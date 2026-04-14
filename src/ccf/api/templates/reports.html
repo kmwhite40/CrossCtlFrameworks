@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Reports · Concord{% endblock %}
+{% block heading %}Custom reports{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Build a per-organization, per-baseline, per-framework report and export it as JSON or CSV.</p>
+{% endblock %}
+{% block content %}
+
+<section class="card card--elevated">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Report builder</div>
+      <div class="card__subtitle">Scope the catalog, choose a crosswalk, export.</div>
+    </div>
+  </div>
+  <div class="card__body">
+    <form id="report-form" method="get" action="/api/reports/build"
+          style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Organization</span>
+        <select class="select" name="organization_id" aria-label="Organization">
+          <option value="">(Catalog — no org scope)</option>
+          {% for o in organizations %}
+            <option value="{{ o.id }}">{{ o.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">System</span>
+        <select class="select" name="system_id" aria-label="System">
+          <option value="">(Any)</option>
+          {% for s in systems %}
+            <option value="{{ s.id }}">{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Baseline</span>
+        <select class="select" name="baseline" aria-label="Baseline">
+          <option value="">(All)</option>
+          <option value="low">FISMA Low</option>
+          <option value="mod" selected>FISMA Moderate</option>
+          <option value="high">FISMA High</option>
+        </select>
+      </label>
+
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Family</span>
+        <select class="select" name="family" aria-label="Family">
+          <option value="">(All families)</option>
+          {% for f in families %}<option value="{{ f.code }}">{{ f.code }} — {{ f.name }}</option>{% endfor %}
+        </select>
+      </label>
+
+      <label style="grid-column:span 2;display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Crosswalk framework</span>
+        <select class="select" name="framework" aria-label="Framework">
+          <option value="">(No crosswalk)</option>
+          {% for fw in frameworks %}<option value="{{ fw.code }}" {% if fw.code==selected_framework %}selected{% endif %}>{{ fw.name }}</option>{% endfor %}
+        </select>
+      </label>
+
+      <label style="grid-column:span 2;display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Filename (CSV)</span>
+        <input class="input" type="text" name="filename" placeholder="concord-report.csv" />
+      </label>
+
+      <div class="row" style="grid-column:1/-1;gap:8px;margin-top:4px">
+        <button type="button" class="btn btn--primary" onclick="runReport('json')"><i data-lucide="play"></i> Preview JSON</button>
+        <button type="button" class="btn btn--secondary" onclick="runReport('csv')"><i data-lucide="download"></i> Download CSV</button>
+        <span class="spacer"></span>
+        <span class="dim" style="font-size:12px">Reports also available via <span class="mono">GET /api/reports/build</span>.</span>
+      </div>
+    </form>
+  </div>
+</section>
+
+<section id="report-preview" class="card" style="margin-top:16px;display:none">
+  <div class="card__header">
+    <div class="card__title">Preview</div>
+    <span id="report-summary" class="dim" style="font-size:12px"></span>
+  </div>
+  <div class="card__body">
+    <pre id="report-pre" class="mono" style="font-size:12px;max-height:520px;overflow:auto;background:var(--ink-50);padding:14px;border-radius:var(--radius);white-space:pre-wrap"></pre>
+  </div>
+</section>
+
+<script>
+function runReport(fmt) {
+  const form = document.getElementById('report-form');
+  const params = new URLSearchParams(new FormData(form));
+  params.set('fmt', fmt);
+  const url = '/api/reports/build?' + params.toString();
+  if (fmt === 'csv') { window.location = url; return; }
+  fetch(url).then(r => r.json()).then(data => {
+    document.getElementById('report-preview').style.display = 'block';
+    document.getElementById('report-summary').textContent =
+      `${data.summary.total_rows} rows · ` +
+      `baseline=${data.summary.baseline || 'any'} · ` +
+      `framework=${data.summary.framework || 'none'}`;
+    document.getElementById('report-pre').textContent = JSON.stringify(data, null, 2);
+    if (window.toast) window.toast(`Report ready — ${data.summary.total_rows} rows`);
+  }).catch(e => {
+    if (window.toast) window.toast('Report failed: ' + e.message);
+  });
+}
+</script>
+
+{% endblock %}

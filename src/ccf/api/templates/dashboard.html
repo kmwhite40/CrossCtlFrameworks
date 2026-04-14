@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Concord{% endblock %}
+{% block heading %}Compliance dashboard{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">NIST SP 800-53A Rev 5 catalog with cross-framework coverage.</p>
+{% endblock %}
+{% block actions %}
+  <a href="/reports" class="btn btn--secondary"><i data-lucide="file-text"></i> Build report</a>
+  <a href="/controls" class="btn btn--primary"><i data-lucide="list-checks"></i> Browse controls</a>
+{% endblock %}
+{% block content %}
+
+<section class="grid-cards stack">
+  {% set cards = [
+    ('Controls', controls_ct, 'list-checks', '/controls'),
+    ('Framework mappings', mapping_ct, 'git-compare-arrows', '/frameworks'),
+    ('Frameworks', frameworks_ct, 'layers', '/frameworks'),
+    ('Worksheets', worksheets_ct, 'sheet', '/worksheets'),
+  ] %}
+  {% for label, value, icon, href in cards %}
+    <a class="kpi" href="{{ href }}">
+      <span class="kpi__trend"><i data-lucide="{{ icon }}"></i></span>
+      <span class="kpi__label">{{ label }}</span>
+      <span class="kpi__value">{{ '{:,}'.format(value) }}</span>
+      <span class="kpi__meta">Last ingest
+        {% if last_run %}&middot; {{ last_run.started_at.strftime('%Y-%m-%d') }}{% endif %}
+      </span>
+    </a>
+  {% endfor %}
+</section>
+
+<section class="stack" style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+  <div class="card">
+    <div class="card__header">
+      <div><div class="card__title">Controls by family</div>
+        <div class="card__subtitle">NIST SP 800-53 Rev 5 control families</div></div>
+      <a href="/controls" class="btn btn--ghost btn--sm">View all <i data-lucide="arrow-right"></i></a>
+    </div>
+    <div class="card__body">
+      <div class="grid-cards">
+        {% for code, name, count in by_family %}
+          <a href="/controls?family={{ code }}" class="card" style="padding:14px 14px">
+            <div class="row"><span class="chip chip--brand">{{ code }}</span><span class="spacer"></span><strong>{{ count }}</strong></div>
+            <div class="dim" style="font-size:12px;margin-top:4px">{{ name }}</div>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card__header">
+      <div class="card__title">FISMA baselines</div>
+    </div>
+    <div class="card__body">
+      {% for key, label, color in [('low','Low','var(--ok-500)'),('mod','Moderate','var(--warn-500)'),('high','High','var(--err-500)')] %}
+        {% set v = by_baseline[key] %}
+        {% set pct = (v / (controls_ct or 1) * 100) | round(1) %}
+        <a href="/controls?baseline={{ key }}" class="bar-row" style="padding:10px 0">
+          <span style="width:90px">{{ label }}</span>
+          <span class="bar-row__track"><span class="bar-row__fill" style="width:{{ pct }}%;background:{{ color }}"></span></span>
+          <span style="width:72px;text-align:right"><strong>{{ '{:,}'.format(v) }}</strong> <span class="dim">&middot; {{ pct }}%</span></span>
+        </a>
+      {% endfor %}
+
+      <hr style="border:none;border-top:1px solid var(--ink-200);margin:16px 0">
+
+      <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Ingestion</div>
+      {% if last_run %}
+        <div class="row" style="margin-top:6px">
+          <span class="chip {% if last_run.status=='succeeded' %}chip--ok{% else %}chip--err{% endif %}">{{ last_run.status }}</span>
+          <span class="dim">{{ last_run.started_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+        </div>
+      {% else %}
+        <div class="dim" style="margin-top:6px">No ingestion recorded.</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{% endblock %}

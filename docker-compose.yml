@@ -1,0 +1,77 @@
+# Copyright © 2026 Colleen Townsend
+name: ccf
+
+x-ccf-env: &ccf_env
+  CCF_DATABASE_URL: postgresql+asyncpg://ccf:ccf@db:5432/ccf
+  CCF_DATABASE_URL_SYNC: postgresql+psycopg://ccf:ccf@db:5432/ccf
+  CCF_LOG_LEVEL: INFO
+  CCF_LOG_JSON: "false"
+  CCF_WORKBOOK_PATH: /data/NIST Cross Mappings Rev. 1.1.xlsx
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ccf-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ccf
+      POSTGRES_PASSWORD: ccf
+      POSTGRES_DB: ccf
+    ports: ["5433:5432"]
+    volumes: ["ccf_pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ccf -d ccf"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrator:
+    build: .
+    container_name: ccf-migrator
+    depends_on:
+      db: { condition: service_healthy }
+    environment: *ccf_env
+    entrypoint: ["alembic"]
+    command: ["upgrade", "head"]
+    restart: "no"
+
+  api:
+    build: .
+    container_name: ccf-api
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    environment: *ccf_env
+    ports: ["8088:8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  etl:
+    build: .
+    container_name: ccf-etl
+    profiles: ["etl"]
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    environment: *ccf_env
+    volumes: ["./data:/data:ro"]
+    entrypoint: ["ccf"]
+    command: ["ingest"]
+    restart: "no"
+
+  cli:
+    build: .
+    container_name: ccf-cli
+    profiles: ["cli"]
+    depends_on:
+      db: { condition: service_healthy }
+    environment: *ccf_env
+    entrypoint: ["ccf"]
+    restart: "no"
+
+volumes:
+  ccf_pgdata:

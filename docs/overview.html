@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Concord — High-Level Overview</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --brand: #3366ff; --ink: #0b1220; }
+  body { font-family: 'Inter', system-ui, sans-serif; }
+  .chip { display:inline-flex; align-items:center; font-size:.75rem; font-weight:500;
+          padding:.15rem .55rem; border-radius:9999px; }
+  .card { background:#fff; border:1px solid #e2e8f0; border-radius:1rem; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  .kbd { font-family: ui-monospace, monospace; background:#f1f5f9; border:1px solid #e2e8f0;
+         padding:.05rem .35rem; border-radius:.3rem; font-size:.8rem; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+
+<header class="bg-gradient-to-br from-[#1f3fa8] to-[#3366ff] text-white">
+  <div class="max-w-5xl mx-auto px-6 py-16">
+    <div class="flex items-center gap-3 mb-6">
+      <div class="w-10 h-10 rounded-xl bg-white/15 grid place-items-center font-bold text-xl">C</div>
+      <span class="text-sm uppercase tracking-widest text-white/70">High-level overview</span>
+    </div>
+    <h1 class="text-5xl md:text-6xl font-semibold tracking-tight">Concord</h1>
+    <p class="mt-4 text-xl md:text-2xl text-white/85 max-w-3xl">
+      An internal compliance controls platform — NIST SP 800-53A Rev 5,
+      cross-framework mappings, and compliance operations in one place.
+    </p>
+    <div class="mt-8 flex flex-wrap gap-2 text-xs">
+      <span class="chip bg-white/15 text-white">FedRAMP</span>
+      <span class="chip bg-white/15 text-white">FISMA</span>
+      <span class="chip bg-white/15 text-white">CMMC</span>
+      <span class="chip bg-white/15 text-white">NIST 800-171</span>
+      <span class="chip bg-white/15 text-white">ISO 27001</span>
+      <span class="chip bg-white/15 text-white">SOC 2</span>
+      <span class="chip bg-white/15 text-white">HIPAA</span>
+      <span class="chip bg-white/15 text-white">HITRUST</span>
+      <span class="chip bg-white/15 text-white">NIST CSF</span>
+      <span class="chip bg-white/15 text-white">CIS v8</span>
+      <span class="chip bg-white/15 text-white">GDPR</span>
+      <span class="chip bg-white/15 text-white">StateRAMP</span>
+      <span class="chip bg-white/15 text-white">CJIS</span>
+      <span class="chip bg-white/15 text-white">MARS-E</span>
+      <span class="chip bg-white/15 text-white">AWS/Azure/GCP</span>
+      <span class="chip bg-white/15 text-white">CDM</span>
+      <span class="chip bg-white/15 text-white">CUI Overlay</span>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-6 py-12 space-y-14">
+
+  <section>
+    <h2 class="text-2xl font-semibold tracking-tight">Summary — what Concord does</h2>
+    <p class="mt-2 text-slate-600">Six capabilities, one service.</p>
+
+    <div class="mt-6 grid md:grid-cols-2 gap-4">
+      <article class="card p-5">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-blue-50 text-blue-700 grid place-items-center font-bold">1</div>
+          <h3 class="font-semibold">Ingests the workbook</h3>
+        </div>
+        <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+          Loads the <em>NIST Cross Mappings Rev. 1.1</em> workbook (17 sheets) into Postgres.
+          <code class="kbd">SP.800-53Ar5_assessment</code> is parsed into typed
+          <code class="kbd">ccf.controls</code> and normalized
+          <code class="kbd">ccf.framework_mappings</code>; every other tab lands in
+          generic <code class="kbd">ccf.worksheets</code> / <code class="kbd">worksheet_rows</code>.
+        </p>
+      </article>
+
+      <article class="card p-5">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-700 grid place-items-center font-bold">2</div>
+          <h3 class="font-semibold">Classifies 550+ mapping columns</h3>
+        </div>
+        <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+          Resolves each spreadsheet column into one of
+          <strong>26 canonical frameworks</strong> — FedRAMP, CMMC, NIST 800-171/172,
+          HIPAA, HITRUST, ISO 27001, SOC 2, CIS v8, NIST CSF, GDPR, StateRAMP,
+          CJIS, MARS-E, AWS / Azure / GCP, CDM, CUI overlay, and more.
+        </p>
+      </article>
+
+      <article class="card p-5">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-700 grid place-items-center font-bold">3</div>
+          <h3 class="font-semibold">Models a compliance-ops layer</h3>
+        </div>
+        <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+          Beyond the catalog: organizations, systems (FIPS-199 + FedRAMP baseline
+          + ATO status), per-system control implementations, evidence, assessments,
+          POA&amp;Ms, risks, and an append-only audit log.
+        </p>
+      </article>
+
+      <article class="card p-5">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-rose-50 text-rose-700 grid place-items-center font-bold">4</div>
+          <h3 class="font-semibold">Serves a UI</h3>
+        </div>
+        <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+          HTMX + Tailwind server-rendered pages: dashboard, faceted control
+          browser, per-control detail with mappings grouped by framework,
+          framework catalog, generic worksheet viewer, and Postgres full-text search.
+        </p>
+      </article>
+
+      <article class="card p-5">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-amber-50 text-amber-700 grid place-items-center font-bold">5</div>
+          <h3 class="font-semibold">Publishes a REST API</h3>
+        </div>
+        <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+          Everything the UI renders is available as JSON under
+          <code class="kbd">/api</code>, with Swagger UI at
+          <code class="kbd">/docs</code> and the schema at
+          <code class="kbd">/openapi.json</code>.
+        </p>
+      </article>
+
+      <article class="card p-5">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-slate-100 text-slate-700 grid place-items-center font-bold">6</div>
+          <h3 class="font-semibold">Provides a Typer CLI</h3>
+        </div>
+        <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+          <code class="kbd">ccf ingest</code> &middot;
+          <code class="kbd">ccf stats</code> &middot;
+          <code class="kbd">ccf show &lt;identifier&gt;</code> &middot;
+          <code class="kbd">ccf search &lt;query&gt;</code> &middot;
+          <code class="kbd">ccf serve</code>
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="text-2xl font-semibold tracking-tight">What was built</h2>
+    <p class="mt-2 text-slate-600">Relative to the repository root.</p>
+
+    <div class="mt-6 grid md:grid-cols-2 gap-4">
+      <article class="card p-5">
+        <h3 class="font-semibold">Application — <code class="kbd">src/ccf/</code></h3>
+        <ul class="mt-3 text-sm text-slate-600 space-y-2 list-disc pl-5">
+          <li><code class="kbd">config.py</code> (pydantic-settings)</li>
+          <li><code class="kbd">logging.py</code> (structlog)</li>
+          <li><code class="kbd">db.py</code> (async SQLAlchemy)</li>
+          <li><code class="kbd">models.py</code> — 20+ ORM classes</li>
+          <li><code class="kbd">schemas.py</code> — Pydantic v2</li>
+          <li><code class="kbd">cli.py</code> — Typer entrypoint</li>
+          <li><code class="kbd">etl/</code> — classifier + ingestion pipeline with dedup and tsvector refresh</li>
+          <li><code class="kbd">api/</code> — FastAPI app, 6 route modules, 8 Jinja templates</li>
+        </ul>
+      </article>
+
+      <article class="card p-5">
+        <h3 class="font-semibold">Database — <code class="kbd">migrations/</code></h3>
+        <ul class="mt-3 text-sm text-slate-600 space-y-2 list-disc pl-5">
+          <li>Alembic baseline creating <code class="kbd">ccf</code>, <code class="kbd">ccf_raw</code>, <code class="kbd">ccf_audit</code> schemas</li>
+          <li><code class="kbd">pg_trgm</code> &amp; <code class="kbd">pgcrypto</code> extensions</li>
+          <li>13 enums, 17 tables, GIN indexes on JSONB + tsvector + trigram mappings</li>
+        </ul>
+      </article>
+
+      <article class="card p-5">
+        <h3 class="font-semibold">Delivery</h3>
+        <ul class="mt-3 text-sm text-slate-600 space-y-2 list-disc pl-5">
+          <li>Multi-stage <code class="kbd">Dockerfile</code>, non-root user, tini PID 1, HEALTHCHECK</li>
+          <li><code class="kbd">docker-compose.yml</code> — <code class="kbd">db</code> / <code class="kbd">migrator</code> / <code class="kbd">api</code> / <code class="kbd">etl</code> / <code class="kbd">cli</code></li>
+          <li><code class="kbd">Makefile</code>, <code class="kbd">.env.example</code>, <code class="kbd">.dockerignore</code>, <code class="kbd">.gitignore</code></li>
+        </ul>
+      </article>
+
+      <article class="card p-5">
+        <h3 class="font-semibold">Quality &amp; compliance</h3>
+        <ul class="mt-3 text-sm text-slate-600 space-y-2 list-disc pl-5">
+          <li><code class="kbd">tests/</code> — classifier unit tests, ingest integration, API smoke</li>
+          <li><code class="kbd">.github/workflows/ci.yml</code> — lint, typecheck, test, SBOM, Trivy, Docker build</li>
+          <li><code class="kbd">LICENSE</code> + <code class="kbd">NOTICE</code> — &copy; 2026 Colleen Townsend</li>
+          <li><code class="kbd">README.md</code></li>
+        </ul>
+      </article>
+    </div>
+  </section>
+
+  <section class="card p-6">
+    <h2 class="text-xl font-semibold">Live deployment</h2>
+    <div class="mt-4 grid sm:grid-cols-2 gap-4 text-sm">
+      <div>
+        <div class="text-slate-500">Web UI</div>
+        <a class="text-blue-600 hover:underline font-mono" href="http://localhost:8088">http://localhost:8088</a>
+      </div>
+      <div>
+        <div class="text-slate-500">API docs</div>
+        <a class="text-blue-600 hover:underline font-mono" href="http://localhost:8088/docs">http://localhost:8088/docs</a>
+      </div>
+      <div>
+        <div class="text-slate-500">Postgres</div>
+        <span class="font-mono">localhost:5433 (ccf/ccf/ccf)</span>
+      </div>
+      <div>
+        <div class="text-slate-500">Data loaded</div>
+        <span>5,430 controls &middot; 121,944 mappings &middot; 26 frameworks &middot; 16 worksheets &middot; 19,951 rows</span>
+      </div>
+    </div>
+  </section>
+
+  <footer class="pt-6 border-t border-slate-200 text-sm text-slate-500 flex justify-between">
+    <span>Concord &middot; Compliance controls platform</span>
+    <span>&copy; 2026 Colleen Townsend. All rights reserved.</span>
+  </footer>
+</main>
+
+</body>
+</html>

@@ -1,0 +1,57 @@
+{% if rows %}
+<div class="card__body" style="padding:0">
+<div class="table-wrap">
+<table class="data">
+  <thead>
+    <tr>
+      <th style="width:120px">Identifier</th>
+      <th>Name</th>
+      <th style="width:120px">Family</th>
+      <th style="width:140px">Baselines</th>
+      <th style="width:80px"><span class="sr-only">Actions</span></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for c in rows %}
+      <tr>
+        <td><a class="mono" href="/controls/{{ c.identifier }}">{{ c.identifier }}</a></td>
+        <td><strong>{{ c.control_name or '—' }}</strong>
+          {% if c.description %}<div class="dim truncate" style="max-width:640px">{{ c.description[:160] }}</div>{% endif %}
+        </td>
+        <td>{% if c.family %}<span class="chip chip--brand">{{ c.family.code }}</span>{% endif %}</td>
+        <td>
+          {% if c.fisma_low  %}<span class="chip chip--ok"   title="FISMA Low">L</span>{% endif %}
+          {% if c.fisma_mod  %}<span class="chip chip--warn" title="FISMA Moderate">M</span>{% endif %}
+          {% if c.fisma_high %}<span class="chip chip--err"  title="FISMA High">H</span>{% endif %}
+        </td>
+        <td><button type="button" class="btn btn--ghost btn--sm" data-copy="{{ c.identifier }}" aria-label="Copy identifier"><i data-lucide="copy"></i></button></td>
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+</div>
+
+{% set prev_off = [offset - limit, 0] | max %}
+{% set next_off = offset + limit %}
+<div class="card__footer">
+  <div>{{ '{:,}'.format(total) }} controls {% if q or family or baseline %}&middot; filtered{% endif %}</div>
+  <div class="row">
+    <span class="dim">Showing {{ offset + 1 }}–{{ [offset + limit, total] | min }}</span>
+    <a class="btn btn--ghost btn--sm" {% if offset==0 %}aria-disabled="true"{% endif %}
+       href="/controls?q={{ q }}&family={{ family }}&baseline={{ baseline }}&limit={{ limit }}&offset={{ prev_off }}"
+       hx-get="/controls?q={{ q }}&family={{ family }}&baseline={{ baseline }}&limit={{ limit }}&offset={{ prev_off }}"
+       hx-target="#controls-table" hx-push-url="true"><i data-lucide="chevron-left"></i> Prev</a>
+    <a class="btn btn--ghost btn--sm" {% if next_off >= total %}aria-disabled="true"{% endif %}
+       href="/controls?q={{ q }}&family={{ family }}&baseline={{ baseline }}&limit={{ limit }}&offset={{ next_off }}"
+       hx-get="/controls?q={{ q }}&family={{ family }}&baseline={{ baseline }}&limit={{ limit }}&offset={{ next_off }}"
+       hx-target="#controls-table" hx-push-url="true">Next <i data-lucide="chevron-right"></i></a>
+  </div>
+</div>
+{% else %}
+<div class="card__body" style="text-align:center;padding:48px">
+  <i data-lucide="search-x" style="width:40px;height:40px;color:var(--ink-400)"></i>
+  <div style="font-weight:600;margin-top:8px">No controls match your filters.</div>
+  <div class="dim" style="font-size:13px">Try relaxing a filter or clearing the query.</div>
+</div>
+{% endif %}

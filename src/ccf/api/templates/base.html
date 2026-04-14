@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>{% block title %}Concord{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <style>body{font-family:'Inter',system-ui,sans-serif;margin:0;background:var(--ink-50)}</style>
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/vendor/alpine.min.js" defer></script>
+  <script src="/static/vendor/lucide.min.js" defer></script>
+  <script src="/static/js/app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+
+<div class="app">
+  <!-- Topbar spans both columns -->
+  <header class="topbar" role="banner">
+    <a href="/" class="topbar__brand">
+      <span class="topbar__brand-mark">C</span>
+      <span>Concord</span>
+      <span class="topbar__tag">Compliance platform</span>
+    </a>
+
+    <button type="button" class="topbar__cmd" onclick="openPalette()" aria-label="Open command palette">
+      <i data-lucide="search" style="width:16px;height:16px"></i>
+      <span>Jump to…</span>
+      <kbd>⌘K</kbd>
+    </button>
+
+    <div class="topbar__right">
+      <button type="button" class="topbar__btn" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
+        <i data-lucide="sun-moon"></i>
+      </button>
+      <a class="topbar__btn" href="/docs" aria-label="API docs" title="API docs">
+        <i data-lucide="book-open"></i>
+      </a>
+      <div class="topbar__user" role="group" aria-label="Account">
+        <span class="topbar__avatar">CT</span>
+        <span style="font-size:13px;font-weight:500">Colleen Townsend</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Sidebar -->
+  <aside class="sidebar" role="navigation" aria-label="Primary">
+    <div class="sidebar__group">
+      <div class="sidebar__group-title">Catalog</div>
+      <a class="nav-link" href="/"           {% if active=='dashboard'  %}aria-current="page"{% endif %}><i data-lucide="gauge-circle"></i> Dashboard</a>
+      <a class="nav-link" href="/controls"   {% if active=='controls'   %}aria-current="page"{% endif %}><i data-lucide="list-checks"></i> Controls</a>
+      <a class="nav-link" href="/frameworks" {% if active=='frameworks' %}aria-current="page"{% endif %}><i data-lucide="layers"></i> Frameworks</a>
+      <a class="nav-link" href="/worksheets" {% if active=='worksheets' %}aria-current="page"{% endif %}><i data-lucide="sheet"></i> Worksheets</a>
+      <a class="nav-link" href="/search"     {% if active=='search'     %}aria-current="page"{% endif %}><i data-lucide="search"></i> Search</a>
+    </div>
+    <div class="sidebar__group">
+      <div class="sidebar__group-title">Operations</div>
+      <a class="nav-link" href="/reports"    {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i> Reports</a>
+      <a class="nav-link" href="/systems"    {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i> Systems</a>
+      <a class="nav-link" href="/poams"      {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i> POA&amp;Ms</a>
+    </div>
+    <div class="sidebar__group">
+      <div class="sidebar__group-title">Admin</div>
+      <a class="nav-link" href="/ingestions" {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i> Ingestions</a>
+      <a class="nav-link" href="/settings"   {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i> Settings</a>
+    </div>
+    <div class="sidebar__foot">
+      <div>v0.1.0 &middot; Concord</div>
+      <div>&copy; 2026 Colleen Townsend</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main" id="main" tabindex="-1">
+    {% block breadcrumbs %}{% endblock %}
+    <div class="page">
+      <div class="page__header">
+        <div>
+          <h1 class="page__title">{% block heading %}{% endblock %}</h1>
+          {% block subtitle %}{% endblock %}
+        </div>
+        <div class="row" style="gap:8px">{% block actions %}{% endblock %}</div>
+      </div>
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+
+<!-- Command palette -->
+<div id="cmd-backdrop" class="cmd-backdrop" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="cmd" role="listbox">
+    <input id="cmd-input" class="cmd__input" placeholder="Type a command or search…" autocomplete="off" />
+    <div id="cmd-root" class="cmd__list"></div>
+  </div>
+</div>
+
+</body>
+</html>

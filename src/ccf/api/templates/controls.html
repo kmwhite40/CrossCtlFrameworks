@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Controls · Concord{% endblock %}
+{% block heading %}Control catalog{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ '{:,}'.format(total) }} NIST SP 800-53A Rev 5 assessment objectives.</p>
+{% endblock %}
+{% block actions %}
+  <button type="button" class="btn btn--secondary" onclick="openPalette()"><i data-lucide="command"></i> Quick jump</button>
+  <a href="/reports" class="btn btn--primary"><i data-lucide="download"></i> Export report</a>
+{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__body">
+    <form hx-get="/controls" hx-target="#controls-table" hx-push-url="true"
+          hx-include="closest form" role="search" aria-label="Filter controls"
+          style="display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px">
+      <label class="field-group" style="position:relative">
+        <i data-lucide="search" style="position:absolute;left:10px;top:10px;width:18px;height:18px;color:var(--ink-400)"></i>
+        <input type="text" name="q" value="{{ q }}" placeholder="Search by identifier or name…"
+               class="input input--with-icon" aria-label="Search"
+               style="width:100%" />
+      </label>
+      <select name="family" class="select" aria-label="Control family" title="Control family">
+        <option value="">All families</option>
+        {% for f in families %}
+          <option value="{{ f.code }}" {% if f.code==family %}selected{% endif %}>{{ f.code }} — {{ f.name }}</option>
+        {% endfor %}
+      </select>
+      <select name="baseline" class="select" aria-label="FISMA baseline" title="FISMA baseline">
+        <option value="">All baselines</option>
+        <option value="low"  {% if baseline=='low'  %}selected{% endif %}>FISMA Low</option>
+        <option value="mod"  {% if baseline=='mod'  %}selected{% endif %}>FISMA Moderate</option>
+        <option value="high" {% if baseline=='high' %}selected{% endif %}>FISMA High</option>
+      </select>
+      <button type="submit" class="btn btn--primary"><i data-lucide="filter"></i> Apply</button>
+    </form>
+  </div>
+</section>
+
+<section id="controls-table" class="card">
+  {% include "_controls_table.html" %}
+</section>
+
+{% endblock %}

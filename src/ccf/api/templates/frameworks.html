@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Frameworks · Concord{% endblock %}
+{% block heading %}Cross-framework catalog{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ rows | length }} canonical frameworks resolved from the NIST Cross Mappings workbook.</p>
+{% endblock %}
+{% block content %}
+
+{% set max_count = (rows | map(attribute='mappings') | max) or 1 %}
+<section class="grid-cards">
+  {% for r in rows %}
+    {% set pct = (r.mappings / max_count * 100) | round(1) %}
+    <a href="/frameworks/{{ r.code }}" class="card" style="padding:18px;display:block">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div class="dim" style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase">{{ r.family or '—' }}</div>
+          <div style="font-weight:600;font-size:16px;letter-spacing:-.01em;margin-top:2px">{{ r.name }}</div>
+          <div class="mono dim" style="font-size:11px">{{ r.code }}</div>
+        </div>
+        <span class="chip chip--brand">{{ '{:,}'.format(r.mappings) }}</span>
+      </div>
+      {% if r.description %}<p class="dim" style="font-size:13px;margin-top:10px;line-height:1.5">{{ r.description }}</p>{% endif %}
+      <div class="bar-row" style="margin-top:14px">
+        <span class="bar-row__track"><span class="bar-row__fill" style="width:{{ pct }}%;background:linear-gradient(90deg,var(--brand-400),var(--brand-600))"></span></span>
+      </div>
+    </a>
+  {% endfor %}
+</section>
+
+{% endblock %}

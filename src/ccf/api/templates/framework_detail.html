@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}{{ fw.name }} · Concord{% endblock %}
+{% block breadcrumbs %}
+<nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
+  <a href="/">Home</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/frameworks">Frameworks</a>
+  <i data-lucide="chevron-right"></i>
+  <span>{{ fw.code }}</span>
+</nav>
+{% endblock %}
+{% block heading %}{{ fw.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ '{:,}'.format(total) }} mappings across the NIST catalog.</p>
+{% endblock %}
+{% block actions %}
+  <a class="btn btn--secondary btn--sm" href="/api/frameworks/{{ fw.code }}/controls" target="_blank"><i data-lucide="braces"></i> JSON</a>
+  <a class="btn btn--primary btn--sm" href="/reports?framework={{ fw.code }}"><i data-lucide="file-text"></i> Build report</a>
+{% endblock %}
+{% block content %}
+
+<section class="card">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Crosswalk</div>
+      <div class="card__subtitle">NIST 800-53 control → {{ fw.name }} column</div>
+    </div>
+    <span class="chip chip--brand">{{ fw.code }}</span>
+  </div>
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr>
+      <th style="width:120px">Control</th>
+      <th>Name</th>
+      <th style="width:28%">Column</th>
+      <th>Mapping</th>
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td><a class="mono" href="/controls/{{ r.identifier }}">{{ r.identifier }}</a></td>
+          <td>{{ r.control_name or '—' }}</td>
+          <td class="dim" style="font-size:12.5px">{{ r.column_key }}</td>
+          <td style="white-space:pre-wrap;font-size:13px">{{ r.value }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  {% set prev_off = [offset - limit, 0] | max %}
+  {% set next_off = offset + limit %}
+  <div class="card__footer">
+    <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ '{:,}'.format(total) }}</span>
+    <div class="row">
+      <a class="btn btn--ghost btn--sm" {% if offset==0 %}aria-disabled="true"{% endif %}
+         href="/frameworks/{{ fw.code }}?offset={{ prev_off }}&limit={{ limit }}"><i data-lucide="chevron-left"></i> Prev</a>
+      <a class="btn btn--ghost btn--sm" {% if next_off >= total %}aria-disabled="true"{% endif %}
+         href="/frameworks/{{ fw.code }}?offset={{ next_off }}&limit={{ limit }}">Next <i data-lucide="chevron-right"></i></a>
+    </div>
+  </div>
+</section>
+
+{% endblock %}

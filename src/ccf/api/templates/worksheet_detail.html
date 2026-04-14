@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}{{ sheet.name }} · Concord{% endblock %}
+{% block breadcrumbs %}
+<nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
+  <a href="/">Home</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/worksheets">Worksheets</a>
+  <i data-lucide="chevron-right"></i>
+  <span>{{ sheet.name }}</span>
+</nav>
+{% endblock %}
+{% block heading %}{{ sheet.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ '{:,}'.format(total) }} rows · {{ (sheet.headers or []) | length }} columns.</p>
+{% endblock %}
+{% block content %}
+
+<section class="card">
+  <div class="table-wrap">
+  <table class="data">
+    <thead><tr>
+      <th>#</th>
+      {% for h in sheet.headers %}<th>{{ h }}</th>{% endfor %}
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}
+        <tr>
+          <td class="mono dim">{{ r.row_index }}</td>
+          {% for h in sheet.headers %}
+            <td style="white-space:pre-wrap;font-size:13px">{{ r.payload.get(h) or '' }}</td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  {% set prev_off = [offset - limit, 0] | max %}
+  {% set next_off = offset + limit %}
+  <div class="card__footer">
+    <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ '{:,}'.format(total) }}</span>
+    <div class="row">
+      <a class="btn btn--ghost btn--sm" {% if offset==0 %}aria-disabled="true"{% endif %}
+         href="/worksheets/{{ sheet.slug }}?offset={{ prev_off }}&limit={{ limit }}"><i data-lucide="chevron-left"></i> Prev</a>
+      <a class="btn btn--ghost btn--sm" {% if next_off >= total %}aria-disabled="true"{% endif %}
+         href="/worksheets/{{ sheet.slug }}?offset={{ next_off }}&limit={{ limit }}">Next <i data-lucide="chevron-right"></i></a>
+    </div>
+  </div>
+</section>
+{% endblock %}

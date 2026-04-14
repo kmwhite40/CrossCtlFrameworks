@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Worksheets · Concord{% endblock %}
+{% block heading %}Workbook tabs{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">All 16 non-primary sheets from the NIST Cross Mappings workbook.</p>
+{% endblock %}
+{% block content %}
+<section class="grid-cards">
+  {% for w in rows %}
+    <a href="/worksheets/{{ w.slug }}" class="card" style="padding:18px;display:block">
+      <div class="row" style="justify-content:space-between">
+        <strong style="letter-spacing:-.01em">{{ w.name }}</strong>
+        <span class="chip chip--brand">{{ '{:,}'.format(w.row_count) }} rows</span>
+      </div>
+      <div class="dim" style="font-size:12px;margin-top:6px">
+        {{ (w.headers or []) | length }} columns · loaded {{ w.loaded_at.strftime('%Y-%m-%d') }}
+      </div>
+    </a>
+  {% endfor %}
+</section>
+{% endblock %}

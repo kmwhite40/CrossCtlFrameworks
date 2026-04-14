@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Search · Concord{% endblock %}
+{% block heading %}Search controls{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Full-text search over NIST 800-53A identifiers, names, objectives, and discussion.</p>
+{% endblock %}
+{% block content %}
+
+<section class="card card--elevated">
+  <div class="card__body">
+    <form action="/search" class="field-group" role="search" style="gap:10px">
+      <div style="flex:1;position:relative">
+        <i data-lucide="search" style="position:absolute;left:12px;top:10px;width:18px;height:18px;color:var(--ink-400)"></i>
+        <input name="q" value="{{ q }}" autofocus placeholder="e.g. multi-factor authentication, encryption at rest, audit log…"
+               class="input input--with-icon" aria-label="Search query" style="width:100%;font-size:15px;height:44px" />
+      </div>
+      <button type="submit" class="btn btn--primary" style="height:44px"><i data-lucide="search"></i> Search</button>
+    </form>
+    <div class="dim" style="font-size:12px;margin-top:8px">
+      Press <kbd style="font-family:ui-monospace;background:var(--ink-100);border:1px solid var(--ink-200);padding:1px 5px;border-radius:4px">/</kbd> anywhere to focus search.
+    </div>
+  </div>
+</section>
+
+{% if q %}
+  <section class="card" style="margin-top:16px">
+    <div class="card__header">
+      <div class="card__title">{{ results | length }} result(s)</div>
+      <div class="dim" style="font-size:13px">for <span class="mono">{{ q }}</span></div>
+    </div>
+    {% if results %}
+    <div class="card__body" style="padding:0">
+      <ul style="list-style:none;margin:0;padding:0">
+        {% for r in results %}
+        <li style="border-bottom:1px solid var(--ink-100);padding:14px 18px">
+          <div class="row" style="gap:10px">
+            <a class="mono" href="/controls/{{ r.identifier }}" style="color:var(--brand-700);font-size:13px">{{ r.identifier }}</a>
+            <strong style="letter-spacing:-.01em">{{ r.control_name or '' }}</strong>
+            <span class="chip chip--ghost" style="margin-left:auto">rank {{ '%.3f' % r.rank }}</span>
+          </div>
+          {% if r.description %}
+            <p class="dim" style="font-size:13px;margin-top:4px;line-height:1.55">{{ r.description[:240] }}{% if r.description|length > 240 %}…{% endif %}</p>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% else %}
+      <div class="card__body dim" style="text-align:center;padding:40px">
+        <i data-lucide="search-x" style="width:36px;height:36px;color:var(--ink-400)"></i>
+        <div style="margin-top:8px;font-weight:600">No matches.</div>
+        <div style="font-size:13px">Try a broader term or check spelling.</div>
+      </div>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% endblock %}

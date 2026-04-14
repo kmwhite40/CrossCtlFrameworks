@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}{{ control.identifier }} · Concord{% endblock %}
+{% block breadcrumbs %}
+<nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
+  <a href="/">Home</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/controls">Controls</a>
+  {% if control.family %}<i data-lucide="chevron-right"></i>
+    <a href="/controls?family={{ control.family.code }}">{{ control.family.code }}</a>{% endif %}
+  <i data-lucide="chevron-right"></i>
+  <span>{{ control.identifier }}</span>
+</nav>
+{% endblock %}
+{% block heading %}{{ control.identifier }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ control.control_name or '—' }}</p>
+{% endblock %}
+{% block actions %}
+  <button type="button" class="btn btn--secondary btn--sm" data-copy="{{ control.identifier }}"><i data-lucide="copy"></i> Copy ID</button>
+  <a class="btn btn--secondary btn--sm" href="/api/controls/{{ control.identifier }}" target="_blank"><i data-lucide="braces"></i> JSON</a>
+{% endblock %}
+{% block content %}
+
+<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">
+  {% if control.family %}<span class="chip chip--brand">{{ control.family.code }} — {{ control.family.name }}</span>{% endif %}
+  {% if control.fisma_low  %}<span class="chip chip--ok">FISMA Low</span>{% endif %}
+  {% if control.fisma_mod  %}<span class="chip chip--warn">FISMA Moderate</span>{% endif %}
+  {% if control.fisma_high %}<span class="chip chip--err">FISMA High</span>{% endif %}
+  {% if control.assurance_control %}<span class="chip">Assurance {{ control.assurance_control }}</span>{% endif %}
+  {% if control.implemented_by %}<span class="chip">{{ control.implemented_by }}</span>{% endif %}
+  {% if control.overall_control_type %}<span class="chip">{{ control.overall_control_type }}</span>{% endif %}
+</div>
+
+<div x-data="{tab:'overview'}">
+  <nav class="tabs" role="tablist">
+    <button role="tab" :aria-selected="tab==='overview'"   class="tab" @click="tab='overview'">Overview</button>
+    <button role="tab" :aria-selected="tab==='assessment'" class="tab" @click="tab='assessment'">Assessment</button>
+    <button role="tab" :aria-selected="tab==='mappings'"   class="tab" @click="tab='mappings'">Mappings ({{ control.mappings | length }})</button>
+    <button role="tab" :aria-selected="tab==='raw'"        class="tab" @click="tab='raw'">Raw</button>
+  </nav>
+
+  <!-- Overview -->
+  <div role="tabpanel" x-show="tab==='overview'">
+    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+      <div class="card">
+        <div class="card__header"><div class="card__title">Description</div></div>
+        <div class="card__body" style="white-space:pre-wrap;line-height:1.65">{{ control.description or '—' }}</div>
+      </div>
+      <div class="card">
+        <div class="card__header"><div class="card__title">Attributes</div></div>
+        <div class="card__body">
+          <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;font-size:13px">
+            {% for k, v in [
+              ('Sequence', control.sequence_control),
+              ('Sort key', control.sort_as),
+              ('AP acronym', control.ap_acronym),
+              ('Owner', control.owner),
+              ('OPD', ('Yes' if control.opd else ('No' if control.opd is not none else None))),
+            ] %}{% if v %}
+              <dt class="dim">{{ k }}</dt><dd>{{ v }}</dd>
+            {% endif %}{% endfor %}
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    {% if control.discussion %}
+    <div class="card" style="margin-top:16px">
+      <div class="card__header"><div class="card__title">Discussion</div></div>
+      <div class="card__body" style="white-space:pre-wrap;line-height:1.65;color:var(--ink-700)">{{ control.discussion }}</div>
+    </div>
+    {% endif %}
+
+    {% if control.related_controls %}
+    <div class="card" style="margin-top:16px">
+      <div class="card__header"><div class="card__title">Related controls</div></div>
+      <div class="card__body">{{ control.related_controls }}</div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Assessment -->
+  <div role="tabpanel" x-show="tab==='assessment'" x-cloak>
+    {% if control.assessment_objective %}
+    <div class="card">
+      <div class="card__header"><div class="card__title">Assessment objective</div></div>
+      <div class="card__body" style="white-space:pre-wrap;line-height:1.65">{{ control.assessment_objective }}</div>
+    </div>
+    {% endif %}
+    <div class="grid-cards" style="margin-top:16px">
+      {% for label, val, icon in [('Examine', control.examine, 'search'),('Interview', control.interview, 'message-circle'),('Test', control.test, 'flask-conical')] %}
+        {% if val %}
+        <div class="card">
+          <div class="card__header"><div class="row" style="gap:8px"><i data-lucide="{{ icon }}"></i><div class="card__title">{{ label }}</div></div></div>
+          <div class="card__body" style="white-space:pre-wrap;line-height:1.6;font-size:13px">{{ val }}</div>
+        </div>
+        {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Mappings -->
+  <div role="tabpanel" x-show="tab==='mappings'" x-cloak>
+    {% if grouped %}
+      <div class="stack" x-data="{open: '{{ grouped | list | first }}' }">
+      {% for fw, items in grouped.items() %}
+        <div class="card">
+          <button type="button" class="card__header" style="width:100%;background:none;border:none;cursor:pointer;text-align:left"
+                  @click="open = open === '{{ fw }}' ? null : '{{ fw }}'">
+            <div><div class="card__title">{{ fw }}</div><div class="card__subtitle">{{ items | length }} entries</div></div>
+            <i data-lucide="chevron-down" :class="open === '{{ fw }}' ? 'rotate-180' : ''"></i>
+          </button>
+          <div x-show="open === '{{ fw }}'" x-cloak>
+          <table class="data">
+            <thead><tr><th style="width:35%">Column</th><th>Value</th></tr></thead>
+            <tbody>
+            {% for m in items %}
+              <tr><td class="dim">{{ m.column_key }}</td><td style="white-space:pre-wrap">{{ m.value }}</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      {% endfor %}
+      </div>
+    {% else %}
+      <div class="card"><div class="card__body dim" style="text-align:center;padding:36px">No cross-framework mappings recorded for this control.</div></div>
+    {% endif %}
+  </div>
+
+  <!-- Raw -->
+  <div role="tabpanel" x-show="tab==='raw'" x-cloak>
+    <div class="card">
+      <div class="card__header"><div class="card__title">Raw audit payload</div>
+        <a class="btn btn--ghost btn--sm" href="/api/controls/{{ control.identifier }}" target="_blank"><i data-lucide="external-link"></i> Open JSON</a></div>
+      <div class="card__body">
+        <pre class="mono" style="font-size:12px;white-space:pre-wrap;background:var(--ink-50);padding:14px;border-radius:var(--radius);max-height:520px;overflow:auto">{{ control.audit_payload | tojson(indent=2) }}</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
