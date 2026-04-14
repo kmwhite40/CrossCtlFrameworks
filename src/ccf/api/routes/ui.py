@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from ...models import (
     FrameworkMapping,
     IngestionRun,
     Organization,
+    POAM,
     System,
     Worksheet,
     WorksheetRow,
@@ -231,6 +232,86 @@ async def worksheet_detail(
         "active": "worksheets",
         "sheet": sheet, "rows": rows, "total": total,
         "limit": limit, "offset": offset,
+    })
+
+
+@router.get("/systems", response_class=HTMLResponse)
+async def systems_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
+    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    by_org: dict[int, list[System]] = {}
+    for s in systems:
+        by_org.setdefault(s.organization_id, []).append(s)
+    return templates.TemplateResponse(request, "systems.html", {
+        "active": "systems",
+        "organizations": orgs,
+        "systems": systems,
+        "by_org": by_org,
+    })
+
+
+@router.post("/systems/orgs")
+async def create_org(
+    name: str = Form(...),
+    description: str | None = Form(None),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    if name.strip():
+        session.add(Organization(name=name.strip(), description=(description or None)))
+        await session.commit()
+    return RedirectResponse("/systems", status_code=303)
+
+
+@router.post("/systems/new")
+async def create_system(
+    organization_id: int = Form(...),
+    name: str = Form(...),
+    description: str | None = Form(None),
+    baseline: str | None = Form(None),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    if name.strip():
+        session.add(System(
+            organization_id=organization_id,
+            name=name.strip(),
+            description=(description or None),
+            baseline=(baseline or None),
+        ))
+        await session.commit()
+    return RedirectResponse("/systems", status_code=303)
+
+
+@router.get("/poams", response_class=HTMLResponse)
+async def poams_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (await session.execute(select(POAM).order_by(POAM.due_on.nulls_last()))).scalars().all()
+    return templates.TemplateResponse(request, "poams.html", {
+        "active": "poams", "rows": rows,
+    })
+
+
+@router.get("/ingestions", response_class=HTMLResponse)
+async def ingestions_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (await session.execute(
+        select(IngestionRun).order_by(IngestionRun.id.desc()).limit(50)
+    )).scalars().all()
+    return templates.TemplateResponse(request, "ingestions.html", {
+        "active": "ingestions", "rows": rows,
+    })
+
+
+@router.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request) -> HTMLResponse:
+    return templates.TemplateResponse(request, "settings.html", {
+        "active": "settings",
     })
 
 

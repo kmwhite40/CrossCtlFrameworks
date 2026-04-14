@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Ingestions · Concord{% endblock %}
+{% block heading %}Ingestion runs{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Workbook load history with provenance (SHA-256), timing, and per-sheet stats.</p>
+{% endblock %}
+{% block content %}
+
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">Recent runs</div>
+    <span class="dim" style="font-size:13px">{{ rows | length }} run(s) shown</span>
+  </div>
+
+  {% if rows %}
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr>
+          <th>Run</th>
+          <th>Source</th>
+          <th>SHA-256</th>
+          <th>Started</th>
+          <th>Finished</th>
+          <th>Status</th>
+        </tr></thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td class="mono">#{{ r.id }}</td>
+              <td class="dim" style="font-size:12.5px">{{ r.source_file }}</td>
+              <td class="mono dim" style="font-size:11.5px">{{ (r.sha256 or '')[:16] }}{% if r.sha256 %}…{% endif %}</td>
+              <td class="dim">{{ r.started_at.strftime('%Y-%m-%d %H:%M:%S') if r.started_at else '—' }}</td>
+              <td class="dim">{{ r.finished_at.strftime('%Y-%m-%d %H:%M:%S') if r.finished_at else '—' }}</td>
+              <td>
+                <span class="chip
+                  {% if r.status == 'succeeded' %}chip--ok
+                  {% elif r.status == 'failed' %}chip--err
+                  {% else %}chip--warn{% endif %}">{{ r.status }}</span>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="card__body dim" style="text-align:center;padding:40px">
+      <i data-lucide="database" style="width:36px;height:36px;color:var(--ink-400)"></i>
+      <div style="font-weight:600;margin-top:8px">No ingestion runs recorded.</div>
+      <div style="font-size:13px">Run <span class="mono">ccf ingest</span> or <span class="mono">docker compose --profile etl run --rm etl</span>.</div>
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}

@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Systems · Concord{% endblock %}
+{% block heading %}Systems &amp; organizations{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Manage authorization boundaries (FedRAMP / FISMA systems) and the organizations that own them.</p>
+{% endblock %}
+{% block content %}
+
+<section style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+  <div class="card">
+    <div class="card__header"><div class="card__title">New organization</div></div>
+    <form method="post" action="/systems/orgs" class="card__body" style="display:grid;gap:10px">
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Name</span>
+        <input class="input" name="name" required placeholder="Acme Corp" />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Description</span>
+        <input class="input" name="description" placeholder="Optional" />
+      </label>
+      <button type="submit" class="btn btn--primary"><i data-lucide="building-2"></i> Create organization</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card__header"><div class="card__title">New system</div></div>
+    <form method="post" action="/systems/new" class="card__body" style="display:grid;gap:10px">
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Organization</span>
+        <select class="select" name="organization_id" required aria-label="Organization">
+          {% for o in organizations %}<option value="{{ o.id }}">{{ o.name }}</option>{% else %}
+          <option value="" disabled>Create an organization first</option>
+          {% endfor %}
+        </select>
+      </label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <label style="display:flex;flex-direction:column;gap:6px">
+          <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">System name</span>
+          <input class="input" name="name" required placeholder="Customer Portal Prod" />
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Baseline</span>
+          <select class="select" name="baseline" aria-label="Baseline">
+            <option value="">(none)</option>
+            <option value="low">FedRAMP Low</option>
+            <option value="moderate" selected>FedRAMP Moderate</option>
+            <option value="high">FedRAMP High</option>
+          </select>
+        </label>
+      </div>
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Description</span>
+        <input class="input" name="description" placeholder="Optional" />
+      </label>
+      <button type="submit" class="btn btn--primary"><i data-lucide="server"></i> Create system</button>
+    </form>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Inventory</div>
+      <div class="card__subtitle">{{ organizations | length }} organization(s) · {{ systems | length }} system(s)</div>
+    </div>
+  </div>
+
+  {% if organizations %}
+    <div class="card__body" style="padding:0">
+      {% for o in organizations %}
+        <div style="border-bottom:1px solid var(--ink-100);padding:14px 18px">
+          <div class="row" style="gap:10px">
+            <i data-lucide="building-2" style="color:var(--brand-600)"></i>
+            <strong>{{ o.name }}</strong>
+            {% if o.description %}<span class="dim" style="font-size:13px">— {{ o.description }}</span>{% endif %}
+            <span class="spacer"></span>
+            <span class="chip">{{ (by_org.get(o.id) or []) | length }} system(s)</span>
+          </div>
+          {% set sys_list = by_org.get(o.id) or [] %}
+          {% if sys_list %}
+            <div class="table-wrap" style="margin-top:10px">
+              <table class="data">
+                <thead><tr>
+                  <th>System</th><th>Baseline</th><th>ATO status</th><th>Expires</th><th>Description</th>
+                </tr></thead>
+                <tbody>
+                  {% for s in sys_list %}
+                    <tr>
+                      <td><strong>{{ s.name }}</strong></td>
+                      <td>{% if s.baseline %}<span class="chip chip--brand">{{ s.baseline | upper }}</span>{% else %}—{% endif %}</td>
+                      <td>{% if s.ato_status %}<span class="chip">{{ s.ato_status }}</span>{% else %}—{% endif %}</td>
+                      <td class="dim">{{ s.ato_expires_on or '—' }}</td>
+                      <td class="dim">{{ s.description or '' }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <div class="dim" style="font-size:13px;margin-top:8px">No systems yet — add one above.</div>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="card__body dim" style="text-align:center;padding:40px">
+      <i data-lucide="building-2" style="width:36px;height:36px;color:var(--ink-400)"></i>
+      <div style="font-weight:600;margin-top:8px">No organizations yet.</div>
+      <div style="font-size:13px">Create one in the form above to start tracking systems.</div>
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}

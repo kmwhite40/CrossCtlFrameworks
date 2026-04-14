@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Settings · Concord{% endblock %}
+{% block heading %}Settings{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Application configuration and operator information.</p>
+{% endblock %}
+{% block content %}
+
+<section style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+  <div class="card">
+    <div class="card__header"><div class="card__title">Appearance</div></div>
+    <div class="card__body" style="display:grid;gap:12px">
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div style="font-weight:500">Theme</div>
+          <div class="dim" style="font-size:13px">Persisted in localStorage.</div>
+        </div>
+        <button type="button" class="btn btn--secondary" onclick="toggleTheme()"><i data-lucide="sun-moon"></i> Toggle light / dark</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card__header"><div class="card__title">About</div></div>
+    <div class="card__body">
+      <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;font-size:13px">
+        <dt class="dim">Version</dt><dd class="mono">0.1.0</dd>
+        <dt class="dim">Application</dt><dd>Concord — compliance controls platform</dd>
+        <dt class="dim">Copyright</dt><dd>&copy; 2026 Colleen Townsend</dd>
+        <dt class="dim">License</dt><dd>Proprietary</dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="card" style="grid-column:1/-1">
+    <div class="card__header"><div class="card__title">Useful links</div></div>
+    <div class="card__body" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+      <a class="btn btn--secondary" href="/docs"><i data-lucide="book-open"></i> API docs (Swagger)</a>
+      <a class="btn btn--secondary" href="/openapi.json"><i data-lucide="braces"></i> OpenAPI schema</a>
+      <a class="btn btn--secondary" href="/healthz"><i data-lucide="activity"></i> Health</a>
+      <a class="btn btn--secondary" href="/readyz"><i data-lucide="check-circle"></i> Readiness</a>
+      <a class="btn btn--secondary" href="/ingestions"><i data-lucide="database"></i> Ingestion history</a>
+      <a class="btn btn--secondary" href="/reports"><i data-lucide="file-text"></i> Reports</a>
+    </div>
+  </div>
+</section>
+
+{% endblock %}

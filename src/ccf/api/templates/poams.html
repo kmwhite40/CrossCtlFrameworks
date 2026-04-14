@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}POA&amp;Ms · Concord{% endblock %}
+{% block heading %}Plan of Actions &amp; Milestones{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Track open findings, due dates, and remediation status across every system.</p>
+{% endblock %}
+{% block content %}
+
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">All POA&amp;Ms</div>
+    <span class="dim" style="font-size:13px">{{ rows | length }} item(s)</span>
+  </div>
+
+  {% if rows %}
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr>
+          <th>Title</th>
+          <th>Severity</th>
+          <th>Status</th>
+          <th>Identified</th>
+          <th>Due</th>
+          <th>Closed</th>
+        </tr></thead>
+        <tbody>
+          {% for p in rows %}
+            <tr>
+              <td><strong>{{ p.title }}</strong>{% if p.weakness %}<div class="dim" style="font-size:12px">{{ p.weakness[:160] }}</div>{% endif %}</td>
+              <td>
+                <span class="chip
+                  {% if p.severity == 'critical' or p.severity == 'high' %}chip--err
+                  {% elif p.severity == 'moderate' %}chip--warn
+                  {% else %}chip--ok{% endif %}">{{ p.severity }}</span>
+              </td>
+              <td>
+                <span class="chip
+                  {% if p.status in ('open','in_progress') %}chip--warn
+                  {% elif p.status in ('completed','closed') %}chip--ok
+                  {% else %}chip{% endif %}">{{ p.status | replace('_',' ') }}</span>
+              </td>
+              <td class="dim">{{ p.identified_on or '—' }}</td>
+              <td class="dim">{{ p.due_on or '—' }}</td>
+              <td class="dim">{{ p.closed_on or '—' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="card__body dim" style="text-align:center;padding:40px">
+      <i data-lucide="clipboard-check" style="width:36px;height:36px;color:var(--ink-400)"></i>
+      <div style="font-weight:600;margin-top:8px">No POA&amp;Ms recorded.</div>
+      <div style="font-size:13px">Findings created during assessments will appear here.</div>
+    </div>
+  {% endif %}
+</section>
+
+{% endblock %}
