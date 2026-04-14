@@ -102,26 +102,33 @@
   <!-- Mappings -->
   <div role="tabpanel" x-show="tab==='mappings'" x-cloak>
     {% if grouped %}
-      <div class="stack" x-data="{open: '{{ grouped | list | first }}' }">
-      {% for fw, items in grouped.items() %}
-        <div class="card">
-          <button type="button" class="card__header" style="width:100%;background:none;border:none;cursor:pointer;text-align:left"
-                  @click="open = open === '{{ fw }}' ? null : '{{ fw }}'">
-            <div><div class="card__title">{{ fw }}</div><div class="card__subtitle">{{ items | length }} entries</div></div>
-            <i data-lucide="chevron-down" :class="open === '{{ fw }}' ? 'rotate-180' : ''"></i>
-          </button>
-          <div x-show="open === '{{ fw }}'" x-cloak>
-          <table class="data">
-            <thead><tr><th style="width:35%">Column</th><th>Value</th></tr></thead>
-            <tbody>
-            {% for m in items %}
-              <tr><td class="dim">{{ m.column_key }}</td><td style="white-space:pre-wrap">{{ m.value }}</td></tr>
-            {% endfor %}
-            </tbody>
-          </table>
+      <div class="card" x-data="{open: '{{ grouped | list | first }}' }">
+        {% for fw, items in grouped.items() %}
+          <div {% if not loop.first %}style="border-top:1px solid var(--ink-100)"{% endif %}>
+            <button type="button" class="row between"
+                    style="width:100%;padding:14px 18px;background:none;border:none;cursor:pointer;text-align:left;align-items:center"
+                    @click="open = open === '{{ fw }}' ? null : '{{ fw }}'"
+                    :aria-expanded="open === '{{ fw }}'">
+              <div>
+                <div style="font-family:'Space Grotesk',Inter,sans-serif;font-weight:600;letter-spacing:-0.01em">{{ fw }}</div>
+                <div class="dim" style="font-size:12px">{{ items | length }} entries</div>
+              </div>
+              <i data-lucide="chevron-down"
+                 :style="open === '{{ fw }}' ? 'transform:rotate(180deg)' : ''"
+                 style="transition:transform .2s"></i>
+            </button>
+            <div x-show="open === '{{ fw }}'" x-cloak>
+              <table class="data">
+                <thead><tr><th style="width:35%">Column</th><th>Value</th></tr></thead>
+                <tbody>
+                  {% for m in items %}
+                    <tr><td class="dim">{{ m.column_key }}</td><td style="white-space:pre-wrap">{{ m.value }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
-      {% endfor %}
+        {% endfor %}
       </div>
     {% else %}
       <div class="card"><div class="card__body dim" style="text-align:center;padding:36px">No cross-framework mappings recorded for this control.</div></div>

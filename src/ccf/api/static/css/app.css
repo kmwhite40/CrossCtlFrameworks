@@ -220,9 +220,8 @@ body {
 }
 .nav-link:hover svg { color: var(--ink-300); }
 .nav-link[aria-current="page"] {
-  background: linear-gradient(90deg, rgba(51,102,255,0.22), rgba(51,102,255,0.06));
+  background: rgba(51,102,255,0.14);
   color: #fff;
-  box-shadow: inset 2px 0 0 var(--brand-500);
 }
 .nav-link[aria-current="page"] svg { color: var(--brand-400); }
 .nav-link .badge {
@@ -253,8 +252,17 @@ body {
   gap: 16px; margin-bottom: 20px;
 }
 .page__title {
-  font-size: 26px; font-weight: 600; letter-spacing: -0.02em;
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-size: 28px; font-weight: 600; letter-spacing: -0.025em;
   color: var(--ink-900);
+  line-height: 1.15;
+}
+.topbar__brand span:not(.topbar__brand-mark):not(.topbar__tag) {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-weight: 600; font-size: 15px; letter-spacing: -0.01em;
+}
+.card__title {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
 }
 .page__subtitle { color: var(--ink-500); font-size: 14px; margin-top: 2px; }
 
@@ -264,6 +272,43 @@ body {
 }
 .breadcrumbs a:hover { color: var(--brand-700); text-decoration: underline; }
 .breadcrumbs svg { width: 14px; height: 14px; color: var(--ink-400); }
+
+/* ─── Typography ───────────────────────────────────────── */
+.display {
+  font-family: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+/* ─── Tiles (flat, non-card) — avoid Cardocalypse ──────── */
+.tile {
+  display: block;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--ink-200);
+  background: transparent;
+  transition: background .15s, border-color .15s;
+  color: inherit;
+  text-decoration: none;
+}
+.tile:hover { background: var(--ink-50); border-color: var(--ink-300); }
+html[data-theme="dark"] .tile,
+html[data-theme="system"] .tile { border-color: var(--ink-800); }
+html[data-theme="dark"] .tile:hover,
+html[data-theme="system"] .tile:hover { background: rgba(255,255,255,0.03); }
+
+/* Layout utilities — reduce inline style churn */
+.g-1  { gap: 6px; }
+.g-2  { gap: 10px; }
+.g-3  { gap: 14px; }
+.g-4  { gap: 18px; }
+.cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.cols-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+@media (max-width: 900px) {
+  .cols-2, .cols-3, .cols-4 { grid-template-columns: 1fr; }
+}
+.between { justify-content: space-between; }
 
 /* ─── Cards ────────────────────────────────────────────── */
 .card {
@@ -307,6 +352,7 @@ body {
 .btn--ghost:hover { background: var(--ink-100); }
 .btn--sm { padding: 6px 10px; font-size: 13px; }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
+.btn:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 2px; }
 
 /* ─── Inputs ───────────────────────────────────────────── */
 .input, .select {
@@ -374,16 +420,23 @@ table.data .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 
 /* ─── Skeleton ─────────────────────────────────────────── */
 .skeleton {
-  background: linear-gradient(90deg, var(--ink-100) 0%, var(--ink-200) 50%, var(--ink-100) 100%);
-  background-size: 200% 100%; animation: skel 1.2s infinite;
+  position: relative; overflow: hidden;
+  background: var(--ink-100);
   border-radius: var(--radius-sm);
 }
-@keyframes skel { 0% {background-position:200% 0} 100% {background-position:-200% 0} }
+.skeleton::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.55), transparent);
+  transform: translateX(-100%);
+  animation: skel 1.2s infinite;
+  will-change: transform;
+}
+@keyframes skel { to { transform: translateX(100%); } }
 
 /* ─── Command palette ──────────────────────────────────── */
 .cmd-backdrop {
   position: fixed; inset: 0; background: rgba(15,23,42,0.5);
-  backdrop-filter: blur(4px); z-index: 60;
+  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px); z-index: 60;
   display: grid; place-items: start center; padding-top: 12vh;
 }
 .cmd {
@@ -422,7 +475,9 @@ table.data .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; 
 .stack > * + * { margin-top: 14px; }
 .row { display: flex; gap: 8px; align-items: center; }
 .spacer { flex: 1; }
-.dim { color: var(--ink-500); }
+.dim { color: var(--ink-600); }
+html[data-theme="dark"] .dim,
+html[data-theme="system"] .dim { color: var(--ink-400); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
 

@@ -39,8 +39,8 @@
     <div class="card__body">
       <div class="grid-cards">
         {% for code, name, count in by_family %}
-          <a href="/controls?family={{ code }}" class="card" style="padding:14px 14px">
-            <div class="row"><span class="chip chip--brand">{{ code }}</span><span class="spacer"></span><strong>{{ count }}</strong></div>
+          <a href="/controls?family={{ code }}" class="tile">
+            <div class="row between"><span class="chip chip--brand">{{ code }}</span><strong>{{ count }}</strong></div>
             <div class="dim" style="font-size:12px;margin-top:4px">{{ name }}</div>
           </a>
         {% endfor %}
