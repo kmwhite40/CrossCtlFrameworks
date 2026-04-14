@@ -6,6 +6,39 @@
 {% endblock %}
 {% block content %}
 
+<section class="card" x-data="{showOrg: {{ 'true' if not organizations else 'false' }}}" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Organization</div>
+      <div class="card__subtitle">
+        {% if organizations %}
+          {{ organizations | length }} organization(s) configured.
+        {% else %}
+          No organizations yet — add one to scope a report.
+        {% endif %}
+      </div>
+    </div>
+    <button type="button" class="btn btn--ghost btn--sm" @click="showOrg = !showOrg">
+      <i data-lucide="plus"></i> New organization
+    </button>
+  </div>
+  <div class="card__body" x-show="showOrg" x-cloak>
+    <form method="post" action="/systems/orgs"
+          style="display:grid;grid-template-columns:2fr 3fr auto;gap:10px;align-items:end">
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Name</span>
+        <input class="input" name="name" required placeholder="Acme Corp" />
+      </label>
+      <label style="display:flex;flex-direction:column;gap:6px">
+        <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Description</span>
+        <input class="input" name="description" placeholder="Optional" />
+      </label>
+      <button type="submit" class="btn btn--primary"><i data-lucide="building-2"></i> Create</button>
+    </form>
+    <p class="dim" style="font-size:12px;margin-top:8px">Reloads the page so the new org appears in the builder below.</p>
+  </div>
+</section>
+
 <section class="card card--elevated">
   <div class="card__header">
     <div>
