@@ -1,9 +1,9 @@
 """Typer CLI entrypoint (`ccf`)."""
+
 from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import typer
@@ -30,8 +30,12 @@ def _setup() -> None:
 @app.command()
 def ingest(
     xlsx: Path = typer.Option(
-        None, "--xlsx",
-        help="Workbook path (defaults to CCF_WORKBOOK_PATH / /data/NIST Cross Mappings Rev. 1.1.xlsx)",
+        None,
+        "--xlsx",
+        help=(
+            "Workbook path (defaults to CCF_WORKBOOK_PATH / "
+            "/data/NIST Cross Mappings Rev. 1.1.xlsx)"
+        ),
     ),
 ) -> None:
     """Ingest the NIST Cross Mappings workbook into Postgres."""
@@ -44,8 +48,9 @@ def ingest(
     async def _run() -> None:
         async with session_scope() as session:
             run = await ingest_workbook(session, xlsx)
-            console.print(f"[green]Ingestion {run.status}[/green] — "
-                          f"stats: {json.dumps(run.stats, indent=2)}")
+            console.print(
+                f"[green]Ingestion {run.status}[/green] — stats: {json.dumps(run.stats, indent=2)}"
+            )
 
     asyncio.run(_run())
 
@@ -69,6 +74,7 @@ def serve(
 @app.command()
 def stats() -> None:
     """Print row counts and the most recent ingestion run."""
+
     async def _run() -> None:
         async with session_scope() as session:
             c = (await session.execute(select(func.count(Control.id)))).scalar_one()
@@ -101,26 +107,31 @@ def search(
     limit: int = typer.Option(20, "--limit"),
 ) -> None:
     """Search controls (FTS) by keyword."""
+
     async def _run() -> None:
         async with session_scope() as session:
             stmt = (
                 select(
                     Control.identifier,
                     Control.control_name,
-                    func.ts_rank(Control.search_vector,
-                                 func.plainto_tsquery("english", query)).label("rank"),
+                    func.ts_rank(
+                        Control.search_vector, func.plainto_tsquery("english", query)
+                    ).label("rank"),
                 )
-                .where(Control.search_vector.op("@@")(
-                    func.plainto_tsquery("english", query)
-                ))
-                .order_by(func.ts_rank(Control.search_vector,
-                                       func.plainto_tsquery("english", query)).desc())
+                .where(Control.search_vector.op("@@")(func.plainto_tsquery("english", query)))
+                .order_by(
+                    func.ts_rank(
+                        Control.search_vector, func.plainto_tsquery("english", query)
+                    ).desc()
+                )
                 .limit(limit)
             )
             rows = (await session.execute(stmt)).all()
 
         t = Table(title=f"Search: {query}")
-        t.add_column("Identifier"); t.add_column("Name"); t.add_column("Rank", justify="right")
+        t.add_column("Identifier")
+        t.add_column("Name")
+        t.add_column("Rank", justify="right")
         for r in rows:
             t.add_row(r.identifier, (r.control_name or "")[:80], f"{r.rank:.3f}")
         console.print(t)
@@ -131,25 +142,28 @@ def search(
 @app.command()
 def show(identifier: str) -> None:
     """Print a single control as JSON."""
+
     async def _run() -> None:
         async with session_scope() as session:
             ctl = (
-                await session.execute(
-                    select(Control).where(Control.identifier == identifier)
-                )
+                await session.execute(select(Control).where(Control.identifier == identifier))
             ).scalar_one_or_none()
             if not ctl:
                 console.print(f"[red]Not found: {identifier}[/red]")
                 raise typer.Exit(code=1)
-            console.print_json(json.dumps({
-                "identifier": ctl.identifier,
-                "control_name": ctl.control_name,
-                "description": ctl.description,
-                "assessment_objective": ctl.assessment_objective,
-                "fisma_low": ctl.fisma_low,
-                "fisma_mod": ctl.fisma_mod,
-                "fisma_high": ctl.fisma_high,
-            }))
+            console.print_json(
+                json.dumps(
+                    {
+                        "identifier": ctl.identifier,
+                        "control_name": ctl.control_name,
+                        "description": ctl.description,
+                        "assessment_objective": ctl.assessment_objective,
+                        "fisma_low": ctl.fisma_low,
+                        "fisma_mod": ctl.fisma_mod,
+                        "fisma_high": ctl.fisma_high,
+                    }
+                )
+            )
 
     asyncio.run(_run())
 

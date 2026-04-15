@@ -1,11 +1,15 @@
 """Workbook version diff (#40) — compare two snapshots in control_history."""
+
 from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import ControlHistory, MappingHistory, WorkbookVersion
+from ...models import ControlHistory, WorkbookVersion
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/diff", tags=["diff"])
@@ -16,25 +20,37 @@ async def diff_workbook(
     a: str = Query(..., description="SHA-256 of base version"),
     b: str = Query(..., description="SHA-256 of compare version"),
     session: AsyncSession = Depends(get_session),
-) -> dict:
-    va = (await session.execute(
-        select(WorkbookVersion).where(WorkbookVersion.sha256 == a)
-    )).scalar_one_or_none()
-    vb = (await session.execute(
-        select(WorkbookVersion).where(WorkbookVersion.sha256 == b)
-    )).scalar_one_or_none()
+) -> dict[str, Any]:
+    va = (
+        await session.execute(select(WorkbookVersion).where(WorkbookVersion.sha256 == a))
+    ).scalar_one_or_none()
+    vb = (
+        await session.execute(select(WorkbookVersion).where(WorkbookVersion.sha256 == b))
+    ).scalar_one_or_none()
     if not va or not vb:
         raise HTTPException(404, "workbook version not found")
 
-    def _flatten(rows):
+    def _flatten(rows: Sequence[ControlHistory]) -> dict[str, dict[str, Any]]:
         return {r.identifier: r.payload for r in rows}
 
-    ha = _flatten((await session.execute(
-        select(ControlHistory).where(ControlHistory.workbook_version_id == va.id)
-    )).scalars().all())
-    hb = _flatten((await session.execute(
-        select(ControlHistory).where(ControlHistory.workbook_version_id == vb.id)
-    )).scalars().all())
+    ha = _flatten(
+        (
+            await session.execute(
+                select(ControlHistory).where(ControlHistory.workbook_version_id == va.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    hb = _flatten(
+        (
+            await session.execute(
+                select(ControlHistory).where(ControlHistory.workbook_version_id == vb.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
     added = sorted(set(hb) - set(ha))
     removed = sorted(set(ha) - set(hb))

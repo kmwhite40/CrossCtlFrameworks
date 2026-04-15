@@ -1,11 +1,12 @@
 """Shared pytest fixtures."""
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-import pytest
 import openpyxl
+import pytest
 
 # Run against a real Postgres — CI service container; locally, docker compose.
 os.environ.setdefault(
@@ -26,26 +27,87 @@ def mini_workbook(tmp_path_factory: pytest.TempPathFactory) -> Path:
     a = wb.active
     a.title = "SP.800-53Ar5_assessment"
     headers = [
-        "family", "identifier", "Sequence Control", "sort-as",
-        "control-name", "Security Control Description",
-        "assessment-objective", "EXAMINE", "INTERVIEW", "TEST",
-        "FISMA Low", "FISMA Mod", "FISMA High",
-        "ISO 27001 Mapping", "CMMC Rev. 2L2", "FedRAMP Moderate",
+        "family",
+        "identifier",
+        "Sequence Control",
+        "sort-as",
+        "control-name",
+        "Security Control Description",
+        "Security Control Discussion",
+        "NIST SP 800-53 Rev. 5 related controls",
+        "assessment-objective",
+        "EXAMINE",
+        "INTERVIEW",
+        "TEST",
+        "FISMA Low",
+        "FISMA Mod",
+        "FISMA High",
+        "ISO 27001 Mapping",
+        "CMMC Rev. 2L2",
+        "FedRAMP Moderate",
     ]
     a.append(headers)
     rows = [
-        ["(AC) ACCESS CONTROL", "AC-01", "AC-01", "AC-01-00-00",
-         "Policy and Procedures", "Develop, document, and disseminate...",
-         "Determine if:", "policy docs", "personnel", "",
-         "X", "X", "X", "A.5.15", "AC.L2-3.1.1", "AC-1"],
-        ["(AC) ACCESS CONTROL", "AC-02", "AC-02", "AC-02-00-00",
-         "Account Management", "Identify and select account types...",
-         "Determine if:", "config", "admins", "test",
-         "", "X", "X", "A.5.16", "AC.L2-3.1.2", "AC-2"],
-        ["(AU) AUDIT AND ACCOUNTABILITY", "AU-01", "AU-01", "AU-01-00-00",
-         "Policy and Procedures", "Develop audit policy...",
-         "Determine if:", "policy docs", "personnel", "",
-         "X", "X", "X", "A.5.28", "AU.L2-3.3.1", "AU-1"],
+        [
+            "(AC) ACCESS CONTROL",
+            "AC-01",
+            "AC-01",
+            "AC-01-00-00",
+            "Policy and Procedures",
+            "Develop, document, and disseminate...",
+            "Discussion text",
+            "AC-02",
+            "Determine if:",
+            "policy docs",
+            "personnel",
+            "",
+            "X",
+            "X",
+            "X",
+            "A.5.15",
+            "AC.L2-3.1.1",
+            "AC-1",
+        ],
+        [
+            "(AC) ACCESS CONTROL",
+            "AC-02",
+            "AC-02",
+            "AC-02-00-00",
+            "Account Management",
+            "Identify and select account types...",
+            "Discussion text",
+            "AC-03",
+            "Determine if:",
+            "config",
+            "admins",
+            "test",
+            "",
+            "X",
+            "X",
+            "A.5.16",
+            "AC.L2-3.1.2",
+            "AC-2",
+        ],
+        [
+            "(AU) AUDIT AND ACCOUNTABILITY",
+            "AU-01",
+            "AU-01",
+            "AU-01-00-00",
+            "Policy and Procedures",
+            "Develop audit policy...",
+            "Discussion text",
+            "",
+            "Determine if:",
+            "policy docs",
+            "personnel",
+            "",
+            "X",
+            "X",
+            "X",
+            "A.5.28",
+            "AU.L2-3.3.1",
+            "AU-1",
+        ],
     ]
     for r in rows:
         a.append(r)

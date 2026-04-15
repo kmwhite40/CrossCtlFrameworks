@@ -30,8 +30,8 @@ jobs:
       CCF_DATABASE_URL: postgresql+asyncpg://ccf:ccf@localhost:5432/ccf_test
       CCF_DATABASE_URL_SYNC: postgresql+psycopg://ccf:ccf@localhost:5432/ccf_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12", cache: "pip" }
       - run: pip install -U pip
       - run: pip install -e ".[dev]"
@@ -45,9 +45,9 @@ jobs:
     defaults:
       run: { working-directory: web/landing }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: "20", cache: "npm", cache-dependency-path: web/landing/package-lock.json }
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: { node-version: "22", cache: "npm", cache-dependency-path: web/landing/package-lock.json }
       - run: npm ci
       - run: npm run typecheck
       - run: npm run lint --if-present
@@ -57,8 +57,8 @@ jobs:
     name: sbom + vuln scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: pip install -U pip cyclonedx-bom pip-audit
       - run: pip install -e .
@@ -69,7 +69,7 @@ jobs:
       - name: pip-audit
         run: pip-audit --strict || true
       - name: Trivy fs scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.33.1
         with:
           scan-type: fs
           severity: HIGH,CRITICAL
@@ -81,7 +81,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: quality
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:

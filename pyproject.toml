@@ -62,7 +62,10 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "N", "PL", "RUF"]
-ignore = ["PLR0913", "PLR2004", "PLR0912", "PLR0915"]
+ignore = ["B008", "PLR0913", "PLR2004", "PLR0912", "PLR0915"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/ccf/db.py" = ["PLW0603"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -73,6 +76,10 @@ exclude = ["migrations/"]
 
 [[tool.mypy.overrides]]
 module = ["openpyxl.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["prometheus_client", "slowapi", "slowapi.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

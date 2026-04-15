@@ -4,17 +4,19 @@ Emits a minimal OSCAL 1.1 Component Definition describing Concord's view of a
 given system: the list of implemented / inherited controls with their
 implementation narratives. Not a full OSCAL profile — targets auditor intake.
 """
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ...models import Control, ControlImplementation, System
+from ...models import ControlImplementation, System
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/oscal", tags=["oscal"])
@@ -24,20 +26,22 @@ router = APIRouter(prefix="/api/oscal", tags=["oscal"])
 async def component_definition(
     system_id: int,
     session: AsyncSession = Depends(get_session),
-) -> dict:
-    sys = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
+) -> dict[str, Any]:
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
     if sys is None:
         raise HTTPException(404, "system not found")
 
     impls = (
-        await session.execute(
-            select(ControlImplementation)
-            .where(ControlImplementation.system_id == system_id)
-            .options(selectinload(ControlImplementation.control))
+        (
+            await session.execute(
+                select(ControlImplementation)
+                .where(ControlImplementation.system_id == system_id)
+                .options(selectinload(ControlImplementation.control))
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     implemented_reqs = [
         {
@@ -52,7 +56,7 @@ async def component_definition(
         for i in impls
     ]
 
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     return {
         "component-definition": {
             "uuid": str(uuid.uuid4()),

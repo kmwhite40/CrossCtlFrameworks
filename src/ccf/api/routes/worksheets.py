@@ -1,5 +1,8 @@
 """Generic workbook tab viewer endpoints."""
+
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
@@ -16,9 +19,7 @@ router = APIRouter(prefix="/api/worksheets", tags=["worksheets"])
 async def list_worksheets(
     session: AsyncSession = Depends(get_session),
 ) -> list[WorksheetOut]:
-    rows = (
-        await session.execute(select(Worksheet).order_by(Worksheet.name))
-    ).scalars().all()
+    rows = (await session.execute(select(Worksheet).order_by(Worksheet.name))).scalars().all()
     return [WorksheetOut.model_validate(r) for r in rows]
 
 
@@ -28,7 +29,7 @@ async def get_worksheet(
     session: AsyncSession = Depends(get_session),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-) -> dict:
+) -> dict[str, Any]:
     sheet = (
         await session.execute(select(Worksheet).where(Worksheet.slug == slug))
     ).scalar_one_or_none()
@@ -41,13 +42,18 @@ async def get_worksheet(
         )
     ).scalar_one()
     rows = (
-        await session.execute(
-            select(WorksheetRow)
-            .where(WorksheetRow.worksheet_id == sheet.id)
-            .order_by(WorksheetRow.row_index)
-            .limit(limit).offset(offset)
+        (
+            await session.execute(
+                select(WorksheetRow)
+                .where(WorksheetRow.worksheet_id == sheet.id)
+                .order_by(WorksheetRow.row_index)
+                .limit(limit)
+                .offset(offset)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     return {
         "worksheet": WorksheetOut.model_validate(sheet).model_dump(),

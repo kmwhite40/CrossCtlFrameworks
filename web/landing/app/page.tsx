@@ -297,7 +297,7 @@ export default function Page() {
               </h3>
               <p className="mx-auto mt-4 max-w-xl text-muted-foreground text-balance">
                 Stand up Concord with a single <span className="font-mono text-xs">docker compose up</span>.
-                Load the workbook. Open the UI. You're done.
+                Load the workbook. Open the UI. You&apos;re done.
               </p>
               <div className="mt-8 flex flex-wrap justify-center gap-2">
                 <Button asChild size="lg">

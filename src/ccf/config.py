@@ -1,10 +1,11 @@
 """Application configuration (pydantic-settings)."""
+
 from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, PostgresDsn
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,12 +23,12 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     log_json: bool = Field(default=False)
 
-    database_url: PostgresDsn = Field(
-        default="postgresql+asyncpg://ccf:ccf@localhost:5432/ccf",  # type: ignore[arg-type]
+    database_url: str = Field(
+        default="postgresql+asyncpg://ccf:ccf@localhost:5432/ccf",
         description="Async SQLAlchemy DSN for Postgres",
     )
-    database_url_sync: PostgresDsn = Field(
-        default="postgresql+psycopg://ccf:ccf@localhost:5432/ccf",  # type: ignore[arg-type]
+    database_url_sync: str = Field(
+        default="postgresql+psycopg://ccf:ccf@localhost:5432/ccf",
         description="Sync DSN used by Alembic migrations / CLI",
     )
 
@@ -36,9 +37,7 @@ class Settings(BaseSettings):
     api_cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     data_dir: Path = Field(default=Path("/data"))
-    workbook_path: Path = Field(
-        default=Path("/data/NIST Cross Mappings Rev. 1.1.xlsx")
-    )
+    workbook_path: Path = Field(default=Path("/data/NIST Cross Mappings Rev. 1.1.xlsx"))
 
     # Concord Reader flavor: SQLite + single-exe + hide write UI + 403 on mutations.
     readonly: bool = Field(

@@ -1,8 +1,11 @@
 """Cross-framework mapping search (#39)."""
+
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import Control, Framework, FrameworkMapping
@@ -17,7 +20,7 @@ async def search_mappings(
     framework: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     stmt = (
         select(
             Control.identifier,
@@ -40,5 +43,5 @@ async def search_mappings(
     return {
         "query": q,
         "framework": framework,
-        "results": [dict(r._mapping) for r in rows],
+        "results": [{str(k): v for k, v in r._mapping.items()} for r in rows],
     }

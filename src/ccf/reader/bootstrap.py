@@ -4,12 +4,14 @@ Alembic migration 0001 uses Postgres-only types (JSONB, TSVECTOR, pg_trgm).
 Rather than fork migrations, the Reader creates a *subset* of the schema —
 exactly what the read-only UI needs — directly via DDL, portable to SQLite.
 """
+
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
-
 
 READER_DDL_SQLITE = [
     # --- Reference layer -----------------------------------------------------
@@ -57,7 +59,6 @@ READER_DDL_SQLITE = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_controls_sequence ON controls(sequence_control)",
     "CREATE INDEX IF NOT EXISTS idx_controls_family ON controls(family_id)",
-
     """CREATE TABLE IF NOT EXISTS framework_mappings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         control_id INTEGER NOT NULL REFERENCES controls(id) ON DELETE CASCADE,
@@ -69,7 +70,6 @@ READER_DDL_SQLITE = [
     "CREATE INDEX IF NOT EXISTS ix_fm_control ON framework_mappings(control_id)",
     "CREATE INDEX IF NOT EXISTS ix_fm_framework ON framework_mappings(framework_id)",
     "CREATE INDEX IF NOT EXISTS ix_fm_value ON framework_mappings(value)",
-
     """CREATE TABLE IF NOT EXISTS worksheets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
@@ -85,7 +85,6 @@ READER_DDL_SQLITE = [
         payload TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS ix_wr_worksheet ON worksheet_rows(worksheet_id)",
-
     """CREATE TABLE IF NOT EXISTS ingestion_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_file TEXT NOT NULL,
@@ -108,7 +107,7 @@ async def init_reader_schema(engine: AsyncEngine) -> None:
 
 def default_data_dir() -> Path:
     """Return %LOCALAPPDATA%/Concord (Windows) or ~/.concord (Unix)."""
-    import os
+
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     root = Path(base) / ("Concord" if os.name == "nt" else ".concord")
     root.mkdir(parents=True, exist_ok=True)

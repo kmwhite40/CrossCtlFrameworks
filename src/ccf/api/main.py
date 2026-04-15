@@ -1,16 +1,21 @@
 """FastAPI application factory."""
+
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.types import ExceptionHandler
 
 from ..config import get_settings
 from ..logging import configure_logging, get_logger
@@ -42,7 +47,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):  # noqa: ARG001
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     log.info("api.startup")
     yield
@@ -61,7 +66,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(
+        RateLimitExceeded,
+        cast(ExceptionHandler, _rate_limit_exceeded_handler),
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.api_cors_origins,
@@ -71,8 +79,9 @@ def create_app() -> FastAPI:
     app.middleware("http")(metrics_middleware)
 
     if settings.readonly:
+
         @app.middleware("http")
-        async def readonly_guard(request: Request, call_next):
+        async def readonly_guard(request: Request, call_next: RequestResponseEndpoint) -> Response:
             if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
                 return JSONResponse(
                     {"detail": "Concord Reader is read-only."},

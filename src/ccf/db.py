@@ -1,8 +1,10 @@
 """Async SQLAlchemy engine / session factory."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
@@ -33,7 +35,7 @@ def get_engine() -> AsyncEngine:
             )
 
             @event.listens_for(_engine.sync_engine, "connect")
-            def _attach(dbapi_conn, _record):  # noqa: ANN001
+            def _attach(dbapi_conn: Any, _record: Any) -> None:
                 target = dsn.removeprefix("sqlite+aiosqlite:///")
                 target = target.removeprefix("sqlite:///")
                 cur = dbapi_conn.cursor()
@@ -44,8 +46,10 @@ def get_engine() -> AsyncEngine:
         else:
             _engine = create_async_engine(
                 dsn,
-                pool_size=10, max_overflow=10,
-                pool_pre_ping=True, future=True,
+                pool_size=10,
+                max_overflow=10,
+                pool_pre_ping=True,
+                future=True,
             )
     return _engine
 

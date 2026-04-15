@@ -1,5 +1,8 @@
 """Full-text search endpoint."""
+
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
@@ -16,11 +19,12 @@ async def search(
     q: str = Query(..., min_length=2),
     limit: int = Query(25, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     tsq = func.plainto_tsquery("english", q)
     stmt = (
         select(
-            Control.identifier, Control.control_name,
+            Control.identifier,
+            Control.control_name,
             Control.description,
             func.ts_rank(Control.search_vector, tsq).label("rank"),
         )

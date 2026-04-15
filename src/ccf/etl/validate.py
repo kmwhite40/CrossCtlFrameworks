@@ -3,12 +3,13 @@
 Strict on required-header *removal* (breaks contract → fail run).
 Soft on *additions* (log only; they're classified into frameworks).
 """
+
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-
 
 CONTRACT_PATH = Path(__file__).resolve().parents[3] / "contracts" / "headers.v1_1.json"
 
@@ -23,14 +24,20 @@ class HeaderDiff:
     added: list[str]
 
 
-def load_contract(path: Path | None = None) -> dict:
+def load_contract(path: Path | None = None) -> dict[str, list[str]]:
     p = path or CONTRACT_PATH
     if not p.is_file():
         return {"required_headers": []}
-    return json.loads(p.read_text(encoding="utf-8"))
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    required_headers = raw.get("required_headers", [])
+    if not isinstance(required_headers, list):
+        required_headers = []
+    return {"required_headers": [str(header) for header in required_headers]}
 
 
-def validate_headers(observed: set[str], contract: dict | None = None) -> HeaderDiff:
+def validate_headers(
+    observed: set[str], contract: Mapping[str, list[str]] | None = None
+) -> HeaderDiff:
     """Return (missing, added); raise HeaderContractError on any missing header."""
     contract = contract or load_contract()
     required = set(contract.get("required_headers", []))

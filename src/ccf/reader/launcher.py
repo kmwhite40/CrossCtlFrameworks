@@ -9,6 +9,7 @@ Responsibilities on launch:
      auto-ingest it so the operator doesn't need to do anything.
   6. Open the default browser at http://127.0.0.1:8088 and run uvicorn.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,9 +17,17 @@ import os
 import socket
 import sys
 import threading
-import time
 import webbrowser
+from contextlib import suppress
 from pathlib import Path
+
+import uvicorn
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from ..config import get_settings
+from .bootstrap import READER_DDL_SQLITE
+from .ingest import ingest_into_sqlite
 
 
 def _exe_dir() -> Path:
@@ -54,24 +63,15 @@ def _wait_free_port(host: str, port: int, tries: int = 40) -> int:
 
 
 async def _init_and_maybe_ingest(dsn: str, workbook: Path | None) -> None:
-    from sqlalchemy import text
-    from sqlalchemy.ext.asyncio import create_async_engine
-
-    from .bootstrap import init_reader_schema
-    from .ingest import ingest_into_sqlite
-
     engine = create_async_engine(dsn)
     try:
         # Create the attached sqlite DB's tables. bootstrap expects the file
         # to be the 'ccf' attached schema — we set that up transiently.
         target = dsn.removeprefix("sqlite+aiosqlite:///").removeprefix("sqlite:///")
-        from sqlalchemy.ext.asyncio import create_async_engine as _cae
-
-        raw = _cae(f"sqlite+aiosqlite:///{target}")
+        raw = create_async_engine(f"sqlite+aiosqlite:///{target}")
         async with raw.begin() as conn:
             # bootstrap's DDL uses unqualified names, so we run it directly
             # against the file, not the attached alias.
-            from .bootstrap import READER_DDL_SQLITE
             for stmt in READER_DDL_SQLITE:
                 await conn.execute(text(stmt))
         await raw.dispose()
@@ -80,12 +80,15 @@ async def _init_and_maybe_ingest(dsn: str, workbook: Path | None) -> None:
         # (which attaches the file as 'ccf').
         async with engine.begin() as conn:
             r = await conn.execute(text("SELECT count(*) AS c FROM ccf.controls"))
-            n = list(r)[0].c
+            n = next(iter(r)).c
         if n == 0 and workbook is not None:
             print(f"[Concord Reader] Ingesting {workbook.name} …", flush=True)
             stats = await ingest_into_sqlite(engine, workbook)
-            print(f"[Concord Reader] Loaded {stats['controls']} controls, "
-                  f"{stats['mappings']} mappings.", flush=True)
+            print(
+                f"[Concord Reader] Loaded {stats['controls']} controls, "
+                f"{stats['mappings']} mappings.",
+                flush=True,
+            )
     finally:
         await engine.dispose()
 
@@ -119,13 +122,8 @@ def main() -> int:
     print(f"[Concord Reader] {url}  (Ctrl-C to quit)", flush=True)
 
     # Clear cached settings so CCF_READONLY is picked up.
-    from ..config import get_settings
-    try:
-        get_settings.cache_clear()  # type: ignore[attr-defined]
-    except AttributeError:
-        pass
-
-    import uvicorn
+    with suppress(AttributeError):
+        get_settings.cache_clear()
     uvicorn.run("ccf.api.main:app", host=host, port=port, log_level="warning")
     return 0
 

@@ -1,5 +1,8 @@
 """User CRUD (no auth yet — governance only)."""
+
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
@@ -31,7 +34,7 @@ class UserUpdate(BaseModel):
 async def list_users(
     session: AsyncSession = Depends(get_session),
     organization_id: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     stmt = select(User).order_by(User.email)
     if organization_id is not None:
         stmt = stmt.where(User.organization_id == organization_id)
@@ -51,8 +54,9 @@ async def list_users(
 
 @router.post("", status_code=201)
 async def create_user(
-    body: UserCreate, session: AsyncSession = Depends(get_session),
-) -> dict:
+    body: UserCreate,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
     obj = User(**body.model_dump())
     session.add(obj)
     await session.commit()
@@ -62,9 +66,10 @@ async def create_user(
 
 @router.patch("/{uid}")
 async def update_user(
-    uid: int, body: UserUpdate,
+    uid: int,
+    body: UserUpdate,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     obj = (await session.execute(select(User).where(User.id == uid))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(404, "user not found")

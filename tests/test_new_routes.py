@@ -1,10 +1,12 @@
 """Smoke-test the routes added in 0.2 (no DB rows required)."""
+
 from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
+from ccf.etl.validate import HeaderContractError, validate_headers
 
 
 @pytest.mark.asyncio
@@ -38,6 +40,5 @@ async def test_metrics_endpoint_exposes_prom_format() -> None:
 
 
 def test_header_contract_catches_missing() -> None:
-    from ccf.etl.validate import HeaderContractError, validate_headers
     with pytest.raises(HeaderContractError):
         validate_headers(set())

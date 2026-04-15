@@ -1,4 +1,5 @@
 """POA&M CRUD."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -70,7 +71,8 @@ async def create_poam(
 
 @router.patch("/{pid}", response_model=POAMOut)
 async def update_poam(
-    pid: int, body: POAMUpdate,
+    pid: int,
+    body: POAMUpdate,
     session: AsyncSession = Depends(get_session),
 ) -> POAMOut:
     obj = (await session.execute(select(POAM).where(POAM.id == pid))).scalar_one_or_none()
@@ -85,14 +87,14 @@ async def update_poam(
 
 @router.post("/{pid}/close", response_model=POAMOut)
 async def close_poam(
-    pid: int, session: AsyncSession = Depends(get_session),
+    pid: int,
+    session: AsyncSession = Depends(get_session),
 ) -> POAMOut:
-    from datetime import date as _d
     obj = (await session.execute(select(POAM).where(POAM.id == pid))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(404, "poam not found")
     obj.status = "closed"
-    obj.closed_on = _d.today()
+    obj.closed_on = date.today()
     await session.commit()
     await session.refresh(obj)
     return POAMOut.model_validate(obj)

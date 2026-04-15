@@ -7,10 +7,11 @@ Provenance layer — WorkbookVersion, IngestionRun (FK'd),
 Operational layer — Organizations, Users, Systems, ControlImplementations,
                    Evidence, Assessments, AssessmentResults, POAMs, Risks, AuditLog.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import (
     JSON,
@@ -33,8 +34,11 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
-    metadata = MetaData(schema="ccf")
-    type_annotation_map = {dict[str, Any]: JSONB, list[Any]: JSONB}
+    metadata: ClassVar[MetaData] = MetaData(schema="ccf")
+    type_annotation_map: ClassVar[dict[object, object]] = {
+        dict[str, Any]: JSONB,
+        list[Any]: JSONB,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +48,7 @@ class Base(DeclarativeBase):
 
 class WorkbookVersion(Base):
     __tablename__ = "workbook_versions"
-    __table_args__ = {"schema": "ccf_audit"}
+    __table_args__ = {"schema": "ccf_audit"}  # noqa: RUF012
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     sha256: Mapped[str] = mapped_column(String(64), unique=True)
@@ -66,9 +70,7 @@ class IngestionRun(Base):
     workbook_version_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf_audit.workbook_versions.id", ondelete="SET NULL")
     )
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="running")
     stats: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
@@ -76,7 +78,7 @@ class IngestionRun(Base):
 
 class RejectedRow(Base):
     __tablename__ = "rejected_rows"
-    __table_args__ = {"schema": "ccf_audit"}
+    __table_args__ = {"schema": "ccf_audit"}  # noqa: RUF012
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     run_id: Mapped[int] = mapped_column(
@@ -107,9 +109,7 @@ class ControlHistory(Base):
         index=True,
     )
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    valid_from: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class MappingHistory(Base):
@@ -130,9 +130,7 @@ class MappingHistory(Base):
     )
     column_key: Mapped[str] = mapped_column(String(255))
     value: Mapped[str] = mapped_column(Text)
-    valid_from: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Framework(Base):
@@ -198,16 +196,12 @@ class Control(Base):
     search_vector: Mapped[Any] = mapped_column(TSVECTOR, nullable=True)
 
     source_row: Mapped[int | None] = mapped_column(Integer)
-    loaded_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     mappings: Mapped[list[FrameworkMapping]] = relationship(
         back_populates="control", cascade="all, delete-orphan"
     )
-    implementations: Mapped[list[ControlImplementation]] = relationship(
-        back_populates="control"
-    )
+    implementations: Mapped[list[ControlImplementation]] = relationship(back_populates="control")
 
     __table_args__ = (
         Index("idx_controls_search_vector", "search_vector", postgresql_using="gin"),
@@ -244,9 +238,7 @@ class Worksheet(Base):
     slug: Mapped[str] = mapped_column(String(255), unique=True)
     headers: Mapped[list[Any]] = mapped_column(JSON, default=list)
     row_count: Mapped[int] = mapped_column(Integer, default=0)
-    loaded_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    loaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     rows: Mapped[list[WorksheetRow]] = relationship(
         back_populates="worksheet", cascade="all, delete-orphan"
@@ -265,9 +257,7 @@ class WorksheetRow(Base):
 
     worksheet: Mapped[Worksheet] = relationship(back_populates="rows")
 
-    __table_args__ = (
-        Index("idx_worksheet_rows_payload_gin", "payload", postgresql_using="gin"),
-    )
+    __table_args__ = (Index("idx_worksheet_rows_payload_gin", "payload", postgresql_using="gin"),)
 
 
 # ---------------------------------------------------------------------------
@@ -281,9 +271,7 @@ class Organization(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     systems: Mapped[list[System]] = relationship(back_populates="organization")
     users: Mapped[list[User]] = relationship(back_populates="organization")
@@ -299,14 +287,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True)
     full_name: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(
-        Enum("admin", "control_owner", "assessor", "viewer",
-             name="user_role", schema="ccf"),
+        Enum("admin", "control_owner", "assessor", "viewer", name="user_role", schema="ccf"),
         default="viewer",
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     organization: Mapped[Organization] = relationship(back_populates="users")
 
@@ -321,26 +306,19 @@ class System(Base):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
     fips199_confidentiality: Mapped[str | None] = mapped_column(
-        Enum("low", "moderate", "high",
-             name="fips199_level", schema="ccf")
+        Enum("low", "moderate", "high", name="fips199_level", schema="ccf")
     )
     fips199_integrity: Mapped[str | None] = mapped_column(
-        Enum("low", "moderate", "high",
-             name="fips199_level", schema="ccf",
-             create_type=False)
+        Enum("low", "moderate", "high", name="fips199_level", schema="ccf", create_type=False)
     )
     fips199_availability: Mapped[str | None] = mapped_column(
-        Enum("low", "moderate", "high",
-             name="fips199_level", schema="ccf",
-             create_type=False)
+        Enum("low", "moderate", "high", name="fips199_level", schema="ccf", create_type=False)
     )
     baseline: Mapped[str | None] = mapped_column(
-        Enum("low", "moderate", "high",
-             name="fedramp_baseline", schema="ccf")
+        Enum("low", "moderate", "high", name="fedramp_baseline", schema="ccf")
     )
     ato_status: Mapped[str | None] = mapped_column(
-        Enum("none", "in_progress", "authorized", "expired",
-             name="ato_status", schema="ccf"),
+        Enum("none", "in_progress", "authorized", "expired", name="ato_status", schema="ccf"),
         default="none",
     )
     ato_expires_on: Mapped[date | None] = mapped_column(Date)
@@ -350,9 +328,7 @@ class System(Base):
         back_populates="system", cascade="all, delete-orphan"
     )
 
-    __table_args__ = (
-        UniqueConstraint("organization_id", "name", name="uq_system_org_name"),
-    )
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_system_org_name"),)
 
 
 class ControlImplementation(Base):
@@ -366,14 +342,22 @@ class ControlImplementation(Base):
         ForeignKey("ccf.controls.id", ondelete="RESTRICT"), index=True
     )
     status: Mapped[str] = mapped_column(
-        Enum("not_implemented", "planned", "partial",
-             "implemented", "inherited", "not_applicable",
-             name="impl_status", schema="ccf"),
+        Enum(
+            "not_implemented",
+            "planned",
+            "partial",
+            "implemented",
+            "inherited",
+            "not_applicable",
+            name="impl_status",
+            schema="ccf",
+        ),
         default="not_implemented",
     )
     responsibility: Mapped[str | None] = mapped_column(
-        Enum("customer", "provider", "shared", "inherited",
-             name="impl_responsibility", schema="ccf")
+        Enum(
+            "customer", "provider", "shared", "inherited", name="impl_responsibility", schema="ccf"
+        )
     )
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.users.id", ondelete="SET NULL")
@@ -395,9 +379,7 @@ class ControlImplementation(Base):
         back_populates="implementation"
     )
 
-    __table_args__ = (
-        UniqueConstraint("system_id", "control_id", name="uq_impl_system_control"),
-    )
+    __table_args__ = (UniqueConstraint("system_id", "control_id", name="uq_impl_system_control"),)
 
 
 class Evidence(Base):
@@ -409,9 +391,18 @@ class Evidence(Base):
         index=True,
     )
     kind: Mapped[str] = mapped_column(
-        Enum("document", "screenshot", "config_export", "attestation",
-             "scan_result", "ticket", "link", "other",
-             name="evidence_kind", schema="ccf")
+        Enum(
+            "document",
+            "screenshot",
+            "config_export",
+            "attestation",
+            "scan_result",
+            "ticket",
+            "link",
+            "other",
+            name="evidence_kind",
+            schema="ccf",
+        )
     )
     title: Mapped[str] = mapped_column(String(512))
     uri: Mapped[str | None] = mapped_column(String(1024))
@@ -419,9 +410,7 @@ class Evidence(Base):
     expires_on: Mapped[date | None] = mapped_column(Date)
     hash_sha256: Mapped[str | None] = mapped_column(String(64))
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     implementation: Mapped[ControlImplementation] = relationship(back_populates="evidence")
 
@@ -435,8 +424,7 @@ class Assessment(Base):
     )
     name: Mapped[str] = mapped_column(String(255))
     kind: Mapped[str] = mapped_column(
-        Enum("self", "internal", "3pao", "ig", "audit",
-             name="assessment_kind", schema="ccf")
+        Enum("self", "internal", "3pao", "ig", "audit", name="assessment_kind", schema="ccf")
     )
     started_on: Mapped[date | None] = mapped_column(Date)
     finished_on: Mapped[date | None] = mapped_column(Date)
@@ -460,8 +448,13 @@ class AssessmentResult(Base):
         index=True,
     )
     finding: Mapped[str] = mapped_column(
-        Enum("satisfied", "other_than_satisfied", "not_applicable",
-             name="finding_status", schema="ccf")
+        Enum(
+            "satisfied",
+            "other_than_satisfied",
+            "not_applicable",
+            name="finding_status",
+            schema="ccf",
+        )
     )
     rationale: Mapped[str | None] = mapped_column(Text)
     observed_on: Mapped[date | None] = mapped_column(Date)
@@ -485,13 +478,19 @@ class POAM(Base):
     title: Mapped[str] = mapped_column(String(512))
     weakness: Mapped[str | None] = mapped_column(Text)
     severity: Mapped[str] = mapped_column(
-        Enum("low", "moderate", "high", "critical",
-             name="severity", schema="ccf"),
+        Enum("low", "moderate", "high", "critical", name="severity", schema="ccf"),
         default="moderate",
     )
     status: Mapped[str] = mapped_column(
-        Enum("open", "in_progress", "completed", "risk_accepted", "closed",
-             name="poam_status", schema="ccf"),
+        Enum(
+            "open",
+            "in_progress",
+            "completed",
+            "risk_accepted",
+            "closed",
+            name="poam_status",
+            schema="ccf",
+        ),
         default="open",
     )
     identified_on: Mapped[date | None] = mapped_column(Date)
@@ -506,32 +505,23 @@ class Risk(Base):
     __tablename__ = "risks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    system_id: Mapped[int | None] = mapped_column(
-        ForeignKey("ccf.systems.id", ondelete="CASCADE")
-    )
+    system_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.systems.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(512))
     description: Mapped[str | None] = mapped_column(Text)
     likelihood: Mapped[str | None] = mapped_column(
-        Enum("low", "moderate", "high",
-             name="risk_level", schema="ccf")
+        Enum("low", "moderate", "high", name="risk_level", schema="ccf")
     )
     impact: Mapped[str | None] = mapped_column(
-        Enum("low", "moderate", "high",
-             name="risk_level", schema="ccf",
-             create_type=False)
+        Enum("low", "moderate", "high", name="risk_level", schema="ccf", create_type=False)
     )
     treatment: Mapped[str | None] = mapped_column(
-        Enum("mitigate", "transfer", "accept", "avoid",
-             name="risk_treatment", schema="ccf")
+        Enum("mitigate", "transfer", "accept", "avoid", name="risk_treatment", schema="ccf")
     )
     status: Mapped[str] = mapped_column(
-        Enum("open", "mitigated", "accepted", "closed",
-             name="risk_status", schema="ccf"),
+        Enum("open", "mitigated", "accepted", "closed", name="risk_status", schema="ccf"),
         default="open",
     )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class AuditLog(Base):

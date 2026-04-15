@@ -12,13 +12,15 @@ Flow per run:
   7. Refresh the controls.search_vector column.
   8. Close the run with per-sheet stats.
 """
+
 from __future__ import annotations
 
 import hashlib
 import re
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import openpyxl
 from slugify import slugify
@@ -39,7 +41,7 @@ from ..models import (
     Worksheet,
     WorksheetRow,
 )
-from .frameworks import FRAMEWORKS, CORE_HEADERS, classify_header
+from .frameworks import CORE_HEADERS, FRAMEWORKS, classify_header
 from .validate import HeaderContractError, load_contract, validate_headers
 
 log = get_logger(__name__)
@@ -83,9 +85,7 @@ async def _upsert_workbook_version(
     session: AsyncSession, xlsx_path: Path, sha: str
 ) -> WorkbookVersion:
     existing = (
-        await session.execute(
-            select(WorkbookVersion).where(WorkbookVersion.sha256 == sha)
-        )
+        await session.execute(select(WorkbookVersion).where(WorkbookVersion.sha256 == sha))
     ).scalar_one_or_none()
     if existing:
         return existing
@@ -100,25 +100,29 @@ async def _upsert_workbook_version(
 
 
 async def _seed_frameworks(session: AsyncSession) -> dict[str, int]:
-    existing = {
-        f.code: f.id
-        for f in (await session.execute(select(Framework))).scalars().all()
-    }
+    existing = {f.code: f.id for f in (await session.execute(select(Framework))).scalars().all()}
     for spec in FRAMEWORKS:
         if spec.code in existing:
             continue
-        session.add(Framework(
-            code=spec.code, name=spec.name,
-            family=spec.family, description=spec.description,
-        ))
+        session.add(
+            Framework(
+                code=spec.code,
+                name=spec.name,
+                family=spec.family,
+                description=spec.description,
+            )
+        )
     if "OTHER" not in existing:
-        session.add(Framework(code="OTHER", name="Other / Misc",
-                              family="Other", description="Unclassified columns"))
+        session.add(
+            Framework(
+                code="OTHER",
+                name="Other / Misc",
+                family="Other",
+                description="Unclassified columns",
+            )
+        )
     await session.flush()
-    return {
-        f.code: f.id
-        for f in (await session.execute(select(Framework))).scalars().all()
-    }
+    return {f.code: f.id for f in (await session.execute(select(Framework))).scalars().all()}
 
 
 async def _ensure_family(
@@ -148,10 +152,7 @@ def _iter_sheet_rows(ws: Any) -> Iterable[tuple[int, list[str], tuple[Any, ...]]
     headers: list[str] = []
     for i, row in enumerate(ws.iter_rows(values_only=True)):
         if i == 0:
-            headers = [
-                str(h) if h is not None else f"col_{idx}"
-                for idx, h in enumerate(row)
-            ]
+            headers = [str(h) if h is not None else f"col_{idx}" for idx, h in enumerate(row)]
             continue
         if not any(c is not None and str(c).strip() for c in row):
             continue
@@ -163,7 +164,7 @@ async def _ingest_assessment(
     ws: Any,
     framework_ids: dict[str, int],
     run: IngestionRun,
-    workbook_version: WorkbookVersion,
+    workbook_version: WorkbookVersion | None,
 ) -> dict[str, int]:
     stats = {"rows": 0, "mappings": 0, "rejected": 0}
     family_cache: dict[str, int] = {}
@@ -212,14 +213,18 @@ async def _ingest_assessment(
                 log.info("ingest.header_drift", new_headers_count=len(diff.added))
             first = False
 
-        record = dict(zip(headers, row))
+        record = dict(zip(headers, row, strict=False))
         identifier = _clean(record.get("identifier"))
         if not identifier:
-            session.add(RejectedRow(
-                run_id=run.id, sheet=ASSESSMENT_SHEET, row_index=row_idx,
-                rule="missing_identifier",
-                payload={k: str(v) for k, v in record.items() if v is not None},
-            ))
+            session.add(
+                RejectedRow(
+                    run_id=run.id,
+                    sheet=ASSESSMENT_SHEET,
+                    row_index=row_idx,
+                    rule="missing_identifier",
+                    payload={k: str(v) for k, v in record.items() if v is not None},
+                )
+            )
             stats["rejected"] += 1
             continue
         identifier = str(identifier)
@@ -228,7 +233,9 @@ async def _ingest_assessment(
         seen_identifiers.add(identifier)
 
         family_id = await _ensure_family(
-            session, _clean(record.get("family")), family_cache,
+            session,
+            _clean(record.get("family")),
+            family_cache,
         )
 
         audit_payload = {k: v for k, v in record.items() if _clean(v) is not None}
@@ -250,11 +257,13 @@ async def _ingest_assessment(
         stats["rows"] += 1
 
         if workbook_version is not None:
-            history_controls.append(ControlHistory(
-                identifier=identifier,
-                workbook_version_id=workbook_version.id,
-                payload=audit_payload,
-            ))
+            history_controls.append(
+                ControlHistory(
+                    identifier=identifier,
+                    workbook_version_id=workbook_version.id,
+                    payload=audit_payload,
+                )
+            )
 
         for header, value in record.items():
             if header in CORE_HEADERS:
@@ -263,19 +272,23 @@ async def _ingest_assessment(
             if v is None:
                 continue
             fw_code = classify_header(header) or "OTHER"
-            mapping_batch.append(FrameworkMapping(
-                control_id=ctl.id,
-                framework_id=framework_ids.get(fw_code),
-                column_key=header,
-                value=str(v),
-            ))
-            if workbook_version is not None:
-                history_mappings.append(MappingHistory(
-                    identifier=identifier,
-                    workbook_version_id=workbook_version.id,
+            mapping_batch.append(
+                FrameworkMapping(
+                    control_id=ctl.id,
+                    framework_id=framework_ids.get(fw_code),
                     column_key=header,
                     value=str(v),
-                ))
+                )
+            )
+            if workbook_version is not None:
+                history_mappings.append(
+                    MappingHistory(
+                        identifier=identifier,
+                        workbook_version_id=workbook_version.id,
+                        column_key=header,
+                        value=str(v),
+                    )
+                )
             stats["mappings"] += 1
 
         if len(mapping_batch) >= 500:
@@ -298,19 +311,23 @@ async def _ingest_assessment(
     # Postgres-only: refresh tsvector. SQLite (Reader) skips this.
     dialect = session.bind.dialect.name if session.bind else ""
     if dialect == "postgresql":
-        await session.execute(text("""
+        await session.execute(
+            text("""
             UPDATE ccf.controls SET search_vector =
               setweight(to_tsvector('english', coalesce(identifier,'')), 'A') ||
               setweight(to_tsvector('english', coalesce(control_name,'')), 'A') ||
               setweight(to_tsvector('english', coalesce(assessment_objective,'')), 'B') ||
               setweight(to_tsvector('english', coalesce(description,'')), 'C') ||
               setweight(to_tsvector('english', coalesce(discussion,'')), 'D')
-        """))
+        """)
+        )
     return stats
 
 
 async def _ingest_generic_sheet(
-    session: AsyncSession, sheet_name: str, ws: Any,
+    session: AsyncSession,
+    sheet_name: str,
+    ws: Any,
 ) -> dict[str, int]:
     stats = {"rows": 0}
     slug = slugify(sheet_name, max_length=240) or f"sheet-{abs(hash(sheet_name))}"
@@ -326,16 +343,13 @@ async def _ingest_generic_sheet(
     rows_out: list[WorksheetRow] = []
     for i, row in enumerate(ws.iter_rows(values_only=True)):
         if i == 0:
-            headers = [
-                str(h) if h is not None else f"col_{idx}"
-                for idx, h in enumerate(row)
-            ]
+            headers = [str(h) if h is not None else f"col_{idx}" for idx, h in enumerate(row)]
             continue
         if not any(c is not None and str(c).strip() for c in row):
             continue
         payload = {
             h: (v if isinstance(v, (int, float, bool)) else str(v).strip())
-            for h, v in zip(headers, row)
+            for h, v in zip(headers, row, strict=False)
             if v is not None and str(v).strip()
         }
         if not payload:
@@ -344,8 +358,11 @@ async def _ingest_generic_sheet(
         stats["rows"] += 1
 
     sheet = Worksheet(
-        name=sheet_name, slug=slug, headers=headers,
-        row_count=stats["rows"], rows=rows_out,
+        name=sheet_name,
+        slug=slug,
+        headers=headers,
+        row_count=stats["rows"],
+        rows=rows_out,
     )
     session.add(sheet)
     await session.flush()
@@ -378,25 +395,29 @@ async def ingest_workbook(session: AsyncSession, xlsx_path: Path) -> IngestionRu
             ws = wb[sheet_name]
             if sheet_name == ASSESSMENT_SHEET:
                 per_sheet[sheet_name] = await _ingest_assessment(
-                    session, ws, framework_ids, run, workbook_version,
+                    session,
+                    ws,
+                    framework_ids,
+                    run,
+                    workbook_version,
                 )
             else:
                 per_sheet[sheet_name] = await _ingest_generic_sheet(session, sheet_name, ws)
             log.info("ingest.sheet", sheet=sheet_name, **per_sheet[sheet_name])
 
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.now(UTC)
         run.status = "succeeded"
         run.stats = {"sheets": per_sheet, "sha256": sha}
         await session.flush()
         return run
     except HeaderContractError as e:
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.now(UTC)
         run.status = "failed"
         run.stats = {"error": "header_contract", "detail": str(e)}
         await session.flush()
         raise
     except Exception as e:
-        run.finished_at = datetime.now(timezone.utc)
+        run.finished_at = datetime.now(UTC)
         run.status = "failed"
         run.stats = {"error": "exception", "detail": str(e)[:500]}
         await session.flush()

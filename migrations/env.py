@@ -1,4 +1,5 @@
 """Alembic environment — sync mode using psycopg (v3)."""
+
 from __future__ import annotations
 
 from logging.config import fileConfig
@@ -19,7 +20,7 @@ config.set_main_option("sqlalchemy.url", str(settings.database_url_sync))
 target_metadata = Base.metadata
 
 
-def include_name(name, type_, parent_names):  # noqa: ANN001, ARG001
+def include_name(name, type_, parent_names):
     # Only manage objects in our schemas.
     if type_ == "schema":
         return name in {"ccf", "ccf_raw", "ccf_audit"}

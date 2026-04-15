@@ -1,4 +1,5 @@
 """Smoke test the FastAPI app (in-process)."""
+
 from __future__ import annotations
 
 import pytest

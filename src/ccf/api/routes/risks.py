@@ -1,5 +1,8 @@
 """Risk register CRUD."""
+
 from __future__ import annotations
+
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -39,7 +42,7 @@ class RiskUpdate(BaseModel):
 async def list_risks(
     session: AsyncSession = Depends(get_session),
     system_id: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     stmt = select(Risk).order_by(Risk.created_at.desc())
     if system_id is not None:
         stmt = stmt.where(Risk.system_id == system_id)
@@ -64,7 +67,7 @@ async def list_risks(
 async def create_risk(
     body: RiskCreate,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     obj = Risk(**body.model_dump(exclude_none=True))
     session.add(obj)
     await session.commit()
@@ -74,9 +77,10 @@ async def create_risk(
 
 @router.patch("/{rid}")
 async def update_risk(
-    rid: int, body: RiskUpdate,
+    rid: int,
+    body: RiskUpdate,
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, Any]:
     obj = (await session.execute(select(Risk).where(Risk.id == rid))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(404, "risk not found")

@@ -1,14 +1,16 @@
 """Systems / control implementation / POA&M endpoints."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import (
+    POAM,
     Control,
     ControlImplementation,
-    POAM,
     System,
 )
 from ...schemas import (
@@ -47,9 +49,7 @@ async def compliance_summary(
     system_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> ComplianceSummary:
-    sys = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
     if sys is None:
         raise HTTPException(404, "system not found")
 
@@ -68,10 +68,17 @@ async def compliance_summary(
         .where(ControlImplementation.system_id == system_id)
         .group_by(ControlImplementation.status)
     )
-    buckets = {s: 0 for s in (
-        "implemented", "partial", "planned",
-        "not_implemented", "inherited", "not_applicable",
-    )}
+    buckets = {
+        s: 0
+        for s in (
+            "implemented",
+            "partial",
+            "planned",
+            "not_implemented",
+            "inherited",
+            "not_applicable",
+        )
+    }
     for status, count in (await session.execute(stmt)).all():
         buckets[status] = count
 
@@ -134,7 +141,7 @@ async def upsert_implementation(
     return ImplementationOut.model_validate(obj)
 
 
-class BulkImplementationRow(__import__("pydantic").BaseModel):
+class BulkImplementationRow(BaseModel):
     identifier: str
     status: str
     narrative: str | None = None
@@ -145,16 +152,14 @@ async def bulk_import_implementations(
     system_id: int,
     rows: list[BulkImplementationRow],
     session: AsyncSession = Depends(get_session),
-) -> dict:
+) -> dict[str, int]:
     """Bulk-seed implementation state for a system from a list of rows."""
-    if not (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none():
+    if not (
+        await session.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none():
         raise HTTPException(404, "system not found")
 
-    ctrls = {
-        c.identifier: c.id for c in (
-            await session.execute(select(Control))
-        ).scalars().all()
-    }
+    ctrls = {c.identifier: c.id for c in (await session.execute(select(Control))).scalars().all()}
     upserted = 0
     skipped = 0
     for r in rows:
@@ -186,8 +191,12 @@ async def list_poams(
     session: AsyncSession = Depends(get_session),
 ) -> list[POAMOut]:
     rows = (
-        await session.execute(
-            select(POAM).where(POAM.system_id == system_id).order_by(POAM.due_on)
+        (
+            await session.execute(
+                select(POAM).where(POAM.system_id == system_id).order_by(POAM.due_on)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [POAMOut.model_validate(r) for r in rows]

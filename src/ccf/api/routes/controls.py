@@ -1,4 +1,5 @@
 """Control catalog endpoints."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -33,23 +34,23 @@ async def list_controls(
 
     if family:
         stmt = stmt.join(Control.family).where(ControlFamily.code == family.upper())
-        count_stmt = count_stmt.join(Control.family).where(
-            ControlFamily.code == family.upper()
-        )
+        count_stmt = count_stmt.join(Control.family).where(ControlFamily.code == family.upper())
     if baseline:
-        col = {"low": Control.fisma_low, "mod": Control.fisma_mod, "high": Control.fisma_high}[baseline]
+        col = {"low": Control.fisma_low, "mod": Control.fisma_mod, "high": Control.fisma_high}[
+            baseline
+        ]
         stmt = stmt.where(col.is_(True))
         count_stmt = count_stmt.where(col.is_(True))
     if q:
         like = f"%{q}%"
-        stmt = stmt.where(
-            (Control.identifier.ilike(like)) | (Control.control_name.ilike(like))
-        )
+        stmt = stmt.where((Control.identifier.ilike(like)) | (Control.control_name.ilike(like)))
         count_stmt = count_stmt.where(
             (Control.identifier.ilike(like)) | (Control.control_name.ilike(like))
         )
 
-    stmt = stmt.order_by(Control.sort_as.nulls_last(), Control.identifier).limit(limit).offset(offset)
+    stmt = (
+        stmt.order_by(Control.sort_as.nulls_last(), Control.identifier).limit(limit).offset(offset)
+    )
 
     total = (await session.execute(count_stmt)).scalar_one()
     rows = (await session.execute(stmt)).scalars().all()
@@ -59,8 +60,8 @@ async def list_controls(
 @router.get("/families", response_model=list[ControlFamilyOut])
 async def list_families(session: AsyncSession = Depends(get_session)) -> list[ControlFamilyOut]:
     rows = (
-        await session.execute(select(ControlFamily).order_by(ControlFamily.code))
-    ).scalars().all()
+        (await session.execute(select(ControlFamily).order_by(ControlFamily.code))).scalars().all()
+    )
     return [ControlFamilyOut.model_validate(r) for r in rows]
 
 

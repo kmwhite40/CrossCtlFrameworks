@@ -1,4 +1,5 @@
 """Evidence CRUD — attach artifacts to control implementations."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -18,7 +19,10 @@ router = APIRouter(prefix="/api/evidence", tags=["evidence"])
 
 class EvidenceCreate(BaseModel):
     implementation_id: int
-    kind: str = Field(..., pattern=r"^(document|screenshot|config_export|attestation|scan_result|ticket|link|other)$")
+    kind: str = Field(
+        ...,
+        pattern=r"^(document|screenshot|config_export|attestation|scan_result|ticket|link|other)$",
+    )
     title: str
     uri: str | None = None
     collected_on: date | None = None
@@ -52,9 +56,7 @@ async def create_evidence(
 
 
 @router.delete("/{eid}", status_code=204)
-async def delete_evidence(
-    eid: int, session: AsyncSession = Depends(get_session)
-) -> None:
+async def delete_evidence(eid: int, session: AsyncSession = Depends(get_session)) -> None:
     obj = (await session.execute(select(Evidence).where(Evidence.id == eid))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(404, "evidence not found")
