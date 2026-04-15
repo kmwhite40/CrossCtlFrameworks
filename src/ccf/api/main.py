@@ -70,6 +70,16 @@ def create_app() -> FastAPI:
     )
     app.middleware("http")(metrics_middleware)
 
+    if settings.readonly:
+        @app.middleware("http")
+        async def readonly_guard(request: Request, call_next):
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+                return JSONResponse(
+                    {"detail": "Concord Reader is read-only."},
+                    status_code=403,
+                )
+            return await call_next(request)
+
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

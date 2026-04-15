@@ -33,11 +33,21 @@ from ..deps import get_session
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+# Inject settings.readonly into every template's globals (avoids per-route plumbing).
+from ...config import get_settings as _get_settings  # noqa: E402
+templates.env.globals["settings"] = _get_settings()
+
 router = APIRouter(include_in_schema=False)
 
 
 def _is_htmx(request: Request) -> bool:
     return request.headers.get("hx-request") == "true"
+
+
+def _ctx(**extra: object) -> dict[str, object]:
+    """Inject settings.readonly flag into every UI response."""
+    from ...config import get_settings
+    return {"readonly": get_settings().readonly, **extra}
 
 
 @router.get("/", response_class=HTMLResponse)

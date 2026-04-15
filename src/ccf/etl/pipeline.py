@@ -249,11 +249,12 @@ async def _ingest_assessment(
         await session.flush()
         stats["rows"] += 1
 
-        history_controls.append(ControlHistory(
-            identifier=identifier,
-            workbook_version_id=workbook_version.id,
-            payload=audit_payload,
-        ))
+        if workbook_version is not None:
+            history_controls.append(ControlHistory(
+                identifier=identifier,
+                workbook_version_id=workbook_version.id,
+                payload=audit_payload,
+            ))
 
         for header, value in record.items():
             if header in CORE_HEADERS:
@@ -268,12 +269,13 @@ async def _ingest_assessment(
                 column_key=header,
                 value=str(v),
             ))
-            history_mappings.append(MappingHistory(
-                identifier=identifier,
-                workbook_version_id=workbook_version.id,
-                column_key=header,
-                value=str(v),
-            ))
+            if workbook_version is not None:
+                history_mappings.append(MappingHistory(
+                    identifier=identifier,
+                    workbook_version_id=workbook_version.id,
+                    column_key=header,
+                    value=str(v),
+                ))
             stats["mappings"] += 1
 
         if len(mapping_batch) >= 500:
@@ -293,14 +295,17 @@ async def _ingest_assessment(
         session.add_all(history_mappings)
     await session.flush()
 
-    await session.execute(text("""
-        UPDATE ccf.controls SET search_vector =
-          setweight(to_tsvector('english', coalesce(identifier,'')), 'A') ||
-          setweight(to_tsvector('english', coalesce(control_name,'')), 'A') ||
-          setweight(to_tsvector('english', coalesce(assessment_objective,'')), 'B') ||
-          setweight(to_tsvector('english', coalesce(description,'')), 'C') ||
-          setweight(to_tsvector('english', coalesce(discussion,'')), 'D')
-    """))
+    # Postgres-only: refresh tsvector. SQLite (Reader) skips this.
+    dialect = session.bind.dialect.name if session.bind else ""
+    if dialect == "postgresql":
+        await session.execute(text("""
+            UPDATE ccf.controls SET search_vector =
+              setweight(to_tsvector('english', coalesce(identifier,'')), 'A') ||
+              setweight(to_tsvector('english', coalesce(control_name,'')), 'A') ||
+              setweight(to_tsvector('english', coalesce(assessment_objective,'')), 'B') ||
+              setweight(to_tsvector('english', coalesce(description,'')), 'C') ||
+              setweight(to_tsvector('english', coalesce(discussion,'')), 'D')
+        """))
     return stats
 
 
@@ -350,13 +355,16 @@ async def _ingest_generic_sheet(
 async def ingest_workbook(session: AsyncSession, xlsx_path: Path) -> IngestionRun:
     log.info("ingest.start", path=str(xlsx_path))
     sha = _sha256(xlsx_path)
+    dialect = session.bind.dialect.name if session.bind else ""
 
-    workbook_version = await _upsert_workbook_version(session, xlsx_path, sha)
+    workbook_version = None
+    if dialect == "postgresql":
+        workbook_version = await _upsert_workbook_version(session, xlsx_path, sha)
 
     run = IngestionRun(
         source_file=str(xlsx_path),
         sha256=sha,
-        workbook_version_id=workbook_version.id,
+        workbook_version_id=(workbook_version.id if workbook_version else None),
     )
     session.add(run)
     await session.flush()

@@ -59,6 +59,7 @@
       <a class="nav-link" href="/coverage"   {% if active=='coverage'   %}aria-current="page"{% endif %}><i data-lucide="grid-3x3"></i> Coverage</a>
       <a class="nav-link" href="/diff"       {% if active=='diff'       %}aria-current="page"{% endif %}><i data-lucide="diff"></i> Workbook diff</a>
     </div>
+    {% if not settings.readonly %}
     <div class="sidebar__group">
       <div class="sidebar__group-title">Operations</div>
       <a class="nav-link" href="/reports"    {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i> Reports</a>
@@ -72,6 +73,15 @@
       <a class="nav-link" href="/ingestions" {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i> Ingestions</a>
       <a class="nav-link" href="/settings"   {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i> Settings</a>
     </div>
+    {% else %}
+    <div class="sidebar__group">
+      <div class="sidebar__group-title">Reader mode</div>
+      <div class="nav-link" style="cursor:default;opacity:.75">
+        <i data-lucide="eye"></i> Read-only
+        <span class="badge">SQLite</span>
+      </div>
+    </div>
+    {% endif %}
     <div class="sidebar__group">
       <div class="sidebar__group-title">External</div>
       <a class="nav-link" href="http://localhost:3000" target="_blank" rel="noopener">

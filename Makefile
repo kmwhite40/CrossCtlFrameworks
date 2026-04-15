@@ -53,5 +53,15 @@ sbom: ## Generate CycloneDX SBOM
 scan: ## Trivy filesystem scan
 	trivy fs --severity HIGH,CRITICAL --exit-code 1 .
 
+reader-build: ## Build Concord Reader .exe via PyInstaller
+	pip install -e ".[reader]"
+	pyinstaller concord_reader.spec --clean --noconfirm
+	@echo "Artifact: dist/ConcordReader$(if $(findstring Windows,$(OS)),.exe,)"
+
+reader-run: ## Run the Reader from source (no packaging)
+	CCF_READONLY=true CCF_DATABASE_URL=sqlite+aiosqlite:///$$HOME/.concord/concord.db \
+	CCF_DATABASE_URL_SYNC=sqlite:///$$HOME/.concord/concord.db \
+	python -m ccf.reader.launcher
+
 clean:
 	rm -rf .venv .pytest_cache .ruff_cache .mypy_cache dist build *.egg-info sbom.json

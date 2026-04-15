@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -21,13 +22,31 @@ def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
-        _engine = create_async_engine(
-            str(settings.database_url),
-            pool_size=10,
-            max_overflow=10,
-            pool_pre_ping=True,
-            future=True,
-        )
+        dsn = str(settings.database_url)
+        if dsn.startswith("sqlite"):
+            # Reader flavor: ORM models carry schema="ccf" metadata which
+            # SQLite understands only if we ATTACH the file as that name.
+            # We open :memory: and attach the real file on every new conn.
+            _engine = create_async_engine(
+                "sqlite+aiosqlite:///:memory:?cache=shared&uri=true",
+                future=True,
+            )
+
+            @event.listens_for(_engine.sync_engine, "connect")
+            def _attach(dbapi_conn, _record):  # noqa: ANN001
+                target = dsn.removeprefix("sqlite+aiosqlite:///")
+                target = target.removeprefix("sqlite:///")
+                cur = dbapi_conn.cursor()
+                cur.execute(f"ATTACH DATABASE '{target}' AS ccf")
+                cur.execute("ATTACH DATABASE ':memory:' AS ccf_audit")
+                cur.execute("ATTACH DATABASE ':memory:' AS ccf_raw")
+                cur.close()
+        else:
+            _engine = create_async_engine(
+                dsn,
+                pool_size=10, max_overflow=10,
+                pool_pre_ping=True, future=True,
+            )
     return _engine
 
 

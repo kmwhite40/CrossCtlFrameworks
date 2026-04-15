@@ -29,6 +29,7 @@ dependencies = [
     "python-multipart>=0.0.9,<1",
     "prometheus-client>=0.20,<1",
     "slowapi>=0.1.9,<1",
+    "aiosqlite>=0.20,<1",
 ]
 
 [project.optional-dependencies]
@@ -40,9 +41,13 @@ dev = [
     "mypy>=1.10,<2",
     "types-python-slugify",
 ]
+reader = [
+    "pyinstaller>=6.10,<7",
+]
 
 [project.scripts]
 ccf = "ccf.cli:app"
+concord-reader = "ccf.reader.launcher:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

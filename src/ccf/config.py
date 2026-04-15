@@ -40,6 +40,16 @@ class Settings(BaseSettings):
         default=Path("/data/NIST Cross Mappings Rev. 1.1.xlsx")
     )
 
+    # Concord Reader flavor: SQLite + single-exe + hide write UI + 403 on mutations.
+    readonly: bool = Field(
+        default=False,
+        description="When true, hide ops UI and block POST/PATCH/DELETE.",
+    )
+
+    @property
+    def is_sqlite(self) -> bool:
+        return "sqlite" in str(self.database_url)
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
