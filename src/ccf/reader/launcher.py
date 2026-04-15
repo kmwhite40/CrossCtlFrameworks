@@ -98,8 +98,10 @@ def main() -> int:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     db_file = data_dir / "concord.db"
-    dsn_async = f"sqlite+aiosqlite:///{db_file}"
-    dsn_sync = f"sqlite:///{db_file}"
+    # SQLAlchemy SQLite URLs want forward slashes, even on Windows.
+    db_str = db_file.as_posix()
+    dsn_async = f"sqlite+aiosqlite:///{db_str}"
+    dsn_sync = f"sqlite:///{db_str}"
     os.environ["CCF_DATABASE_URL"] = dsn_async
     os.environ["CCF_DATABASE_URL_SYNC"] = dsn_sync
     os.environ["CCF_READONLY"] = "true"
@@ -118,7 +120,10 @@ def main() -> int:
 
     # Clear cached settings so CCF_READONLY is picked up.
     from ..config import get_settings
-    get_settings.cache_clear()  # type: ignore[attr-defined]
+    try:
+        get_settings.cache_clear()  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
 
     import uvicorn
     uvicorn.run("ccf.api.main:app", host=host, port=port, log_level="warning")

@@ -44,7 +44,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter", "pytest", "notebook", "IPython"],
+    excludes=[
+        "tkinter", "pytest", "notebook", "IPython",
+        # Reader uses SQLite only — drop the Postgres drivers to shrink the
+        # binary and avoid PyInstaller hook issues on Windows wheels.
+        "asyncpg", "psycopg", "psycopg2", "psycopg2-binary",
+        # Unix-only event loops that creep in via uvicorn[standard].
+        "uvloop",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
