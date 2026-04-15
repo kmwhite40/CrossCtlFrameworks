@@ -72,6 +72,17 @@
       <a class="nav-link" href="/ingestions" {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i> Ingestions</a>
       <a class="nav-link" href="/settings"   {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i> Settings</a>
     </div>
+    <div class="sidebar__group">
+      <div class="sidebar__group-title">External</div>
+      <a class="nav-link" href="http://localhost:3000" target="_blank" rel="noopener">
+        <i data-lucide="sparkles"></i> Landing page
+        <i data-lucide="external-link" style="width:14px;height:14px;margin-left:auto;opacity:.6"></i>
+      </a>
+      <a class="nav-link" href="/docs" target="_blank" rel="noopener">
+        <i data-lucide="book-open"></i> API docs
+        <i data-lucide="external-link" style="width:14px;height:14px;margin-left:auto;opacity:.6"></i>
+      </a>
+    </div>
     <div class="sidebar__foot">
       <div>v0.1.0 &middot; Concord</div>
       <div>&copy; 2026 Colleen Townsend</div>
