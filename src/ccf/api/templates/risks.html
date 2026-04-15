@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Risks · Concord{% endblock %}
+{% block heading %}Risk register{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Track risk treatments across systems.</p>{% endblock %}
+{% block content %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Record a risk</div></div>
+  <form class="card__body" id="risk-form" style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 1fr auto;gap:10px">
+    <input class="input" name="title" placeholder="Risk title" required />
+    <select class="select" name="system_id" aria-label="System"><option value="">(no system)</option>
+      {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+    </select>
+    <select class="select" name="likelihood" aria-label="Likelihood"><option value="">Likelihood</option>
+      <option>low</option><option>moderate</option><option>high</option>
+    </select>
+    <select class="select" name="impact" aria-label="Impact"><option value="">Impact</option>
+      <option>low</option><option>moderate</option><option>high</option>
+    </select>
+    <select class="select" name="treatment" aria-label="Treatment"><option value="">Treatment</option>
+      <option>mitigate</option><option>transfer</option><option>accept</option><option>avoid</option>
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Risks ({{ rows | length }})</div></div>
+  {% if rows %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Title</th><th>Likelihood</th><th>Impact</th><th>Treatment</th><th>Status</th><th>Created</th></tr></thead>
+      <tbody>
+        {% for r in rows %}<tr>
+          <td><strong>{{ r.title }}</strong></td>
+          <td>{% if r.likelihood %}<span class="chip">{{ r.likelihood }}</span>{% endif %}</td>
+          <td>{% if r.impact %}<span class="chip">{{ r.impact }}</span>{% endif %}</td>
+          <td>{% if r.treatment %}<span class="chip chip--brand">{{ r.treatment }}</span>{% endif %}</td>
+          <td><span class="chip">{{ r.status }}</span></td>
+          <td class="dim">{{ r.created_at.strftime('%Y-%m-%d') }}</td>
+        </tr>{% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <div class="card__body dim" style="text-align:center;padding:40px">No risks recorded.</div>
+  {% endif %}
+</section>
+
+<script>
+document.getElementById('risk-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries([...fd.entries()].filter(([,v]) => v !== ''));
+  if (body.system_id) body.system_id = parseInt(body.system_id, 10);
+  const r = await fetch('/api/risks', {method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body)});
+  if (r.ok) location.reload(); else if (window.toast) window.toast('Failed to create risk');
+});
+</script>
+{% endblock %}

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   quality:
-    name: lint + typecheck + test
+    name: lint + typecheck + test (api)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -39,6 +39,20 @@ jobs:
       - run: mypy src
       - run: pytest -q --cov=ccf --cov-report=term-missing
 
+  landing:
+    name: lint + typecheck + build (landing)
+    runs-on: ubuntu-latest
+    defaults:
+      run: { working-directory: web/landing }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20", cache: "npm", cache-dependency-path: web/landing/package-lock.json }
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint --if-present
+      - run: npm run build
+
   supply-chain:
     name: sbom + vuln scan
     runs-on: ubuntu-latest
@@ -51,11 +65,9 @@ jobs:
       - name: Generate SBOM
         run: cyclonedx-py environment -o sbom.json
       - uses: actions/upload-artifact@v4
-        with:
-          name: sbom
-          path: sbom.json
+        with: { name: sbom, path: sbom.json }
       - name: pip-audit
-        run: pip-audit --strict --ignore-vuln PYSEC-0000-0 || true
+        run: pip-audit --strict || true
       - name: Trivy fs scan
         uses: aquasecurity/trivy-action@0.24.0
         with:

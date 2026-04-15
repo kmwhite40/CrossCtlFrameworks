@@ -13,12 +13,18 @@ from sqlalchemy.orm import selectinload
 from ...models import (
     Control,
     ControlFamily,
+    ControlImplementation,
+    Evidence,
     Framework,
     FrameworkMapping,
     IngestionRun,
     Organization,
     POAM,
+    RejectedRow,
+    Risk,
     System,
+    User,
+    WorkbookVersion,
     Worksheet,
     WorksheetRow,
 )
@@ -312,6 +318,161 @@ async def ingestions_page(
 async def settings_page(request: Request) -> HTMLResponse:
     return templates.TemplateResponse(request, "settings.html", {
         "active": "settings",
+    })
+
+
+@router.get("/systems/{system_id}", response_class=HTMLResponse)
+async def system_detail(
+    system_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    if sys is None:
+        raise HTTPException(404, "system not found")
+    impl_counts = (await session.execute(
+        select(ControlImplementation.status, func.count())
+        .where(ControlImplementation.system_id == system_id)
+        .group_by(ControlImplementation.status)
+    )).all()
+    poams = (await session.execute(
+        select(POAM).where(POAM.system_id == system_id).order_by(POAM.due_on.nulls_last())
+    )).scalars().all()
+    evidence_count = (await session.execute(
+        select(func.count(Evidence.id))
+        .join(ControlImplementation, ControlImplementation.id == Evidence.implementation_id)
+        .where(ControlImplementation.system_id == system_id)
+    )).scalar_one()
+    return templates.TemplateResponse(request, "system_detail.html", {
+        "active": "systems",
+        "sys": sys,
+        "impl_counts": {s: n for s, n in impl_counts},
+        "poams": poams,
+        "evidence_count": evidence_count,
+    })
+
+
+@router.get("/risks", response_class=HTMLResponse)
+async def risks_page(
+    request: Request, session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (await session.execute(select(Risk).order_by(Risk.created_at.desc()))).scalars().all()
+    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    return templates.TemplateResponse(request, "risks.html", {
+        "active": "risks", "rows": rows, "systems": systems,
+    })
+
+
+@router.get("/users", response_class=HTMLResponse)
+async def users_page(
+    request: Request, session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (await session.execute(select(User).order_by(User.email))).scalars().all()
+    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
+    return templates.TemplateResponse(request, "users.html", {
+        "active": "users", "rows": rows, "organizations": orgs,
+    })
+
+
+@router.get("/mappings", response_class=HTMLResponse)
+async def mappings_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    q: str | None = Query(None),
+    framework: str | None = Query(None),
+) -> HTMLResponse:
+    frameworks = (await session.execute(
+        select(Framework).order_by(Framework.family, Framework.name)
+    )).scalars().all()
+    results = []
+    if q and len(q) >= 2:
+        stmt = (
+            select(
+                Control.identifier,
+                Control.control_name,
+                Framework.code.label("framework_code"),
+                Framework.name.label("framework_name"),
+                FrameworkMapping.column_key,
+                FrameworkMapping.value,
+            )
+            .select_from(FrameworkMapping)
+            .join(Control, Control.id == FrameworkMapping.control_id)
+            .join(Framework, Framework.id == FrameworkMapping.framework_id, isouter=True)
+            .where(FrameworkMapping.value.ilike(f"%{q}%"))
+            .order_by(Control.sort_as.nulls_last(), Control.identifier)
+            .limit(100)
+        )
+        if framework:
+            stmt = stmt.where(Framework.code == framework.upper())
+        results = (await session.execute(stmt)).all()
+    return templates.TemplateResponse(request, "mappings.html", {
+        "active": "mappings",
+        "q": q or "",
+        "framework": framework or "",
+        "frameworks": frameworks,
+        "results": results,
+    })
+
+
+@router.get("/coverage", response_class=HTMLResponse)
+async def coverage_page(
+    request: Request, session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    cells = (await session.execute(
+        select(
+            Framework.code.label("framework"),
+            ControlFamily.code.label("family"),
+            func.count(func.distinct(Control.id)).label("controls"),
+        )
+        .select_from(FrameworkMapping)
+        .join(Framework, Framework.id == FrameworkMapping.framework_id)
+        .join(Control, Control.id == FrameworkMapping.control_id)
+        .join(ControlFamily, ControlFamily.id == Control.family_id, isouter=True)
+        .group_by(Framework.code, ControlFamily.code)
+    )).all()
+    frameworks = sorted({c.framework for c in cells})
+    families = sorted({c.family for c in cells if c.family})
+    grid = {(c.framework, c.family): c.controls for c in cells}
+    max_v = max((c.controls for c in cells), default=1)
+    return templates.TemplateResponse(request, "coverage.html", {
+        "active": "coverage",
+        "frameworks": frameworks, "families": families,
+        "grid": grid, "max_v": max_v,
+    })
+
+
+@router.get("/diff", response_class=HTMLResponse)
+async def diff_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    a: str | None = Query(None),
+    b: str | None = Query(None),
+) -> HTMLResponse:
+    versions = (await session.execute(
+        select(WorkbookVersion).order_by(WorkbookVersion.imported_at.desc())
+    )).scalars().all()
+    result = None
+    if a and b:
+        from .diff import diff_workbook
+        try:
+            result = await diff_workbook(a=a, b=b, session=session)
+        except HTTPException:
+            result = {"error": "one or both SHA-256 values not found"}
+    return templates.TemplateResponse(request, "diff.html", {
+        "active": "diff", "versions": versions,
+        "a": a or "", "b": b or "", "result": result,
+    })
+
+
+@router.get("/quarantine", response_class=HTMLResponse)
+async def quarantine_page(
+    request: Request, session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    rows = (await session.execute(
+        select(RejectedRow).order_by(RejectedRow.rejected_at.desc()).limit(200)
+    )).scalars().all()
+    return templates.TemplateResponse(request, "quarantine.html", {
+        "active": "ingestions", "rows": rows,
     })
 
 

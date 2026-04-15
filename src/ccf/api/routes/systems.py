@@ -134,6 +134,52 @@ async def upsert_implementation(
     return ImplementationOut.model_validate(obj)
 
 
+class BulkImplementationRow(__import__("pydantic").BaseModel):
+    identifier: str
+    status: str
+    narrative: str | None = None
+
+
+@router.post("/{system_id}/implementations/bulk")
+async def bulk_import_implementations(
+    system_id: int,
+    rows: list[BulkImplementationRow],
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Bulk-seed implementation state for a system from a list of rows."""
+    if not (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none():
+        raise HTTPException(404, "system not found")
+
+    ctrls = {
+        c.identifier: c.id for c in (
+            await session.execute(select(Control))
+        ).scalars().all()
+    }
+    upserted = 0
+    skipped = 0
+    for r in rows:
+        cid = ctrls.get(r.identifier)
+        if not cid:
+            skipped += 1
+            continue
+        obj = (
+            await session.execute(
+                select(ControlImplementation)
+                .where(ControlImplementation.system_id == system_id)
+                .where(ControlImplementation.control_id == cid)
+            )
+        ).scalar_one_or_none()
+        if obj is None:
+            obj = ControlImplementation(system_id=system_id, control_id=cid)
+            session.add(obj)
+        obj.status = r.status
+        if r.narrative is not None:
+            obj.narrative = r.narrative
+        upserted += 1
+    await session.commit()
+    return {"upserted": upserted, "skipped": skipped, "total": len(rows)}
+
+
 @router.get("/{system_id}/poams", response_model=list[POAMOut])
 async def list_poams(
     system_id: int,

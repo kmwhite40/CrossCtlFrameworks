@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Workbook diff · Concord{% endblock %}
+{% block heading %}Workbook version diff{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Compare any two ingested workbook versions by their SHA-256.</p>{% endblock %}
+{% block content %}
+
+<section class="card" style="margin-bottom:16px">
+  <form method="get" action="/diff" class="card__body" style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px">
+    <select class="select" name="a" aria-label="Base">
+      <option value="">(base)</option>
+      {% for v in versions %}<option value="{{ v.sha256 }}" {% if v.sha256==a %}selected{% endif %}>{{ v.sha256[:12] }}… · {{ v.imported_at.strftime('%Y-%m-%d') }}</option>{% endfor %}
+    </select>
+    <select class="select" name="b" aria-label="Compare">
+      <option value="">(compare)</option>
+      {% for v in versions %}<option value="{{ v.sha256 }}" {% if v.sha256==b %}selected{% endif %}>{{ v.sha256[:12] }}… · {{ v.imported_at.strftime('%Y-%m-%d') }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="git-compare-arrows"></i> Diff</button>
+  </form>
+</section>
+
+{% if result %}
+  {% if result.error %}
+    <div class="card"><div class="card__body">{{ result.error }}</div></div>
+  {% else %}
+    <div class="grid-cards" style="margin-bottom:16px">
+      <div class="kpi"><span class="kpi__label">Added</span><span class="kpi__value">{{ result.counts.added }}</span></div>
+      <div class="kpi"><span class="kpi__label">Changed</span><span class="kpi__value">{{ result.counts.changed }}</span></div>
+      <div class="kpi"><span class="kpi__label">Removed</span><span class="kpi__value">{{ result.counts.removed }}</span></div>
+    </div>
+
+    <div class="cols-3">
+      {% for label, key in [('Added','added_controls'), ('Changed','changed_controls'), ('Removed','removed_controls')] %}
+        <div class="card">
+          <div class="card__header"><div class="card__title">{{ label }}</div></div>
+          <div class="card__body" style="max-height:360px;overflow:auto">
+            {% for ident in result[key][:200] %}
+              <div class="mono" style="font-size:12.5px;padding:2px 0"><a href="/controls/{{ ident }}">{{ ident }}</a></div>
+            {% else %}<div class="dim">—</div>{% endfor %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endif %}
+{% endblock %}

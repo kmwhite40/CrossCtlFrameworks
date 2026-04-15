@@ -1,10 +1,11 @@
 """SQLAlchemy 2.0 ORM models.
 
-Layered schema:
-    Reference layer  — Frameworks, ControlFamilies, Controls, FrameworkMappings,
-                       Worksheets/WorksheetRows (the ingested NIST workbook).
-    Operational layer — Organizations, Systems, ControlImplementations, Evidence,
-                       Assessments, AssessmentResults, POAMs, Risks, AuditLog.
+Reference layer  — Frameworks, ControlFamilies, Controls, FrameworkMappings,
+                   Worksheets/WorksheetRows (ingested NIST workbook).
+Provenance layer — WorkbookVersion, IngestionRun (FK'd),
+                   ControlHistory, MappingHistory, RejectedRow (ccf_audit schema).
+Operational layer — Organizations, Users, Systems, ControlImplementations,
+                   Evidence, Assessments, AssessmentResults, POAMs, Risks, AuditLog.
 """
 from __future__ import annotations
 
@@ -37,8 +38,23 @@ class Base(DeclarativeBase):
 
 
 # ---------------------------------------------------------------------------
-# Reference layer — the NIST workbook, canonicalized.
+# Reference layer
 # ---------------------------------------------------------------------------
+
+
+class WorkbookVersion(Base):
+    __tablename__ = "workbook_versions"
+    __table_args__ = {"schema": "ccf_audit"}
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    source_path: Mapped[str] = mapped_column(String(512))
+    revision_label: Mapped[str | None] = mapped_column(String(64))
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    imported_by: Mapped[str | None] = mapped_column(String(255))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class IngestionRun(Base):
@@ -47,12 +63,76 @@ class IngestionRun(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     source_file: Mapped[str] = mapped_column(String(512))
     sha256: Mapped[str | None] = mapped_column(String(64))
+    workbook_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf_audit.workbook_versions.id", ondelete="SET NULL")
+    )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(32), default="running")
     stats: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class RejectedRow(Base):
+    __tablename__ = "rejected_rows"
+    __table_args__ = {"schema": "ccf_audit"}
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.ingestion_runs.id", ondelete="CASCADE"), index=True
+    )
+    sheet: Mapped[str] = mapped_column(String(255))
+    row_index: Mapped[int] = mapped_column(Integer)
+    rule: Mapped[str] = mapped_column(String(128))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    rejected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ControlHistory(Base):
+    """SCD-2 snapshot of ccf.controls rows as seen by a specific workbook version."""
+
+    __tablename__ = "control_history"
+    __table_args__ = (
+        Index("ix_control_history_ident", "identifier"),
+        {"schema": "ccf_audit"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    identifier: Mapped[str] = mapped_column(String(128))
+    workbook_version_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf_audit.workbook_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class MappingHistory(Base):
+    """SCD-2 snapshot of ccf.framework_mappings keyed by (identifier, column_key)."""
+
+    __tablename__ = "mapping_history"
+    __table_args__ = (
+        Index("ix_mapping_history_ident", "identifier"),
+        Index("ix_mapping_history_col", "column_key"),
+        {"schema": "ccf_audit"},
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    identifier: Mapped[str] = mapped_column(String(128))
+    workbook_version_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf_audit.workbook_versions.id", ondelete="CASCADE"),
+        index=True,
+    )
+    column_key: Mapped[str] = mapped_column(String(255))
+    value: Mapped[str] = mapped_column(Text)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class Framework(Base):
@@ -191,7 +271,7 @@ class WorksheetRow(Base):
 
 
 # ---------------------------------------------------------------------------
-# Operational layer — an organization running a compliance program.
+# Operational layer
 # ---------------------------------------------------------------------------
 
 
@@ -224,13 +304,14 @@ class User(Base):
         default="viewer",
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
     organization: Mapped[Organization] = relationship(back_populates="users")
 
 
 class System(Base):
-    """FISMA / FedRAMP system boundary (ATO package)."""
-
     __tablename__ = "systems"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -275,8 +356,6 @@ class System(Base):
 
 
 class ControlImplementation(Base):
-    """Per-system implementation state for a reference control."""
-
     __tablename__ = "control_implementations"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -394,8 +473,6 @@ class AssessmentResult(Base):
 
 
 class POAM(Base):
-    """Plan of Action & Milestones — remediation tracking for findings."""
-
     __tablename__ = "poams"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

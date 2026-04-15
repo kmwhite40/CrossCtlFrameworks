@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Mapping search · Concord{% endblock %}
+{% block heading %}Cross-framework mapping search{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Find a NIST control by its reference in any other framework — e.g. <span class="mono">A.8.9</span> or <span class="mono">AC.L2-3.1.1</span>.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form class="card__body" method="get" action="/mappings" style="display:grid;grid-template-columns:3fr 2fr auto;gap:10px">
+    <input class="input" name="q" value="{{ q }}" placeholder="Search mapping value (e.g. A.8.9, AC-2, MFA)…" />
+    <select class="select" name="framework" aria-label="Framework"><option value="">Any framework</option>
+      {% for f in frameworks %}<option value="{{ f.code }}" {% if f.code==framework %}selected{% endif %}>{{ f.name }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="search"></i> Search</button>
+  </form>
+</section>
+
+{% if q %}
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">{{ results | length }} match(es)</div>
+    <div class="dim" style="font-size:13px">value ILIKE <span class="mono">%{{ q }}%</span></div>
+  </div>
+  {% if results %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>Name</th><th>Framework</th><th>Column</th><th>Value</th></tr></thead>
+    <tbody>
+      {% for r in results %}<tr>
+        <td><a class="mono" href="/controls/{{ r.identifier }}">{{ r.identifier }}</a></td>
+        <td>{{ r.control_name or '—' }}</td>
+        <td>{% if r.framework_code %}<span class="chip chip--brand">{{ r.framework_code }}</span>{% endif %}</td>
+        <td class="dim" style="font-size:12.5px">{{ r.column_key }}</td>
+        <td style="white-space:pre-wrap;font-size:13px">{{ r.value }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No matches.</div>{% endif %}
+</section>
+{% endif %}
+{% endblock %}

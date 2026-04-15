@@ -1,0 +1,21 @@
+{
+  "sheet": "SP.800-53Ar5_assessment",
+  "revision": "v1.1",
+  "required_headers": [
+    "family",
+    "identifier",
+    "sort-as",
+    "control-name",
+    "Security Control Description",
+    "Security Control Discussion",
+    "NIST SP 800-53 Rev. 5 related controls",
+    "assessment-objective",
+    "EXAMINE",
+    "INTERVIEW",
+    "TEST",
+    "FISMA Low",
+    "FISMA Mod",
+    "FISMA High"
+  ],
+  "notes": "Minimal header set enforced at ingest time. Additional columns are accepted and classified into frameworks; removed required columns fail the run."
+}

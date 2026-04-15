@@ -1,11 +1,16 @@
 """Workbook ingestion pipeline.
 
-Loads every sheet of the NIST Cross Mappings workbook into Postgres:
-
-  * `SP.800-53Ar5_assessment` -> ccf.controls + ccf.framework_mappings
-  * All other sheets          -> ccf.worksheets + ccf.worksheet_rows (generic landing)
-
-Records the run (source hash, status, per-sheet stats) in ccf.ingestion_runs.
+Flow per run:
+  1. SHA-256 the source; upsert ccf_audit.workbook_versions (content-addressed).
+  2. Open a ccf.ingestion_runs row linked to the version.
+  3. Validate assessment-tab headers against contracts/headers.v1_1.json.
+  4. Ingest assessment -> ccf.controls + ccf.framework_mappings.
+     Rows without identifier are quarantined in ccf_audit.rejected_rows.
+  5. Snapshot the authoritative row set into ccf_audit.control_history and
+     ccf_audit.mapping_history (one snapshot per workbook version).
+  6. Ingest every other sheet into ccf.worksheets / ccf.worksheet_rows.
+  7. Refresh the controls.search_vector column.
+  8. Close the run with per-sheet stats.
 """
 from __future__ import annotations
 
@@ -24,20 +29,24 @@ from ..logging import get_logger
 from ..models import (
     Control,
     ControlFamily,
+    ControlHistory,
     Framework,
     FrameworkMapping,
     IngestionRun,
+    MappingHistory,
+    RejectedRow,
+    WorkbookVersion,
     Worksheet,
     WorksheetRow,
 )
 from .frameworks import FRAMEWORKS, CORE_HEADERS, classify_header
+from .validate import HeaderContractError, load_contract, validate_headers
 
 log = get_logger(__name__)
 
 ASSESSMENT_SHEET = "SP.800-53Ar5_assessment"
 BOOL_STRINGS_TRUE = {"x", "yes", "y", "true", "t", "1"}
 BOOL_STRINGS_FALSE = {"no", "n", "false", "f", "0"}
-
 FAMILY_RE = re.compile(r"\(([A-Z]{2,3})\)\s*(.*)")
 
 
@@ -70,6 +79,26 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+async def _upsert_workbook_version(
+    session: AsyncSession, xlsx_path: Path, sha: str
+) -> WorkbookVersion:
+    existing = (
+        await session.execute(
+            select(WorkbookVersion).where(WorkbookVersion.sha256 == sha)
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+    wv = WorkbookVersion(
+        sha256=sha,
+        source_path=str(xlsx_path),
+        size_bytes=xlsx_path.stat().st_size,
+    )
+    session.add(wv)
+    await session.flush()
+    return wv
+
+
 async def _seed_frameworks(session: AsyncSession) -> dict[str, int]:
     existing = {
         f.code: f.id
@@ -78,12 +107,10 @@ async def _seed_frameworks(session: AsyncSession) -> dict[str, int]:
     for spec in FRAMEWORKS:
         if spec.code in existing:
             continue
-        fw = Framework(
+        session.add(Framework(
             code=spec.code, name=spec.name,
             family=spec.family, description=spec.description,
-        )
-        session.add(fw)
-    # OTHER bucket
+        ))
     if "OTHER" not in existing:
         session.add(Framework(code="OTHER", name="Other / Misc",
                               family="Other", description="Unclassified columns"))
@@ -94,13 +121,14 @@ async def _seed_frameworks(session: AsyncSession) -> dict[str, int]:
     }
 
 
-async def _ensure_family(session: AsyncSession, raw: str | None,
-                          cache: dict[str, int]) -> int | None:
+async def _ensure_family(
+    session: AsyncSession, raw: str | None, cache: dict[str, int]
+) -> int | None:
     if not raw:
         return None
     m = FAMILY_RE.match(raw.strip())
     if m:
-        code, name = m.group(1), m.group(2).strip().title() or raw
+        code, name = m.group(1), (m.group(2).strip().title() or raw)
     else:
         code, name = raw[:16].upper(), raw
     if code in cache:
@@ -134,16 +162,16 @@ async def _ingest_assessment(
     session: AsyncSession,
     ws: Any,
     framework_ids: dict[str, int],
+    run: IngestionRun,
+    workbook_version: WorkbookVersion,
 ) -> dict[str, int]:
-    stats = {"rows": 0, "mappings": 0, "skipped": 0}
+    stats = {"rows": 0, "mappings": 0, "rejected": 0}
     family_cache: dict[str, int] = {}
 
-    # Wipe prior snapshot so every ingest is deterministic.
     await session.execute(delete(FrameworkMapping))
     await session.execute(delete(Control))
 
     core_map = {
-        # identifier is set explicitly on Control() (may be suffixed for dupes)
         "Sequence Control": "sequence_control",
         "sort-as": "sort_as",
         "Rev 5 Assurance Control?": "assurance_control",
@@ -167,30 +195,48 @@ async def _ingest_assessment(
     }
     bool_fields = {"opd", "fisma_low", "fisma_mod", "fisma_high"}
 
-    batch: list[Control] = []
     mapping_batch: list[FrameworkMapping] = []
+    history_mappings: list[MappingHistory] = []
+    history_controls: list[ControlHistory] = []
     seen_identifiers: set[str] = set()
 
+    # Validate headers against the contract once.
+    first = True
+    header_set: set[str] = set()
+
     for row_idx, headers, row in _iter_sheet_rows(ws):
+        if first:
+            header_set = set(headers)
+            diff = validate_headers(header_set, load_contract())
+            if diff.added:
+                log.info("ingest.header_drift", new_headers_count=len(diff.added))
+            first = False
+
         record = dict(zip(headers, row))
         identifier = _clean(record.get("identifier"))
         if not identifier:
-            stats["skipped"] += 1
+            session.add(RejectedRow(
+                run_id=run.id, sheet=ASSESSMENT_SHEET, row_index=row_idx,
+                rule="missing_identifier",
+                payload={k: str(v) for k, v in record.items() if v is not None},
+            ))
+            stats["rejected"] += 1
             continue
         identifier = str(identifier)
-        # The workbook has repeated identifiers for multi-objective rows; keep
-        # each row distinct by suffixing with the source row index.
         if identifier in seen_identifiers:
             identifier = f"{identifier}#row{row_idx}"
         seen_identifiers.add(identifier)
 
-        family_id = await _ensure_family(session, _clean(record.get("family")), family_cache)
+        family_id = await _ensure_family(
+            session, _clean(record.get("family")), family_cache,
+        )
 
+        audit_payload = {k: v for k, v in record.items() if _clean(v) is not None}
         ctl = Control(
             identifier=identifier,
             family_id=family_id,
             source_row=row_idx,
-            audit_payload={k: v for k, v in record.items() if _clean(v) is not None},
+            audit_payload=audit_payload,
         )
         for header, attr in core_map.items():
             val = record.get(header)
@@ -200,8 +246,14 @@ async def _ingest_assessment(
                 cleaned = _clean(val)
                 setattr(ctl, attr, str(cleaned) if cleaned is not None else None)
         session.add(ctl)
-        await session.flush()  # need id for mappings
+        await session.flush()
         stats["rows"] += 1
+
+        history_controls.append(ControlHistory(
+            identifier=identifier,
+            workbook_version_id=workbook_version.id,
+            payload=audit_payload,
+        ))
 
         for header, value in record.items():
             if header in CORE_HEADERS:
@@ -216,16 +268,30 @@ async def _ingest_assessment(
                 column_key=header,
                 value=str(v),
             ))
+            history_mappings.append(MappingHistory(
+                identifier=identifier,
+                workbook_version_id=workbook_version.id,
+                column_key=header,
+                value=str(v),
+            ))
             stats["mappings"] += 1
 
         if len(mapping_batch) >= 500:
             session.add_all(mapping_batch)
-            await session.flush()
             mapping_batch.clear()
+            await session.flush()
+        if len(history_mappings) >= 1000:
+            session.add_all(history_mappings)
+            history_mappings.clear()
+            await session.flush()
 
     if mapping_batch:
         session.add_all(mapping_batch)
-        await session.flush()
+    if history_controls:
+        session.add_all(history_controls)
+    if history_mappings:
+        session.add_all(history_mappings)
+    await session.flush()
 
     await session.execute(text("""
         UPDATE ccf.controls SET search_vector =
@@ -273,11 +339,8 @@ async def _ingest_generic_sheet(
         stats["rows"] += 1
 
     sheet = Worksheet(
-        name=sheet_name,
-        slug=slug,
-        headers=headers,
-        row_count=stats["rows"],
-        rows=rows_out,
+        name=sheet_name, slug=slug, headers=headers,
+        row_count=stats["rows"], rows=rows_out,
     )
     session.add(sheet)
     await session.flush()
@@ -286,7 +349,15 @@ async def _ingest_generic_sheet(
 
 async def ingest_workbook(session: AsyncSession, xlsx_path: Path) -> IngestionRun:
     log.info("ingest.start", path=str(xlsx_path))
-    run = IngestionRun(source_file=str(xlsx_path), sha256=_sha256(xlsx_path))
+    sha = _sha256(xlsx_path)
+
+    workbook_version = await _upsert_workbook_version(session, xlsx_path, sha)
+
+    run = IngestionRun(
+        source_file=str(xlsx_path),
+        sha256=sha,
+        workbook_version_id=workbook_version.id,
+    )
     session.add(run)
     await session.flush()
 
@@ -299,7 +370,7 @@ async def ingest_workbook(session: AsyncSession, xlsx_path: Path) -> IngestionRu
             ws = wb[sheet_name]
             if sheet_name == ASSESSMENT_SHEET:
                 per_sheet[sheet_name] = await _ingest_assessment(
-                    session, ws, framework_ids,
+                    session, ws, framework_ids, run, workbook_version,
                 )
             else:
                 per_sheet[sheet_name] = await _ingest_generic_sheet(session, sheet_name, ws)
@@ -307,12 +378,19 @@ async def ingest_workbook(session: AsyncSession, xlsx_path: Path) -> IngestionRu
 
         run.finished_at = datetime.now(timezone.utc)
         run.status = "succeeded"
-        run.stats = {"sheets": per_sheet}
+        run.stats = {"sheets": per_sheet, "sha256": sha}
         await session.flush()
         return run
-    except Exception:
+    except HeaderContractError as e:
         run.finished_at = datetime.now(timezone.utc)
         run.status = "failed"
+        run.stats = {"error": "header_contract", "detail": str(e)}
+        await session.flush()
+        raise
+    except Exception as e:
+        run.finished_at = datetime.now(timezone.utc)
+        run.status = "failed"
+        run.stats = {"error": "exception", "detail": str(e)[:500]}
         await session.flush()
         raise
     finally:

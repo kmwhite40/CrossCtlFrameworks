@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Users · Concord{% endblock %}
+{% block heading %}Users &amp; roles{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Until OIDC lands, roles here govern write actions only at the app layer.</p>{% endblock %}
+{% block content %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Invite a user</div></div>
+  <form id="user-form" class="card__body" style="display:grid;grid-template-columns:2fr 2fr 1fr 1fr auto;gap:10px">
+    <input class="input" name="email" type="email" placeholder="name@org.example" required />
+    <input class="input" name="full_name" placeholder="Full name" />
+    <select class="select" name="organization_id" required aria-label="Organization">
+      {% for o in organizations %}<option value="{{ o.id }}">{{ o.name }}</option>{% else %}
+      <option value="" disabled>Create an organization first</option>
+      {% endfor %}
+    </select>
+    <select class="select" name="role" aria-label="Role">
+      <option value="viewer">Viewer</option>
+      <option value="assessor">Assessor</option>
+      <option value="control_owner">Control owner</option>
+      <option value="admin">Admin</option>
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="user-plus"></i> Add</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Users ({{ rows | length }})</div></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for u in rows %}<tr>
+        <td class="mono">{{ u.email }}</td>
+        <td>{{ u.full_name or '—' }}</td>
+        <td><span class="chip chip--brand">{{ u.role }}</span></td>
+        <td>{% if u.active %}<span class="chip chip--ok">active</span>{% else %}<span class="chip chip--err">inactive</span>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No users yet.</div>{% endif %}
+</section>
+
+<script>
+document.getElementById('user-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const body = Object.fromEntries(fd.entries());
+  body.organization_id = parseInt(body.organization_id, 10);
+  const r = await fetch('/api/users', {method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body)});
+  if (r.ok) location.reload(); else if (window.toast) window.toast('Failed to create user');
+});
+</script>
+{% endblock %}

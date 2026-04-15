@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Quarantine · Concord{% endblock %}
+{% block heading %}Rejected rows{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Rows the ETL could not ingest (missing identifier, contract violation, …). Most recent 200.</p>{% endblock %}
+{% block content %}
+
+<section class="card">
+  {% if rows %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Run</th><th>Sheet</th><th>Row</th><th>Rule</th><th>When</th></tr></thead>
+      <tbody>
+        {% for r in rows %}<tr>
+          <td class="mono">#{{ r.run_id }}</td>
+          <td>{{ r.sheet }}</td>
+          <td class="dim">{{ r.row_index }}</td>
+          <td><span class="chip chip--err">{{ r.rule }}</span></td>
+          <td class="dim">{{ r.rejected_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        </tr>{% endfor %}
+      </tbody>
+    </table></div>
+  {% else %}
+    <div class="card__body dim" style="text-align:center;padding:40px">No rejected rows. 👍</div>
+  {% endif %}
+</section>
+{% endblock %}

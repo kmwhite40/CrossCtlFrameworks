@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ sys.name }} · Systems{% endblock %}
+{% block breadcrumbs %}
+<nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
+  <a href="/">Home</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/systems">Systems</a>
+  <i data-lucide="chevron-right"></i>
+  <span>{{ sys.name }}</span>
+</nav>
+{% endblock %}
+{% block heading %}{{ sys.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ sys.description or '—' }}</p>
+{% endblock %}
+{% block actions %}
+  <a class="btn btn--secondary btn--sm" href="/api/oscal/component-definition/{{ sys.id }}" target="_blank"><i data-lucide="download"></i> OSCAL</a>
+  <a class="btn btn--primary btn--sm" href="/reports?"><i data-lucide="file-text"></i> Report</a>
+{% endblock %}
+{% block content %}
+
+<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">
+  {% if sys.baseline %}<span class="chip chip--brand">Baseline: {{ sys.baseline | upper }}</span>{% endif %}
+  {% if sys.ato_status %}<span class="chip">ATO: {{ sys.ato_status }}</span>{% endif %}
+  {% if sys.ato_expires_on %}<span class="chip chip--warn">Expires {{ sys.ato_expires_on }}</span>{% endif %}
+</div>
+
+<section class="grid-cards" style="margin-bottom:16px">
+  {% set total = impl_counts.values() | sum %}
+  {% for label, key, cls in [
+    ('Implemented','implemented','chip--ok'),
+    ('Partial','partial','chip--warn'),
+    ('Planned','planned','chip--warn'),
+    ('Not implemented','not_implemented','chip--err'),
+    ('Inherited','inherited','chip--ok'),
+    ('N/A','not_applicable','chip'),
+  ] %}
+    <div class="kpi">
+      <span class="kpi__label">{{ label }}</span>
+      <span class="kpi__value">{{ impl_counts.get(key, 0) }}</span>
+      <span class="kpi__meta">of {{ total or 0 }} tracked</span>
+    </div>
+  {% endfor %}
+</section>
+
+<section class="cols-2">
+  <div class="card">
+    <div class="card__header">
+      <div class="card__title">POA&amp;Ms for this system</div>
+      <span class="dim" style="font-size:13px">{{ poams | length }}</span>
+    </div>
+    {% if poams %}
+      <div class="table-wrap"><table class="data">
+        <thead><tr><th>Title</th><th>Severity</th><th>Status</th><th>Due</th></tr></thead>
+        <tbody>
+          {% for p in poams %}<tr>
+            <td>{{ p.title }}</td>
+            <td><span class="chip {% if p.severity in ('high','critical') %}chip--err{% elif p.severity == 'moderate' %}chip--warn{% else %}chip--ok{% endif %}">{{ p.severity }}</span></td>
+            <td><span class="chip">{{ p.status }}</span></td>
+            <td class="dim">{{ p.due_on or '—' }}</td>
+          </tr>{% endfor %}
+        </tbody>
+      </table></div>
+    {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No POA&amp;Ms for this system.</div>{% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card__header">
+      <div class="card__title">Evidence</div>
+      <span class="dim" style="font-size:13px">{{ evidence_count }} item(s)</span>
+    </div>
+    <div class="card__body dim">Attach evidence via <span class="mono">/api/evidence</span> or the implementation detail view (coming soon).</div>
+  </div>
+</section>
+{% endblock %}

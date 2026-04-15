@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Coverage heatmap · Concord{% endblock %}
+{% block heading %}Coverage heatmap{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Distinct NIST controls mapped into each framework, grouped by family.</p>{% endblock %}
+{% block content %}
+
+<section class="card">
+  <div class="card__body" style="padding:0;overflow:auto">
+    <table class="data" style="min-width:100%">
+      <thead><tr><th>Framework \ Family</th>
+        {% for fam in families %}<th style="text-align:center">{{ fam }}</th>{% endfor %}
+      </tr></thead>
+      <tbody>
+        {% for fw in frameworks %}
+          <tr>
+            <td class="mono" style="font-weight:600">{{ fw }}</td>
+            {% for fam in families %}
+              {% set v = grid.get((fw, fam), 0) %}
+              {% set pct = (v / max_v) if max_v else 0 %}
+              <td style="text-align:center;background:rgba(51,102,255,{{ (0.05 + pct * 0.55) | round(3) }});font-variant-numeric:tabular-nums">
+                {{ v if v else '' }}
+              </td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card__footer"><span class="dim">Deeper shade = more controls covered. Max per cell: {{ max_v }}.</span></div>
+</section>
+{% endblock %}
