@@ -1,0 +1,92 @@
+name: release-reader
+# Copyright © 2026 Colleen Townsend.
+# Triggered on tags like v0.2.0 or reader-v0.2.0. Builds Concord Reader as a
+# Windows .exe with PyInstaller and attaches it to a GitHub Release.
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "reader-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish against (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: write  # needed to create releases + upload assets
+
+jobs:
+  build-windows:
+    name: Build ConcordReader.exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: "pip" }
+
+      - name: Install build deps
+        shell: pwsh
+        run: |
+          python -m pip install -U pip
+          pip install -e ".[reader]"
+
+      - name: Build exe (PyInstaller)
+        shell: pwsh
+        run: pyinstaller concord_reader.spec --clean --noconfirm
+
+      - name: Smoke test (exe starts and serves /healthz)
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath ".\dist\ConcordReader.exe" -PassThru -WindowStyle Hidden
+          try {
+            $ok = $false
+            for ($i = 0; $i -lt 20; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8088/healthz -TimeoutSec 2
+                if ($r.StatusCode -eq 200) { $ok = $true; break }
+              } catch { }
+            }
+            if (-not $ok) { throw "Reader did not respond on :8088" }
+            Write-Host "Reader healthy."
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Compute SHA-256
+        id: hash
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash -Algorithm SHA256 .\dist\ConcordReader.exe).Hash.ToLower()
+          "$h  ConcordReader.exe" | Out-File -FilePath .\dist\ConcordReader.exe.sha256 -Encoding ascii
+          echo "sha256=$h" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA-256: $h"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ConcordReader-windows
+          path: |
+            dist/ConcordReader.exe
+            dist/ConcordReader.exe.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          name: Concord ${{ github.ref_name || inputs.tag }}
+          body: |
+            **Concord Reader** — read-only single-file distribution.
+
+            - SHA-256: `${{ steps.hash.outputs.sha256 }}`
+            - See `docs/runbooks/deploy-reader-from-github.md` for install.
+
+            _Concord (the full Docker/Postgres platform) is unchanged._
+          files: |
+            dist/ConcordReader.exe
+            dist/ConcordReader.exe.sha256
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') }}
