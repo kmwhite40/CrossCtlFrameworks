@@ -22,11 +22,11 @@
   </div></div>
 {% else %}
 
-<form method="get" action="/scoring" class="card" style="margin-bottom:16px">
+<form method="get" action="/scoring" class="card" style="margin-bottom:12px">
   <div class="card__body row" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
     <label class="field-group">
       <span class="dim" style="font-size:12px">System</span>
-      <select name="system_id" class="select" onchange="this.form.submit()">
+      <select name="system_id" class="select" onchange="this.form.submit()" aria-label="System">
         <option value="">— choose a system —</option>
         {% for s in systems %}
           <option value="{{ s.id }}" {% if system_id==s.id %}selected{% endif %}>{{ s.name }}</option>
@@ -59,6 +59,41 @@
     {% endif %}
   </div>
 </form>
+
+<details class="card" style="margin-bottom:16px" {% if not systems %}open{% endif %}>
+  <summary class="card__header" style="cursor:pointer;list-style:none">
+    <div class="row" style="gap:8px;align-items:center">
+      <i data-lucide="plus-circle"></i>
+      <span class="card__title">New system</span>
+      <span class="dim" style="font-size:12px">— create a system (and customer) to start scoring</span>
+    </div>
+  </summary>
+  <form method="post" action="/scoring/systems/new" class="card__body row"
+        style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Customer / organization *</span>
+      <input class="input" name="organization_name" required placeholder="Acme Defense LLC"
+             list="scoring-org-list" autocomplete="off">
+      <datalist id="scoring-org-list">
+        {% for o in organizations %}<option value="{{ o.name }}">{% endfor %}
+      </datalist>
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">System name *</span>
+      <input class="input" name="system_name" required placeholder="CUI Enclave">
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">FedRAMP baseline</span>
+      <select name="baseline" class="select">
+        <option value="">—</option>
+        <option value="low">Low</option>
+        <option value="moderate">Moderate</option>
+        <option value="high">High</option>
+      </select>
+    </label>
+    <button class="btn btn--primary" type="submit"><i data-lucide="server"></i> Create &amp; score</button>
+  </form>
+</details>
 
 {% if system_id and summary %}
 <div style="display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start">

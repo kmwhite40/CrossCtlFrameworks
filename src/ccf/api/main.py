@@ -19,8 +19,10 @@ from starlette.types import ExceptionHandler
 
 from ..config import get_settings
 from ..logging import configure_logging, get_logger
+from .audit import audit_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
+    audit,
     controls,
     coverage,
     diff,
@@ -30,6 +32,7 @@ from .routes import (
     mappings,
     oscal,
     poams,
+    posture,
     reports,
     risks,
     scoring,
@@ -79,6 +82,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.middleware("http")(metrics_middleware)
+    if settings.audit_enabled and not settings.readonly:
+        app.middleware("http")(audit_middleware)
 
     if settings.readonly:
 
@@ -108,6 +113,8 @@ def create_app() -> FastAPI:
     app.include_router(systems.router)
     app.include_router(scoring.router)
     app.include_router(ssp.router)
+    app.include_router(posture.router)
+    app.include_router(audit.router)
     app.include_router(evidence.router)
     app.include_router(poams.router)
     app.include_router(risks.router)

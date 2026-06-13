@@ -62,8 +62,12 @@
       </label>
       <label class="field-group"><span class="dim" style="font-size:12px">System name (if not listed)</span>
         <input class="input" name="system_name" placeholder="CUI Enclave"></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Cloud platform (seeds sample statements)</span>
+        <select class="select" name="platform">
+          {% for code, label in platforms.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+        </select></label>
       <label class="field-group"><span class="dim" style="font-size:12px">Prepared by</span>
-        <input class="input" name="prepared_by" placeholder="Raptor Solutions LLC"></label>
+        <input class="input" name="prepared_by" placeholder="Author / preparing organization"></label>
       <div class="row" style="gap:12px">
         <label class="field-group" style="flex:1"><span class="dim" style="font-size:12px">Version</span>
           <input class="input" name="version" value="0.1"></label>

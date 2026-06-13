@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...models import SSPControlEntry, SSPProject, System
 from ...ssp import constants
 from ...ssp.generator import generate_ssp_docx
+from ...ssp.platforms import PLATFORMS, normalize_platform
 from ...ssp.seed import entry_to_dict, seed_project_entries
 from ..deps import get_session
 
@@ -33,6 +34,7 @@ class ProjectCreate(BaseModel):
     customer_name: str
     system_id: int | None = None
     system_name: str | None = None
+    platform: str = "m365"
     title: str = "System Security Plan (SSP)"
     version: str = "0.1"
     prepared_by: str | None = None
@@ -42,6 +44,7 @@ class ProjectCreate(BaseModel):
 class ProjectUpdate(BaseModel):
     customer_name: str | None = None
     system_name: str | None = None
+    platform: str | None = None
     title: str | None = None
     version: str | None = None
     prepared_by: str | None = None
@@ -61,6 +64,7 @@ class ProjectOut(BaseModel):
     system_id: int | None
     customer_name: str
     system_name: str | None
+    platform: str
     title: str
     version: str
     prepared_by: str | None
@@ -88,6 +92,7 @@ async def options() -> dict[str, Any]:
         "origination_definitions": [
             {"name": n, "definition": d} for n, d in constants.ORIGINATION_DEFINITIONS
         ],
+        "platforms": [{"code": c, "label": label} for c, label in PLATFORMS.items()],
     }
 
 
@@ -118,6 +123,7 @@ async def create_project(
         system_id=body.system_id,
         customer_name=body.customer_name,
         system_name=system_name,
+        platform=normalize_platform(body.platform),
         title=body.title,
         version=body.version,
         prepared_by=body.prepared_by,
@@ -158,7 +164,7 @@ async def update_project(
 ) -> ProjectOut:
     proj = await _require_project(session, project_id)
     for k, v in body.model_dump(exclude_none=True).items():
-        setattr(proj, k, v)
+        setattr(proj, k, normalize_platform(v) if k == "platform" else v)
     await session.commit()
     await session.refresh(proj)
     return ProjectOut.model_validate(proj)
@@ -175,11 +181,18 @@ async def delete_project(project_id: int, session: AsyncSession = Depends(get_se
 async def reseed_project(
     project_id: int,
     overwrite: bool = False,
+    platform: str | None = None,
     session: AsyncSession = Depends(get_session),
-) -> dict[str, int]:
+) -> dict[str, int | str]:
+    """Regenerate sample statements, optionally switching the target platform."""
     proj = await _require_project(session, project_id)
-    created = await seed_project_entries(session, proj, overwrite=overwrite)
-    return {"created": created}
+    if platform is not None:
+        proj.platform = normalize_platform(platform)
+        await session.flush()
+    touched = await seed_project_entries(
+        session, proj, overwrite=overwrite, platform=proj.platform
+    )
+    return {"touched": touched, "platform": proj.platform}
 
 
 @router.put("/projects/{project_id}/entries/{control_id}")
@@ -226,6 +239,7 @@ async def generate_document(
     project_meta = {
         "customer_name": proj.customer_name,
         "system_name": proj.system_name,
+        "platform": PLATFORMS.get(proj.platform, proj.platform),
         "title": proj.title,
         "version": proj.version,
         "prepared_by": proj.prepared_by,

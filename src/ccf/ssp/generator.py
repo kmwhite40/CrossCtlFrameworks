@@ -147,6 +147,7 @@ def _cover(doc: Any, project: Mapping[str, Any]) -> None:
         ("Organization", project.get("customer_name") or ""),
         ("Information System", project.get("system_name") or ""),
         ("CMMC Model / Level", "CMMC 2.0 — Level 2 (NIST SP 800-171 Rev. 2, 110 requirements)"),
+        ("Cloud Platform", project.get("platform") or ""),
         ("Document Version", project.get("version") or "0.1"),
         ("Date", project.get("document_date") or ""),
         ("Prepared By", project.get("prepared_by") or ""),

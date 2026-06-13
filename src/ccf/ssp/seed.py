@@ -3,7 +3,8 @@
 Each entry is pre-populated with assessor-facing *draft* content (responsible
 role, control origination derived from the Microsoft 365 placemat, and one
 narrative per NIST 800-171A determination part) so a customer engagement starts
-from a tailorable baseline rather than a blank page.
+from a tailorable baseline rather than a blank page. The narratives are written
+for the project's target platform (Microsoft 365, Azure, or AWS GovCloud).
 """
 
 from __future__ import annotations
@@ -15,29 +16,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import ScoringControl, SSPControlEntry, SSPProject
 from . import constants
+from .platforms import sample_statement
 
 
-def _draft_part_text(rec: ScoringControl, part: dict[str, str]) -> str:
-    """Compose a tailorable draft narrative for one determination part."""
-    obj = (part.get("text") or "").strip().rstrip(".")
-    stmt = (rec.m365_implementation_statement or "").strip()
-    lead = (
-        f"Draft — tailor to the environment. The organization satisfies this objective by "
-        f"ensuring that {obj}."
-        if obj
-        else "Draft — describe how this objective is met."
-    )
-    if stmt:
-        lead += f" Microsoft 365 reference: {stmt}"
-    return lead
-
-
-def build_entries(rec: ScoringControl, order: int) -> SSPControlEntry:
+def _narratives(rec: ScoringControl, platform: str) -> list[dict[str, str]]:
     parts: list[dict[str, str]] = list(rec.objective_parts or [])
-    narratives: list[dict[str, str]] = [
-        {"label": p.get("label", ""), "text": _draft_part_text(rec, p)} for p in parts
-    ] or [{"label": "", "text": _draft_part_text(rec, {"text": rec.requirement or ""})}]
+    out = [
+        {"label": p.get("label", ""), "text": sample_statement(platform, rec, p)} for p in parts
+    ]
+    return out or [
+        {"label": "", "text": sample_statement(platform, rec, {"text": rec.requirement or ""})}
+    ]
 
+
+def build_entries(rec: ScoringControl, order: int, platform: str) -> SSPControlEntry:
     return SSPControlEntry(
         control_id=rec.control_id,
         nist_id=rec.nist_id,
@@ -47,25 +39,33 @@ def build_entries(rec: ScoringControl, order: int) -> SSPControlEntry:
         responsible_role=constants.responsible_role_for(rec.domain),
         implementation_status=["Planned"],
         control_origination=constants.default_origination(rec.m365_coverage_status),
-        part_narratives=narratives,
+        part_narratives=_narratives(rec, platform),
         sort_order=order,
     )
 
 
 async def seed_project_entries(
-    session: AsyncSession, project: SSPProject, *, overwrite: bool = False
+    session: AsyncSession,
+    project: SSPProject,
+    *,
+    overwrite: bool = False,
+    platform: str | None = None,
 ) -> int:
-    """Create SSP entries for every scoring control. Returns the count created.
+    """Seed SSP entries for every scoring control. Returns the count created/updated.
 
-    Skips controls that already have an entry unless ``overwrite`` is set.
+    Without ``overwrite`` only missing controls are created. With ``overwrite``
+    the seeded fields (narratives, origination, responsible role) of existing
+    entries are regenerated for ``platform`` while the assessor's implementation
+    status is preserved.
     """
+    plat = platform or project.platform or "m365"
     controls = (
         (await session.execute(select(ScoringControl).order_by(ScoringControl.sort_order)))
         .scalars()
         .all()
     )
     existing = {
-        e.control_id
+        e.control_id: e
         for e in (
             await session.execute(
                 select(SSPControlEntry).where(SSPControlEntry.project_id == project.id)
@@ -75,17 +75,24 @@ async def seed_project_entries(
         .all()
     }
 
-    created = 0
+    touched = 0
     for order, rec in enumerate(controls):
-        if rec.control_id in existing and not overwrite:
-            continue
-        entry = build_entries(rec, order)
-        entry.project_id = project.id
-        session.add(entry)
-        created += 1
+        current = existing.get(rec.control_id)
+        if current is not None:
+            if not overwrite:
+                continue
+            current.part_narratives = _narratives(rec, plat)
+            current.control_origination = constants.default_origination(rec.m365_coverage_status)
+            current.responsible_role = constants.responsible_role_for(rec.domain)
+            current.sort_order = order
+        else:
+            entry = build_entries(rec, order, plat)
+            entry.project_id = project.id
+            session.add(entry)
+        touched += 1
 
     await session.commit()
-    return created
+    return touched
 
 
 def entry_to_dict(entry: SSPControlEntry) -> dict[str, Any]:

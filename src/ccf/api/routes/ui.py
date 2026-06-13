@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Sequence
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,9 +15,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...analytics import org_summary
 from ...config import get_settings
 from ...models import (
     POAM,
+    AuditLog,
     Control,
     ControlFamily,
     ControlImplementation,
@@ -40,6 +42,7 @@ from ...models import (
 )
 from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
+from ...ssp.platforms import PLATFORMS, normalize_platform
 from ...ssp.seed import seed_project_entries
 from ..deps import get_session
 from .diff import diff_workbook
@@ -780,10 +783,14 @@ async def scoring_page(
     coverage: str | None = Query(None),
 ) -> HTMLResponse:
     systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    organizations = (
+        (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
+    )
     total_controls = (await session.execute(select(func.count(ScoringControl.id)))).scalar_one()
     ctx: dict[str, Any] = {
         "active": "scoring",
         "systems": systems,
+        "organizations": organizations,
         "system_id": system_id,
         "total_controls": total_controls,
         "states": STATES,
@@ -839,6 +846,39 @@ async def scoring_set_state(
     )
 
 
+@router.post("/scoring/systems/new")
+async def scoring_create_system(
+    organization_name: str = Form(...),
+    system_name: str = Form(...),
+    baseline: str | None = Form(None),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Create (or reuse) an org + system and jump straight into scoring it."""
+    org_name = organization_name.strip()
+    sys_name = system_name.strip()
+    if not org_name or not sys_name:
+        return RedirectResponse("/scoring", status_code=303)
+    org = (
+        await session.execute(select(Organization).where(Organization.name == org_name))
+    ).scalar_one_or_none()
+    if org is None:
+        org = Organization(name=org_name)
+        session.add(org)
+        await session.flush()
+    sysm = (
+        await session.execute(
+            select(System).where(System.organization_id == org.id, System.name == sys_name)
+        )
+    ).scalar_one_or_none()
+    if sysm is None:
+        sysm = System(organization_id=org.id, name=sys_name, baseline=(baseline or None))
+        session.add(sysm)
+        await session.flush()
+    sid = sysm.id
+    await session.commit()
+    return RedirectResponse(f"/scoring?system_id={sid}", status_code=303)
+
+
 # ---------------------------------------------------------------------------
 # SSP builder
 # ---------------------------------------------------------------------------
@@ -865,6 +905,7 @@ async def ssp_page(
             "systems": systems,
             "organizations": orgs,
             "have_controls": have_controls,
+            "platforms": PLATFORMS,
         },
     )
 
@@ -874,6 +915,7 @@ async def ssp_create(
     customer_name: str = Form(...),
     system_id: str | None = Form(None),
     system_name: str | None = Form(None),
+    platform: str = Form("m365"),
     prepared_by: str | None = Form(None),
     version: str = Form("0.1"),
     document_date: str | None = Form(None),
@@ -889,14 +931,13 @@ async def ssp_create(
             sname = sname or sys.name
     doc_date: date | None = None
     if document_date:
-        try:
+        with contextlib.suppress(ValueError):
             doc_date = date.fromisoformat(document_date)
-        except ValueError:
-            doc_date = None
     proj = SSPProject(
         system_id=sid,
         customer_name=customer_name.strip(),
         system_name=(sname or None),
+        platform=normalize_platform(platform),
         prepared_by=(prepared_by or None),
         version=version or "0.1",
         document_date=doc_date,
@@ -905,6 +946,23 @@ async def ssp_create(
     await session.flush()
     await seed_project_entries(session, proj)
     return RedirectResponse(f"/ssp/{proj.id}", status_code=303)
+
+
+@router.post("/ssp/{project_id}/regenerate")
+async def ssp_regenerate(
+    project_id: int,
+    platform: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Switch the target platform and regenerate every control's sample statement."""
+    proj = (
+        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
+    ).scalar_one_or_none()
+    if proj is not None:
+        proj.platform = normalize_platform(platform)
+        await session.flush()
+        await seed_project_entries(session, proj, overwrite=True, platform=proj.platform)
+    return RedirectResponse(f"/ssp/{project_id}", status_code=303)
 
 
 @router.get("/ssp/{project_id}", response_class=HTMLResponse)
@@ -943,6 +1001,7 @@ async def ssp_detail(
             "status_options": ssp_constants.IMPLEMENTATION_STATUS_OPTIONS,
             "origination_options": ssp_constants.CONTROL_ORIGINATION_OPTIONS,
             "entry_count": len(entries),
+            "platforms": PLATFORMS,
         },
     )
 
@@ -1010,4 +1069,50 @@ async def ssp_save_entry(
     return HTMLResponse(
         '<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>'
         '<script>if(window.lucide)lucide.createIcons();</script>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Enterprise posture command center + audit trail
+# ---------------------------------------------------------------------------
+
+
+@router.get("/posture", response_class=HTMLResponse)
+async def posture_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    summary = await org_summary(session, today=datetime.now(UTC).date())
+    return templates.TemplateResponse(
+        request,
+        "posture.html",
+        {"active": "posture", "s": summary},
+    )
+
+
+@router.get("/audit", response_class=HTMLResponse)
+async def audit_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    entity_type: str | None = Query(None),
+    action: str | None = Query(None),
+) -> HTMLResponse:
+    stmt = select(AuditLog).order_by(AuditLog.id.desc()).limit(200)
+    if entity_type:
+        stmt = stmt.where(AuditLog.entity_type == entity_type)
+    if action:
+        stmt = stmt.where(AuditLog.action == action)
+    rows = (await session.execute(stmt)).scalars().all()
+    entity_types = (
+        (await session.execute(select(AuditLog.entity_type).distinct())).scalars().all()
+    )
+    return templates.TemplateResponse(
+        request,
+        "audit.html",
+        {
+            "active": "audit",
+            "rows": rows,
+            "entity_types": sorted(t for t in entity_types if t),
+            "entity_type": entity_type or "",
+            "action": action or "",
+        },
     )

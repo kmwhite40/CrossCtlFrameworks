@@ -620,6 +620,7 @@ class SSPProject(Base):
     )
     customer_name: Mapped[str] = mapped_column(String(255))
     system_name: Mapped[str | None] = mapped_column(String(255))
+    platform: Mapped[str] = mapped_column(String(32), default="m365")
     title: Mapped[str] = mapped_column(String(512), default="System Security Plan (SSP)")
     version: Mapped[str] = mapped_column(String(32), default="0.1")
     prepared_by: Mapped[str | None] = mapped_column(String(255))

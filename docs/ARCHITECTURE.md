@@ -43,8 +43,9 @@ independent of the FastAPI service.
 2. Route handler pulls an async SQLAlchemy session via `get_session` dep.
 3. UI routes render Jinja2 templates; REST routes return Pydantic v2 JSON.
 4. `/metrics` scrape exposes Prometheus text format.
-5. Writes: any mutation records an `audit_log` row (schema ready, wiring
-   pending with OIDC integration).
+5. Writes: `audit_middleware` records every successful mutation (POST/PUT/PATCH/
+   DELETE → 2xx/3xx) to `ccf.audit_log`, attributed to the `X-Actor` header
+   (falling back to `CCF_AUDIT_DEFAULT_ACTOR`). Exposed at `/api/audit` + `/audit`.
 
 ## ETL path (new in 0.2)
 

@@ -62,6 +62,7 @@
     {% if not settings.readonly %}
     <div class="sidebar__group">
       <div class="sidebar__group-title">Operations</div>
+      <a class="nav-link" href="/posture"    {% if active=='posture'    %}aria-current="page"{% endif %}><i data-lucide="shield-check"></i> Posture</a>
       <a class="nav-link" href="/scoring"    {% if active=='scoring'    %}aria-current="page"{% endif %}><i data-lucide="gauge"></i> Live scoring</a>
       <a class="nav-link" href="/ssp"        {% if active=='ssp'        %}aria-current="page"{% endif %}><i data-lucide="file-signature"></i> SSP builder</a>
       <a class="nav-link" href="/reports"    {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i> Reports</a>
@@ -72,6 +73,7 @@
     </div>
     <div class="sidebar__group">
       <div class="sidebar__group-title">Admin</div>
+      <a class="nav-link" href="/audit"      {% if active=='audit'      %}aria-current="page"{% endif %}><i data-lucide="scroll-text"></i> Audit trail</a>
       <a class="nav-link" href="/ingestions" {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i> Ingestions</a>
       <a class="nav-link" href="/settings"   {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i> Settings</a>
     </div>
