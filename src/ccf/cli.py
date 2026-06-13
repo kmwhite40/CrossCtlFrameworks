@@ -16,7 +16,21 @@ from .config import get_settings
 from .db import session_scope
 from .etl import ingest_workbook
 from .logging import configure_logging
-from .models import Control, Framework, FrameworkMapping, IngestionRun, Worksheet
+from .models import (
+    Control,
+    Framework,
+    FrameworkMapping,
+    IngestionRun,
+    ScoringControl,
+    ScoringStatus,
+    SSPControlEntry,
+    SSPProject,
+    Worksheet,
+)
+from .scoring.engine import score_system
+from .scoring.seed import seed_scoring_controls
+from .ssp.generator import generate_ssp_docx
+from .ssp.seed import entry_to_dict
 
 app = typer.Typer(help="Concord administration & query CLI", no_args_is_help=True)
 console = Console()
@@ -164,6 +178,97 @@ def show(identifier: str) -> None:
                     }
                 )
             )
+
+    asyncio.run(_run())
+
+
+@app.command(name="scoring-seed")
+def scoring_seed(
+    source: Path = typer.Option(
+        None,
+        "--source",
+        help="Scoring matrix workbook (.xlsx) or seed.json; defaults to the committed seed.",
+    ),
+) -> None:
+    """Load (or refresh) the CMMC L2 scoring matrix into ccf.scoring_controls."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await seed_scoring_controls(session, source)
+        console.print(f"[green]Scoring matrix loaded[/green] — {json.dumps(result)}")
+
+    asyncio.run(_run())
+
+
+@app.command(name="score")
+def score(system_id: int = typer.Argument(..., help="System id to score")) -> None:
+    """Print the live SPRS score for a system."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            controls = [
+                {"control_id": c.control_id, "domain": c.domain, "point_value": c.point_value}
+                for c in (await session.execute(select(ScoringControl))).scalars()
+            ]
+            states = {
+                cid: st
+                for cid, st in (
+                    await session.execute(
+                        select(ScoringControl.control_id, ScoringStatus.state)
+                        .join(ScoringStatus, ScoringStatus.scoring_control_id == ScoringControl.id)
+                        .where(ScoringStatus.system_id == system_id)
+                    )
+                ).all()
+            }
+        summary = score_system(controls, states)
+        console.print(
+            f"[bold]SPRS score: {summary.score}/110[/bold] "
+            f"({summary.percentage}%) - minus {summary.deductions_total} pts, "
+            f"SSP present: {summary.ssp_present}"
+        )
+
+    asyncio.run(_run())
+
+
+@app.command(name="ssp-generate")
+def ssp_generate(
+    project_id: int = typer.Argument(..., help="SSP project id"),
+    out: Path = typer.Option("ssp.docx", "--out", help="Output .docx path"),
+) -> None:
+    """Generate the FedRAMP Appendix A SSP .docx for a saved project."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            proj = (
+                await session.execute(select(SSPProject).where(SSPProject.id == project_id))
+            ).scalar_one_or_none()
+            if proj is None:
+                console.print(f"[red]SSP project {project_id} not found[/red]")
+                raise typer.Exit(code=1)
+            entries = (
+                (
+                    await session.execute(
+                        select(SSPControlEntry)
+                        .where(SSPControlEntry.project_id == project_id)
+                        .order_by(SSPControlEntry.sort_order)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            meta = {
+                "customer_name": proj.customer_name,
+                "system_name": proj.system_name,
+                "title": proj.title,
+                "version": proj.version,
+                "prepared_by": proj.prepared_by,
+                "document_date": proj.document_date.strftime("%m/%d/%Y")
+                if proj.document_date
+                else "",
+            }
+        data = generate_ssp_docx(meta, [entry_to_dict(e) for e in entries])
+        Path(out).write_bytes(data)
+        console.print(f"[green]Wrote[/green] {out} ({len(data):,} bytes, {len(entries)} controls)")
 
     asyncio.run(_run())
 

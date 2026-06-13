@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -26,14 +28,22 @@ from ...models import (
     Organization,
     RejectedRow,
     Risk,
+    ScoringControl,
+    ScoringStatus,
+    SSPControlEntry,
+    SSPProject,
     System,
     User,
     WorkbookVersion,
     Worksheet,
     WorksheetRow,
 )
+from ...scoring.engine import STATES
+from ...ssp import constants as ssp_constants
+from ...ssp.seed import seed_project_entries
 from ..deps import get_session
 from .diff import diff_workbook
+from .scoring import compute_summary
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -717,4 +727,287 @@ async def search_page(
             "q": q or "",
             "results": results,
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Live CMMC L2 scoring matrix
+# ---------------------------------------------------------------------------
+
+_DOMAIN_BARS = ["AC", "AT", "AU", "CM", "IA", "IR", "MA", "MP", "PE", "PS", "RA", "CA", "SC", "SI"]
+
+
+async def _scoring_rows(
+    session: AsyncSession,
+    system_id: int,
+    *,
+    domain: str | None = None,
+    point_value: str | None = None,
+    coverage: str | None = None,
+) -> list[dict[str, Any]]:
+    stmt = select(ScoringControl).order_by(ScoringControl.sort_order)
+    if domain:
+        stmt = stmt.where(ScoringControl.domain == domain.upper())
+    if point_value:
+        stmt = stmt.where(ScoringControl.point_value == point_value)
+    if coverage:
+        stmt = stmt.where(ScoringControl.m365_coverage_status == coverage)
+    controls = (await session.execute(stmt)).scalars().all()
+    states = {
+        cid: (st, notes)
+        for cid, st, notes in (
+            await session.execute(
+                select(ScoringControl.control_id, ScoringStatus.state, ScoringStatus.notes)
+                .join(ScoringStatus, ScoringStatus.scoring_control_id == ScoringControl.id)
+                .where(ScoringStatus.system_id == system_id)
+            )
+        ).all()
+    }
+    rows = []
+    for c in controls:
+        st, notes = states.get(c.control_id, ("not_assessed", None))
+        rows.append({"c": c, "state": st, "notes": notes})
+    return rows
+
+
+@router.get("/scoring", response_class=HTMLResponse)
+async def scoring_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    system_id: int | None = Query(None),
+    domain: str | None = Query(None),
+    point_value: str | None = Query(None),
+    coverage: str | None = Query(None),
+) -> HTMLResponse:
+    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    total_controls = (await session.execute(select(func.count(ScoringControl.id)))).scalar_one()
+    ctx: dict[str, Any] = {
+        "active": "scoring",
+        "systems": systems,
+        "system_id": system_id,
+        "total_controls": total_controls,
+        "states": STATES,
+        "domains": _DOMAIN_BARS,
+        "domain": domain or "",
+        "point_value": point_value or "",
+        "coverage": coverage or "",
+    }
+    if system_id is not None and total_controls:
+        sys = (
+            await session.execute(select(System).where(System.id == system_id))
+        ).scalar_one_or_none()
+        ctx["system"] = sys
+        ctx["summary"] = await compute_summary(session, system_id)
+        ctx["rows"] = await _scoring_rows(
+            session, system_id, domain=domain, point_value=point_value, coverage=coverage
+        )
+    return templates.TemplateResponse(request, "scoring.html", ctx)
+
+
+@router.post("/scoring/{system_id}/state", response_class=HTMLResponse)
+async def scoring_set_state(
+    system_id: int,
+    request: Request,
+    control_id: str = Form(...),
+    state: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    if state in STATES:
+        ctrl = (
+            await session.execute(
+                select(ScoringControl).where(ScoringControl.control_id == control_id)
+            )
+        ).scalar_one_or_none()
+        if ctrl is not None:
+            status = (
+                await session.execute(
+                    select(ScoringStatus)
+                    .where(ScoringStatus.system_id == system_id)
+                    .where(ScoringStatus.scoring_control_id == ctrl.id)
+                )
+            ).scalar_one_or_none()
+            if status is None:
+                status = ScoringStatus(system_id=system_id, scoring_control_id=ctrl.id)
+                session.add(status)
+            status.state = state
+            await session.commit()
+    summary = await compute_summary(session, system_id)
+    return templates.TemplateResponse(
+        request,
+        "_scoring_score.html",
+        {"summary": summary, "system_id": system_id, "domains": _DOMAIN_BARS},
+    )
+
+
+# ---------------------------------------------------------------------------
+# SSP builder
+# ---------------------------------------------------------------------------
+
+
+@router.get("/ssp", response_class=HTMLResponse)
+async def ssp_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    projects = (
+        (await session.execute(select(SSPProject).order_by(SSPProject.created_at.desc())))
+        .scalars()
+        .all()
+    )
+    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
+    have_controls = (await session.execute(select(func.count(ScoringControl.id)))).scalar_one()
+    return templates.TemplateResponse(
+        request,
+        "ssp.html",
+        {
+            "active": "ssp",
+            "projects": projects,
+            "systems": systems,
+            "organizations": orgs,
+            "have_controls": have_controls,
+        },
+    )
+
+
+@router.post("/ssp/new")
+async def ssp_create(
+    customer_name: str = Form(...),
+    system_id: str | None = Form(None),
+    system_name: str | None = Form(None),
+    prepared_by: str | None = Form(None),
+    version: str = Form("0.1"),
+    document_date: str | None = Form(None),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    if not customer_name.strip():
+        return RedirectResponse("/ssp", status_code=303)
+    sid = int(system_id) if system_id and system_id.isdigit() else None
+    sname = system_name
+    if sid is not None:
+        sys = (await session.execute(select(System).where(System.id == sid))).scalar_one_or_none()
+        if sys is not None:
+            sname = sname or sys.name
+    doc_date: date | None = None
+    if document_date:
+        try:
+            doc_date = date.fromisoformat(document_date)
+        except ValueError:
+            doc_date = None
+    proj = SSPProject(
+        system_id=sid,
+        customer_name=customer_name.strip(),
+        system_name=(sname or None),
+        prepared_by=(prepared_by or None),
+        version=version or "0.1",
+        document_date=doc_date,
+    )
+    session.add(proj)
+    await session.flush()
+    await seed_project_entries(session, proj)
+    return RedirectResponse(f"/ssp/{proj.id}", status_code=303)
+
+
+@router.get("/ssp/{project_id}", response_class=HTMLResponse)
+async def ssp_detail(
+    project_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    domain: str | None = Query(None),
+) -> HTMLResponse:
+    proj = (
+        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
+    ).scalar_one_or_none()
+    if proj is None:
+        raise HTTPException(404, "SSP project not found")
+    stmt = (
+        select(SSPControlEntry)
+        .where(SSPControlEntry.project_id == project_id)
+        .order_by(SSPControlEntry.sort_order)
+    )
+    entries = (await session.execute(stmt)).scalars().all()
+    by_domain: dict[str, list[SSPControlEntry]] = {}
+    for e in entries:
+        by_domain.setdefault(e.domain or "?", []).append(e)
+    ordered = [d for d in ssp_constants.DOMAIN_ORDER if d in by_domain]
+    ordered += [d for d in by_domain if d not in ssp_constants.DOMAIN_ORDER]
+    return templates.TemplateResponse(
+        request,
+        "ssp_detail.html",
+        {
+            "active": "ssp",
+            "project": proj,
+            "by_domain": by_domain,
+            "ordered_domains": ordered,
+            "domain_name": ssp_constants.domain_name,
+            "section_number": ssp_constants.section_number,
+            "status_options": ssp_constants.IMPLEMENTATION_STATUS_OPTIONS,
+            "origination_options": ssp_constants.CONTROL_ORIGINATION_OPTIONS,
+            "entry_count": len(entries),
+        },
+    )
+
+
+@router.post("/ssp/{project_id}/meta")
+async def ssp_save_meta(
+    project_id: int,
+    customer_name: str = Form(...),
+    system_name: str | None = Form(None),
+    prepared_by: str | None = Form(None),
+    version: str = Form("0.1"),
+    document_date: str | None = Form(None),
+    status: str = Form("draft"),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    proj = (
+        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
+    ).scalar_one_or_none()
+    if proj is not None:
+        proj.customer_name = customer_name.strip() or proj.customer_name
+        proj.system_name = system_name or None
+        proj.prepared_by = prepared_by or None
+        proj.version = version or "0.1"
+        proj.status = status or "draft"
+        if document_date:
+            with contextlib.suppress(ValueError):
+                proj.document_date = date.fromisoformat(document_date)
+        await session.commit()
+    return RedirectResponse(f"/ssp/{project_id}", status_code=303)
+
+
+@router.post("/ssp/{project_id}/entry/{entry_id}", response_class=HTMLResponse)
+async def ssp_save_entry(
+    project_id: int,
+    entry_id: int,
+    request: Request,
+    responsible_role: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    entry = (
+        await session.execute(
+            select(SSPControlEntry)
+            .where(SSPControlEntry.id == entry_id)
+            .where(SSPControlEntry.project_id == project_id)
+        )
+    ).scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(404, "entry not found")
+    form = await request.form()
+    entry.responsible_role = responsible_role or None
+    entry.implementation_status = [
+        s for s in ssp_constants.IMPLEMENTATION_STATUS_OPTIONS if f"status::{s}" in form
+    ]
+    entry.control_origination = [
+        o for o in ssp_constants.CONTROL_ORIGINATION_OPTIONS if f"orig::{o}" in form
+    ]
+    narratives: list[dict[str, str]] = []
+    for part in entry.part_narratives or []:
+        label = part.get("label", "")
+        narratives.append(
+            {"label": label, "text": str(form.get(f"part::{label}", part.get("text", "")))}
+        )
+    entry.part_narratives = narratives
+    await session.commit()
+    return HTMLResponse(
+        '<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>'
+        '<script>if(window.lucide)lucide.createIcons();</script>'
     )

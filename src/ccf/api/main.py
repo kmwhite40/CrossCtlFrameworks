@@ -32,7 +32,9 @@ from .routes import (
     poams,
     reports,
     risks,
+    scoring,
     search,
+    ssp,
     systems,
     ui,
     users,
@@ -104,6 +106,8 @@ def create_app() -> FastAPI:
     app.include_router(oscal.router)
     app.include_router(diff.router)
     app.include_router(systems.router)
+    app.include_router(scoring.router)
+    app.include_router(ssp.router)
     app.include_router(evidence.router)
     app.include_router(poams.router)
     app.include_router(risks.router)

@@ -62,6 +62,8 @@
     {% if not settings.readonly %}
     <div class="sidebar__group">
       <div class="sidebar__group-title">Operations</div>
+      <a class="nav-link" href="/scoring"    {% if active=='scoring'    %}aria-current="page"{% endif %}><i data-lucide="gauge"></i> Live scoring</a>
+      <a class="nav-link" href="/ssp"        {% if active=='ssp'        %}aria-current="page"{% endif %}><i data-lucide="file-signature"></i> SSP builder</a>
       <a class="nav-link" href="/reports"    {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i> Reports</a>
       <a class="nav-link" href="/systems"    {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i> Systems</a>
       <a class="nav-link" href="/poams"      {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i> POA&amp;Ms</a>
