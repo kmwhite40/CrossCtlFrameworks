@@ -617,6 +617,9 @@ class SSPProject(Base):
     __tablename__ = "ssp_projects"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="SET NULL"), index=True
+    )
     system_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.systems.id", ondelete="SET NULL"), index=True
     )
@@ -681,3 +684,5 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(64))
     entity_id: Mapped[str | None] = mapped_column(String(64))
     diff: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    prev_hash: Mapped[str | None] = mapped_column(String(64))
+    row_hash: Mapped[str | None] = mapped_column(String(64))

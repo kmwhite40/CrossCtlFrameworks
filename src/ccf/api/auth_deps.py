@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -13,7 +14,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from ..auth import SYSTEM_PRINCIPAL, Principal, verify_session
 from ..config import get_settings
 from ..db import get_session_factory
-from ..models import User
+from ..models import System, User
 from .deps import get_session
 
 SESSION_COOKIE = "concord_session"
@@ -80,6 +81,12 @@ async def get_principal(
         raise HTTPException(401, "authentication required")
     request.state.principal = principal
     return principal
+
+
+def org_systems_subq(principal: Principal) -> Any:
+    """Subquery of System ids in the principal's org. Callers apply it only when
+    ``principal.org_id`` is set (global principals are unscoped)."""
+    return select(System.id).where(System.organization_id == principal.org_id)
 
 
 def require_role(*roles: str) -> Callable[..., Awaitable[Principal]]:

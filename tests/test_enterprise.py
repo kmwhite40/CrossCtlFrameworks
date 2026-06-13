@@ -8,10 +8,11 @@ from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from ccf.api.audit import _redact, row_hash
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, ScoringStatus, System
+from ccf.models import AuditLog, Organization, ScoringStatus, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -98,6 +99,55 @@ async def test_audit_trail_records_mutations() -> None:
         # Read requests are never audited — the latest entry is unchanged after a GET.
         await c.get("/api/posture/summary")
         assert (await c.get("/api/audit")).json()[0]["diff"]["path"] == "/api/ssp/projects"
+
+
+def test_audit_redaction_and_hash_chain_helpers() -> None:
+    # Sensitive keys are redacted recursively.
+    red = _redact(
+        {"password": "p", "nested": {"api_token": "t", "ok": 1}, "list": [{"secret": "s"}]}
+    )
+    assert red["password"] == "***"
+    assert red["nested"]["api_token"] == "***" and red["nested"]["ok"] == 1
+    assert red["list"][0]["secret"] == "***"
+    # row_hash is deterministic and chains on the previous hash.
+    payload = {"actor": "a", "action": "create", "entity_type": "x"}
+    assert row_hash("0" * 64, payload) == row_hash("0" * 64, payload)
+    assert row_hash("0" * 64, payload) != row_hash("f" * 64, payload)
+
+
+@pytest.mark.asyncio
+async def test_audit_chain_verifies_and_detects_tampering() -> None:
+    async with _client() as c:
+        await c.post("/api/scoring/seed")
+        await c.post("/api/ssp/projects", json={"customer_name": "ChainCo"})
+
+        assert (await c.get("/api/audit/verify")).json()["ok"] is True
+        # Request body is captured into the audit diff.
+        latest = (await c.get("/api/audit")).json()[0]
+        assert latest["diff"].get("body", {}).get("customer_name") == "ChainCo"
+
+        # Tamper with a chained row's content → the chain no longer verifies.
+        async with session_scope() as s:
+            row = (
+                await s.execute(
+                    select(AuditLog)
+                    .where(AuditLog.row_hash.is_not(None))
+                    .order_by(AuditLog.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one()
+            row_id, original_actor = row.id, row.actor
+            row.actor = "evil@attacker.test"
+        try:
+            verdict = (await c.get("/api/audit/verify")).json()
+            assert verdict["ok"] is False and verdict["broken_at_id"] is not None
+        finally:
+            # Restore original content so the chain (and the next run) stays valid.
+            async with session_scope() as s:
+                row = (
+                    await s.execute(select(AuditLog).where(AuditLog.id == row_id))
+                ).scalar_one()
+                row.actor = original_actor
 
 
 @pytest.mark.asyncio

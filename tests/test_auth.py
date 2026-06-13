@@ -138,6 +138,15 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         ).json()
         assert created["organization_id"] == org_a
 
+        # SSP project tenant isolation: B cannot see A's project.
+        proj = (
+            await c.post("/api/ssp/projects", json={"customer_name": "A SSP"}, headers=ha)
+        ).json()
+        assert (await c.get(f"/api/ssp/projects/{proj['id']}", headers=ha)).status_code == 200
+        assert (await c.get(f"/api/ssp/projects/{proj['id']}", headers=hb)).status_code == 404
+        b_projects = (await c.get("/api/ssp/projects", headers=hb)).json()
+        assert all(p["id"] != proj["id"] for p in b_projects)
+
         # Login issues a session; /me reflects the principal.
         login = await c.post(
             "/api/auth/login", json={"email": "admin@a.test", "password": "pw"}

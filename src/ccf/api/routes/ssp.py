@@ -19,11 +19,13 @@ from slugify import slugify
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth import Principal
 from ...models import SSPControlEntry, SSPProject, System
 from ...ssp import constants
 from ...ssp.generator import generate_ssp_docx
 from ...ssp.platforms import PLATFORMS, normalize_platform
 from ...ssp.seed import entry_to_dict, seed_project_entries
+from ..auth_deps import get_principal
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/ssp", tags=["ssp"])
@@ -75,11 +77,15 @@ class ProjectOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-async def _require_project(session: AsyncSession, project_id: int) -> SSPProject:
+async def _require_project(
+    session: AsyncSession, project_id: int, principal: Principal
+) -> SSPProject:
     proj = (
         await session.execute(select(SSPProject).where(SSPProject.id == project_id))
     ).scalar_one_or_none()
-    if proj is None:
+    if proj is None or (
+        principal.org_id is not None and proj.organization_id != principal.org_id
+    ):
         raise HTTPException(404, "SSP project not found")
     return proj
 
@@ -98,29 +104,39 @@ async def options() -> dict[str, Any]:
 
 
 @router.get("/projects", response_model=list[ProjectOut])
-async def list_projects(session: AsyncSession = Depends(get_session)) -> list[ProjectOut]:
-    rows = (
-        (await session.execute(select(SSPProject).order_by(SSPProject.created_at.desc())))
-        .scalars()
-        .all()
-    )
+async def list_projects(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[ProjectOut]:
+    stmt = select(SSPProject).order_by(SSPProject.created_at.desc())
+    if principal.org_id is not None:
+        stmt = stmt.where(SSPProject.organization_id == principal.org_id)
+    rows = (await session.execute(stmt)).scalars().all()
     return [ProjectOut.model_validate(r) for r in rows]
 
 
 @router.post("/projects", response_model=ProjectOut, status_code=201)
 async def create_project(
-    body: ProjectCreate, session: AsyncSession = Depends(get_session)
+    body: ProjectCreate,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectOut:
     system_name = body.system_name
+    org_id = principal.org_id
     if body.system_id is not None:
         sys = (
             await session.execute(select(System).where(System.id == body.system_id))
         ).scalar_one_or_none()
-        if sys is None:
+        if sys is None or (
+            principal.org_id is not None and sys.organization_id != principal.org_id
+        ):
             raise HTTPException(404, "system not found")
         system_name = system_name or sys.name
+        if org_id is None:
+            org_id = sys.organization_id
 
     proj = SSPProject(
+        organization_id=org_id,
         system_id=body.system_id,
         customer_name=body.customer_name,
         system_name=system_name,
@@ -139,9 +155,11 @@ async def create_project(
 
 @router.get("/projects/{project_id}")
 async def get_project(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    proj = await _require_project(session, project_id)
+    proj = await _require_project(session, project_id, principal)
     entries = (
         (
             await session.execute(
@@ -161,9 +179,12 @@ async def get_project(
 
 @router.patch("/projects/{project_id}", response_model=ProjectOut)
 async def update_project(
-    project_id: int, body: ProjectUpdate, session: AsyncSession = Depends(get_session)
+    project_id: int,
+    body: ProjectUpdate,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> ProjectOut:
-    proj = await _require_project(session, project_id)
+    proj = await _require_project(session, project_id, principal)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(proj, k, normalize_platform(v) if k == "platform" else v)
     await session.commit()
@@ -172,8 +193,12 @@ async def update_project(
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-async def delete_project(project_id: int, session: AsyncSession = Depends(get_session)) -> None:
-    proj = await _require_project(session, project_id)
+async def delete_project(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> None:
+    proj = await _require_project(session, project_id, principal)
     await session.delete(proj)
     await session.commit()
 
@@ -184,9 +209,10 @@ async def reseed_project(
     overwrite: bool = False,
     platform: str | None = None,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, int | str]:
     """Regenerate sample statements, optionally switching the target platform."""
-    proj = await _require_project(session, project_id)
+    proj = await _require_project(session, project_id, principal)
     if platform is not None:
         proj.platform = normalize_platform(platform)
         await session.flush()
@@ -202,8 +228,9 @@ async def update_entry(
     control_id: str,
     body: EntryUpdate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    await _require_project(session, project_id)
+    await _require_project(session, project_id, principal)
     entry = (
         await session.execute(
             select(SSPControlEntry)
@@ -222,10 +249,12 @@ async def update_entry(
 
 @router.get("/projects/{project_id}/document", response_model=None)
 async def generate_document(
-    project_id: int, session: AsyncSession = Depends(get_session)
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> StreamingResponse:
     """Generate and download the SSP ``.docx`` for this customer's project."""
-    proj = await _require_project(session, project_id)
+    proj = await _require_project(session, project_id, principal)
     entries = (
         (
             await session.execute(
