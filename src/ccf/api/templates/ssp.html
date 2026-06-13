@@ -19,7 +19,7 @@
   </div></div>
 {% endif %}
 
-<div style="display:grid;grid-template-columns:1fr 360px;gap:16px;align-items:start">
+<div class="layout-split-r">
   <div class="card">
     <div class="card__header"><div class="card__title">SSP projects</div></div>
     <div class="table-wrap">
@@ -34,8 +34,8 @@
             <td><span class="chip {{ 'chip--ok' if p.status=='final' else 'chip--warn' }}">{{ p.status }}</span></td>
             <td class="dim">{{ p.created_at.strftime('%Y-%m-%d') }}</td>
             <td class="row" style="gap:6px">
-              <a class="btn btn--ghost btn--sm" href="/ssp/{{ p.id }}"><i data-lucide="pencil"></i></a>
-              <a class="btn btn--secondary btn--sm" href="/api/ssp/projects/{{ p.id }}/document"><i data-lucide="file-down"></i> .docx</a>
+              <a class="btn btn--ghost btn--sm" href="/ssp/{{ p.id }}" aria-label="Edit SSP for {{ p.customer_name }}"><i data-lucide="pencil"></i></a>
+              <a class="btn btn--secondary btn--sm" href="/api/ssp/projects/{{ p.id }}/document" aria-label="Download SSP .docx for {{ p.customer_name }}"><i data-lucide="file-down"></i> .docx</a>
             </td>
           </tr>
           {% else %}

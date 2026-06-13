@@ -13,11 +13,9 @@ from ..models import (
     ControlImplementation,
     Evidence,
     Risk,
-    ScoringControl,
-    ScoringStatus,
     System,
 )
-from ..scoring.engine import score_system
+from ..scoring.service import system_score_summary
 
 # Implementation statuses that count as "met" for coverage.
 _MET_IMPL = ("implemented", "inherited")
@@ -26,26 +24,7 @@ EXPIRING_WINDOW_DAYS = 30
 
 async def sprs_for_system(session: AsyncSession, system_id: int) -> dict[str, Any]:
     """Live SPRS summary for one system (shared with the scoring API)."""
-    controls = (
-        (await session.execute(select(ScoringControl).order_by(ScoringControl.sort_order)))
-        .scalars()
-        .all()
-    )
-    states = {
-        cid: state
-        for cid, state in (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringStatus.state)
-                .join(ScoringStatus, ScoringStatus.scoring_control_id == ScoringControl.id)
-                .where(ScoringStatus.system_id == system_id)
-            )
-        ).all()
-    }
-    refs = [
-        {"control_id": c.control_id, "domain": c.domain, "point_value": c.point_value}
-        for c in controls
-    ]
-    return score_system(refs, states).as_dict()
+    return await system_score_summary(session, system_id)
 
 
 async def _impl_coverage(session: AsyncSession, system_id: int) -> dict[str, int]:

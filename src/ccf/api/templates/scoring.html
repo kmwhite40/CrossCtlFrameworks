@@ -96,7 +96,7 @@
 </details>
 
 {% if system_id and summary %}
-<div style="display:grid;grid-template-columns:320px 1fr;gap:16px;align-items:start">
+<div class="layout-split-l">
   <div>{% include "_scoring_score.html" %}</div>
 
   <div class="card">
@@ -141,7 +141,7 @@
             </td>
             <td>
               <details>
-                <summary class="btn btn--ghost btn--sm" title="Evidence guidance"><i data-lucide="clipboard-list"></i></summary>
+                <summary class="btn btn--ghost btn--sm" title="Evidence guidance" aria-label="Evidence guidance for {{ r.c.control_id }}"><i data-lucide="clipboard-list"></i></summary>
                 <div class="card" style="position:absolute;z-index:20;max-width:460px;margin-top:6px;box-shadow:var(--shadow-lg)">
                   <div class="card__body" style="font-size:13px">
                     {% if r.c.m365_implementation_statement %}<p><strong>M365:</strong> {{ r.c.m365_implementation_statement }}</p>{% endif %}

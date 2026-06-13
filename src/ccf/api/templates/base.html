@@ -57,12 +57,14 @@
       </button>
     </div>
     <div class="sidebar__group">
+      <div class="sidebar__group-title">Workspace</div>
       <a class="nav-link" href="/"           title="Dashboard"      {% if active=='dashboard'  %}aria-current="page"{% endif %}><i data-lucide="layout-dashboard"></i><span class="nav-link__label">Dashboard</span></a>
       <a class="nav-link" href="/posture"    title="Posture"        {% if active=='posture'    %}aria-current="page"{% endif %}><i data-lucide="shield-check"></i><span class="nav-link__label">Posture</span></a>
       <a class="nav-link" href="/scoring"    title="Live scoring"   {% if active=='scoring'    %}aria-current="page"{% endif %}><i data-lucide="gauge"></i><span class="nav-link__label">Live scoring</span></a>
       <a class="nav-link" href="/ssp"        title="SSP builder"    {% if active=='ssp'        %}aria-current="page"{% endif %}><i data-lucide="file-signature"></i><span class="nav-link__label">SSP builder</span></a>
     </div>
     <div class="sidebar__group">
+      <div class="sidebar__group-title">Catalog</div>
       <a class="nav-link" href="/controls"   title="Controls"       {% if active=='controls'   %}aria-current="page"{% endif %}><i data-lucide="list-checks"></i><span class="nav-link__label">Controls</span></a>
       <a class="nav-link" href="/frameworks" title="Frameworks"     {% if active=='frameworks' %}aria-current="page"{% endif %}><i data-lucide="layers"></i><span class="nav-link__label">Frameworks</span></a>
       <a class="nav-link" href="/coverage"   title="Coverage"       {% if active=='coverage'   %}aria-current="page"{% endif %}><i data-lucide="grid-3x3"></i><span class="nav-link__label">Coverage</span></a>
@@ -73,6 +75,7 @@
     </div>
     {% if not settings.readonly %}
     <div class="sidebar__group">
+      <div class="sidebar__group-title">Operations</div>
       <a class="nav-link" href="/reports"    title="Reports"        {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i><span class="nav-link__label">Reports</span></a>
       <a class="nav-link" href="/systems"    title="Systems"        {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i><span class="nav-link__label">Systems</span></a>
       <a class="nav-link" href="/poams"      title="POA&amp;Ms"     {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i><span class="nav-link__label">POA&amp;Ms</span></a>
@@ -80,6 +83,7 @@
       <a class="nav-link" href="/users"      title="Users"          {% if active=='users'      %}aria-current="page"{% endif %}><i data-lucide="users"></i><span class="nav-link__label">Users</span></a>
     </div>
     <div class="sidebar__group">
+      <div class="sidebar__group-title">Admin</div>
       <a class="nav-link" href="/audit"      title="Audit trail"    {% if active=='audit'      %}aria-current="page"{% endif %}><i data-lucide="scroll-text"></i><span class="nav-link__label">Audit trail</span></a>
       <a class="nav-link" href="/ingestions" title="Ingestions"     {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i><span class="nav-link__label">Ingestions</span></a>
       <a class="nav-link" href="/settings"   title="Settings"       {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i><span class="nav-link__label">Settings</span></a>

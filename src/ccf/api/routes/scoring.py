@@ -16,8 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import ScoringControl, ScoringStatus, System
-from ...scoring.engine import STATES, score_system
+from ...scoring.engine import STATES
 from ...scoring.seed import seed_scoring_controls
+from ...scoring.service import system_score_summary
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/scoring", tags=["scoring"])
@@ -54,26 +55,8 @@ async def _require_system(session: AsyncSession, system_id: int) -> System:
 
 
 async def compute_summary(session: AsyncSession, system_id: int) -> dict[str, Any]:
-    controls = (
-        (await session.execute(select(ScoringControl).order_by(ScoringControl.sort_order)))
-        .scalars()
-        .all()
-    )
-    states = {
-        cid: state
-        for cid, state in (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringStatus.state)
-                .join(ScoringStatus, ScoringStatus.scoring_control_id == ScoringControl.id)
-                .where(ScoringStatus.system_id == system_id)
-            )
-        ).all()
-    }
-    refs = [
-        {"control_id": c.control_id, "domain": c.domain, "point_value": c.point_value}
-        for c in controls
-    ]
-    return score_system(refs, states).as_dict()
+    """Live SPRS summary for a system (delegates to the shared scoring service)."""
+    return await system_score_summary(session, system_id)
 
 
 @router.get("/controls", response_model=list[ScoringControlOut])

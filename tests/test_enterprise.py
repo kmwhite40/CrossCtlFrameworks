@@ -8,11 +8,12 @@ from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
-from ccf import db as ccf_db
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Organization, ScoringStatus, System
+
+pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -20,15 +21,6 @@ def _migrate() -> None:
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
     command.upgrade(cfg, "head")
-
-
-@pytest.fixture(autouse=True)
-async def _fresh_engine() -> object:
-    yield
-    if ccf_db._engine is not None:
-        await ccf_db._engine.dispose()
-    ccf_db._engine = None
-    ccf_db._session_factory = None
 
 
 def _client() -> AsyncClient:

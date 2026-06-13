@@ -23,9 +23,9 @@
   --err-50: rgba(251,113,133,0.14); --info-50: rgba(56,189,248,0.14);
 
   /* ─── Surface / text (dark glass default) ───────────── */
-  --text:      #e8eaf4;
-  --text-dim:  #a5adc6;
-  --text-mute: #7e87a3;
+  --text:      #eef0f8;
+  --text-dim:  #bcc4dd;
+  --text-mute: #9aa3c0;
   --glass:        rgba(255,255,255,0.045);
   --glass-2:      rgba(255,255,255,0.075);
   --glass-strong: rgba(255,255,255,0.10);
@@ -132,9 +132,14 @@ body {
   height: calc(100vh - var(--topbar-h)); overflow: visible;
   display: flex; flex-direction: column; align-items: center; gap: 4px; z-index: 20;
 }
-.sidebar__group { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 0; width: 100%; }
-.sidebar__group + .sidebar__group { border-top: 1px solid var(--hairline); }
-.sidebar__group:last-of-type { margin-top: auto; border-top: 1px solid var(--hairline); }
+.sidebar__group { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0; width: 100%; position: relative; }
+.sidebar__group:last-of-type { margin-top: auto; }
+/* collapsed: a short, soft centered divider between groups (not a full edge-to-edge line) */
+.sidebar__group + .sidebar__group::before {
+  content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+  width: 28px; height: 1px; background: rgba(255,255,255,0.08);
+}
+.sidebar__group--toggle { padding-top: 2px; }
 .sidebar__group-title { display: none; }
 .nav-link { position: relative; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 13px; color: var(--text-mute); transition: background .15s, color .15s, box-shadow .15s; text-decoration: none; }
 .nav-link svg { width: 20px; height: 20px; stroke-width: 1.9; }
@@ -146,10 +151,17 @@ body {
 
 .rail-toggle { background: transparent; border: none; cursor: pointer; color: var(--text-mute); font: inherit; }
 .rail-toggle:hover { color: var(--text); }
-.sidebar__group--toggle { padding-top: 0; padding-bottom: 6px; border-bottom: 1px solid var(--hairline); }
 
 /* ─── Expanded sidebar (icon + service name) ───────────── */
 html[data-rail="expanded"] { --sidebar-w: 246px; }
+/* expanded: drop the centered dividers in favour of section labels */
+html[data-rail="expanded"] .sidebar__group + .sidebar__group::before { display: none; }
+html[data-rail="expanded"] .sidebar__group { padding: 4px 0 6px; }
+html[data-rail="expanded"] .sidebar__group-title {
+  display: block; align-self: stretch; padding: 12px 14px 6px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.11em;
+  color: var(--text-mute);
+}
 html[data-rail="expanded"] .topbar__brand { width: var(--sidebar-w); min-width: var(--sidebar-w); justify-content: flex-start; padding-left: 20px; gap: 11px; }
 html[data-rail="expanded"] .topbar__wordmark { display: inline; font-weight: 700; font-size: 17px; letter-spacing: -0.02em; color: #fff; }
 html[data-rail="expanded"] .sidebar { align-items: stretch; padding: 12px 12px; }
@@ -214,6 +226,19 @@ a.kpi:hover { transform: translateY(-2px); border-color: var(--glass-border-2); 
 .cols-4{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
 @media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
 .between{justify-content:space-between}
+
+/* responsive split layouts (scoring = left rail, ssp = right rail) */
+.layout-split-l { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
+.layout-split-r { display: grid; grid-template-columns: 1fr 360px; gap: 16px; align-items: start; }
+@media (max-width: 1000px) {
+  .layout-split-l, .layout-split-r { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .page { padding: 20px 16px 48px; }
+  .page__title { font-size: 27px; }
+  .topbar__cmd { max-width: none; }
+  .topbar__user-meta { display: none; }
+}
 
 /* ─── Buttons ──────────────────────────────────────────── */
 .btn { display: inline-flex; align-items: center; gap: 8px; padding: 9px 15px; border-radius: 10px; font-size: 13.5px; font-weight: 600; line-height: 1; border: 1px solid transparent; cursor: pointer; transition: background .15s, color .15s, border-color .15s, box-shadow .15s, transform .1s; }

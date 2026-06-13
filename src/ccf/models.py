@@ -661,7 +661,10 @@ class SSPControlEntry(Base):
 
     project: Mapped[SSPProject] = relationship(back_populates="entries")
 
-    __table_args__ = (UniqueConstraint("project_id", "control_id", name="uq_ssp_project_control"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "control_id", name="uq_ssp_project_control"),
+        Index("ix_ssp_entry_project_sort", "project_id", "sort_order"),
+    )
 
 
 class AuditLog(Base):

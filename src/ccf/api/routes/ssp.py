@@ -8,6 +8,7 @@ Projects persist, so a customer's SSP can be reopened and re-generated.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date
 from typing import Any
 
@@ -245,7 +246,10 @@ async def generate_document(
         "prepared_by": proj.prepared_by,
         "document_date": proj.document_date.strftime("%m/%d/%Y") if proj.document_date else "",
     }
-    data = generate_ssp_docx(project_meta, [entry_to_dict(e) for e in entries])
+    # python-docx is synchronous CPU work — keep it off the event loop.
+    data = await asyncio.to_thread(
+        generate_ssp_docx, project_meta, [entry_to_dict(e) for e in entries]
+    )
     slug = slugify(f"{proj.customer_name}-ssp-appendix-a-v{proj.version}") or "ssp"
     return StreamingResponse(
         iter([data]),
