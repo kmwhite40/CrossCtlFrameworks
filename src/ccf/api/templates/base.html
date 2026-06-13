@@ -51,6 +51,11 @@
 
   <!-- Icon rail -->
   <aside class="sidebar" role="navigation" aria-label="Primary">
+    <div class="sidebar__group sidebar__group--toggle">
+      <button type="button" class="nav-link rail-toggle" onclick="toggleSidebar()" aria-label="Collapse or expand sidebar" title="Toggle sidebar">
+        <i data-lucide="panel-left"></i><span class="nav-link__label">Collapse menu</span>
+      </button>
+    </div>
     <div class="sidebar__group">
       <a class="nav-link" href="/"           title="Dashboard"      {% if active=='dashboard'  %}aria-current="page"{% endif %}><i data-lucide="layout-dashboard"></i><span class="nav-link__label">Dashboard</span></a>
       <a class="nav-link" href="/posture"    title="Posture"        {% if active=='posture'    %}aria-current="page"{% endif %}><i data-lucide="shield-check"></i><span class="nav-link__label">Posture</span></a>

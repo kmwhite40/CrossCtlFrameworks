@@ -11,6 +11,17 @@
     localStorage.setItem('concord:theme', next);
   };
 
+  // ── Sidebar collapse / expand (persisted) ──────────────
+  const railState = localStorage.getItem('concord:rail') || 'collapsed';
+  document.documentElement.setAttribute('data-rail', railState);
+  window.toggleSidebar = () => {
+    const cur = document.documentElement.getAttribute('data-rail') || 'collapsed';
+    const next = cur === 'expanded' ? 'collapsed' : 'expanded';
+    document.documentElement.setAttribute('data-rail', next);
+    localStorage.setItem('concord:rail', next);
+    if (window.lucide) window.lucide.createIcons();
+  };
+
   // ── Toasts ─────────────────────────────────────────────
   const toastRoot = () => {
     let el = document.getElementById('toasts');

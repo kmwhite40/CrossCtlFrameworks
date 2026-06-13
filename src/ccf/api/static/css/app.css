@@ -144,6 +144,31 @@ body {
 .nav-link__label { position: absolute; left: calc(100% + 12px); top: 50%; transform: translateY(-50%); white-space: nowrap; background: rgba(20,24,46,0.95); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); color: #fff; font-size: 12.5px; font-weight: 500; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--glass-border); box-shadow: var(--shadow-md); opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 50; }
 .nav-link:hover .nav-link__label { opacity: 1; }
 
+.rail-toggle { background: transparent; border: none; cursor: pointer; color: var(--text-mute); font: inherit; }
+.rail-toggle:hover { color: var(--text); }
+.sidebar__group--toggle { padding-top: 0; padding-bottom: 6px; border-bottom: 1px solid var(--hairline); }
+
+/* ─── Expanded sidebar (icon + service name) ───────────── */
+html[data-rail="expanded"] { --sidebar-w: 246px; }
+html[data-rail="expanded"] .topbar__brand { width: var(--sidebar-w); min-width: var(--sidebar-w); justify-content: flex-start; padding-left: 20px; gap: 11px; }
+html[data-rail="expanded"] .topbar__wordmark { display: inline; font-weight: 700; font-size: 17px; letter-spacing: -0.02em; color: #fff; }
+html[data-rail="expanded"] .sidebar { align-items: stretch; padding: 12px 12px; }
+html[data-rail="expanded"] .sidebar__group { align-items: stretch; }
+html[data-rail="expanded"] .nav-link {
+  display: flex; align-items: center; justify-content: flex-start;
+  width: auto; height: 42px; gap: 12px; padding: 0 12px;
+  border-radius: 10px; font-size: 14px; font-weight: 500;
+}
+html[data-rail="expanded"] .nav-link svg { flex-shrink: 0; }
+html[data-rail="expanded"] .nav-link__label {
+  position: static; transform: none; opacity: 1; pointer-events: auto;
+  background: transparent; border: none; box-shadow: none; padding: 0;
+  color: inherit; font-weight: 500;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+html[data-rail="expanded"] .nav-link__label::before { display: none; }
+html[data-theme="light"] .topbar__wordmark { color: var(--text); }
+
 /* ─── Main ─────────────────────────────────────────────── */
 .main { min-height: calc(100vh - var(--topbar-h)); background: transparent; }
 .page { max-width: 1480px; margin: 0 auto; padding: 32px 36px 64px; }
