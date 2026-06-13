@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "Concord — NIST SP 800-53A Rev 5 + cross-framework control mappings platform"
 requires-python = ">=3.12"
 readme = "README.md"
-license = { text = "Proprietary — © 2026 Colleen Townsend. All rights reserved." }
-authors = [{ name = "Colleen Townsend" }]
+license = { text = "Proprietary" }
+authors = [{ name = "Concord" }]
 dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn[standard]>=0.30,<1",

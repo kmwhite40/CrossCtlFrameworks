@@ -7,7 +7,7 @@
   <title>{% block title %}Concord{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/app.css" />
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
@@ -22,85 +22,68 @@
   <header class="topbar" role="banner">
     <a href="/" class="topbar__brand">
       <span class="topbar__brand-mark">C</span>
-      <span>Concord</span>
-      <span class="topbar__tag">Compliance platform</span>
+      <span class="topbar__wordmark">Concord</span>
     </a>
 
-    <button type="button" class="topbar__cmd" onclick="openPalette()" aria-label="Open command palette">
-      <i data-lucide="search" style="width:16px;height:16px"></i>
-      <span>Jump to…</span>
+    <button type="button" class="topbar__cmd" onclick="openPalette()" aria-label="Search Concord">
+      <i data-lucide="search"></i>
+      <span>Search Concord</span>
       <kbd>⌘K</kbd>
     </button>
 
     <div class="topbar__right">
+      <a class="topbar__pill" href="/posture"><i data-lucide="sparkles"></i> Ask Concord</a>
       <button type="button" class="topbar__btn" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
         <i data-lucide="sun-moon"></i>
       </button>
       <a class="topbar__btn" href="/docs" aria-label="API docs" title="API docs">
-        <i data-lucide="book-open"></i>
+        <i data-lucide="circle-help"></i>
       </a>
       <div class="topbar__user" role="group" aria-label="Account">
-        <span class="topbar__avatar">CT</span>
-        <span style="font-size:13px;font-weight:500">Colleen Townsend</span>
+        <span class="topbar__avatar">C</span>
+        <span class="topbar__user-meta">
+          <strong>Compliance</strong>
+          <small>Concord Workspace</small>
+        </span>
       </div>
     </div>
   </header>
 
-  <!-- Sidebar -->
+  <!-- Icon rail -->
   <aside class="sidebar" role="navigation" aria-label="Primary">
     <div class="sidebar__group">
-      <div class="sidebar__group-title">Catalog</div>
-      <a class="nav-link" href="/"           {% if active=='dashboard'  %}aria-current="page"{% endif %}><i data-lucide="gauge-circle"></i> Dashboard</a>
-      <a class="nav-link" href="/controls"   {% if active=='controls'   %}aria-current="page"{% endif %}><i data-lucide="list-checks"></i> Controls</a>
-      <a class="nav-link" href="/frameworks" {% if active=='frameworks' %}aria-current="page"{% endif %}><i data-lucide="layers"></i> Frameworks</a>
-      <a class="nav-link" href="/worksheets" {% if active=='worksheets' %}aria-current="page"{% endif %}><i data-lucide="sheet"></i> Worksheets</a>
-      <a class="nav-link" href="/search"     {% if active=='search'     %}aria-current="page"{% endif %}><i data-lucide="search"></i> Search</a>
-      <a class="nav-link" href="/mappings"   {% if active=='mappings'   %}aria-current="page"{% endif %}><i data-lucide="git-compare-arrows"></i> Mapping search</a>
-      <a class="nav-link" href="/coverage"   {% if active=='coverage'   %}aria-current="page"{% endif %}><i data-lucide="grid-3x3"></i> Coverage</a>
-      <a class="nav-link" href="/diff"       {% if active=='diff'       %}aria-current="page"{% endif %}><i data-lucide="diff"></i> Workbook diff</a>
+      <a class="nav-link" href="/"           title="Dashboard"      {% if active=='dashboard'  %}aria-current="page"{% endif %}><i data-lucide="layout-dashboard"></i><span class="nav-link__label">Dashboard</span></a>
+      <a class="nav-link" href="/posture"    title="Posture"        {% if active=='posture'    %}aria-current="page"{% endif %}><i data-lucide="shield-check"></i><span class="nav-link__label">Posture</span></a>
+      <a class="nav-link" href="/scoring"    title="Live scoring"   {% if active=='scoring'    %}aria-current="page"{% endif %}><i data-lucide="gauge"></i><span class="nav-link__label">Live scoring</span></a>
+      <a class="nav-link" href="/ssp"        title="SSP builder"    {% if active=='ssp'        %}aria-current="page"{% endif %}><i data-lucide="file-signature"></i><span class="nav-link__label">SSP builder</span></a>
+    </div>
+    <div class="sidebar__group">
+      <a class="nav-link" href="/controls"   title="Controls"       {% if active=='controls'   %}aria-current="page"{% endif %}><i data-lucide="list-checks"></i><span class="nav-link__label">Controls</span></a>
+      <a class="nav-link" href="/frameworks" title="Frameworks"     {% if active=='frameworks' %}aria-current="page"{% endif %}><i data-lucide="layers"></i><span class="nav-link__label">Frameworks</span></a>
+      <a class="nav-link" href="/coverage"   title="Coverage"       {% if active=='coverage'   %}aria-current="page"{% endif %}><i data-lucide="grid-3x3"></i><span class="nav-link__label">Coverage</span></a>
+      <a class="nav-link" href="/mappings"   title="Mapping search" {% if active=='mappings'   %}aria-current="page"{% endif %}><i data-lucide="git-compare-arrows"></i><span class="nav-link__label">Mapping search</span></a>
+      <a class="nav-link" href="/search"     title="Search"         {% if active=='search'     %}aria-current="page"{% endif %}><i data-lucide="search"></i><span class="nav-link__label">Search</span></a>
+      <a class="nav-link" href="/worksheets" title="Worksheets"     {% if active=='worksheets' %}aria-current="page"{% endif %}><i data-lucide="sheet"></i><span class="nav-link__label">Worksheets</span></a>
+      <a class="nav-link" href="/diff"       title="Workbook diff"  {% if active=='diff'       %}aria-current="page"{% endif %}><i data-lucide="diff"></i><span class="nav-link__label">Workbook diff</span></a>
     </div>
     {% if not settings.readonly %}
     <div class="sidebar__group">
-      <div class="sidebar__group-title">Operations</div>
-      <a class="nav-link" href="/posture"    {% if active=='posture'    %}aria-current="page"{% endif %}><i data-lucide="shield-check"></i> Posture</a>
-      <a class="nav-link" href="/scoring"    {% if active=='scoring'    %}aria-current="page"{% endif %}><i data-lucide="gauge"></i> Live scoring</a>
-      <a class="nav-link" href="/ssp"        {% if active=='ssp'        %}aria-current="page"{% endif %}><i data-lucide="file-signature"></i> SSP builder</a>
-      <a class="nav-link" href="/reports"    {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i> Reports</a>
-      <a class="nav-link" href="/systems"    {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i> Systems</a>
-      <a class="nav-link" href="/poams"      {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i> POA&amp;Ms</a>
-      <a class="nav-link" href="/risks"      {% if active=='risks'      %}aria-current="page"{% endif %}><i data-lucide="triangle-alert"></i> Risks</a>
-      <a class="nav-link" href="/users"      {% if active=='users'      %}aria-current="page"{% endif %}><i data-lucide="users"></i> Users</a>
+      <a class="nav-link" href="/reports"    title="Reports"        {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i><span class="nav-link__label">Reports</span></a>
+      <a class="nav-link" href="/systems"    title="Systems"        {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i><span class="nav-link__label">Systems</span></a>
+      <a class="nav-link" href="/poams"      title="POA&amp;Ms"     {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i><span class="nav-link__label">POA&amp;Ms</span></a>
+      <a class="nav-link" href="/risks"      title="Risks"          {% if active=='risks'      %}aria-current="page"{% endif %}><i data-lucide="triangle-alert"></i><span class="nav-link__label">Risks</span></a>
+      <a class="nav-link" href="/users"      title="Users"          {% if active=='users'      %}aria-current="page"{% endif %}><i data-lucide="users"></i><span class="nav-link__label">Users</span></a>
     </div>
     <div class="sidebar__group">
-      <div class="sidebar__group-title">Admin</div>
-      <a class="nav-link" href="/audit"      {% if active=='audit'      %}aria-current="page"{% endif %}><i data-lucide="scroll-text"></i> Audit trail</a>
-      <a class="nav-link" href="/ingestions" {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i> Ingestions</a>
-      <a class="nav-link" href="/settings"   {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i> Settings</a>
+      <a class="nav-link" href="/audit"      title="Audit trail"    {% if active=='audit'      %}aria-current="page"{% endif %}><i data-lucide="scroll-text"></i><span class="nav-link__label">Audit trail</span></a>
+      <a class="nav-link" href="/ingestions" title="Ingestions"     {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i><span class="nav-link__label">Ingestions</span></a>
+      <a class="nav-link" href="/settings"   title="Settings"       {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i><span class="nav-link__label">Settings</span></a>
     </div>
     {% else %}
     <div class="sidebar__group">
-      <div class="sidebar__group-title">Reader mode</div>
-      <div class="nav-link" style="cursor:default;opacity:.75">
-        <i data-lucide="eye"></i> Read-only
-        <span class="badge">SQLite</span>
-      </div>
+      <span class="nav-link" style="cursor:default;opacity:.75" title="Read-only (SQLite)"><i data-lucide="eye"></i><span class="nav-link__label">Read-only</span></span>
     </div>
     {% endif %}
-    <div class="sidebar__group">
-      <div class="sidebar__group-title">External</div>
-      <a class="nav-link" href="http://localhost:3000" target="_blank" rel="noopener">
-        <i data-lucide="sparkles"></i> Landing page
-        <i data-lucide="external-link" style="width:14px;height:14px;margin-left:auto;opacity:.6"></i>
-      </a>
-      <a class="nav-link" href="/docs" target="_blank" rel="noopener">
-        <i data-lucide="book-open"></i> API docs
-        <i data-lucide="external-link" style="width:14px;height:14px;margin-left:auto;opacity:.6"></i>
-      </a>
-    </div>
-    <div class="sidebar__foot">
-      <div>v0.1.0 &middot; Concord</div>
-      <div>&copy; 2026 Colleen Townsend</div>
-    </div>
   </aside>
 
   <!-- Main -->

@@ -1,6 +1,5 @@
 # Concord — Architecture
 
-Copyright © 2026 Colleen Townsend. All rights reserved.
 
 ## Service topology
 

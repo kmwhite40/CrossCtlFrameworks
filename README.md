@@ -8,7 +8,6 @@ workbook into Postgres, normalizes the 5,400 SP 800-53A Rev. 5 assessment object
 and their 550+ cross-framework mappings, and exposes the data through a FastAPI
 service with an HTMX + Tailwind UI, a Typer CLI, and a REST API.
 
-Copyright © 2026 Colleen Townsend. All rights reserved. See [LICENSE](LICENSE).
 
 ---
 
@@ -171,4 +170,3 @@ SCD-2 history, OSCAL export, and production runbooks are next.
 
 ---
 
-Copyright © 2026 Colleen Townsend. All rights reserved.

@@ -1,6 +1,5 @@
 # Runbook — Install & Run Docker on Windows (for Concord)
 
-Copyright © 2026 Colleen Townsend. All rights reserved.
 
 **Audience:** an operator standing up Concord on a Windows 10/11 workstation
 or VM for the first time.
