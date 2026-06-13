@@ -55,7 +55,14 @@ async def audit_middleware(
         and not path.startswith(_SKIP_PREFIXES)
     ):
         try:
-            actor = request.headers.get("x-actor") or get_settings().audit_default_actor
+            # Prefer the authenticated principal; fall back to the X-Actor header
+            # (only meaningful when auth is disabled), then the configured default.
+            principal = getattr(request.state, "principal", None)
+            actor = (
+                getattr(principal, "email", None)
+                or request.headers.get("x-actor")
+                or get_settings().audit_default_actor
+            )
             entity_type, entity_id = _entity(path)
             factory = get_session_factory()
             async with factory() as session:

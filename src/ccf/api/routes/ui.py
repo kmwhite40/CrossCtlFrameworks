@@ -9,13 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...analytics import org_summary
+from ...auth import sign_session, verify_password
 from ...config import get_settings
 from ...models import (
     POAM,
@@ -44,6 +45,7 @@ from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
 from ...ssp.platforms import PLATFORMS, normalize_platform
 from ...ssp.seed import seed_project_entries
+from ..auth_deps import SESSION_COOKIE
 from ..deps import get_session
 from .diff import diff_workbook
 from .scoring import compute_summary
@@ -1087,6 +1089,46 @@ async def posture_page(
         "posture.html",
         {"active": "posture", "s": summary},
     )
+
+
+@router.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request, error: int | None = Query(None)) -> Response:
+    if not get_settings().auth_enabled:
+        return RedirectResponse("/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"error": bool(error)})
+
+
+@router.post("/login")
+async def login_submit(
+    email: str = Form(...),
+    password: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    user = (
+        await session.execute(select(User).where(User.email == email, User.active.is_(True)))
+    ).scalar_one_or_none()
+    if user is None or not verify_password(password, user.password_hash):
+        return RedirectResponse("/login?error=1", status_code=303)
+    settings = get_settings()
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(
+        SESSION_COOKIE,
+        sign_session(
+            user.id, settings.auth_session_secret, ttl_hours=settings.auth_session_ttl_hours
+        ),
+        max_age=settings.auth_session_ttl_hours * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=settings.env == "prod",
+    )
+    return resp
+
+
+@router.get("/logout")
+async def logout_ui() -> RedirectResponse:
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(SESSION_COOKIE)
+    return resp
 
 
 @router.get("/audit", response_class=HTMLResponse)

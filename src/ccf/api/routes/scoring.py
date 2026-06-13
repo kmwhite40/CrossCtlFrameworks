@@ -15,10 +15,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth import Principal
 from ...models import ScoringControl, ScoringStatus, System
 from ...scoring.engine import STATES
 from ...scoring.seed import seed_scoring_controls
 from ...scoring.service import system_score_summary
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/scoring", tags=["scoring"])
@@ -47,9 +49,11 @@ class StateUpdate(BaseModel):
     evidence_ref: str | None = None
 
 
-async def _require_system(session: AsyncSession, system_id: int) -> System:
+async def _require_system(
+    session: AsyncSession, system_id: int, principal: Principal
+) -> System:
     sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    if sys is None:
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
     return sys
 
@@ -82,16 +86,21 @@ async def list_scoring_controls(
 
 
 @router.post("/seed")
-async def seed(session: AsyncSession = Depends(get_session)) -> dict[str, int]:
+async def seed(
+    session: AsyncSession = Depends(get_session),
+    _: Principal = Depends(require_role("admin")),
+) -> dict[str, int]:
     """Load (or refresh) the reference scoring matrix from the committed seed."""
     return await seed_scoring_controls(session)
 
 
 @router.get("/systems/{system_id}/score")
 async def system_score(
-    system_id: int, session: AsyncSession = Depends(get_session)
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    await _require_system(session, system_id)
+    await _require_system(session, system_id, principal)
     return await compute_summary(session, system_id)
 
 
@@ -99,10 +108,11 @@ async def system_score(
 async def system_matrix(
     system_id: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
     domain: str | None = Query(None),
 ) -> dict[str, Any]:
     """The full matrix for a system: each control plus its current live state."""
-    await _require_system(session, system_id)
+    await _require_system(session, system_id, principal)
     stmt = select(ScoringControl).order_by(ScoringControl.sort_order)
     if domain:
         stmt = stmt.where(ScoringControl.domain == domain.upper())
@@ -143,11 +153,12 @@ async def set_control_state(
     control_id: str,
     body: StateUpdate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Set a control's implementation state and return the recomputed live score."""
     if body.state not in STATES:
         raise HTTPException(422, f"state must be one of {', '.join(STATES)}")
-    await _require_system(session, system_id)
+    await _require_system(session, system_id, principal)
     ctrl = (
         await session.execute(select(ScoringControl).where(ScoringControl.control_id == control_id))
     ).scalar_one_or_none()

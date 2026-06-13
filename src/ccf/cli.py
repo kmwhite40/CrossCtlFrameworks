@@ -12,6 +12,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import func, select
 
+from .auth import hash_password, new_api_token
 from .config import get_settings
 from .db import session_scope
 from .etl import ingest_workbook
@@ -21,10 +22,12 @@ from .models import (
     Framework,
     FrameworkMapping,
     IngestionRun,
+    Organization,
     ScoringControl,
     ScoringStatus,
     SSPControlEntry,
     SSPProject,
+    User,
     Worksheet,
 )
 from .scoring.engine import score_system
@@ -269,6 +272,48 @@ def ssp_generate(
         data = generate_ssp_docx(meta, [entry_to_dict(e) for e in entries])
         Path(out).write_bytes(data)
         console.print(f"[green]Wrote[/green] {out} ({len(data):,} bytes, {len(entries)} controls)")
+
+    asyncio.run(_run())
+
+
+@app.command(name="user-create")
+def user_create(
+    email: str = typer.Argument(..., help="User email (login)"),
+    org: str = typer.Option("Default", "--org", help="Organization name (created if missing)"),
+    role: str = typer.Option(
+        "admin", "--role", help="admin | control_owner | assessor | viewer"
+    ),
+    password: str = typer.Option(
+        ..., "--password", prompt=True, hide_input=True, confirmation_prompt=True
+    ),
+) -> None:
+    """Create (or update) a user with a password + API token for authentication."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            organization = (
+                await session.execute(select(Organization).where(Organization.name == org))
+            ).scalar_one_or_none()
+            if organization is None:
+                organization = Organization(name=org)
+                session.add(organization)
+                await session.flush()
+            user = (
+                await session.execute(select(User).where(User.email == email))
+            ).scalar_one_or_none()
+            if user is None:
+                user = User(email=email, organization_id=organization.id)
+                session.add(user)
+            user.role = role
+            user.active = True
+            user.password_hash = hash_password(password)
+            token = new_api_token()
+            user.api_token = token
+            await session.flush()
+        console.print(
+            f"[green]User ready[/green] — {email} (org={org}, role={role})\n"
+            f"API token: [bold]{token}[/bold]"
+        )
 
     asyncio.run(_run())
 

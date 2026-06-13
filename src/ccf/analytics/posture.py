@@ -41,9 +41,22 @@ async def _impl_coverage(session: AsyncSession, system_id: int) -> dict[str, int
     return {"total": total, "met": met, "by_status": counts}
 
 
-async def systems_scorecard(session: AsyncSession, *, today: date) -> list[dict[str, Any]]:
+def _org_system_subq(org_id: int | None) -> Any:
+    """Subquery of System ids in an org (or all systems when org_id is None)."""
+    stmt = select(System.id)
+    if org_id is not None:
+        stmt = stmt.where(System.organization_id == org_id)
+    return stmt
+
+
+async def systems_scorecard(
+    session: AsyncSession, *, today: date, org_id: int | None = None
+) -> list[dict[str, Any]]:
     """Per-system scorecard: SPRS, implementation coverage, POA&M and evidence health."""
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    sys_stmt = select(System).order_by(System.name)
+    if org_id is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org_id)
+    systems = (await session.execute(sys_stmt)).scalars().all()
     scorecards: list[dict[str, Any]] = []
     for sys in systems:
         sprs = await sprs_for_system(session, sys.id)
@@ -103,17 +116,14 @@ async def systems_scorecard(session: AsyncSession, *, today: date) -> list[dict[
     return scorecards
 
 
-async def poam_aging(session: AsyncSession, *, today: date) -> dict[str, Any]:
+async def poam_aging(
+    session: AsyncSession, *, today: date, org_id: int | None = None
+) -> dict[str, Any]:
     """Aging buckets for open POA&Ms by days since identification."""
-    rows = (
-        (
-            await session.execute(
-                select(POAM).where(POAM.status.in_(("open", "in_progress")))
-            )
-        )
-        .scalars()
-        .all()
-    )
+    stmt = select(POAM).where(POAM.status.in_(("open", "in_progress")))
+    if org_id is not None:
+        stmt = stmt.where(POAM.system_id.in_(_org_system_subq(org_id)))
+    rows = (await session.execute(stmt)).scalars().all()
     buckets = {"0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, "unknown": 0}
     overdue = 0
     by_severity: dict[str, int] = {}
@@ -141,9 +151,18 @@ async def poam_aging(session: AsyncSession, *, today: date) -> dict[str, Any]:
     }
 
 
-async def evidence_freshness(session: AsyncSession, *, today: date) -> dict[str, Any]:
+async def evidence_freshness(
+    session: AsyncSession, *, today: date, org_id: int | None = None
+) -> dict[str, Any]:
     """Classify evidence as fresh / expiring-soon / expired by expiry date."""
-    rows = (await session.execute(select(Evidence.expires_on))).all()
+    stmt = select(Evidence.expires_on)
+    if org_id is not None:
+        stmt = (
+            stmt.join(
+                ControlImplementation, ControlImplementation.id == Evidence.implementation_id
+            ).where(ControlImplementation.system_id.in_(_org_system_subq(org_id)))
+        )
+    rows = (await session.execute(stmt)).all()
     horizon = today + timedelta(days=EXPIRING_WINDOW_DAYS)
     fresh = expiring = expired = no_expiry = 0
     for (expires_on,) in rows:
@@ -165,25 +184,24 @@ async def evidence_freshness(session: AsyncSession, *, today: date) -> dict[str,
     }
 
 
-async def org_summary(session: AsyncSession, *, today: date) -> dict[str, Any]:
-    """Top-level executive rollup across the whole portfolio."""
-    cards = await systems_scorecard(session, today=today)
-    poams = await poam_aging(session, today=today)
-    evidence = await evidence_freshness(session, today=today)
+async def org_summary(
+    session: AsyncSession, *, today: date, org_id: int | None = None
+) -> dict[str, Any]:
+    """Top-level executive rollup across the portfolio (optionally one org)."""
+    cards = await systems_scorecard(session, today=today, org_id=org_id)
+    poams = await poam_aging(session, today=today, org_id=org_id)
+    evidence = await evidence_freshness(session, today=today, org_id=org_id)
 
     scored = [c for c in cards if c["controls_assessed"] > 0]
     avg_sprs = round(sum(c["sprs_score"] for c in scored) / len(scored), 1) if scored else None
 
-    risk_rows = (
-        await session.execute(
-            select(Risk.status, func.count()).group_by(Risk.status)
-        )
-    ).all()
-    ato_rows = (
-        await session.execute(
-            select(System.ato_status, func.count()).group_by(System.ato_status)
-        )
-    ).all()
+    risk_stmt = select(Risk.status, func.count()).group_by(Risk.status)
+    ato_stmt = select(System.ato_status, func.count()).group_by(System.ato_status)
+    if org_id is not None:
+        risk_stmt = risk_stmt.where(Risk.system_id.in_(_org_system_subq(org_id)))
+        ato_stmt = ato_stmt.where(System.organization_id == org_id)
+    risk_rows = (await session.execute(risk_stmt)).all()
+    ato_rows = (await session.execute(ato_stmt)).all()
 
     return {
         "generated_for": today.isoformat(),

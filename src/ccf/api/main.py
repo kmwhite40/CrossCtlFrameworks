@@ -20,9 +20,11 @@ from starlette.types import ExceptionHandler
 from ..config import get_settings
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
+from .auth_deps import auth_gate_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
     audit,
+    auth,
     controls,
     coverage,
     diff,
@@ -84,6 +86,9 @@ def create_app() -> FastAPI:
     app.middleware("http")(metrics_middleware)
     if settings.audit_enabled and not settings.readonly:
         app.middleware("http")(audit_middleware)
+    # Registered last → runs first, so the principal is resolved before audit/routes.
+    if settings.auth_enabled:
+        app.middleware("http")(auth_gate_middleware)
 
     if settings.readonly:
 
@@ -102,6 +107,7 @@ def create_app() -> FastAPI:
     app.add_route("/metrics", metrics_endpoint)
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)
