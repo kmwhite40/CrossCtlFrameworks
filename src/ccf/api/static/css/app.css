@@ -167,7 +167,10 @@ html[data-rail="expanded"] .nav-link__label { position: static; transform: none;
 /* container context so grids respond to the *content* width (sidebar-aware) */
 .main { min-height: calc(100vh - var(--topbar-h)); background: transparent; container: main / inline-size; }
 .page { max-width: 1480px; margin: 0 auto; padding: 32px 36px 64px; }
-.page__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 26px; }
+/* consistent vertical rhythm for page sections (header → section → section).
+   Replaces ad-hoc .stack on grid sections, which mis-aligned grid cards. */
+.page > * + * { margin-top: 22px; }
+.page__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .page__title { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; color: #fff; line-height: 1.08; }
 .page__subtitle { color: var(--text-dim); font-size: 14px; margin-top: 6px; max-width: 84ch; }
 .breadcrumbs { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-mute); margin-bottom: 10px; }
@@ -304,6 +307,9 @@ details > summary::-webkit-details-marker { display: none; }
 /* ── Utilities ──────────────────────────────────────────── */
 .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 18px; }
 .stack > * + * { margin-top: 18px; }
+/* alignment guard: grid items never inherit stack/page margins (would stagger them) */
+.grid-cards > *, .cols-2 > *, .cols-3 > *, .cols-4 > *, .grid-2-1 > *, .grid-1-1 > *,
+.layout-split-l > *, .layout-split-r > *, .filters > * { margin-top: 0; }
 .row { display: flex; gap: 8px; align-items: center; }
 .spacer { flex: 1; }
 .dim { color: var(--text-dim); }

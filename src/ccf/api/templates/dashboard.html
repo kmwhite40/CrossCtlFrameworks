@@ -10,7 +10,7 @@
 {% endblock %}
 {% block content %}
 
-<section class="grid-cards stack">
+<section class="grid-cards">
   {% set cards = [
     ('Controls', controls_ct, 'list-checks', '/controls'),
     ('Framework mappings', mapping_ct, 'git-compare-arrows', '/frameworks'),
@@ -29,7 +29,7 @@
   {% endfor %}
 </section>
 
-<section class="stack grid-2-1">
+<section class="grid-2-1">
   <div class="card">
     <div class="card__header">
       <div><div class="card__title">Controls by family</div>

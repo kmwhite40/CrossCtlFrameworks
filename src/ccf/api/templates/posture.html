@@ -14,7 +14,7 @@
 {% set sprs = s.avg_sprs_score %}
 {% set sprs_color = 'var(--ok-500)' if (sprs is not none and sprs >= 88) else ('var(--warn-500)' if (sprs is not none and sprs >= 0) else 'var(--err-500)') %}
 
-<section class="grid-cards stack">
+<section class="grid-cards">
   <div class="kpi">
     <span class="kpi__trend"><i data-lucide="gauge-circle"></i></span>
     <span class="kpi__label">Avg SPRS score</span>
@@ -41,7 +41,7 @@
   </div>
 </section>
 
-<section class="stack grid-1-1">
+<section class="grid-1-1">
   <div class="card">
     <div class="card__header"><div class="card__title">POA&amp;M aging</div>
       <div class="card__subtitle">Open items by age since identification</div></div>
