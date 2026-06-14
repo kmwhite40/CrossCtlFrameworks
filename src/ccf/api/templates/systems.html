@@ -81,16 +81,22 @@
             <div class="table-wrap" style="margin-top:10px">
               <table class="data">
                 <thead><tr>
-                  <th>System</th><th>Baseline</th><th>ATO status</th><th>Expires</th><th>Description</th>
+                  <th>System</th><th>Baseline</th><th>ATO status</th><th>Expires</th><th>Description</th><th></th>
                 </tr></thead>
                 <tbody>
                   {% for s in sys_list %}
                     <tr>
-                      <td><strong>{{ s.name }}</strong></td>
+                      <td><a href="/systems/{{ s.id }}">{{ s.name }}</a></td>
                       <td>{% if s.baseline %}<span class="chip chip--brand">{{ s.baseline | upper }}</span>{% else %}—{% endif %}</td>
                       <td>{% if s.ato_status %}<span class="chip">{{ s.ato_status }}</span>{% else %}—{% endif %}</td>
                       <td class="dim">{{ s.ato_expires_on or '—' }}</td>
                       <td class="dim">{{ s.description or '' }}</td>
+                      <td style="text-align:right">
+                        <form method="post" action="/systems/{{ s.id }}/delete"
+                              onsubmit="return confirm('Delete system &quot;{{ s.name }}&quot; and all its implementations, scoring, POA&amp;Ms and risks? This cannot be undone.');">
+                          <button class="btn btn--ghost btn--sm" type="submit" aria-label="Delete {{ s.name }}"><i data-lucide="trash-2"></i></button>
+                        </form>
+                      </td>
                     </tr>
                   {% endfor %}
                 </tbody>

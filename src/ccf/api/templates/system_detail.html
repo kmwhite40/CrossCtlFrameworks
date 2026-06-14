@@ -16,6 +16,10 @@
 {% block actions %}
   <a class="btn btn--secondary btn--sm" href="/api/oscal/component-definition/{{ sys.id }}" target="_blank"><i data-lucide="download"></i> OSCAL</a>
   <a class="btn btn--primary btn--sm" href="/reports?"><i data-lucide="file-text"></i> Report</a>
+  <form method="post" action="/systems/{{ sys.id }}/delete"
+        onsubmit="return confirm('Delete system &quot;{{ sys.name }}&quot; and all its implementations, scoring, POA&amp;Ms and risks? This cannot be undone.');">
+    <button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="trash-2"></i> Delete</button>
+  </form>
 {% endblock %}
 {% block content %}
 

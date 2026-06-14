@@ -67,6 +67,19 @@ async def create_system(
     return SystemOut.model_validate(obj)
 
 
+@router.delete("/{system_id}", status_code=204)
+async def delete_system(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> None:
+    """Delete a system and its dependent records (implementations, scoring
+    statuses, POA&Ms, risks, assessments cascade; SSP projects are detached)."""
+    sys = await require_system_in_scope(session, system_id, principal)
+    await session.delete(sys)
+    await session.commit()
+
+
 @router.get("/{system_id}/summary", response_model=ComplianceSummary)
 async def compliance_summary(
     system_id: int,

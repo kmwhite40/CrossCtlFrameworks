@@ -150,6 +150,9 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         # Server-rendered UI pages honor the same org boundary.
         assert (await c.get(f"/ssp/{proj['id']}", headers=hb)).status_code == 404
         assert (await c.get(f"/systems/{sys_a}", headers=hb)).status_code == 404
+        # B cannot delete A's system (out of scope → 404, system survives).
+        assert (await c.delete(f"/api/systems/{sys_a}", headers=hb)).status_code == 404
+        assert (await c.get(f"/api/systems/{sys_a}/summary", headers=ha)).status_code == 200
 
         # Login issues a session; /me reflects the principal.
         login = await c.post(

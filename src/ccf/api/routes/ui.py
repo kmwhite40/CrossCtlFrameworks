@@ -446,6 +446,22 @@ async def create_system(
     return RedirectResponse("/systems", status_code=303)
 
 
+@router.post("/systems/{system_id}/delete")
+async def delete_system_ui(
+    system_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    sys = (
+        await session.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if sys is not None and (org is None or sys.organization_id == org):
+        await session.delete(sys)
+        await session.commit()
+    return RedirectResponse("/systems", status_code=303)
+
+
 @router.get("/poams", response_class=HTMLResponse)
 async def poams_page(
     request: Request,

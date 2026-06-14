@@ -96,6 +96,23 @@ async def test_live_score_recompute() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delete_system_cascades_and_404s() -> None:
+    async with _client() as c:
+        await c.post("/api/scoring/seed")
+        sid = await _fresh_system("DeleteMeSys")
+        # leave a dependent scoring status to exercise the cascade
+        await c.put(
+            f"/api/scoring/systems/{sid}/controls/AC.L2-3.1.1", json={"state": "implemented"}
+        )
+        assert (await c.get(f"/api/scoring/systems/{sid}/score")).status_code == 200
+
+        assert (await c.delete(f"/api/systems/{sid}")).status_code == 204
+        # the system (and its scoring) is gone; a second delete 404s
+        assert (await c.get(f"/api/scoring/systems/{sid}/score")).status_code == 404
+        assert (await c.delete(f"/api/systems/{sid}")).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_ssp_project_lifecycle_and_document() -> None:
     async with _client() as c:
         await c.post("/api/scoring/seed")
