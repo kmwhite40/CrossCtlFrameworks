@@ -17,10 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...analytics import org_summary
+from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import sign_session, verify_password
 from ...config import get_settings
 from ...models import (
     POAM,
+    Assessment,
+    AssessmentControlResult,
     AuditLog,
     Control,
     ControlFamily,
@@ -1272,3 +1275,228 @@ async def audit_page(
             "action": action or "",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Assessment workflow (CMMC L2)
+# ---------------------------------------------------------------------------
+
+_FINDING_META = [
+    ("not_assessed", "Not assessed", "chip--ghost"),
+    ("satisfied", "Satisfied", "chip--ok"),
+    ("other_than_satisfied", "Other than satisfied", "chip--err"),
+    ("not_applicable", "N/A", "chip--info"),
+]
+
+
+@router.get("/assessments", response_class=HTMLResponse)
+async def assessments_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    a_stmt = select(Assessment).order_by(Assessment.id.desc())
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        a_stmt = a_stmt.join(System, System.id == Assessment.system_id).where(
+            System.organization_id == org
+        )
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    assessments = (await session.execute(a_stmt)).scalars().all()
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    sys_names = {s.id: s.name for s in systems}
+    have_controls = (await session.execute(select(func.count(ScoringControl.id)))).scalar_one()
+    # progress per assessment
+    progress: dict[int, dict[str, Any]] = {}
+    for a in assessments:
+        rows = (
+            await session.execute(
+                select(AssessmentControlResult).where(
+                    AssessmentControlResult.assessment_id == a.id
+                )
+            )
+        ).scalars().all()
+        progress[a.id] = summarize_results(rows)
+    return templates.TemplateResponse(
+        request,
+        "assessments.html",
+        {
+            "active": "assessments",
+            "assessments": assessments,
+            "systems": systems,
+            "sys_names": sys_names,
+            "have_controls": have_controls,
+            "progress": progress,
+        },
+    )
+
+
+@router.post("/assessments/new")
+async def assessment_create_ui(
+    request: Request,
+    system_id: int = Form(...),
+    name: str = Form("CMMC L2 Assessment"),
+    kind: str = Form("self"),
+    assessor: str | None = Form(None),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    if sys is None or (org is not None and sys.organization_id != org):
+        return RedirectResponse("/assessments", status_code=303)
+    a = Assessment(
+        system_id=system_id,
+        name=name.strip() or "CMMC L2 Assessment",
+        kind=kind if kind in ("self", "internal", "3pao", "ig", "audit") else "self",
+        assessor=(assessor or None),
+        started_on=datetime.now(UTC).date(),
+    )
+    session.add(a)
+    await session.flush()
+    await seed_assessment_results(session, a)
+    return RedirectResponse(f"/assessments/{a.id}", status_code=303)
+
+
+async def _scoped_assessment(
+    session: AsyncSession, assessment_id: int, org: int | None
+) -> Assessment | None:
+    a = (
+        await session.execute(select(Assessment).where(Assessment.id == assessment_id))
+    ).scalar_one_or_none()
+    if a is None:
+        return None
+    sys = (
+        await session.execute(select(System).where(System.id == a.system_id))
+    ).scalar_one_or_none()
+    if sys is None or (org is not None and sys.organization_id != org):
+        return None
+    return a
+
+
+@router.get("/assessments/{assessment_id}", response_class=HTMLResponse)
+async def assessment_detail(
+    assessment_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    a = await _scoped_assessment(session, assessment_id, _principal_org(request))
+    if a is None:
+        raise HTTPException(404, "assessment not found")
+    sys = (await session.execute(select(System).where(System.id == a.system_id))).scalar_one()
+    results = (
+        await session.execute(
+            select(AssessmentControlResult)
+            .where(AssessmentControlResult.assessment_id == assessment_id)
+            .order_by(AssessmentControlResult.sort_order)
+        )
+    ).scalars().all()
+    by_domain: dict[str, list[AssessmentControlResult]] = {}
+    for r in results:
+        by_domain.setdefault(r.domain or "?", []).append(r)
+    ordered = [d for d in ssp_constants.DOMAIN_ORDER if d in by_domain]
+    ordered += [d for d in by_domain if d not in ssp_constants.DOMAIN_ORDER]
+    return templates.TemplateResponse(
+        request,
+        "assessment_detail.html",
+        {
+            "active": "assessments",
+            "assessment": a,
+            "system": sys,
+            "by_domain": by_domain,
+            "ordered_domains": ordered,
+            "domain_name": ssp_constants.domain_name,
+            "section_number": ssp_constants.section_number,
+            "summary": summarize_results(results),
+            "findings": FINDINGS,
+            "finding_meta": _FINDING_META,
+        },
+    )
+
+
+@router.post("/assessments/{assessment_id}/result/{result_id}", response_class=HTMLResponse)
+async def assessment_save_result(
+    assessment_id: int,
+    result_id: int,
+    request: Request,
+    finding: str = Form("not_assessed"),
+    examine_note: str = Form(""),
+    interview_note: str = Form(""),
+    test_note: str = Form(""),
+    assessor_note: str = Form(""),
+    evidence_ref: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    if await _scoped_assessment(session, assessment_id, _principal_org(request)) is None:
+        raise HTTPException(404, "assessment not found")
+    result = (
+        await session.execute(
+            select(AssessmentControlResult)
+            .where(AssessmentControlResult.id == result_id)
+            .where(AssessmentControlResult.assessment_id == assessment_id)
+        )
+    ).scalar_one_or_none()
+    if result is None:
+        raise HTTPException(404, "result not found")
+    form = await request.form()
+    result.finding = finding if finding in FINDINGS else "not_assessed"
+    result.examine_note = examine_note or None
+    result.interview_note = interview_note or None
+    result.test_note = test_note or None
+    result.assessor_note = assessor_note or None
+    result.evidence_ref = evidence_ref or None
+    result.reviewed = "reviewed" in form
+    objs: list[dict[str, str]] = []
+    for part in result.objective_findings or []:
+        label = part.get("label", "")
+        of = str(form.get(f"obj::{label}", part.get("finding", "not_assessed")))
+        objs.append({"label": label, "text": part.get("text", ""), "finding": of})
+    result.objective_findings = objs
+    result.observed_on = datetime.now(UTC).date()
+    await session.commit()
+    return HTMLResponse(
+        '<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>'
+        '<script>if(window.lucide)lucide.createIcons();</script>'
+    )
+
+
+@router.post("/assessments/{assessment_id}/poams")
+async def assessment_make_poams_ui(
+    assessment_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    a = await _scoped_assessment(session, assessment_id, _principal_org(request))
+    if a is not None:
+        results = (
+            await session.execute(
+                select(AssessmentControlResult).where(
+                    AssessmentControlResult.assessment_id == assessment_id
+                )
+            )
+        ).scalars().all()
+        existing = {
+            t for (t,) in (
+                await session.execute(select(POAM.title).where(POAM.system_id == a.system_id))
+            ).all()
+        }
+        today = datetime.now(UTC).date()
+        for r in results:
+            if r.finding != "other_than_satisfied":
+                continue
+            title = f"{r.control_id} — {r.title or 'Other than satisfied'}"
+            if title in existing:
+                continue
+            session.add(
+                POAM(
+                    system_id=a.system_id,
+                    title=title,
+                    weakness=(
+                        f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
+                        f"{r.assessor_note or ''}"
+                    ).strip(),
+                    severity="moderate",
+                    status="open",
+                    identified_on=today,
+                )
+            )
+        await session.commit()
+    return RedirectResponse(f"/assessments/{assessment_id}", status_code=303)

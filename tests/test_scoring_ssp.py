@@ -145,3 +145,43 @@ async def test_ssp_project_lifecycle_and_document() -> None:
         )
         assert doc.content[:2] == b"PK"  # a real .docx (zip) payload
         assert "lifecycle-co" in doc.headers["content-disposition"]
+
+
+@pytest.mark.asyncio
+async def test_assessment_lifecycle_sar_and_poams() -> None:
+    async with _client() as c:
+        await c.post("/api/scoring/seed")
+        sid = await _fresh_system("AssessSys")
+        r = await c.post(
+            "/api/assessments",
+            json={"system_id": sid, "name": "Q3 SA", "kind": "self", "assessor": "3PAO"},
+        )
+        assert r.status_code == 201
+        aid = r.json()["id"]
+
+        detail = (await c.get(f"/api/assessments/{aid}")).json()
+        assert len(detail["results"]) == 110
+        assert detail["results"][0]["objective_findings"]  # seeded from objectives
+
+        await c.put(f"/api/assessments/{aid}/controls/AC.L2-3.1.1", json={"finding": "satisfied"})
+        await c.put(
+            f"/api/assessments/{aid}/controls/AC.L2-3.1.12",
+            json={"finding": "other_than_satisfied", "assessor_note": "no session monitoring"},
+        )
+        summ = (await c.get(f"/api/assessments/{aid}/summary")).json()
+        assert summ["assessed"] == 2
+        assert summ["by_finding"]["satisfied"] == 1
+        assert summ["by_finding"]["other_than_satisfied"] == 1
+
+        # POA&Ms auto-created from other-than-satisfied findings (idempotent).
+        assert (await c.post(f"/api/assessments/{aid}/poams-from-findings")).json()["created"] == 1
+        assert (await c.post(f"/api/assessments/{aid}/poams-from-findings")).json()["created"] == 0
+
+        sar = await c.get(f"/api/assessments/{aid}/sar")
+        assert sar.status_code == 200 and sar.content[:2] == b"PK"
+
+        # invalid finding is rejected.
+        bad = await c.put(
+            f"/api/assessments/{aid}/controls/AC.L2-3.1.1", json={"finding": "bogus"}
+        )
+        assert bad.status_code == 422

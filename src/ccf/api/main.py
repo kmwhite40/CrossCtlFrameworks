@@ -23,6 +23,7 @@ from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
+    assessments,
     audit,
     auth,
     controls,
@@ -119,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(systems.router)
     app.include_router(scoring.router)
     app.include_router(ssp.router)
+    app.include_router(assessments.router)
     app.include_router(posture.router)
     app.include_router(audit.router)
     app.include_router(evidence.router)

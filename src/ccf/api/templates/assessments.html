@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Assessments · Concord{% endblock %}
+{% block heading %}Assessments{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Run a CMMC Level 2 assessment — examine / interview / test each of the
+  110 practices, record findings, and generate the Security Assessment Report.</p>
+{% endblock %}
+{% block content %}
+
+{% if not have_controls %}
+  <div class="card" style="margin-bottom:16px"><div class="card__body">
+    <div class="row between">
+      <div class="dim">Load the scoring matrix first — assessment results are seeded from it.</div>
+      <button class="btn btn--secondary" hx-post="/api/scoring/seed" hx-swap="none"
+              hx-on::after-request="window.location.reload()"><i data-lucide="download"></i> Load scoring matrix</button>
+    </div>
+  </div></div>
+{% endif %}
+
+<div class="layout-split-r">
+  <div class="card">
+    <div class="card__header"><div class="card__title">Assessments</div></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Assessment</th><th>System</th><th>Type</th><th>Assessor</th><th>Progress</th><th></th></tr></thead>
+        <tbody>
+          {% for a in assessments %}
+          {% set p = progress.get(a.id) %}
+          <tr>
+            <td><a href="/assessments/{{ a.id }}" style="font-weight:600">{{ a.name }}</a>
+              <div class="dim" style="font-size:11px">{{ a.started_on or '' }}</div></td>
+            <td>{{ sys_names.get(a.system_id, '—') }}</td>
+            <td><span class="chip chip--brand">{{ a.kind }}</span></td>
+            <td class="dim">{{ a.assessor or '—' }}</td>
+            <td>
+              {% if p %}
+              <div class="row" style="gap:6px;align-items:center">
+                <span class="bar-row__track" style="width:80px"><span class="bar-row__fill" style="width:{{ p.complete_pct }}%;background:var(--brand-500)"></span></span>
+                <span class="dim" style="font-size:12px">{{ p.assessed }}/{{ p.total }}</span>
+              </div>
+              {% if p.by_finding.get('other_than_satisfied') %}<span class="chip chip--err">{{ p.by_finding['other_than_satisfied'] }} OTS</span>{% endif %}
+              {% endif %}
+            </td>
+            <td class="row" style="gap:6px">
+              <a class="btn btn--ghost btn--sm" href="/assessments/{{ a.id }}" aria-label="Open {{ a.name }}"><i data-lucide="pencil"></i></a>
+              <a class="btn btn--secondary btn--sm" href="/api/assessments/{{ a.id }}/sar" aria-label="Download SAR"><i data-lucide="file-down"></i> SAR</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="dim">No assessments yet — start one for a system →</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <form method="post" action="/assessments/new" class="card">
+    <div class="card__header"><div class="card__title">New assessment</div></div>
+    <div class="card__body stack" style="gap:12px">
+      <label class="field-group"><span class="dim" style="font-size:12px">System *</span>
+        <select class="select" name="system_id" required>
+          {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% else %}
+          <option value="" disabled>Create a system first</option>{% endfor %}
+        </select></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Name</span>
+        <input class="input" name="name" value="CMMC L2 Assessment"></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Type</span>
+        <select class="select" name="kind">
+          <option value="self">Self-assessment</option>
+          <option value="internal">Internal</option>
+          <option value="3pao">C3PAO / 3PAO</option>
+          <option value="ig">IG</option>
+          <option value="audit">Audit</option>
+        </select></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Lead assessor</span>
+        <input class="input" name="assessor" placeholder="Name / firm"></label>
+      <button class="btn btn--primary" type="submit"><i data-lucide="clipboard-check"></i> Start &amp; seed 110 practices</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

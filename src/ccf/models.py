@@ -467,6 +467,48 @@ class AssessmentResult(Base):
     )
 
 
+class AssessmentControlResult(Base):
+    """An assessor's finding for one CMMC L2 practice within an assessment.
+
+    Keyed to ``scoring_controls`` (the 110 practices) by ``control_id`` so the
+    assessor works the live matrix' objectives + examine/interview/test methods.
+    """
+
+    __tablename__ = "assessment_control_results"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    assessment_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.assessments.id", ondelete="CASCADE"), index=True
+    )
+    control_id: Mapped[str] = mapped_column(String(32), index=True)
+    nist_id: Mapped[str | None] = mapped_column(String(16))
+    domain: Mapped[str | None] = mapped_column(String(8))
+    title: Mapped[str | None] = mapped_column(String(512))
+    requirement: Mapped[str | None] = mapped_column(Text)
+
+    # satisfied | other_than_satisfied | not_applicable | not_assessed
+    finding: Mapped[str] = mapped_column(String(32), default="not_assessed")
+    objective_findings: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    examine_note: Mapped[str | None] = mapped_column(Text)
+    interview_note: Mapped[str | None] = mapped_column(Text)
+    test_note: Mapped[str | None] = mapped_column(Text)
+    assessor_note: Mapped[str | None] = mapped_column(Text)
+    evidence_ref: Mapped[str | None] = mapped_column(String(1024))
+
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
+    reviewer: Mapped[str | None] = mapped_column(String(255))
+    observed_on: Mapped[date | None] = mapped_column(Date)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "control_id", name="uq_assess_ctrl"),
+        Index("ix_assess_ctrl_assessment_sort", "assessment_id", "sort_order"),
+    )
+
+
 class POAM(Base):
     __tablename__ = "poams"
 
