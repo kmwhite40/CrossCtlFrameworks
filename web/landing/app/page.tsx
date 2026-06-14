@@ -1,4 +1,4 @@
-import ShaderBackground from "@/components/ui/shader-background";
+import CybercoreBackground from "@/components/ui/cybercore-section-hero";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -103,9 +103,9 @@ const STEPS = [
 export default function Page() {
   return (
     <>
-      <ShaderBackground />
+      <CybercoreBackground beamCount={70} />
 
-      <div className="relative">
+      <div className="relative z-10">
         {/* ── Nav ───────────────────────────────────────────── */}
         <header className="sticky top-0 z-20 backdrop-blur-md bg-background/30 border-b border-border/50">
           <div className="container flex h-16 items-center">
@@ -316,7 +316,7 @@ export default function Page() {
         {/* ── Footer ────────────────────────────────────────── */}
         <footer className="border-t border-border/50 py-10">
           <div className="container flex flex-col md:flex-row items-center justify-between gap-4 text-sm text-muted-foreground">
-            <div>© 2026 Colleen Townsend. All rights reserved.</div>
+            <div>Concord — cross-framework compliance platform</div>
             <div className="flex items-center gap-5">
               <Link href="http://localhost:8088" className="hover:text-foreground">App</Link>
               <Link href="http://localhost:8088/docs" className="hover:text-foreground">API</Link>
