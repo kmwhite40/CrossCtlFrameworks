@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Concord — cross-framework compliance command console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
+  <script src="/static/vendor/lucide.min.js" defer></script>
+  <style>
+    :root {
+      --cc-bg: #0a0d1e; --cc-light: #8b93ff; --cc-highlight: #2dd4bf;
+      --cc-glow-1: rgba(111,123,255,0.8); --cc-glow-2: rgba(90,99,240,0.55);
+      --cc-highlight-glow: rgba(45,212,191,0.7);
+    }
+    @keyframes lp-rise { 0% { transform: translateY(100%); opacity: 0; } 10% { opacity: 1; } 100% { transform: translateY(-5%); opacity: 0; } }
+    @keyframes lp-fade { 0%,100% { opacity: 0; } 5%,85% { opacity: 0.8; } }
+    @keyframes lp-floorGlow { 0%,100% { transform: translateX(-50%) scale(0.95); opacity: 0.6; } 50% { transform: translateX(-50%) scale(1.05); opacity: 1; } }
+    @keyframes lp-mainGlow { from { opacity: 0.45; filter: blur(30px); } to { opacity: 0.75; filter: blur(18px); } }
+    @keyframes lp-moveGrid { from { background-position: 0 0; } to { background-position: -100px -50px; } }
+    @keyframes lp-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+    .lp-scene { position: fixed; inset: 0; z-index: 0; overflow: hidden; perspective: 700px;
+      background: radial-gradient(80% 60% at 50% 110%, rgba(111,123,255,0.18), transparent 60%), var(--cc-bg); }
+    .lp-floor { position: absolute; left: 50%; bottom: -12%; width: 240%; height: 95%;
+      transform: translateX(-50%) rotateX(76deg); transform-origin: bottom center;
+      background-image: linear-gradient(var(--cc-light) 1px, transparent 1px), linear-gradient(90deg, var(--cc-light) 1px, transparent 1px);
+      background-size: 48px 48px; opacity: 0.22; animation: lp-moveGrid 4s linear infinite;
+      -webkit-mask-image: linear-gradient(to top, black, transparent 72%); mask-image: linear-gradient(to top, black, transparent 72%); }
+    .lp-scene::before { content: ""; position: absolute; left: 50%; bottom: 4%; width: 70%; height: 220px; transform: translateX(-50%);
+      background: radial-gradient(ellipse at center, var(--cc-glow-1), transparent 70%); filter: blur(50px); animation: lp-floorGlow 5s ease-in-out infinite; }
+    .lp-column { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; transform: translateX(-50%);
+      background: linear-gradient(to top, transparent, var(--cc-light) 45%, transparent); animation: lp-mainGlow 3s ease-in-out infinite alternate; }
+    .lp-beam { position: absolute; bottom: 0; height: 62vh; background: linear-gradient(to top, transparent, var(--cc-light));
+      box-shadow: 0 0 8px var(--cc-glow-1), 0 0 16px var(--cc-glow-2); animation-name: lp-rise, lp-fade;
+      animation-timing-function: ease-out, ease-in-out; animation-iteration-count: infinite, infinite; will-change: transform, opacity; }
+    .lp-beam.secondary { background: linear-gradient(to top, transparent, var(--cc-highlight)); box-shadow: 0 0 8px var(--cc-highlight-glow), 0 0 18px var(--cc-highlight-glow); }
+    .lp-wrap { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; }
+    .lp-nav { display: flex; align-items: center; gap: 14px; padding: 20px 28px; }
+    .lp-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; color: #fff; text-decoration: none; }
+    .lp-mark { width: 34px; height: 34px; border-radius: 10px; background: radial-gradient(120% 120% at 30% 20%, #b9a6ff, var(--brand-500) 55%, var(--brand-700)); color: #fff; display: grid; place-items: center; font-weight: 800; box-shadow: var(--glow); }
+    .lp-nav a.lp-link { color: var(--text-dim); text-decoration: none; font-size: 14px; }
+    .lp-nav a.lp-link:hover { color: #fff; }
+    .lp-hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px 24px 80px; }
+    .lp-hero > * { animation: lp-up .6s cubic-bezier(.2,.7,.2,1) backwards; }
+    .lp-hero > *:nth-child(2){animation-delay:.08s} .lp-hero > *:nth-child(3){animation-delay:.16s} .lp-hero > *:nth-child(4){animation-delay:.24s} .lp-hero > *:nth-child(5){animation-delay:.32s}
+    .lp-eyebrow { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--brand-300); border: 1px solid var(--glass-border); background: var(--glass); border-radius: 999px; padding: 6px 14px; }
+    .lp-title { font-size: clamp(40px, 7vw, 80px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.04; color: #fff; margin: 22px 0 0; max-width: 16ch; }
+    .lp-title .grad { background: linear-gradient(135deg, hsl(235 100% 82%), hsl(172 70% 62%)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .lp-sub { margin: 22px auto 0; max-width: 60ch; color: var(--text-dim); font-size: clamp(15px, 2vw, 18px); line-height: 1.6; }
+    .lp-cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 34px; }
+    .lp-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; margin-top: 56px; width: min(880px, 92vw); }
+    @media (max-width: 640px){ .lp-stats { grid-template-columns: 1fr 1fr; } .lp-nav .lp-link { display:none; } }
+    .lp-stat { background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-lg); padding: 18px; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); text-align: left; }
+    .lp-stat b { display: block; font-size: 28px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+    .lp-stat span { font-size: 12.5px; color: var(--text-mute); }
+    .lp-foot { text-align: center; padding: 22px; color: var(--text-mute); font-size: 12.5px; }
+    @media (prefers-reduced-motion: reduce) { .lp-floor, .lp-column, .lp-beam, .lp-scene::before, .lp-hero > * { animation: none; } }
+  </style>
+</head>
+<body>
+  <div class="lp-scene" aria-hidden="true">
+    <div class="lp-floor"></div>
+    <div class="lp-column"></div>
+    <div class="lp-beams" id="lp-beams"></div>
+  </div>
+
+  <div class="lp-wrap">
+    <nav class="lp-nav">
+      <a class="lp-brand" href="/"><span class="lp-mark">C</span> Concord</a>
+      <span style="flex:1"></span>
+      <a class="lp-link" href="/docs">API docs</a>
+      <a class="btn btn--secondary btn--sm" href="/dashboard"><i data-lucide="layout-dashboard"></i> Dashboard</a>
+      <a class="btn btn--primary btn--sm" href="/posture"><i data-lucide="shield-check"></i> Launch</a>
+    </nav>
+
+    <main class="lp-hero">
+      <span class="lp-eyebrow"><i data-lucide="sparkles" style="width:14px;height:14px"></i> CMMC L2 · NIST 800-171 · 26 frameworks</span>
+      <h1 class="lp-title">Cross-framework compliance, <span class="grad">in concord.</span></h1>
+      <p class="lp-sub">Live SPRS scoring, an SSP &amp; SAR generator, an assessor workflow, evidence and
+        POA&amp;M tracking, OSCAL export, and a tamper-evident audit trail — one command console for your
+        entire control program.</p>
+      <div class="lp-cta">
+        <a class="btn btn--primary btn--lg" href="/dashboard">Enter dashboard <i data-lucide="arrow-right"></i></a>
+        <a class="btn btn--secondary btn--lg" href="/posture">View posture</a>
+      </div>
+      <div class="lp-stats">
+        <div class="lp-stat"><b>110</b><span>CMMC L2 practices, scored live</span></div>
+        <div class="lp-stat"><b>121,944</b><span>framework mappings</span></div>
+        <div class="lp-stat"><b>26</b><span>canonical frameworks</span></div>
+        <div class="lp-stat"><b>SPRS</b><span>+ SSP, SAR &amp; OSCAL output</span></div>
+      </div>
+    </main>
+
+    <footer class="lp-foot">Concord — cross-framework compliance platform · <a class="lp-link" href="/dashboard" style="color:var(--brand-300)">open the app →</a></footer>
+  </div>
+
+  <script>
+    (function () {
+      var root = document.getElementById('lp-beams');
+      if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      var n = 70;
+      for (var i = 0; i < n; i++) {
+        var rise = Math.random() * 3 + 5;
+        var b = document.createElement('div');
+        b.className = 'lp-beam' + (Math.random() < 0.15 ? ' secondary' : '');
+        b.style.left = (Math.random() * 100) + '%';
+        b.style.width = (Math.floor(Math.random() * 2) + 1) + 'px';
+        b.style.animationDelay = (Math.random() * 6) + 's';
+        b.style.animationDuration = rise + 's, ' + rise + 's';
+        root.appendChild(b);
+      }
+    })();
+  </script>
+</body>
+</html>

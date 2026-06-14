@@ -111,7 +111,7 @@ async def auth_gate_middleware(
     if not get_settings().auth_enabled:
         return await call_next(request)
     path = request.url.path
-    if path == "/" or not any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+    if path != "/" and not any(path.startswith(p) for p in _PUBLIC_PREFIXES):
         factory = get_session_factory()
         async with factory() as session:
             principal = await _lookup_principal(request, session)

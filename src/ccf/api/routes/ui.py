@@ -108,6 +108,12 @@ async def _scoped_project(
 
 
 @router.get("/", response_class=HTMLResponse)
+async def landing(request: Request) -> HTMLResponse:
+    """Public marketing front door — shown before the dashboard."""
+    return templates.TemplateResponse(request, "landing.html", {"asset_v": _asset_version()})
+
+
+@router.get("/dashboard", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     controls_ct = (await session.execute(select(func.count(Control.id)))).scalar_one()
     mapping_ct = (await session.execute(select(func.count(FrameworkMapping.id)))).scalar_one()
