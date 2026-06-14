@@ -1,10 +1,9 @@
-# Concord — Design System ("SIGINT")
+# Concord — Design System (indigo glassmorphism)
 
 A single, app-specific visual language for the CMMC/NIST compliance command
-console. The aesthetic is **defense-grade instrumentation**: a graphite mission-
-control surface, steel-cyan authority, a sharp signal-amber live accent, and
-dense, legible telemetry. It is deliberately *not* the generic "Inter + purple
-gradient on white" look.
+console: a deep indigo/violet gradient canvas with **frosted-glass panels**,
+periwinkle (`--brand`) and teal (`--accent`) accents, soft glows, and Open Sans
+type — modern, calm, and legible over the dark surface.
 
 All tokens and class names live in [`src/ccf/api/static/css/app.css`](../src/ccf/api/static/css/app.css)
 and are a **stable contract** consumed by the Jinja templates — restyle the
@@ -14,13 +13,13 @@ and are a **stable contract** consumed by the Jinja templates — restyle the
 
 | Element | Decision | Why |
 |---|---|---|
-| Surface | Graphite `#090b10`→`#0c0f15` + faint 34px HUD grid | Mission-control / SCIF, depth without noise |
-| Authority color | **Steel cyan** `--brand-500 #2bb0c6` | Primary actions, active nav, links, focus — calm, technical |
-| Live accent | **Signal amber** `--accent-500 #ffb224` | Sparse, high-impact: brand glyph, active-nav LED, live metrics, warnings |
-| Panels | Hairline 1px border, light blur, small radius (8–12px) | Precise instrument panels, not pillowy "glass blobs" |
-| Status | **LED dots** (`.led--ok/warn/err/live`) + semantic chips | Reads at a glance like a control board |
+| Surface | Indigo/violet gradient `#0c1024`→`#080a18` with radial brand/teal pools | Modern, atmospheric depth |
+| Panels | Frosted glass: translucent fill + `backdrop-blur(20px)` + hairline border + inner highlight, `--radius-lg` (18px) | The signature "glass" look |
+| Primary | **Periwinkle** `--brand-500 #6f7bff` | Active nav, primary buttons, links, focus, brand mark |
+| Accent | **Teal** `--accent-500 #2dd4bf` | Secondary highlights / data |
+| Status | semantic chips + optional `.led--ok/warn/err/live` dots | At-a-glance health |
 
-Dominant graphite + cyan, **sharp amber accents** — never an even rainbow.
+Dominant indigo + glass, with periwinkle/teal accents and semantic green/amber/red.
 
 ## Type
 

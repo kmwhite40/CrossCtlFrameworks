@@ -61,6 +61,8 @@ where = ["src"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# Vendored third-party Claude Code skills are not part of our codebase.
+extend-exclude = [".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "N", "PL", "RUF"]
