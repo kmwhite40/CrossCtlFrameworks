@@ -68,6 +68,28 @@ def _ctx(**extra: object) -> dict[str, object]:
     return {"readonly": get_settings().readonly, **extra}
 
 
+def _principal_org(request: Request) -> int | None:
+    """Organization id to scope UI queries by.
+
+    ``None`` means unscoped — auth disabled (no principal on the request state)
+    or a global principal. Set by ``auth_gate_middleware`` when auth is enabled.
+    """
+    principal = getattr(request.state, "principal", None)
+    return getattr(principal, "org_id", None) if principal is not None else None
+
+
+async def _scoped_project(
+    session: AsyncSession, project_id: int, org: int | None
+) -> SSPProject | None:
+    """Return the SSP project iff visible to ``org`` (None = unscoped)."""
+    proj = (
+        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
+    ).scalar_one_or_none()
+    if proj is None or (org is not None and proj.organization_id != org):
+        return None
+    return proj
+
+
 @router.get("/", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     controls_ct = (await session.execute(select(func.count(Control.id)))).scalar_one()
@@ -350,8 +372,14 @@ async def systems_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    org = _principal_org(request)
+    orgs_stmt = select(Organization).order_by(Organization.name)
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        orgs_stmt = orgs_stmt.where(Organization.id == org)
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    orgs = (await session.execute(orgs_stmt)).scalars().all()
+    systems = (await session.execute(sys_stmt)).scalars().all()
     by_org: dict[int, list[System]] = {}
     for s in systems:
         by_org.setdefault(s.organization_id, []).append(s)
@@ -369,11 +397,13 @@ async def systems_page(
 
 @router.post("/systems/orgs")
 async def create_org(
+    request: Request,
     name: str = Form(...),
     description: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    if name.strip():
+    # Tenant principals may not create new organizations.
+    if _principal_org(request) is None and name.strip():
         session.add(Organization(name=name.strip(), description=(description or None)))
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
@@ -381,16 +411,18 @@ async def create_org(
 
 @router.post("/systems/new")
 async def create_system(
+    request: Request,
     organization_id: int = Form(...),
     name: str = Form(...),
     description: str | None = Form(None),
     baseline: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    org = _principal_org(request)
     if name.strip():
         session.add(
             System(
-                organization_id=organization_id,
+                organization_id=(org if org is not None else organization_id),
                 name=name.strip(),
                 description=(description or None),
                 baseline=(baseline or None),
@@ -405,7 +437,13 @@ async def poams_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    rows = (await session.execute(select(POAM).order_by(POAM.due_on.nulls_last()))).scalars().all()
+    org = _principal_org(request)
+    stmt = select(POAM).order_by(POAM.due_on.nulls_last())
+    if org is not None:
+        stmt = stmt.where(
+            POAM.system_id.in_(select(System.id).where(System.organization_id == org))
+        )
+    rows = (await session.execute(stmt)).scalars().all()
     return templates.TemplateResponse(
         request,
         "poams.html",
@@ -453,8 +491,9 @@ async def system_detail(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    org = _principal_org(request)
     sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    if sys is None:
+    if sys is None or (org is not None and sys.organization_id != org):
         raise HTTPException(404, "system not found")
     impl_counts = (
         await session.execute(
@@ -497,8 +536,15 @@ async def risks_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    rows = (await session.execute(select(Risk).order_by(Risk.created_at.desc()))).scalars().all()
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    org = _principal_org(request)
+    risk_stmt = select(Risk).order_by(Risk.created_at.desc())
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        org_systems = select(System.id).where(System.organization_id == org)
+        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_systems))
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    rows = (await session.execute(risk_stmt)).scalars().all()
+    systems = (await session.execute(sys_stmt)).scalars().all()
     return templates.TemplateResponse(
         request,
         "risks.html",
@@ -515,8 +561,14 @@ async def users_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    rows = (await session.execute(select(User).order_by(User.email))).scalars().all()
-    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
+    org = _principal_org(request)
+    user_stmt = select(User).order_by(User.email)
+    orgs_stmt = select(Organization).order_by(Organization.name)
+    if org is not None:
+        user_stmt = user_stmt.where(User.organization_id == org)
+        orgs_stmt = orgs_stmt.where(Organization.id == org)
+    rows = (await session.execute(user_stmt)).scalars().all()
+    orgs = (await session.execute(orgs_stmt)).scalars().all()
     return templates.TemplateResponse(
         request,
         "users.html",
@@ -784,10 +836,14 @@ async def scoring_page(
     point_value: str | None = Query(None),
     coverage: str | None = Query(None),
 ) -> HTMLResponse:
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
-    organizations = (
-        (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
-    )
+    org = _principal_org(request)
+    sys_stmt = select(System).order_by(System.name)
+    orgs_stmt = select(Organization).order_by(Organization.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+        orgs_stmt = orgs_stmt.where(Organization.id == org)
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    organizations = (await session.execute(orgs_stmt)).scalars().all()
     total_controls = (await session.execute(select(func.count(ScoringControl.id)))).scalar_one()
     ctx: dict[str, Any] = {
         "active": "scoring",
@@ -805,11 +861,12 @@ async def scoring_page(
         sys = (
             await session.execute(select(System).where(System.id == system_id))
         ).scalar_one_or_none()
-        ctx["system"] = sys
-        ctx["summary"] = await compute_summary(session, system_id)
-        ctx["rows"] = await _scoring_rows(
-            session, system_id, domain=domain, point_value=point_value, coverage=coverage
-        )
+        if sys is not None and (org is None or sys.organization_id == org):
+            ctx["system"] = sys
+            ctx["summary"] = await compute_summary(session, system_id)
+            ctx["rows"] = await _scoring_rows(
+                session, system_id, domain=domain, point_value=point_value, coverage=coverage
+            )
     return templates.TemplateResponse(request, "scoring.html", ctx)
 
 
@@ -821,6 +878,13 @@ async def scoring_set_state(
     state: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    org = _principal_org(request)
+    if org is not None:
+        sys = (
+            await session.execute(select(System).where(System.id == system_id))
+        ).scalar_one_or_none()
+        if sys is None or sys.organization_id != org:
+            raise HTTPException(404, "system not found")
     if state in STATES:
         ctrl = (
             await session.execute(
@@ -850,23 +914,33 @@ async def scoring_set_state(
 
 @router.post("/scoring/systems/new")
 async def scoring_create_system(
+    request: Request,
     organization_name: str = Form(...),
     system_name: str = Form(...),
     baseline: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Create (or reuse) an org + system and jump straight into scoring it."""
+    principal_org = _principal_org(request)
     org_name = organization_name.strip()
     sys_name = system_name.strip()
-    if not org_name or not sys_name:
+    if not sys_name or (principal_org is None and not org_name):
         return RedirectResponse("/scoring", status_code=303)
-    org = (
-        await session.execute(select(Organization).where(Organization.name == org_name))
-    ).scalar_one_or_none()
-    if org is None:
-        org = Organization(name=org_name)
-        session.add(org)
-        await session.flush()
+    if principal_org is not None:
+        # Tenant principals are pinned to their own organization.
+        org = (
+            await session.execute(select(Organization).where(Organization.id == principal_org))
+        ).scalar_one_or_none()
+        if org is None:
+            return RedirectResponse("/scoring", status_code=303)
+    else:
+        org = (
+            await session.execute(select(Organization).where(Organization.name == org_name))
+        ).scalar_one_or_none()
+        if org is None:
+            org = Organization(name=org_name)
+            session.add(org)
+            await session.flush()
     sysm = (
         await session.execute(
             select(System).where(System.organization_id == org.id, System.name == sys_name)
@@ -890,13 +964,17 @@ async def scoring_create_system(
 async def ssp_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    projects = (
-        (await session.execute(select(SSPProject).order_by(SSPProject.created_at.desc())))
-        .scalars()
-        .all()
-    )
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
-    orgs = (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
+    org = _principal_org(request)
+    proj_stmt = select(SSPProject).order_by(SSPProject.created_at.desc())
+    sys_stmt = select(System).order_by(System.name)
+    orgs_stmt = select(Organization).order_by(Organization.name)
+    if org is not None:
+        proj_stmt = proj_stmt.where(SSPProject.organization_id == org)
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+        orgs_stmt = orgs_stmt.where(Organization.id == org)
+    projects = (await session.execute(proj_stmt)).scalars().all()
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    orgs = (await session.execute(orgs_stmt)).scalars().all()
     have_controls = (await session.execute(select(func.count(ScoringControl.id)))).scalar_one()
     return templates.TemplateResponse(
         request,
@@ -914,6 +992,7 @@ async def ssp_page(
 
 @router.post("/ssp/new")
 async def ssp_create(
+    request: Request,
     customer_name: str = Form(...),
     system_id: str | None = Form(None),
     system_name: str | None = Form(None),
@@ -925,17 +1004,22 @@ async def ssp_create(
 ) -> RedirectResponse:
     if not customer_name.strip():
         return RedirectResponse("/ssp", status_code=303)
+    org = _principal_org(request)
     sid = int(system_id) if system_id and system_id.isdigit() else None
     sname = system_name
     if sid is not None:
         sys = (await session.execute(select(System).where(System.id == sid))).scalar_one_or_none()
-        if sys is not None:
-            sname = sname or sys.name
+        if sys is None or (org is not None and sys.organization_id != org):
+            return RedirectResponse("/ssp", status_code=303)
+        sname = sname or sys.name
+        if org is None:
+            org = sys.organization_id
     doc_date: date | None = None
     if document_date:
         with contextlib.suppress(ValueError):
             doc_date = date.fromisoformat(document_date)
     proj = SSPProject(
+        organization_id=org,
         system_id=sid,
         customer_name=customer_name.strip(),
         system_name=(sname or None),
@@ -953,13 +1037,12 @@ async def ssp_create(
 @router.post("/ssp/{project_id}/regenerate")
 async def ssp_regenerate(
     project_id: int,
+    request: Request,
     platform: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Switch the target platform and regenerate every control's sample statement."""
-    proj = (
-        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
-    ).scalar_one_or_none()
+    proj = await _scoped_project(session, project_id, _principal_org(request))
     if proj is not None:
         proj.platform = normalize_platform(platform)
         await session.flush()
@@ -974,9 +1057,7 @@ async def ssp_detail(
     session: AsyncSession = Depends(get_session),
     domain: str | None = Query(None),
 ) -> HTMLResponse:
-    proj = (
-        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
-    ).scalar_one_or_none()
+    proj = await _scoped_project(session, project_id, _principal_org(request))
     if proj is None:
         raise HTTPException(404, "SSP project not found")
     stmt = (
@@ -1011,6 +1092,7 @@ async def ssp_detail(
 @router.post("/ssp/{project_id}/meta")
 async def ssp_save_meta(
     project_id: int,
+    request: Request,
     customer_name: str = Form(...),
     system_name: str | None = Form(None),
     prepared_by: str | None = Form(None),
@@ -1019,9 +1101,7 @@ async def ssp_save_meta(
     status: str = Form("draft"),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    proj = (
-        await session.execute(select(SSPProject).where(SSPProject.id == project_id))
-    ).scalar_one_or_none()
+    proj = await _scoped_project(session, project_id, _principal_org(request))
     if proj is not None:
         proj.customer_name = customer_name.strip() or proj.customer_name
         proj.system_name = system_name or None
@@ -1043,6 +1123,8 @@ async def ssp_save_entry(
     responsible_role: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    if await _scoped_project(session, project_id, _principal_org(request)) is None:
+        raise HTTPException(404, "entry not found")
     entry = (
         await session.execute(
             select(SSPControlEntry)
@@ -1083,7 +1165,9 @@ async def ssp_save_entry(
 async def posture_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    summary = await org_summary(session, today=datetime.now(UTC).date())
+    summary = await org_summary(
+        session, today=datetime.now(UTC).date(), org_id=_principal_org(request)
+    )
     return templates.TemplateResponse(
         request,
         "posture.html",

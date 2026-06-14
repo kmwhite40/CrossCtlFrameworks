@@ -147,6 +147,10 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         b_projects = (await c.get("/api/ssp/projects", headers=hb)).json()
         assert all(p["id"] != proj["id"] for p in b_projects)
 
+        # Server-rendered UI pages honor the same org boundary.
+        assert (await c.get(f"/ssp/{proj['id']}", headers=hb)).status_code == 404
+        assert (await c.get(f"/systems/{sys_a}", headers=hb)).status_code == 404
+
         # Login issues a session; /me reflects the principal.
         login = await c.post(
             "/api/auth/login", json={"email": "admin@a.test", "password": "pw"}
