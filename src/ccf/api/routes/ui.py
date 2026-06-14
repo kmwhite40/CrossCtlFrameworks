@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -51,10 +52,23 @@ from .diff import diff_workbook
 from .scoring import compute_summary
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
+STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# Inject settings.readonly into every template's globals (avoids per-route plumbing).
+
+def _asset_version() -> str:
+    """Short hash of the CSS/JS so ``?v=`` busts the browser cache on any change."""
+    h = hashlib.sha256()
+    for rel in ("css/app.css", "js/app.js"):
+        path = STATIC_DIR / rel
+        if path.exists():
+            h.update(path.read_bytes())
+    return h.hexdigest()[:10]
+
+
+# Inject settings.readonly + an asset-version token into every template's globals.
 templates.env.globals["settings"] = get_settings()
+templates.env.globals["asset_v"] = _asset_version()
 
 router = APIRouter(include_in_schema=False)
 

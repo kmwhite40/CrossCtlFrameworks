@@ -202,7 +202,9 @@ html[data-rail="expanded"] .nav-link[aria-current="page"]::after { left: auto; r
 html[data-rail="expanded"] .nav-link__label { position: static; transform: none; opacity: 1; pointer-events: auto; background: transparent; border: none; box-shadow: none; padding: 0; color: inherit; font-family: var(--font-body); font-weight: 500; letter-spacing: normal; -webkit-backdrop-filter: none; backdrop-filter: none; }
 
 /* ── Main ───────────────────────────────────────────────── */
-.main { min-height: calc(100vh - var(--topbar-h)); background: transparent; }
+/* container context so grids respond to the *content* width (sidebar-aware),
+   not the viewport — fixes cramped columns when the rail is expanded. */
+.main { min-height: calc(100vh - var(--topbar-h)); background: transparent; container: main / inline-size; }
 .page { max-width: 1480px; margin: 0 auto; padding: 30px 36px 64px; }
 .page__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
 .page__title { font-family: var(--font-display); font-size: 32px; font-weight: 700; letter-spacing: -0.01em; color: #fff; line-height: 1.1; }
@@ -252,11 +254,18 @@ a.kpi:hover { transform: translateY(-2px); border-color: var(--brand-500); box-s
 .cols-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 .cols-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 .cols-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
-@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+@container main (max-width:880px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
 .between{justify-content:space-between}
 .layout-split-l { display: grid; grid-template-columns: 320px 1fr; gap: 16px; align-items: start; }
 .layout-split-r { display: grid; grid-template-columns: 1fr 360px; gap: 16px; align-items: start; }
-@media (max-width: 1000px) { .layout-split-l, .layout-split-r { grid-template-columns: 1fr; } }
+@container main (max-width: 920px) { .layout-split-l, .layout-split-r { grid-template-columns: 1fr; } }
+/* responsive content-section + filter grids (replace hardcoded inline grids) */
+.grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; align-items: start; }
+.grid-1-1 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@container main (max-width: 900px) { .grid-2-1 { grid-template-columns: 1fr; } }
+@container main (max-width: 720px) { .grid-1-1 { grid-template-columns: 1fr; } }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end; }
+.filters > .btn { align-self: end; }
 @media (max-width: 720px) {
   .page { padding: 20px 16px 48px; }
   .page__title { font-size: 26px; }
