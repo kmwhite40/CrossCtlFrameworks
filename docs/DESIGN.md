@@ -26,13 +26,15 @@ Dominant graphite + cyan, **sharp amber accents** — never an even rainbow.
 
 | Role | Family | Usage |
 |---|---|---|
-| Display | **Chivo** (`--font-display`) | Page titles, card titles, KPI/metric numbers |
-| Body | **IBM Plex Sans** (`--font-body`) | Prose, controls, buttons |
-| Mono | **IBM Plex Mono** (`--font-mono`) | Telemetry labels, table headers, control IDs, metadata |
+| Display | **Open Sans** (`--font-display`) | Page titles, card titles, KPI/metric numbers |
+| Body | **Open Sans** (`--font-body`) | Prose, controls, buttons |
+| Mono | **Open Sans** (`--font-mono`) | Telemetry labels, table headers, control IDs, metadata |
 
-Numerals are **tabular** wherever data lives (metrics, tables, chips). The
-heavy, uppercase, letter-spaced **mono micro-label** is the signature texture —
-use `.label`, `.kpi__label`, `.card__subtitle`, and `<th>` for it.
+A single family (**Open Sans**) is used throughout; the three `--font-*` tokens
+remain so a future tier change is a one-line edit. Numerals are **tabular**
+wherever data lives (metrics, tables, chips). The heavy, uppercase,
+letter-spaced **micro-label** (mono token) is the signature texture — use
+`.label`, `.kpi__label`, `.card__subtitle`, and `<th>` for it.
 
 ## Tokens (the contract)
 

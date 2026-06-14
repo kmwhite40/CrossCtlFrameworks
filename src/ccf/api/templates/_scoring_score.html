@@ -11,7 +11,7 @@
     {% set color = 'var(--ok-500)' if score >= 88 else ('var(--warn-500)' if score >= 0 else 'var(--err-500)') %}
     <div class="row between" style="align-items:flex-end;gap:12px">
       <div>
-        <div style="font-family:'Space Grotesk',sans-serif;font-size:54px;line-height:1;font-weight:700;color:{{ color }}">
+        <div style="font-family:var(--font-display);font-size:54px;line-height:1;font-weight:800;color:{{ color }}">
           {{ score }}
         </div>
         <div class="dim" style="font-size:12px;margin-top:4px">out of {{ summary.max_score }}

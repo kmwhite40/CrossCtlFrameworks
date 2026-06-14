@@ -110,7 +110,7 @@
                     @click="open = open === '{{ fw }}' ? null : '{{ fw }}'"
                     :aria-expanded="open === '{{ fw }}'">
               <div>
-                <div style="font-family:'Space Grotesk',Inter,sans-serif;font-weight:600;letter-spacing:-0.01em">{{ fw }}</div>
+                <div style="font-family:var(--font-display);font-weight:600;letter-spacing:-0.01em">{{ fw }}</div>
                 <div class="dim" style="font-size:12px">{{ items | length }} entries</div>
               </div>
               <i data-lucide="chevron-down"

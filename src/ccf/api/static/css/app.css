@@ -3,16 +3,16 @@
    Design system: "SIGINT" — defense-grade instrumentation.
      Graphite canvas + faint HUD grid · steel-cyan authority · signal-amber
      live accent · hairline-precision panels · monospace telemetry labels ·
-     status-LED motif · tabular numerals · Chivo / IBM Plex Sans / IBM Plex Mono.
+     status-LED motif · tabular numerals · Open Sans throughout.
    See docs/DESIGN.md for the conventions. Class + token names are a stable
    contract used by the Jinja templates — restyle values, not names.
    ========================================================================== */
 
 :root {
-  /* ── Type ───────────────────────────────────────────── */
-  --font-display: 'Chivo', system-ui, sans-serif;        /* headings + metrics  */
-  --font-body:    'IBM Plex Sans', system-ui, sans-serif; /* prose + controls   */
-  --font-mono:    'IBM Plex Mono', ui-monospace, Menlo, monospace; /* labels/IDs */
+  /* ── Type (Open Sans throughout) ────────────────────── */
+  --font-display: 'Open Sans', system-ui, sans-serif;  /* headings + metrics */
+  --font-body:    'Open Sans', system-ui, sans-serif;  /* prose + controls   */
+  --font-mono:    'Open Sans', system-ui, sans-serif;  /* labels/IDs/data    */
 
   /* ── Brand = steel cyan (authority / data / primary) ── */
   --brand-50:  #e9f7fb;
