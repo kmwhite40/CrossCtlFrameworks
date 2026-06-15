@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="light dark" />
   <title>{% block title %}Concord{% endblock %}</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png?v={{ asset_v }}" />
+  <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v={{ asset_v }}" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -21,7 +23,7 @@
   <!-- Topbar spans both columns -->
   <header class="topbar" role="banner">
     <a href="/" class="topbar__brand">
-      <span class="topbar__brand-mark">C</span>
+      <img class="topbar__brand-mark" src="/static/img/logo-512.png?v={{ asset_v }}" alt="Concord" width="34" height="34" />
       <span class="topbar__wordmark">Concord</span>
     </a>
 
