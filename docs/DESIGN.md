@@ -37,7 +37,7 @@ letter-spaced **micro-label** (mono token) is the signature texture — use
 
 ## Tokens (the contract)
 
-- Color ramps: `--brand-50…700` (cyan), `--accent-400…600` (amber),
+- Color ramps: `--brand-50…700` (periwinkle), `--accent-400…600` (teal),
   `--ok/warn/err/info-500/700` (+ `-50` translucent fills).
 - Surface/text: `--bg-0/1`, `--panel`, `--text`, `--text-dim`, `--text-mute`,
   `--glass`, `--glass-2`, `--glass-border(-2)`, `--hairline`, `--field-bg`.
@@ -52,24 +52,29 @@ graphite-on-paper variant; components inherit it automatically.
 ## Reusable patterns
 
 - **Panel**: `.card` (`.card--elevated`) with `.card__header/__title/__subtitle/__body/__footer`.
-- **Metric/KPI**: `.kpi` → `.kpi__label` (mono) + `.kpi__value` (Chivo) + `.kpi__meta` + optional `.kpi__trend` icon chip; an amber→cyan accent rail runs down the left edge.
+- **Brand mark**: the Concord logo (`static/img/logo*.png`) renders as the
+  topbar `.topbar__brand-mark`, the landing nav `.lp-mark` + floating
+  `.lp-logo` hero, and the favicon / apple-touch-icon.
+- **Metric/KPI**: `.kpi` → `.kpi__label` (mono) + `.kpi__value` + `.kpi__meta` + optional `.kpi__trend` icon chip; a teal→periwinkle accent rail runs down the left edge.
 - **Status**: `.chip--ok/warn/err/info/brand/ghost` (mono) and `.led--ok/warn/err/live` dots; `--live` pulses for real-time elements.
 - **Telemetry label**: `.label` — mono, uppercase, `0.14em` tracking, muted.
-- **Tables**: wrap in `.table-wrap`; mono uppercase `<th>`, cyan row-hover, cyan ID links, `.mono` cells for identifiers.
-- **Buttons**: `.btn--primary` (cyan), `.btn--secondary` (outline), `.btn--ghost`; `.btn--sm`.
+- **Tables**: wrap in `.table-wrap`; mono uppercase `<th>`, brand row-hover, brand ID links, `.mono` cells for identifiers.
+- **Buttons**: `.btn--primary` (periwinkle), `.btn--secondary` (outline), `.btn--ghost`; `.btn--sm` / `.btn--lg`.
 - **Inputs**: `.input` / `.select` + `.field-group` (mono label).
 - **Layout**: `.cols-2/3/4`, `.grid-cards`, `.stack`, `.row`, `.layout-split-l/r` (responsive split views), `.between`.
 
 ## Motion
 
 One orchestrated page-load moment: `.page > *` rises in with a small stagger.
-Live elements use the amber LED pulse. Everything is disabled under
-`prefers-reduced-motion`. Keep transitions ≤ 200ms and CSS-only.
+Live elements use the LED pulse. The landing page layers an ambient scene
+(rising light beams, perspective grid floor, a gently floating logo). Everything
+is disabled under `prefers-reduced-motion`. Keep app transitions ≤ 200ms and
+CSS-only.
 
 ## Conventions for new components
 
 1. Compose from the existing tokens + classes; add a token before a hardcoded color.
 2. Labels/IDs/units → `--font-mono`; numbers → tabular; headings/metrics → `--font-display`.
-3. Cyan is structure/authority; **amber is rationed** for live/critical signals only.
-4. Hairline borders + small radii; avoid heavy blur and large drop shadows.
+3. Periwinkle (`--brand`) is structure/authority; **teal (`--accent`) is rationed** for highlights, with semantic green/amber/red reserved for live/critical status.
+4. Hairline borders + small radii; the glass blur is the signature — avoid competing heavy shadows.
 5. Verify both `data-theme` values and `prefers-reduced-motion`.

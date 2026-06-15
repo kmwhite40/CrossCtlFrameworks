@@ -26,12 +26,16 @@ from ...models import (
     Organization,
     System,
 )
+from ...reporting import report_to_docx, report_to_xlsx
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 Baseline = Literal["low", "mod", "high"]
-Fmt = Literal["json", "csv"]
+Fmt = Literal["json", "csv", "xlsx", "docx"]
+
+_XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 async def _scope_controls(session: AsyncSession, baseline: Baseline | None) -> list[Control]:
@@ -153,7 +157,16 @@ async def build_report(
     if fmt == "json":
         return {"summary": summary, "rows": lines}
 
-    # CSV
+    stem = (filename or f"concord-report-{(org.name if org else 'catalog')}").rsplit(".", 1)[0]
+    stem = stem.replace(" ", "_")
+
+    if fmt == "xlsx":
+        return _download(report_to_xlsx(summary, lines), f"{stem}.xlsx", _XLSX_MEDIA)
+
+    if fmt == "docx":
+        return _download(report_to_docx(summary, lines), f"{stem}.docx", _DOCX_MEDIA)
+
+    # CSV (default streaming export)
     buf = io.StringIO()
     writer = csv.DictWriter(
         buf, fieldnames=list(lines[0].keys()) if lines else ["identifier", "family", "control_name"]
@@ -161,10 +174,12 @@ async def build_report(
     writer.writeheader()
     for row in lines:
         writer.writerow(row)
-    buf.seek(0)
-    fname = filename or f"concord-report-{(org.name if org else 'catalog').replace(' ', '_')}.csv"
+    return _download(buf.getvalue().encode("utf-8"), f"{stem}.csv", "text/csv")
+
+
+def _download(payload: bytes, filename: str, media_type: str) -> StreamingResponse:
     return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        iter([payload]),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
