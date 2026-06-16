@@ -99,29 +99,20 @@ with `docker compose down` (keeps data) or `docker compose down -v` (full reset)
 Live Scoring, the SSP builder, and the CMMC L2 assessment workflow seed their
 own 110 CMMC practices from bundled data and **work without any ingest**. The
 cross-framework **catalog** (Controls / Frameworks / Coverage / Mapping search)
-is populated by ingesting the workbook, which is a one-time step.
+is populated by ingesting the workbook — a one-time step.
 
-The **`NIST Cross Mappings Rev. 1.1.xlsx`** workbook (~26 MB) is **not** shipped
-in the repo (`data/` is git-ignored). Obtain it from the team's shared drive and
-place it in `./data/` with that exact filename, then run the `etl` profile:
+The **`NIST Cross Mappings Rev. 1.1.xlsx`** workbook (~26 MB) **ships with the
+repo** at `data/NIST Cross Mappings Rev. 1.1.xlsx`, so on any clone or GitHub
+zip download you can ingest the catalog directly:
 
 ```sh
-# macOS / Linux
-mkdir -p data
-cp "/path/to/NIST Cross Mappings Rev. 1.1.xlsx" data/
 docker compose --profile etl run --rm etl
 ```
 
-```powershell
-# Windows (PowerShell), from the project root
-mkdir data -Force
-copy "$env:USERPROFILE\Downloads\NIST Cross Mappings Rev. 1.1.xlsx" .\data\
-docker compose --profile etl run --rm etl
-```
-
-A `Workbook not found: /data/NIST Cross Mappings Rev. 1.1.xlsx` message means the
-file is missing or misnamed in `./data/` — the app itself is still running. To
-ingest from a different location, set `CCF_WORKBOOK_PATH` and mount that folder.
+No file copying is required. If you ever need to ingest a different/updated
+workbook, drop it in `./data/` (or point `CCF_WORKBOOK_PATH` at it) and re-run
+the `etl` profile. A `Workbook not found: /data/NIST Cross Mappings Rev. 1.1.xlsx`
+message means the file was removed or renamed — the app itself keeps running.
 
 ### Local
 

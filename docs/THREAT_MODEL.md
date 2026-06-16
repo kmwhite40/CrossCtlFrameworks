@@ -80,3 +80,6 @@ OIDC/IdP federation and DB-enforced RLS remain on the roadmap.
 4. `localhost:8088` (app, with landing at `/`) and the optional
    `localhost:3000` (standalone Next.js landing) bind to `0.0.0.0` inside the
    container; bind to `127.0.0.1` on the host for multi-user workstations.
+5. The catalog workbook (`data/NIST Cross Mappings Rev. 1.1.xlsx`, ~26 MB) is
+   committed to the repo so ingest works on any clone. Repository read access
+   therefore grants catalog access — **keep the repository private**.

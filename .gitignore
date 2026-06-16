@@ -6,7 +6,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
-data/
+data/*
+# Ship the NIST catalog workbook with the repo so `ccf ingest` works on any clone.
+!data/NIST Cross Mappings Rev. 1.1.xlsx
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
