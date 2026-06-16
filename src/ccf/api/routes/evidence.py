@@ -10,11 +10,31 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import Evidence
+from ...auth import Principal
+from ...models import ControlImplementation, Evidence, System
 from ...schemas import EvidenceOut
+from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/evidence", tags=["evidence"])
+
+
+async def _impl_in_scope(
+    session: AsyncSession, implementation_id: int, principal: Principal
+) -> bool:
+    if principal.org_id is None:
+        return True
+    ok = (
+        await session.execute(
+            select(ControlImplementation.id)
+            .join(System, System.id == ControlImplementation.system_id)
+            .where(
+                ControlImplementation.id == implementation_id,
+                System.organization_id == principal.org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    return ok is not None
 
 
 class EvidenceCreate(BaseModel):
@@ -35,8 +55,13 @@ class EvidenceCreate(BaseModel):
 async def list_evidence(
     session: AsyncSession = Depends(get_session),
     implementation_id: int | None = None,
+    principal: Principal = Depends(get_principal),
 ) -> list[EvidenceOut]:
     stmt = select(Evidence).order_by(Evidence.created_at.desc())
+    if principal.org_id is not None:
+        stmt = stmt.join(
+            ControlImplementation, ControlImplementation.id == Evidence.implementation_id
+        ).where(ControlImplementation.system_id.in_(org_systems_subq(principal)))
     if implementation_id is not None:
         stmt = stmt.where(Evidence.implementation_id == implementation_id)
     rows = (await session.execute(stmt)).scalars().all()
@@ -47,7 +72,10 @@ async def list_evidence(
 async def create_evidence(
     body: EvidenceCreate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> EvidenceOut:
+    if not await _impl_in_scope(session, body.implementation_id, principal):
+        raise HTTPException(404, "control implementation not found")
     obj = Evidence(**body.model_dump(exclude_none=False))
     session.add(obj)
     await session.commit()
@@ -56,9 +84,13 @@ async def create_evidence(
 
 
 @router.delete("/{eid}", status_code=204)
-async def delete_evidence(eid: int, session: AsyncSession = Depends(get_session)) -> None:
+async def delete_evidence(
+    eid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> None:
     obj = (await session.execute(select(Evidence).where(Evidence.id == eid))).scalar_one_or_none()
-    if obj is None:
+    if obj is None or not await _impl_in_scope(session, obj.implementation_id, principal):
         raise HTTPException(404, "evidence not found")
     await session.delete(obj)
     await session.commit()

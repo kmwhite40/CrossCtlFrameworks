@@ -2,7 +2,7 @@
 {% block title %}{{ control.identifier }} · Concord{% endblock %}
 {% block breadcrumbs %}
 <nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
-  <a href="/">Home</a>
+  <a href="/dashboard">Home</a>
   <i data-lucide="chevron-right"></i>
   <a href="/controls">Controls</a>
   {% if control.family %}<i data-lucide="chevron-right"></i>
@@ -41,7 +41,7 @@
 
   <!-- Overview -->
   <div role="tabpanel" x-show="tab==='overview'">
-    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+    <div class="grid-2-1">
       <div class="card">
         <div class="card__header"><div class="card__title">Description</div></div>
         <div class="card__body" style="white-space:pre-wrap;line-height:1.65">{{ control.description or '—' }}</div>
@@ -110,7 +110,7 @@
                     @click="open = open === '{{ fw }}' ? null : '{{ fw }}'"
                     :aria-expanded="open === '{{ fw }}'">
               <div>
-                <div style="font-family:'Space Grotesk',Inter,sans-serif;font-weight:600;letter-spacing:-0.01em">{{ fw }}</div>
+                <div style="font-family:var(--font-display);font-weight:600;letter-spacing:-0.01em">{{ fw }}</div>
                 <div class="dim" style="font-size:12px">{{ items | length }} entries</div>
               </div>
               <i data-lucide="chevron-down"

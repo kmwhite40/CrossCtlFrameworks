@@ -1,15 +1,25 @@
-/* Concord — UI behavior layer
-   © 2026 Colleen Townsend. All rights reserved. */
+/* Concord — UI behavior layer */
 
 (() => {
   // ── Theme toggle (persisted) ───────────────────────────
-  const stored = localStorage.getItem('concord:theme') || 'light';
+  const stored = localStorage.getItem('concord:theme') || 'dark';
   document.documentElement.setAttribute('data-theme', stored);
   window.toggleTheme = () => {
-    const cur = document.documentElement.getAttribute('data-theme') || 'light';
+    const cur = document.documentElement.getAttribute('data-theme') || 'dark';
     const next = cur === 'light' ? 'dark' : 'light';
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('concord:theme', next);
+  };
+
+  // ── Sidebar collapse / expand (persisted) ──────────────
+  const railState = localStorage.getItem('concord:rail') || 'collapsed';
+  document.documentElement.setAttribute('data-rail', railState);
+  window.toggleSidebar = () => {
+    const cur = document.documentElement.getAttribute('data-rail') || 'collapsed';
+    const next = cur === 'expanded' ? 'collapsed' : 'expanded';
+    document.documentElement.setAttribute('data-rail', next);
+    localStorage.setItem('concord:rail', next);
+    if (window.lucide) window.lucide.createIcons();
   };
 
   // ── Toasts ─────────────────────────────────────────────

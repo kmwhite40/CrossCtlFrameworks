@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ assessment.name }} · Assessment{% endblock %}
+{% block heading %}{{ assessment.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">{{ system.name }} · {{ assessment.kind }} assessment · examine / interview / test
+  across the 110 CMMC L2 practices.</p>
+{% endblock %}
+{% block actions %}
+  <a class="btn btn--ghost" href="/assessments"><i data-lucide="arrow-left"></i> All</a>
+  <form method="post" action="/assessments/{{ assessment.id }}/poams"
+        onsubmit="return confirm('Create an open POA&amp;M for every Other-Than-Satisfied finding?');">
+    <button class="btn btn--secondary" type="submit"><i data-lucide="clipboard-list"></i> POA&amp;Ms from findings</button>
+  </form>
+  <a class="btn btn--primary" href="/api/assessments/{{ assessment.id }}/sar"><i data-lucide="file-down"></i> Generate SAR</a>
+{% endblock %}
+{% block content %}
+
+<div class="card" style="margin-bottom:16px"><div class="card__body row" style="gap:18px;flex-wrap:wrap;align-items:center">
+  <div>
+    <div class="kpi__label">Progress</div>
+    <div class="row" style="gap:8px;align-items:center;margin-top:4px">
+      <span class="bar-row__track" style="width:160px"><span class="bar-row__fill" style="width:{{ summary.complete_pct }}%;background:var(--brand-500)"></span></span>
+      <strong>{{ summary.assessed }}/{{ summary.total }}</strong>
+      <span class="dim" style="font-size:12px">· {{ summary.reviewed }} reviewed</span>
+    </div>
+  </div>
+  <span class="spacer"></span>
+  {% for key, label, cls in finding_meta %}
+    <span class="chip {{ cls }}">{{ label }} · {{ summary.by_finding.get(key, 0) }}</span>
+  {% endfor %}
+</div></div>
+
+{% for d in ordered_domains %}
+<details class="card" style="margin-bottom:12px" {% if loop.first %}open{% endif %}>
+  <summary class="card__header" style="cursor:pointer;list-style:none">
+    <div class="row between" style="width:100%">
+      <div class="card__title">{{ section_number(d) }} {{ domain_name(d) }} ({{ d }})</div>
+      <span class="chip chip--brand">{{ by_domain[d]|length }} practices</span>
+    </div>
+  </summary>
+  <div class="card__body stack" style="gap:14px">
+    {% for r in by_domain[d] %}
+    <form method="post" action="/assessments/{{ assessment.id }}/result/{{ r.id }}"
+          hx-post="/assessments/{{ assessment.id }}/result/{{ r.id }}" hx-target="#saved-{{ r.id }}" hx-swap="innerHTML"
+          class="card" style="border:1px solid var(--glass-border)">
+      <div class="card__body stack" style="gap:10px">
+        <div class="row between">
+          <div>
+            <span class="mono" style="font-weight:700">{{ r.control_id }}</span>
+            <span class="dim">· NIST {{ r.nist_id }}</span>
+            <div style="font-weight:600;margin-top:2px">{{ r.title }}</div>
+          </div>
+          <div class="row" style="gap:10px;align-items:center">
+            <label class="field-group"><span class="dim" style="font-size:11px">Finding</span>
+              <select class="select" name="finding">
+                {% for key, label, cls in finding_meta %}
+                  <option value="{{ key }}" {% if r.finding==key %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select></label>
+            <span id="saved-{{ r.id }}"></span>
+            <button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="save"></i> Save</button>
+          </div>
+        </div>
+        {% if r.requirement %}<div class="dim" style="font-size:12px">{{ r.requirement }}</div>{% endif %}
+
+        <div class="dim" style="font-size:12px">Determination statements (NIST 800-171A)</div>
+        {% for part in r.objective_findings or [] %}
+        <div class="row" style="gap:10px;align-items:flex-start">
+          <span class="chip chip--ghost" style="margin-top:4px">[{{ part.label or '—' }}]</span>
+          <div style="flex:1;font-size:13px">{{ part.text }}</div>
+          <select class="select" name="obj::{{ part.label }}" style="width:170px">
+            {% for key, label, cls in finding_meta %}
+              <option value="{{ key }}" {% if part.finding==key %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        {% endfor %}
+
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <label class="field-group" style="flex:1;min-width:180px"><span class="dim" style="font-size:11px">Examine</span>
+            <textarea class="input" name="examine_note" rows="2">{{ r.examine_note or '' }}</textarea></label>
+          <label class="field-group" style="flex:1;min-width:180px"><span class="dim" style="font-size:11px">Interview</span>
+            <textarea class="input" name="interview_note" rows="2">{{ r.interview_note or '' }}</textarea></label>
+          <label class="field-group" style="flex:1;min-width:180px"><span class="dim" style="font-size:11px">Test</span>
+            <textarea class="input" name="test_note" rows="2">{{ r.test_note or '' }}</textarea></label>
+        </div>
+        <div class="row" style="gap:10px;flex-wrap:wrap">
+          <label class="field-group" style="flex:2;min-width:220px"><span class="dim" style="font-size:11px">Assessor note</span>
+            <input class="input" name="assessor_note" value="{{ r.assessor_note or '' }}"></label>
+          <label class="field-group" style="flex:2;min-width:220px"><span class="dim" style="font-size:11px">Evidence reference</span>
+            <input class="input" name="evidence_ref" value="{{ r.evidence_ref or '' }}"></label>
+          <label class="row" style="gap:6px;font-size:13px;align-self:flex-end;padding-bottom:8px">
+            <input type="checkbox" name="reviewed" {% if r.reviewed %}checked{% endif %}> Reviewed
+          </label>
+        </div>
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</details>
+{% endfor %}
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import openpyxl
 import pytest
+
+from ccf import db as ccf_db
 
 # Run against a real Postgres — CI service container; locally, docker compose.
 os.environ.setdefault(
@@ -17,6 +20,19 @@ os.environ.setdefault(
     "CCF_DATABASE_URL_SYNC",
     "postgresql+psycopg://ccf:ccf@localhost:5432/ccf_test",
 )
+
+
+@pytest.fixture
+async def fresh_engine() -> AsyncIterator[None]:
+    """pytest-asyncio uses a per-test event loop; the global asyncpg engine binds
+    to whichever loop created it. Dispose + reset it after each test so the next
+    test gets a fresh engine on its own loop. Opt-in per test module via
+    ``pytestmark = pytest.mark.usefixtures("fresh_engine")``."""
+    yield
+    if ccf_db._engine is not None:
+        await ccf_db._engine.dispose()
+    ccf_db._engine = None
+    ccf_db._session_factory = None
 
 
 @pytest.fixture(scope="session")

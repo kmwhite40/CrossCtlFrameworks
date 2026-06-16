@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Live scoring · Concord{% endblock %}
+{% block heading %}CMMC L2 live scoring matrix{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Real-time SPRS scoring across the 110 CMMC Level 2 practices — the scoring
+  spreadsheet, made live per system.</p>
+{% endblock %}
+{% block content %}
+
+{% if not total_controls %}
+  <div class="card"><div class="card__body">
+    <div class="row between">
+      <div>
+        <div class="card__title">No scoring matrix loaded</div>
+        <div class="dim" style="margin-top:4px">Load the CMMC L2 scoring matrix reference data to begin.</div>
+      </div>
+      <button class="btn btn--primary" hx-post="/api/scoring/seed" hx-swap="none"
+              hx-on::after-request="window.location.reload()">
+        <i data-lucide="download"></i> Load scoring matrix
+      </button>
+    </div>
+  </div></div>
+{% else %}
+
+<form method="get" action="/scoring" class="card" style="margin-bottom:12px">
+  <div class="card__body row" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">System</span>
+      <select name="system_id" class="select" onchange="this.form.submit()" aria-label="System">
+        <option value="">— choose a system —</option>
+        {% for s in systems %}
+          <option value="{{ s.id }}" {% if system_id==s.id %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% if system_id %}
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Domain</span>
+      <select name="domain" class="select" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for d in domains %}<option value="{{ d }}" {% if domain==d %}selected{% endif %}>{{ d }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Point value</span>
+      <select name="point_value" class="select" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for p in ['5','3','3/5','1','Special'] %}<option value="{{ p }}" {% if point_value==p %}selected{% endif %}>{{ p }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">M365 coverage</span>
+      <select name="coverage" class="select" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for c in ['Shared Coverage','Customer Responsibility','Microsoft Coverage','Not Applicable'] %}
+          <option value="{{ c }}" {% if coverage==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+  </div>
+</form>
+
+<details class="card" style="margin-bottom:16px" {% if not systems %}open{% endif %}>
+  <summary class="card__header" style="cursor:pointer;list-style:none">
+    <div class="row" style="gap:8px;align-items:center">
+      <i data-lucide="plus-circle"></i>
+      <span class="card__title">New system</span>
+      <span class="dim" style="font-size:12px">— create a system (and customer) to start scoring</span>
+    </div>
+  </summary>
+  <form method="post" action="/scoring/systems/new" class="card__body row"
+        style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Customer / organization *</span>
+      <input class="input" name="organization_name" required placeholder="Acme Defense LLC"
+             list="scoring-org-list" autocomplete="off">
+      <datalist id="scoring-org-list">
+        {% for o in organizations %}<option value="{{ o.name }}">{% endfor %}
+      </datalist>
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">System name *</span>
+      <input class="input" name="system_name" required placeholder="CUI Enclave">
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">FedRAMP baseline</span>
+      <select name="baseline" class="select">
+        <option value="">—</option>
+        <option value="low">Low</option>
+        <option value="moderate">Moderate</option>
+        <option value="high">High</option>
+      </select>
+    </label>
+    <button class="btn btn--primary" type="submit"><i data-lucide="server"></i> Create &amp; score</button>
+  </form>
+</details>
+
+{% if system_id and summary %}
+<div class="layout-split-l">
+  <div>{% include "_scoring_score.html" %}</div>
+
+  <div class="card">
+    <div class="card__header">
+      <div>
+        <div class="card__title">{{ system.name if system else 'System' }} — assessment matrix</div>
+        <div class="card__subtitle">{{ rows|length }} practices · set each control's state to update the score live</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Control</th><th>Pts</th><th>Title</th><th>M365 coverage</th><th style="width:170px">State</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          {% set pv = r.c.point_value %}
+          {% set pvcls = 'chip--err' if pv in ['5','3/5'] else ('chip--warn' if pv=='3' else ('chip--info' if pv=='Special' else 'chip--ghost')) %}
+          <tr>
+            <td><a href="/controls" class="mono" style="font-weight:600">{{ r.c.control_id }}</a>
+                <div class="dim" style="font-size:11px">NIST {{ r.c.nist_id }}</div></td>
+            <td><span class="chip {{ pvcls }}">{{ pv }}</span></td>
+            <td>{{ r.c.title }}
+              {% if r.c.m365_primary_services %}<div class="dim" style="font-size:11px">{{ r.c.m365_primary_services[:2]|join(', ') }}{% if r.c.m365_primary_services|length > 2 %} +{{ r.c.m365_primary_services|length - 2 }}{% endif %}</div>{% endif %}
+            </td>
+            <td>
+              {% set cov = r.c.m365_coverage_status %}
+              {% set ccls = 'chip--ok' if cov=='Microsoft Coverage' else ('chip--info' if cov=='Shared Coverage' else ('chip--warn' if cov=='Customer Responsibility' else 'chip--ghost')) %}
+              <span class="chip {{ ccls }}">{{ cov or '—' }}</span>
+            </td>
+            <td>
+              <select class="select" name="state"
+                      hx-post="/scoring/{{ system_id }}/state"
+                      hx-vals='{"control_id": {{ r.c.control_id | tojson }}}'
+                      hx-target="#score-panel" hx-swap="outerHTML">
+                {% for st in states %}
+                  <option value="{{ st }}" {% if st==r.state %}selected{% endif %}>{{ st.replace('_',' ') }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td>
+              <details>
+                <summary class="btn btn--ghost btn--sm" title="Evidence guidance" aria-label="Evidence guidance for {{ r.c.control_id }}"><i data-lucide="clipboard-list"></i></summary>
+                <div class="card" style="position:absolute;z-index:20;max-width:460px;margin-top:6px;box-shadow:var(--shadow-lg)">
+                  <div class="card__body" style="font-size:13px">
+                    {% if r.c.m365_implementation_statement %}<p><strong>M365:</strong> {{ r.c.m365_implementation_statement }}</p>{% endif %}
+                    {% if r.c.recommended_customer_evidence %}<p><strong>Customer evidence:</strong> {{ r.c.recommended_customer_evidence }}</p>{% endif %}
+                    {% if r.c.recommended_provider_evidence %}<p><strong>Provider evidence:</strong> {{ r.c.recommended_provider_evidence }}</p>{% endif %}
+                  </div>
+                </div>
+              </details>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% else %}
+  <div class="card"><div class="card__body dim">Choose a system above to start a live assessment.</div></div>
+{% endif %}
+
+{% endif %}
+{% endblock %}

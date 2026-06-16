@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...auth import Principal
 from ...models import (
     POAM,
     Control,
@@ -21,14 +22,31 @@ from ...schemas import (
     SystemCreate,
     SystemOut,
 )
+from ..auth_deps import get_principal
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/systems", tags=["systems"])
 
 
+async def require_system_in_scope(
+    session: AsyncSession, system_id: int, principal: Principal
+) -> System:
+    """Fetch a system, 404-ing if it is outside the principal's organization."""
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "system not found")
+    return sys
+
+
 @router.get("", response_model=list[SystemOut])
-async def list_systems(session: AsyncSession = Depends(get_session)) -> list[SystemOut]:
-    rows = (await session.execute(select(System).order_by(System.name))).scalars().all()
+async def list_systems(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[SystemOut]:
+    stmt = select(System).order_by(System.name)
+    if principal.org_id is not None:
+        stmt = stmt.where(System.organization_id == principal.org_id)
+    rows = (await session.execute(stmt)).scalars().all()
     return [SystemOut.model_validate(r) for r in rows]
 
 
@@ -36,22 +54,39 @@ async def list_systems(session: AsyncSession = Depends(get_session)) -> list[Sys
 async def create_system(
     body: SystemCreate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> SystemOut:
-    obj = System(**body.model_dump(exclude_none=True))
+    data = body.model_dump(exclude_none=True)
+    # Tenant principals may only create systems within their own organization.
+    if principal.org_id is not None:
+        data["organization_id"] = principal.org_id
+    obj = System(**data)
     session.add(obj)
     await session.commit()
     await session.refresh(obj)
     return SystemOut.model_validate(obj)
 
 
+@router.delete("/{system_id}", status_code=204)
+async def delete_system(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> None:
+    """Delete a system and its dependent records (implementations, scoring
+    statuses, POA&Ms, risks, assessments cascade; SSP projects are detached)."""
+    sys = await require_system_in_scope(session, system_id, principal)
+    await session.delete(sys)
+    await session.commit()
+
+
 @router.get("/{system_id}/summary", response_model=ComplianceSummary)
 async def compliance_summary(
     system_id: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> ComplianceSummary:
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    if sys is None:
-        raise HTTPException(404, "system not found")
+    sys = await require_system_in_scope(session, system_id, principal)
 
     # Total controls for this baseline.
     baseline_col = {
@@ -123,7 +158,9 @@ async def upsert_implementation(
     control_id: int,
     body: ImplementationUpdate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> ImplementationOut:
+    await require_system_in_scope(session, system_id, principal)
     obj = (
         await session.execute(
             select(ControlImplementation)
@@ -152,12 +189,10 @@ async def bulk_import_implementations(
     system_id: int,
     rows: list[BulkImplementationRow],
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, int]:
     """Bulk-seed implementation state for a system from a list of rows."""
-    if not (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none():
-        raise HTTPException(404, "system not found")
+    await require_system_in_scope(session, system_id, principal)
 
     ctrls = {c.identifier: c.id for c in (await session.execute(select(Control))).scalars().all()}
     upserted = 0
@@ -189,7 +224,9 @@ async def bulk_import_implementations(
 async def list_poams(
     system_id: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> list[POAMOut]:
+    await require_system_in_scope(session, system_id, principal)
     rows = (
         (
             await session.execute(

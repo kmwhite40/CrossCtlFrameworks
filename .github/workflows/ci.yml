@@ -1,5 +1,4 @@
 name: ci
-# Copyright © 2026 Colleen Townsend
 
 on:
   push:

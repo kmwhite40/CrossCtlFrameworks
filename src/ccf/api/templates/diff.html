@@ -5,7 +5,7 @@
 {% block content %}
 
 <section class="card" style="margin-bottom:16px">
-  <form method="get" action="/diff" class="card__body" style="display:grid;grid-template-columns:1fr 1fr auto;gap:10px">
+  <form method="get" action="/diff" class="card__body filters">
     <select class="select" name="a" aria-label="Base">
       <option value="">(base)</option>
       {% for v in versions %}<option value="{{ v.sha256 }}" {% if v.sha256==a %}selected{% endif %}>{{ v.sha256[:12] }}… · {{ v.imported_at.strftime('%Y-%m-%d') }}</option>{% endfor %}

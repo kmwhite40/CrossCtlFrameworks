@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Posture · Concord{% endblock %}
+{% block heading %}Compliance posture{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Portfolio-wide CMMC/NIST posture — SPRS, POA&amp;M aging, evidence
+  freshness, and risk across every system. As of {{ s.generated_for }}.</p>
+{% endblock %}
+{% block actions %}
+  <a href="/scoring" class="btn btn--secondary"><i data-lucide="gauge"></i> Live scoring</a>
+  <a href="/api/posture/summary" class="btn btn--ghost"><i data-lucide="braces"></i> JSON</a>
+{% endblock %}
+{% block content %}
+
+{% set sprs = s.avg_sprs_score %}
+{% set sprs_color = 'var(--ok-500)' if (sprs is not none and sprs >= 88) else ('var(--warn-500)' if (sprs is not none and sprs >= 0) else 'var(--err-500)') %}
+
+<section class="grid-cards">
+  <div class="kpi">
+    <span class="kpi__trend"><i data-lucide="gauge-circle"></i></span>
+    <span class="kpi__label">Avg SPRS score</span>
+    <span class="kpi__value" style="color:{{ sprs_color }}">{{ sprs if sprs is not none else '—' }}</span>
+    <span class="kpi__meta">{{ s.systems_scored }}/{{ s.systems_total }} systems scored · max {{ s.sprs_max }}</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi__trend"><i data-lucide="clipboard-list"></i></span>
+    <span class="kpi__label">Open POA&amp;Ms</span>
+    <span class="kpi__value">{{ s.open_poams }}</span>
+    <span class="kpi__meta">{{ s.overdue_poams }} overdue</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi__trend"><i data-lucide="file-clock"></i></span>
+    <span class="kpi__label">Evidence expiring ≤{{ s.evidence.window_days }}d</span>
+    <span class="kpi__value" style="color:{{ 'var(--warn-500)' if s.evidence.expiring_soon else 'inherit' }}">{{ s.evidence.expiring_soon }}</span>
+    <span class="kpi__meta">{{ s.evidence.expired }} expired · {{ s.evidence.total }} total</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi__trend"><i data-lucide="triangle-alert"></i></span>
+    <span class="kpi__label">Open risks</span>
+    <span class="kpi__value">{{ s.risks_by_status.get('open', 0) }}</span>
+    <span class="kpi__meta">{{ s.risks_by_status.get('accepted', 0) }} accepted · {{ s.risks_by_status.get('mitigated', 0) }} mitigated</span>
+  </div>
+</section>
+
+<section class="grid-1-1">
+  <div class="card">
+    <div class="card__header"><div class="card__title">POA&amp;M aging</div>
+      <div class="card__subtitle">Open items by age since identification</div></div>
+    <div class="card__body">
+      {% set pa = s.poam_aging %}
+      {% set agemax = [pa.buckets['0-30'], pa.buckets['31-60'], pa.buckets['61-90'], pa.buckets['90+'], pa.buckets['unknown'], 1]|max %}
+      {% for label, color in [('0-30','var(--ok-500)'),('31-60','var(--warn-500)'),('61-90','var(--warn-500)'),('90+','var(--err-500)'),('unknown','var(--ink-300)')] %}
+        {% set v = pa.buckets[label] %}
+        <div class="bar-row" style="padding:7px 0">
+          <span style="width:72px">{{ label }} days</span>
+          <span class="bar-row__track"><span class="bar-row__fill" style="width:{{ (v/agemax*100)|round(1) }}%;background:{{ color }}"></span></span>
+          <span style="width:40px;text-align:right"><strong>{{ v }}</strong></span>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card__header"><div class="card__title">Evidence freshness</div>
+      <div class="card__subtitle">Continuous-monitoring posture</div></div>
+    <div class="card__body">
+      {% set ev = s.evidence %}
+      {% set evmax = [ev.fresh, ev.expiring_soon, ev.expired, ev.no_expiry, 1]|max %}
+      {% for label, v, color in [('Fresh', ev.fresh, 'var(--ok-500)'),('Expiring soon', ev.expiring_soon, 'var(--warn-500)'),('Expired', ev.expired, 'var(--err-500)'),('No expiry set', ev.no_expiry, 'var(--ink-300)')] %}
+        <div class="bar-row" style="padding:7px 0">
+          <span style="width:120px">{{ label }}</span>
+          <span class="bar-row__track"><span class="bar-row__fill" style="width:{{ (v/evmax*100)|round(1) }}%;background:{{ color }}"></span></span>
+          <span style="width:40px;text-align:right"><strong>{{ v }}</strong></span>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</section>
+
+<section class="stack">
+  <div class="card">
+    <div class="card__header">
+      <div><div class="card__title">System scorecard</div>
+        <div class="card__subtitle">{{ s.systems_total }} systems</div></div>
+      <a href="/systems" class="btn btn--ghost btn--sm">Manage systems <i data-lucide="arrow-right"></i></a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>System</th><th>Baseline</th><th>ATO</th><th>SPRS</th><th>Assessed</th>
+          <th>Impl. met</th><th>Open POA&amp;M</th><th>Overdue</th><th>Evidence</th>
+        </tr></thead>
+        <tbody>
+          {% for c in s.systems %}
+          {% set col = 'var(--ok-500)' if c.sprs_score >= 88 else ('var(--warn-500)' if c.sprs_score >= 0 else 'var(--err-500)') %}
+          <tr>
+            <td><a href="/scoring?system_id={{ c.system_id }}" style="font-weight:600">{{ c.name }}</a>
+              {% if not c.ssp_present %}<span class="chip chip--err" title="SSP prerequisite not met">SSP</span>{% endif %}</td>
+            <td>{% if c.baseline %}<span class="chip chip--ghost">{{ c.baseline }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+            <td><span class="chip {{ 'chip--ok' if c.ato_status=='authorized' else 'chip--ghost' }}">{{ c.ato_status or 'none' }}</span></td>
+            <td><strong style="color:{{ col }}">{{ c.sprs_score }}</strong><span class="dim">/110</span></td>
+            <td>{{ c.controls_assessed }}/110</td>
+            <td>{{ c.impl_met }}/{{ c.impl_total }}</td>
+            <td>{{ c.open_poams }}</td>
+            <td>{% if c.overdue_poams %}<span class="chip chip--err">{{ c.overdue_poams }}</span>{% else %}0{% endif %}</td>
+            <td>{{ c.evidence_total }}{% if c.expired_evidence %} <span class="chip chip--err" title="expired">{{ c.expired_evidence }} exp</span>{% endif %}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="9" class="dim">No systems yet — create one from <a href="/scoring">Live scoring</a>.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endblock %}

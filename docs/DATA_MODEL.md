@@ -26,14 +26,27 @@
 
 ## Operational layer (`ccf`)
 
-- **`organizations` / `users`** — tenant + identity (OIDC pending).
+- **`organizations` / `users`** — tenant + identity. `users` carry a
+  `password_hash` (PBKDF2-HMAC-SHA256) + `api_token` for local auth + RBAC
+  role (OIDC federation pending).
 - **`systems`** — FIPS-199 (CIA) + FedRAMP baseline + ATO status.
 - **`control_implementations`** — per `(system, control)`: status, responsibility, narrative, conmon frequency, last / next assessed.
 - **`evidence`** — artifacts tied to an implementation.
-- **`assessments` / `assessment_results`** — assessment runs + per-control findings.
+- **`assessments` / `assessment_results`** — generic assessment runs + per-control findings.
+- **`assessment_control_results`** — CMMC L2 assessor workflow: per
+  `(assessment, control_id)` finding (`not_assessed` / `satisfied` /
+  `other_than_satisfied` / `not_applicable`), `[a]/[b]` objective findings
+  (JSONB), examine/interview/test notes, evidence ref, reviewer. Feeds the SAR
+  and auto-POA&M generation.
+- **`scoring_controls` / `scoring_statuses`** — the 110 CMMC L2 practices and
+  per-system implementation state behind live SPRS scoring.
+- **`ssp_projects` / `ssp_control_entries`** — SSP builder projects
+  (org-scoped, platform-tailored) and their per-control narrative entries.
 - **`poams`** — Plan of Actions & Milestones.
 - **`risks`** — risk register.
-- **`audit_log`** — application-level activity journal.
+- **`audit_log`** — tamper-evident application activity journal: a SHA-256
+  **hash chain** (`prev_hash` → `row_hash`) over redacted request bodies,
+  verifiable end-to-end via `/api/audit/verify`.
 
 ## Indexes of note
 

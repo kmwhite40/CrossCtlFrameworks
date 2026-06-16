@@ -9,7 +9,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import Risk
+from ...auth import Principal
+from ...models import Risk, System
+from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/risks", tags=["risks"])
@@ -38,12 +40,32 @@ class RiskUpdate(BaseModel):
     status: str | None = Field(None, pattern=STATUS)
 
 
+async def _require_risk(session: AsyncSession, rid: int, principal: Principal) -> Risk:
+    obj = (await session.execute(select(Risk).where(Risk.id == rid))).scalar_one_or_none()
+    if obj is None:
+        raise HTTPException(404, "risk not found")
+    if principal.org_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == obj.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "risk not found")
+    return obj
+
+
 @router.get("")
 async def list_risks(
     session: AsyncSession = Depends(get_session),
     system_id: int | None = None,
+    principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
     stmt = select(Risk).order_by(Risk.created_at.desc())
+    if principal.org_id is not None:
+        stmt = stmt.where(Risk.system_id.in_(org_systems_subq(principal)))
     if system_id is not None:
         stmt = stmt.where(Risk.system_id == system_id)
     rows = (await session.execute(stmt)).scalars().all()
@@ -67,7 +89,18 @@ async def list_risks(
 async def create_risk(
     body: RiskCreate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
+    if principal.org_id is not None and body.system_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == body.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "system not found")
     obj = Risk(**body.model_dump(exclude_none=True))
     session.add(obj)
     await session.commit()
@@ -80,10 +113,9 @@ async def update_risk(
     rid: int,
     body: RiskUpdate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    obj = (await session.execute(select(Risk).where(Risk.id == rid))).scalar_one_or_none()
-    if obj is None:
-        raise HTTPException(404, "risk not found")
+    obj = await _require_risk(session, rid, principal)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(obj, k, v)
     await session.commit()

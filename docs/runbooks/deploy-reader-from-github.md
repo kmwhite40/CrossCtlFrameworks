@@ -1,6 +1,5 @@
 # Runbook — Deploy Concord Reader from GitHub
 
-Copyright © 2026 Colleen Townsend. All rights reserved.
 
 Two audiences, one document:
 

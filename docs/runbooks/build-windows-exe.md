@@ -1,6 +1,5 @@
 # Runbook — Build Concord Reader `.exe` (Windows)
 
-Copyright © 2026 Colleen Townsend. All rights reserved.
 
 **Audience:** release engineer producing the standalone read-only distribution
 of Concord for analysts on locked-down Windows workstations.
@@ -119,7 +118,7 @@ For a proper installer with Start Menu shortcut and uninstall:
 [Setup]
 AppName=Concord Reader
 AppVersion=0.2.0
-AppPublisher=Colleen Townsend
+AppPublisher=Concord
 DefaultDirName={autopf}\Concord Reader
 DefaultGroupName=Concord Reader
 UninstallDisplayIcon={app}\ConcordReader.exe

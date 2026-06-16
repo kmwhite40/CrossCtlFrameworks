@@ -23,27 +23,38 @@
 | Viewer | Low | Reads only. |
 | Unauthenticated external | **None** | Must not see any operational data. |
 
-**Current gap:** OIDC + RBAC are not yet wired; the service currently
-trusts any caller on the host network. Public deployment is **not**
-supported until Phase-3.
+**Current state:** local authentication + RBAC are implemented and gate the
+service when `CCF_AUTH_ENABLED=1` (signed session cookie / API token, role
+checks, app-level org scoping). They default to **off** for the dev preview,
+so an unconfigured instance still trusts any caller on the host network —
+enable auth and bind to a trusted network before any shared/public deployment.
+OIDC/IdP federation and DB-enforced RLS remain on the roadmap.
 
 ## STRIDE
 
-- **Spoofing** — no auth today. Planned: OIDC with `fastapi-users` or an
-  in-house `Principal` dep enforcing a signed JWT.
-- **Tampering** — Alembic-managed schema; audit schema designed for
-  append-only. Grants not yet split; `ccf` role can currently `DELETE` any
-  row. Planned mitigation: `ccf_app` loses `UPDATE, DELETE` on `ccf_audit.*`.
-- **Repudiation** — `audit_log` designed; middleware hook pending. Until
-  it's live, actions on the system are effectively anonymous.
-- **Information disclosure** — no tenant RLS; two orgs in one DB can
-  query each other's rows via the API. Planned: row-level policies keyed
-  on `current_setting('ccf.tenant_id')::int` injected per request.
+- **Spoofing** — `auth_gate_middleware` resolves a `Principal` from an
+  HMAC-signed session cookie or `secrets` API token; passwords are
+  PBKDF2-HMAC-SHA256. Gap: auth is opt-in (`CCF_AUTH_ENABLED`) and OIDC/IdP
+  federation is not yet wired.
+- **Tampering** — Alembic-managed schema; `audit_log` is a SHA-256 hash chain
+  (`prev_hash` → `row_hash`) verifiable via `/api/audit/verify`, so silent
+  edits are detectable. Grants not yet split; the `ccf` role can still `DELETE`
+  rows. Planned mitigation: `ccf_app` loses `UPDATE, DELETE` on `ccf_audit.*`
+  + append-only triggers.
+- **Repudiation** — `audit_middleware` records every successful mutation
+  attributed to the authenticated `Principal` (else `X-Actor` /
+  `CCF_AUDIT_DEFAULT_ACTOR`). With auth disabled, actions fall back to the
+  default actor and are effectively anonymous.
+- **Information disclosure** — queries are **org-scoped at the application
+  layer** (`Principal.organization_id`), but there is no DB-enforced RLS yet,
+  so a bug or a raw SQL path could cross tenants. Planned: row-level policies
+  keyed on `current_setting('ccf.tenant_id')::int` injected per request.
 - **Denial of service** — `slowapi` limits to 120/min per IP. Ingestion
   is not rate-limited but runs only via CLI / Docker; expose only on an
   admin network.
-- **Elevation of privilege** — no role checks on `/systems/*` POSTs today.
-  Only deploy with network-level isolation until Phase-3 lands.
+- **Elevation of privilege** — `require_role` enforces RBAC on privileged
+  routes when auth is enabled. With auth disabled there are no role checks, so
+  deploy with network-level isolation until auth is turned on.
 
 ## Supply chain
 
@@ -63,8 +74,12 @@ supported until Phase-3.
 ## Known accepted risks (dev preview)
 
 1. Single shared DB role.
-2. No authentication.
-3. No RLS / tenant isolation.
-4. `localhost:3000` (landing) & `localhost:8088` (app) bound to `0.0.0.0`
-   inside the container; bind to `127.0.0.1` on the host for multi-user
-   workstations.
+2. Auth + RBAC are implemented but **off by default** (`CCF_AUTH_ENABLED=0`);
+   an unconfigured instance is unauthenticated.
+3. Tenant isolation is app-level only — no DB-enforced RLS.
+4. `localhost:8088` (app, with landing at `/`) and the optional
+   `localhost:3000` (standalone Next.js landing) bind to `0.0.0.0` inside the
+   container; bind to `127.0.0.1` on the host for multi-user workstations.
+5. The catalog workbook (`data/NIST Cross Mappings Rev. 1.1.xlsx`, ~26 MB) is
+   committed to the repo so ingest works on any clone. Repository read access
+   therefore grants catalog access — **keep the repository private**.

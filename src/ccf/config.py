@@ -45,6 +45,16 @@ class Settings(BaseSettings):
         description="When true, hide ops UI and block POST/PATCH/DELETE.",
     )
 
+    # Audit trail: record state-changing requests to ccf.audit_log.
+    audit_enabled: bool = Field(default=True)
+    audit_default_actor: str = Field(default="system")
+
+    # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
+    # read-only reader stay open; turn on for shared/production deployments.
+    auth_enabled: bool = Field(default=False)
+    auth_session_secret: str = Field(default="dev-insecure-change-me")
+    auth_session_ttl_hours: int = Field(default=12)
+
     @property
     def is_sqlite(self) -> bool:
         return "sqlite" in str(self.database_url)

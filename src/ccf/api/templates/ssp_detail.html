@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}{{ project.customer_name }} SSP · Concord{% endblock %}
+{% block heading %}{{ project.customer_name }} — SSP{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">CMMC Level 2 · {{ entry_count }} control narratives · FedRAMP Appendix A style.</p>
+{% endblock %}
+{% block actions %}
+  <a class="btn btn--ghost" href="/ssp"><i data-lucide="arrow-left"></i> All projects</a>
+  <a class="btn btn--primary" href="/api/ssp/projects/{{ project.id }}/document">
+    <i data-lucide="file-down"></i> Generate .docx</a>
+{% endblock %}
+{% block content %}
+
+<form method="post" action="/ssp/{{ project.id }}/meta" class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Document metadata</div></div>
+  <div class="card__body row" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <label class="field-group"><span class="dim" style="font-size:12px">Customer</span>
+      <input class="input" name="customer_name" value="{{ project.customer_name }}" required></label>
+    <label class="field-group"><span class="dim" style="font-size:12px">System</span>
+      <input class="input" name="system_name" value="{{ project.system_name or '' }}"></label>
+    <label class="field-group"><span class="dim" style="font-size:12px">Prepared by</span>
+      <input class="input" name="prepared_by" value="{{ project.prepared_by or '' }}"></label>
+    <label class="field-group"><span class="dim" style="font-size:12px">Version</span>
+      <input class="input" style="width:90px" name="version" value="{{ project.version }}"></label>
+    <label class="field-group"><span class="dim" style="font-size:12px">Date</span>
+      <input class="input" type="date" name="document_date"
+             value="{{ project.document_date.isoformat() if project.document_date else '' }}"></label>
+    <label class="field-group"><span class="dim" style="font-size:12px">Status</span>
+      <select class="select" name="status">
+        {% for s in ['draft','in_review','final'] %}<option value="{{ s }}" {% if project.status==s %}selected{% endif %}>{{ s }}</option>{% endfor %}
+      </select></label>
+    <button class="btn btn--secondary" type="submit"><i data-lucide="save"></i> Save metadata</button>
+  </div>
+</form>
+
+<form method="post" action="/ssp/{{ project.id }}/regenerate" class="card" style="margin-bottom:16px"
+      onsubmit="return confirm('Regenerate all 110 sample statements for this platform? This overwrites the seeded narratives, roles, and origination (your implementation-status selections are kept).');">
+  <div class="card__body row" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <div>
+      <div class="card__title">Sample control statements</div>
+      <div class="dim" style="font-size:12px">Current platform:
+        <span class="chip chip--info">{{ platforms.get(project.platform, project.platform) }}</span></div>
+    </div>
+    <label class="field-group" style="margin-left:auto">
+      <span class="dim" style="font-size:12px">Target platform</span>
+      <select class="select" name="platform">
+        {% for code, label in platforms.items() %}
+          <option value="{{ code }}" {% if project.platform==code %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="btn btn--secondary" type="submit"><i data-lucide="wand-2"></i> Regenerate statements</button>
+  </div>
+</form>
+
+{% for d in ordered_domains %}
+<details class="card" style="margin-bottom:12px" {% if loop.first %}open{% endif %}>
+  <summary class="card__header" style="cursor:pointer;list-style:none">
+    <div class="row between" style="width:100%">
+      <div class="card__title">{{ section_number(d) }} {{ domain_name(d) }} ({{ d }})</div>
+      <span class="chip chip--brand">{{ by_domain[d]|length }} controls</span>
+    </div>
+  </summary>
+  <div class="card__body stack" style="gap:14px">
+    {% for e in by_domain[d] %}
+    <form method="post" action="/ssp/{{ project.id }}/entry/{{ e.id }}"
+          hx-post="/ssp/{{ project.id }}/entry/{{ e.id }}" hx-target="#saved-{{ e.id }}" hx-swap="innerHTML"
+          class="card" style="border:1px solid var(--ink-200)">
+      <div class="card__body stack" style="gap:10px">
+        <div class="row between">
+          <div>
+            <span class="mono" style="font-weight:700">{{ e.control_id }}</span>
+            <span class="dim">· NIST {{ e.nist_id }}</span>
+            <div style="font-weight:600;margin-top:2px">{{ e.title }}</div>
+          </div>
+          <div class="row" style="gap:8px;align-items:center">
+            <span id="saved-{{ e.id }}"></span>
+            <button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="save"></i> Save</button>
+          </div>
+        </div>
+        {% if e.requirement %}<div class="dim" style="font-size:12px">{{ e.requirement }}</div>{% endif %}
+
+        <label class="field-group"><span class="dim" style="font-size:12px">Responsible role</span>
+          <input class="input" name="responsible_role" value="{{ e.responsible_role or '' }}"></label>
+
+        <div class="row" style="gap:24px;flex-wrap:wrap">
+          <div>
+            <div class="dim" style="font-size:12px;margin-bottom:4px">Implementation status</div>
+            {% for opt in status_options %}
+            <label class="row" style="gap:6px;font-size:13px">
+              <input type="checkbox" name="status::{{ opt }}" {% if opt in (e.implementation_status or []) %}checked{% endif %}> {{ opt }}
+            </label>
+            {% endfor %}
+          </div>
+          <div>
+            <div class="dim" style="font-size:12px;margin-bottom:4px">Control origination</div>
+            {% for opt in origination_options %}
+            <label class="row" style="gap:6px;font-size:13px">
+              <input type="checkbox" name="orig::{{ opt }}" {% if opt in (e.control_origination or []) %}checked{% endif %}> {{ opt }}
+            </label>
+            {% endfor %}
+          </div>
+        </div>
+
+        <div class="dim" style="font-size:12px">What is the solution and how is it implemented?</div>
+        {% for part in e.part_narratives or [] %}
+        <label class="field-group">
+          <span class="dim" style="font-size:12px">Part [{{ part.label or '—' }}]</span>
+          <textarea class="input" name="part::{{ part.label }}" rows="2">{{ part.text }}</textarea>
+        </label>
+        {% endfor %}
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+</details>
+{% endfor %}
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

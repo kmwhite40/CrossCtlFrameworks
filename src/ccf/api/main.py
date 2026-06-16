@@ -19,8 +19,13 @@ from starlette.types import ExceptionHandler
 
 from ..config import get_settings
 from ..logging import configure_logging, get_logger
+from .audit import audit_middleware
+from .auth_deps import auth_gate_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
+    assessments,
+    audit,
+    auth,
     controls,
     coverage,
     diff,
@@ -30,9 +35,12 @@ from .routes import (
     mappings,
     oscal,
     poams,
+    posture,
     reports,
     risks,
+    scoring,
     search,
+    ssp,
     systems,
     ui,
     users,
@@ -77,6 +85,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.middleware("http")(metrics_middleware)
+    if settings.audit_enabled and not settings.readonly:
+        app.middleware("http")(audit_middleware)
+    # Registered last → runs first, so the principal is resolved before audit/routes.
+    if settings.auth_enabled:
+        app.middleware("http")(auth_gate_middleware)
 
     if settings.readonly:
 
@@ -95,6 +108,7 @@ def create_app() -> FastAPI:
     app.add_route("/metrics", metrics_endpoint)
 
     app.include_router(health.router)
+    app.include_router(auth.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)
@@ -104,6 +118,11 @@ def create_app() -> FastAPI:
     app.include_router(oscal.router)
     app.include_router(diff.router)
     app.include_router(systems.router)
+    app.include_router(scoring.router)
+    app.include_router(ssp.router)
+    app.include_router(assessments.router)
+    app.include_router(posture.router)
+    app.include_router(audit.router)
     app.include_router(evidence.router)
     app.include_router(poams.router)
     app.include_router(risks.router)

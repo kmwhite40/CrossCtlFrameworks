@@ -9,8 +9,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models import POAM
+from ...auth import Principal
+from ...models import POAM, System
 from ...schemas import POAMOut
+from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/poams", tags=["poams"])
@@ -42,13 +44,33 @@ class POAMUpdate(BaseModel):
     owner_user_id: int | None = None
 
 
+async def _require_poam(session: AsyncSession, pid: int, principal: Principal) -> POAM:
+    obj = (await session.execute(select(POAM).where(POAM.id == pid))).scalar_one_or_none()
+    if obj is None:
+        raise HTTPException(404, "poam not found")
+    if principal.org_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == obj.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "poam not found")
+    return obj
+
+
 @router.get("", response_model=list[POAMOut])
 async def list_poams(
     session: AsyncSession = Depends(get_session),
     system_id: int | None = None,
     status: str | None = None,
+    principal: Principal = Depends(get_principal),
 ) -> list[POAMOut]:
     stmt = select(POAM).order_by(POAM.due_on.nulls_last())
+    if principal.org_id is not None:
+        stmt = stmt.where(POAM.system_id.in_(org_systems_subq(principal)))
     if system_id is not None:
         stmt = stmt.where(POAM.system_id == system_id)
     if status:
@@ -61,7 +83,18 @@ async def list_poams(
 async def create_poam(
     body: POAMCreate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> POAMOut:
+    if principal.org_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == body.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "system not found")
     obj = POAM(**body.model_dump(exclude_none=True))
     session.add(obj)
     await session.commit()
@@ -74,10 +107,9 @@ async def update_poam(
     pid: int,
     body: POAMUpdate,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> POAMOut:
-    obj = (await session.execute(select(POAM).where(POAM.id == pid))).scalar_one_or_none()
-    if obj is None:
-        raise HTTPException(404, "poam not found")
+    obj = await _require_poam(session, pid, principal)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(obj, k, v)
     await session.commit()
@@ -89,10 +121,9 @@ async def update_poam(
 async def close_poam(
     pid: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> POAMOut:
-    obj = (await session.execute(select(POAM).where(POAM.id == pid))).scalar_one_or_none()
-    if obj is None:
-        raise HTTPException(404, "poam not found")
+    obj = await _require_poam(session, pid, principal)
     obj.status = "closed"
     obj.closed_on = date.today()
     await session.commit()

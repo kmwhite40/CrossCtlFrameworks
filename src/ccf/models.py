@@ -291,6 +291,8 @@ class User(Base):
         default="viewer",
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    api_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     organization: Mapped[Organization] = relationship(back_populates="users")
@@ -465,6 +467,48 @@ class AssessmentResult(Base):
     )
 
 
+class AssessmentControlResult(Base):
+    """An assessor's finding for one CMMC L2 practice within an assessment.
+
+    Keyed to ``scoring_controls`` (the 110 practices) by ``control_id`` so the
+    assessor works the live matrix' objectives + examine/interview/test methods.
+    """
+
+    __tablename__ = "assessment_control_results"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    assessment_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.assessments.id", ondelete="CASCADE"), index=True
+    )
+    control_id: Mapped[str] = mapped_column(String(32), index=True)
+    nist_id: Mapped[str | None] = mapped_column(String(16))
+    domain: Mapped[str | None] = mapped_column(String(8))
+    title: Mapped[str | None] = mapped_column(String(512))
+    requirement: Mapped[str | None] = mapped_column(Text)
+
+    # satisfied | other_than_satisfied | not_applicable | not_assessed
+    finding: Mapped[str] = mapped_column(String(32), default="not_assessed")
+    objective_findings: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    examine_note: Mapped[str | None] = mapped_column(Text)
+    interview_note: Mapped[str | None] = mapped_column(Text)
+    test_note: Mapped[str | None] = mapped_column(Text)
+    assessor_note: Mapped[str | None] = mapped_column(Text)
+    evidence_ref: Mapped[str | None] = mapped_column(String(1024))
+
+    reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
+    reviewer: Mapped[str | None] = mapped_column(String(255))
+    observed_on: Mapped[date | None] = mapped_column(Date)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("assessment_id", "control_id", name="uq_assess_ctrl"),
+        Index("ix_assess_ctrl_assessment_sort", "assessment_id", "sort_order"),
+    )
+
+
 class POAM(Base):
     __tablename__ = "poams"
 
@@ -524,6 +568,152 @@ class Risk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+# ---------------------------------------------------------------------------
+# CMMC Level 2 live scoring layer (replaces the static scoring-matrix workbook)
+# ---------------------------------------------------------------------------
+
+
+class ScoringControl(Base):
+    """Reference row for one CMMC L2 practice from the scoring matrix.
+
+    Loaded from ``ccf.scoring.seed`` — one row per the 110 Level 2 practices,
+    carrying the SPRS point value, NIST 800-171A objective parts, assessment
+    cases, and the Microsoft 365 placemat evidence/inheritance guidance.
+    """
+
+    __tablename__ = "scoring_controls"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    control_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    nist_id: Mapped[str | None] = mapped_column(String(16), index=True)
+    domain: Mapped[str] = mapped_column(String(8), index=True)
+    title: Mapped[str | None] = mapped_column(String(512))
+
+    point_value: Mapped[str] = mapped_column(String(8))  # "5" | "3" | "1" | "3/5" | "Special"
+    scoring_bucket: Mapped[str | None] = mapped_column(String(64))
+    scoring_notes: Mapped[str | None] = mapped_column(Text)
+
+    requirement: Mapped[str | None] = mapped_column(Text)
+    objectives: Mapped[str | None] = mapped_column(Text)
+    objective_parts: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    examine_cases: Mapped[str | None] = mapped_column(Text)
+    interview_cases: Mapped[str | None] = mapped_column(Text)
+    test_cases: Mapped[str | None] = mapped_column(Text)
+    considerations: Mapped[str | None] = mapped_column(Text)
+    key_references: Mapped[str | None] = mapped_column(Text)
+    guide_page: Mapped[str | None] = mapped_column(String(16))
+    pdf_page: Mapped[str | None] = mapped_column(String(16))
+    source: Mapped[str | None] = mapped_column(Text)
+
+    m365_coverage_status: Mapped[str | None] = mapped_column(String(64), index=True)
+    m365_primary_services: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    m365_secondary_services: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    m365_implementation_statement: Mapped[str | None] = mapped_column(Text)
+    m365_inheritance: Mapped[str | None] = mapped_column(Text)
+    recommended_customer_evidence: Mapped[str | None] = mapped_column(Text)
+    recommended_provider_evidence: Mapped[str | None] = mapped_column(Text)
+    evidence_notes: Mapped[str | None] = mapped_column(Text)
+    m365_source: Mapped[str | None] = mapped_column(Text)
+
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    statuses: Mapped[list[ScoringStatus]] = relationship(
+        back_populates="scoring_control", cascade="all, delete-orphan"
+    )
+
+
+class ScoringStatus(Base):
+    """Per-system live implementation state for a scoring control (drives SPRS)."""
+
+    __tablename__ = "scoring_statuses"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    scoring_control_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.scoring_controls.id", ondelete="CASCADE"), index=True
+    )
+    state: Mapped[str] = mapped_column(String(32), default="not_assessed")
+    notes: Mapped[str | None] = mapped_column(Text)
+    evidence_ref: Mapped[str | None] = mapped_column(String(1024))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    scoring_control: Mapped[ScoringControl] = relationship(back_populates="statuses")
+
+    __table_args__ = (
+        UniqueConstraint("system_id", "scoring_control_id", name="uq_scoring_system_control"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# System Security Plan (SSP) authoring layer — FedRAMP Appendix A style
+# ---------------------------------------------------------------------------
+
+
+class SSPProject(Base):
+    """A per-customer SSP document project that can be edited and re-generated."""
+
+    __tablename__ = "ssp_projects"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="SET NULL"), index=True
+    )
+    system_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="SET NULL"), index=True
+    )
+    customer_name: Mapped[str] = mapped_column(String(255))
+    system_name: Mapped[str | None] = mapped_column(String(255))
+    platform: Mapped[str] = mapped_column(String(32), default="m365")
+    title: Mapped[str] = mapped_column(String(512), default="System Security Plan (SSP)")
+    version: Mapped[str] = mapped_column(String(32), default="0.1")
+    prepared_by: Mapped[str | None] = mapped_column(String(255))
+    document_date: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(32), default="draft")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    entries: Mapped[list[SSPControlEntry]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class SSPControlEntry(Base):
+    """One control's authored content within an SSP project."""
+
+    __tablename__ = "ssp_control_entries"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.ssp_projects.id", ondelete="CASCADE"), index=True
+    )
+    control_id: Mapped[str] = mapped_column(String(32), index=True)
+    nist_id: Mapped[str | None] = mapped_column(String(16))
+    domain: Mapped[str | None] = mapped_column(String(8))
+    title: Mapped[str | None] = mapped_column(String(512))
+    requirement: Mapped[str | None] = mapped_column(Text)
+    responsible_role: Mapped[str | None] = mapped_column(String(255))
+    implementation_status: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    control_origination: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    part_narratives: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    project: Mapped[SSPProject] = relationship(back_populates="entries")
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "control_id", name="uq_ssp_project_control"),
+        Index("ix_ssp_entry_project_sort", "project_id", "sort_order"),
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
@@ -536,3 +726,5 @@ class AuditLog(Base):
     entity_type: Mapped[str] = mapped_column(String(64))
     entity_id: Mapped[str | None] = mapped_column(String(64))
     diff: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    prev_hash: Mapped[str | None] = mapped_column(String(64))
+    row_hash: Mapped[str | None] = mapped_column(String(64))

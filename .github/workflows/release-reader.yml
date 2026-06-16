@@ -1,5 +1,4 @@
 name: release-reader
-# Copyright © 2026 Colleen Townsend.
 # Triggered on tags like v0.2.0 or reader-v0.2.0. Builds Concord Reader as a
 # Windows .exe with PyInstaller and attaches it to a GitHub Release.
 

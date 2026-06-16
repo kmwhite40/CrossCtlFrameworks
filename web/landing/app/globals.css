@@ -4,27 +4,28 @@
 
 @layer base {
   :root {
-    --background: 240 14% 4%;
-    --foreground: 0 0% 98%;
+    /* Matches the Concord app: deep indigo canvas, periwinkle brand, teal accent. */
+    --background: 230 38% 7%;
+    --foreground: 230 30% 96%;
 
-    --card: 240 10% 7%;
-    --card-foreground: 0 0% 98%;
+    --card: 230 28% 10%;
+    --card-foreground: 230 30% 96%;
 
-    --primary: 260 85% 66%;
-    --primary-foreground: 0 0% 100%;
+    --primary: 235 100% 72%;
+    --primary-foreground: 230 60% 8%;
 
-    --secondary: 240 4% 14%;
-    --secondary-foreground: 0 0% 98%;
+    --secondary: 232 18% 16%;
+    --secondary-foreground: 230 30% 96%;
 
-    --muted: 240 4% 14%;
-    --muted-foreground: 240 5% 65%;
+    --muted: 232 18% 16%;
+    --muted-foreground: 230 14% 66%;
 
-    --accent: 260 85% 66%;
-    --accent-foreground: 0 0% 100%;
+    --accent: 172 66% 50%;
+    --accent-foreground: 230 60% 8%;
 
-    --border: 240 6% 20%;
-    --input: 240 6% 16%;
-    --ring: 260 85% 66%;
+    --border: 232 18% 22%;
+    --input: 232 18% 18%;
+    --ring: 235 100% 72%;
 
     --radius: 0.75rem;
   }
@@ -43,9 +44,133 @@
     mask-image: radial-gradient(ellipse at center, black 40%, transparent 80%);
   }
   .gradient-text {
-    background: linear-gradient(135deg, hsl(260 85% 80%), hsl(220 90% 75%));
+    background: linear-gradient(135deg, hsl(235 100% 80%), hsl(172 70% 60%));
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
   }
+}
+
+/* ============================================================================
+   CyberCore animated background — recolored to the Concord indigo/teal scheme.
+   Component: components/ui/cybercore-section-hero.tsx
+   ========================================================================== */
+:root {
+  --cc-bg: #0a0d1e;            /* deep indigo canvas (matches the app) */
+  --cc-light: #8b93ff;        /* periwinkle beams / grid */
+  --cc-highlight: #2dd4bf;    /* teal accent beams */
+  --cc-glow-1: rgba(111, 123, 255, 0.8);
+  --cc-glow-2: rgba(90, 99, 240, 0.55);
+  --cc-highlight-glow: rgba(45, 212, 191, 0.7);
+}
+
+@keyframes rise {
+  0% { transform: translateY(100%); opacity: 0; }
+  10% { opacity: 1; }
+  100% { transform: translateY(-5%); opacity: 0; }
+}
+@keyframes fade {
+  0%, 100% { opacity: 0; }
+  5%, 85% { opacity: 0.8; }
+}
+@keyframes floorGlow {
+  0%, 100% { transform: translateX(-50%) scale(0.95); opacity: 0.6; }
+  50% { transform: translateX(-50%) scale(1.05); opacity: 1; }
+}
+@keyframes mainGlow {
+  from { opacity: 0.45; filter: blur(30px); }
+  to { opacity: 0.75; filter: blur(18px); }
+}
+@keyframes moveGrid {
+  from { background-position: 0 0; }
+  to { background-position: -100px -50px; }
+}
+
+/* The scene is a fixed, full-viewport animated backdrop sitting behind content. */
+.scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(80% 60% at 50% 110%, rgba(111, 123, 255, 0.18), transparent 60%),
+    var(--cc-bg);
+  perspective: 700px;
+}
+
+/* receding perspective grid floor */
+.scene .floor {
+  position: absolute;
+  left: 50%;
+  bottom: -12%;
+  width: 240%;
+  height: 95%;
+  transform: translateX(-50%) rotateX(76deg);
+  transform-origin: bottom center;
+  background-image:
+    linear-gradient(var(--cc-light) 1px, transparent 1px),
+    linear-gradient(90deg, var(--cc-light) 1px, transparent 1px);
+  background-size: 48px 48px;
+  opacity: 0.22;
+  animation: moveGrid 4s linear infinite;
+  -webkit-mask-image: linear-gradient(to top, black, transparent 72%);
+  mask-image: linear-gradient(to top, black, transparent 72%);
+}
+
+/* horizon glow */
+.scene::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 4%;
+  width: 70%;
+  height: 220px;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, var(--cc-glow-1), transparent 70%);
+  filter: blur(50px);
+  animation: floorGlow 5s ease-in-out infinite;
+  z-index: 0;
+}
+
+/* central light column */
+.scene .main-column {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  background: linear-gradient(to top, transparent, var(--cc-light) 45%, transparent);
+  animation: mainGlow 3s ease-in-out infinite alternate;
+  z-index: 1;
+}
+
+.scene .light-stream-container {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/* rising light beams (durations + delay come from the component's inline style) */
+.scene .light-beam {
+  position: absolute;
+  bottom: 0;
+  height: 62vh;
+  background: linear-gradient(to top, transparent, var(--cc-light));
+  box-shadow: 0 0 8px var(--cc-glow-1), 0 0 16px var(--cc-glow-2);
+  animation-name: rise, fade;
+  animation-timing-function: ease-out, ease-in-out;
+  animation-iteration-count: infinite, infinite;
+  will-change: transform, opacity;
+}
+.scene .light-beam.secondary {
+  background: linear-gradient(to top, transparent, var(--cc-highlight));
+  box-shadow: 0 0 8px var(--cc-highlight-glow), 0 0 18px var(--cc-highlight-glow);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scene .floor,
+  .scene .main-column,
+  .scene .light-beam,
+  .scene::before { animation: none; }
 }

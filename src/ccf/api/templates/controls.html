@@ -14,7 +14,7 @@
   <div class="card__body">
     <form hx-get="/controls" hx-target="#controls-table" hx-push-url="true"
           hx-include="closest form" role="search" aria-label="Filter controls"
-          style="display:grid;grid-template-columns:2fr 1fr 1fr auto;gap:10px">
+          class="filters">
       <label class="field-group" style="position:relative">
         <i data-lucide="search" style="position:absolute;left:10px;top:10px;width:18px;height:18px;color:var(--ink-400)"></i>
         <input type="text" name="q" value="{{ q }}" placeholder="Search by identifier or name…"

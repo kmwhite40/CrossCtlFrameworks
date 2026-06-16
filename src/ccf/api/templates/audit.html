@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Audit trail · Concord{% endblock %}
+{% block heading %}Audit trail{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Immutable record of every state-changing action across the platform.</p>
+{% endblock %}
+{% block actions %}
+  <a href="/api/audit" class="btn btn--ghost"><i data-lucide="braces"></i> JSON</a>
+{% endblock %}
+{% block content %}
+
+<form method="get" action="/audit" class="card" style="margin-bottom:16px">
+  <div class="card__body row" style="gap:12px;flex-wrap:wrap;align-items:flex-end">
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Entity</span>
+      <select name="entity_type" class="select" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for t in entity_types %}<option value="{{ t }}" {% if entity_type==t %}selected{% endif %}>{{ t }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Action</span>
+      <select name="action" class="select" onchange="this.form.submit()">
+        <option value="">All</option>
+        {% for a in ['create','update','delete'] %}<option value="{{ a }}" {% if action==a %}selected{% endif %}>{{ a }}</option>{% endfor %}
+      </select>
+    </label>
+  </div>
+</form>
+
+<div class="card">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>When (UTC)</th><th>Actor</th><th>Action</th><th>Entity</th><th>ID</th><th>Path</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="dim mono">{{ r.at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+          <td>{{ r.actor or '—' }}</td>
+          <td>
+            <span class="chip {{ 'chip--ok' if r.action=='create' else ('chip--warn' if r.action=='update' else 'chip--err') }}">{{ r.action }}</span>
+          </td>
+          <td><span class="chip chip--brand">{{ r.entity_type }}</span></td>
+          <td class="mono">{{ r.entity_id or '—' }}</td>
+          <td class="mono dim" style="font-size:12px">{{ r.diff.get('method','') }} {{ r.diff.get('path','') }}</td>
+          <td class="mono">{{ r.diff.get('status','') }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="dim">No audit entries yet — perform an action (create a system, edit an SSP) to populate the trail.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

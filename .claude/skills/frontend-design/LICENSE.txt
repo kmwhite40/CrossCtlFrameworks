@@ -1,0 +1,12 @@
+frontend-design skill
+======================
+
+Source: Anthropic "claude-code" repository
+  plugins/frontend-design/skills/frontend-design/SKILL.md
+
+Vendored into this project as a local Claude Code skill under
+.claude/skills/frontend-design so it can be invoked with /frontend-design.
+
+The SKILL.md content is (c) Anthropic and provided under the license terms of
+the upstream claude-code repository. Refer to that repository for the
+authoritative license text. This file is a provenance note for the vendored copy.

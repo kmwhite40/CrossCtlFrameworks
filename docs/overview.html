@@ -56,7 +56,7 @@
 
   <section>
     <h2 class="text-2xl font-semibold tracking-tight">Summary — what Concord does</h2>
-    <p class="mt-2 text-slate-600">Six capabilities, one service.</p>
+    <p class="mt-2 text-slate-600">Catalog, compliance operations, and audit-ready outputs — one service.</p>
 
     <div class="mt-6 grid md:grid-cols-2 gap-4">
       <article class="card p-5">
@@ -94,19 +94,23 @@
         <p class="mt-3 text-sm text-slate-600 leading-relaxed">
           Beyond the catalog: organizations, systems (FIPS-199 + FedRAMP baseline
           + ATO status), per-system control implementations, evidence, assessments,
-          POA&amp;Ms, risks, and an append-only audit log.
+          POA&amp;Ms, risks, optional auth + RBAC + org-scoped multi-tenancy, and a
+          <strong>tamper-evident, hash-chained audit log</strong>.
         </p>
       </article>
 
       <article class="card p-5">
         <div class="flex items-center gap-3">
           <div class="w-9 h-9 rounded-lg bg-rose-50 text-rose-700 grid place-items-center font-bold">4</div>
-          <h3 class="font-semibold">Serves a UI</h3>
+          <h3 class="font-semibold">Serves a UI + audit-ready outputs</h3>
         </div>
         <p class="mt-3 text-sm text-slate-600 leading-relaxed">
-          HTMX + Tailwind server-rendered pages: dashboard, faceted control
-          browser, per-control detail with mappings grouped by framework,
-          framework catalog, generic worksheet viewer, and Postgres full-text search.
+          HTMX + glassmorphism server-rendered pages behind a marketing landing
+          page: dashboard, control browser, framework catalog, full-text search,
+          plus <strong>live SPRS scoring</strong>, an <strong>SSP builder</strong>,
+          a <strong>CMMC L2 assessment workflow</strong> (→ SAR + auto-POA&amp;Ms),
+          and a <strong>custom report builder</strong> exporting xlsx / docx / csv /
+          json. SSP, SAR, and OSCAL 1.1 documents generate on demand.
         </p>
       </article>
 
@@ -150,20 +154,21 @@
           <li><code class="kbd">config.py</code> (pydantic-settings)</li>
           <li><code class="kbd">logging.py</code> (structlog)</li>
           <li><code class="kbd">db.py</code> (async SQLAlchemy)</li>
-          <li><code class="kbd">models.py</code> — 20+ ORM classes</li>
+          <li><code class="kbd">models.py</code> — 25+ ORM classes</li>
           <li><code class="kbd">schemas.py</code> — Pydantic v2</li>
           <li><code class="kbd">cli.py</code> — Typer entrypoint</li>
           <li><code class="kbd">etl/</code> — classifier + ingestion pipeline with dedup and tsvector refresh</li>
-          <li><code class="kbd">api/</code> — FastAPI app, 6 route modules, 8 Jinja templates</li>
+          <li><code class="kbd">scoring/</code>, <code class="kbd">ssp/</code>, <code class="kbd">assessment/</code>, <code class="kbd">reporting/</code> — SPRS scoring + docx/xlsx generators</li>
+          <li><code class="kbd">api/</code> — FastAPI app, 20+ route modules, Jinja templates, auth + hash-chained audit middleware</li>
         </ul>
       </article>
 
       <article class="card p-5">
         <h3 class="font-semibold">Database — <code class="kbd">migrations/</code></h3>
         <ul class="mt-3 text-sm text-slate-600 space-y-2 list-disc pl-5">
-          <li>Alembic baseline creating <code class="kbd">ccf</code>, <code class="kbd">ccf_raw</code>, <code class="kbd">ccf_audit</code> schemas</li>
+          <li>Alembic migration chain (→ <code class="kbd">0009</code>) creating <code class="kbd">ccf</code>, <code class="kbd">ccf_raw</code>, <code class="kbd">ccf_audit</code> schemas</li>
           <li><code class="kbd">pg_trgm</code> &amp; <code class="kbd">pgcrypto</code> extensions</li>
-          <li>13 enums, 17 tables, GIN indexes on JSONB + tsvector + trigram mappings</li>
+          <li>26 tables (catalog, ops, scoring, SSP, assessment, hash-chained audit), GIN indexes on JSONB + tsvector + trigram mappings</li>
         </ul>
       </article>
 
@@ -179,9 +184,8 @@
       <article class="card p-5">
         <h3 class="font-semibold">Quality &amp; compliance</h3>
         <ul class="mt-3 text-sm text-slate-600 space-y-2 list-disc pl-5">
-          <li><code class="kbd">tests/</code> — classifier unit tests, ingest integration, API smoke</li>
+          <li><code class="kbd">tests/</code> — classifier, ingest, scoring/SSP, assessment, reports export, auth/RBAC, and enterprise-posture suites</li>
           <li><code class="kbd">.github/workflows/ci.yml</code> — lint, typecheck, test, SBOM, Trivy, Docker build</li>
-          <li><code class="kbd">LICENSE</code> + <code class="kbd">NOTICE</code> — &copy; 2026 Colleen Townsend</li>
           <li><code class="kbd">README.md</code></li>
         </ul>
       </article>
@@ -212,7 +216,6 @@
 
   <footer class="pt-6 border-t border-slate-200 text-sm text-slate-500 flex justify-between">
     <span>Concord &middot; Compliance controls platform</span>
-    <span>&copy; 2026 Colleen Townsend. All rights reserved.</span>
   </footer>
 </main>
 

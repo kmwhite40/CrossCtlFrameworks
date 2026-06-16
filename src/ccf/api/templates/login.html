@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sign in · Concord</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
+</head>
+<body>
+  <main style="min-height:100vh;display:grid;place-items:center;padding:24px">
+    <form method="post" action="/login" class="card card--elevated" style="width:min(400px,94vw)">
+      <div class="card__body stack" style="gap:16px">
+        <div class="row" style="gap:11px">
+          <span class="topbar__brand-mark">C</span>
+          <div>
+            <div style="font-size:18px;font-weight:700;color:#fff">Concord</div>
+            <div class="dim" style="font-size:12px">Compliance platform</div>
+          </div>
+        </div>
+        <div>
+          <h1 style="font-size:20px;font-weight:700;color:#fff;margin:0 0 2px">Sign in</h1>
+          <p class="dim" style="font-size:13px;margin:0">Use your Concord account credentials.</p>
+        </div>
+        {% if error %}
+        <div class="chip chip--err" style="width:100%;justify-content:flex-start;padding:8px 12px">
+          Invalid email or password.
+        </div>
+        {% endif %}
+        <label class="field-group">
+          <span class="dim" style="font-size:12px">Email</span>
+          <input class="input" type="email" name="email" autocomplete="username" required autofocus>
+        </label>
+        <label class="field-group">
+          <span class="dim" style="font-size:12px">Password</span>
+          <input class="input" type="password" name="password" autocomplete="current-password" required>
+        </label>
+        <button class="btn btn--primary" type="submit" style="justify-content:center">Sign in</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

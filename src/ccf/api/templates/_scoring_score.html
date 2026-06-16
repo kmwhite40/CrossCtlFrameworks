@@ -1,0 +1,78 @@
+{# Live SPRS score panel — re-rendered (out-of-band) on every state change. #}
+<div id="score-panel" class="card card--elevated stack" aria-live="polite" tabindex="-1">
+  <div class="card__header">
+    <div>
+      <div class="card__title">SPRS score</div>
+      <div class="card__subtitle">NIST SP 800-171 DoD methodology · max 110</div>
+    </div>
+  </div>
+  <div class="card__body">
+    {% set score = summary.score %}
+    {% set color = 'var(--ok-500)' if score >= 88 else ('var(--warn-500)' if score >= 0 else 'var(--err-500)') %}
+    <div class="row between" style="align-items:flex-end;gap:12px">
+      <div>
+        <div style="font-family:var(--font-display);font-size:54px;line-height:1;font-weight:800;color:{{ color }}">
+          {{ score }}
+        </div>
+        <div class="dim" style="font-size:12px;margin-top:4px">out of {{ summary.max_score }}
+          &middot; −{{ summary.deductions_total }} pts</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:22px;font-weight:700">{{ summary.percentage }}%</div>
+        <div class="dim" style="font-size:12px">{{ summary.met_controls }}/{{ summary.total_controls }} met</div>
+      </div>
+    </div>
+
+    <div class="bar-row__track" style="margin-top:12px">
+      {% set pct = ((score / summary.max_score * 100) if score > 0 else 0) | round(1) %}
+      <span class="bar-row__fill" style="width:{{ pct }}%;background:{{ color }}"></span>
+    </div>
+
+    {% if not summary.ssp_present %}
+      <div class="chip chip--err" style="margin-top:12px">
+        <i data-lucide="alert-triangle"></i> SSP prerequisite (CA.L2-3.12.4) not met — assessment cannot be scored
+      </div>
+    {% endif %}
+
+    <hr style="border:none;border-top:1px solid var(--ink-200);margin:16px 0">
+
+    <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-bottom:8px">Status mix</div>
+    {% set state_meta = [
+      ('implemented','Implemented','chip--ok'),
+      ('inherited','Inherited','chip--info'),
+      ('not_applicable','N/A','chip--ghost'),
+      ('partial','Partial','chip--warn'),
+      ('planned','Planned','chip--warn'),
+      ('not_implemented','Not implemented','chip--err'),
+      ('not_assessed','Not assessed','chip--ghost'),
+    ] %}
+    <div class="row" style="flex-wrap:wrap;gap:6px">
+      {% for key, label, cls in state_meta %}
+        {% set n = summary.state_counts.get(key, 0) %}
+        {% if n %}<span class="chip {{ cls }}">{{ label }} · {{ n }}</span>{% endif %}
+      {% endfor %}
+    </div>
+
+    <hr style="border:none;border-top:1px solid var(--ink-200);margin:16px 0">
+
+    <div class="dim" style="font-size:11px;text-transform:uppercase;letter-spacing:.05em;font-weight:600;margin-bottom:8px">Deductions by domain</div>
+    {% for d in domains %}
+      {% set b = summary.by_domain.get(d) %}
+      {% if b %}
+        {% set dmax = b.controls * 5 %}
+        {% set dpct = ((b.deductions / dmax * 100) if dmax else 0) | round(1) %}
+        <div class="bar-row" style="padding:5px 0">
+          <span style="width:38px"><span class="chip chip--brand">{{ d }}</span></span>
+          <span class="bar-row__track" style="height:7px">
+            <span class="bar-row__fill" style="width:{{ dpct }}%;background:{{ 'var(--err-500)' if b.deductions else 'var(--ok-500)' }}"></span>
+          </span>
+          <span style="width:74px;text-align:right;font-size:12px">
+            {% if b.deductions %}<strong style="color:var(--err-500)">−{{ b.deductions }}</strong>{% else %}<span class="dim">0</span>{% endif %}
+            <span class="dim">/ {{ b.controls }}</span>
+          </span>
+        </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+  <script>if(window.lucide)lucide.createIcons();</script>
+</div>

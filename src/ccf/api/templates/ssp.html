@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}SSP builder · Concord{% endblock %}
+{% block heading %}SSP builder{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Author a CMMC Level 2 System Security Plan (FedRAMP Appendix A style) per
+  customer, then generate the Word document.</p>
+{% endblock %}
+{% block content %}
+
+{% if not have_controls %}
+  <div class="card" style="margin-bottom:16px"><div class="card__body">
+    <div class="row between">
+      <div class="dim">The scoring matrix reference data isn't loaded yet — SSP entries are seeded from it.</div>
+      <button class="btn btn--secondary" hx-post="/api/scoring/seed" hx-swap="none"
+              hx-on::after-request="window.location.reload()">
+        <i data-lucide="download"></i> Load scoring matrix
+      </button>
+    </div>
+  </div></div>
+{% endif %}
+
+<div class="layout-split-r">
+  <div class="card">
+    <div class="card__header"><div class="card__title">SSP projects</div></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Customer</th><th>System</th><th>Version</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <tbody>
+          {% for p in projects %}
+          <tr>
+            <td><a href="/ssp/{{ p.id }}" style="font-weight:600">{{ p.customer_name }}</a></td>
+            <td>{{ p.system_name or '—' }}</td>
+            <td><span class="chip chip--ghost">v{{ p.version }}</span></td>
+            <td><span class="chip {{ 'chip--ok' if p.status=='final' else 'chip--warn' }}">{{ p.status }}</span></td>
+            <td class="dim">{{ p.created_at.strftime('%Y-%m-%d') }}</td>
+            <td class="row" style="gap:6px">
+              <a class="btn btn--ghost btn--sm" href="/ssp/{{ p.id }}" aria-label="Edit SSP for {{ p.customer_name }}"><i data-lucide="pencil"></i></a>
+              <a class="btn btn--secondary btn--sm" href="/api/ssp/projects/{{ p.id }}/document" aria-label="Download SSP .docx for {{ p.customer_name }}"><i data-lucide="file-down"></i> .docx</a>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="6" class="dim">No SSP projects yet — create one for a customer →</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <form method="post" action="/ssp/new" class="card">
+    <div class="card__header"><div class="card__title">New SSP project</div></div>
+    <div class="card__body stack" style="gap:12px">
+      <label class="field-group"><span class="dim" style="font-size:12px">Customer / organization *</span>
+        <input class="input" name="customer_name" required placeholder="Acme Defense LLC"
+               list="org-list" autocomplete="off">
+        <datalist id="org-list">{% for o in organizations %}<option value="{{ o.name }}">{% endfor %}</datalist>
+      </label>
+      <label class="field-group"><span class="dim" style="font-size:12px">System (optional)</span>
+        <select class="select" name="system_id">
+          <option value="">— none / enter name below —</option>
+          {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="field-group"><span class="dim" style="font-size:12px">System name (if not listed)</span>
+        <input class="input" name="system_name" placeholder="CUI Enclave"></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Cloud platform (seeds sample statements)</span>
+        <select class="select" name="platform">
+          {% for code, label in platforms.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
+        </select></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Prepared by</span>
+        <input class="input" name="prepared_by" placeholder="Author / preparing organization"></label>
+      <div class="row" style="gap:12px">
+        <label class="field-group" style="flex:1"><span class="dim" style="font-size:12px">Version</span>
+          <input class="input" name="version" value="0.1"></label>
+        <label class="field-group" style="flex:1"><span class="dim" style="font-size:12px">Date</span>
+          <input class="input" type="date" name="document_date"></label>
+      </div>
+      <button class="btn btn--primary" type="submit"><i data-lucide="file-plus"></i> Create & seed 110 controls</button>
+      <div class="dim" style="font-size:12px">Entries are pre-filled from the scoring matrix (roles, origination, draft narratives) and are fully editable.</div>
+    </div>
+  </form>
+</div>
+{% endblock %}

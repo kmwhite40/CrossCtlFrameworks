@@ -8,7 +8,6 @@ workbook into Postgres, normalizes the 5,400 SP 800-53A Rev. 5 assessment object
 and their 550+ cross-framework mappings, and exposes the data through a FastAPI
 service with an HTMX + Tailwind UI, a Typer CLI, and a REST API.
 
-Copyright © 2026 Colleen Townsend. All rights reserved. See [LICENSE](LICENSE).
 
 ---
 
@@ -80,15 +79,40 @@ tests/                   unit + integration (Postgres required)
 ### Docker (recommended)
 
 ```sh
-mkdir -p data
-cp "NIST Cross Mappings Rev. 1.1.xlsx" data/
-
-docker compose up -d db migrator api
-docker compose --profile etl run --rm etl
-
-open http://localhost:8000
-open http://localhost:8000/docs
+docker compose up -d --build      # builds image, starts db, runs migrator, starts api
 ```
+
+Then open:
+
+- App:   http://localhost:8088   (landing → dashboard)
+- Docs:  http://localhost:8088/docs
+
+> Host ports: the API is published on **8088** (→ container 8000) and Postgres
+> on **5433** (→ 5432). Change the `ports:` lines in `docker-compose.yml` if
+> either is taken.
+
+The database persists in the `ccf_pgdata` Docker volume across restarts. Stop
+with `docker compose down` (keeps data) or `docker compose down -v` (full reset).
+
+### Loading the cross-framework catalog
+
+Live Scoring, the SSP builder, and the CMMC L2 assessment workflow seed their
+own 110 CMMC practices from bundled data and **work without any ingest**. The
+cross-framework **catalog** (Controls / Frameworks / Coverage / Mapping search)
+is populated by ingesting the workbook — a one-time step.
+
+The **`NIST Cross Mappings Rev. 1.1.xlsx`** workbook (~26 MB) **ships with the
+repo** at `data/NIST Cross Mappings Rev. 1.1.xlsx`, so on any clone or GitHub
+zip download you can ingest the catalog directly:
+
+```sh
+docker compose --profile etl run --rm etl
+```
+
+No file copying is required. If you ever need to ingest a different/updated
+workbook, drop it in `./data/` (or point `CCF_WORKBOOK_PATH` at it) and re-run
+the `etl` profile. A `Workbook not found: /data/NIST Cross Mappings Rev. 1.1.xlsx`
+message means the file was removed or renamed — the app itself keeps running.
 
 ### Local
 
@@ -171,4 +195,3 @@ SCD-2 history, OSCAL export, and production runbooks are next.
 
 ---
 
-Copyright © 2026 Colleen Townsend. All rights reserved.

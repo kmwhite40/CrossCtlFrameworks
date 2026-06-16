@@ -19,7 +19,6 @@ export const metadata: Metadata = {
     "Ingest every NIST 800-53A assessment objective, map it to every major compliance framework, and run your whole control program from one place.",
   metadataBase: new URL("http://localhost:3000"),
   applicationName: "Concord",
-  authors: [{ name: "Colleen Townsend" }],
   keywords: [
     "compliance", "NIST 800-53", "FedRAMP", "FISMA", "CMMC",
     "ISO 27001", "SOC 2", "HIPAA", "POA&M", "OSCAL",
