@@ -79,15 +79,49 @@ tests/                   unit + integration (Postgres required)
 ### Docker (recommended)
 
 ```sh
-mkdir -p data
-cp "NIST Cross Mappings Rev. 1.1.xlsx" data/
-
-docker compose up -d db migrator api
-docker compose --profile etl run --rm etl
-
-open http://localhost:8000
-open http://localhost:8000/docs
+docker compose up -d --build      # builds image, starts db, runs migrator, starts api
 ```
+
+Then open:
+
+- App:   http://localhost:8088   (landing → dashboard)
+- Docs:  http://localhost:8088/docs
+
+> Host ports: the API is published on **8088** (→ container 8000) and Postgres
+> on **5433** (→ 5432). Change the `ports:` lines in `docker-compose.yml` if
+> either is taken.
+
+The database persists in the `ccf_pgdata` Docker volume across restarts. Stop
+with `docker compose down` (keeps data) or `docker compose down -v` (full reset).
+
+### Loading the cross-framework catalog
+
+Live Scoring, the SSP builder, and the CMMC L2 assessment workflow seed their
+own 110 CMMC practices from bundled data and **work without any ingest**. The
+cross-framework **catalog** (Controls / Frameworks / Coverage / Mapping search)
+is populated by ingesting the workbook, which is a one-time step.
+
+The **`NIST Cross Mappings Rev. 1.1.xlsx`** workbook (~26 MB) is **not** shipped
+in the repo (`data/` is git-ignored). Obtain it from the team's shared drive and
+place it in `./data/` with that exact filename, then run the `etl` profile:
+
+```sh
+# macOS / Linux
+mkdir -p data
+cp "/path/to/NIST Cross Mappings Rev. 1.1.xlsx" data/
+docker compose --profile etl run --rm etl
+```
+
+```powershell
+# Windows (PowerShell), from the project root
+mkdir data -Force
+copy "$env:USERPROFILE\Downloads\NIST Cross Mappings Rev. 1.1.xlsx" .\data\
+docker compose --profile etl run --rm etl
+```
+
+A `Workbook not found: /data/NIST Cross Mappings Rev. 1.1.xlsx` message means the
+file is missing or misnamed in `./data/` — the app itself is still running. To
+ingest from a different location, set `CCF_WORKBOOK_PATH` and mount that folder.
 
 ### Local
 
