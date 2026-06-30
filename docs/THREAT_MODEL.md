@@ -45,10 +45,15 @@ OIDC/IdP federation and DB-enforced RLS remain on the roadmap.
   attributed to the authenticated `Principal` (else `X-Actor` /
   `CCF_AUDIT_DEFAULT_ACTOR`). With auth disabled, actions fall back to the
   default actor and are effectively anonymous.
-- **Information disclosure** — queries are **org-scoped at the application
-  layer** (`Principal.organization_id`), but there is no DB-enforced RLS yet,
-  so a bug or a raw SQL path could cross tenants. Planned: row-level policies
-  keyed on `current_setting('ccf.tenant_id')::int` injected per request.
+- **Information disclosure** — defense in depth: queries are **org-scoped at the
+  application layer** (`Principal.organization_id`) *and* enforced at the DB by
+  **PostgreSQL row-level security** (migration `0010`). Scoped requests run as the
+  non-superuser `ccf_app` role with `ccf.tenant_id` set, so policies keyed on
+  `ccf.current_tenant()` filter every tenant table — a missed `.where()` or raw
+  SQL path can no longer cross tenants. Unscoped/global principals, CLI, and ETL
+  run as the bootstrap role (bypass). Remaining: the app still *authenticates* as
+  the superuser and `SET ROLE`s down per request; a dedicated login-less app
+  credential is the next hardening step.
 - **Denial of service** — `slowapi` limits to 120/min per IP. Ingestion
   is not rate-limited but runs only via CLI / Docker; expose only on an
   admin network.
@@ -73,10 +78,13 @@ OIDC/IdP federation and DB-enforced RLS remain on the roadmap.
 
 ## Known accepted risks (dev preview)
 
-1. Single shared DB role.
+1. The app authenticates to Postgres as the bootstrap superuser and `SET ROLE`s
+   to the non-superuser `ccf_app` for scoped requests; a separate login-less app
+   credential (no superuser on the wire) is still pending.
 2. Auth + RBAC are implemented but **off by default** (`CCF_AUTH_ENABLED=0`);
-   an unconfigured instance is unauthenticated.
-3. Tenant isolation is app-level only — no DB-enforced RLS.
+   an unconfigured instance is unauthenticated (and runs unscoped/bypass).
+3. Tenant isolation is now enforced at **both** the app layer and the database
+   (PostgreSQL RLS, migration `0010`).
 4. `localhost:8088` (app, with landing at `/`) and the optional
    `localhost:3000` (standalone Next.js landing) bind to `0.0.0.0` inside the
    container; bind to `127.0.0.1` on the host for multi-user workstations.

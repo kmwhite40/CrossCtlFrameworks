@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from sqlalchemy import event
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -18,6 +18,31 @@ from .config import get_settings
 
 _engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+async def set_session_tenant(session: AsyncSession, tenant_id: int | None) -> None:
+    """Bind the Postgres RLS tenant context for this session's connection.
+
+    For a scoped tenant we set ``ccf.tenant_id`` and ``SET ROLE ccf_app`` — the
+    non-superuser application role that row-level security policies actually
+    apply to (the bootstrap ``ccf`` role is a superuser and bypasses RLS). For an
+    unscoped/``None`` context (CLI/ETL, migrations, global/anonymous principals) we
+    ``RESET ROLE`` and clear the GUC, which the policies treat as *bypass* (full
+    access). Every session-opening path calls this, so a pooled connection never
+    inherits a prior request's role or tenant. No-op on SQLite (Reader build).
+    Set at session (connection) scope so it survives intermediate commits.
+    """
+    if get_engine().dialect.name != "postgresql":
+        return
+    if tenant_id is None:
+        await session.execute(text("RESET ROLE"))
+        await session.execute(text("SELECT set_config('ccf.tenant_id', '', false)"))
+    else:
+        await session.execute(
+            text("SELECT set_config('ccf.tenant_id', :v, false)"),
+            {"v": str(int(tenant_id))},
+        )
+        await session.execute(text("SET ROLE ccf_app"))
 
 
 def get_engine() -> AsyncEngine:
@@ -70,6 +95,7 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
     """Transactional session context used by CLI / ETL code."""
     factory = get_session_factory()
     async with factory() as session:
+        await set_session_tenant(session, None)  # CLI/ETL run unscoped (bypass)
         try:
             yield session
             await session.commit()

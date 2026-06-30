@@ -18,3 +18,6 @@ build/
 sbom.json
 .coverage
 htmlcov/
+
+# Local skill data caches (not project code)
+.claude/skills/*/data/

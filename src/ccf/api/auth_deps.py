@@ -13,9 +13,8 @@ from starlette.middleware.base import RequestResponseEndpoint
 
 from ..auth import SYSTEM_PRINCIPAL, Principal, verify_session
 from ..config import get_settings
-from ..db import get_session_factory
+from ..db import get_session_factory, set_session_tenant
 from ..models import System, User
-from .deps import get_session
 
 SESSION_COOKIE = "concord_session"
 
@@ -66,20 +65,38 @@ async def _lookup_principal(request: Request, session: AsyncSession) -> Principa
     )
 
 
-async def get_principal(
-    request: Request, session: AsyncSession = Depends(get_session)
-) -> Principal:
-    """Dependency: the authenticated caller (open SYSTEM principal when auth off)."""
+async def get_principal_optional(request: Request) -> Principal | None:
+    """Resolve the caller without forcing auth (returns ``None`` if anonymous).
+
+    Used to bind the request session's tenant context. Resolution runs on its own
+    short-lived, unscoped (bypass) session so it can read ``users`` across orgs
+    *before* the tenant context is known. Pre-auth/public routes (e.g. login) get
+    ``None`` and therefore an unscoped session; protected routes are already gated
+    by ``auth_gate_middleware`` (which sets ``request.state.principal``).
+    """
     if not get_settings().auth_enabled:
         request.state.principal = SYSTEM_PRINCIPAL
         return SYSTEM_PRINCIPAL
     existing = getattr(request.state, "principal", None)
     if isinstance(existing, Principal):
         return existing
-    principal = await _lookup_principal(request, session)
+    factory = get_session_factory()
+    async with factory() as session:
+        await set_session_tenant(session, None)
+        principal = await _lookup_principal(request, session)
+    if principal is not None:
+        request.state.principal = principal
+    return principal
+
+
+async def get_principal(request: Request) -> Principal:
+    """Dependency: the authenticated caller (open SYSTEM principal when auth off).
+
+    Raises 401 when auth is enabled and the caller is anonymous.
+    """
+    principal = await get_principal_optional(request)
     if principal is None:
         raise HTTPException(401, "authentication required")
-    request.state.principal = principal
     return principal
 
 
@@ -114,6 +131,7 @@ async def auth_gate_middleware(
     if path != "/" and not any(path.startswith(p) for p in _PUBLIC_PREFIXES):
         factory = get_session_factory()
         async with factory() as session:
+            await set_session_tenant(session, None)
             principal = await _lookup_principal(request, session)
         if principal is None:
             if path.startswith("/api"):
