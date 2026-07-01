@@ -16,8 +16,11 @@ from .auth import hash_password, new_api_token
 from .config import get_settings
 from .db import session_scope
 from .etl import ingest_workbook
+from .etl.sources import poll as poll_sources
+from .etl.sources import seed_sources
 from .logging import configure_logging
 from .models import (
+    CatalogSource,
     Control,
     Framework,
     FrameworkMapping,
@@ -34,6 +37,7 @@ from .scoring.engine import score_system
 from .scoring.seed import seed_scoring_controls
 from .ssp.generator import generate_ssp_docx
 from .ssp.seed import entry_to_dict
+from .ssp.templates_seed import seed_statement_templates
 
 app = typer.Typer(help="Concord administration & query CLI", no_args_is_help=True)
 console = Console()
@@ -114,6 +118,57 @@ def stats() -> None:
         console.print(t)
         if last_run:
             console.print(f"Last ingestion: {last_run.started_at}  status={last_run.status}")
+
+    asyncio.run(_run())
+
+
+@app.command(name="sources-seed")
+def sources_seed() -> None:
+    """Register the default authoritative catalog sources (NIST OSCAL, etc.)."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            created = await seed_sources(session)
+        console.print(f"[green]Seeded {created} new catalog source(s).[/green]")
+
+    asyncio.run(_run())
+
+
+@app.command(name="sources-check")
+def sources_check(
+    key: str = typer.Option(None, "--key", help="Check only this source key"),
+    include_disabled: bool = typer.Option(False, "--all", help="Include disabled sources"),
+) -> None:
+    """Poll authoritative sources and report catalog drift."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            checks = await poll_sources(session, only_key=key, include_disabled=include_disabled)
+            # Resolve source keys for display before the session closes.
+            src_keys = {
+                s.id: s.key for s in (await session.execute(select(CatalogSource))).scalars().all()
+            }
+            rows = [
+                (
+                    src_keys.get(c.source_id, str(c.source_id)),
+                    c.status,
+                    c.detail.get("revision") or "",
+                    c.detail.get("counts") or "",
+                )
+                for c in checks
+            ]
+
+        t = Table(title="Concord — catalog drift check", show_lines=False)
+        t.add_column("Source")
+        t.add_column("Status")
+        t.add_column("Revision")
+        t.add_column("Changes")
+        for src, status, rev, counts in rows:
+            color = {"changed": "yellow", "ingested": "green", "error": "red"}.get(status, "white")
+            t.add_row(src, f"[{color}]{status}[/{color}]", str(rev), str(counts))
+        console.print(t)
+        if not rows:
+            console.print("[dim]No sources checked. Run `ccf sources-seed` first.[/dim]")
 
     asyncio.run(_run())
 
@@ -203,6 +258,20 @@ def scoring_seed(
     asyncio.run(_run())
 
 
+@app.command(name="templates-seed")
+def templates_seed(
+    overwrite: bool = typer.Option(False, "--overwrite", help="Refresh existing template bodies"),
+) -> None:
+    """Load the canned implementation-statement library into ccf.statement_templates."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            touched = await seed_statement_templates(session, overwrite=overwrite)
+        console.print(f"[green]Statement templates loaded[/green] — {touched} touched")
+
+    asyncio.run(_run())
+
+
 @app.command(name="score")
 def score(system_id: int = typer.Argument(..., help="System id to score")) -> None:
     """Print the live SPRS score for a system."""
@@ -280,9 +349,7 @@ def ssp_generate(
 def user_create(
     email: str = typer.Argument(..., help="User email (login)"),
     org: str = typer.Option("Default", "--org", help="Organization name (created if missing)"),
-    role: str = typer.Option(
-        "admin", "--role", help="admin | control_owner | assessor | viewer"
-    ),
+    role: str = typer.Option("admin", "--role", help="admin | control_owner | assessor | viewer"),
     password: str = typer.Option(
         ..., "--password", prompt=True, hide_input=True, confirmation_prompt=True
     ),

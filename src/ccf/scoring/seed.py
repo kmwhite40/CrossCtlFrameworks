@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import ScoringControl
+from ..ssp.odp import odps_for
 from .parser import load_seed, parse_workbook
 
 _FIELDS = (
@@ -77,6 +78,11 @@ async def seed_scoring_controls(
         for field in _FIELDS:
             setattr(row, field, rec.get(field))
         row.sort_order = order
+        # Derive organization-defined parameters from the curated 800-171 overlay
+        # plus any [Assignment]/[Selection] markers in the requirement/objectives.
+        row.odp_definitions = odps_for(
+            rec.get("nist_id"), rec.get("requirement"), rec.get("objectives")
+        )
 
     await session.commit()
     return {"created": created, "updated": updated, "total": len(records)}

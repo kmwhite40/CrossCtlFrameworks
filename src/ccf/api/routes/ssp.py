@@ -20,10 +20,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
-from ...models import SSPControlEntry, SSPProject, System
+from ...connectors import get_connector, list_connectors
+from ...models import ScoringControl, SSPControlEntry, SSPProject, StatementTemplate, System
 from ...ssp import constants
 from ...ssp.generator import generate_ssp_docx
-from ...ssp.platforms import PLATFORMS, normalize_platform
+from ...ssp.odp import render as render_template
+from ...ssp.platforms import (
+    GOV_ENVIRONMENTS,
+    PLATFORMS,
+    normalize_platform,
+    platform_label,
+    services_for,
+)
 from ...ssp.seed import entry_to_dict, seed_project_entries
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -60,6 +68,14 @@ class EntryUpdate(BaseModel):
     implementation_status: list[str] | None = None
     control_origination: list[str] | None = None
     part_narratives: list[dict[str, str]] | None = None
+    odp_values: dict[str, str] | None = None
+
+
+class ApplyTemplate(BaseModel):
+    template_key: str
+    # When true, replace the control's narratives with the rendered statement;
+    # otherwise append it as an additional part.
+    replace: bool = False
 
 
 class ProjectOut(BaseModel):
@@ -171,10 +187,191 @@ async def get_project(
         .scalars()
         .all()
     )
+    # Attach each control's organization-defined parameter slots (reference data
+    # from the scoring catalog) so the editor can render fill-in-the-blank fields.
+    odp_map = dict(
+        (
+            await session.execute(
+                select(ScoringControl.control_id, ScoringControl.odp_definitions)
+            )
+        ).all()
+    )
+    out_entries = []
+    for e in entries:
+        d = entry_to_dict(e)
+        d["odp_definitions"] = list(odp_map.get(e.control_id) or [])
+        out_entries.append(d)
     return {
         "project": ProjectOut.model_validate(proj).model_dump(),
-        "entries": [entry_to_dict(e) for e in entries],
+        "entries": out_entries,
     }
+
+
+async def _render_context(proj: SSPProject, domain: str | None) -> dict[str, str]:
+    """Context tokens available to every template body ({{environment}}, …)."""
+    plat = normalize_platform(proj.platform)
+    return {
+        "environment": GOV_ENVIRONMENTS.get(plat, platform_label(plat)),
+        "platform": platform_label(plat),
+        "services": services_for(plat, domain),
+    }
+
+
+def _template_matches(t: StatementTemplate, control_id: str, domain: str | None) -> bool:
+    if t.scope == "control":
+        return t.control_id == control_id
+    if t.scope == "domain":
+        return t.domain == domain
+    return True  # global
+
+
+@router.get("/connectors")
+async def connectors() -> list[dict[str, Any]]:
+    """Available config-capture connectors and whether each is configured."""
+    return [
+        {
+            "key": c.key,
+            "label": c.label,
+            "configured": c.is_configured(),
+            "parameter_map": c.PARAMETER_MAP,
+        }
+        for c in list_connectors()
+    ]
+
+
+@router.post("/projects/{project_id}/autofill")
+async def autofill_from_connector(
+    project_id: int,
+    connector: str,
+    apply: bool = False,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Capture live config via a connector and map it onto the project's ODPs.
+
+    With ``apply=false`` (default) this is a dry run: it returns what *would* be
+    set per control without writing. With ``apply=true`` it merges captured
+    values into each matching control's ``odp_values``. If the connector is not
+    configured, returns ``configured=false`` plus its ``parameter_map`` so the
+    caller can see what it would pull once credentials are set.
+    """
+    proj = await _require_project(session, project_id, principal)
+    conn = get_connector(connector)
+    if conn is None:
+        raise HTTPException(404, "unknown connector")
+    if not conn.is_configured():
+        return {
+            "connector": conn.key,
+            "configured": False,
+            "parameter_map": conn.PARAMETER_MAP,
+            "captured": [],
+            "applied": 0,
+        }
+
+    captured = await conn.capture()
+    entries = (
+        (
+            await session.execute(
+                select(SSPControlEntry).where(SSPControlEntry.project_id == proj.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_nist = {e.nist_id: e for e in entries if e.nist_id}
+
+    applied = 0
+    results: list[dict[str, Any]] = []
+    for cap in captured:
+        entry = by_nist.get(cap.nist_id or "")
+        matched = entry is not None
+        if matched and apply:
+            entry.odp_values = {**(entry.odp_values or {}), cap.odp_key: cap.value}
+            applied += 1
+        results.append({**cap.to_dict(), "matched_control": entry.control_id if entry else None})
+    if apply and applied:
+        await session.commit()
+
+    return {
+        "connector": conn.key,
+        "configured": True,
+        "captured": results,
+        "applied": applied,
+        "dry_run": not apply,
+    }
+
+
+@router.get("/templates")
+async def list_templates(
+    control_id: str | None = None,
+    domain: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    """Canned statement templates, optionally filtered to a control/domain."""
+    rows = (
+        (await session.execute(select(StatementTemplate).order_by(StatementTemplate.sort_order)))
+        .scalars()
+        .all()
+    )
+    if control_id or domain:
+        rows = [t for t in rows if _template_matches(t, control_id or "", domain)]
+    return [
+        {
+            "key": t.key,
+            "title": t.title,
+            "scope": t.scope,
+            "domain": t.domain,
+            "control_id": t.control_id,
+            "body": t.body,
+            "tags": list(t.tags or []),
+        }
+        for t in rows
+    ]
+
+
+@router.post("/projects/{project_id}/entries/{control_id}/apply-template")
+async def apply_template(
+    project_id: int,
+    control_id: str,
+    body: ApplyTemplate,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Render a canned template with the entry's ODP values and add it as a part.
+
+    Returns the updated entry plus ``missing_odps`` — parameters the customer
+    still has to fill before the statement is complete.
+    """
+    proj = await _require_project(session, project_id, principal)
+    entry = (
+        await session.execute(
+            select(SSPControlEntry)
+            .where(SSPControlEntry.project_id == project_id)
+            .where(SSPControlEntry.control_id == control_id)
+        )
+    ).scalar_one_or_none()
+    if entry is None:
+        raise HTTPException(404, "control entry not found in project")
+    tmpl = (
+        await session.execute(
+            select(StatementTemplate).where(StatementTemplate.key == body.template_key)
+        )
+    ).scalar_one_or_none()
+    if tmpl is None:
+        raise HTTPException(404, "template not found")
+
+    context = await _render_context(proj, entry.domain)
+    text, missing = render_template(tmpl.body, dict(entry.odp_values or {}), context)
+    new_part = {"label": tmpl.title, "text": text}
+    if body.replace:
+        entry.part_narratives = [new_part]
+    else:
+        entry.part_narratives = [*(entry.part_narratives or []), new_part]
+    await session.commit()
+    await session.refresh(entry)
+    result = entry_to_dict(entry)
+    result["missing_odps"] = missing
+    return result
 
 
 @router.patch("/projects/{project_id}", response_model=ProjectOut)

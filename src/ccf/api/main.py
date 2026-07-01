@@ -26,6 +26,7 @@ from .routes import (
     assessments,
     audit,
     auth,
+    catalog,
     controls,
     coverage,
     diff,
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(mappings.router)
     app.include_router(coverage.router)
     app.include_router(oscal.router)
+    app.include_router(catalog.router)
     app.include_router(diff.router)
     app.include_router(systems.router)
     app.include_router(scoring.router)

@@ -125,7 +125,13 @@
 <script>
 function runReport(fmt) {
   const form = document.getElementById('report-form');
-  const params = new URLSearchParams(new FormData(form));
+  // Drop empty-valued fields: the API's typed filters (organization_id,
+  // system_id, baseline, …) 422 on empty strings, which would otherwise make
+  // every export navigate to an error page instead of downloading.
+  const params = new URLSearchParams();
+  for (const [k, v] of new FormData(form)) {
+    if (v !== '' && v != null) params.set(k, v);
+  }
   params.set('fmt', fmt);
   const url = '/api/reports/build?' + params.toString();
   if (fmt !== 'json') { window.location = url; return; }

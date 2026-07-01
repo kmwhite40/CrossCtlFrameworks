@@ -72,5 +72,21 @@ services:
     entrypoint: ["ccf"]
     restart: "no"
 
+  # Catalog currency poller. One-shot: `docker compose --profile poller up`.
+  # Wrap in a host cron / scheduler for daily runs, or run it from CI on a
+  # schedule to open a PR when a catalog drifts. `sources-seed` is idempotent;
+  # `sources-check` records drift (it does not auto-mutate the curated catalog).
+  poller:
+    build: .
+    container_name: ccf-poller
+    profiles: ["poller"]
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    environment: *ccf_env
+    entrypoint: ["sh", "-c"]
+    command: ["ccf sources-seed && ccf sources-check"]
+    restart: "no"
+
 volumes:
   ccf_pgdata:

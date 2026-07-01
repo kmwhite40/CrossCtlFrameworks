@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import constants
+
 if TYPE_CHECKING:  # pragma: no cover
     from ..models import ScoringControl
 
@@ -19,6 +21,13 @@ DEFAULT_PLATFORM = "m365"
 PLATFORMS: dict[str, str] = {
     "m365": "Microsoft 365 (Entra ID / Purview / Intune)",
     "azure": "Microsoft Azure (Gov)",
+    "aws_govcloud": "AWS GovCloud (US)",
+}
+
+# Government-cloud environment names used in customer-responsibility drafts.
+GOV_ENVIRONMENTS: dict[str, str] = {
+    "m365": "Microsoft 365 Government (GCC High)",
+    "azure": "Microsoft Azure Government",
     "aws_govcloud": "AWS GovCloud (US)",
 }
 
@@ -104,20 +113,37 @@ def services_for(platform: str | None, domain: str | None) -> str:
 
 
 def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, str]) -> str:
-    """Compose a tailorable, platform-specific draft narrative for one part."""
+    """Compose a platform-specific narrative for one determination part."""
     plat = normalize_platform(platform)
     label = PLATFORMS[plat]
     obj = (part.get("text") or "").strip().rstrip(".")
     services = services_for(plat, rec.domain)
     if obj:
         body = (
-            f"Draft ({label}) — tailor to the environment. The organization satisfies this "
-            f"objective by ensuring that {obj}, implemented through {services}."
+            f"The organization satisfies this objective by ensuring that {obj}, "
+            f"implemented through {services} on {label}."
         )
     else:
-        body = (
-            f"Draft ({label}) — describe how this objective is met using {services}."
-        )
+        body = f"The organization meets this objective using {services} on {label}."
     if plat == "m365" and rec.m365_implementation_statement:
         body += f" Microsoft 365 reference: {rec.m365_implementation_statement.strip()}"
     return body
+
+
+def customer_responsibility_statement(platform: str | None, rec: ScoringControl) -> str:
+    """Draft a customer-responsibility narrative for a Government-cloud environment.
+
+    Used for controls the cloud provider does not fully cover, where the customer
+    must configure and evidence the control in their own tenant/account. Prefixed
+    with the draft indicator so a human reviews and finalizes it.
+    """
+    plat = normalize_platform(platform)
+    env = GOV_ENVIRONMENTS[plat]
+    services = services_for(plat, rec.domain)
+    obj = (rec.requirement or rec.title or "this requirement").strip().rstrip(".")
+    return (
+        f"{constants.DRAFT_PREFIX}As a customer responsibility within {env}, the organization "
+        f"configures and maintains {services} to satisfy {obj}. Organization-defined parameters "
+        f"and configuration settings are established by the System Owner and evidenced in the "
+        f"{env} tenant/account configuration."
+    )

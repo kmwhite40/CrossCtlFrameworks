@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     audit_enabled: bool = Field(default=True)
     audit_default_actor: str = Field(default="system")
 
+    # Config-capture connectors. Populate an organization's ODP values / evidence
+    # from live cloud configuration. All optional — a connector reports
+    # "not configured" until its credentials are set, so the scaffolding is safe
+    # to ship disabled. Microsoft Graph defaults target the Government cloud
+    # (graph.microsoft.us / login.microsoftonline.us).
+    graph_tenant_id: str | None = Field(default=None)
+    graph_client_id: str | None = Field(default=None)
+    graph_client_secret: str | None = Field(default=None)
+    graph_base_url: str = Field(default="https://graph.microsoft.us")
+    graph_login_url: str = Field(default="https://login.microsoftonline.us")
+    aws_region: str = Field(default="us-gov-west-1")
+    aws_capture_enabled: bool = Field(default=False)
+
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
     # read-only reader stay open; turn on for shared/production deployments.
     auth_enabled: bool = Field(default=False)

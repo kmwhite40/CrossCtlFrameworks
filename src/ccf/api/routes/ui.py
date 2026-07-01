@@ -39,6 +39,7 @@ from ...models import (
     ScoringStatus,
     SSPControlEntry,
     SSPProject,
+    StatementTemplate,
     System,
     User,
     WorkbookVersion,
@@ -47,7 +48,14 @@ from ...models import (
 )
 from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
-from ...ssp.platforms import PLATFORMS, normalize_platform
+from ...ssp.odp import render as render_template
+from ...ssp.platforms import (
+    GOV_ENVIRONMENTS,
+    PLATFORMS,
+    normalize_platform,
+    platform_label,
+    services_for,
+)
 from ...ssp.seed import seed_project_entries
 from ..auth_deps import SESSION_COOKIE
 from ..deps import get_session
@@ -1110,6 +1118,33 @@ async def ssp_detail(
         by_domain.setdefault(e.domain or "?", []).append(e)
     ordered = [d for d in ssp_constants.DOMAIN_ORDER if d in by_domain]
     ordered += [d for d in by_domain if d not in ssp_constants.DOMAIN_ORDER]
+
+    # ODP fill-in slots (reference) and the canned statement library.
+    odp_map = dict(
+        (
+            await session.execute(select(ScoringControl.control_id, ScoringControl.odp_definitions))
+        ).all()
+    )
+    template_rows = (
+        (await session.execute(select(StatementTemplate).order_by(StatementTemplate.sort_order)))
+        .scalars()
+        .all()
+    )
+
+    def odp_defs_for(control_id: str) -> list[dict[str, Any]]:
+        return list(odp_map.get(control_id) or [])
+
+    def templates_for(control_id: str, dom: str | None) -> list[StatementTemplate]:
+        out = []
+        for t in template_rows:
+            if (
+                (t.scope == "control" and t.control_id == control_id)
+                or (t.scope == "domain" and t.domain == dom)
+                or t.scope == "global"
+            ):
+                out.append(t)
+        return out
+
     return templates.TemplateResponse(
         request,
         "ssp_detail.html",
@@ -1124,6 +1159,8 @@ async def ssp_detail(
             "origination_options": ssp_constants.CONTROL_ORIGINATION_OPTIONS,
             "entry_count": len(entries),
             "platforms": PLATFORMS,
+            "odp_defs_for": odp_defs_for,
+            "templates_for": templates_for,
         },
     )
 
@@ -1162,7 +1199,8 @@ async def ssp_save_entry(
     responsible_role: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    if await _scoped_project(session, project_id, _principal_org(request)) is None:
+    proj = await _scoped_project(session, project_id, _principal_org(request))
+    if proj is None:
         raise HTTPException(404, "entry not found")
     entry = (
         await session.execute(
@@ -1187,6 +1225,31 @@ async def ssp_save_entry(
         narratives.append(
             {"label": label, "text": str(form.get(f"part::{label}", part.get("text", "")))}
         )
+    # Persist organization-defined parameter fill-ins (odp::<key> fields).
+    odp_values = {
+        k[len("odp::") :]: str(v).strip()
+        for k, v in form.multi_items()
+        if k.startswith("odp::") and str(v).strip()
+    }
+    entry.odp_values = odp_values
+
+    # Optionally apply a canned statement template, rendered with the ODP values.
+    apply_key = str(form.get("apply_template") or "").strip()
+    if apply_key:
+        tmpl = (
+            await session.execute(
+                select(StatementTemplate).where(StatementTemplate.key == apply_key)
+            )
+        ).scalar_one_or_none()
+        if tmpl is not None:
+            plat = normalize_platform(proj.platform)
+            context = {
+                "environment": GOV_ENVIRONMENTS.get(plat, platform_label(plat)),
+                "platform": platform_label(plat),
+                "services": services_for(plat, entry.domain),
+            }
+            text, _missing = render_template(tmpl.body, odp_values, context)
+            narratives.append({"label": tmpl.title, "text": text})
     entry.part_narratives = narratives
     await session.commit()
     return HTMLResponse(

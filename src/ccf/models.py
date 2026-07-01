@@ -615,6 +615,9 @@ class ScoringControl(Base):
     evidence_notes: Mapped[str | None] = mapped_column(Text)
     m365_source: Mapped[str | None] = mapped_column(Text)
 
+    # Organization-defined parameters (fill-in-the-blank slots) for this practice.
+    odp_definitions: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     statuses: Mapped[list[ScoringStatus]] = relationship(
@@ -701,6 +704,9 @@ class SSPControlEntry(Base):
     implementation_status: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     control_origination: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     part_narratives: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    # Customer fill-ins for this control's organization-defined parameters:
+    # {odp_key: value}. Consumed when rendering canned statement templates.
+    odp_values: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -712,6 +718,99 @@ class SSPControlEntry(Base):
         UniqueConstraint("project_id", "control_id", name="uq_ssp_project_control"),
         Index("ix_ssp_entry_project_sort", "project_id", "sort_order"),
     )
+
+
+class StatementTemplate(Base):
+    """A reusable, canned implementation-statement template for the SSP builder.
+
+    ``body`` may embed ``{{odp_key}}`` (organization-defined parameter) and
+    ``{{environment}}`` / ``{{services}}`` context tokens, resolved at apply time.
+    ``scope`` (``global`` | ``domain`` | ``control``) with ``domain`` / ``control_id``
+    controls which controls the template offers itself to.
+    """
+
+    __tablename__ = "statement_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    scope: Mapped[str] = mapped_column(String(16), default="global")
+    domain: Mapped[str | None] = mapped_column(String(8), index=True)
+    control_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    platform: Mapped[str | None] = mapped_column(String(32))
+    body: Mapped[str] = mapped_column(Text)
+    tags: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    source: Mapped[str | None] = mapped_column(String(255))
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------
+# Catalog currency layer — track authoritative upstream sources (NIST OSCAL,
+# the cross-mapping workbook) and detect when they drift from what we ingested.
+# ---------------------------------------------------------------------------
+
+
+class CatalogSource(Base):
+    """A registered upstream authority we poll for control updates.
+
+    ``kind`` selects how a change is detected/handled:
+      - ``oscal_catalog`` — fetch NIST OSCAL JSON, index controls, diff prose.
+      - ``xlsx``          — fetch a workbook; on change optionally re-ingest.
+      - ``generic``       — content-hash only (any URL); drift = sha changed.
+    """
+
+    __tablename__ = "catalog_sources"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    authority: Mapped[str | None] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(32), default="oscal_catalog")
+    url: Mapped[str] = mapped_column(String(1024))
+    framework_code: Mapped[str | None] = mapped_column(String(64))
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_ingest: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    etag: Mapped[str | None] = mapped_column(String(255))
+    last_sha256: Mapped[str | None] = mapped_column(String(64))
+    last_status: Mapped[str | None] = mapped_column(String(32))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    revision_label: Mapped[str | None] = mapped_column(String(64))
+    item_count: Mapped[int | None] = mapped_column(Integer)
+    # Per-control content hashes from the last successful fetch, for diffing.
+    content_index: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    checks: Mapped[list[CatalogCheck]] = relationship(
+        back_populates="source", cascade="all, delete-orphan"
+    )
+
+
+class CatalogCheck(Base):
+    """One poll of a :class:`CatalogSource` — the audit trail of drift checks."""
+
+    __tablename__ = "catalog_checks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.catalog_sources.id", ondelete="CASCADE"), index=True
+    )
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    # unchanged | changed | ingested | error
+    status: Mapped[str] = mapped_column(String(32))
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+    source: Mapped[CatalogSource] = relationship(back_populates="checks")
 
 
 class AuditLog(Base):

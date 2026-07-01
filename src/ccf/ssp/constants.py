@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+# Prefix marking machine-drafted narrative content that a human must review.
+DRAFT_PREFIX = "[DRAFT] "
+
 # CMMC 2.0 Level 2 domain → (NIST 800-171 §, human name).
 DOMAINS: dict[str, tuple[str, str]] = {
     "AC": ("3.1", "Access Control"),

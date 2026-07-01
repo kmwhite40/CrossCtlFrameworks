@@ -33,9 +33,28 @@ router = APIRouter(prefix="/api/reports", tags=["reports"])
 
 Baseline = Literal["low", "mod", "high"]
 Fmt = Literal["json", "csv", "xlsx", "docx"]
+_BASELINES = ("low", "mod", "high")
 
 _XLSX_MEDIA = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _opt_int(name: str, raw: str | None) -> int | None:
+    """Parse an optional int query param, treating "" (empty form field) as None."""
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise HTTPException(422, f"{name} must be an integer") from exc
+
+
+def _opt_str(raw: str | None) -> str | None:
+    """Normalize an optional string query param, treating "" as None."""
+    if raw is None:
+        return None
+    val = raw.strip()
+    return val or None
 
 
 async def _scope_controls(session: AsyncSession, baseline: Baseline | None) -> list[Control]:
@@ -55,26 +74,41 @@ async def _scope_controls(session: AsyncSession, baseline: Baseline | None) -> l
 @router.get("/build", response_model=None)
 async def build_report(
     session: AsyncSession = Depends(get_session),
-    organization_id: int | None = Query(None, description="Scope to an organization's systems"),
-    system_id: int | None = Query(None),
-    baseline: Baseline | None = Query(None),
+    organization_id: str | None = Query(None, description="Scope to an organization's systems"),
+    system_id: str | None = Query(None),
+    baseline: str | None = Query(None, description="low | mod | high"),
     framework: str | None = Query(None, description="Framework code to crosswalk, e.g. ISO_27001"),
     family: str | None = Query(None, description="Control family code, e.g. AC"),
     fmt: Fmt = Query("json"),
     filename: str | None = Query(None),
 ) -> StreamingResponse | dict[str, Any]:
-    """Return a custom report as JSON or CSV."""
+    """Return a custom report as JSON, CSV, XLSX, or DOCX.
+
+    Query params are accepted as strings and coerced here so that empty form
+    fields (``organization_id=``, ``baseline=``) are treated as "unset" rather
+    than rejected — otherwise the HTML builder's exports would 422.
+    """
+    organization_id_i = _opt_int("organization_id", organization_id)
+    system_id_i = _opt_int("system_id", system_id)
+    framework = _opt_str(framework)
+    family = _opt_str(family)
+    filename = _opt_str(filename)
+    baseline_s = _opt_str(baseline)
+    if baseline_s is not None and baseline_s not in _BASELINES:
+        raise HTTPException(422, "baseline must be one of low, mod, high")
+    baseline_typed: Baseline | None = baseline_s  # type: ignore[assignment]
+
     org: Organization | None = None
     sys: System | None = None
-    if organization_id:
+    if organization_id_i:
         org = (
-            await session.execute(select(Organization).where(Organization.id == organization_id))
+            await session.execute(select(Organization).where(Organization.id == organization_id_i))
         ).scalar_one_or_none()
         if not org:
             raise HTTPException(404, "organization not found")
-    if system_id:
+    if system_id_i:
         sys = (
-            await session.execute(select(System).where(System.id == system_id))
+            await session.execute(select(System).where(System.id == system_id_i))
         ).scalar_one_or_none()
         if not sys:
             raise HTTPException(404, "system not found")
@@ -87,7 +121,7 @@ async def build_report(
         if not fw:
             raise HTTPException(404, "framework not found")
 
-    controls = await _scope_controls(session, baseline)
+    controls = await _scope_controls(session, baseline_typed)
     if family:
         controls = [c for c in controls if c.family and c.family.code == family.upper()]
 
@@ -148,7 +182,7 @@ async def build_report(
         "generated_at": datetime.now(UTC).isoformat(),
         "organization": org.name if org else None,
         "system": sys.name if sys else None,
-        "baseline": baseline,
+        "baseline": baseline_typed,
         "framework": fw.code if fw else None,
         "family_filter": family.upper() if family else None,
         "total_rows": len(lines),

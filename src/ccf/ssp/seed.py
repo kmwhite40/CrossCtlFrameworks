@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import ScoringControl, SSPControlEntry, SSPProject
 from . import constants
-from .platforms import sample_statement
+from .platforms import customer_responsibility_statement, sample_statement
 
 
 def _narratives(rec: ScoringControl, platform: str) -> list[dict[str, str]]:
@@ -24,9 +24,21 @@ def _narratives(rec: ScoringControl, platform: str) -> list[dict[str, str]]:
     out = [
         {"label": p.get("label", ""), "text": sample_statement(platform, rec, p)} for p in parts
     ]
-    return out or [
-        {"label": "", "text": sample_statement(platform, rec, {"text": rec.requirement or ""})}
-    ]
+    if not out:
+        out = [
+            {"label": "", "text": sample_statement(platform, rec, {"text": rec.requirement or ""})}
+        ]
+    # For controls the provider doesn't fully cover, lead with a draft-flagged
+    # customer-responsibility statement scoped to the Government-cloud environment.
+    if (rec.m365_coverage_status or "") == "Customer Responsibility":
+        out.insert(
+            0,
+            {
+                "label": "Customer Responsibility",
+                "text": customer_responsibility_statement(platform, rec),
+            },
+        )
+    return out
 
 
 def build_entries(rec: ScoringControl, order: int, platform: str) -> SSPControlEntry:
@@ -106,4 +118,5 @@ def entry_to_dict(entry: SSPControlEntry) -> dict[str, Any]:
         "implementation_status": list(entry.implementation_status or []),
         "control_origination": list(entry.control_origination or []),
         "part_narratives": list(entry.part_narratives or []),
+        "odp_values": dict(entry.odp_values or {}),
     }
