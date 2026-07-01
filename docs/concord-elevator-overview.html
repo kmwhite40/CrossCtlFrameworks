@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Concord — Product Overview</title>
+<style>
+  :root {
+    --navy:#0d1b2a; --navy-2:#1b2a41; --steel:#3a5a7a; --accent:#c9a227;
+    --ink:#14212e; --muted:#5b6b7b; --line:#dfe4ea; --bg:#ffffff; --panel:#f5f7f9;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body {
+    font-family:'Georgia','Times New Roman',serif;
+    color:var(--ink); background:var(--bg); line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .sans { font-family:'Helvetica Neue',Arial,system-ui,sans-serif; }
+  .wrap { max-width:840px; margin:0 auto; padding:0 40px; }
+
+  /* Header */
+  header { background:var(--navy); color:#fff; padding:0; border-bottom:3px solid var(--accent); }
+  .hbar {
+    font-family:'Helvetica Neue',Arial,sans-serif; font-size:.68rem; letter-spacing:.28em;
+    text-transform:uppercase; color:rgba(255,255,255,.55);
+    padding:14px 0; border-bottom:1px solid rgba(255,255,255,.1);
+    display:flex; justify-content:space-between;
+  }
+  .hmain { padding:44px 0 46px; }
+  h1 { font-size:3.1rem; font-weight:400; letter-spacing:.01em; margin:0; line-height:1; }
+  .rule { width:46px; height:2px; background:var(--accent); margin:22px 0; }
+  .lede { font-size:1.24rem; line-height:1.5; color:rgba(255,255,255,.9); margin:0; max-width:640px; font-weight:400; }
+  .chips { margin-top:28px; display:flex; flex-wrap:wrap; gap:0; font-family:'Helvetica Neue',Arial,sans-serif; }
+  .chip { font-size:.7rem; letter-spacing:.06em; text-transform:uppercase; color:rgba(255,255,255,.72);
+          padding:0 14px; border-left:1px solid rgba(255,255,255,.18); }
+  .chip:first-child { padding-left:0; border-left:0; }
+
+  /* Sections */
+  section { padding:40px 0 6px; }
+  .kicker { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.7rem; letter-spacing:.2em;
+            text-transform:uppercase; color:var(--steel); margin:0 0 6px; font-weight:600; }
+  h2 { font-size:1.5rem; font-weight:400; letter-spacing:.01em; margin:0 0 20px; color:var(--navy); }
+
+  .pitch {
+    background:var(--panel); border:1px solid var(--line); border-top:3px solid var(--accent);
+    padding:26px 30px; margin-top:30px; font-size:1.14rem; line-height:1.62; color:var(--ink);
+  }
+  .pitch b { color:var(--navy); font-weight:700; }
+
+  /* Capability list */
+  .caps { display:grid; grid-template-columns:1fr 1fr; gap:0 40px; }
+  .cap { padding:18px 0; border-top:1px solid var(--line); }
+  .cap:nth-child(1),.cap:nth-child(2){ border-top:0; }
+  .cap h3 { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.95rem; font-weight:700;
+            letter-spacing:.01em; margin:0 0 5px; color:var(--navy); }
+  .cap p { margin:0; font-size:.92rem; color:var(--muted); line-height:1.55; }
+
+  /* Needs */
+  .needs { border-top:1px solid var(--line); }
+  .need { display:grid; grid-template-columns:220px 1fr; gap:24px; padding:16px 0; border-bottom:1px solid var(--line); }
+  .need .n { font-family:'Helvetica Neue',Arial,sans-serif; font-weight:700; font-size:.95rem; color:var(--navy); }
+  .need .a { font-size:.96rem; color:var(--muted); margin:0; }
+  .need .a b { color:var(--ink); font-weight:700; }
+
+  /* Table */
+  table { width:100%; border-collapse:collapse; margin-top:4px; font-size:.96rem; }
+  th, td { text-align:left; padding:13px 16px; border-bottom:1px solid var(--line); vertical-align:top; }
+  thead th { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.68rem; letter-spacing:.1em;
+             text-transform:uppercase; color:var(--steel); border-bottom:2px solid var(--navy); }
+  tbody tr:nth-child(odd) td { background:var(--panel); }
+  td b { color:var(--navy); }
+  td.note { color:var(--muted); }
+
+  footer { margin-top:44px; padding:22px 0 46px; border-top:2px solid var(--navy);
+           color:var(--muted); font-size:.82rem; font-family:'Helvetica Neue',Arial,sans-serif; line-height:1.7; }
+  footer b { color:var(--navy); }
+
+  @media print {
+    body { background:#fff; }
+    header,.pitch,thead th,tbody tr:nth-child(odd) td { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    section { break-inside:avoid; }
+    .cap,.need,tr { break-inside:avoid; }
+  }
+  @media (max-width:640px){ .caps,.need{grid-template-columns:1fr;} h1{font-size:2.3rem;} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="hbar"><span>Concord Compliance Platform</span><span>Product Overview</span></div>
+    <div class="hmain">
+      <h1>Concord</h1>
+      <div class="rule"></div>
+      <p class="lede">The self-hostable, OSCAL-native compliance engine for CUI, defense-industrial, and federal systems.</p>
+      <div class="chips">
+        <span class="chip">FedRAMP</span>
+        <span class="chip">CMMC L2</span>
+        <span class="chip">NIST 800-53A / 800-171</span>
+        <span class="chip">OSCAL 1.1</span>
+        <span class="chip">26 Frameworks</span>
+        <span class="chip">Air-Gap Capable</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section>
+    <div class="pitch">
+      Compliance teams in the defense and federal space are forced to choose between
+      cloud-only GRC tools they <b>cannot</b> put CUI into, and spreadsheets that do not scale.
+      <b>Concord is the middle path</b> &mdash; a compliance controls platform you run inside your own
+      security boundary. It computes a live, transparent SPRS score, generates SSPs, SARs, and
+      <b>OSCAL 1.1</b> packages, and maps a single control effort across <b>26 frameworks</b>, so you
+      author once and comply many. No per-seat SaaS tax, and no data leaving your perimeter.
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">Capabilities</p>
+    <h2>What Concord delivers</h2>
+    <div class="caps">
+      <div class="cap">
+        <h3>Live CMMC L2 / SPRS scoring</h3>
+        <p>A deterministic SPRS score (&minus;203 to 110) that recomputes the moment an implementation changes &mdash; transparent and defensible, not a black box.</p>
+      </div>
+      <div class="cap">
+        <h3>Document &amp; OSCAL generation</h3>
+        <p>SSP, SAR, and compliance reports in xlsx, docx, csv, and json, plus OSCAL 1.1 component-definition and SSP export aligned to FedRAMP 20x / RFC-0024.</p>
+      </div>
+      <div class="cap">
+        <h3>Guided SSP authoring</h3>
+        <p>Canned, Gov-cloud-aware implementation statements with organization-defined-parameter fill-in-the-blanks &mdash; author 800-171 narratives in minutes instead of from a blank page.</p>
+      </div>
+      <div class="cap">
+        <h3>Always-current catalogs</h3>
+        <p>A scheduled poller watches authoritative NIST OSCAL feeds and flags exactly which controls changed &mdash; your baseline never silently drifts out of date behind a static spreadsheet.</p>
+      </div>
+      <div class="cap">
+        <h3>Config-capture automation</h3>
+        <p>Optional Microsoft Graph (M365 Government / GCC High) and AWS GovCloud connectors read live tenant configuration to auto-populate SSP parameters in support of the controls.</p>
+      </div>
+      <div class="cap">
+        <h3>Cross-framework crosswalk</h3>
+        <p>Approximately 121,000 mappings across 26 frameworks &mdash; FedRAMP, CMMC, 800-171, HIPAA, ISO 27001, SOC 2, CIS v8, NIST CSF and more &mdash; with full-text search.</p>
+      </div>
+      <div class="cap">
+        <h3>Compliance operations</h3>
+        <p>Systems, control implementations, evidence, assessments, and POA&amp;M and risk registers &mdash; the full ATO workflow in one governed data model.</p>
+      </div>
+      <div class="cap">
+        <h3>Tamper-evident audit</h3>
+        <p>A hash-chained audit log, opt-in authentication and RBAC, and database-enforced multi-tenant isolation via PostgreSQL row-level security.</p>
+      </div>
+      <div class="cap">
+        <h3>Deploy anywhere</h3>
+        <p>Docker and PostgreSQL. A FastAPI service, browser UI, command-line interface, and documented REST API &mdash; installable in air-gapped environments.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The Problem</p>
+    <h2>Industry needs Concord answers</h2>
+    <div class="needs">
+      <div class="need">
+        <div class="n">CUI cannot go to the cloud</div>
+        <p class="a">Most modern GRC tools are SaaS-only and off-limits for ITAR and classified DIB workloads. <b>Concord runs inside your boundary.</b></p>
+      </div>
+      <div class="need">
+        <div class="n">OSCAL is becoming mandatory</div>
+        <p class="a">FedRAMP 20x and RFC-0024 push machine-readable packages toward roughly September 2026. <b>Concord already ships OSCAL export.</b></p>
+      </div>
+      <div class="need">
+        <div class="n">SPRS math is opaque</div>
+        <p class="a">Most enterprise GRC does not compute SPRS at all. <b>Concord shows a live, deterministic score</b> you can defend to an assessor.</p>
+      </div>
+      <div class="need">
+        <div class="n">Map once, comply many</div>
+        <p class="a">Redundant control work across frameworks is the leading GRC cost. <b>Concord's crosswalk collapses it</b> into a single effort.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">Differentiation</p>
+    <h2>Where Concord wins</h2>
+    <table>
+      <thead><tr><th style="width:34%">Differentiator</th><th>Why it matters</th></tr></thead>
+      <tbody>
+        <tr><td><b>Self-hosted / air-gap capable</b></td><td class="note">Serves the CUI, ITAR, and classified buyers that SaaS-only vendors structurally cannot.</td></tr>
+        <tr><td><b>Transparent live SPRS</b></td><td class="note">Deterministic and recomputed on change &mdash; defensible in a C3PAO assessment.</td></tr>
+        <tr><td><b>OSCAL-native</b></td><td class="note">The government-native moat, directly on the FedRAMP 20x mandate curve.</td></tr>
+        <tr><td><b>Always-current catalogs</b></td><td class="note">Auto-detects NIST OSCAL revisions and pinpoints changed controls &mdash; no more stale static workbooks.</td></tr>
+        <tr><td><b>Config-capture automation</b></td><td class="note">Pulls SSP parameters from live M365 Government and AWS GovCloud configuration in support of the controls.</td></tr>
+        <tr><td><b>Crosswalk depth</b></td><td class="note">26 frameworks and ~121,000 mappings with full-text search &mdash; author once, comply many.</td></tr>
+        <tr><td><b>No per-seat SaaS tax</b></td><td class="note">Competitors are quote-based at $10K&ndash;$100K+ per year; Concord is yours to run.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <footer>
+    <b>CONCORD</b> &nbsp;&middot;&nbsp; A cross-framework, cross-control compliance platform.<br>
+    Target market: CUI / defense-industrial base and federal systems &nbsp;&middot;&nbsp; Stack: FastAPI, PostgreSQL, Docker, OSCAL 1.1
+  </footer>
+
+</div>
+</body>
+</html>
