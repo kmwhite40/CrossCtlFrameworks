@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -18,6 +19,7 @@ from .db import session_scope
 from .etl import ingest_workbook
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
+from .governance import conmon, digest
 from .logging import configure_logging
 from .models import (
     CatalogSource,
@@ -268,6 +270,30 @@ def templates_seed(
         async with session_scope() as session:
             touched = await seed_statement_templates(session, overwrite=overwrite)
         console.print(f"[green]Statement templates loaded[/green] — {touched} touched")
+
+    asyncio.run(_run())
+
+
+@app.command(name="conmon-scan")
+def conmon_scan() -> None:
+    """Run a continuous-monitoring scan: open tasks/alerts for unhealthy controls."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await conmon.scan(session, today=datetime.now(UTC).date())
+        console.print(f"[green]ConMon scan complete[/green] — {json.dumps(result)}")
+
+    asyncio.run(_run())
+
+
+@app.command(name="notify-digest")
+def notify_digest() -> None:
+    """Run the org-level alert digest (ATO expiry, catalog drift, reviews due)."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            counts = await digest.run(session, today=datetime.now(UTC).date())
+        console.print(f"[green]Alert digest complete[/green] — {json.dumps(counts)}")
 
     asyncio.run(_run())
 

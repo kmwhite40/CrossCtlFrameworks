@@ -86,6 +86,12 @@
       <a class="nav-link" href="/users"      title="Users"          {% if active=='users'      %}aria-current="page"{% endif %}><i data-lucide="users"></i><span class="nav-link__label">Users</span></a>
     </div>
     <div class="sidebar__group">
+      <div class="sidebar__group-title">Governance</div>
+      <a class="nav-link" href="/governance" title="Command center" {% if active=='governance' %}aria-current="page"{% endif %}><i data-lucide="gauge"></i><span class="nav-link__label">Command center</span></a>
+      <a class="nav-link" href="/governance#tasks" title="Tasks"     {% if active=='tasks'      %}aria-current="page"{% endif %}><i data-lucide="check-square"></i><span class="nav-link__label">Tasks</span></a>
+      <a class="nav-link" href="/governance#diagrams" title="Diagrams" {% if active=='diagrams'  %}aria-current="page"{% endif %}><i data-lucide="workflow"></i><span class="nav-link__label">Diagrams</span></a>
+    </div>
+    <div class="sidebar__group">
       <div class="sidebar__group-title">Admin</div>
       <a class="nav-link" href="/audit"      title="Audit trail"    {% if active=='audit'      %}aria-current="page"{% endif %}><i data-lucide="scroll-text"></i><span class="nav-link__label">Audit trail</span></a>
       <a class="nav-link" href="/ingestions" title="Ingestions"     {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i><span class="nav-link__label">Ingestions</span></a>

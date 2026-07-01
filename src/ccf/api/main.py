@@ -23,19 +23,25 @@ from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
+    artifacts,
     assessments,
     audit,
     auth,
     catalog,
+    conmon,
     controls,
     coverage,
+    diagrams,
     diff,
+    events,
     evidence,
     frameworks,
     health,
     mappings,
+    notifications,
     oscal,
     poams,
+    policies,
     posture,
     reports,
     risks,
@@ -43,8 +49,10 @@ from .routes import (
     search,
     ssp,
     systems,
+    tasks,
     ui,
     users,
+    vendors,
     worksheets,
 )
 
@@ -130,6 +138,15 @@ def create_app() -> FastAPI:
     app.include_router(risks.router)
     app.include_router(users.router)
     app.include_router(reports.router)
+    # Enterprise governance layer.
+    app.include_router(conmon.router)
+    app.include_router(tasks.router)
+    app.include_router(notifications.router)
+    app.include_router(events.router)
+    app.include_router(policies.router)
+    app.include_router(vendors.router)
+    app.include_router(artifacts.router)
+    app.include_router(diagrams.router)
     app.include_router(ui.router)
     return app
 

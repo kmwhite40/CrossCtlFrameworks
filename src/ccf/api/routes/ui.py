@@ -20,6 +20,8 @@ from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import sign_session, verify_password
 from ...config import get_settings
+from ...governance import conmon as conmon_engine
+from ...governance import digest as digest_engine
 from ...models import (
     POAM,
     Assessment,
@@ -28,11 +30,14 @@ from ...models import (
     Control,
     ControlFamily,
     ControlImplementation,
+    Event,
     Evidence,
     Framework,
     FrameworkMapping,
     IngestionRun,
+    Notification,
     Organization,
+    Policy,
     RejectedRow,
     Risk,
     ScoringControl,
@@ -41,7 +46,9 @@ from ...models import (
     SSPProject,
     StatementTemplate,
     System,
+    Task,
     User,
+    Vendor,
     WorkbookVersion,
     Worksheet,
     WorksheetRow,
@@ -470,9 +477,7 @@ async def delete_system_ui(
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     org = _principal_org(request)
-    sys = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
     if sys is not None and (org is None or sys.organization_id == org):
         await session.delete(sys)
         await session.commit()
@@ -1008,9 +1013,7 @@ async def scoring_create_system(
 
 
 @router.get("/ssp", response_class=HTMLResponse)
-async def ssp_page(
-    request: Request, session: AsyncSession = Depends(get_session)
-) -> HTMLResponse:
+async def ssp_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     org = _principal_org(request)
     proj_stmt = select(SSPProject).order_by(SSPProject.created_at.desc())
     sys_stmt = select(System).order_by(System.name)
@@ -1254,7 +1257,7 @@ async def ssp_save_entry(
     await session.commit()
     return HTMLResponse(
         '<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>'
-        '<script>if(window.lucide)lucide.createIcons();</script>'
+        "<script>if(window.lucide)lucide.createIcons();</script>"
     )
 
 
@@ -1275,6 +1278,99 @@ async def posture_page(
         "posture.html",
         {"active": "posture", "s": summary},
     )
+
+
+@router.get("/governance", response_class=HTMLResponse)
+async def governance_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Governance command center — ConMon health, tasks, alerts, activity, diagrams."""
+    org = _principal_org(request)
+    today = datetime.now(UTC).date()
+    health = await conmon_engine.health_summary(session, today=today, org_id=org)
+
+    def _scoped(stmt: Any, col: Any) -> Any:
+        return stmt.where(col == org) if org is not None else stmt
+
+    tasks = (
+        (
+            await session.execute(
+                _scoped(
+                    select(Task).where(Task.status.in_(("open", "in_progress", "blocked"))),
+                    Task.organization_id,
+                )
+                .order_by(Task.due_on.nulls_last(), Task.id.desc())
+                .limit(25)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    notifs = (
+        (
+            await session.execute(
+                _scoped(select(Notification), Notification.organization_id)
+                .order_by(Notification.created_at.desc())
+                .limit(25)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    events = (
+        (
+            await session.execute(
+                _scoped(select(Event), Event.organization_id).order_by(Event.id.desc()).limit(25)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    systems = (
+        (
+            await session.execute(
+                _scoped(select(System), System.organization_id).order_by(System.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    counts = {
+        "policies": (
+            await session.execute(_scoped(select(func.count(Policy.id)), Policy.organization_id))
+        ).scalar_one(),
+        "vendors": (
+            await session.execute(_scoped(select(func.count(Vendor.id)), Vendor.organization_id))
+        ).scalar_one(),
+        "open_tasks": len(tasks),
+        "unread_alerts": sum(1 for n in notifs if n.read_at is None),
+    }
+    return templates.TemplateResponse(
+        request,
+        "governance.html",
+        {
+            "active": "governance",
+            "health": health,
+            "tasks": tasks,
+            "notifs": notifs,
+            "events": events,
+            "systems": systems,
+            "counts": counts,
+        },
+    )
+
+
+@router.post("/governance/scan")
+async def governance_scan(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    """Trigger a ConMon scan + alert digest from the command center."""
+    org = _principal_org(request)
+    today = datetime.now(UTC).date()
+    await conmon_engine.scan(session, today=today, org_id=org)
+    await digest_engine.run(session, today=today, org_id=org)
+    await session.commit()
+    return RedirectResponse("/governance", status_code=303)
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -1330,9 +1426,7 @@ async def audit_page(
     if action:
         stmt = stmt.where(AuditLog.action == action)
     rows = (await session.execute(stmt)).scalars().all()
-    entity_types = (
-        (await session.execute(select(AuditLog.entity_type).distinct())).scalars().all()
-    )
+    entity_types = (await session.execute(select(AuditLog.entity_type).distinct())).scalars().all()
     return templates.TemplateResponse(
         request,
         "audit.html",
@@ -1378,12 +1472,16 @@ async def assessments_page(
     progress: dict[int, dict[str, Any]] = {}
     for a in assessments:
         rows = (
-            await session.execute(
-                select(AssessmentControlResult).where(
-                    AssessmentControlResult.assessment_id == a.id
+            (
+                await session.execute(
+                    select(AssessmentControlResult).where(
+                        AssessmentControlResult.assessment_id == a.id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         progress[a.id] = summarize_results(rows)
     return templates.TemplateResponse(
         request,
@@ -1452,12 +1550,16 @@ async def assessment_detail(
         raise HTTPException(404, "assessment not found")
     sys = (await session.execute(select(System).where(System.id == a.system_id))).scalar_one()
     results = (
-        await session.execute(
-            select(AssessmentControlResult)
-            .where(AssessmentControlResult.assessment_id == assessment_id)
-            .order_by(AssessmentControlResult.sort_order)
+        (
+            await session.execute(
+                select(AssessmentControlResult)
+                .where(AssessmentControlResult.assessment_id == assessment_id)
+                .order_by(AssessmentControlResult.sort_order)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     by_domain: dict[str, list[AssessmentControlResult]] = {}
     for r in results:
         by_domain.setdefault(r.domain or "?", []).append(r)
@@ -1523,7 +1625,7 @@ async def assessment_save_result(
     await session.commit()
     return HTMLResponse(
         '<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>'
-        '<script>if(window.lucide)lucide.createIcons();</script>'
+        "<script>if(window.lucide)lucide.createIcons();</script>"
     )
 
 
@@ -1536,14 +1638,19 @@ async def assessment_make_poams_ui(
     a = await _scoped_assessment(session, assessment_id, _principal_org(request))
     if a is not None:
         results = (
-            await session.execute(
-                select(AssessmentControlResult).where(
-                    AssessmentControlResult.assessment_id == assessment_id
+            (
+                await session.execute(
+                    select(AssessmentControlResult).where(
+                        AssessmentControlResult.assessment_id == assessment_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         existing = {
-            t for (t,) in (
+            t
+            for (t,) in (
                 await session.execute(select(POAM.title).where(POAM.system_id == a.system_id))
             ).all()
         }

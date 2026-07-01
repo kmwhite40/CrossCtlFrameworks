@@ -23,6 +23,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Text,
@@ -411,6 +412,10 @@ class Evidence(Base):
     collected_on: Mapped[date | None] = mapped_column(Date)
     expires_on: Mapped[date | None] = mapped_column(Date)
     hash_sha256: Mapped[str | None] = mapped_column(String(64))
+    # Optional link to a stored artifact (evidence collected via the intake API).
+    artifact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.artifacts.id", ondelete="SET NULL")
+    )
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -565,6 +570,9 @@ class Risk(Base):
         Enum("open", "mitigated", "accepted", "closed", name="risk_status", schema="ccf"),
         default="open",
     )
+    # Quantitative scoring (likelihood x impact on a 1-5 scale, 1-25 exposure).
+    inherent_score: Mapped[int | None] = mapped_column(Integer)
+    residual_score: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -827,3 +835,254 @@ class AuditLog(Base):
     diff: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     prev_hash: Mapped[str | None] = mapped_column(String(64))
     row_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+# ---------------------------------------------------------------------------
+# Enterprise governance layer — the connective tissue that turns the compliance
+# data model into a living program: tasks, notifications, an event bus/webhooks,
+# policies, vendors (TPRM), an artifact store, and continuous-monitoring runs.
+# Generic entity links (entity_type + entity_id) let any record point at any
+# other, so modules interoperate without a web of hard foreign keys.
+# ---------------------------------------------------------------------------
+
+
+class Task(Base):
+    """A governance work item — remediation, review, evidence refresh, etc."""
+
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(512))
+    description: Mapped[str | None] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(32), default="general")
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    priority: Mapped[str] = mapped_column(String(16), default="medium")
+    assignee_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="SET NULL"), index=True
+    )
+    system_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    # Generic link to any entity (control_implementation | poam | risk | policy |
+    # vendor | evidence | catalog_source | system | assessment).
+    entity_type: Mapped[str | None] = mapped_column(String(32))
+    entity_id: Mapped[str | None] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(16), default="manual")  # manual | auto
+    # Stable key for auto-generated tasks so a rescan updates rather than dupes.
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), unique=True)
+    due_on: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_tasks_entity", "entity_type", "entity_id"),)
+
+
+class Notification(Base):
+    """An alert surfaced to a user or broadcast to an org (user_id NULL)."""
+
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="CASCADE"), index=True
+    )
+    severity: Mapped[str] = mapped_column(String(16), default="info")  # info|warning|critical
+    category: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(512))
+    body: Mapped[str | None] = mapped_column(Text)
+    entity_type: Mapped[str | None] = mapped_column(String(32))
+    entity_id: Mapped[str | None] = mapped_column(String(64))
+    dedupe_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class Event(Base):
+    """Append-only activity/event stream — the internal integration bus."""
+
+    __tablename__ = "events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    actor: Mapped[str | None] = mapped_column(String(255))
+    verb: Mapped[str] = mapped_column(String(48))  # created|updated|closed|captured|drifted|alerted
+    entity_type: Mapped[str] = mapped_column(String(32))
+    entity_id: Mapped[str | None] = mapped_column(String(64))
+    summary: Mapped[str] = mapped_column(String(512))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    __table_args__ = (Index("ix_events_entity", "entity_type", "entity_id"),)
+
+
+class Webhook(Base):
+    """Outbound HTTP subscription so external systems receive events."""
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    url: Mapped[str] = mapped_column(String(1024))
+    secret: Mapped[str | None] = mapped_column(String(128))
+    events: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # subscribed verbs/categories
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Artifact(Base):
+    """Content-addressed artifact store for collected evidence files."""
+
+    __tablename__ = "artifacts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    filename: Mapped[str] = mapped_column(String(512))
+    media_type: Mapped[str | None] = mapped_column(String(255))
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    storage: Mapped[str] = mapped_column(String(16), default="inline")  # inline | external
+    content: Mapped[bytes | None] = mapped_column(LargeBinary)
+    uri: Mapped[str | None] = mapped_column(String(1024))
+    uploaded_by: Mapped[str | None] = mapped_column(String(255))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("organization_id", "sha256", name="uq_artifact_org_sha"),)
+
+
+class Policy(Base):
+    """A governance policy document with a review cadence and versions."""
+
+    __tablename__ = "policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(64))
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft|active|retired
+    review_frequency: Mapped[str | None] = mapped_column(String(32))
+    next_review_on: Mapped[date | None] = mapped_column(Date)
+    # Control identifiers this policy supports/implements.
+    linked_controls: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    versions: Mapped[list[PolicyVersion]] = relationship(
+        back_populates="policy", cascade="all, delete-orphan"
+    )
+
+
+class PolicyVersion(Base):
+    __tablename__ = "policy_versions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    policy_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.policies.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[str] = mapped_column(String(32))
+    body: Mapped[str | None] = mapped_column(Text)
+    uri: Mapped[str | None] = mapped_column(String(1024))
+    effective_on: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    policy: Mapped[Policy] = relationship(back_populates="versions")
+    attestations: Mapped[list[PolicyAttestation]] = relationship(
+        back_populates="policy_version", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (UniqueConstraint("policy_id", "version", name="uq_policy_version"),)
+
+
+class PolicyAttestation(Base):
+    """A user's acknowledgement of a specific policy version."""
+
+    __tablename__ = "policy_attestations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    policy_version_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.policy_versions.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.users.id", ondelete="SET NULL"))
+    attestor: Mapped[str | None] = mapped_column(String(255))
+    note: Mapped[str | None] = mapped_column(Text)
+    attested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    policy_version: Mapped[PolicyVersion] = relationship(back_populates="attestations")
+
+
+class Vendor(Base):
+    """A third party / supplier tracked for supply-chain risk (TPRM)."""
+
+    __tablename__ = "vendors"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    service_type: Mapped[str | None] = mapped_column(String(128))
+    criticality: Mapped[str] = mapped_column(String(16), default="medium")
+    status: Mapped[str] = mapped_column(
+        String(16), default="active"
+    )  # prospective|active|offboarded
+    risk_rating: Mapped[str | None] = mapped_column(String(16))  # low|moderate|high
+    contact_email: Mapped[str | None] = mapped_column(String(255))
+    # e.g. "FedRAMP High Authorized" — supports control inheritance.
+    authorization: Mapped[str | None] = mapped_column(String(128))
+    review_frequency: Mapped[str | None] = mapped_column(String(32))
+    last_reviewed_on: Mapped[date | None] = mapped_column(Date)
+    next_review_on: Mapped[date | None] = mapped_column(Date)
+    linked_controls: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MonitoringRun(Base):
+    """Log of a continuous-monitoring scan and what it produced."""
+
+    __tablename__ = "monitoring_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    controls_checked: Mapped[int] = mapped_column(Integer, default=0)
+    findings: Mapped[int] = mapped_column(Integer, default=0)
+    tasks_created: Mapped[int] = mapped_column(Integer, default=0)
+    notifications_created: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)

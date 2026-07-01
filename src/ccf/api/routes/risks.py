@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...governance.risk import band, compute_scores
 from ...models import Risk, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
@@ -79,10 +80,19 @@ async def list_risks(
             "impact": r.impact,
             "treatment": r.treatment,
             "status": r.status,
+            "inherent_score": r.inherent_score,
+            "residual_score": r.residual_score,
+            "residual_band": band(r.residual_score),
             "created_at": r.created_at.isoformat(),
         }
         for r in rows
     ]
+
+
+def _rescore(obj: Risk) -> None:
+    obj.inherent_score, obj.residual_score = compute_scores(
+        obj.likelihood, obj.impact, obj.treatment
+    )
 
 
 @router.post("", status_code=201)
@@ -102,10 +112,18 @@ async def create_risk(
         if ok is None:
             raise HTTPException(404, "system not found")
     obj = Risk(**body.model_dump(exclude_none=True))
+    _rescore(obj)
     session.add(obj)
     await session.commit()
     await session.refresh(obj)
-    return {"id": obj.id, "title": obj.title, "status": obj.status}
+    return {
+        "id": obj.id,
+        "title": obj.title,
+        "status": obj.status,
+        "inherent_score": obj.inherent_score,
+        "residual_score": obj.residual_score,
+        "residual_band": band(obj.residual_score),
+    }
 
 
 @router.patch("/{rid}")
@@ -118,6 +136,13 @@ async def update_risk(
     obj = await _require_risk(session, rid, principal)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(obj, k, v)
+    _rescore(obj)
     await session.commit()
     await session.refresh(obj)
-    return {"id": obj.id, "status": obj.status}
+    return {
+        "id": obj.id,
+        "status": obj.status,
+        "inherent_score": obj.inherent_score,
+        "residual_score": obj.residual_score,
+        "residual_band": band(obj.residual_score),
+    }

@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Governance · Concord{% endblock %}
+{% block heading %}Governance command center{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Continuous monitoring, the work queue, alerts, activity, and diagrams — one interoperating view.</p>
+{% endblock %}
+{% block content %}
+
+<div class="row" style="gap:12px;flex-wrap:wrap;margin-bottom:16px">
+  <div class="card" style="flex:1;min-width:150px;padding:16px">
+    <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Control health</div>
+    <div style="font-size:2rem;font-weight:700">{{ health.health_pct if health.health_pct is not none else '—' }}%</div>
+    <div class="dim" style="font-size:12px">{{ health.total }} implementations</div>
+  </div>
+  <div class="card" style="flex:1;min-width:150px;padding:16px">
+    <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Open tasks</div>
+    <div style="font-size:2rem;font-weight:700">{{ counts.open_tasks }}</div>
+  </div>
+  <div class="card" style="flex:1;min-width:150px;padding:16px">
+    <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Unread alerts</div>
+    <div style="font-size:2rem;font-weight:700">{{ counts.unread_alerts }}</div>
+  </div>
+  <div class="card" style="flex:1;min-width:150px;padding:16px">
+    <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Policies · Vendors</div>
+    <div style="font-size:2rem;font-weight:700">{{ counts.policies }} · {{ counts.vendors }}</div>
+  </div>
+  <form method="post" action="/governance/scan" style="display:flex;align-items:center">
+    <button class="btn btn--primary" type="submit"><i data-lucide="radar"></i> Run ConMon scan</button>
+  </form>
+</div>
+
+<div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-start">
+  <section class="card" id="tasks" style="flex:1;min-width:320px">
+    <div class="card__header"><div class="card__title">Work queue</div><span class="chip chip--brand">{{ tasks|length }}</span></div>
+    <div class="card__body stack" style="gap:8px">
+      {% for t in tasks %}
+      <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px">
+        <div>
+          <span class="chip {% if t.priority=='critical' or t.priority=='high' %}chip--warn{% else %}chip--ghost{% endif %}">{{ t.priority }}</span>
+          <span style="font-weight:600">{{ t.title }}</span>
+          <div class="dim" style="font-size:12px">{{ t.kind }} · {{ t.status }}{% if t.due_on %} · due {{ t.due_on }}{% endif %}{% if t.source=='auto' %} · auto{% endif %}</div>
+        </div>
+      </div>
+      {% else %}<div class="dim">No open tasks. Run a ConMon scan to generate work.</div>{% endfor %}
+    </div>
+  </section>
+
+  <section class="card" style="flex:1;min-width:320px">
+    <div class="card__header"><div class="card__title">Alerts</div><span class="chip chip--brand">{{ counts.unread_alerts }} unread</span></div>
+    <div class="card__body stack" style="gap:8px">
+      {% for n in notifs %}
+      <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px;{% if n.read_at %}opacity:.6{% endif %}">
+        <div>
+          <span class="chip {% if n.severity=='critical' %}chip--warn{% elif n.severity=='warning' %}chip--info{% else %}chip--ghost{% endif %}">{{ n.severity }}</span>
+          <span style="font-weight:600">{{ n.title }}</span>
+          <div class="dim" style="font-size:12px">{{ n.category }}{% if n.body %} · {{ n.body }}{% endif %}</div>
+        </div>
+      </div>
+      {% else %}<div class="dim">No alerts.</div>{% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="card" id="diagrams" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Diagrams</div></div>
+  <div class="card__body">
+    <div class="row" style="gap:8px;align-items:end;margin-bottom:12px;flex-wrap:wrap">
+      <label class="field-group"><span class="dim" style="font-size:12px">System</span>
+        <select class="select" id="dg-system">
+          {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Diagram</span>
+        <select class="select" id="dg-kind">
+          <option value="authorization-boundary">Authorization boundary</option>
+          <option value="control-coverage">Control coverage</option>
+        </select>
+      </label>
+      <button class="btn btn--secondary" type="button" onclick="renderDiagram()"><i data-lucide="workflow"></i> Render</button>
+      <button class="btn btn--ghost" type="button" onclick="renderLandscape()">System landscape</button>
+    </div>
+    <div id="diagram-out" class="mermaid" style="background:var(--panel,#f5f7f9);padding:16px;border-radius:8px;min-height:120px">Choose a diagram and click Render.</div>
+  </div>
+</section>
+
+<section class="card" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Activity feed</div></div>
+  <div class="card__body stack" style="gap:6px">
+    {% for e in events %}
+    <div class="row" style="gap:10px;font-size:13px;border-bottom:1px solid var(--ink-100);padding-bottom:4px">
+      <span class="chip chip--ghost">{{ e.verb }}</span>
+      <span>{{ e.summary }}</span>
+      <span class="dim" style="margin-left:auto;font-size:11px">{{ e.entity_type }}</span>
+    </div>
+    {% else %}<div class="dim">No activity yet.</div>{% endfor %}
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
+  async function _draw(text) {
+    const el = document.getElementById('diagram-out');
+    el.removeAttribute('data-processed');
+    try {
+      const { svg } = await mermaid.render('dg' + Date.now(), text);
+      el.innerHTML = svg;
+    } catch (e) { el.textContent = 'Render error: ' + e.message + '\n\n' + text; }
+  }
+  async function renderDiagram() {
+    const sid = document.getElementById('dg-system').value;
+    const kind = document.getElementById('dg-kind').value;
+    if (!sid) return;
+    const r = await fetch(`/api/diagrams/systems/${sid}/${kind}`);
+    _draw(await r.text());
+  }
+  async function renderLandscape() {
+    const r = await fetch('/api/diagrams/system-landscape');
+    _draw(await r.text());
+  }
+  if (window.lucide) lucide.createIcons();
+</script>
+{% endblock %}
