@@ -548,6 +548,42 @@ class POAM(Base):
     owner_user_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.users.id", ondelete="SET NULL")
     )
+    # FedRAMP / eMASS POA&M fields.
+    source: Mapped[str | None] = mapped_column(String(32))  # assessment|scan|conmon|self_identified
+    point_of_contact: Mapped[str | None] = mapped_column(String(255))
+    remediation_plan: Mapped[str | None] = mapped_column(Text)
+    resources_required: Mapped[str | None] = mapped_column(Text)
+    cost_estimate: Mapped[str | None] = mapped_column(String(64))
+    scheduled_completion: Mapped[date | None] = mapped_column(Date)
+    original_due_on: Mapped[date | None] = mapped_column(Date)  # for deviation tracking
+    risk_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.risks.id", ondelete="SET NULL"))
+    vendor_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.vendors.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    milestones: Mapped[list[PoamMilestone]] = relationship(
+        back_populates="poam", cascade="all, delete-orphan", order_by="PoamMilestone.sort_order"
+    )
+
+
+class PoamMilestone(Base):
+    """A scheduled remediation milestone within a POA&M (FedRAMP-style)."""
+
+    __tablename__ = "poam_milestones"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    poam_id: Mapped[int] = mapped_column(ForeignKey("ccf.poams.id", ondelete="CASCADE"), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    due_on: Mapped[date | None] = mapped_column(Date)
+    completed_on: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending"
+    )  # pending|in_progress|completed|delayed
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    poam: Mapped[POAM] = relationship(back_populates="milestones")
 
 
 class Risk(Base):
@@ -557,6 +593,8 @@ class Risk(Base):
     system_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.systems.id", ondelete="CASCADE"))
     title: Mapped[str] = mapped_column(String(512))
     description: Mapped[str | None] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(String(64))  # taxonomy: operational|technical|...
+    source: Mapped[str | None] = mapped_column(String(32))
     likelihood: Mapped[str | None] = mapped_column(
         Enum("low", "moderate", "high", name="risk_level", schema="ccf")
     )
@@ -573,7 +611,19 @@ class Risk(Base):
     # Quantitative scoring (likelihood x impact on a 1-5 scale, 1-25 exposure).
     inherent_score: Mapped[int | None] = mapped_column(Integer)
     residual_score: Mapped[int | None] = mapped_column(Integer)
+    # Ownership, review cadence, and cross-links to the rest of the program.
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="SET NULL")
+    )
+    next_review_on: Mapped[date | None] = mapped_column(Date)
+    control_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.controls.id", ondelete="SET NULL")
+    )
+    vendor_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.vendors.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import POAM, CatalogSource, Policy, System, Vendor
+from ..models import POAM, CatalogSource, Policy, Risk, System, Vendor
 from . import bus
 
 ATO_WINDOW_DAYS = 90
@@ -23,7 +23,7 @@ REVIEW_WINDOW_DAYS = 30
 
 async def run(session: AsyncSession, *, today: date, org_id: int | None = None) -> dict[str, Any]:
     """Raise/refresh org-level notifications. Returns counts by category."""
-    counts = {"ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0}
+    counts = {"ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0}
 
     # ATO expiring / expired.
     sys_stmt = select(System).where(System.ato_expires_on.is_not(None))
@@ -128,5 +128,28 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
             dedupe_key=f"vendor-review:{v.id}:{v.next_review_on}",
         )
         counts["vendor"] += 1
+
+    # Risk reviews coming due (open/mitigated risks with a review date).
+    risk_stmt = select(Risk).where(
+        Risk.next_review_on.is_not(None),
+        Risk.next_review_on <= horizon,
+        Risk.status.in_(("open", "mitigated")),
+    )
+    if org_id is not None:
+        risk_stmt = risk_stmt.where(
+            Risk.system_id.in_(select(System.id).where(System.organization_id == org_id))
+        )
+    for r in (await session.execute(risk_stmt)).scalars().all():
+        await bus.notify(
+            session,
+            category="risk",
+            title=f"Risk review due: {r.title}",
+            org_id=org_id,
+            severity="info",
+            entity_type="risk",
+            entity_id=r.id,
+            dedupe_key=f"risk-review:{r.id}:{r.next_review_on}",
+        )
+        counts["risk"] += 1
 
     return counts

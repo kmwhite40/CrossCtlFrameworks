@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Concord — Demo Script</title>
+<style>
+  :root {
+    --navy:#0d1b2a; --navy-2:#1b2a41; --steel:#3a5a7a; --accent:#c9a227;
+    --ink:#14212e; --muted:#5b6b7b; --line:#dfe4ea; --bg:#ffffff; --panel:#f5f7f9;
+    --code:#0f2233; --ok:#0f7b52;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; }
+  body {
+    font-family:'Georgia','Times New Roman',serif;
+    color:var(--ink); background:var(--bg); line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .sans { font-family:'Helvetica Neue',Arial,system-ui,sans-serif; }
+  .wrap { max-width:880px; margin:0 auto; padding:0 40px; }
+
+  header { background:var(--navy); color:#fff; border-bottom:3px solid var(--accent); }
+  .hbar {
+    font-family:'Helvetica Neue',Arial,sans-serif; font-size:.68rem; letter-spacing:.28em;
+    text-transform:uppercase; color:rgba(255,255,255,.55);
+    padding:14px 0; border-bottom:1px solid rgba(255,255,255,.1);
+    display:flex; justify-content:space-between;
+  }
+  .hmain { padding:40px 0 42px; }
+  h1 { font-size:2.7rem; font-weight:400; letter-spacing:.01em; margin:0; line-height:1; }
+  .rule { width:46px; height:2px; background:var(--accent); margin:20px 0; }
+  .lede { font-size:1.15rem; line-height:1.5; color:rgba(255,255,255,.9); margin:0; max-width:640px; }
+  .meta { margin-top:22px; font-family:'Helvetica Neue',Arial,sans-serif; font-size:.8rem;
+          color:rgba(255,255,255,.7); display:flex; gap:0; flex-wrap:wrap; }
+  .meta span { padding:0 14px; border-left:1px solid rgba(255,255,255,.18); }
+  .meta span:first-child { padding-left:0; border-left:0; }
+
+  section { padding:34px 0 4px; }
+  .kicker { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.7rem; letter-spacing:.2em;
+            text-transform:uppercase; color:var(--steel); margin:0 0 6px; font-weight:600; }
+  h2 { font-size:1.4rem; font-weight:400; margin:0 0 4px; color:var(--navy); }
+
+  .pitch {
+    background:var(--panel); border:1px solid var(--line); border-top:3px solid var(--accent);
+    padding:22px 26px; margin-top:24px; font-size:1.05rem; color:var(--ink);
+  }
+  .pitch b { color:var(--navy); }
+
+  .step { border-top:1px solid var(--line); padding:22px 0; display:grid;
+          grid-template-columns:44px 1fr; gap:18px; break-inside:avoid; }
+  .num { font-family:'Helvetica Neue',Arial,sans-serif; font-weight:700; font-size:1.1rem;
+         color:#fff; background:var(--navy); width:34px; height:34px; border-radius:50%;
+         display:flex; align-items:center; justify-content:center; }
+  .step h3 { font-family:'Helvetica Neue',Arial,sans-serif; font-size:1.02rem; font-weight:700;
+             margin:2px 0 4px; color:var(--navy); }
+  .step .time { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.68rem; letter-spacing:.08em;
+                text-transform:uppercase; color:var(--steel); float:right; font-weight:600; }
+  .show { margin:8px 0; }
+  .show .lbl, .say .lbl { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.7rem;
+                          letter-spacing:.08em; text-transform:uppercase; font-weight:700;
+                          color:var(--steel); margin-right:8px; }
+  .say { background:#fbfaf5; border-left:3px solid var(--accent); padding:10px 14px; margin:10px 0;
+         font-style:italic; color:#3a3320; }
+  .path { font-family:'Helvetica Neue',Arial,sans-serif; font-size:.9rem; }
+  a.url { color:var(--steel); text-decoration:none; border-bottom:1px dotted var(--steel); }
+  code, pre { font-family:'SF Mono','Menlo',Consolas,monospace; }
+  code { background:var(--panel); border:1px solid var(--line); border-radius:4px;
+         padding:1px 6px; font-size:.85em; color:var(--code); }
+  pre { background:var(--code); color:#e8eef3; padding:14px 16px; border-radius:8px;
+        overflow:auto; font-size:.82rem; line-height:1.5; margin:10px 0; }
+  pre .c { color:#8aa0b2; }
+  .tag { display:inline-block; font-family:'Helvetica Neue',Arial,sans-serif; font-size:.66rem;
+         letter-spacing:.04em; text-transform:uppercase; font-weight:700; padding:2px 8px;
+         border-radius:3px; background:#eef4ee; color:var(--ok); border:1px solid #cfe5d6; }
+  .tag.new { background:#fef6e6; color:#8a6d1f; border-color:#efdca8; }
+
+  ul.pre-list { margin:6px 0 0; padding-left:18px; }
+  ul.pre-list li { margin:3px 0; }
+
+  footer { margin-top:40px; padding:20px 0 44px; border-top:2px solid var(--navy);
+           color:var(--muted); font-size:.82rem; font-family:'Helvetica Neue',Arial,sans-serif; line-height:1.7; }
+  footer b { color:var(--navy); }
+
+  @media print {
+    body { background:#fff; }
+    header,.pitch,.say,.num,pre { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    .step, section { break-inside:avoid; }
+    pre { white-space:pre-wrap; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <div class="hbar"><span>Concord Compliance Platform</span><span>Demo Script &middot; ~20 min</span></div>
+    <div class="hmain">
+      <h1>Concord — Demo Script</h1>
+      <div class="rule"></div>
+      <p class="lede">A presenter's walkthrough of the live platform: from cross-framework catalog to guided SSP authoring, config-capture automation, and an enterprise governance program.</p>
+      <div class="meta">
+        <span>Runs at http://localhost:8088</span>
+        <span>Audience: DIB / federal compliance buyers</span>
+        <span>Format: click-through + a few API calls</span>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section>
+    <div class="pitch">
+      <b>Before you start.</b> Bring the stack up with <code>docker compose up -d</code> and confirm
+      <a class="url" href="http://localhost:8088/healthz">/healthz</a> returns <code>ok</code>. Open two tabs:
+      the <b>browser UI</b> (<a class="url" href="http://localhost:8088/dashboard">/dashboard</a>) and a
+      <b>terminal</b> for the three API moments. Have <a class="url" href="http://localhost:8088/docs">/docs</a>
+      ready as the "it's a real, documented API" backstop. The whole arc is about 20 minutes; each step lists a
+      time budget so you can trim to 10 if needed.
+    </div>
+  </section>
+
+  <section>
+    <p class="kicker">The one-liner</p>
+    <h2>Framing (say this first)</h2>
+    <div class="say"><span class="lbl">Say</span>
+      "Compliance teams in the defense space are stuck between cloud-only GRC tools they can't put CUI into,
+      and spreadsheets that don't scale. Concord is the middle path — a self-hostable, OSCAL-native platform that
+      computes a live SPRS score, authors your SSP, keeps your catalog current, and runs a continuous-monitoring
+      program — all inside your own boundary. Let me show you."</div>
+  </section>
+
+  <!-- 1 -->
+  <div class="step">
+    <div class="num">1</div>
+    <div>
+      <span class="time">2 min</span>
+      <h3>The dashboard &amp; the catalog</h3>
+      <div class="show"><span class="lbl">Show</span>
+        <span class="path"><a class="url" href="http://localhost:8088/dashboard">/dashboard</a> &rarr;
+        <a class="url" href="http://localhost:8088/controls">/controls</a> &rarr;
+        <a class="url" href="http://localhost:8088/coverage">/coverage</a></span>
+      </div>
+      <ul class="pre-list">
+        <li>Dashboard: control counts, families, FISMA baselines, last ingestion.</li>
+        <li>Controls: search "session lock", open a control — show objectives + examine/interview/test.</li>
+        <li>Coverage: the family &times; framework heatmap.</li>
+      </ul>
+      <div class="say"><span class="lbl">Say</span>
+        "One curated control effort maps across 26 frameworks — roughly 121,000 mappings, full-text searchable.
+        Author once, comply many."</div>
+    </div>
+  </div>
+
+  <!-- 2 -->
+  <div class="step">
+    <div class="num">2</div>
+    <div>
+      <span class="time">2 min</span>
+      <h3>Live CMMC L2 / SPRS scoring</h3>
+      <div class="show"><span class="lbl">Show</span>
+        <span class="path"><a class="url" href="http://localhost:8088/scoring">/scoring</a> &mdash; toggle a practice's state and watch the SPRS score recompute.</span>
+      </div>
+      <div class="say"><span class="lbl">Say</span>
+        "This isn't a stored number in a spreadsheet — it's deterministic and recomputed the instant an
+        implementation changes, so it's defensible to a C3PAO. −203 to 110, transparent math."</div>
+    </div>
+  </div>
+
+  <!-- 3 -->
+  <div class="step">
+    <div class="num">3</div>
+    <div>
+      <span class="time">3 min</span>
+      <h3>Guided SSP authoring + organization-defined parameters <span class="tag new">new</span></h3>
+      <div class="show"><span class="lbl">Show</span>
+        <span class="path"><a class="url" href="http://localhost:8088/ssp">/ssp</a> &rarr; create/open a project (platform: AWS GovCloud) &rarr; open a control.</span>
+      </div>
+      <ul class="pre-list">
+        <li>Point out a <b>Customer Responsibility</b> control: the narrative leads with a <code>[DRAFT]</code>
+          indicator, scoped to the Gov-cloud environment.</li>
+        <li>Fill an <b>ODP</b> field (e.g. incident-reporting timeframe &rarr; "within 72 hours to DIBNet").</li>
+        <li>Pick a <b>canned statement</b> from the dropdown, Save — it renders with your parameter substituted.</li>
+        <li>Generate the FedRAMP Appendix-A <code>.docx</code>.</li>
+      </ul>
+      <div class="say"><span class="lbl">Say</span>
+        "800-171 narratives in minutes, not from a blank page. The blanks are organization-defined parameters
+        pulled from NIST 800-171 — the customer fills them in, and the statement renders complete."</div>
+    </div>
+  </div>
+
+  <!-- 4 -->
+  <div class="step">
+    <div class="num">4</div>
+    <div>
+      <span class="time">2 min</span>
+      <h3>Config-capture automation <span class="tag new">new</span></h3>
+      <div class="show"><span class="lbl">Show (terminal)</span></div>
+<pre><span class="c"># What the connectors would pull — before any credentials are set</span>
+curl -s localhost:8088/api/ssp/connectors | python3 -m json.tool</pre>
+      <div class="say"><span class="lbl">Say</span>
+        "Two connectors — Microsoft Graph for M365 Government / GCC High, and AWS GovCloud — read live tenant
+        configuration to auto-populate those SSP parameters. Point them at a real tenant with app credentials and
+        the fill-in-the-blanks fill themselves. Until then, they honestly report what they'd map."</div>
+    </div>
+  </div>
+
+  <!-- 5 -->
+  <div class="step">
+    <div class="num">5</div>
+    <div>
+      <span class="time">2 min</span>
+      <h3>Always-current catalogs <span class="tag new">new</span></h3>
+      <div class="show"><span class="lbl">Show (terminal)</span></div>
+<pre><span class="c"># Seed authoritative sources, then check upstream NIST OSCAL for drift</span>
+docker compose --profile poller up   <span class="c"># or: ccf sources-seed && ccf sources-check</span>
+curl -s localhost:8088/api/catalog/sources | python3 -m json.tool</pre>
+      <div class="say"><span class="lbl">Say</span>
+        "Your workbook was Rev 1.1. NIST 800-53 is already at Rev 5.2.0. This poller watches the authoritative
+        OSCAL feeds and tells you exactly which controls changed — so your baseline never silently goes stale
+        behind a static spreadsheet."</div>
+    </div>
+  </div>
+
+  <!-- 6 -->
+  <div class="step">
+    <div class="num">6</div>
+    <div>
+      <span class="time">4 min</span>
+      <h3>Governance command center — the enterprise story <span class="tag new">new</span></h3>
+      <div class="show"><span class="lbl">Show</span>
+        <span class="path"><a class="url" href="http://localhost:8088/governance">/governance</a></span>
+      </div>
+      <ul class="pre-list">
+        <li>Top row: <b>control health %</b>, open tasks, unread alerts, policies &middot; vendors.</li>
+        <li>Click <b>Run ConMon scan</b> — the work queue and alerts populate.</li>
+        <li>Walk the <b>work queue</b> (auto-generated tasks), <b>alerts</b>, and the <b>activity feed</b>.</li>
+        <li>Render a diagram: pick a system &rarr; <b>Authorization boundary</b> / <b>Control coverage</b>.</li>
+      </ul>
+      <div class="say"><span class="lbl">Say</span>
+        "This is what separates a strong internal tool from enterprise GRC. Continuous monitoring scores each
+        control's health from evidence freshness, assessment recency, and open POA&amp;Ms — then opens the work and
+        raises the alerts automatically. Everything emits to an activity feed and to webhooks, so it all talks to
+        each other and to your external systems."</div>
+    </div>
+  </div>
+
+  <!-- 7 -->
+  <div class="step">
+    <div class="num">7</div>
+    <div>
+      <span class="time">2 min</span>
+      <h3>Evidence collection API + artifact store <span class="tag new">new</span></h3>
+      <div class="show"><span class="lbl">Show (terminal)</span></div>
+<pre><span class="c"># An automated collector pushes proof of a control — content-addressed, deduped</span>
+echo "MFA enabled for all users" &gt; mfa.txt
+curl -s -X POST localhost:8088/api/evidence/collect \
+  -F implementation_id=1 -F title="MFA config export" -F kind=config_export \
+  -F expires_on=2026-12-31 -F file=@mfa.txt | python3 -m json.tool</pre>
+      <div class="say"><span class="lbl">Say</span>
+        "Evidence doesn't have to be a human attaching files. Collectors POST here; we SHA-256 and dedupe every
+        artifact, link it to the control, and emit an event. Re-post the same file and it reuses the artifact."</div>
+    </div>
+  </div>
+
+  <!-- 8 -->
+  <div class="step">
+    <div class="num">8</div>
+    <div>
+      <span class="time">2 min</span>
+      <h3>Documents, OSCAL &amp; reports</h3>
+      <div class="show"><span class="lbl">Show</span>
+        <span class="path"><a class="url" href="http://localhost:8088/reports">/reports</a> &mdash; export xlsx / docx / csv; then the OSCAL endpoints.</span>
+      </div>
+<pre><span class="c"># OSCAL 1.1 — the government-native, machine-readable package</span>
+curl -s localhost:8088/api/oscal/component-definition/1 | head -c 400</pre>
+      <div class="say"><span class="lbl">Say</span>
+        "SSP, SAR, and reports in the formats an assessor expects — plus OSCAL 1.1 export, right on the
+        FedRAMP 20x / RFC-0024 mandate curve. Nothing here left your boundary."</div>
+    </div>
+  </div>
+
+  <!-- 9 -->
+  <div class="step">
+    <div class="num">9</div>
+    <div>
+      <span class="time">1 min</span>
+      <h3>Close</h3>
+      <div class="say"><span class="lbl">Say</span>
+        "Self-hostable and air-gap capable, transparent live SPRS, OSCAL-native, catalog that stays current,
+        and a full continuous-monitoring and governance program — with no per-seat SaaS tax and no CUI leaving
+        your perimeter. Everything you saw runs from one <code>docker compose up</code>."</div>
+      <div class="show" style="margin-top:8px"><span class="lbl">Leave-behind</span>
+        <span class="path">the product overview PDF, the <code>/docs</code> API reference, and this environment for a hands-on trial.</span></div>
+    </div>
+  </div>
+
+  <section>
+    <p class="kicker">Appendix</p>
+    <h2>Reset &amp; troubleshooting</h2>
+    <ul class="pre-list">
+      <li><span class="lbl">Bring up</span> <code>docker compose up -d</code> &nbsp;&middot;&nbsp; <span class="lbl">Logs</span> <code>docker compose logs -f api</code></li>
+      <li><span class="lbl">Seed demo state</span> create an org (<a class="url" href="http://localhost:8088/systems">/systems</a>), a system, set a control implementation, then <b>Run ConMon scan</b> on <a class="url" href="http://localhost:8088/governance">/governance</a>.</li>
+      <li><span class="lbl">If a page is empty</span> most views are org-scoped — create an organization first, then a system.</li>
+      <li><span class="lbl">Scheduled jobs</span> <code>ccf conmon-scan</code>, <code>ccf notify-digest</code>, <code>ccf sources-check</code> (cron-ready).</li>
+    </ul>
+  </section>
+
+  <footer>
+    <b>CONCORD</b> &nbsp;&middot;&nbsp; Demo script &nbsp;&middot;&nbsp; A cross-framework, cross-control compliance platform.<br>
+    Runs at http://localhost:8088 &nbsp;&middot;&nbsp; Stack: FastAPI, PostgreSQL, Docker, OSCAL 1.1
+  </footer>
+
+</div>
+</body>
+</html>
