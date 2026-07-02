@@ -346,6 +346,32 @@ async def _check_package_service(_s: AsyncSession) -> Check:
         return Check("fedramp20x_package_export", FAIL, f"Package export error: {exc}")
 
 
+async def _check_oscal_official_schema(_s: AsyncSession) -> Check:
+    """Report whether official OSCAL schema validation is available (vs structural)."""
+    try:
+        from ..oscal import official_schema_available  # noqa: PLC0415
+
+        settings = get_settings()
+        kinds = ("ssp", "component", "poam")
+        available = [k for k in kinds if official_schema_available(k)]
+        if len(available) == len(kinds):
+            return Check("oscal_official_schema", PASS, "Official OSCAL schema validation active.")
+        missing = [k for k in kinds if k not in available]
+        if settings.oscal_require_official_schema:
+            return Check(
+                "oscal_official_schema", FAIL,
+                f"Official OSCAL schema required but missing for: {missing}.",
+                "Set CCF_OSCAL_SCHEMA_DIR to the NIST OSCAL JSON schema directory.",
+            )
+        return Check(
+            "oscal_official_schema", WARN,
+            f"Structural OSCAL validation only (no official schema for: {missing}).",
+            "Set CCF_OSCAL_SCHEMA_DIR for full OSCAL conformance checking.",
+        )
+    except Exception as exc:
+        return Check("oscal_official_schema", FAIL, f"OSCAL schema check error: {exc}")
+
+
 async def _check_assessor(session: AsyncSession) -> Check:
     if await _regclass(session, "ccf.ksi_assessor_reviews"):
         return Check("fedramp20x_assessor_review", PASS, "Assessor review workflow available.")
@@ -470,6 +496,7 @@ _CHECKS = [
     _check_validation_service,
     _check_readiness_service,
     _check_package_service,
+    _check_oscal_official_schema,
     _check_assessor,
     _check_dependency,
     _check_ksi_conmon,

@@ -643,5 +643,36 @@ def fr20x_monitor() -> None:
     console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
+oscal_app = typer.Typer(help="OSCAL — validate exports against official or structural schema")
+app.add_typer(oscal_app, name="oscal")
+
+
+@oscal_app.command(name="validate")
+def oscal_validate(
+    path: str = typer.Option(..., "--path", help="Path to an OSCAL JSON document"),
+    kind: str = typer.Option("auto", "--kind", help="ssp|component|poam|assessment|auto"),
+) -> None:
+    """Validate an OSCAL document; exits non-zero when validation fails."""
+    from pathlib import Path  # noqa: PLC0415
+
+    from .oscal import validate_document  # noqa: PLC0415
+
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        console.print(f"[red]Could not read {path}: {e}[/red]")
+        raise typer.Exit(2) from e
+    report = validate_document(doc, kind=kind)
+    for w in report.warnings:
+        console.print(f"[yellow]warning:[/yellow] {w}")
+    if report.ok:
+        console.print(f"[green]VALID[/green] — {report.kind} ({report.mode} validation)")
+        return
+    console.print(f"[red]INVALID[/red] — {report.kind} ({report.mode} validation):")
+    for err in report.errors:
+        console.print(f"  [red]•[/red] {err}")
+    raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

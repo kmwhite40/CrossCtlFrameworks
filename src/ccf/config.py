@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     # (structural validation only — not official OSCAL schema conformance).
     fedramp20x_oscal_validate: bool = Field(default=False)
 
+    # Official OSCAL schema validation. Point CCF_OSCAL_SCHEMA_DIR at a directory
+    # holding the upstream NIST OSCAL JSON Schemas (e.g. oscal_ssp_schema.json)
+    # to validate exports against the real schema; otherwise Concord falls back to
+    # its built-in structural checks and reports a degraded status. When
+    # CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA is set, a missing official schema is a hard
+    # failure rather than a warning.
+    oscal_schema_dir: Path | None = Field(default=None)
+    oscal_require_official_schema: bool = Field(default=False)
+
     @property
     def is_sqlite(self) -> bool:
         return "sqlite" in str(self.database_url)

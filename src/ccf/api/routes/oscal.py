@@ -25,10 +25,23 @@ from ...models import (
     SSPProject,
     System,
 )
+from ...oscal import validate_document
 from ..auth_deps import get_principal
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/oscal", tags=["oscal"])
+
+
+@router.post("/validate")
+async def validate_oscal_endpoint(
+    body: dict[str, Any],
+    kind: str = "auto",
+    _principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Validate a posted OSCAL document (SSP / Component Definition / POA&M /
+    assessment) against the official schema when configured, else structural
+    checks. ``kind`` defaults to auto-detection from the document root key."""
+    return validate_document(body, kind=kind).as_dict()
 
 # OSCAL POA&M item status maps to the assessment-log lifecycle NIST expects.
 _OSCAL_POAM_STATE = {

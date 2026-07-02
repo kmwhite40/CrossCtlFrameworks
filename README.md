@@ -100,6 +100,11 @@ Continuous-controls-monitoring (parity with commercial CCM/GRC platforms):
   `POST /api/control-tests/{id}/evaluate` or automatically in the scheduler cycle.
 - **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` emits an OSCAL 1.1
   plan-of-action-and-milestones (alongside the existing OSCAL SSP + Component Definition).
+- **Official OSCAL validation** — `POST /api/oscal/validate` (and `ccf oscal validate`)
+  check SSP / Component Definition / POA&M / assessment docs against the upstream NIST
+  OSCAL JSON Schemas when `CCF_OSCAL_SCHEMA_DIR` is configured, and degrade to
+  structural checks (with a warning + `oscal_official_schema` reliability status)
+  otherwise. `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` fails closed.
 - **UI** at `/scans` — upload a scan and review reconciliation counts + ingestion history.
 
 Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/access-reviews`):

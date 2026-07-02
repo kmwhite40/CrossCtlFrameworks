@@ -6,6 +6,14 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — enterprise hardening (Phase 1)
+- **Official OSCAL validation** (`ccf/oscal/validation.py`) — validates SSP /
+  Component Definition / POA&M / assessment documents against the upstream NIST
+  OSCAL JSON Schemas when `CCF_OSCAL_SCHEMA_DIR` is set, degrading to built-in
+  structural checks (with a warning) otherwise; `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA`
+  fails closed. New `POST /api/oscal/validate`, `ccf oscal validate --path --kind`,
+  and an `oscal_official_schema` reliability check.
+
 ### Added — server-rendered UI for the new modules
 - **Scan ingestion** page (`/scans`) — upload a scan and see reconciliation counts +
   ingestion history.
