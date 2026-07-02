@@ -1,0 +1,38 @@
+{
+  "id": "concord-self-assurance",
+  "name": "Concord Self-Assurance",
+  "version": "1.0.0",
+  "schema_version": "1",
+  "compatible_concord": ">=0.1",
+  "description": "Controls Concord asserts about itself (RLS, audit hash-chain, migrations, CI, supply chain, AI guardrails).",
+  "controls": [
+    {"control_id": "CSA-RLS", "title": "Row-level security enforced on tenant tables", "family": "Platform"},
+    {"control_id": "CSA-AUDIT", "title": "Tamper-evident audit hash-chain", "family": "Platform"},
+    {"control_id": "CSA-MIGRATIONS", "title": "Schema managed by reversible migrations", "family": "Platform"},
+    {"control_id": "CSA-SUPPLY", "title": "SBOM + dependency + container scanning in CI", "family": "Supply Chain"},
+    {"control_id": "CSA-AI", "title": "AI actions are citation-first and human-approved", "family": "AI Governance"}
+  ],
+  "mappings": [
+    {"control_id": "CSA-RLS", "framework": "NIST_800_53", "reference": "AC-4"},
+    {"control_id": "CSA-AUDIT", "framework": "NIST_800_53", "reference": "AU-9"},
+    {"control_id": "CSA-SUPPLY", "framework": "NIST_800_53", "reference": "SR-3"}
+  ],
+  "evidence_requirements": [
+    {"control_id": "CSA-RLS", "description": "RLS test results and policy coverage report."},
+    {"control_id": "CSA-AUDIT", "description": "Audit chain verification output (/api/audit/verify)."},
+    {"control_id": "CSA-SUPPLY", "description": "CI SBOM + Trivy + pip-audit artifacts."}
+  ],
+  "rules": [
+    {"key": "reliability_pass", "kind": "reliability", "definition": {"check": "rls_enforced"}}
+  ],
+  "policy_templates": [],
+  "questionnaire_templates": [],
+  "connector_mappings": [],
+  "dashboard_cards": [
+    {"key": "self_readiness", "title": "Self-assurance readiness", "metric": "self.readiness_pct"}
+  ],
+  "tests": [
+    {"key": "has_controls", "assert": "controls>=5"},
+    {"key": "has_evidence", "assert": "evidence_requirements>=3"}
+  ]
+}

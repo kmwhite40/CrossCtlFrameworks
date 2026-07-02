@@ -954,6 +954,132 @@ def fr20x_delta(
     console.print(asyncio.run(_run()))
 
 
+packs_app = typer.Typer(help="Compliance packs — validate, install, coverage, test")
+app.add_typer(packs_app, name="packs")
+
+
+@packs_app.command(name="list")
+def packs_list() -> None:
+    """List available (bundled) and installed compliance packs."""
+    from .models_packs import CompliancePack  # noqa: PLC0415
+    from .packs import list_available  # noqa: PLC0415
+
+    async def _installed() -> list[tuple[str, str]]:
+        async with session_scope() as session:
+            rows = (await session.execute(select(CompliancePack))).scalars().all()
+            return [(p.pack_key, p.version) for p in rows]
+
+    console.print("[bold]Available:[/bold]")
+    for p in list_available():
+        console.print(f"  [cyan]{p['id']}[/cyan] v{p['version']} — {p['controls']} controls")
+    console.print("[bold]Installed:[/bold]")
+    for key, version in asyncio.run(_installed()):
+        console.print(f"  [green]{key}[/green] v{version}")
+
+
+@packs_app.command(name="validate")
+def packs_validate(path: str = typer.Argument(...)) -> None:
+    """Validate a pack manifest (path or pack id)."""
+    from .packs import load_pack, validate_manifest  # noqa: PLC0415
+
+    try:
+        manifest = load_pack(path)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(2) from e
+    errors = validate_manifest(manifest)
+    if errors:
+        console.print("[red]INVALID[/red]:")
+        for err in errors:
+            console.print(f"  [red]•[/red] {err}")
+        raise typer.Exit(1)
+    console.print(f"[green]VALID[/green] — {manifest['id']} v{manifest.get('version')}")
+
+
+@packs_app.command(name="install")
+def packs_install(path_or_name: str = typer.Argument(...)) -> None:
+    """Install a compliance pack (bundled id or path)."""
+    from .packs import install_pack, load_pack, service  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            try:
+                manifest = load_pack(path_or_name)
+                pack = await install_pack(
+                    session, org_id=None, manifest=manifest, source=path_or_name, actor="cli"
+                )
+            except FileNotFoundError as e:
+                return f"not_found: {e}"
+            except service.PackError as e:
+                return f"invalid: {e}"
+            await session.commit()
+            return f"{pack.pack_key} v{pack.version}"
+
+    out = asyncio.run(_run())
+    if out.startswith(("not_found", "invalid")):
+        console.print(f"[red]{out}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]installed[/green] {out}")
+
+
+@packs_app.command(name="coverage")
+def packs_coverage(
+    pack_id: str = typer.Argument(...),
+    system_id: int = typer.Option(..., "--system-id"),
+) -> None:
+    """Show a pack's control coverage for a system."""
+    from .models_packs import CompliancePack  # noqa: PLC0415
+    from .packs import coverage  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any] | None:
+        async with session_scope() as session:
+            pack = (
+                await session.execute(
+                    select(CompliancePack).where(CompliancePack.pack_key == pack_id)
+                )
+            ).scalars().first()
+            if pack is None:
+                return None
+            return await coverage(session, pack=pack, system_id=system_id)
+
+    out = asyncio.run(_run())
+    if out is None:
+        console.print("[red]Pack not installed.[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[cyan]{out['pack_key']}[/cyan] on system {system_id}: "
+        f"{out['coverage_pct']}% ({out['covered']}/{out['total_controls']})"
+    )
+
+
+@packs_app.command(name="test")
+def packs_test(pack_id: str = typer.Argument(...)) -> None:
+    """Run a pack's conformance tests."""
+    from .models_packs import CompliancePack  # noqa: PLC0415
+    from .packs import run_tests  # noqa: PLC0415
+
+    async def _run() -> list[tuple[str, str]] | None:
+        async with session_scope() as session:
+            pack = (
+                await session.execute(
+                    select(CompliancePack).where(CompliancePack.pack_key == pack_id)
+                )
+            ).scalars().first()
+            if pack is None:
+                return None
+            results = await run_tests(session, pack)
+            await session.commit()
+            return [(r.test_key, r.status) for r in results]
+
+    out = asyncio.run(_run())
+    if out is None:
+        console.print("[red]Pack not installed.[/red]")
+        raise typer.Exit(1)
+    for key, status in out:
+        color = "green" if status == "pass" else "red"
+        console.print(f"  [{color}]{status}[/{color}] {key}")
+
+
 evidence_app = typer.Typer(help="Evidence repository — confidence scoring + replay")
 app.add_typer(evidence_app, name="evidence")
 

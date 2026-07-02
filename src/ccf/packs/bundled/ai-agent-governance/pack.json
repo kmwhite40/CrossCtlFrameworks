@@ -1,0 +1,41 @@
+{
+  "id": "ai-agent-governance",
+  "name": "AI Agent Governance",
+  "version": "1.0.0",
+  "schema_version": "1",
+  "compatible_concord": ">=0.1",
+  "description": "Governance controls for AI agents as privileged non-human actors (NIST AI RMF / SP 800-218A aligned).",
+  "controls": [
+    {"control_id": "AIG-1", "title": "AI agent inventory", "family": "AI Governance"},
+    {"control_id": "AIG-2", "title": "AI agent risk assessment", "family": "AI Governance"},
+    {"control_id": "AIG-3", "title": "Human oversight of autonomous actions", "family": "AI Governance"},
+    {"control_id": "AIG-4", "title": "AI agent monitoring & incident response", "family": "AI Governance"},
+    {"control_id": "AIG-5", "title": "Kill-switch and containment", "family": "AI Governance"}
+  ],
+  "mappings": [
+    {"control_id": "AIG-2", "framework": "NIST_AI_RMF", "reference": "MAP/MEASURE"},
+    {"control_id": "AIG-3", "framework": "NIST_800_53", "reference": "AC-2"},
+    {"control_id": "AIG-4", "framework": "NIST_800_53", "reference": "SI-4"},
+    {"control_id": "AIG-5", "framework": "NIST_800_218A", "reference": "RV.1"}
+  ],
+  "evidence_requirements": [
+    {"control_id": "AIG-1", "description": "Current AI agent inventory export with owners and data access."},
+    {"control_id": "AIG-2", "description": "Risk assessment for each production AI agent."},
+    {"control_id": "AIG-4", "description": "Monitoring event log and incident records."}
+  ],
+  "rules": [
+    {"key": "unapproved_production", "kind": "assert", "definition": {"metric": "agents.unapproved_production", "op": "eq", "value": 0}}
+  ],
+  "policy_templates": [
+    {"key": "ai-acceptable-use", "title": "AI Agent Acceptable Use Policy", "body": "AI agents must be inventoried, risk-assessed, and approved before production use."}
+  ],
+  "questionnaire_templates": [],
+  "connector_mappings": [],
+  "dashboard_cards": [
+    {"key": "ai_high_risk", "title": "High-risk AI agents", "metric": "agents.high_risk"}
+  ],
+  "tests": [
+    {"key": "has_controls", "assert": "controls>=5"},
+    {"key": "has_rules", "assert": "rules>=1"}
+  ]
+}

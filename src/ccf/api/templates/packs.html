@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Compliance packs · Concord{% endblock %}
+{% block heading %}Compliance packs{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Install framework/control/evidence/rule packs — a local-first runtime. Packs materialize controls, mappings, evidence requirements, and rules for your tenant.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Available packs</div><span class="dim" style="font-size:13px">{{ available|length }}</span></div>
+  {% if available %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Pack</th><th>Version</th><th>Controls</th><th></th></tr></thead>
+    <tbody>
+      {% for a in available %}<tr>
+        <td class="mono">{{ a.id }}</td>
+        <td class="dim">v{{ a.version }}</td>
+        <td class="dim">{{ a.controls }}</td>
+        <td><form method="post" action="/packs/install"><input type="hidden" name="pack_id" value="{{ a.id }}"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="download"></i> Install</button></form></td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:24px">All bundled packs installed.</div>{% endif %}
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Installed packs</div><span class="dim" style="font-size:13px">{{ installed|length }}</span></div>
+  {% if installed %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Pack</th><th>Name</th><th>Version</th><th>Schema</th><th>Installed</th></tr></thead>
+    <tbody>
+      {% for p in installed %}<tr>
+        <td class="mono">{{ p.pack_key }}</td>
+        <td><strong>{{ p.name }}</strong></td>
+        <td><span class="chip chip--ok">v{{ p.version }}</span></td>
+        <td class="dim">{{ p.schema_version }}</td>
+        <td class="dim">{{ p.installed_at.strftime('%Y-%m-%d') if p.installed_at else '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No packs installed yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

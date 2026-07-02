@@ -7,6 +7,15 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **Compliance pack runtime** (`ccf/packs/`, `models_packs.py`, migration 0034) —
+  a local-first runtime for framework/control/evidence/rule packs (JSON manifests
+  bundled under `ccf/packs/bundled/`; ships `ai-agent-governance`, `nist-ssdf-genai`,
+  `concord-self-assurance`). Validate → install (idempotent, materializes controls/
+  mappings/evidence-requirements/rules) → per-system **coverage** → conformance
+  **tests**; packs can never create cross-tenant data. API `GET /api/packs`,
+  `POST /validate|/install`, `/{key}` `/{key}/upgrade|/coverage|/test`; CLI
+  `ccf packs list|validate|install|coverage|test`; `/packs` UI;
+  `installed_pack_integrity` reliability check.
 - **AI agent governance** (`ccf/ai_governance/`, `models_ai_agents.py`,
   migration 0033) — inventory AI agents as privileged non-human actors with their
   autonomy, data access, tools, and system/vendor/policy/control mappings. Pure

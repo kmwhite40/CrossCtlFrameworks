@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     evidence_s3_bucket: str | None = Field(default=None)
     evidence_object_lock_enabled: bool = Field(default=False)
 
+    # Compliance pack runtime — extra directory of installable packs (in addition
+    # to the packs bundled with Concord). Local-first: no packs dir is required.
+    packs_dir: Path | None = Field(default=None)
+
     @property
     def is_sqlite(self) -> bool:
         return "sqlite" in str(self.database_url)

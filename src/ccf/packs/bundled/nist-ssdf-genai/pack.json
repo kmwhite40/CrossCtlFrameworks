@@ -1,0 +1,28 @@
+{
+  "id": "nist-ssdf-genai",
+  "name": "NIST SSDF for Generative AI (SP 800-218A)",
+  "version": "1.0.0",
+  "schema_version": "1",
+  "compatible_concord": ">=0.1",
+  "description": "Secure software development practices for generative AI systems.",
+  "controls": [
+    {"control_id": "PS.1", "title": "Protect training data and model artifacts", "family": "SSDF"},
+    {"control_id": "PW.4", "title": "Reuse well-secured components", "family": "SSDF"},
+    {"control_id": "RV.1", "title": "Identify and confirm vulnerabilities", "family": "SSDF"}
+  ],
+  "mappings": [
+    {"control_id": "PS.1", "framework": "NIST_800_53", "reference": "SC-28"},
+    {"control_id": "RV.1", "framework": "NIST_800_53", "reference": "RA-5"}
+  ],
+  "evidence_requirements": [
+    {"control_id": "RV.1", "description": "Vulnerability scan results for the AI system and its dependencies."}
+  ],
+  "rules": [],
+  "policy_templates": [],
+  "questionnaire_templates": [],
+  "connector_mappings": [],
+  "dashboard_cards": [],
+  "tests": [
+    {"key": "has_controls", "assert": "controls>=1"}
+  ]
+}

@@ -965,3 +965,43 @@ async def ai_agents_kill_ui(
         await engage_kill_switch(session, agent, reason="UI", actor=_actor(request))
         await session.commit()
     return RedirectResponse("/ai-agents", status_code=303)
+
+
+# ── Compliance packs ─────────────────────────────────────────────────────────
+@router.get("/packs", response_class=HTMLResponse)
+async def packs_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    from ...models_packs import CompliancePack  # noqa: PLC0415
+    from ...packs import list_available  # noqa: PLC0415
+
+    org = _principal_org(request)
+    stmt = select(CompliancePack).order_by(CompliancePack.pack_key)
+    if org is not None:
+        stmt = stmt.where(CompliancePack.organization_id == org)
+    installed = (await session.execute(stmt)).scalars().all()
+    installed_keys = {p.pack_key for p in installed}
+    available = [a for a in list_available() if a["id"] not in installed_keys]
+    return templates.TemplateResponse(
+        request, "packs.html",
+        {"active": "packs", "installed": installed, "available": available},
+    )
+
+
+@router.post("/packs/install")
+async def packs_install_ui(
+    request: Request,
+    pack_id: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    from ...packs import install_pack, load_pack  # noqa: PLC0415
+    from ...packs import service as pack_service  # noqa: PLC0415
+
+    with contextlib.suppress(FileNotFoundError, pack_service.PackError):
+        manifest = load_pack(pack_id)
+        await install_pack(
+            session, org_id=_principal_org(request), manifest=manifest,
+            source=pack_id, actor=_actor(request),
+        )
+        await session.commit()
+    return RedirectResponse("/packs", status_code=303)

@@ -51,6 +51,7 @@ from .routes import (
     notifications,
     oscal,
     packages,
+    packs,
     personnel,
     poams,
     policies,
@@ -142,6 +143,7 @@ def create_app() -> FastAPI:
     app.include_router(assurance.router)
     app.include_router(packages.router)
     app.include_router(packages.delta_router)
+    app.include_router(packs.router)
     app.include_router(ai_actions.router)
     app.include_router(ai_agents.router)
     app.include_router(controls.router)

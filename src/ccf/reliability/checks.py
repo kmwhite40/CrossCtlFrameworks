@@ -449,6 +449,27 @@ async def _check_ai_action_review_backlog(session: AsyncSession) -> Check:
     return Check("ai_action_review_backlog", PASS, f"{pending} AI action(s) awaiting review.")
 
 
+async def _check_installed_pack_integrity(session: AsyncSession) -> Check:
+    """Compliance packs are installed and their conformance tests pass."""
+    if not await _regclass(session, "ccf.compliance_packs"):
+        return Check("installed_pack_integrity", PASS, "No pack runtime yet.")
+    installed = await _count(session, "ccf.compliance_packs") or 0
+    if not installed:
+        return Check("installed_pack_integrity", PASS, "No compliance packs installed.")
+    failed = (
+        await session.execute(
+            text("SELECT count(*) FROM ccf.pack_test_results WHERE status = 'fail'")
+        )
+    ).scalar() or 0
+    if failed:
+        return Check(
+            "installed_pack_integrity", WARN,
+            f"{installed} pack(s) installed; {failed} pack test(s) failing.",
+            "Run `ccf packs test <pack>` and review the manifest.",
+        )
+    return Check("installed_pack_integrity", PASS, f"{installed} compliance pack(s) installed.")
+
+
 async def _check_ai_agent_governance(session: AsyncSession) -> Check:
     """Flag high-risk / unapproved-production / unmonitored / overdue AI agents."""
     if not await _regclass(session, "ccf.ai_agents"):
@@ -674,6 +695,7 @@ _CHECKS = [
     _check_ai_guardrail_violations,
     _check_ai_action_review_backlog,
     _check_ai_agent_governance,
+    _check_installed_pack_integrity,
     _check_ssp_service,
     _check_audit_write,
     _check_background,

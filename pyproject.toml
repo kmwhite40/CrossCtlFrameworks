@@ -63,6 +63,7 @@ where = ["src"]
 "ccf.api" = ["templates/*.html", "static/**/*"]
 "ccf.scoring" = ["seed.json"]
 "ccf.fedramp20x" = ["ksi_catalog.json", "oscal_ksi.schema.json"]
+"ccf.packs" = ["bundled/*/pack.json"]
 
 [tool.ruff]
 line-length = 100
