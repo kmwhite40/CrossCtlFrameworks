@@ -21,16 +21,26 @@
   <div class="card__header"><div class="card__title">Register</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
   {% if rows %}
   <div class="table-wrap"><table class="data">
-    <thead><tr><th>Title</th><th>Source</th><th>Framework</th><th>Applicability</th><th>Status</th><th>Due</th><th>Owner</th></tr></thead>
+    <thead><tr><th>Title</th><th>Source</th><th>Framework</th><th>Applicability</th><th>Status</th><th>Due</th><th>Disposition</th></tr></thead>
     <tbody>
       {% for r in rows %}<tr>
         <td><strong>{{ r.title }}</strong></td>
         <td class="dim">{{ r.source or '—' }}</td>
         <td>{% if r.framework_impacted %}<span class="chip chip--brand">{{ r.framework_impacted }}</span>{% else %}—{% endif %}</td>
-        <td class="dim">{{ r.applicability }}</td>
+        <td class="dim">{{ r.applicability|replace('_',' ') }}</td>
         <td><span class="chip {% if r.status in ('new','assessing') %}chip--warn{% elif r.status in ('implemented','closed') %}chip--ok{% else %}chip{% endif %}">{{ r.status|replace('_',' ') }}</span></td>
         <td class="dim">{{ r.due_on or '—' }}</td>
-        <td class="dim">{{ r.owner or '—' }}</td>
+        <td>
+          <form method="post" action="/regulatory/{{ r.id }}/update" class="row" style="gap:6px">
+            <select class="select select--sm" name="applicability" aria-label="Applicability">
+              {% for a in ['assessing','applicable','partially_applicable','not_applicable'] %}<option value="{{ a }}"{% if r.applicability==a %} selected{% endif %}>{{ a|replace('_',' ') }}</option>{% endfor %}
+            </select>
+            <select class="select select--sm" name="status" aria-label="Status">
+              {% for s in ['new','assessing','in_progress','implemented','closed','dismissed'] %}<option value="{{ s }}"{% if r.status==s %} selected{% endif %}>{{ s|replace('_',' ') }}</option>{% endfor %}
+            </select>
+            <button class="btn btn--ghost btn--sm" type="submit" title="Save disposition" aria-label="Save disposition"><i data-lucide="save"></i></button>
+          </form>
+        </td>
       </tr>{% endfor %}
     </tbody>
   </table></div>

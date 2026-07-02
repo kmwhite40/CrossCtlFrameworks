@@ -10,13 +10,15 @@ from __future__ import annotations
 import contextlib
 from datetime import UTC, date, datetime
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ...governance import control_tests, insights
+from ...governance import control_tests, insights, personnel, tprm
+from ...ingest import parse_scan, reconcile_findings
+from ...models import Task, Vendor
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -27,6 +29,8 @@ from ...models_grc import (
     TrustAccessRequest,
     TrustProfile,
 )
+from ...models_people import AccessReview, Person, TrainingRecord
+from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ..deps import get_session
 from .grc import _MOCK_DISCOVERY, CONNECTOR_TYPES
 from .ui import _principal_org, templates
@@ -171,6 +175,26 @@ async def regulatory_create(
         )
     )
     await session.commit()
+    return RedirectResponse("/regulatory", status_code=303)
+
+
+@router.post("/regulatory/{upd_id}/update")
+async def regulatory_update(
+    upd_id: int,
+    applicability: str = Form(""),
+    status: str = Form(""),
+    owner: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    u = await session.get(RegulatoryUpdate, upd_id)
+    if u is not None:
+        if applicability:
+            u.applicability = applicability
+        if status:
+            u.status = status
+        if owner:
+            u.owner = owner or None
+        await session.commit()
     return RedirectResponse("/regulatory", status_code=303)
 
 
