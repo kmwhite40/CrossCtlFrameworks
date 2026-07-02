@@ -48,6 +48,7 @@ from .routes import (
     mappings,
     notifications,
     oscal,
+    packages,
     personnel,
     poams,
     policies,
@@ -137,6 +138,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(identity.router)
     app.include_router(assurance.router)
+    app.include_router(packages.router)
+    app.include_router(packages.delta_router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)

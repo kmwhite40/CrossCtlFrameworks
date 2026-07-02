@@ -643,6 +643,100 @@ def fr20x_monitor() -> None:
     console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
+package_app = typer.Typer(help="Authorization packages — list, diff, replay")
+app.add_typer(package_app, name="package")
+
+
+@package_app.command(name="list")
+def package_list() -> None:
+    """List persisted authorization packages."""
+    from .models_packages import AuthorizationPackage  # noqa: PLC0415
+
+    async def _run() -> list[tuple[int, str, float | None, int]]:
+        async with session_scope() as session:
+            rows = (
+                await session.execute(
+                    select(AuthorizationPackage).order_by(AuthorizationPackage.id.desc())
+                )
+            ).scalars().all()
+            return [(p.id, p.label, p.readiness_pct, p.fact_count) for p in rows]
+
+    for pid, label, pct, facts in asyncio.run(_run()):
+        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {pct}%, {facts} facts")
+
+
+@package_app.command(name="diff")
+def package_diff(
+    from_id: int = typer.Option(..., "--from", help="From package id"),
+    to_id: int = typer.Option(..., "--to", help="To package id"),
+) -> None:
+    """Diff two persisted authorization packages."""
+    from .packages import diff_packages  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            diff = await diff_packages(session, org_id=None, from_id=from_id, to_id=to_id)
+            await session.commit()
+            return diff.summary
+
+    s = asyncio.run(_run())
+    console.print(
+        f"[green]+{s['added']}[/green] / [red]-{s['removed']}[/red] / "
+        f"[yellow]~{s['changed']}[/yellow] fact changes"
+    )
+
+
+@package_app.command(name="replay")
+def package_replay(
+    package: int = typer.Option(..., "--package", help="Package id"),
+) -> None:
+    """Replay a package's facts against the live DB and report drift."""
+    from .models_packages import AuthorizationPackage  # noqa: PLC0415
+    from .packages import replay_package  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            pkg = await session.get(AuthorizationPackage, package)
+            if pkg is None:
+                return "not_found"
+            run = await replay_package(session, org_id=None, package=pkg)
+            await session.commit()
+            return run.status
+
+    status = asyncio.run(_run())
+    if status == "not_found":
+        console.print("[red]Package not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Replay result: [cyan]{status}[/cyan]")
+
+
+@fedramp20x_app.command(name="delta")
+def fr20x_delta(
+    system_id: int = typer.Option(..., "--system-id"),
+    since: str = typer.Option("", "--since", help="ISO date; compare to the package on/before it"),
+) -> None:
+    """Print an assessor-facing authorization delta memo for a system."""
+    import contextlib  # noqa: PLC0415
+    from datetime import date as _date  # noqa: PLC0415
+
+    from .packages import delta_memo  # noqa: PLC0415
+
+    since_date = None
+    if since:
+        with contextlib.suppress(ValueError):
+            since_date = _date.fromisoformat(since)
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            memo = await delta_memo(
+                session, org_id=None, system_id=system_id, since=since_date
+            )
+            await session.commit()
+            return memo.body
+
+    console.print(asyncio.run(_run()))
+
+
 evidence_app = typer.Typer(help="Evidence repository — confidence scoring + replay")
 app.add_typer(evidence_app, name="evidence")
 

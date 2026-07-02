@@ -7,6 +7,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **Authorization package provenance, diff & replay** (`ccf/packages/`,
+  `models_packages.py`, migration 0031) — persists the normalized *facts*
+  (per-KSI/control/evidence/dependency/risk/POA&M/readiness) a package was
+  generated from, so two packages can be **diffed** (added/removed/changed by
+  fact type) and a package can be **replayed** against the live DB to detect drift
+  (read-only — never mutates authoritative state). Assessor-facing **delta memo**.
+  API: `GET/POST /api/authorization-packages`, `/{id}`, `/{id}/provenance`,
+  `/{id}/diff/{other}`, `POST /{id}/replay`, and
+  `GET /api/fedramp/20x/systems/{id}/authorization-delta`. CLI `ccf package
+  list|diff|replay` and `ccf fedramp20x delta`.
 - **Evidence confidence + reproducibility** (`ccf/evidence/confidence.py`,
   `models_evidence_conf.py`, migration 0030) — a pure scorer weighs source type,
   freshness, digest integrity, review/lock status, replayability, and human-
