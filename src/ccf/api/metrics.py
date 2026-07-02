@@ -54,8 +54,11 @@ async def metrics_middleware(request: Request, call_next: RequestResponseEndpoin
     start = time.perf_counter()
     response = await call_next(request)
     elapsed = time.perf_counter() - start
+    # Label with the matched *route template* (e.g. "/api/controls/{identifier}"),
+    # never the raw URL path. Unmatched requests (404s, scanners, "/api/../x") all
+    # collapse to a single "<unmatched>" series to bound Prometheus cardinality.
     route = request.scope.get("route")
-    route_path = getattr(route, "path", request.url.path) if route else request.url.path
+    route_path = getattr(route, "path", None) or "<unmatched>"
     HTTP_REQUESTS.labels(request.method, route_path, str(response.status_code)).inc()
     HTTP_LATENCY.labels(request.method, route_path).observe(elapsed)
     return response

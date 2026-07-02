@@ -31,6 +31,7 @@ class MsGraphConnector(ConfigConnector):
 
     # ODP key → the Graph signal it is (or will be) derived from.
     PARAMETER_MAP: ClassVar[dict[str, str]] = {
+        "mfa_enforced": "Conditional Access grant requiring multi-factor authentication",
         "inactivity_period": "Conditional Access sign-in frequency (session controls)",
         "session_termination_condition": "Conditional Access sign-in frequency / persistent browser",  # noqa: E501
         "nonlocal_maintenance_mfa": "authenticationMethodsPolicy / Conditional Access MFA grant",
@@ -91,11 +92,32 @@ class MsGraphConnector(ConfigConnector):
                     headers=headers,
                 )
                 r.raise_for_status()
-                out.extend(self._map_conditional_access(r.json()))
+                payload = r.json()
+                out.extend(self._map_conditional_access(payload))
+                out.extend(self._map_mfa(payload))
         except Exception as e:  # best-effort — never break the caller
             log.warning("connector.msgraph.capture_failed", error=str(e)[:200])
             return []
         return out
+
+    def _map_mfa(self, payload: dict[str, Any]) -> list[CapturedParameter]:
+        """Detect an enabled Conditional Access policy that grants/requires MFA."""
+        for pol in payload.get("value", []) or []:
+            if (pol.get("state") or "") != "enabled":
+                continue
+            grant = (pol.get("grantControls") or {}).get("builtInControls") or []
+            if "mfa" in grant:
+                return [
+                    CapturedParameter(
+                        odp_key="mfa_enforced",
+                        value="required",
+                        nist_id="3.5.3",
+                        source=f"Graph: Conditional Access '{pol.get('displayName', '')}'",
+                        confidence="high",
+                        detail={"policy_id": pol.get("id")},
+                    )
+                ]
+        return []
 
     def _map_conditional_access(self, payload: dict[str, Any]) -> list[CapturedParameter]:
         """Extract a sign-in frequency, mapped to the session-lock ODP."""

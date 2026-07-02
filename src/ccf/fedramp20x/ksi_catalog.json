@@ -77,13 +77,24 @@
       ],
       "provider_services": [],
       "rule": {
-        "kind": "control_state",
-        "controls": [
-          "IA-2"
-        ],
-        "states": [
-          "implemented",
-          "inherited"
+        "kind": "any_of",
+        "rules": [
+          {
+            "kind": "connector_capture",
+            "captures": [
+              "mfa_enforced"
+            ]
+          },
+          {
+            "kind": "control_state",
+            "controls": [
+              "IA-2"
+            ],
+            "states": [
+              "implemented",
+              "inherited"
+            ]
+          }
         ]
       },
       "sort_order": 0
@@ -536,13 +547,24 @@
       ],
       "provider_services": [],
       "rule": {
-        "kind": "control_state",
-        "controls": [
-          "SC-28"
-        ],
-        "states": [
-          "implemented",
-          "inherited"
+        "kind": "any_of",
+        "rules": [
+          {
+            "kind": "connector_capture",
+            "captures": [
+              "encryption_at_rest"
+            ]
+          },
+          {
+            "kind": "control_state",
+            "controls": [
+              "SC-28"
+            ],
+            "states": [
+              "implemented",
+              "inherited"
+            ]
+          }
         ]
       },
       "sort_order": 15

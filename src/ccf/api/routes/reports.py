@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...auth import Principal
 from ...models import (
     Control,
     ControlImplementation,
@@ -26,7 +27,6 @@ from ...models import (
     Organization,
     System,
 )
-from ...auth import Principal
 from ...reporting import report_to_docx, report_to_xlsx
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -76,6 +76,7 @@ async def _scope_controls(session: AsyncSession, baseline: Baseline | None) -> l
 @router.get("/build", response_model=None)
 async def build_report(
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
     organization_id: str | None = Query(None, description="Scope to an organization's systems"),
     system_id: str | None = Query(None),
     baseline: str | None = Query(None, description="low | mod | high"),
@@ -92,6 +93,10 @@ async def build_report(
     """
     organization_id_i = _opt_int("organization_id", organization_id)
     system_id_i = _opt_int("system_id", system_id)
+    # Org-scope the request: a tenant-scoped caller may only report on their own
+    # organization's data (global/auth-off principals are unscoped).
+    if principal.org_id is not None:
+        organization_id_i = principal.org_id
     framework = _opt_str(framework)
     family = _opt_str(family)
     filename = _opt_str(filename)
@@ -112,7 +117,7 @@ async def build_report(
         sys = (
             await session.execute(select(System).where(System.id == system_id_i))
         ).scalar_one_or_none()
-        if not sys:
+        if not sys or (principal.org_id is not None and sys.organization_id != principal.org_id):
             raise HTTPException(404, "system not found")
 
     fw: Framework | None = None

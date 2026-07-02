@@ -500,23 +500,25 @@ async def test_connector_capture_drives_validation() -> None:
         await s.execute(
             delete(CaptureSnapshot).where(CaptureSnapshot.organization_id == org_id)
         )
-        s.add(
-            CaptureSnapshot(
-                organization_id=org_id,
-                connector="aws_govcloud",
-                odp_key="audit_retention_period",
-                value="365 days",
-                nist_id="3.3.1",
+        for key, val in (
+            ("audit_retention_period", "365 days"),
+            ("encryption_at_rest", "enabled"),
+            ("mfa_enforced", "required"),
+        ):
+            s.add(
+                CaptureSnapshot(
+                    organization_id=org_id, connector="aws_govcloud", odp_key=key, value=val
+                )
             )
-        )
-    # KSI-MLA-01 is any_of[connector_capture(audit_retention_period), control_state(AU-6)];
-    # the capture alone should drive it to pass even with no AU-6 implementation.
+    # Each of these KSIs is any_of[connector_capture(...), control_state(...)]; the live
+    # capture drives them to pass — SVC-03 has no SC-28 implementation at all.
     async with session_scope() as s:
         results = {
             r["ksi_identifier"]: r for r in await validation.validate_system(s, system_id=sid)
         }
-        assert results["KSI-MLA-01"]["validation_status"] == "pass"
-        assert results["KSI-MLA-01"]["source"] == "connector_capture"
+        for ident in ("KSI-MLA-01", "KSI-SVC-03", "KSI-IAM-01"):
+            assert results[ident]["validation_status"] == "pass", ident
+            assert results[ident]["source"] == "connector_capture", ident
 
 
 @pytest.mark.asyncio

@@ -31,6 +31,7 @@ class AwsGovCloudConnector(ConfigConnector):
     # ODP key → the AWS signal it is (or will be) derived from.
     PARAMETER_MAP: ClassVar[dict[str, str]] = {
         "audit_retention_period": "CloudWatch Logs retention (log group retentionInDays)",
+        "encryption_at_rest": "EC2 default EBS encryption (get_ebs_encryption_by_default)",
         "flaw_remediation_timeframe": "Security Hub / Inspector finding SLAs (org policy)",
         "risk_assessment_frequency": "AWS Config conformance-pack evaluation cadence",
         "incident_report_timeframe": "GuardDuty / Security Hub automation (org runbook)",
@@ -85,7 +86,7 @@ class AwsGovCloudConnector(ConfigConnector):
         out: list[CapturedParameter] = []
         # Isolate each sub-capture: one failing AWS call (throttling, a single
         # service permission gap) must not discard parameters other calls captured.
-        for sub in (self._capture_log_retention,):
+        for sub in (self._capture_log_retention, self._capture_ebs_encryption):
             try:
                 out.extend(await sub())
             except Exception as e:  # best-effort — never break the caller
@@ -123,5 +124,24 @@ class AwsGovCloudConnector(ConfigConnector):
                 nist_id="3.3.1",
                 source="AWS: CloudWatch Logs retentionInDays (minimum across log groups)",
                 confidence="medium",
+            )
+        ]
+
+    async def _capture_ebs_encryption(self) -> list[CapturedParameter]:
+        """EC2 default EBS encryption → encryption-at-rest signal (KSI-SVC-03)."""
+
+        def _read() -> bool:
+            client = self._session().client("ec2", region_name=get_settings().aws_region)
+            return bool(client.get_ebs_encryption_by_default().get("EbsEncryptionByDefault"))
+
+        if not await asyncio.to_thread(_read):
+            return []
+        return [
+            CapturedParameter(
+                odp_key="encryption_at_rest",
+                value="enabled",
+                nist_id="SC-28",
+                source="AWS: EC2 default EBS encryption enabled",
+                confidence="high",
             )
         ]
