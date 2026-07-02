@@ -67,6 +67,34 @@ def row_hash(prev_hash: str, payload: dict[str, Any]) -> str:
     return hashlib.sha256(f"{prev_hash}\n{canonical}".encode()).hexdigest()
 
 
+async def record_event(
+    session: Any,
+    *,
+    actor: str,
+    action: str,
+    entity_type: str,
+    entity_id: str | None,
+    diff: dict[str, Any],
+) -> None:
+    """Append one entry to the tamper-evident audit chain within ``session``.
+
+    For events that don't originate from an auto-audited mutating HTTP request
+    (e.g. OIDC/JIT provisioning during a GET callback, or role changes). Uses the
+    same ``prev_hash``/``row_hash`` chaining as the middleware. Caller owns commit.
+    """
+    content = {
+        "actor": actor,
+        "action": action,
+        "entity_type": entity_type,
+        "entity_id": entity_id,
+        "diff": _redact(diff),
+    }
+    prev = (
+        await session.execute(select(AuditLog.row_hash).order_by(AuditLog.id.desc()).limit(1))
+    ).scalar_one_or_none() or _GENESIS
+    session.add(AuditLog(**content, prev_hash=prev, row_hash=row_hash(prev, content)))
+
+
 async def _capture_body(request: Request, method: str) -> Any:
     """Read + redact a JSON request body (cached so the route can still read it)."""
     if method not in _MUTATING:

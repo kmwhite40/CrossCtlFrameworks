@@ -21,6 +21,10 @@ SESSION_COOKIE = "concord_session"
 # Paths reachable without authentication even when auth is enabled.
 _PUBLIC_PREFIXES = (
     "/api/auth",
+    "/auth/login",
+    "/auth/callback",
+    "/auth/logout",
+    "/api/scim",  # SCIM uses its own bearer token, not the user session
     "/login",
     "/logout",
     "/healthz",

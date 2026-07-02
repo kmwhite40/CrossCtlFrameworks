@@ -7,6 +7,14 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — enterprise hardening (Phase 1)
+- **OIDC / SSO / SCIM foundation** (`ccf/identity/`, `models_identity.py`,
+  `routes/identity.py`, migration 0027) — optional, disabled by default so local
+  dev keeps its session login. OIDC authorization-code login (`/auth/login` →
+  `/auth/callback`) with **JIT provisioning**, **IdP group → role mapping**, admin
+  IdP + mapping APIs, and a **SCIM 2.0** `/api/scim/v2/Users|Groups` endpoint
+  (create/update/deactivate) guarded by `CCF_SCIM_BEARER_TOKEN`. Provisioning and
+  role changes write to the tamper-evident audit log; deactivation blocks login.
+  New `auth_oidc_posture` reliability check.
 - **Official OSCAL validation** (`ccf/oscal/validation.py`) — validates SSP /
   Component Definition / POA&M / assessment documents against the upstream NIST
   OSCAL JSON Schemas when `CCF_OSCAL_SCHEMA_DIR` is set, degrading to built-in

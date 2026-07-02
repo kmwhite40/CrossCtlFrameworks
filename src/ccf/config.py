@@ -84,6 +84,20 @@ class Settings(BaseSettings):
     auth_session_secret: str = Field(default="dev-insecure-change-me")
     auth_session_ttl_hours: int = Field(default=12)
 
+    # Enterprise SSO — OIDC authorization-code login + SCIM provisioning. All
+    # optional and disabled by default: with OIDC off the app keeps its local
+    # session login, so local/dev needs no IdP. JIT provisioning creates a local
+    # user on first successful OIDC login (role from group mapping / default).
+    oidc_enabled: bool = Field(default=False)
+    oidc_issuer: str | None = Field(default=None)
+    oidc_client_id: str | None = Field(default=None)
+    oidc_client_secret: str | None = Field(default=None)
+    oidc_redirect_uri: str | None = Field(default=None)
+    oidc_allowed_domains: list[str] = Field(default_factory=list)
+    auth_jit_provisioning: bool = Field(default=True)
+    scim_enabled: bool = Field(default=False)
+    scim_bearer_token: str | None = Field(default=None)
+
     # FedRAMP 20x: when true, the OSCAL-shaped package export is structurally
     # validated against Concord's OSCAL-subset checks before it is returned
     # (structural validation only — not official OSCAL schema conformance).

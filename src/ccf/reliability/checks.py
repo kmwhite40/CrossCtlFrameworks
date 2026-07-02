@@ -346,6 +346,26 @@ async def _check_package_service(_s: AsyncSession) -> Check:
         return Check("fedramp20x_package_export", FAIL, f"Package export error: {exc}")
 
 
+async def _check_auth_oidc_posture(session: AsyncSession) -> Check:
+    """Report OIDC/SCIM configuration coherence (never required in dev)."""
+    s = get_settings()
+    if not s.oidc_enabled and not s.scim_enabled:
+        return Check("auth_oidc_posture", PASS, "Enterprise SSO/SCIM disabled (local login).")
+    problems: list[str] = []
+    if s.oidc_enabled and not (s.oidc_issuer and s.oidc_client_id and s.oidc_redirect_uri):
+        problems.append("OIDC enabled but issuer/client_id/redirect_uri incomplete")
+    if s.scim_enabled and not s.scim_bearer_token:
+        problems.append("SCIM enabled but CCF_SCIM_BEARER_TOKEN is unset")
+    if not await _regclass(session, "ccf.external_identities"):
+        problems.append("identity tables missing (run migrations)")
+    if problems:
+        return Check(
+            "auth_oidc_posture", FAIL, "; ".join(problems),
+            "Complete the CCF_OIDC_*/CCF_SCIM_* config.",
+        )
+    return Check("auth_oidc_posture", PASS, "Enterprise SSO/SCIM configured.")
+
+
 async def _check_oscal_official_schema(_s: AsyncSession) -> Check:
     """Report whether official OSCAL schema validation is available (vs structural)."""
     try:
@@ -490,6 +510,7 @@ _CHECKS = [
     _check_audit_write,
     _check_background,
     _check_auth_posture,
+    _check_auth_oidc_posture,
     _check_ksi_catalog_file,
     _check_ksi_loaded,
     _check_ksi_mappings,
