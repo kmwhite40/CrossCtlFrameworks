@@ -24,6 +24,7 @@ from ...models_grc import (
     ConnectorConfig,
     ControlTest,
     RegulatoryUpdate,
+    TrustAccessRequest,
     TrustProfile,
 )
 from ..deps import get_session
@@ -62,7 +63,51 @@ async def trust_page(
     t = (
         await session.execute(select(TrustProfile).where(TrustProfile.organization_id == org))
     ).scalar_one_or_none()
-    return templates.TemplateResponse(request, "trust.html", {"active": "trust", "t": t})
+    ar_stmt = select(TrustAccessRequest).order_by(TrustAccessRequest.id.desc())
+    if org is not None:
+        ar_stmt = ar_stmt.where(TrustAccessRequest.organization_id == org)
+    access_requests = (await session.execute(ar_stmt)).scalars().all()
+    return templates.TemplateResponse(
+        request, "trust.html", {"active": "trust", "t": t, "access_requests": access_requests}
+    )
+
+
+@router.post("/trust/access-requests")
+async def trust_access_create(
+    request: Request,
+    requester_name: str = Form(...),
+    company: str = Form(""),
+    email: str = Form(""),
+    reason: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    session.add(
+        TrustAccessRequest(
+            organization_id=org,
+            requester_name=requester_name,
+            company=company or None,
+            email=email or None,
+            reason=reason or None,
+        )
+    )
+    await session.commit()
+    return RedirectResponse("/trust", status_code=303)
+
+
+@router.post("/trust/access-requests/{req_id}/decide")
+async def trust_access_decide(
+    req_id: int,
+    request: Request,
+    approve: str = Form("1"),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    r = await session.get(TrustAccessRequest, req_id)
+    if r is not None:
+        r.status = "approved" if approve == "1" else "denied"
+        r.decided_at = _now()
+        await session.commit()
+    return RedirectResponse("/trust", status_code=303)
 
 
 @router.post("/trust")

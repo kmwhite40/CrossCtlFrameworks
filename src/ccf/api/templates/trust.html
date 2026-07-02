@@ -13,9 +13,9 @@
   </div>
   <form method="post" action="/trust" class="card__body stack" style="gap:12px">
     <label class="field-group"><span class="dim" style="font-size:12px">Headline</span>
-      <input class="input" name="headline" value="{{ t.headline if t else '' }}" placeholder="Acme — Security &amp; Compliance"></label>
+      <input class="input" name="headline" value="{{ t.headline if (t and t.headline) else '' }}" placeholder="Acme — Security &amp; Compliance"></label>
     <label class="field-group"><span class="dim" style="font-size:12px">Summary</span>
-      <textarea class="input" name="summary" rows="3" placeholder="How we protect CUI…">{{ t.summary if t else '' }}</textarea></label>
+      <textarea class="input" name="summary" rows="3" placeholder="How we protect CUI…">{{ t.summary if (t and t.summary) else '' }}</textarea></label>
     <div><button class="btn btn--primary" type="submit"><i data-lucide="save"></i> Save</button></div>
   </form>
 </section>
@@ -38,6 +38,39 @@
     </div>
   </section>
 </div>
+
+<section class="card" style="margin-top:16px">
+  <div class="card__header">
+    <div class="card__title">Access requests</div>
+    <span class="chip chip--brand">{{ access_requests|length }}</span>
+  </div>
+  <form method="post" action="/trust/access-requests" class="card__body filters">
+    <input class="input" name="requester_name" required placeholder="Requester name">
+    <input class="input" name="company" placeholder="Company">
+    <input class="input" type="email" name="email" placeholder="Email">
+    <input class="input" name="reason" placeholder="Reason / package requested">
+    <button class="btn btn--secondary" type="submit"><i data-lucide="plus"></i> Log request</button>
+  </form>
+  <div class="table-wrap" style="border-top:1px solid var(--border)"><table class="data">
+    <thead><tr><th>Requester</th><th>Company</th><th>Status</th><th>Received</th><th></th></tr></thead>
+    <tbody>
+      {% for r in access_requests %}<tr>
+        <td><strong>{{ r.requester_name }}</strong></td>
+        <td class="dim">{{ r.company or '—' }}</td>
+        <td><span class="chip {% if r.status=='approved' %}chip--ok{% elif r.status=='denied' %}chip--err{% else %}chip--warn{% endif %}">{{ r.status }}</span></td>
+        <td class="dim">{{ r.created_at.strftime('%Y-%m-%d') if r.created_at else '—' }}</td>
+        <td>
+          {% if r.status == 'pending' %}
+          <div class="row" style="gap:6px">
+            <form method="post" action="/trust/access-requests/{{ r.id }}/decide"><input type="hidden" name="approve" value="1"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="check"></i> Approve</button></form>
+            <form method="post" action="/trust/access-requests/{{ r.id }}/decide"><input type="hidden" name="approve" value="0"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="x"></i> Deny</button></form>
+          </div>
+          {% else %}<span class="dim" style="font-size:12px">decided</span>{% endif %}
+        </td>
+      </tr>{% else %}<tr><td colspan="5" class="dim">No access requests yet.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
 
 <script>if(window.lucide)lucide.createIcons();</script>
 {% endblock %}
