@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...governance import bus, reactions
 from ...models import (
     POAM,
     Control,
@@ -152,14 +155,14 @@ async def compliance_summary(
     )
 
 
-@router.patch("/{system_id}/implementations/{control_id}", response_model=ImplementationOut)
+@router.patch("/{system_id}/implementations/{control_id}", response_model=None)
 async def upsert_implementation(
     system_id: int,
     control_id: int,
     body: ImplementationUpdate,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
-) -> ImplementationOut:
+) -> dict[str, Any]:
     await require_system_in_scope(session, system_id, principal)
     obj = (
         await session.execute(
@@ -173,9 +176,30 @@ async def upsert_implementation(
         session.add(obj)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(obj, k, v)
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="updated",
+        entity_type="control_implementation",
+        entity_id=obj.id,
+        summary=f"Control implementation {control_id} → {obj.status}",
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    # Reaction: propagate this status to crosswalked controls (map once, comply many).
+    propagation = await reactions.propagate_implementation(
+        session,
+        system_id=system_id,
+        control_id=control_id,
+        status=obj.status,
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
     await session.commit()
     await session.refresh(obj)
-    return ImplementationOut.model_validate(obj)
+    out = ImplementationOut.model_validate(obj).model_dump()
+    out["propagation"] = propagation
+    return out
 
 
 class BulkImplementationRow(BaseModel):

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...governance import reactions
 from ...models import ScoringControl, ScoringStatus, System
 from ...scoring.engine import STATES
 from ...scoring.seed import seed_scoring_controls
@@ -49,9 +50,7 @@ class StateUpdate(BaseModel):
     evidence_ref: str | None = None
 
 
-async def _require_system(
-    session: AsyncSession, system_id: int, principal: Principal
-) -> System:
+async def _require_system(session: AsyncSession, system_id: int, principal: Principal) -> System:
     sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
     if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
@@ -180,10 +179,21 @@ async def set_control_state(
         status.notes = body.notes
     if body.evidence_ref is not None:
         status.evidence_ref = body.evidence_ref
+    await session.flush()
+    # Reaction: satisfying a practice auto-closes its gap POA&M + records an event.
+    reaction = await reactions.on_scoring_status_changed(
+        session,
+        system_id=system_id,
+        control_id=control_id,
+        state=status.state,
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
     await session.commit()
 
     return {
         "control_id": control_id,
         "state": status.state,
+        "reaction": reaction,
         "summary": await compute_summary(session, system_id),
     }

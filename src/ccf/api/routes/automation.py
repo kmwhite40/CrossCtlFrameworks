@@ -11,16 +11,26 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import zipfile
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
-from ...governance import automation
-from ...models import Framework, FrameworkControl, Organization, System, SystemProfile
+from ...governance import ai, automation, collection, reactions, scheduler
+from ...models import (
+    POAM,
+    Framework,
+    FrameworkControl,
+    Organization,
+    System,
+    SystemProfile,
+)
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -222,6 +232,114 @@ async def evidence_requirements(
     if profile is None:
         raise HTTPException(404, "system has no profile")
     return await automation.evidence_requirements(session, system_id, profile)
+
+
+@router.post("/systems/{system_id}/propagate")
+async def propagate(
+    system_id: int,
+    control_identifier: str,
+    status: str,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Propagate a control's status to crosswalked peers (map once, comply many)."""
+    cid = await reactions.resolve_control_id(session, control_identifier)
+    if cid is None:
+        raise HTTPException(404, "control not found")
+    result = await reactions.propagate_implementation(
+        session,
+        system_id=system_id,
+        control_id=cid,
+        status=status,
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    await session.commit()
+    return result
+
+
+@router.post("/automation/run-cycle")
+async def run_cycle(principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+    """Manually run one full automation cycle (poll + ConMon + digest + collect)."""
+    return await scheduler.run_cycle()
+
+
+@router.post("/automation/collect")
+async def collect(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Run connector collection + config-drift detection now."""
+    result = await collection.collect_all(session, org_id=principal.org_id)
+    await session.commit()
+    return result
+
+
+class NarrativeIn(BaseModel):
+    control_id: str
+    requirement: str
+    environment: str = "Microsoft 365 Government (GCC High)"
+    services: str = "the platform's native security services"
+
+
+@router.post("/ai/narrative")
+async def ai_narrative(
+    body: NarrativeIn, principal: Principal = Depends(get_principal)
+) -> dict[str, Any]:
+    """Draft an implementation narrative with Claude (config-gated)."""
+    if not ai.is_configured():
+        return {"configured": False, "text": None}
+    text = await ai.draft_narrative(
+        body.control_id, body.requirement, body.environment, body.services
+    )
+    return {"configured": True, "text": text}
+
+
+@router.get("/systems/{system_id}/authorization-package", response_model=None)
+async def authorization_package(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> Response:
+    """Assemble a submission package (zip): coverage, profile, and POA&M."""
+    system = (
+        await session.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if system is None:
+        raise HTTPException(404, "system not found")
+    profile = await _get_profile(session, system_id)
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        if profile is not None:
+            z.writestr(
+                "coverage.json", json.dumps(automation.coverage(profile), indent=2, default=str)
+            )
+            z.writestr("profile.json", json.dumps(profile.answers or {}, indent=2, default=str))
+        poams = (
+            (await session.execute(select(POAM).where(POAM.system_id == system_id)))
+            .scalars()
+            .all()
+        )
+        pbuf = io.StringIO()
+        w = csv.writer(pbuf)
+        w.writerow(["poam_id", "title", "severity", "status", "due_on", "source"])
+        for p in poams:
+            w.writerow([p.id, p.title, p.severity, p.status, p.due_on, p.source])
+        z.writestr("poam.csv", pbuf.getvalue())
+        z.writestr(
+            "README.txt",
+            f"Authorization package for system {system.name} (id {system_id}).\n"
+            "Contents: coverage.json, profile.json, poam.csv.\n"
+            "Generate the SSP .docx via /api/ssp and OSCAL via /api/oscal.\n",
+        )
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="authorization-package-{system_id}.zip"'
+        },
+    )
 
 
 # --- Uploadable framework controls (add new frameworks in future) ------------

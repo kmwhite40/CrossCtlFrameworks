@@ -19,7 +19,7 @@ from .db import session_scope
 from .etl import ingest_workbook
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
-from .governance import conmon, digest
+from .governance import conmon, digest, scheduler
 from .logging import configure_logging
 from .models import (
     CatalogSource,
@@ -294,6 +294,18 @@ def notify_digest() -> None:
         async with session_scope() as session:
             counts = await digest.run(session, today=datetime.now(UTC).date())
         console.print(f"[green]Alert digest complete[/green] — {json.dumps(counts)}")
+
+    asyncio.run(_run())
+
+
+@app.command(name="scheduler")
+def scheduler_run() -> None:
+    """Run one full automation cycle (catalog poll + ConMon + digest + collection)."""
+
+    async def _run() -> None:
+        result = await scheduler.run_cycle()
+        console.print("[green]Automation cycle complete[/green]")
+        console.print_json(json.dumps(result, default=str))
 
     asyncio.run(_run())
 

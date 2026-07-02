@@ -14,16 +14,45 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import POAM, CatalogSource, Policy, Risk, System, Vendor
+from ..models import POAM, CatalogSource, Policy, Risk, System, Task, Vendor
 from . import bus
 
 ATO_WINDOW_DAYS = 90
 REVIEW_WINDOW_DAYS = 30
 
 
+async def _escalate_overdue_tasks(session: AsyncSession, today: date, org_id: int | None) -> int:
+    """SLA escalation: overdue open tasks are bumped to high priority + alerted."""
+    stmt = select(Task).where(
+        Task.status.in_(("open", "in_progress")),
+        Task.due_on.is_not(None),
+        Task.due_on < today,
+        Task.priority != "critical",
+    )
+    if org_id is not None:
+        stmt = stmt.where(Task.organization_id == org_id)
+    escalated = 0
+    for t in (await session.execute(stmt)).scalars().all():
+        t.priority = "critical" if t.priority == "high" else "high"
+        escalated += 1
+        await bus.notify(
+            session,
+            category="task",
+            title=f"Overdue task escalated: {t.title}",
+            body=f"Due {t.due_on}; now {t.priority} priority.",
+            org_id=org_id,
+            severity="warning",
+            entity_type="task",
+            entity_id=t.id,
+            dedupe_key=f"task-overdue:{t.id}:{t.due_on}",
+        )
+    return escalated
+
+
 async def run(session: AsyncSession, *, today: date, org_id: int | None = None) -> dict[str, Any]:
     """Raise/refresh org-level notifications. Returns counts by category."""
     counts = {"ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0}
+    counts["tasks_escalated"] = await _escalate_overdue_tasks(session, today, org_id)
 
     # ATO expiring / expired.
     sys_stmt = select(System).where(System.ato_expires_on.is_not(None))

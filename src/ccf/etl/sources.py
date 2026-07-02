@@ -255,6 +255,17 @@ async def check_source(
             revision=detail.get("revision"),
             counts=detail.get("counts"),
         )
+        from ..governance import bus  # noqa: PLC0415 — lazy to avoid import cycle
+
+        await bus.emit(
+            session,
+            verb="drifted",
+            entity_type="catalog_source",
+            entity_id=source.id,
+            summary=f"Catalog drift: {source.name} → {source.revision_label or '?'}",
+            payload={"counts": detail.get("counts")},
+            dispatch=False,
+        )
         return _finish(session, source, check, started)
 
     except Exception as e:  # record and move on to the next source

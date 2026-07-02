@@ -1178,6 +1178,28 @@ class Vendor(Base):
     )
 
 
+class CaptureSnapshot(Base):
+    """Last value a connector captured for a parameter — the config-drift baseline."""
+
+    __tablename__ = "capture_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    connector: Mapped[str] = mapped_column(String(32))
+    odp_key: Mapped[str] = mapped_column(String(64))
+    value: Mapped[str] = mapped_column(Text)
+    nist_id: Mapped[str | None] = mapped_column(String(16))
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "connector", "odp_key", name="uq_capture_snapshot"),
+    )
+
+
 class MonitoringRun(Base):
     """Log of a continuous-monitoring scan and what it produced."""
 

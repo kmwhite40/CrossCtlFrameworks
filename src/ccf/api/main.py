@@ -68,7 +68,11 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     log.info("api.startup")
+    from ..governance import scheduler
+
+    scheduler.start()  # no-op unless CCF_SCHEDULER_ENABLED
     yield
+    await scheduler.stop()
     log.info("api.shutdown")
 
 

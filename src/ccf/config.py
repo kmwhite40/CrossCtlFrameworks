@@ -63,6 +63,21 @@ class Settings(BaseSettings):
     aws_profile: str | None = Field(default=None)  # named AWS profile (optional)
     aws_capture_enabled: bool = Field(default=False)
 
+    # In-app automation scheduler. When enabled, background jobs run the catalog
+    # poll, ConMon scan, alert digest, and connector collection on a cadence.
+    scheduler_enabled: bool = Field(default=False)
+    scheduler_interval_hours: float = Field(default=24.0)
+
+    # Outbound notification delivery (best-effort). Set a Slack/Teams incoming
+    # webhook to fan critical alerts out of the app.
+    notify_webhook_url: str | None = Field(default=None)
+    notify_min_severity: str = Field(default="critical")  # info|warning|critical
+
+    # AI-assisted authoring (Anthropic). Narratives/remediation plans/risk text.
+    anthropic_api_key: str | None = Field(default=None)
+    anthropic_model: str = Field(default="claude-sonnet-5")
+    anthropic_base_url: str = Field(default="https://api.anthropic.com")
+
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
     # read-only reader stay open; turn on for shared/production deployments.
     auth_enabled: bool = Field(default=False)

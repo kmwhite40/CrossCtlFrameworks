@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
 from ..models import Event, Notification, Webhook
+from . import delivery
 
 log = get_logger(__name__)
 
@@ -127,4 +128,6 @@ async def notify(
     )
     session.add(n)
     await session.flush()
+    # Best-effort outbound delivery (Slack/Teams webhook) for severe alerts.
+    await delivery.deliver(n)
     return n
