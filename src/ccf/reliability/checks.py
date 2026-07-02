@@ -366,6 +366,45 @@ async def _check_auth_oidc_posture(session: AsyncSession) -> Check:
     return Check("auth_oidc_posture", PASS, "Enterprise SSO/SCIM configured.")
 
 
+async def _check_evidence_confidence_freshness(session: AsyncSession) -> Check:
+    """Warn when evidence objects exist but confidence has not been scored."""
+    if not await _regclass(session, "ccf.evidence_confidence_scores"):
+        return Check(
+            "evidence_confidence_freshness", FAIL,
+            "evidence_confidence_scores table missing.", "Run migrations.",
+        )
+    objs = await _count(session, "ccf.evidence_objects") or 0
+    scored = await _count(session, "ccf.evidence_confidence_scores") or 0
+    if objs and scored < objs:
+        return Check(
+            "evidence_confidence_freshness", WARN,
+            f"{objs - scored} evidence object(s) unscored.",
+            "Run `ccf evidence score` or GET /api/evidence-repo/{id}/confidence.",
+        )
+    return Check("evidence_confidence_freshness", PASS, "Evidence confidence scored.")
+
+
+async def _check_evidence_replayability(session: AsyncSession) -> Check:
+    """Report replayable (connector/scan) evidence that failed reproduction."""
+    if not await _regclass(session, "ccf.evidence_replay_runs"):
+        return Check("evidence_replayability", PASS, "No replay runs recorded yet.")
+    drifted = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM ccf.evidence_replay_runs "
+                "WHERE status IN ('drifted', 'missing')"
+            )
+        )
+    ).scalar() or 0
+    if drifted:
+        return Check(
+            "evidence_replayability", WARN,
+            f"{drifted} evidence replay(s) drifted or missing.",
+            "Re-collect the affected evidence from its source.",
+        )
+    return Check("evidence_replayability", PASS, "Evidence replays reproducible.")
+
+
 async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
     """Assurance-graph tables present; warn when the graph has never been built."""
     if not await _regclass(session, "ccf.assurance_build_runs"):
@@ -556,6 +595,8 @@ _CHECKS = [
     _check_scoring_service,
     _check_evidence_service,
     _check_evidence_repository,
+    _check_evidence_confidence_freshness,
+    _check_evidence_replayability,
     _check_assurance_graph_freshness,
     _check_ssp_service,
     _check_audit_write,

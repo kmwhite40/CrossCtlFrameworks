@@ -46,6 +46,9 @@ class EvidenceObject(Base):
     control_id: Mapped[str | None] = mapped_column(String(64))  # tag (e.g. AC-2)
     framework: Mapped[str | None] = mapped_column(String(64))  # tag (e.g. FEDRAMP)
     owner: Mapped[str | None] = mapped_column(String(255))
+    # How the evidence was produced — drives confidence scoring + replayability.
+    # connector|scan|api_import|signed_upload|manual_upload|screenshot|self_attestation
+    source_type: Mapped[str] = mapped_column(String(32), default="manual_upload")
     status: Mapped[str] = mapped_column(String(16), default="draft")
     current_version_id: Mapped[int | None] = mapped_column(BigInteger)
     expires_on: Mapped[date | None] = mapped_column(Date)

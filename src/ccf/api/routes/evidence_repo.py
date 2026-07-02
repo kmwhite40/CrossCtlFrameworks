@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
-from ...evidence import service
+from ...evidence import confidence, service
 from ...models_evidence import EvidenceObject
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -36,6 +36,10 @@ class ObjectIn(BaseModel):
     control_id: str | None = None
     framework: str | None = None
     owner: str | None = None
+    source_type: str = Field(
+        "manual_upload", pattern=r"^(connector|scan|api_import|signed_upload|"
+        r"manual_upload|screenshot|self_attestation)$",
+    )
     expires_on: date | None = None
 
 
@@ -203,3 +207,49 @@ async def download(
         media_type=ver.media_type or "application/octet-stream",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# --- confidence + reproducibility (Phase 2) ---------------------------------
+
+
+@router.get("/confidence/summary")
+async def confidence_summary(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Dashboard metrics: confidence %, automated coverage, reproducibility, etc."""
+    return await confidence.confidence_summary(session, org_id=principal.org_id)
+
+
+@router.get("/{oid}/confidence")
+async def object_confidence(
+    oid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Compute + persist the confidence score for one object, with factor breakdown."""
+    obj = await _require_object(session, oid, principal)
+    row = await confidence.score_object(session, obj)
+    await session.commit()
+    return {
+        "evidence_object_id": oid,
+        "score": row.score,
+        "band": row.band,
+        "source_type": row.source_type,
+        "reproducible": row.reproducible,
+        "factors": row.factors,
+    }
+
+
+@router.post("/{oid}/replay")
+async def object_replay(
+    oid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Attempt to reproduce the object's evidence (digest replay); never 500s."""
+    obj = await _require_object(session, oid, principal)
+    run = await confidence.replay(session, obj)
+    await confidence.score_object(session, obj)  # refresh score after replay
+    await session.commit()
+    return {"evidence_object_id": oid, "status": run.status, "detail": run.detail}

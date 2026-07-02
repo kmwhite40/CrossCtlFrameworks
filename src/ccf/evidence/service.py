@@ -38,6 +38,7 @@ async def create_object(
     control_id: str | None = None,
     framework: str | None = None,
     owner: str | None = None,
+    source_type: str = "manual_upload",
     expires_on: date | None = None,
 ) -> EvidenceObject:
     obj = EvidenceObject(
@@ -48,6 +49,7 @@ async def create_object(
         control_id=control_id,
         framework=framework,
         owner=owner,
+        source_type=source_type,
         expires_on=expires_on,
         status="draft",
     )
@@ -197,6 +199,7 @@ def object_summary(obj: EvidenceObject) -> dict[str, Any]:
         "owner": obj.owner,
         "control_id": obj.control_id,
         "framework": obj.framework,
+        "source_type": obj.source_type,
         "system_id": obj.system_id,
         "expires_on": obj.expires_on,
         "immutable_lock": obj.immutable_lock,

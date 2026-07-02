@@ -643,6 +643,54 @@ def fr20x_monitor() -> None:
     console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
+evidence_app = typer.Typer(help="Evidence repository — confidence scoring + replay")
+app.add_typer(evidence_app, name="evidence")
+
+
+@evidence_app.command(name="score")
+def evidence_score() -> None:
+    """Score confidence for every evidence object."""
+    from .evidence import confidence  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            n = await confidence.score_all(session)
+            summary = await confidence.confidence_summary(session)
+            await session.commit()
+            return {"scored": n, **summary}
+
+    out = asyncio.run(_run())
+    console.print(
+        f"[green]Scored {out['scored']} object(s)[/green] — "
+        f"avg confidence {out['evidence_confidence_pct']}%, "
+        f"reproducible {out['reproducible_validation_pct']}%"
+    )
+
+
+@evidence_app.command(name="replay")
+def evidence_replay(
+    evidence_id: int = typer.Option(..., "--evidence-id"),
+) -> None:
+    """Attempt to reproduce one evidence object's content (digest replay)."""
+    from .evidence import confidence  # noqa: PLC0415
+    from .models_evidence import EvidenceObject  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            obj = await session.get(EvidenceObject, evidence_id)
+            if obj is None:
+                return "not_found"
+            run = await confidence.replay(session, obj)
+            await session.commit()
+            return run.status
+
+    status = asyncio.run(_run())
+    if status == "not_found":
+        console.print("[red]Evidence object not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Replay result: [cyan]{status}[/cyan]")
+
+
 assurance_app = typer.Typer(help="Assurance graph — build + query the authorization digital twin")
 app.add_typer(assurance_app, name="assurance")
 

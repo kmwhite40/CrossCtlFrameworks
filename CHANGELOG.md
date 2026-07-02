@@ -7,6 +7,17 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **Evidence confidence + reproducibility** (`ccf/evidence/confidence.py`,
+  `models_evidence_conf.py`, migration 0030) — a pure scorer weighs source type,
+  freshness, digest integrity, review/lock status, replayability, and human-
+  attestation dependence into a 0-100 score + band with a per-dimension breakdown;
+  connector/scan evidence outscores manual screenshots. `evidence_objects.source_type`
+  added. Replay reproduces connector/scan evidence by digest (non-fatal). API:
+  `GET /api/evidence-repo/{id}/confidence`, `POST /api/evidence-repo/{id}/replay`,
+  `GET /api/evidence-repo/confidence/summary` (confidence %, automated coverage %,
+  reproducible %, manual dependency %, stale-fact count). CLI `ccf evidence
+  score|replay`; `evidence_confidence_freshness` + `evidence_replayability`
+  reliability checks.
 - **Assurance graph / authorization digital twin** (`ccf/assurance/`,
   `models_assurance.py`, `routes/assurance.py`, migration 0029) — a typed,
   tenant-isolated relational graph (no external graph DB) built from Concord's
