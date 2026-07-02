@@ -1426,6 +1426,10 @@ async def intake_submit(
     result = await automation_engine.derive_system(
         session, system_id=system.id, org_id=org, profile=profile
     )
+    # One-click: also auto-generate the SSP seeded from the derivation.
+    ssp_project_id = await automation_engine.generate_ssp(
+        session, system=system, profile=profile
+    )
     await session.commit()
     return templates.TemplateResponse(
         request,
@@ -1436,6 +1440,7 @@ async def intake_submit(
             "result": result,
             "system_id": system.id,
             "system_name": name,
+            "ssp_project_id": ssp_project_id,
         },
     )
 

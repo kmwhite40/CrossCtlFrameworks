@@ -44,6 +44,7 @@ class ProfileIn(BaseModel):
 class IntakeIn(ProfileIn):
     system_name: str
     organization_id: int | None = None
+    generate_ssp: bool = True
 
 
 async def _resolve_org(session: AsyncSession, principal: Principal, org_id: int | None) -> int:
@@ -86,7 +87,7 @@ async def intake_system(
     session.add(system)
     await session.flush()
 
-    prof_data = body.model_dump(exclude={"system_name", "organization_id"})
+    prof_data = body.model_dump(exclude={"system_name", "organization_id", "generate_ssp"})
     profile = SystemProfile(system_id=system.id, answers=body.model_dump(), **prof_data)
     session.add(profile)
     await session.flush()
@@ -98,8 +99,18 @@ async def intake_system(
         profile=profile,
         actor=principal.email,
     )
+    ssp_project_id = None
+    if body.generate_ssp:
+        ssp_project_id = await automation.generate_ssp(
+            session, system=system, profile=profile, actor=principal.email
+        )
     await session.commit()
-    return {"system_id": system.id, "profile_id": profile.id, "derivation": result}
+    return {
+        "system_id": system.id,
+        "profile_id": profile.id,
+        "ssp_project_id": ssp_project_id,
+        "derivation": result,
+    }
 
 
 @router.put("/systems/{system_id}/profile")
@@ -166,6 +177,51 @@ async def coverage(
     if profile is None:
         raise HTTPException(404, "system has no profile")
     return {"system_id": system_id, **automation.coverage(profile)}
+
+
+@router.post("/systems/{system_id}/generate-ssp", status_code=201)
+async def generate_ssp(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Auto-generate an SSP project seeded from the profile's derivation."""
+    system = (
+        await session.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if system is None:
+        raise HTTPException(404, "system not found")
+    profile = await _get_profile(session, system_id)
+    if profile is None or not profile.derivation:
+        raise HTTPException(400, "derive the system profile first")
+    project_id = await automation.generate_ssp(
+        session, system=system, profile=profile, actor=principal.email
+    )
+    await session.commit()
+    return {"project_id": project_id}
+
+
+@router.get("/systems/{system_id}/impact")
+async def impact(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """How each control affects the SPRS score, ranked by recoverable points."""
+    return await automation.control_impact(session, system_id)
+
+
+@router.get("/systems/{system_id}/evidence-requirements")
+async def evidence_requirements(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Derived evidence checklist for the system's non-inherited controls."""
+    profile = await _get_profile(session, system_id)
+    if profile is None:
+        raise HTTPException(404, "system has no profile")
+    return await automation.evidence_requirements(session, system_id, profile)
 
 
 # --- Uploadable framework controls (add new frameworks in future) ------------

@@ -59,7 +59,8 @@ class Settings(BaseSettings):
     graph_client_secret: str | None = Field(default=None)
     graph_base_url: str = Field(default="https://graph.microsoft.us")
     graph_login_url: str = Field(default="https://login.microsoftonline.us")
-    aws_region: str = Field(default="us-gov-west-1")
+    aws_region: str = Field(default="us-gov-west-1")  # GovCloud West by default
+    aws_profile: str | None = Field(default=None)  # named AWS profile (optional)
     aws_capture_enabled: bool = Field(default=False)
 
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the

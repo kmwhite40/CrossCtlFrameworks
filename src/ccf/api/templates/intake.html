@@ -22,8 +22,9 @@
       {% for k, v in result.by_responsibility.items() %}<span class="chip chip--ghost">{{ k }}: {{ v }}</span> {% endfor %}
     </div>
     <div class="row" style="gap:8px;margin-top:14px">
-      <a class="btn btn--secondary" href="/scoring"><i data-lucide="gauge"></i> Open SPRS scoring</a>
-      <a class="btn btn--ghost" href="/poams"><i data-lucide="clipboard-list"></i> Review POA&amp;Ms</a>
+      {% if ssp_project_id %}<a class="btn btn--primary" href="/ssp/{{ ssp_project_id }}"><i data-lucide="file-text"></i> Open generated SSP</a>{% endif %}
+      <a class="btn btn--secondary" href="/scoring"><i data-lucide="gauge"></i> SPRS scoring</a>
+      <a class="btn btn--ghost" href="/poams"><i data-lucide="clipboard-list"></i> POA&amp;Ms ({{ result.poams_created }})</a>
       <a class="btn btn--ghost" href="/governance"><i data-lucide="workflow"></i> Governance</a>
     </div>
   </div>
@@ -42,7 +43,7 @@
       <div class="field-group">
         <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">{{ q.prompt }}</span>
         {% if q.type == 'single' %}
-        <select class="select" name="{{ q.field }}">
+        <select class="select" name="{{ q.field }}" aria-label="{{ q.prompt }}">
           <option value="">(choose…)</option>
           {% for o in q.options %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
         </select>

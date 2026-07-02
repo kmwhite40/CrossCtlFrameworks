@@ -11,13 +11,17 @@ credentials is additive and does not change the interface the API depends on.
 from __future__ import annotations
 
 import asyncio
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from ..config import get_settings
 from ..logging import get_logger
 from .base import CapturedParameter, ConfigConnector
 
 log = get_logger(__name__)
+
+# GovCloud regions live in the aws-us-gov partition; boto3 resolves endpoints
+# (sts.<region>.amazonaws.com in-partition) automatically from the region name.
+GOVCLOUD_REGIONS = ("us-gov-west-1", "us-gov-east-1")
 
 
 class AwsGovCloudConnector(ConfigConnector):
@@ -43,6 +47,38 @@ class AwsGovCloudConnector(ConfigConnector):
     def is_configured(self) -> bool:
         return bool(get_settings().aws_capture_enabled) and self._boto3_available()
 
+    def _session(self) -> Any:
+        import boto3  # noqa: PLC0415
+
+        s = get_settings()
+        # A named profile or the ambient credential chain (env, SSO, IAM role).
+        return boto3.Session(profile_name=s.aws_profile) if s.aws_profile else boto3.Session()
+
+    async def verify(self) -> dict[str, Any]:
+        """Confirm we can connect into the GovCloud account (STS caller identity)."""
+        s = get_settings()
+        if not self._boto3_available():
+            return {"connected": False, "reason": "boto3 not installed"}
+
+        def _call() -> dict[str, Any]:
+            sts = self._session().client("sts", region_name=s.aws_region)
+            ident = sts.get_caller_identity()
+            arn = ident.get("Arn", "")
+            partition = arn.split(":")[1] if arn.count(":") >= 2 else "aws"
+            return {
+                "connected": True,
+                "account": ident.get("Account"),
+                "arn": arn,
+                "region": s.aws_region,
+                "partition": partition,
+                "govcloud": partition == "aws-us-gov" or s.aws_region in GOVCLOUD_REGIONS,
+            }
+
+        try:
+            return await asyncio.to_thread(_call)
+        except Exception as e:
+            return {"connected": False, "reason": str(e)[:200], "region": s.aws_region}
+
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():
             return []
@@ -62,9 +98,7 @@ class AwsGovCloudConnector(ConfigConnector):
         """
 
         def _read() -> str | None:
-            import boto3  # noqa: PLC0415
-
-            client = boto3.client("logs", region_name=get_settings().aws_region)
+            client = self._session().client("logs", region_name=get_settings().aws_region)
             retentions: list[int] = []
             paginator = client.get_paginator("describe_log_groups")
             for page in paginator.paginate():

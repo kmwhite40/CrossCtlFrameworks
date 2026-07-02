@@ -14,7 +14,7 @@ coverage for the UI, not asserted.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 
@@ -56,6 +56,22 @@ class MsGraphConnector(ConfigConnector):
         )
         resp.raise_for_status()
         return resp.json().get("access_token")
+
+    async def verify(self) -> dict[str, Any]:
+        """Confirm we can obtain a Graph token for the configured Gov tenant."""
+        s = get_settings()
+        if not self.is_configured():
+            return {"connected": False, "reason": "graph credentials not configured"}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                token = await self._token(client)
+            return {
+                "connected": bool(token),
+                "tenant": s.graph_tenant_id,
+                "graph_endpoint": s.graph_base_url,
+            }
+        except Exception as e:
+            return {"connected": False, "reason": str(e)[:200]}
 
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():

@@ -99,9 +99,7 @@ async def _require_project(
     proj = (
         await session.execute(select(SSPProject).where(SSPProject.id == project_id))
     ).scalar_one_or_none()
-    if proj is None or (
-        principal.org_id is not None and proj.organization_id != principal.org_id
-    ):
+    if proj is None or (principal.org_id is not None and proj.organization_id != principal.org_id):
         raise HTTPException(404, "SSP project not found")
     return proj
 
@@ -191,9 +189,7 @@ async def get_project(
     # from the scoring catalog) so the editor can render fill-in-the-blank fields.
     odp_map = dict(
         (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringControl.odp_definitions)
-            )
+            await session.execute(select(ScoringControl.control_id, ScoringControl.odp_definitions))
         ).all()
     )
     out_entries = []
@@ -237,6 +233,15 @@ async def connectors() -> list[dict[str, Any]]:
         }
         for c in list_connectors()
     ]
+
+
+@router.post("/connectors/{key}/verify")
+async def verify_connector(key: str) -> dict[str, Any]:
+    """Prove connectivity into the target environment (e.g. an AWS GovCloud account)."""
+    conn = get_connector(key)
+    if conn is None:
+        raise HTTPException(404, "unknown connector")
+    return {"connector": conn.key, "configured": conn.is_configured(), **(await conn.verify())}
 
 
 @router.post("/projects/{project_id}/autofill")
@@ -413,9 +418,7 @@ async def reseed_project(
     if platform is not None:
         proj.platform = normalize_platform(platform)
         await session.flush()
-    touched = await seed_project_entries(
-        session, proj, overwrite=overwrite, platform=proj.platform
-    )
+    touched = await seed_project_entries(session, proj, overwrite=overwrite, platform=proj.platform)
     return {"touched": touched, "platform": proj.platform}
 
 

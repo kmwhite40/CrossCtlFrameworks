@@ -63,3 +63,11 @@ class ConfigConnector(abc.ABC):
         Implementations MUST return ``[]`` (never raise) when not configured or
         on a transient provider error — capture is best-effort enrichment.
         """
+
+    async def verify(self) -> dict[str, Any]:
+        """Prove connectivity into the target environment (best-effort).
+
+        Returns ``{"connected": bool, ...}`` with provider identity details, or a
+        ``reason`` when it cannot connect. Never raises.
+        """
+        return {"connected": False, "reason": "verification not implemented"}

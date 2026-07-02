@@ -12,7 +12,7 @@ COPY pyproject.toml ./
 COPY src ./src
 RUN python -m venv /venv \
  && /venv/bin/pip install --upgrade pip setuptools wheel \
- && /venv/bin/pip install .
+ && /venv/bin/pip install ".[aws]"
 
 FROM python:3.12-slim AS runtime
 LABEL org.opencontainers.image.title="Concord" \

@@ -16,8 +16,20 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import POAM, ScoringControl, ScoringStatus, SystemProfile, Vendor
-from ..scoring.engine import score_system
+from ..models import (
+    POAM,
+    ControlImplementation,
+    Evidence,
+    ScoringControl,
+    ScoringStatus,
+    SSPControlEntry,
+    SSPProject,
+    System,
+    SystemProfile,
+    Vendor,
+)
+from ..scoring.engine import deduction_for, score_system
+from ..ssp.seed import seed_project_entries
 from . import bus
 
 # --- The questionnaire that makes intake simplistic --------------------------
@@ -137,9 +149,7 @@ async def _vendor_inheritance(session: AsyncSession, org_id: int | None) -> dict
     stmt = select(Vendor)
     if org_id is not None:
         # Include org-scoped vendors and global (unscoped) shared services.
-        stmt = stmt.where(
-            (Vendor.organization_id == org_id) | (Vendor.organization_id.is_(None))
-        )
+        stmt = stmt.where((Vendor.organization_id == org_id) | (Vendor.organization_id.is_(None)))
     out: dict[str, str] = {}
     for v in (await session.execute(stmt)).scalars().all():
         if v.status == "offboarded":
@@ -309,6 +319,159 @@ async def _seed_gap_poams(
         )
         created += 1
     return created
+
+
+# --- Profile -> SSP projection ----------------------------------------------
+
+# profile cloud platform -> SSP authoring platform code.
+PLATFORM_TO_SSP = {
+    "m365_gcc_high": "m365",
+    "azure_gov": "azure",
+    "aws_govcloud": "aws_govcloud",
+}
+_RESP_TO_ORIGINATION = {
+    "inherited": ["Inherited"],
+    "shared": ["Shared"],
+    "customer": ["Configured by Customer / Business Owner"],
+    "not_applicable": [],
+}
+_STATE_TO_STATUS = {
+    "inherited": ["Implemented"],
+    "implemented": ["Implemented"],
+    "partial": ["Partially Implemented"],
+    "not_implemented": ["Planned"],
+    "planned": ["Planned"],
+    "not_applicable": ["Not Applicable"],
+}
+
+
+def ssp_overlay_for(control_id: str, derivation: dict[str, Any]) -> dict[str, list[str]]:
+    """Origination + implementation status an SSP entry should inherit from derivation."""
+    row = derivation.get(control_id)
+    if not row:
+        return {}
+    return {
+        "control_origination": _RESP_TO_ORIGINATION.get(row["responsibility"], []),
+        "implementation_status": _STATE_TO_STATUS.get(row["state"], ["Planned"]),
+    }
+
+
+async def generate_ssp(
+    session: AsyncSession, *, system: System, profile: SystemProfile, actor: str | None = None
+) -> int:
+    """Create an SSP project seeded from the derivation (origination + status)."""
+    plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", "m365")
+    proj = SSPProject(
+        organization_id=system.organization_id,
+        system_id=system.id,
+        customer_name=system.name,
+        system_name=system.name,
+        platform=plat,
+    )
+    session.add(proj)
+    await session.flush()
+    await seed_project_entries(session, proj)  # seeds one entry per practice
+    entries = (
+        (
+            await session.execute(
+                select(SSPControlEntry).where(SSPControlEntry.project_id == proj.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    derivation = profile.derivation or {}
+    for e in entries:
+        ov = ssp_overlay_for(e.control_id, derivation)
+        if ov:
+            e.control_origination = ov["control_origination"]
+            e.implementation_status = ov["implementation_status"]
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="generated",
+        entity_type="ssp_project",
+        entity_id=proj.id,
+        summary=f"SSP auto-generated for {system.name} from profile ({len(entries)} controls)",
+        org_id=system.organization_id,
+        actor=actor,
+    )
+    return proj.id
+
+
+async def control_impact(session: AsyncSession, system_id: int) -> dict[str, Any]:
+    """Per-control score contribution + the delta if it were implemented."""
+    practices = (await session.execute(select(ScoringControl))).scalars().all()
+    states = {
+        s.scoring_control_id: s.state
+        for s in (
+            await session.execute(select(ScoringStatus).where(ScoringStatus.system_id == system_id))
+        )
+        .scalars()
+        .all()
+    }
+    rows: list[dict[str, Any]] = []
+    for sc in practices:
+        state = states.get(sc.id, "not_assessed")
+        current = deduction_for(sc.point_value, state)
+        implemented = deduction_for(sc.point_value, "implemented")
+        rows.append(
+            {
+                "control_id": sc.control_id,
+                "domain": sc.domain,
+                "point_value": sc.point_value,
+                "state": state,
+                "current_deduction": current,
+                "gain_if_implemented": current - implemented,
+            }
+        )
+    rows.sort(key=lambda r: r["gain_if_implemented"], reverse=True)
+    return {
+        "total_deduction": sum(r["current_deduction"] for r in rows),
+        "recoverable": sum(r["gain_if_implemented"] for r in rows),
+        "controls": rows,
+    }
+
+
+async def evidence_requirements(
+    session: AsyncSession, system_id: int, profile: SystemProfile
+) -> dict[str, Any]:
+    """Derived evidence checklist: what each non-inherited control needs + status."""
+    practices = {
+        sc.control_id: sc for sc in (await session.execute(select(ScoringControl))).scalars()
+    }
+    have = {
+        e.title
+        for e in (
+            await session.execute(
+                select(Evidence)
+                .join(ControlImplementation, ControlImplementation.id == Evidence.implementation_id)
+                .where(ControlImplementation.system_id == system_id)
+            )
+        )
+        .scalars()
+        .all()
+    }
+    items: list[dict[str, Any]] = []
+    for cid, row in (profile.derivation or {}).items():
+        if row["responsibility"] == "inherited" or row["state"] == "not_applicable":
+            continue
+        sc = practices.get(cid)
+        rec = (sc.recommended_customer_evidence if sc else None) or "Evidence of implementation"
+        items.append(
+            {
+                "control_id": cid,
+                "responsibility": row["responsibility"],
+                "required_evidence": rec,
+                "satisfied": any(cid in t for t in have),
+            }
+        )
+    items.sort(key=lambda i: i["satisfied"])
+    return {
+        "required": len(items),
+        "satisfied": sum(1 for i in items if i["satisfied"]),
+        "items": items,
+    }
 
 
 def coverage(profile: SystemProfile) -> dict[str, Any]:
