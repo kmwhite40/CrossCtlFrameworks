@@ -6,7 +6,14 @@ Concord (repo: `CrossCtlFrameworks`, package: `ccf`) is an internal compliance
 controls platform. It ingests the **NIST Cross Mappings Rev. 1.1**
 workbook into Postgres, normalizes the 5,400 SP 800-53A Rev. 5 assessment objectives
 and their 550+ cross-framework mappings, and exposes the data through a FastAPI
-service with an HTMX + Tailwind UI, a Typer CLI, and a REST API.
+service with an HTMX + Alpine web UI, a Typer CLI, and a REST API.
+
+The interface is a calm, editorial, **top-navigation** shell (no permanent
+sidebar): a global nav with per-area mega menus, a contextual section nav, and
+an editorial hero on every page. It is **light-first** with a neutral graphite
+dark mode, built on a small design-token system in
+[`app.css`](src/ccf/api/static/css/app.css) — system typography, a single blue
+accent, soft shadows, no chrome-heavy glassmorphism.
 
 
 ---
@@ -25,9 +32,10 @@ service with an HTMX + Tailwind UI, a Typer CLI, and a REST API.
 - **Provides a compliance-ops layer** — organizations, systems (FIPS-199 +
   FedRAMP baseline + ATO status), per-system control implementations,
   evidence, assessments, POA&Ms, risks, and an `audit_log`.
-- **Serves a UI** at `/` with dashboards, a faceted control browser,
-  per-control detail with grouped cross-framework mappings, a framework
-  catalog, a generic worksheet viewer, and Postgres full-text search.
+- **Serves a UI** at `/` — a top-navigation shell (global nav → section nav →
+  page hero) with dashboards, a faceted control browser, per-control detail with
+  grouped cross-framework mappings, a framework catalog, a cross-framework
+  mapping search, a generic worksheet viewer, and Postgres full-text search.
 - **Publishes a REST API** under `/api` with OpenAPI docs at `/docs`.
 
 ## Architecture
