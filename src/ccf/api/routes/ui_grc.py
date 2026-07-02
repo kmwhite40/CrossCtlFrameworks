@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ...governance import insights
+from ...governance import control_tests, insights
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -272,6 +272,26 @@ async def control_tests_create(
         )
     )
     await session.commit()
+    return RedirectResponse("/control-tests", status_code=303)
+
+
+@router.post("/control-tests/{test_id}/run")
+async def control_tests_run(
+    test_id: int,
+    request: Request,
+    status: str = Form(...),
+    detail: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    test = await session.get(ControlTest, test_id)
+    if test is not None:
+        principal = getattr(request.state, "principal", None)
+        actor = getattr(principal, "email", None) or "user"
+        with contextlib.suppress(ValueError):
+            await control_tests.record_result(
+                session, test, status=status, detail=detail or None, actor=actor
+            )
+            await session.commit()
     return RedirectResponse("/control-tests", status_code=303)
 
 

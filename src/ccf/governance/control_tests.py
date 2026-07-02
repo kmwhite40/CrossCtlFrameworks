@@ -113,6 +113,43 @@ async def _alert_on_failure(
         )
 
 
+async def record_result(
+    session: AsyncSession,
+    test: ControlTest,
+    *,
+    status: str,
+    detail: str | None = None,
+    evidence_ref: str | None = None,
+    actor: str = "user",
+) -> ControlTestResult:
+    """Persist one test result, update the test, and alert on fail/warn.
+
+    Shared by the manual UI run action and the scheduler auto-run so the alert +
+    remediation-task behaviour is identical regardless of trigger.
+    """
+    if status not in ("pass", "warn", "fail"):
+        raise ValueError("status must be pass|warn|fail")
+    res = ControlTestResult(
+        control_test_id=test.id, status=status, detail=detail, evidence_ref=evidence_ref
+    )
+    session.add(res)
+    test.last_status = status
+    test.last_tested_at = datetime.now(UTC)
+    await session.flush()
+    if status in ("fail", "warn"):
+        await _alert_on_failure(session, test, status, detail or "")
+    await bus.emit(
+        session,
+        verb="tested",
+        entity_type="control_test",
+        entity_id=test.id,
+        summary=f"Control test {status}: {test.control_id}",
+        org_id=test.organization_id,
+        actor=actor,
+    )
+    return res
+
+
 async def run_due(session: AsyncSession, *, today: date | None = None) -> dict[str, Any]:
     """Auto-run every due connector-backed test. Returns per-status counts."""
     today = today or datetime.now(UTC).date()
