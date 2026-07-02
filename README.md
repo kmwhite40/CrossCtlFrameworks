@@ -105,6 +105,35 @@ Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/acces
   getting a retain/revoke/modify decision. `GET /api/personnel/summary` rolls up
   screening gaps, overdue training, and pending access decisions.
 
+GRC operating system (server-rendered modules under the **Governance** nav, each
+backed by a JSON API and covered by reliability checks):
+- **Executive dashboard** (`/executive`) — a single consolidated rollup: average
+  SPRS, systems, open/overdue POA&Ms, evidence freshness, risk-by-residual-band,
+  systems-by-ATO, the full data-quality check list, and the top "implement once,
+  satisfy many" cross-framework controls. Print/PDF for board reporting. Built on
+  the read-only insights layer (`/api/reports/executive`, `/api/admin/data-quality`,
+  `/api/mappings/unified`).
+- **Trust Center** (`/trust`) — posture summary, framework badges, FAQ, a
+  shareable package export (`.md`/JSON), and an **access-request workflow**
+  (log a request → approve/deny inline).
+- **Audit collaboration workspace** (`/audit-workspace`) — engagements with a
+  PBC **evidence-request** list and **findings** tracked through to closure.
+- **Regulatory change management** (`/regulatory`) — track framework/regulatory
+  updates with applicability, control/policy/system impact, owner, and due dates
+  (overdue items surface in the alert digest).
+- **Cloud connector registry** (`/connectors`) — register cloud/SaaS connectors
+  (Azure/Azure Gov, M365/GCC High, AWS/AWS GovCloud, GCP, GitHub, Jira,
+  ServiceNow) and sync for evidence collection.
+- **Continuous control tests** (`/control-tests`) — define repeatable tests per
+  control, **record a manual result** from the UI, or let the scheduler
+  **auto-run** `method='connector'` tests on their cadence. A failing run opens a
+  critical alert + a dedup'd remediation task (identical for manual and automated
+  triggers via a shared `record_result` helper).
+- **Register import/export** — round-trip the POA&M / risk / vendor / policy
+  registers: `GET /api/export/{dataset}?fmt=csv|json|md` and
+  `POST /api/import/{dataset}` (upserts by org-scoped id; recomputes derived
+  scores; returns a `{created, updated, skipped, errors}` summary).
+
 Observability: Prometheus metrics (`ccf_ksi_validations_total`,
 `ccf_fedramp20x_validation_duration_seconds`, `ccf_ksi_drift_events_total`,
 `ccf_fedramp20x_readiness_pct`) with a ready-to-import Grafana dashboard at
@@ -258,6 +287,15 @@ ccf reliability-check                       # platform + 20x readiness checks
 | POST · PATCH | `/api/fedramp/20x/exceptions` | KSI exceptions |
 | GET | `/api/fedramp/20x/controls/{id}/ksis` | Reverse KSI↔control traceability |
 | GET | `/api/fedramp/20x/systems/{id}/package?format=json\|markdown\|oscal\|docx\|bundle` | Authorization package export |
+| GET | `/api/reports/executive` | Consolidated executive rollup (posture, risk, POA&M, DQ) |
+| GET | `/api/admin/data-quality` | GRC data-completeness checks |
+| GET | `/api/mappings/unified` | "Implement once, satisfy many" cross-framework ranking |
+| GET · POST | `/api/export/{dataset}` · `/api/import/{dataset}` | Register round-trip (poams\|risks\|vendors\|policies) |
+| GET · POST | `/api/control-tests` (+ `/{id}/run`) | Continuous control tests + result recording |
+| GET · POST | `/api/audit/engagements` (+ requests, findings) | Audit collaboration workspace |
+| GET · POST | `/api/regulatory` | Regulatory change register |
+| GET · POST | `/api/connector-configs` (+ `/{id}/sync`) | Cloud connector registry |
+| GET · POST | `/api/trust/access-requests` (+ `/{id}/decide`) | Trust Center access workflow |
 | GET | `/api/admin/reliability` | Reliability checks (503 on hard fail) |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
