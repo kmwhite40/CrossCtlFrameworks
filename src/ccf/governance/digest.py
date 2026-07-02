@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import POAM, CatalogSource, Policy, Risk, System, Task, Vendor
 from ..models_grc import AuditEngagement, AuditRequest, RegulatoryUpdate
+from ..models_people import AccessReview, Person, TrainingRecord
+from ..models_tprm import VendorQuestionnaire
 from . import bus
 
 ATO_WINDOW_DAYS = 90
@@ -50,11 +52,105 @@ async def _escalate_overdue_tasks(session: AsyncSession, today: date, org_id: in
     return escalated
 
 
+async def _personnel_and_tprm(
+    session: AsyncSession, today: date, org_id: int | None, counts: dict[str, Any]
+) -> None:
+    """Workforce-security + third-party-risk sweep: overdue training, screening
+    gaps, overdue access reviews, and overdue vendor questionnaires."""
+    # Overdue security training (rolled up per org).
+    tr_stmt = (
+        select(TrainingRecord)
+        .join(Person, Person.id == TrainingRecord.person_id)
+        .where(
+            TrainingRecord.status == "assigned",
+            TrainingRecord.due_on.is_not(None),
+            TrainingRecord.due_on < today,
+        )
+    )
+    if org_id is not None:
+        tr_stmt = tr_stmt.where(Person.organization_id == org_id)
+    overdue_training = (await session.execute(tr_stmt)).scalars().all()
+    if overdue_training:
+        await bus.notify(
+            session,
+            category="training",
+            title=f"{len(overdue_training)} security training(s) overdue",
+            org_id=org_id,
+            severity="warning",
+            entity_type="training",
+            dedupe_key=f"training-overdue:{org_id}",
+        )
+        counts["training"] = len(overdue_training)
+
+    # Active personnel with incomplete background screening (PS-3).
+    scr_stmt = select(Person).where(
+        Person.status == "active",
+        Person.background_check_status.not_in(("completed", "waived")),
+    )
+    if org_id is not None:
+        scr_stmt = scr_stmt.where(Person.organization_id == org_id)
+    screening_gaps = (await session.execute(scr_stmt)).scalars().all()
+    if screening_gaps:
+        await bus.notify(
+            session,
+            category="screening",
+            title=f"{len(screening_gaps)} active personnel without completed screening",
+            org_id=org_id,
+            severity="warning",
+            entity_type="person",
+            dedupe_key=f"screening-gap:{org_id}",
+        )
+        counts["screening"] = len(screening_gaps)
+
+    # Overdue access reviews (AC-2).
+    ar_stmt = select(AccessReview).where(
+        AccessReview.status != "completed",
+        AccessReview.due_on.is_not(None),
+        AccessReview.due_on < today,
+    )
+    if org_id is not None:
+        ar_stmt = ar_stmt.where(AccessReview.organization_id == org_id)
+    for ar in (await session.execute(ar_stmt)).scalars().all():
+        await bus.notify(
+            session,
+            category="access_review",
+            title=f"Access review overdue: {ar.name}",
+            org_id=org_id,
+            severity="warning",
+            entity_type="access_review",
+            entity_id=ar.id,
+            dedupe_key=f"access-review-overdue:{ar.id}:{ar.due_on}",
+        )
+        counts["access_review"] += 1
+
+    # Overdue vendor security questionnaires still awaiting a response.
+    vq_stmt = select(VendorQuestionnaire).where(
+        VendorQuestionnaire.status.in_(("sent", "in_progress")),
+        VendorQuestionnaire.due_on.is_not(None),
+        VendorQuestionnaire.due_on < today,
+    )
+    if org_id is not None:
+        vq_stmt = vq_stmt.where(VendorQuestionnaire.organization_id == org_id)
+    for vq in (await session.execute(vq_stmt)).scalars().all():
+        await bus.notify(
+            session,
+            category="questionnaire",
+            title=f"Vendor questionnaire overdue: {vq.name}",
+            org_id=org_id,
+            severity="warning",
+            entity_type="vendor_questionnaire",
+            entity_id=vq.id,
+            dedupe_key=f"questionnaire-overdue:{vq.id}:{vq.due_on}",
+        )
+        counts["questionnaire"] += 1
+
+
 async def run(session: AsyncSession, *, today: date, org_id: int | None = None) -> dict[str, Any]:
     """Raise/refresh org-level notifications. Returns counts by category."""
     counts = {
         "ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0,
         "regulatory": 0, "audit": 0,
+        "training": 0, "screening": 0, "access_review": 0, "questionnaire": 0,
     }
     counts["tasks_escalated"] = await _escalate_overdue_tasks(session, today, org_id)
 
@@ -238,5 +334,7 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
             dedupe_key=f"audit-overdue:{eng_id}",
         )
         counts["audit"] += n
+
+    await _personnel_and_tprm(session, today, org_id, counts)
 
     return counts

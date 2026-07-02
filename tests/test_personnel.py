@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -11,8 +13,10 @@ from sqlalchemy import select
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Task
-from ccf.models_people import TrainingRecord
+from ccf.governance import digest
+from ccf.models import Notification, Organization, Task, Vendor
+from ccf.models_people import AccessReview, Person, TrainingRecord
+from ccf.models_tprm import VendorQuestionnaire
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -149,3 +153,52 @@ async def test_person_404_for_unknown_id() -> None:
     async with _client() as c:
         assert (await c.get("/api/personnel/999999")).status_code == 404
         assert (await c.post("/api/personnel/999999/offboard", json={})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_digest_flags_personnel_and_tprm_overdue() -> None:
+    past = date(2020, 1, 1)
+    today = date(2026, 7, 1)
+    async with session_scope() as s:
+        org = Organization(name="DigestPeopleOrg")
+        s.add(org)
+        await s.flush()
+        person = Person(
+            organization_id=org.id, full_name="Overdue Person",
+            status="active", background_check_status="not_started",
+        )
+        s.add(person)
+        await s.flush()
+        s.add(
+            TrainingRecord(
+                person_id=person.id, course="Security Awareness Training",
+                status="assigned", due_on=past,
+            )
+        )
+        s.add(AccessReview(organization_id=org.id, name="Stale Review", status="open", due_on=past))
+        vendor = Vendor(organization_id=org.id, name="Late Vendor")
+        s.add(vendor)
+        await s.flush()
+        s.add(
+            VendorQuestionnaire(
+                organization_id=org.id, vendor_id=vendor.id, name="Late Qnr",
+                status="sent", due_on=past,
+            )
+        )
+        await s.flush()
+        org_id = org.id
+
+    async with session_scope() as s:
+        counts = await digest.run(s, today=today, org_id=org_id)
+        assert counts["training"] >= 1
+        assert counts["screening"] >= 1
+        assert counts["access_review"] >= 1
+        assert counts["questionnaire"] >= 1
+
+        cats = {
+            n.category
+            for n in (
+                await s.execute(select(Notification).where(Notification.organization_id == org_id))
+            ).scalars().all()
+        }
+        assert {"training", "screening", "access_review", "questionnaire"} <= cats
