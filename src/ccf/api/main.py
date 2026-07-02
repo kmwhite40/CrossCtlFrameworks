@@ -23,6 +23,7 @@ from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
+    approvals,
     artifacts,
     assessments,
     audit,
@@ -68,7 +69,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
     log.info("api.startup")
-    from ..governance import scheduler
+    from ..governance import scheduler  # noqa: PLC0415 — lazy to keep factory import light
 
     scheduler.start()  # no-op unless CCF_SCHEDULER_ENABLED
     yield
@@ -145,6 +146,7 @@ def create_app() -> FastAPI:
     app.include_router(reports.router)
     # Enterprise governance layer.
     app.include_router(automation.router)
+    app.include_router(approvals.router)
     app.include_router(conmon.router)
     app.include_router(tasks.router)
     app.include_router(notifications.router)

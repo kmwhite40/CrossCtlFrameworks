@@ -1178,6 +1178,39 @@ class Vendor(Base):
     )
 
 
+class Approval(Base):
+    """Review/approval workflow record for a governed entity (one per entity).
+
+    Drives a draft → submitted → approved/rejected lifecycle with separation of
+    duties: the approver must differ from the submitter (enforced when auth is on).
+    """
+
+    __tablename__ = "approvals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    entity_type: Mapped[str] = mapped_column(String(32))  # ssp_project|poam|risk|assessment
+    entity_id: Mapped[str] = mapped_column(String(64))
+    # draft | submitted | approved | rejected
+    state: Mapped[str] = mapped_column(String(16), default="draft")
+    submitted_by: Mapped[str | None] = mapped_column(String(255))
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[str | None] = mapped_column(String(255))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("entity_type", "entity_id", name="uq_approval_entity"),
+        Index("ix_approvals_entity", "entity_type", "entity_id"),
+    )
+
+
 class CaptureSnapshot(Base):
     """Last value a connector captured for a parameter — the config-drift baseline."""
 
