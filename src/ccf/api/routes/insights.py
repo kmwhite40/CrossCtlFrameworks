@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,3 +63,39 @@ async def export_dataset(
         media_type=media,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def _infer_fmt(filename: str | None, explicit: str | None) -> str:
+    if explicit:
+        return explicit.lower()
+    name = (filename or "").lower()
+    if name.endswith(".json"):
+        return "json"
+    return "csv"
+
+
+@router.post("/import/{dataset}")
+async def import_dataset(
+    dataset: str,
+    file: UploadFile = File(...),
+    fmt: str | None = Form(None),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Import a register (poams|risks|vendors|policies) from csv|json.
+
+    Round-trips with ``GET /api/export/{dataset}``: rows with a known ``id`` are
+    updated, others created. Returns ``{created, updated, skipped, errors}``.
+    """
+    content = await file.read()
+    try:
+        summary = await exporter.import_rows(
+            session,
+            dataset=dataset,
+            content=content,
+            fmt=_infer_fmt(file.filename, fmt),
+            org_id=principal.org_id,
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    return {"dataset": dataset, **summary}
