@@ -18,9 +18,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..governance import bus
+from ..logging import get_logger
 from ..models import KSI, FedRAMP20xProfile, KSIState, System
 from .readiness import score_system
 from .validation import validate_system
+
+log = get_logger(__name__)
 
 _REGRESSED_TO = ("fail", "warn")
 
@@ -79,6 +82,18 @@ async def scan_system(
             actor="scheduler",
             payload={"regressions": regressions, "readiness": readiness},
         )
+        log.warning(
+            "fedramp20x.drift",
+            system_id=system.id,
+            regressions=len(regressions),
+            readiness_pct=readiness["readiness_pct"],
+        )
+        try:
+            from ..api.metrics import KSI_DRIFT_EVENTS  # noqa: PLC0415
+
+            KSI_DRIFT_EVENTS.inc(len(regressions))
+        except Exception:
+            pass
     return {
         "system_id": system.id,
         "readiness_pct": readiness["readiness_pct"],

@@ -9,6 +9,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from prometheus_client import REGISTRY
 from sqlalchemy import delete, select, update
 
 from ccf.api.main import create_app
@@ -345,6 +346,22 @@ async def test_continuous_monitoring_detects_drift() -> None:
             .all()
         )
         assert any(str(sid) == e.entity_id for e in drift)
+
+
+@pytest.mark.asyncio
+async def test_validation_emits_prometheus_metrics() -> None:
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    sid = await _fresh_system("MetricCso")
+
+    def _pass_count() -> float:
+        return REGISTRY.get_sample_value("ccf_ksi_validations_total", {"status": "pass"}) or 0.0
+
+    before = _pass_count()
+    async with session_scope() as s:
+        await validation.validate_system(s, system_id=sid)
+    # IA-2 implemented -> at least one KSI passes, so the counter advanced.
+    assert _pass_count() > before
 
 
 @pytest.mark.asyncio

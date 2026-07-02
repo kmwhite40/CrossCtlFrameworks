@@ -28,6 +28,27 @@ INGESTION_RUNS = Counter(
 CONTROLS_TOTAL = Gauge("ccf_controls_total", "Rows in ccf.controls")
 MAPPINGS_TOTAL = Gauge("ccf_framework_mappings_total", "Rows in ccf.framework_mappings")
 
+# --- FedRAMP 20x ------------------------------------------------------------
+KSI_VALIDATIONS = Counter(
+    "ccf_ksi_validations_total",
+    "KSI validation results by status",
+    ["status"],
+)
+KSI_VALIDATION_DURATION = Histogram(
+    "ccf_fedramp20x_validation_duration_seconds",
+    "Duration of a full validate_system run",
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+)
+KSI_DRIFT_EVENTS = Counter(
+    "ccf_ksi_drift_events_total",
+    "KSI regressions (pass -> warn/fail) detected by continuous monitoring",
+)
+FEDRAMP20X_READINESS = Gauge(
+    "ccf_fedramp20x_readiness_pct",
+    "Most recent FedRAMP 20x readiness percentage per system",
+    ["system_id"],
+)
+
 
 async def metrics_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
     start = time.perf_counter()

@@ -15,6 +15,7 @@ the per-system KSI state.
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -23,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..logging import get_logger
 from ..models import (
     KSI,
     Control,
@@ -33,6 +35,8 @@ from ..models import (
     KSIState,
     KSIValidationResult,
 )
+
+log = get_logger(__name__)
 
 _ACCEPTABLE_DEFAULT = ("implemented", "inherited")
 
@@ -291,6 +295,7 @@ async def validate_system(
     """Validate every KSI for a system; record history + state. Returns result dicts."""
     if ksis is None:
         ksis = list((await session.execute(select(KSI).order_by(KSI.sort_order))).scalars().all())
+    started = time.perf_counter()
     ctx = await build_context(session, system_id)
     now = datetime.now(UTC)
 
@@ -345,4 +350,24 @@ async def validate_system(
             }
         )
     await session.flush()
+
+    # Observability: per-status counts, run duration, and a structured event.
+    counts: dict[str, int] = {}
+    for r in results:
+        counts[r["validation_status"]] = counts.get(r["validation_status"], 0) + 1
+    try:
+        from ..api.metrics import KSI_VALIDATION_DURATION, KSI_VALIDATIONS  # noqa: PLC0415
+
+        KSI_VALIDATION_DURATION.observe(time.perf_counter() - started)
+        for status, n in counts.items():
+            KSI_VALIDATIONS.labels(status).inc(n)
+    except Exception:
+        pass
+    log.info(
+        "fedramp20x.validated",
+        system_id=system_id,
+        ksis=len(results),
+        by_status=counts,
+        duration_ms=round((time.perf_counter() - started) * 1000),
+    )
     return results

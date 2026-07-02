@@ -240,4 +240,10 @@ async def score_system(
         ):
             profile.readiness_status = r.status
         await session.flush()
+        try:
+            from ..api.metrics import FEDRAMP20X_READINESS  # noqa: PLC0415
+
+            FEDRAMP20X_READINESS.labels(str(system_id)).set(r.readiness_pct)
+        except Exception:
+            pass
     return payload
