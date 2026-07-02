@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -27,7 +27,7 @@ async def system_diagram(
     if fn is None:
         raise HTTPException(404, f"unknown diagram kind: {kind}")
     try:
-        return await fn(session, system_id)
+        return cast(str, await fn(session, system_id))
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
 

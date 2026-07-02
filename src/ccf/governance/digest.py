@@ -59,6 +59,8 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
     if org_id is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org_id)
     for s in (await session.execute(sys_stmt)).scalars().all():
+        if s.ato_expires_on is None:  # guarded by the query, but narrow for the type checker
+            continue
         days = (s.ato_expires_on - today).days
         if days <= ATO_WINDOW_DAYS:
             await bus.notify(

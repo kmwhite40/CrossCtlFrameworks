@@ -47,11 +47,11 @@ def assess_health(
     reasons: list[str] = []
     horizon = today + timedelta(days=DUE_SOON_DAYS)
 
-    dated = [e for e in evidences if e.expires_on is not None]
-    if any(e.expires_on < today for e in dated):
+    dated = [e.expires_on for e in evidences if e.expires_on is not None]
+    if any(d < today for d in dated):
         status = _escalate(status, "overdue")
         reasons.append("evidence expired")
-    elif any(e.expires_on <= horizon for e in dated):
+    elif any(d <= horizon for d in dated):
         status = _escalate(status, "due_soon")
         reasons.append("evidence expiring soon")
     if not evidences and impl.status in ("implemented", "inherited"):

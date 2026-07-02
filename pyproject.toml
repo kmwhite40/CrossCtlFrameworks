@@ -92,6 +92,10 @@ ignore_missing_imports = true
 module = ["prometheus_client", "slowapi", "slowapi.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

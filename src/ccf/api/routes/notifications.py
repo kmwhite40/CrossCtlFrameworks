@@ -81,7 +81,7 @@ async def mark_all_read(
         stmt = stmt.where(Notification.organization_id == principal.org_id)
     result = await session.execute(stmt)
     await session.commit()
-    return {"marked_read": result.rowcount or 0}
+    return {"marked_read": getattr(result, "rowcount", 0) or 0}
 
 
 @router.post("/scan")

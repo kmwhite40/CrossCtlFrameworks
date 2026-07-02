@@ -55,7 +55,8 @@ class MsGraphConnector(ConfigConnector):
             },
         )
         resp.raise_for_status()
-        return resp.json().get("access_token")
+        token = resp.json().get("access_token")
+        return token if isinstance(token, str) else None
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can obtain a Graph token for the configured Gov tenant."""
@@ -96,7 +97,7 @@ class MsGraphConnector(ConfigConnector):
             return []
         return out
 
-    def _map_conditional_access(self, payload: dict) -> list[CapturedParameter]:
+    def _map_conditional_access(self, payload: dict[str, Any]) -> list[CapturedParameter]:
         """Extract a sign-in frequency, mapped to the session-lock ODP."""
         for pol in payload.get("value", []) or []:
             if (pol.get("state") or "") != "enabled":

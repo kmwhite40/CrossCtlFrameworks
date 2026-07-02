@@ -1175,11 +1175,14 @@ async def ssp_detail(
     ordered += [d for d in by_domain if d not in ssp_constants.DOMAIN_ORDER]
 
     # ODP fill-in slots (reference) and the canned statement library.
-    odp_map = dict(
-        (
-            await session.execute(select(ScoringControl.control_id, ScoringControl.odp_definitions))
+    odp_map: dict[str, Any] = {
+        row[0]: row[1]
+        for row in (
+            await session.execute(
+                select(ScoringControl.control_id, ScoringControl.odp_definitions)
+            )
         ).all()
-    )
+    }
     template_rows = (
         (await session.execute(select(StatementTemplate).order_by(StatementTemplate.sort_order)))
         .scalars()

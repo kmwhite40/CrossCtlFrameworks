@@ -9,7 +9,7 @@ generic template sentence. Pure and side-effect-free; the orchestration
 
 from __future__ import annotations
 
-from .constants import DRAFT_PREFIX
+from .constants import DRAFT_PREFIX as DRAFT_PREFIX  # noqa: PLC0414 — explicit re-export
 
 
 def source_label(source: str | None, environment: str) -> str:

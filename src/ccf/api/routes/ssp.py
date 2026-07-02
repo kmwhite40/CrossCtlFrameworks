@@ -197,11 +197,14 @@ async def get_project(
     )
     # Attach each control's organization-defined parameter slots (reference data
     # from the scoring catalog) so the editor can render fill-in-the-blank fields.
-    odp_map = dict(
-        (
-            await session.execute(select(ScoringControl.control_id, ScoringControl.odp_definitions))
+    odp_map: dict[str, Any] = {
+        row[0]: row[1]
+        for row in (
+            await session.execute(
+                select(ScoringControl.control_id, ScoringControl.odp_definitions)
+            )
         ).all()
-    )
+    }
     out_entries = []
     for e in entries:
         d = entry_to_dict(e)
@@ -248,11 +251,14 @@ async def completeness(
         .scalars()
         .all()
     )
-    odp_map = dict(
-        (
-            await session.execute(select(ScoringControl.control_id, ScoringControl.odp_definitions))
+    odp_map: dict[str, Any] = {
+        row[0]: row[1]
+        for row in (
+            await session.execute(
+                select(ScoringControl.control_id, ScoringControl.odp_definitions)
+            )
         ).all()
-    )
+    }
     rows = []
     for e in entries:
         d = entry_to_dict(e)
@@ -444,8 +450,7 @@ async def autofill_from_connector(
     results: list[dict[str, Any]] = []
     for cap in captured:
         entry = by_nist.get(cap.nist_id or "")
-        matched = entry is not None
-        if matched and apply:
+        if entry is not None and apply:
             entry.odp_values = {**(entry.odp_values or {}), cap.odp_key: cap.value}
             applied += 1
         results.append({**cap.to_dict(), "matched_control": entry.control_id if entry else None})
