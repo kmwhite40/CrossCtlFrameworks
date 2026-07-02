@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Evidence repository · Concord{% endblock %}
+{% block heading %}Evidence repository{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Versioned, content-addressed evidence with review. Approval locks an object (WORM-ready); expired evidence is flagged in reliability and data-quality checks.</p>{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Objects</div><div class="kpi__value">{{ metrics.total }}</div></div>
+  <div class="kpi"><div class="kpi__label">Approved</div><div class="kpi__value">{{ metrics.approved }}</div></div>
+  <div class="kpi"><div class="kpi__label">In review</div><div class="kpi__value">{{ metrics.submitted }}</div></div>
+  <div class="kpi"><div class="kpi__label">Expired</div><div class="kpi__value">{{ metrics.expired }}</div></div>
+</div>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/evidence" class="card__body filters">
+    <input class="input" name="title" required placeholder="Evidence title (e.g. SOC 2 Type II)">
+    <input class="input" name="control_id" placeholder="Control (AC-2)">
+    <input class="input" name="framework" placeholder="Framework (FEDRAMP)">
+    <input class="input" name="owner" placeholder="Owner">
+    <button class="btn btn--primary" type="submit"><i data-lucide="file-plus"></i> New object</button>
+  </form>
+  <div class="card__body dim" style="font-size:13px">Upload versions, submit, review, and download via the <code>/api/evidence-repo</code> API.</div>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Evidence objects</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Title</th><th>Control</th><th>Framework</th><th>Owner</th><th>Status</th><th>Versions</th><th>Locked</th><th>Expires</th></tr></thead>
+    <tbody>
+      {% for r in rows %}<tr>
+        <td><strong>{{ r.title }}</strong></td>
+        <td class="mono dim">{{ r.control_id or '—' }}</td>
+        <td class="dim">{{ r.framework or '—' }}</td>
+        <td class="dim">{{ r.owner or '—' }}</td>
+        <td>{% if r.status=='approved' %}<span class="chip chip--ok">approved</span>{% elif r.status=='expired' %}<span class="chip chip--err">expired</span>{% elif r.status=='rejected' %}<span class="chip chip--err">rejected</span>{% elif r.status=='submitted' %}<span class="chip chip--warn">submitted</span>{% else %}<span class="dim">draft</span>{% endif %}</td>
+        <td>{{ r.version_count }}</td>
+        <td>{% if r.immutable_lock %}<i data-lucide="lock" style="width:14px"></i>{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="dim">{{ r.expires_on or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No evidence objects yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

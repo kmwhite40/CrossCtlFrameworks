@@ -7,6 +7,14 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — enterprise hardening (Phase 1)
+- **Evidence repository** (`ccf/evidence/`, `models_evidence.py`,
+  `routes/evidence_repo.py`, migration 0028) — versioned, content-addressed
+  evidence objects with a pluggable storage backend (local FS default; S3/object-
+  lock WORM via boto3 when configured). Draft → submitted → approved/rejected
+  review flow; approval sets an immutable lock; downloads record access events;
+  expiry surfaces in an `evidence_repository` reliability check. API under
+  `/api/evidence-repo`, UI at `/evidence`. Sits alongside the existing
+  implementation-scoped `/api/evidence` intake (unchanged).
 - **OIDC / SSO / SCIM foundation** (`ccf/identity/`, `models_identity.py`,
   `routes/identity.py`, migration 0027) — optional, disabled by default so local
   dev keeps its session login. OIDC authorization-code login (`/auth/login` →

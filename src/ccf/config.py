@@ -112,6 +112,15 @@ class Settings(BaseSettings):
     oscal_schema_dir: Path | None = Field(default=None)
     oscal_require_official_schema: bool = Field(default=False)
 
+    # Evidence repository — versioned, content-addressed evidence objects with a
+    # pluggable storage backend. Local filesystem by default (no external deps);
+    # 's3' targets an S3-compatible, optionally object-locked (WORM) bucket via
+    # boto3 when installed, degrading to local storage otherwise.
+    evidence_backend: str = Field(default="local")  # local|s3
+    evidence_local_dir: Path = Field(default=Path("./data/evidence"))
+    evidence_s3_bucket: str | None = Field(default=None)
+    evidence_object_lock_enabled: bool = Field(default=False)
+
     @property
     def is_sqlite(self) -> bool:
         return "sqlite" in str(self.database_url)

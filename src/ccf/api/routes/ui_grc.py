@@ -16,9 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...evidence import service as evidence_service
 from ...governance import control_tests, insights, personnel, tprm
 from ...ingest import parse_scan, reconcile_findings
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
+from ...models_evidence import EvidenceObject
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -754,3 +756,50 @@ async def questionnaire_review(
                     )
     await session.commit()
     return RedirectResponse(f"/vendor-questionnaires/{qid}", status_code=303)
+
+
+# ── Evidence repository ──────────────────────────────────────────────────────
+@router.get("/evidence", response_class=HTMLResponse)
+async def evidence_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    stmt = (
+        select(EvidenceObject)
+        .options(selectinload(EvidenceObject.versions))
+        .order_by(EvidenceObject.id.desc())
+    )
+    if org is not None:
+        stmt = stmt.where(EvidenceObject.organization_id == org)
+    objs = (await session.execute(stmt)).scalars().all()
+    rows = [evidence_service.object_summary(o) for o in objs]
+    metrics = {
+        "total": len(rows),
+        "approved": sum(1 for r in rows if r["status"] == "approved"),
+        "submitted": sum(1 for r in rows if r["status"] == "submitted"),
+        "expired": sum(1 for r in rows if r["status"] == "expired"),
+    }
+    return templates.TemplateResponse(
+        request, "evidence.html", {"active": "evidence_repo", "rows": rows, "metrics": metrics}
+    )
+
+
+@router.post("/evidence")
+async def evidence_create(
+    request: Request,
+    title: str = Form(...),
+    control_id: str = Form(""),
+    framework: str = Form(""),
+    owner: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    await evidence_service.create_object(
+        session,
+        org_id=_principal_org(request),
+        title=title,
+        control_id=control_id or None,
+        framework=framework or None,
+        owner=owner or None,
+    )
+    await session.commit()
+    return RedirectResponse("/evidence", status_code=303)

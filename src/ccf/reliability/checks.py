@@ -366,6 +366,29 @@ async def _check_auth_oidc_posture(session: AsyncSession) -> Check:
     return Check("auth_oidc_posture", PASS, "Enterprise SSO/SCIM configured.")
 
 
+async def _check_evidence_repository(session: AsyncSession) -> Check:
+    """Evidence repository present; surface expired evidence as a warning."""
+    if not await _regclass(session, "ccf.evidence_objects"):
+        return Check(
+            "evidence_repository", FAIL, "evidence_objects table missing.", "Run migrations."
+        )
+    expired = (
+        await session.execute(
+            text(
+                "SELECT count(*) FROM ccf.evidence_objects "
+                "WHERE expires_on IS NOT NULL AND expires_on < CURRENT_DATE "
+                "AND status <> 'expired'"
+            )
+        )
+    ).scalar() or 0
+    if expired:
+        return Check(
+            "evidence_repository", WARN, f"{expired} evidence object(s) past freshness.",
+            "Refresh or re-approve expired evidence (ccf evidence expire-scan).",
+        )
+    return Check("evidence_repository", PASS, "Evidence repository healthy.")
+
+
 async def _check_oscal_official_schema(_s: AsyncSession) -> Check:
     """Report whether official OSCAL schema validation is available (vs structural)."""
     try:
@@ -506,6 +529,7 @@ _CHECKS = [
     _check_search_vector,
     _check_scoring_service,
     _check_evidence_service,
+    _check_evidence_repository,
     _check_ssp_service,
     _check_audit_write,
     _check_background,

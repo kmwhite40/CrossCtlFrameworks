@@ -37,6 +37,7 @@ from .routes import (
     diff,
     events,
     evidence,
+    evidence_repo,
     fedramp20x,
     frameworks,
     grc,
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(posture.router)
     app.include_router(audit.router)
     app.include_router(evidence.router)
+    app.include_router(evidence_repo.router)
     app.include_router(poams.router)
     app.include_router(risks.router)
     app.include_router(scans.router)
