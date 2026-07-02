@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import (
     POAM,
+    CaptureSnapshot,
     ControlImplementation,
     Evidence,
     ScoringControl,
@@ -29,8 +30,10 @@ from ..models import (
     Vendor,
 )
 from ..scoring.engine import deduction_for, score_system
+from ..ssp import statements as stmt
+from ..ssp.platforms import GOV_ENVIRONMENTS, platform_label, services_for
 from ..ssp.seed import seed_project_entries
-from . import bus
+from . import ai, bus
 
 # --- The questionnaire that makes intake simplistic --------------------------
 QUESTIONNAIRE: list[dict[str, Any]] = [
@@ -387,6 +390,8 @@ async def generate_ssp(
             e.control_origination = ov["control_origination"]
             e.implementation_status = ov["implementation_status"]
     await session.flush()
+    # Auto-compose the implementation statements from the derivation.
+    await generate_statements(session, project=proj, profile=profile)
     await bus.emit(
         session,
         verb="generated",
@@ -397,6 +402,86 @@ async def generate_ssp(
         actor=actor,
     )
     return proj.id
+
+
+async def generate_statements(
+    session: AsyncSession,
+    *,
+    project: SSPProject,
+    profile: SystemProfile,
+    use_ai: bool = False,
+    style: str = "standard",
+    include_captured: bool = True,
+    mark_draft: bool = True,
+) -> dict[str, Any]:
+    """Compose each entry's implementation statement from the derivation + config.
+
+    Reflects responsibility/inheritance source, environment, services, filled
+    ODP values, and live captured config; optionally drafts via AI when enabled.
+    """
+    ssp_plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", project.platform or "m365")
+    environment = GOV_ENVIRONMENTS.get(ssp_plat, platform_label(ssp_plat))
+    derivation = profile.derivation or {}
+
+    # Live captured config indexed by NIST id (from the connector collection loop).
+    caps_by_nist: dict[str, list[dict[str, str]]] = {}
+    for snap in (
+        (
+            await session.execute(
+                select(CaptureSnapshot).where(
+                    CaptureSnapshot.organization_id == project.organization_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        if snap.nist_id:
+            caps_by_nist.setdefault(snap.nist_id, []).append(
+                {"odp_key": snap.odp_key, "value": snap.value, "connector": snap.connector}
+            )
+
+    entries = (
+        (
+            await session.execute(
+                select(SSPControlEntry).where(SSPControlEntry.project_id == project.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    ai_ready = use_ai and ai.is_configured()
+    drafts = ai_used = 0
+    for e in entries:
+        row = derivation.get(e.control_id) or {}
+        responsibility = row.get("responsibility", "customer")
+        services = services_for(ssp_plat, e.domain)
+        captured = caps_by_nist.get(e.nist_id or "", [])
+        text, needs_review = stmt.compose(
+            control_id=e.control_id,
+            requirement=e.requirement,
+            responsibility=responsibility,
+            source=row.get("source"),
+            environment=environment,
+            services=services,
+            odp_values=dict(e.odp_values or {}),
+            captured=captured,
+            style=style,
+            include_captured=include_captured,
+            mark_draft=mark_draft,
+        )
+        if ai_ready and responsibility in ("customer", "shared"):
+            ai_text = await ai.draft_narrative(
+                e.control_id, e.requirement or "", environment, services
+            )
+            if ai_text:
+                text = (stmt.DRAFT_PREFIX if mark_draft else "") + ai_text
+                ai_used += 1
+        if needs_review:
+            drafts += 1
+        e.part_narratives = [{"label": "Implementation", "text": text}]
+    await session.flush()
+    return {"entries": len(entries), "drafts": drafts, "ai_used": ai_used}
 
 
 async def control_impact(session: AsyncSession, system_id: int) -> dict[str, Any]:

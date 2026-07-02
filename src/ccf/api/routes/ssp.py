@@ -21,7 +21,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...connectors import get_connector, list_connectors
-from ...models import ScoringControl, SSPControlEntry, SSPProject, StatementTemplate, System
+from ...governance import automation
+from ...models import (
+    ScoringControl,
+    SSPControlEntry,
+    SSPProject,
+    StatementTemplate,
+    System,
+    SystemProfile,
+)
 from ...ssp import constants
 from ...ssp.generator import generate_ssp_docx
 from ...ssp.odp import render as render_template
@@ -33,6 +41,7 @@ from ...ssp.platforms import (
     services_for,
 )
 from ...ssp.seed import entry_to_dict, seed_project_entries
+from ...ssp.statements import STYLES
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -219,6 +228,47 @@ def _template_matches(t: StatementTemplate, control_id: str, domain: str | None)
     if t.scope == "domain":
         return t.domain == domain
     return True  # global
+
+
+@router.post("/projects/{project_id}/auto-statements")
+async def auto_statements(
+    project_id: int,
+    use_ai: bool = False,
+    style: str = "standard",
+    include_captured: bool = True,
+    mark_draft: bool = True,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """(Re)compose every control's implementation statement from the derivation.
+
+    Options: ``style`` (concise|standard|detailed), ``use_ai`` (Claude drafting
+    when configured), ``include_captured`` (fold in live connector captures), and
+    ``mark_draft`` (prefix customer/shared statements with [DRAFT]).
+    """
+    if style not in STYLES:
+        raise HTTPException(422, f"style must be one of {', '.join(STYLES)}")
+    proj = await _require_project(session, project_id, principal)
+    profile = None
+    if proj.system_id is not None:
+        profile = (
+            await session.execute(
+                select(SystemProfile).where(SystemProfile.system_id == proj.system_id)
+            )
+        ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(400, "project's system has no profile; run intake/derive first")
+    result = await automation.generate_statements(
+        session,
+        project=proj,
+        profile=profile,
+        use_ai=use_ai,
+        style=style,
+        include_captured=include_captured,
+        mark_draft=mark_draft,
+    )
+    await session.commit()
+    return result
 
 
 @router.get("/connectors")
