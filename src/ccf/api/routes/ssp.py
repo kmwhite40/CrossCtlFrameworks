@@ -30,6 +30,7 @@ from ...models import (
     System,
     SystemProfile,
 )
+from ...ssp import completeness as ssp_completeness
 from ...ssp import constants
 from ...ssp.generator import generate_ssp_docx
 from ...ssp.odp import render as render_template
@@ -228,6 +229,110 @@ def _template_matches(t: StatementTemplate, control_id: str, domain: str | None)
     if t.scope == "domain":
         return t.domain == domain
     return True  # global
+
+
+@router.get("/projects/{project_id}/completeness")
+async def completeness(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """SSP readiness score + exactly what front matter / controls are missing."""
+    proj = await _require_project(session, project_id, principal)
+    entries = (
+        (
+            await session.execute(
+                select(SSPControlEntry).where(SSPControlEntry.project_id == project_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    odp_map = dict(
+        (
+            await session.execute(select(ScoringControl.control_id, ScoringControl.odp_definitions))
+        ).all()
+    )
+    rows = []
+    for e in entries:
+        d = entry_to_dict(e)
+        d["odp_definitions"] = list(odp_map.get(e.control_id) or [])
+        rows.append(d)
+    return ssp_completeness.assess(proj.metadata_json or {}, rows)
+
+
+class MetadataIn(BaseModel):
+    metadata_json: dict[str, Any]
+    autofill: bool = True
+
+
+@router.put("/projects/{project_id}/metadata")
+async def set_metadata(
+    project_id: int,
+    body: MetadataIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Set SSP front matter; optionally auto-fill from the linked system + profile."""
+    proj = await _require_project(session, project_id, principal)
+    meta = {**(proj.metadata_json or {}), **body.metadata_json}
+    if body.autofill and proj.system_id is not None:
+        sysm = (
+            await session.execute(select(System).where(System.id == proj.system_id))
+        ).scalar_one_or_none()
+        if sysm is not None:
+            fips = meta.setdefault("fips199", {})
+            fips.setdefault("confidentiality", sysm.fips199_confidentiality or "moderate")
+            fips.setdefault("integrity", sysm.fips199_integrity or "moderate")
+            fips.setdefault("availability", sysm.fips199_availability or "moderate")
+            levels = [
+                fips["confidentiality"],
+                fips["integrity"],
+                fips["availability"],
+            ]
+            order = {"low": 0, "moderate": 1, "high": 2}
+            fips.setdefault("overall", max(levels, key=lambda x: order.get(x, 1)))
+            meta.setdefault("system_type", "Cloud information system (CUI)")
+        prof = (
+            await session.execute(
+                select(SystemProfile).where(SystemProfile.system_id == proj.system_id)
+            )
+        ).scalar_one_or_none()
+        if prof is not None and not meta.get("authorization_boundary"):
+            env = GOV_ENVIRONMENTS.get(normalize_platform(proj.platform), proj.platform)
+            meta["authorization_boundary"] = (
+                f"The authorization boundary is the {env} tenant/account and the managed "
+                f"endpoints, identities ({prof.identity_model or 'enterprise IdP'}), and "
+                f"security tooling that store, process, or transmit "
+                f"{', '.join(prof.data_types or ['CUI'])}."
+            )
+    proj.metadata_json = meta
+    await session.commit()
+    return {"metadata_json": proj.metadata_json}
+
+
+class RevisionIn(BaseModel):
+    version: str
+    date: str | None = None
+    author: str | None = None
+    notes: str | None = None
+
+
+@router.post("/projects/{project_id}/revisions", status_code=201)
+async def add_revision(
+    project_id: int,
+    body: RevisionIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Append a revision-history entry (and bump the project version)."""
+    proj = await _require_project(session, project_id, principal)
+    rev = body.model_dump()
+    rev["author"] = rev.get("author") or principal.email
+    proj.revision_history = [*(proj.revision_history or []), rev]
+    proj.version = body.version
+    await session.commit()
+    return {"version": proj.version, "revisions": len(proj.revision_history)}
 
 
 @router.post("/projects/{project_id}/auto-statements")
@@ -524,6 +629,8 @@ async def generate_document(
         "version": proj.version,
         "prepared_by": proj.prepared_by,
         "document_date": proj.document_date.strftime("%m/%d/%Y") if proj.document_date else "",
+        "metadata_json": proj.metadata_json or {},
+        "revision_history": proj.revision_history or [],
     }
     # python-docx is synchronous CPU work — keep it off the event loop.
     data = await asyncio.to_thread(

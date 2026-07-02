@@ -204,6 +204,108 @@ def _front_matter(doc: Any) -> None:
     doc.add_page_break()
 
 
+def _kv_table(doc: Any, rows: Sequence[tuple[str, str]]) -> None:
+    table = doc.add_table(rows=len(rows), cols=2)
+    table.style = "Table Grid"
+    for i, (label, value) in enumerate(rows):
+        lc = table.cell(i, 0)
+        _shade(lc, LABEL_FILL)
+        _runs(lc, label, bold=True)
+        _runs(table.cell(i, 1), str(value) if value else "—")
+
+
+def _system_characterization(doc: Any, project: Mapping[str, Any]) -> None:
+    """FedRAMP-style front matter: categorization, roles, boundary, interconnections."""
+    meta: Mapping[str, Any] = project.get("metadata_json") or {}
+    fips = meta.get("fips199") or {}
+    roles = meta.get("roles") or {}
+
+    doc.add_heading("1. System Characterization", level=1)
+    _kv_table(
+        doc,
+        [
+            ("Information System Name", project.get("system_name") or ""),
+            ("System Type", meta.get("system_type") or ""),
+            ("Cloud Platform / Environment", project.get("platform") or ""),
+            ("Operational Status", meta.get("operational_status") or "Operational"),
+        ],
+    )
+
+    doc.add_heading("1.1 Security Categorization (FIPS-199)", level=2)
+    _kv_table(
+        doc,
+        [
+            ("Confidentiality", fips.get("confidentiality") or ""),
+            ("Integrity", fips.get("integrity") or ""),
+            ("Availability", fips.get("availability") or ""),
+            ("Overall Categorization", fips.get("overall") or ""),
+        ],
+    )
+
+    doc.add_heading("1.2 Roles and Responsibilities", level=2)
+
+    def _role(key: str) -> str:
+        r = roles.get(key) or {}
+        name, email = r.get("name") or "", r.get("email") or ""
+        return f"{name}{'  ·  ' + email if email else ''}" if name else ""
+
+    _kv_table(
+        doc,
+        [
+            ("System Owner", _role("system_owner")),
+            ("Information System Security Officer (ISSO)", _role("isso")),
+            ("Information System Security Manager (ISSM)", _role("issm")),
+            ("Authorizing Official (AO)", _role("authorizing_official")),
+        ],
+    )
+
+    doc.add_heading("1.3 Authorization Boundary", level=2)
+    doc.add_paragraph(
+        meta.get("authorization_boundary")
+        or "The authorization boundary includes the systems, users, devices, cloud services, "
+        "security tooling, and facilities that store, process, or transmit CUI."
+    )
+
+    leveraged = meta.get("leveraged_authorizations") or []
+    if leveraged:
+        doc.add_heading("1.4 Leveraged Authorizations (Inheritance)", level=2)
+        table = doc.add_table(rows=len(leveraged) + 1, cols=2)
+        table.style = "Table Grid"
+        _shade(table.cell(0, 0), HEADER_FILL)
+        _shade(table.cell(0, 1), HEADER_FILL)
+        _runs(table.cell(0, 0), "Provider / Service", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+        _runs(table.cell(0, 1), "Authorization", bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+        for i, lv in enumerate(leveraged, start=1):
+            _runs(table.cell(i, 0), str(lv.get("provider") or ""))
+            _runs(table.cell(i, 1), str(lv.get("authorization") or ""))
+
+    laws = meta.get("laws_regulations") or []
+    if laws:
+        doc.add_heading("1.5 Applicable Laws and Regulations", level=2)
+        for law in laws:
+            doc.add_paragraph(str(law), style="List Bullet")
+
+    doc.add_page_break()
+
+
+def _revision_history(doc: Any, project: Mapping[str, Any]) -> None:
+    history = project.get("revision_history") or []
+    if not history:
+        return
+    doc.add_heading("Document Revision History", level=1)
+    table = doc.add_table(rows=len(history) + 1, cols=4)
+    table.style = "Table Grid"
+    for j, head in enumerate(("Version", "Date", "Author", "Description")):
+        _shade(table.cell(0, j), HEADER_FILL)
+        _runs(table.cell(0, j), head, bold=True, color=RGBColor(0xFF, 0xFF, 0xFF))
+    for i, rev in enumerate(history, start=1):
+        _runs(table.cell(i, 0), str(rev.get("version") or ""))
+        _runs(table.cell(i, 1), str(rev.get("date") or ""))
+        _runs(table.cell(i, 2), str(rev.get("author") or ""))
+        _runs(table.cell(i, 3), str(rev.get("notes") or ""))
+    doc.add_page_break()
+
+
 def generate_ssp_docx(project: Mapping[str, Any], entries: Sequence[Mapping[str, Any]]) -> bytes:
     """Build the SSP and return the ``.docx`` file as bytes."""
     doc = Document()
@@ -212,6 +314,8 @@ def generate_ssp_docx(project: Mapping[str, Any], entries: Sequence[Mapping[str,
     style.font.size = Pt(10.5)
 
     _cover(doc, project)
+    _revision_history(doc, project)
+    _system_characterization(doc, project)
     _front_matter(doc)
 
     by_domain: dict[str, list[Mapping[str, Any]]] = {}

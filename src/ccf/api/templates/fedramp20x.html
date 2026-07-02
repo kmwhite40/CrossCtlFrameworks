@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}FedRAMP 20x · Concord{% endblock %}
+{% block heading %}FedRAMP 20x{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Key Security Indicators (KSIs), deterministic validation, and
+  authorization readiness — kept separate from traditional FedRAMP Rev. 5 scoring, but
+  traceable to NIST SP 800-53. The KSI catalog is representative and evolves with the program.</p>
+{% endblock %}
+{% block content %}
+
+{% if not ksi_total %}
+  <div class="card"><div class="card__body">
+    <div class="row between">
+      <div>
+        <div class="card__title">No KSI catalog loaded</div>
+        <div class="dim" style="margin-top:4px">Seed the FedRAMP 20x KSI catalog to begin.</div>
+      </div>
+      <button class="btn btn--primary" hx-post="/api/fedramp/20x/ksis/seed" hx-swap="none"
+              hx-on::after-request="window.location.reload()">
+        <i data-lucide="download"></i> Seed KSI catalog
+      </button>
+    </div>
+  </div></div>
+{% else %}
+
+<form method="get" action="/fedramp20x" class="card" style="margin-bottom:12px">
+  <div class="card__body row between">
+    <div>
+      <label class="dim" for="system_id">Score a system</label>
+      <select name="system_id" id="system_id" onchange="this.form.submit()">
+        <option value="">— select a system —</option>
+        {% for s in systems %}
+        <option value="{{ s.id }}" {% if system_id == s.id %}selected{% endif %}>{{ s.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if system_id %}
+    <div class="row" style="gap:8px">
+      <button class="btn btn--primary" type="button"
+              hx-post="/api/fedramp/20x/systems/{{ system_id }}/validate" hx-swap="none"
+              hx-on::after-request="window.location.reload()">
+        <i data-lucide="play"></i> Run validation
+      </button>
+      <a class="btn" href="/api/fedramp/20x/systems/{{ system_id }}/package?format=markdown" target="_blank">
+        <i data-lucide="file-text"></i> Export package
+      </a>
+    </div>
+    {% endif %}
+  </div>
+</form>
+
+{% if readiness %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">20x readiness</div>
+    <div class="card__subtitle">Status: <strong>{{ readiness.status }}</strong></div></div>
+  <div class="card__body">
+    <div class="stat-grid">
+      <div class="stat"><div class="stat__value">{{ readiness.readiness_pct }}%</div><div class="stat__label">Overall</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.ksi_pass_rate if readiness.ksi_pass_rate is not none else '—' }}%</div><div class="stat__label">KSI pass rate</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.automation_coverage if readiness.automation_coverage is not none else '—' }}%</div><div class="stat__label">Automation</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.evidence_completeness if readiness.evidence_completeness is not none else '—' }}%</div><div class="stat__label">Evidence</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.assessor_completion if readiness.assessor_completion is not none else '—' }}%</div><div class="stat__label">Assessor</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.dependency_readiness if readiness.dependency_readiness is not none else '—' }}%</div><div class="stat__label">Dependencies</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.high_risk_findings }}</div><div class="stat__label">High-risk findings</div></div>
+      <div class="stat"><div class="stat__value">{{ readiness.manual_review_burden }}</div><div class="stat__label">Manual review</div></div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% for category, items in by_category.items() %}
+<section class="card" style="margin-bottom:12px">
+  <div class="card__header"><div class="card__title">{{ category }}</div>
+    <div class="card__subtitle">{{ items | length }} indicator(s)</div></div>
+  <div class="card__body">
+    <table class="table">
+      <thead><tr><th>KSI</th><th>Name</th><th>Automation</th><th>NIST refs</th>{% if system_id %}<th>Status</th>{% endif %}</tr></thead>
+      <tbody>
+      {% for k in items %}
+        <tr>
+          <td><code>{{ k.identifier }}</code></td>
+          <td>{{ k.name }}</td>
+          <td class="dim">{{ k.automation_level }}</td>
+          <td class="dim">{{ k.nist_refs | join(', ') }}</td>
+          {% if system_id %}
+          <td>
+            {% set st = states.get(k.id, 'not_tested') %}
+            <span class="badge badge--{{ 'ok' if st == 'pass' else ('warn' if st in ('warn','manual_review_required') else ('bad' if st == 'fail' else 'muted')) }}">{{ st }}</span>
+          </td>
+          {% endif %}
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+
+{% endif %}
+{% endblock %}

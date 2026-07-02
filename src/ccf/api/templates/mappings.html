@@ -21,18 +21,25 @@
     <div class="dim" style="font-size:13px">value ILIKE <span class="mono">%{{ q }}%</span></div>
   </div>
   {% if results %}
-  <div class="table-wrap"><table class="data">
-    <thead><tr><th>Control</th><th>Name</th><th>Framework</th><th>Column</th><th>Value</th></tr></thead>
+  <div class="table-wrap"><table class="data" style="table-layout:fixed;width:100%">
+    <thead><tr>
+      <th style="width:112px">Control</th>
+      <th style="width:190px">Name</th>
+      <th style="width:96px">Framework</th>
+      <th style="width:168px">Column</th>
+      <th>Value</th>
+    </tr></thead>
     <tbody>
       {% for r in results %}<tr>
         <td><a class="mono" href="/controls/{{ r.identifier }}">{{ r.identifier }}</a></td>
-        <td>{{ r.control_name or '—' }}</td>
+        <td style="overflow:hidden;text-overflow:ellipsis">{{ r.control_name or '—' }}</td>
         <td>{% if r.framework_code %}<span class="chip chip--brand">{{ r.framework_code }}</span>{% endif %}</td>
-        <td class="dim" style="font-size:12.5px">{{ r.column_key }}</td>
-        <td style="white-space:pre-wrap;font-size:13px">{{ r.value }}</td>
+        <td class="dim" style="font-size:12.5px;overflow:hidden;text-overflow:ellipsis">{{ r.column_key }}</td>
+        <td><div class="clamp-3" style="font-size:13px" title="{{ r.value }}">{{ r.value }}</div></td>
       </tr>{% endfor %}
     </tbody>
   </table></div>
+  <div class="card__footer"><span class="dim" style="font-size:12px">Long values are clamped — hover a value to see the full text, or open the control. Tip: choose a framework to narrow results.</span></div>
   {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No matches.</div>{% endif %}
 </section>
 {% endif %}

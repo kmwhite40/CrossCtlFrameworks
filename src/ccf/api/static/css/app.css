@@ -70,6 +70,8 @@
   --shadow-glow: none; --glow: none;
 }
 
+*, *::before, *::after { box-sizing: border-box; }
+
 html { scroll-behavior: smooth; }
 
 body {
@@ -290,6 +292,12 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .stack > * + * { margin-top: 20px; }
 .grid-cards > *, .cols-2 > *, .cols-3 > *, .cols-4 > *, .grid-2-1 > *, .grid-1-1 > *,
 .layout-split-l > *, .layout-split-r > *, .filters > * { margin-top: 0; }
+/* Flex/grid overflow guard: without min-width:0, items with intrinsic content
+   (inputs, selects, long text) refuse to shrink below their content size and
+   spill over neighbors — font-metric dependent, so it surfaces with SF Pro but
+   not every fallback. Let them shrink to their track and truncate instead. */
+.grid-cards > *, .cols-2 > *, .cols-3 > *, .cols-4 > *, .grid-2-1 > *, .grid-1-1 > *,
+.layout-split-l > *, .layout-split-r > *, .filters > *, .row > * { min-width: 0; }
 .row { display: flex; gap: 10px; align-items: center; }
 .spacer { flex: 1; }
 .dim { color: var(--text-secondary); }

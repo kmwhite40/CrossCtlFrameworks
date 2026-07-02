@@ -793,6 +793,10 @@ class SSPProject(Base):
     prepared_by: Mapped[str | None] = mapped_column(String(255))
     document_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(32), default="draft")
+    # Enterprise SSP front matter: system characterization, FIPS-199, roles,
+    # authorization boundary, interconnections, ports, laws, leveraged auths.
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    revision_history: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -1250,3 +1254,231 @@ class MonitoringRun(Base):
     tasks_created: Mapped[int] = mapped_column(Integer, default=0)
     notifications_created: Mapped[int] = mapped_column(Integer, default=0)
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+# ---------------------------------------------------------------------------
+# FedRAMP 20x layer
+# ---------------------------------------------------------------------------
+# FedRAMP 20x is a cloud-assurance model built on Key Security Indicators (KSIs),
+# automated validation, machine-readable evidence, and continuous monitoring. It
+# is kept logically SEPARATE from the traditional FedRAMP Rev. 5 baseline/scoring
+# (systems.baseline, scoring_controls) but stays TRACEABLE to NIST 800-53 via the
+# ``KSI.nist_refs`` catalog mapping. Statuses use plain strings (like SystemProfile)
+# because the 20x program is still evolving; the vocabularies are documented in the
+# ``ccf.fedramp20x`` services and enforced at the API layer.
+
+
+class KSI(Base):
+    """A FedRAMP 20x Key Security Indicator (reference catalog, org-agnostic).
+
+    Seeded from ``data/fedramp_20x_ksi_catalog.json`` via ``ccf.fedramp20x.catalog``.
+    ``rule`` is the machine-readable validation spec the validation engine evaluates.
+    """
+
+    __tablename__ = "ksis"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    identifier: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    category: Mapped[str] = mapped_column(String(8), index=True)  # KSI family key (IAM, CNA, ...)
+    category_name: Mapped[str | None] = mapped_column(String(128))
+    name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    expected_outcome: Mapped[str | None] = mapped_column(Text)
+    validation_method: Mapped[str | None] = mapped_column(String(32))  # automated|manual
+    validation_frequency: Mapped[str | None] = mapped_column(String(32))
+    automation_level: Mapped[str | None] = mapped_column(String(32))  # automated|partial|manual
+    evidence_required: Mapped[bool] = mapped_column(Boolean, default=True)
+    nist_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # 800-53 control ids
+    cmmc_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    provider_services: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    rule: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    source: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FedRAMP20xProfile(Base):
+    """Cloud Service Offering (CSO) profile for FedRAMP 20x — one per system."""
+
+    __tablename__ = "fedramp20x_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    service_name: Mapped[str | None] = mapped_column(String(255))
+    service_description: Mapped[str | None] = mapped_column(Text)
+    deployment_model: Mapped[str | None] = mapped_column(String(32))  # iaas|paas|saas
+    cloud_environment: Mapped[str | None] = mapped_column(String(48))
+    boundary_description: Mapped[str | None] = mapped_column(Text)
+    data_types: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    federal_data: Mapped[bool] = mapped_column(Boolean, default=True)
+    cui_support: Mapped[bool] = mapped_column(Boolean, default=False)
+    external_services: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    customer_responsibilities: Mapped[str | None] = mapped_column(Text)
+    provider_responsibilities: Mapped[str | None] = mapped_column(Text)
+    shared_responsibilities: Mapped[str | None] = mapped_column(Text)
+    cryptographic_boundary: Mapped[str | None] = mapped_column(Text)
+    logging_boundary: Mapped[str | None] = mapped_column(Text)
+    incident_response_boundary: Mapped[str | None] = mapped_column(Text)
+    backup_recovery_boundary: Mapped[str | None] = mapped_column(Text)
+    administrative_access_boundary: Mapped[str | None] = mapped_column(Text)
+    readiness_status: Mapped[str] = mapped_column(String(32), default="not_started")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KSIState(Base):
+    """Per-system tracking of a single KSI: current state, ownership, review."""
+
+    __tablename__ = "ksi_states"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    ksi_id: Mapped[int] = mapped_column(ForeignKey("ccf.ksis.id", ondelete="CASCADE"), index=True)
+    # pass|warn|fail|not_tested|manual_review_required|not_applicable
+    status: Mapped[str] = mapped_column(String(32), default="not_tested")
+    assessor_status: Mapped[str] = mapped_column(String(32), default="not_reviewed")
+    owner_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="SET NULL")
+    )
+    reviewer_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="SET NULL")
+    )
+    last_validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_validation_due: Mapped[date | None] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (UniqueConstraint("system_id", "ksi_id", name="uq_ksi_state_system_ksi"),)
+
+
+class KSIValidationResult(Base):
+    """Append-only history of KSI validation runs — the 20x continuous-monitoring trail."""
+
+    __tablename__ = "ksi_validation_results"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    ksi_id: Mapped[int] = mapped_column(ForeignKey("ccf.ksis.id", ondelete="CASCADE"), index=True)
+    ksi_identifier: Mapped[str] = mapped_column(String(32), index=True)
+    # pass|warn|fail|not_tested|manual_review_required
+    status: Mapped[str] = mapped_column(String(32))
+    confidence: Mapped[str | None] = mapped_column(String(16))  # high|medium|low
+    source: Mapped[str | None] = mapped_column(String(64))  # rule kind / connector name
+    evidence_refs: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    failure_reason: Mapped[str | None] = mapped_column(Text)
+    remediation_hint: Mapped[str | None] = mapped_column(Text)
+    assessor_review_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    validated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+class KSIAssessorReview(Base):
+    """Assessor (3PAO) review of a KSI for a system."""
+
+    __tablename__ = "ksi_assessor_reviews"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    ksi_id: Mapped[int] = mapped_column(ForeignKey("ccf.ksis.id", ondelete="CASCADE"), index=True)
+    assessor: Mapped[str | None] = mapped_column(String(255))
+    # See fedramp20x.ASSESSOR_STATUSES: not_reviewed|in_review|accepted|rejected|
+    # needs_clarification|retest_required|finding_opened|closed
+    status: Mapped[str] = mapped_column(String(32), default="not_reviewed")
+    notes: Mapped[str | None] = mapped_column(Text)
+    evidence_accepted: Mapped[bool | None] = mapped_column(Boolean)
+    retest_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    finding: Mapped[str | None] = mapped_column(Text)
+    management_response: Mapped[str | None] = mapped_column(Text)
+    closure_evidence: Mapped[str | None] = mapped_column(Text)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class KSIException(Base):
+    """A documented exception / deviation for a KSI (like a risk acceptance)."""
+
+    __tablename__ = "ksi_exceptions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    ksi_id: Mapped[int] = mapped_column(ForeignKey("ccf.ksis.id", ondelete="CASCADE"), index=True)
+    rationale: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="open")  # open|accepted|closed
+    risk_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.risks.id", ondelete="SET NULL"))
+    expires_on: Mapped[date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FedRAMPDependency(Base):
+    """A FedRAMP-authorized (or not) underlying service the CSO depends on."""
+
+    __tablename__ = "fedramp_dependencies"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(255))
+    provider: Mapped[str | None] = mapped_column(String(255))
+    service_type: Mapped[str | None] = mapped_column(String(16))  # iaas|paas|saas
+    # authorized|in_process|not_authorized|unknown
+    fedramp_status: Mapped[str] = mapped_column(String(32), default="unknown")
+    marketplace_url: Mapped[str | None] = mapped_column(String(1024))
+    authorization_level: Mapped[str | None] = mapped_column(String(32))  # jab|agency|li-saas
+    impact_level: Mapped[str | None] = mapped_column(String(16))  # low|moderate|high
+    boundary_role: Mapped[str | None] = mapped_column(String(255))
+    inherited_controls: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    shared_responsibilities: Mapped[str | None] = mapped_column(Text)
+    dependency_risk: Mapped[str | None] = mapped_column(String(16))  # low|moderate|high|critical
+    evidence: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FedRAMP20xReadinessSnapshot(Base):
+    """Point-in-time 20x readiness rollup — separate from traditional FedRAMP scoring."""
+
+    __tablename__ = "fedramp20x_readiness_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    readiness_pct: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="not_started")
+    ksi_pass_rate: Mapped[int | None] = mapped_column(Integer)
+    automation_coverage: Mapped[int | None] = mapped_column(Integer)
+    evidence_completeness: Mapped[int | None] = mapped_column(Integer)
+    conmon_coverage: Mapped[int | None] = mapped_column(Integer)
+    assessor_completion: Mapped[int | None] = mapped_column(Integer)
+    dependency_readiness: Mapped[int | None] = mapped_column(Integer)
+    open_exceptions: Mapped[int] = mapped_column(Integer, default=0)
+    high_risk_findings: Mapped[int] = mapped_column(Integer, default=0)
+    expired_validations: Mapped[int] = mapped_column(Integer, default=0)
+    manual_review_burden: Mapped[int] = mapped_column(Integer, default=0)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

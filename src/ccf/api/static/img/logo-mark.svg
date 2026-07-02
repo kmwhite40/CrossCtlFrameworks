@@ -1,0 +1,6 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Concord">
+  <rect x="1" y="1" width="30" height="30" rx="8" fill="#0071e3"/>
+  <!-- Two concentric arcs opening right — "concord": distinct frameworks brought into agreement -->
+  <path d="M22 9.2 A8.2 8.2 0 1 0 22 22.8" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M21.4 14.1 A3.4 3.4 0 1 0 21.4 17.9" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" opacity="0.9"/>
+</svg>

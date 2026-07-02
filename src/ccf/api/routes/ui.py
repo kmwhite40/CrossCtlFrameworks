@@ -490,20 +490,70 @@ async def delete_system_ui(
 async def poams_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    status: str | None = Query(None),
+    severity: str | None = Query(None),
+    system_id: int | None = Query(None),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    stmt = select(POAM).order_by(POAM.due_on.nulls_last())
+    today = datetime.now(UTC).date()
+    stmt = (
+        select(POAM)
+        .options(selectinload(POAM.milestones))
+        .order_by(POAM.due_on.nulls_last(), POAM.id.desc())
+    )
     if org is not None:
         stmt = stmt.where(
             POAM.system_id.in_(select(System.id).where(System.organization_id == org))
         )
-    rows = (await session.execute(stmt)).scalars().all()
+    if status:
+        stmt = stmt.where(POAM.status == status)
+    if severity:
+        stmt = stmt.where(POAM.severity == severity)
+    if system_id is not None:
+        stmt = stmt.where(POAM.system_id == system_id)
+    poams = (await session.execute(stmt)).scalars().all()
+
+    rows = []
+    metrics = {"total": 0, "open": 0, "overdue": 0, "high": 0}
+    for p in poams:
+        ms = list(p.milestones or [])
+        done = sum(1 for m in ms if m.status == "completed")
+        overdue = (
+            p.due_on is not None and p.due_on < today and p.status in ("open", "in_progress")
+        )
+        metrics["total"] += 1
+        if p.status in ("open", "in_progress"):
+            metrics["open"] += 1
+        if overdue:
+            metrics["overdue"] += 1
+        if p.severity in ("high", "critical"):
+            metrics["high"] += 1
+        rows.append(
+            {
+                "obj": p,
+                "overdue": overdue,
+                "milestone_total": len(ms),
+                "milestone_done": done,
+                "progress": round(100 * done / len(ms)) if ms else None,
+            }
+        )
+
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    systems = (await session.execute(sys_stmt)).scalars().all()
+
     return templates.TemplateResponse(
         request,
         "poams.html",
         {
             "active": "poams",
             "rows": rows,
+            "metrics": metrics,
+            "systems": systems,
+            "f_status": status or "",
+            "f_severity": severity or "",
+            "f_system": system_id,
         },
     )
 
@@ -1748,3 +1798,73 @@ async def assessment_make_poams_ui(
             )
         await session.commit()
     return RedirectResponse(f"/assessments/{assessment_id}", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# FedRAMP 20x — KSI catalog, readiness, reliability
+# ---------------------------------------------------------------------------
+
+
+@router.get("/fedramp20x", response_class=HTMLResponse)
+async def fedramp20x_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    system_id: int | None = None,
+) -> HTMLResponse:
+    from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
+    from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
+    from ...models import KSI, KSIState  # noqa: PLC0415
+
+    org = _principal_org(request)
+    ksis = await ksi_catalog.list_ksis(session)
+    # Group KSIs by category for display.
+    by_category: dict[str, list[KSI]] = {}
+    for k in ksis:
+        by_category.setdefault(k.category_name or k.category, []).append(k)
+
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    systems = (await session.execute(sys_stmt)).scalars().all()
+
+    readiness = None
+    states: dict[int, str] = {}
+    if system_id is not None:
+        readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
+        states = {
+            s.ksi_id: s.status
+            for s in (
+                await session.execute(select(KSIState).where(KSIState.system_id == system_id))
+            )
+            .scalars()
+            .all()
+        }
+    return templates.TemplateResponse(
+        request,
+        "fedramp20x.html",
+        {
+            "active": "fedramp20x",
+            "asset_v": _asset_version(),
+            "by_category": by_category,
+            "ksi_total": len(ksis),
+            "systems": systems,
+            "system_id": system_id,
+            "readiness": readiness,
+            "states": states,
+        },
+    )
+
+
+@router.get("/admin/reliability", response_class=HTMLResponse)
+async def reliability_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from ...reliability import run_checks, summarize  # noqa: PLC0415
+
+    summary = summarize(await run_checks(session))
+    return templates.TemplateResponse(
+        request,
+        "reliability.html",
+        {"active": "reliability", "asset_v": _asset_version(), "summary": summary},
+    )

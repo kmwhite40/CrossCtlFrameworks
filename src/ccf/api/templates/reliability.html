@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Reliability · Concord{% endblock %}
+{% block heading %}System reliability{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Operational-readiness checks across the database, migrations, core
+  services, and the FedRAMP 20x layer.</p>
+{% endblock %}
+{% block content %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__body row between">
+    <div>
+      <div class="card__title">
+        Overall:
+        <span class="badge badge--{{ 'ok' if summary.overall == 'pass' else ('warn' if summary.overall == 'warn' else 'bad') }}">
+          {{ summary.overall | upper }}
+        </span>
+      </div>
+      <div class="dim" style="margin-top:4px">
+        {{ summary.counts.pass }} pass · {{ summary.counts.warn }} warn · {{ summary.counts.fail }} fail
+        · {{ summary.total }} checks · {{ summary.timestamp }}
+      </div>
+    </div>
+    <button class="btn" onclick="window.location.reload()"><i data-lucide="refresh-cw"></i> Re-run</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card__body">
+    <table class="table">
+      <thead><tr><th>Check</th><th>Status</th><th>Message</th><th>Remediation</th></tr></thead>
+      <tbody>
+      {% for c in summary.checks %}
+        <tr>
+          <td><code>{{ c.name }}</code></td>
+          <td><span class="badge badge--{{ 'ok' if c.status == 'pass' else ('warn' if c.status == 'warn' else 'bad') }}">{{ c.status | upper }}</span></td>
+          <td>{{ c.message }}</td>
+          <td class="dim">{{ c.remediation or '' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{% endblock %}

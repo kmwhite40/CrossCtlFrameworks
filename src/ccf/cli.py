@@ -6,6 +6,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import typer
 import uvicorn
@@ -421,6 +422,181 @@ def user_create(
         )
 
     asyncio.run(_run())
+
+
+@app.command(name="reliability-check")
+def reliability_check(
+    json_out: bool = typer.Option(False, "--json", help="Emit raw JSON instead of a table"),
+) -> None:
+    """Run system reliability / operational-readiness checks."""
+    from .reliability import run_checks, summarize  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            return summarize(await run_checks(session))
+
+    summary = asyncio.run(_run())
+    if json_out:
+        console.print_json(json.dumps(summary, default=str))
+    else:
+        colors = {"pass": "green", "warn": "yellow", "fail": "red"}
+        t = Table(title="Concord — reliability check", show_lines=False)
+        t.add_column("Check")
+        t.add_column("Status")
+        t.add_column("Message")
+        for c in summary["checks"]:
+            color = colors.get(c["status"], "white")
+            t.add_row(c["name"], f"[{color}]{c['status'].upper()}[/{color}]", c["message"])
+        console.print(t)
+        overall = str(summary["overall"])
+        console.print(
+            f"Overall: [{colors.get(overall, 'white')}]{overall.upper()}[/] {summary['counts']}"
+        )
+    if summary["overall"] == "fail":
+        raise typer.Exit(code=1)
+
+
+# --- FedRAMP 20x sub-app ----------------------------------------------------
+
+fedramp20x_app = typer.Typer(help="FedRAMP 20x — KSIs, validation, readiness, package")
+app.add_typer(fedramp20x_app, name="fedramp20x")
+
+
+@fedramp20x_app.command(name="seed-ksi")
+def fr20x_seed_ksi(
+    path: Path = typer.Option(None, "--path", help="Catalog JSON (defaults to bundled seed)"),
+) -> None:
+    """Seed / refresh the FedRAMP 20x KSI catalog (idempotent)."""
+    from .fedramp20x.catalog import seed_ksis  # noqa: PLC0415
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await seed_ksis(session, path)
+        console.print(f"[green]KSI catalog seeded[/green] — {result}")
+
+    asyncio.run(_run())
+
+
+@fedramp20x_app.command(name="readiness")
+def fr20x_readiness(system_id: int = typer.Option(..., "--system-id")) -> None:
+    """Print FedRAMP 20x readiness for a system (no snapshot persisted)."""
+    from .fedramp20x.readiness import score_system  # noqa: PLC0415
+
+    async def _run() -> dict[str, object]:
+        async with session_scope() as session:
+            return await score_system(session, system_id=system_id, persist=False)
+
+    console.print_json(json.dumps(asyncio.run(_run()), default=str))
+
+
+@fedramp20x_app.command(name="validate")
+def fr20x_validate(system_id: int = typer.Option(..., "--system-id")) -> None:
+    """Run deterministic KSI validation for a system and persist a snapshot."""
+    from .fedramp20x.readiness import score_system  # noqa: PLC0415
+    from .fedramp20x.validation import validate_system  # noqa: PLC0415
+
+    async def _run() -> tuple[list[Any], dict[str, Any]]:
+        async with session_scope() as session:
+            results = await validate_system(session, system_id=system_id)
+            score = await score_system(session, system_id=system_id, persist=True)
+            return results, score
+
+    results, score = asyncio.run(_run())
+    console.print(
+        f"[green]Validated {len(results)} KSIs[/green] — "
+        f"readiness {score['readiness_pct']}% ({score['status']})"
+    )
+    console.print_json(json.dumps(results, default=str))
+
+
+@fedramp20x_app.command(name="export-package")
+def fr20x_export(
+    system_id: int = typer.Option(..., "--system-id"),
+    fmt: str = typer.Option("json", "--format", help="json | markdown | oscal"),
+    out: Path = typer.Option(None, "--out", help="Write to a file instead of stdout"),
+) -> None:
+    """Export the FedRAMP 20x authorization-package foundation."""
+    from .fedramp20x.package import build_package, render_markdown, to_oscal_shaped  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            pkg = await build_package(session, system_id=system_id)
+        if fmt == "markdown":
+            return render_markdown(pkg)
+        if fmt == "oscal":
+            return json.dumps(to_oscal_shaped(pkg), indent=2, default=str)
+        return json.dumps(pkg, indent=2, default=str)
+
+    text = asyncio.run(_run())
+    if out:
+        Path(out).write_text(text, encoding="utf-8")
+        console.print(f"[green]Wrote[/green] {out} ({len(text):,} bytes)")
+    else:
+        console.print(text)
+
+
+@fedramp20x_app.command(name="list-gaps")
+def fr20x_gaps(system_id: int = typer.Option(..., "--system-id")) -> None:
+    """List KSIs that are failing, warning, or need manual/assessor review."""
+    from .models import KSI, KSIState  # noqa: PLC0415
+
+    async def _run() -> list[dict[str, object]]:
+        async with session_scope() as session:
+            rows = (
+                await session.execute(
+                    select(KSI.identifier, KSI.name, KSIState.status)
+                    .join(KSIState, KSIState.ksi_id == KSI.id)
+                    .where(
+                        KSIState.system_id == system_id,
+                        KSIState.status.in_(("fail", "warn", "manual_review_required")),
+                    )
+                    .order_by(KSI.sort_order)
+                )
+            ).all()
+            return [{"ksi": r[0], "name": r[1], "status": r[2]} for r in rows]
+
+    gaps = asyncio.run(_run())
+    if not gaps:
+        console.print("[green]No open KSI gaps.[/green]")
+        return
+    t = Table(title=f"FedRAMP 20x KSI gaps — system {system_id}")
+    t.add_column("KSI")
+    t.add_column("Status")
+    t.add_column("Name")
+    for g in gaps:
+        t.add_row(str(g["ksi"]), str(g["status"]), str(g["name"]))
+    console.print(t)
+
+
+@fedramp20x_app.command(name="dependency-check")
+def fr20x_dep_check(system_id: int = typer.Option(..., "--system-id")) -> None:
+    """Summarize FedRAMP-authorized vs. non-authorized dependencies for a system."""
+    from .models import FedRAMPDependency  # noqa: PLC0415
+
+    async def _run() -> list[FedRAMPDependency]:
+        async with session_scope() as session:
+            return list(
+                (
+                    await session.execute(
+                        select(FedRAMPDependency).where(FedRAMPDependency.system_id == system_id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    deps = asyncio.run(_run())
+    if not deps:
+        console.print("[yellow]No dependencies recorded for this system.[/yellow]")
+        return
+    t = Table(title=f"FedRAMP dependencies — system {system_id}")
+    t.add_column("Name")
+    t.add_column("Provider")
+    t.add_column("FedRAMP status")
+    t.add_column("Risk")
+    for d in deps:
+        t.add_row(d.name, d.provider or "", d.fedramp_status, d.dependency_risk or "")
+    console.print(t)
 
 
 if __name__ == "__main__":

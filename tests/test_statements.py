@@ -41,7 +41,9 @@ def test_not_applicable() -> None:
 def test_odp_and_captured_params_folded_in() -> None:
     text, _ = _c(
         odp_values={"inactivity_period": "15 minutes"},
-        captured=[{"odp_key": "audit_retention_period", "value": "90 days", "connector": "aws_govcloud"}],
+        captured=[
+            {"odp_key": "audit_retention_period", "value": "90 days", "connector": "aws_govcloud"}
+        ],
     )
     assert "15 minutes" in text
     assert "captured from aws_govcloud" in text

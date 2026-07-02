@@ -61,6 +61,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "ccf.api" = ["templates/*.html", "static/**/*"]
 "ccf.scoring" = ["seed.json"]
+"ccf.fedramp20x" = ["ksi_catalog.json"]
 
 [tool.ruff]
 line-length = 100
