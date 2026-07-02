@@ -43,6 +43,11 @@ accent, soft shadows, no chrome-heavy glassmorphism.
 - **Supports FedRAMP 20x** (see below) — Key Security Indicators, deterministic
   validation, readiness scoring, and a machine-readable authorization package —
   kept logically separate from traditional FedRAMP Rev. 5 but traceable to NIST.
+- **Runs continuous controls monitoring** — vulnerability-scan ingestion that
+  reconciles findings into POA&Ms, assertion-based control tests over live
+  connector captures, plus a **workforce-security lifecycle** (personnel, training,
+  access reviews) and **vendor security questionnaires** — each with a REST API, a
+  server-rendered UI, and alert-digest integration (see below).
 - **Self-checks** via a reliability subsystem (`ccf reliability-check` /
   `/api/admin/reliability`) covering DB, migrations, core services, and the 20x layer.
 
@@ -95,6 +100,7 @@ Continuous-controls-monitoring (parity with commercial CCM/GRC platforms):
   `POST /api/control-tests/{id}/evaluate` or automatically in the scheduler cycle.
 - **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` emits an OSCAL 1.1
   plan-of-action-and-milestones (alongside the existing OSCAL SSP + Component Definition).
+- **UI** at `/scans` — upload a scan and review reconciliation counts + ingestion history.
 
 Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/access-reviews`):
 - **People** with PS-2 risk designation, PS-3 background screening, and PS-4/PS-5
@@ -104,6 +110,9 @@ Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/acces
   **access-certification reviews** (AC-2) whose completion is gated on every grant
   getting a retain/revoke/modify decision. `GET /api/personnel/summary` rolls up
   screening gaps, overdue training, and pending access decisions.
+- **UI** at `/personnel` — onboard/offboard, screening + training KPIs, and reviews.
+- Overdue training, incomplete screening, and overdue reviews surface in the alert
+  digest each scheduler cycle.
 
 Vendor security questionnaires (TPRM, `/api/questionnaires`):
 - **Templates** (built-in CAIQ-Lite + custom) drive weighted question sets.
@@ -111,6 +120,8 @@ Vendor security questionnaires (TPRM, `/api/questionnaires`):
   posture (weighted 0-100 → low/moderate/high/critical); `no` answers are flagged.
 - **Review** pushes the rating onto the Vendor record and can open a deduped
   remediation task per flagged gap. Scoring is pure (`ccf.governance.tprm`).
+- **UI** at `/vendor-questionnaires` (+ detail) — send, answer inline, and review.
+  Overdue questionnaires surface in the alert digest.
 
 GRC operating system (server-rendered modules under the **Governance** nav, each
 backed by a JSON API and covered by reliability checks):
@@ -136,6 +147,9 @@ backed by a JSON API and covered by reliability checks):
   **auto-run** `method='connector'` tests on their cadence. A failing run opens a
   critical alert + a dedup'd remediation task (identical for manual and automated
   triggers via a shared `record_result` helper).
+- **Scan ingestion** (`/scans`), **Personnel & access** (`/personnel`), and
+  **Vendor questionnaires** (`/vendor-questionnaires`) — the continuous-monitoring,
+  workforce-security, and third-party-risk pages described above.
 - **Register import/export** — round-trip the POA&M / risk / vendor / policy
   registers: `GET /api/export/{dataset}?fmt=csv|json|md` and
   `POST /api/import/{dataset}` (upserts by org-scoped id; recomputes derived
@@ -155,6 +169,9 @@ src/ccf/
 ├── logging.py           structlog (JSON or console)
 ├── db.py                async SQLAlchemy engine + session_scope
 ├── models.py            SQLAlchemy 2.0 ORM (reference + operational layers)
+├── models_grc.py        GRC-OS tables (trust, audit, regulatory, connectors, tests)
+├── models_people.py     personnel, training, access reviews (PS/AT/AC-2)
+├── models_tprm.py       vendor security questionnaires (templates, responses)
 ├── schemas.py           Pydantic v2 API schemas
 ├── cli.py               Typer entrypoint: ingest / serve / stats / search / show /
 │                        score / ssp-generate / fedramp20x / reliability-check / …
@@ -163,6 +180,7 @@ src/ccf/
 │   └── pipeline.py      workbook → Postgres (all sheets, dedup-safe)
 ├── ingest/
 │   └── scanners.py      vuln-scan (Nessus/Tenable/Inspector/Qualys/CSV) → POA&M reconcile
+├── governance/          scheduler, digest, conmon, control tests, personnel, tprm, …
 └── api/
     ├── main.py          FastAPI app factory, CORS, lifespan
     ├── deps.py          get_session dependency
@@ -195,6 +213,11 @@ tests/                   unit + integration (Postgres required)
   governance (tasks, policies, vendors, approvals, connectors, audit workspace,
   trust center) and FedRAMP 20x (KSIs, states, validation history, dependencies)
   tables.
+- Continuous-monitoring & workforce: `ccf.scan_ingestions` (+ `poams.scanner` /
+  `finding_uid` for reconciliation), `control_tests.assertion`; `ccf.people`,
+  `ccf.training_records`, `ccf.access_reviews` / `access_review_items`; and TPRM
+  `ccf.questionnaire_templates`, `ccf.vendor_questionnaires`,
+  `ccf.questionnaire_responses`.
 - Every tenant-owned table is protected by **row-level security** keyed on the
   `ccf.tenant_id` session GUC; `ccf.audit_log` carries a `prev_hash`/`row_hash`
   chain for tamper evidence.
@@ -298,7 +321,14 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET | `/api/admin/data-quality` | GRC data-completeness checks |
 | GET | `/api/mappings/unified` | "Implement once, satisfy many" cross-framework ranking |
 | GET · POST | `/api/export/{dataset}` · `/api/import/{dataset}` | Register round-trip (poams\|risks\|vendors\|policies) |
-| GET · POST | `/api/control-tests` (+ `/{id}/run`) | Continuous control tests + result recording |
+| POST · GET | `/api/scans/ingest` · `/api/scans/ingestions` | Vulnerability-scan ingestion → POA&M reconciliation |
+| GET | `/api/oscal/poam/{system_id}` | OSCAL 1.1 plan-of-action-and-milestones export |
+| GET · POST | `/api/control-tests` (+ `/{id}/run`, `/{id}/evaluate`) | Continuous control tests; manual result + assertion evaluate |
+| GET · POST | `/api/personnel` (+ `/{id}/offboard`, `/summary`) | Personnel lifecycle + workforce-security rollup |
+| POST | `/api/personnel/{id}/training` · `/api/training/{id}/complete` | Security-training assignment + completion |
+| GET · POST | `/api/access-reviews` (+ items, `/{id}/complete`) | AC-2 access-certification campaigns |
+| GET · POST | `/api/questionnaire-templates` · `/api/vendors/{id}/questionnaires` | Vendor questionnaire templates + assessments |
+| POST | `/api/questionnaires/{id}/submit` · `/{id}/review` | Score posture + push vendor risk rating |
 | GET · POST | `/api/audit/engagements` (+ requests, findings) | Audit collaboration workspace |
 | GET · POST | `/api/regulatory` | Regulatory change register |
 | GET · POST | `/api/connector-configs` (+ `/{id}/sync`) | Cloud connector registry |
@@ -374,11 +404,14 @@ Active development; feature-complete across the core platform. In place: the
 ingestion pipeline, data model, REST API + HTMX UI + Typer CLI, CMMC L2 live
 scoring, the SSP builder, the enterprise governance layer, FedRAMP 20x
 (KSIs → validation → readiness → authorization package), continuous-controls
-monitoring (scan ingestion → POA&M reconciliation), OSCAL export (Component
-Definition / SSP / POA&M), session + bearer authentication with
-separation-of-duties RBAC, database-enforced multi-tenant RLS, a tamper-evident
-audit hash-chain, Alembic-managed schema, Docker/Compose, CI, and a reliability
-self-check subsystem. The suite runs 130+ tests against a real Postgres.
+monitoring (scan ingestion → POA&M reconciliation + assertion-based control
+tests), the workforce-security lifecycle (personnel, training, access reviews)
+and vendor security questionnaires — each with an API, a UI, and alert-digest
+integration — OSCAL export (Component Definition / SSP / POA&M), session + bearer
+authentication with separation-of-duties RBAC, database-enforced multi-tenant RLS,
+a tamper-evident audit hash-chain, Alembic-managed schema, Docker/Compose, CI, and
+a reliability self-check subsystem. The suite runs 150+ tests against a real
+Postgres.
 
 Next: OIDC / SSO, SCD-2 history, official OSCAL schema conformance, a finer
 DB-role split, and published production runbooks / SLOs.
