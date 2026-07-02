@@ -39,6 +39,7 @@ from .routes import (
     evidence,
     fedramp20x,
     frameworks,
+    grc,
     health,
     insights,
     mappings,
@@ -162,6 +163,7 @@ def create_app() -> FastAPI:
     app.include_router(artifacts.router)
     app.include_router(diagrams.router)
     app.include_router(insights.router)
+    app.include_router(grc.router)
     app.include_router(ui.router)
     return app
 
