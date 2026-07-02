@@ -6,6 +6,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — continuous authorization
+- **Assurance graph / authorization digital twin** (`ccf/assurance/`,
+  `models_assurance.py`, `routes/assurance.py`, migration 0029) — a typed,
+  tenant-isolated relational graph (no external graph DB) built from Concord's
+  existing records (systems, controls, KSIs, evidence, scans, POA&Ms, risks,
+  vendors, connectors, control tests, evidence objects). Idempotent per-org
+  rebuild; each source is isolated so a missing optional module degrades that
+  slice, not the build. Impact analysis (BFS blast radius) via
+  `GET /api/assurance/impact/{evidence|control-tests|ksis|vendors|connectors}/{id}`;
+  system subgraph at `GET /api/assurance/graph/systems/{id}`; `POST …/graph/rebuild`
+  (audited). CLI `ccf assurance graph-rebuild|impact`; `/assurance` UI;
+  `assurance_graph_freshness` reliability check.
+
 ### Added — enterprise hardening (Phase 1)
 - **Evidence repository** (`ccf/evidence/`, `models_evidence.py`,
   `routes/evidence_repo.py`, migration 0028) — versioned, content-addressed

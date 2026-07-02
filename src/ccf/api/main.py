@@ -26,6 +26,7 @@ from .routes import (
     approvals,
     artifacts,
     assessments,
+    assurance,
     audit,
     auth,
     automation,
@@ -135,6 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(identity.router)
+    app.include_router(assurance.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)

@@ -159,10 +159,10 @@ async def _risks(session: AsyncSession, org_id: int, g: _Graph) -> None:
             await session.execute(select(System.id).where(System.organization_id == org_id))
         ).scalars().all()
     ]
+    if not sys_ids:
+        return
     for r in (
-        await session.execute(
-            select(Risk).where(Risk.system_id.in_(sys_ids)) if sys_ids else select(Risk).where(False)
-        )
+        await session.execute(select(Risk).where(Risk.system_id.in_(sys_ids)))
     ).scalars().all():
         rk = g.node("risk", r.id, r.title, r.status)
         if r.system_id is not None:
@@ -307,7 +307,9 @@ async def rebuild(session: AsyncSession, *, org_id: int | None = None) -> list[d
     return out
 
 
-async def snapshot_system(session: AsyncSession, *, org_id: int | None, system_id: int) -> AssuranceSnapshot:
+async def snapshot_system(
+    session: AsyncSession, *, org_id: int | None, system_id: int
+) -> AssuranceSnapshot:
     """Capture a per-system subgraph summary (node/edge counts by type)."""
     nodes = (
         await session.execute(

@@ -366,6 +366,32 @@ async def _check_auth_oidc_posture(session: AsyncSession) -> Check:
     return Check("auth_oidc_posture", PASS, "Enterprise SSO/SCIM configured.")
 
 
+async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
+    """Assurance-graph tables present; warn when the graph has never been built."""
+    if not await _regclass(session, "ccf.assurance_build_runs"):
+        return Check(
+            "assurance_graph_freshness", FAIL, "assurance_build_runs table missing.",
+            "Run migrations.",
+        )
+    row = (
+        await session.execute(
+            text(
+                "SELECT node_count, edge_count, finished_at FROM ccf.assurance_build_runs "
+                "WHERE status = 'ok' ORDER BY id DESC LIMIT 1"
+            )
+        )
+    ).first()
+    if row is None:
+        return Check(
+            "assurance_graph_freshness", WARN, "Assurance graph has not been built yet.",
+            "Run `ccf assurance graph-rebuild` or POST /api/assurance/graph/rebuild.",
+        )
+    return Check(
+        "assurance_graph_freshness", PASS,
+        f"Assurance graph built ({row[0]} nodes, {row[1]} edges).",
+    )
+
+
 async def _check_evidence_repository(session: AsyncSession) -> Check:
     """Evidence repository present; surface expired evidence as a warning."""
     if not await _regclass(session, "ccf.evidence_objects"):
@@ -530,6 +556,7 @@ _CHECKS = [
     _check_scoring_service,
     _check_evidence_service,
     _check_evidence_repository,
+    _check_assurance_graph_freshness,
     _check_ssp_service,
     _check_audit_write,
     _check_background,

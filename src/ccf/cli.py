@@ -643,6 +643,56 @@ def fr20x_monitor() -> None:
     console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
+assurance_app = typer.Typer(help="Assurance graph — build + query the authorization digital twin")
+app.add_typer(assurance_app, name="assurance")
+
+
+@assurance_app.command(name="graph-rebuild")
+def assurance_graph_rebuild() -> None:
+    """Rebuild the assurance graph for every organization."""
+    from .assurance import rebuild  # noqa: PLC0415
+
+    async def _run() -> list[dict[str, Any]]:
+        async with session_scope() as session:
+            out = await rebuild(session)
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    for row in out:
+        console.print(
+            f"[green]org {row['organization_id']}[/green]: "
+            f"{row['nodes']} nodes, {row['edges']} edges ({row['status']})"
+        )
+    if not out:
+        console.print("[yellow]No organizations to build.[/yellow]")
+
+
+@assurance_app.command(name="impact")
+def assurance_impact(
+    entity_type: str = typer.Option(..., "--entity-type", help="e.g. evidence, vendor, connector"),
+    entity_id: str = typer.Option(..., "--entity-id"),
+) -> None:
+    """Show the blast radius of an entity in the assurance graph."""
+    from .assurance import impact_for  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            return await impact_for(
+                session, org_id=None, entity_type=entity_type, entity_id=entity_id
+            )
+
+    out = asyncio.run(_run())
+    if out["root"] is None:
+        console.print("[yellow]Entity not present in the graph — run graph-rebuild first.[/yellow]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]{out['root']['label']}[/green] impacts {out['affected_count']} node(s):"
+    )
+    for etype, items in out["affected"].items():
+        console.print(f"  {etype}: {len(items)}")
+
+
 oscal_app = typer.Typer(help="OSCAL — validate exports against official or structural schema")
 app.add_typer(oscal_app, name="oscal")
 

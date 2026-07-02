@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import UTC, date, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -680,6 +681,64 @@ async def questionnaire_detail(
     )
 
 
+@router.get("/vendor-questionnaires/{qid}/export", response_class=HTMLResponse)
+async def questionnaire_export(
+    qid: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Render a modern, print-to-PDF assessment report for a questionnaire."""
+    org = _principal_org(request)
+    q = (
+        await session.execute(
+            select(VendorQuestionnaire)
+            .options(selectinload(VendorQuestionnaire.responses))
+            .where(VendorQuestionnaire.id == qid)
+        )
+    ).scalar_one_or_none()
+    if q is None or (org is not None and q.organization_id != org):
+        raise HTTPException(404, "questionnaire not found")
+
+    vendor = await session.get(Vendor, q.vendor_id)
+    responses = sorted(q.responses, key=lambda r: (r.sort_order or 0, r.id))
+
+    def _score(items: list[QuestionnaireResponse]) -> dict[str, Any]:
+        return tprm.score_responses(
+            [
+                {"answer": r.answer, "weight": r.weight, "question_id": r.question_id}
+                for r in items
+            ]
+        )
+
+    scored = _score(responses)
+
+    # Per-domain rollup, preserving first-seen domain order.
+    grouped: dict[str, list[QuestionnaireResponse]] = {}
+    for r in responses:
+        grouped.setdefault(r.domain or "General", []).append(r)
+    domain_rows = [
+        {
+            "domain": dom,
+            "items": items,
+            **_score(items),
+            "gaps": sum(1 for r in items if r.answer == "no"),
+        }
+        for dom, items in grouped.items()
+    ]
+
+    return templates.TemplateResponse(
+        request,
+        "questionnaire_report.html",
+        {
+            "q": q,
+            "vendor": vendor,
+            "responses": responses,
+            "scored": scored,
+            "flagged": set(scored["flagged"]),
+            "domain_rows": domain_rows,
+            "generated": _now(),
+        },
+    )
+
+
 @router.post("/vendor-questionnaires/{qid}/responses/{rid}")
 async def questionnaire_answer(
     qid: int,
@@ -803,3 +862,47 @@ async def evidence_create(
     )
     await session.commit()
     return RedirectResponse("/evidence", status_code=303)
+
+
+# ── Assurance graph (authorization digital twin) ─────────────────────────────
+@router.get("/assurance", response_class=HTMLResponse)
+async def assurance_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    from ...assurance import impact as assurance_impact  # noqa: PLC0415
+    from ...models_assurance import AssuranceNode  # noqa: PLC0415
+
+    org = _principal_org(request)
+    latest = await assurance_impact.latest_build(session, org)
+    node_stmt = select(AssuranceNode)
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        node_stmt = node_stmt.where(AssuranceNode.organization_id == org)
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    nodes = (await session.execute(node_stmt)).scalars().all()
+    by_type: dict[str, int] = {}
+    for n in nodes:
+        by_type[n.entity_type] = by_type.get(n.entity_type, 0) + 1
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    return templates.TemplateResponse(
+        request,
+        "assurance.html",
+        {
+            "active": "assurance",
+            "latest": latest,
+            "by_type": dict(sorted(by_type.items(), key=lambda kv: -kv[1])),
+            "systems": systems,
+            "node_total": len(nodes),
+        },
+    )
+
+
+@router.post("/assurance/rebuild")
+async def assurance_rebuild(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    from ...assurance import builder as assurance_builder  # noqa: PLC0415
+
+    await assurance_builder.rebuild(session, org_id=_principal_org(request))
+    await session.commit()
+    return RedirectResponse("/assurance", status_code=303)
