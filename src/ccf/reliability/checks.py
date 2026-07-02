@@ -66,11 +66,16 @@ async def _check_migrations(session: AsyncSession) -> Check:
 
         head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
         current = None
-        if await _regclass(session, "ccf.alembic_version") or await _regclass(
-            session, "public.alembic_version"
-        ):
+        # Read from the schema the table actually lives in (version_table_schema
+        # is "ccf"); relying on search_path here would fail when ccf isn't on it.
+        version_table = None
+        if await _regclass(session, "ccf.alembic_version"):
+            version_table = "ccf.alembic_version"
+        elif await _regclass(session, "public.alembic_version"):
+            version_table = "public.alembic_version"
+        if version_table is not None:
             current = (
-                await session.execute(text("SELECT version_num FROM alembic_version"))
+                await session.execute(text(f"SELECT version_num FROM {version_table}"))
             ).scalar()
         if current is None:
             return Check(
@@ -355,6 +360,75 @@ async def _check_20x_api(_s: AsyncSession) -> Check:
         return Check("fedramp20x_api_endpoints", FAIL, f"20x router import failed: {exc}")
 
 
+# --- GRC OS checks (Trust, Audit, Regulatory, Connectors, Control tests) ----
+
+
+async def _check_grc_tables(session: AsyncSession) -> Check:
+    required = [
+        "ccf.trust_profiles",
+        "ccf.trust_access_requests",
+        "ccf.regulatory_updates",
+        "ccf.audit_engagements",
+        "ccf.audit_requests",
+        "ccf.audit_findings",
+        "ccf.connector_configs",
+        "ccf.control_tests",
+        "ccf.control_test_results",
+    ]
+    missing = [t for t in required if not await _regclass(session, t)]
+    if missing:
+        return Check(
+            "grc_os_tables", FAIL, f"Missing GRC tables: {missing}", "Run `alembic upgrade head`."
+        )
+    return Check("grc_os_tables", PASS, f"All {len(required)} GRC tables present.")
+
+
+async def _check_grc_api(_s: AsyncSession) -> Check:
+    try:
+        from ..api.routes import grc as route  # noqa: PLC0415
+
+        n = len(route.router.routes)
+        return Check("grc_os_api_endpoints", PASS, f"GRC router loaded ({n} routes).")
+    except Exception as exc:
+        return Check("grc_os_api_endpoints", FAIL, f"GRC router import failed: {exc}")
+
+
+async def _check_grc_ui(_s: AsyncSession) -> Check:
+    try:
+        from ..api.routes import ui_grc as route  # noqa: PLC0415
+
+        paths = {getattr(r, "path", "") for r in route.router.routes}
+        expected = {"/trust", "/regulatory", "/connectors", "/control-tests", "/audit-workspace"}
+        missing = expected - paths
+        if missing:
+            return Check("grc_os_ui_pages", FAIL, f"Missing GRC UI routes: {sorted(missing)}")
+        return Check("grc_os_ui_pages", PASS, f"All {len(expected)} GRC UI pages registered.")
+    except Exception as exc:
+        return Check("grc_os_ui_pages", FAIL, f"GRC UI router import failed: {exc}")
+
+
+async def _check_control_tests_health(session: AsyncSession) -> Check:
+    if not await _regclass(session, "ccf.control_tests"):
+        return Check("grc_control_test_health", FAIL, "control_tests missing.", "Run migrations.")
+    try:
+        failing = (
+            await session.execute(
+                text("SELECT count(*) FROM ccf.control_tests WHERE last_status = 'fail'")
+            )
+        ).scalar() or 0
+        total = await _count(session, "ccf.control_tests") or 0
+        if total and failing:
+            return Check(
+                "grc_control_test_health",
+                WARN,
+                f"{failing}/{total} control tests failing.",
+                "Review /control-tests; each failure opens a remediation task.",
+            )
+        return Check("grc_control_test_health", PASS, f"{total} control tests; none failing.")
+    except Exception as exc:
+        return Check("grc_control_test_health", WARN, f"Could not verify: {exc}")
+
+
 _CHECKS = [
     _check_database,
     _check_migrations,
@@ -378,6 +452,10 @@ _CHECKS = [
     _check_dependency,
     _check_ksi_conmon,
     _check_20x_api,
+    _check_grc_tables,
+    _check_grc_api,
+    _check_grc_ui,
+    _check_control_tests_health,
 ]
 
 
