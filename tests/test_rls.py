@@ -14,7 +14,7 @@ from sqlalchemy import delete, func, select
 
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
-from ccf.models import Organization, System
+from ccf.models import FedRAMPDependency, Organization, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -95,3 +95,40 @@ async def test_rls_scopes_reads_and_blocks_cross_tenant_writes() -> None:
     async with session_scope() as s:
         await set_session_tenant(s, None)
         await s.execute(delete(System).where(System.name == "SmuggledIntoB"))
+
+
+@pytest.mark.asyncio
+async def test_rls_scopes_fedramp_20x_tables() -> None:
+    """The FedRAMP 20x system-owned tables inherit the same tenant isolation."""
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("RLS is a PostgreSQL feature")
+
+    _org_a, sys_a, _org_b, sys_b = await _seed_two_orgs()
+
+    # Seed one dependency per system as an unscoped (bypass) principal.
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        await s.execute(delete(FedRAMPDependency).where(FedRAMPDependency.name == "RlsDep"))
+        s.add(FedRAMPDependency(system_id=sys_a, name="RlsDep", fedramp_status="authorized"))
+        s.add(FedRAMPDependency(system_id=sys_b, name="RlsDep", fedramp_status="authorized"))
+
+    # Tenant A sees only its own system's dependency, with no app-layer filter.
+    async with session_scope() as s:
+        await set_session_tenant(s, _org_a)
+        rows = (await s.execute(select(FedRAMPDependency.system_id))).scalars().all()
+        assert sys_a in rows and sys_b not in rows
+
+    # Cross-tenant INSERT (dependency on B's system while scoped to A) is rejected.
+    with pytest.raises(Exception):  # noqa: B017 - DB raises on the WITH CHECK violation
+        async with session_scope() as s:
+            await set_session_tenant(s, _org_a)
+            s.add(FedRAMPDependency(system_id=sys_b, name="Smuggled20x"))
+            await s.flush()
+
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        await s.execute(
+            delete(FedRAMPDependency).where(
+                FedRAMPDependency.name.in_(["RlsDep", "Smuggled20x"])
+            )
+        )
