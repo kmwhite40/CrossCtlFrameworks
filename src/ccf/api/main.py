@@ -165,6 +165,7 @@ def create_app() -> FastAPI:
     app.include_router(diagrams.router)
     app.include_router(insights.router)
     app.include_router(grc.router)
+    app.include_router(ui_grc.router)
     app.include_router(ui.router)
     return app
 
