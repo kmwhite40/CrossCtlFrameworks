@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...governance import insights
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -34,6 +35,22 @@ router = APIRouter(include_in_schema=False)
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+# ── Executive dashboard ──────────────────────────────────────────────────────
+@router.get("/executive", response_class=HTMLResponse)
+async def executive_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    rollup = await insights.executive(session, org_id=org)
+    dq = await insights.data_quality(session, org_id=org)
+    unified = await insights.unified_controls(session, limit=10)
+    return templates.TemplateResponse(
+        request,
+        "executive.html",
+        {"active": "executive", "r": rollup, "dq": dq, "unified": unified},
+    )
 
 
 # ── Trust Center ─────────────────────────────────────────────────────────────

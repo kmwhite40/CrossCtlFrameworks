@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Executive dashboard · Concord{% endblock %}
+{% block heading %}Executive dashboard{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Consolidated posture, risk, POA&amp;M, evidence, and data-quality rollup across the portfolio. Generated {{ r.generated_at }}.</p>{% endblock %}
+{% block actions %}<button class="btn btn--ghost" onclick="window.print()"><i data-lucide="printer"></i> Print / PDF</button>{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi">
+    <div class="kpi__label">Avg SPRS score</div>
+    <div class="kpi__value">{{ r.avg_sprs_score if r.avg_sprs_score is not none else '—' }}<span class="dim" style="font-size:14px"> / 110</span></div>
+  </div>
+  <div class="kpi"><div class="kpi__label">Systems</div><div class="kpi__value">{{ r.systems_total }}</div></div>
+  <div class="kpi"><div class="kpi__label">Open POA&amp;Ms</div><div class="kpi__value">{{ r.open_poams }}</div></div>
+  <div class="kpi">
+    <div class="kpi__label">Overdue POA&amp;Ms</div>
+    <div class="kpi__value {% if r.overdue_poams %}kpi__value--danger{% endif %}">{{ r.overdue_poams }}</div>
+  </div>
+</div>
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Evidence fresh</div><div class="kpi__value">{{ r.evidence.fresh }}</div></div>
+  <div class="kpi"><div class="kpi__label">Evidence expiring</div><div class="kpi__value">{{ r.evidence.expiring_soon }}</div></div>
+  <div class="kpi"><div class="kpi__label">Evidence expired</div><div class="kpi__value {% if r.evidence.expired %}kpi__value--danger{% endif %}">{{ r.evidence.expired }}</div></div>
+  <div class="kpi"><div class="kpi__label">Data-quality issues</div><div class="kpi__value {% if r.data_quality_issues %}kpi__value--danger{% endif %}">{{ r.data_quality_issues }}</div></div>
+</div>
+
+<div class="cols-2">
+  <section class="card">
+    <div class="card__header"><div class="card__title">Risk by residual band</div></div>
+    <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+      {% for bandname, n in r.risk_by_residual_band.items() %}
+      <span class="chip {% if bandname=='critical' %}chip--err{% elif bandname=='high' %}chip--err{% elif bandname=='moderate' %}chip--warn{% elif bandname=='low' %}chip--ok{% else %}chip{% endif %}">{{ bandname }}: {{ n }}</span>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card__header"><div class="card__title">Systems by ATO status</div></div>
+    <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+      {% for status, n in r.systems_by_ato.items() %}
+      <span class="chip {% if status=='authorized' %}chip--ok{% elif status in ('expired','denied') %}chip--err{% elif status=='none' %}chip{% else %}chip--warn{% endif %}">{{ status|replace('_',' ') }}: {{ n }}</span>
+      {% else %}<span class="dim">No systems yet.</span>{% endfor %}
+    </div>
+  </section>
+</div>
+
+<section class="card" style="margin-top:16px">
+  <div class="card__header">
+    <div class="card__title">Data-quality checks</div>
+    {% if dq.clean %}<span class="chip chip--ok">All clean</span>{% else %}<span class="chip chip--warn">{{ dq.failing_checks|length }} failing</span>{% endif %}
+  </div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Check</th><th>Severity</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for c in dq.checks %}<tr>
+        <td>{{ c.check|replace('_',' ') }}</td>
+        <td><span class="chip {% if c.severity=='critical' %}chip--err{% elif c.severity=='warning' %}chip--warn{% else %}chip{% endif %}">{{ c.severity }}</span></td>
+        <td class="{% if c.count %}mono{% else %}dim{% endif %}">{{ c.count }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="card" style="margin-top:16px">
+  <div class="card__header">
+    <div class="card__title">Implement once, satisfy many</div>
+    <span class="dim" style="font-size:13px">{{ unified.mapped_controls }} mapped controls</span>
+  </div>
+  <div class="card__body dim" style="padding-top:0">{{ unified.note }}</div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>Frameworks covered</th><th>Total mappings</th></tr></thead>
+    <tbody>
+      {% for c in unified.top_controls %}<tr>
+        <td class="mono">{{ c.identifier }}</td>
+        <td><span class="chip chip--brand">{{ c.frameworks_covered }}</span></td>
+        <td class="dim">{{ c.mappings }}</td>
+      </tr>{% else %}<tr><td colspan="3" class="dim">No framework mappings ingested yet.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

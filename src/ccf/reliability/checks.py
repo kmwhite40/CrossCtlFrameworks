@@ -222,6 +222,26 @@ async def _check_background(_s: AsyncSession) -> Check:
         return Check("background_task_readiness", WARN, f"Scheduler import issue: {exc}")
 
 
+async def _check_auth_posture(_s: AsyncSession) -> Check:
+    """Warn/fail on insecure auth defaults outside a dev environment (go-live gate)."""
+    settings = get_settings()
+    if (settings.env or "dev").lower() in ("dev", "local", "test"):
+        return Check(
+            "auth_posture", PASS, f"Dev environment ({settings.env}) — open access is expected."
+        )
+    if not settings.auth_enabled:
+        return Check(
+            "auth_posture", FAIL, f"Auth is DISABLED in a '{settings.env}' environment.",
+            "Set CCF_AUTH_ENABLED=true before serving federal data.",
+        )
+    if settings.auth_session_secret == "dev-insecure-change-me":
+        return Check(
+            "auth_posture", FAIL, "Auth enabled but using the default session secret.",
+            "Set CCF_AUTH_SESSION_SECRET to a strong, secret value.",
+        )
+    return Check("auth_posture", PASS, "Auth enabled with a non-default session secret.")
+
+
 # --- FedRAMP 20x checks -----------------------------------------------------
 
 
@@ -443,6 +463,7 @@ _CHECKS = [
     _check_ssp_service,
     _check_audit_write,
     _check_background,
+    _check_auth_posture,
     _check_ksi_catalog_file,
     _check_ksi_loaded,
     _check_ksi_mappings,

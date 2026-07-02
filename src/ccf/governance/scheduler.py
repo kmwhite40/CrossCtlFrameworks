@@ -13,13 +13,19 @@ import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import text
+
 from ..config import get_settings
-from ..db import session_scope
+from ..db import get_engine, session_scope
 from ..etl.sources import poll as poll_sources
 from ..logging import get_logger
 from . import collection, conmon, control_tests, digest
 
 log = get_logger(__name__)
+
+# Postgres advisory-lock key so only ONE replica runs a cycle at a time
+# (multi-replica leader election without external coordination). Arbitrary constant.
+_SCHEDULER_LOCK_KEY = 809_057_120
 
 _task: asyncio.Task[None] | None = None
 
@@ -28,22 +34,42 @@ async def run_cycle() -> dict[str, Any]:
     """Run one full automation cycle. Returns per-job results."""
     today = datetime.now(UTC).date()
     out: dict[str, Any] = {}
+    is_pg = get_engine().dialect.name == "postgresql"
     async with session_scope() as session:
-        with contextlib.suppress(Exception):
-            checks = await poll_sources(session)
-            out["catalog_checks"] = len(checks)
-        with contextlib.suppress(Exception):
-            out["conmon"] = await conmon.scan(session, today=today)
-        with contextlib.suppress(Exception):
-            out["digest"] = await digest.run(session, today=today)
-        with contextlib.suppress(Exception):
-            out["collection"] = await collection.collect_all(session)
-        with contextlib.suppress(Exception):
-            out["control_tests"] = await control_tests.run_due(session, today=today)
-        with contextlib.suppress(Exception):
-            from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy import keeps startup light
+        # Multi-replica safety: only the instance that wins the advisory lock runs
+        # the cycle; others skip this tick. Session-level lock survives the
+        # intermediate commits inside the jobs and is released in ``finally``.
+        if is_pg:
+            got = (
+                await session.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"), {"k": _SCHEDULER_LOCK_KEY}
+                )
+            ).scalar()
+            if not got:
+                log.info("scheduler.cycle_skipped", reason="another instance holds the lock")
+                return {"skipped": "another instance holds the scheduler lock"}
+        try:
+            with contextlib.suppress(Exception):
+                checks = await poll_sources(session)
+                out["catalog_checks"] = len(checks)
+            with contextlib.suppress(Exception):
+                out["conmon"] = await conmon.scan(session, today=today)
+            with contextlib.suppress(Exception):
+                out["digest"] = await digest.run(session, today=today)
+            with contextlib.suppress(Exception):
+                out["collection"] = await collection.collect_all(session)
+            with contextlib.suppress(Exception):
+                out["control_tests"] = await control_tests.run_due(session, today=today)
+            with contextlib.suppress(Exception):
+                from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy, keeps startup light
 
-            out["fedramp20x"] = await monitoring.scan(session, today=today)
+                out["fedramp20x"] = await monitoring.scan(session, today=today)
+        finally:
+            if is_pg:
+                with contextlib.suppress(Exception):
+                    await session.execute(
+                        text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK_KEY}
+                    )
     log.info("scheduler.cycle", **{k: (v if isinstance(v, int) else "ok") for k, v in out.items()})
     return out
 

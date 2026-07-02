@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 
 from ccf.api.main import create_app
 from ccf.config import get_settings
-from ccf.db import session_scope
+from ccf.db import get_engine, session_scope
+from ccf.governance import scheduler
+from ccf.reliability import checks as checks_mod
 from ccf.reliability import run_checks, summarize
-from ccf.reliability.checks import Check
+from ccf.reliability.checks import Check, _check_auth_posture
 from ccf.reliability.checks import summarize as summarize_checks
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -69,3 +74,48 @@ async def test_reliability_endpoint() -> None:
         body = r.json()
         assert body["overall"] in {"pass", "warn", "fail"}
         assert any(chk["name"] == "fedramp20x_ksi_catalog_loaded" for chk in body["checks"])
+
+
+@pytest.mark.asyncio
+async def test_auth_posture_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(env: str, enabled: bool, secret: str) -> object:
+        return SimpleNamespace(env=env, auth_enabled=enabled, auth_session_secret=secret)
+
+    # Dev is allowed to be open.
+    monkeypatch.setattr(checks_mod, "get_settings", lambda: fake("dev", False, "x"))
+    assert (await _check_auth_posture(None)).status == "pass"  # type: ignore[arg-type]
+
+    # Production with auth disabled -> fail.
+    monkeypatch.setattr(checks_mod, "get_settings", lambda: fake("prod", False, "x"))
+    assert (await _check_auth_posture(None)).status == "fail"  # type: ignore[arg-type]
+
+    # Production with the default secret -> fail.
+    monkeypatch.setattr(
+        checks_mod, "get_settings", lambda: fake("prod", True, "dev-insecure-change-me")
+    )
+    assert (await _check_auth_posture(None)).status == "fail"  # type: ignore[arg-type]
+
+    # Production, auth on, real secret -> pass.
+    monkeypatch.setattr(checks_mod, "get_settings", lambda: fake("prod", True, "s3cret"))
+    assert (await _check_auth_posture(None)).status == "pass"  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_scheduler_leader_lock_skips_when_held() -> None:
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("advisory locks are a PostgreSQL feature")
+    engine = get_engine()
+    # Hold the scheduler advisory lock on a dedicated connection.
+    async with engine.connect() as held:
+        got = (
+            await held.execute(
+                text("SELECT pg_try_advisory_lock(:k)"), {"k": scheduler._SCHEDULER_LOCK_KEY}
+            )
+        ).scalar()
+        assert got is True
+        # A concurrent cycle must skip rather than double-run.
+        result = await scheduler.run_cycle()
+        assert "skipped" in result
+        await held.execute(
+            text("SELECT pg_advisory_unlock(:k)"), {"k": scheduler._SCHEDULER_LOCK_KEY}
+        )
