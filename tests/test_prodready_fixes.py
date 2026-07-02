@@ -25,6 +25,11 @@ from ccf.models import Organization, Task
 from ccf.scoring.parser import split_objectives
 from ccf.ssp.completeness import assess
 
+# Reset the global async engine around every test in this module (the DB tests
+# below reuse the singleton engine, which binds to a per-test event loop). Mirrors
+# tests/test_auth.py — safe for the pure tests too.
+pytestmark = pytest.mark.usefixtures("fresh_engine")
+
 # --- pure-function fixes ----------------------------------------------------
 
 
@@ -137,7 +142,6 @@ def _migrate() -> None:
     command.upgrade(cfg, "head")
 
 
-@pytest.mark.usefixtures("fresh_engine")
 @pytest.mark.asyncio
 async def test_rls_covers_governance_tables() -> None:
     """Org-scoped operational tables (e.g. tasks) inherit tenant isolation (0022)."""
@@ -173,7 +177,6 @@ async def test_rls_covers_governance_tables() -> None:
         await s.execute(delete(Task).where(Task.title == "RlsTask"))
 
 
-@pytest.mark.usefixtures("fresh_engine")
 @pytest.mark.asyncio
 async def test_ingest_enforces_header_contract_without_data_rows(tmp_path) -> None:
     """A header-only assessment sheet missing required headers must FAIL the run

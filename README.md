@@ -37,6 +37,51 @@ accent, soft shadows, no chrome-heavy glassmorphism.
   grouped cross-framework mappings, a framework catalog, a cross-framework
   mapping search, a generic worksheet viewer, and Postgres full-text search.
 - **Publishes a REST API** under `/api` with OpenAPI docs at `/docs`.
+- **Supports FedRAMP 20x** (see below) — Key Security Indicators, deterministic
+  validation, readiness scoring, and a machine-readable authorization package —
+  kept logically separate from traditional FedRAMP Rev. 5 but traceable to NIST.
+- **Self-checks** via a reliability subsystem (`ccf reliability-check` /
+  `/api/admin/reliability`) covering DB, migrations, core services, and the 20x layer.
+
+## FedRAMP 20x
+
+FedRAMP 20x is a cloud-assurance model built on **Key Security Indicators (KSIs)**,
+automated validation, machine-readable evidence, and continuous monitoring. Concord
+implements it as a first-class, separate layer — traditional FedRAMP Rev. 5 scoring
+(`systems.baseline`, `ccf.scoring`) is untouched — while staying **traceable to NIST
+SP 800-53** through each KSI's control mapping.
+
+- **KSI catalog** — 51 indicators across the 10 published families
+  (CED/CMT/CNA/IAM/INR/MLA/PIY/RPL/SVC/TPR), seeded from
+  [`data/fedramp_20x_ksi_catalog.json`](data/fedramp_20x_ksi_catalog.json) (packaged
+  fallback ships in the wheel/image). Representative wording + rules; update the seed,
+  don't touch business logic.
+- **Deterministic validation engine** — evaluates each KSI's machine-readable rule
+  (`control_state` / `control_any` / `evidence_present` / `dependency_authorized` /
+  `connector_capture` / `any_of` / `manual`) against control implementations,
+  evidence, authorized-dependency inventory, and **live cloud-connector captures**
+  (Microsoft Graph MFA/session; AWS EBS-encryption/log-retention). No cloud creds
+  required — connector-backed KSIs degrade to manual review until captures exist.
+- **Readiness scoring** — a separate, documented blend (pass rate, automation
+  coverage, evidence completeness, assessor completion, dependency readiness,
+  ConMon freshness) → an overall % + a 9-state lifecycle, snapshotted per system.
+- **Continuous monitoring** — the scheduler re-validates every 20x system on a
+  cadence, records readiness snapshots, and raises **drift** events/alerts
+  (pass → warn/fail) to the notification/webhook sink.
+- **Authorized-dependency tracking**, **assessor-review workflow** (a finding
+  auto-opens a POA&M), and **KSI exceptions** feed the readiness metrics.
+- **Machine-readable package** — export to JSON, Markdown, **DOCX**, an
+  **OSCAL-shaped** JSON structure (validated against a Concord OSCAL-*subset* schema
+  via `jsonschema` — not official OSCAL conformance), or a downloadable **zip bundle**
+  (package + OSCAL + evidence manifest).
+- **UI** at `/fedramp20x` — KSI catalog by family, per-system readiness, CSO profile,
+  dependencies, assessor review, exceptions, and package export. Reverse
+  KSI↔control traceability appears on each control's detail page.
+
+Observability: Prometheus metrics (`ccf_ksi_validations_total`,
+`ccf_fedramp20x_validation_duration_seconds`, `ccf_ksi_drift_events_total`,
+`ccf_fedramp20x_readiness_pct`) with a ready-to-import Grafana dashboard at
+[`deploy/grafana/fedramp20x-dashboard.json`](deploy/grafana/fedramp20x-dashboard.json).
 
 ## Architecture
 
@@ -140,6 +185,18 @@ ccf stats
 ccf show AC-01
 ccf search "multi-factor authentication"
 ccf serve --reload
+
+# FedRAMP 20x
+ccf fedramp20x seed-ksi
+ccf fedramp20x validate --system-id 1
+ccf fedramp20x readiness --system-id 1
+ccf fedramp20x list-gaps --system-id 1
+ccf fedramp20x dependency-check --system-id 1
+ccf fedramp20x monitor                     # continuous-monitoring sweep (drift)
+ccf fedramp20x export-package --system-id 1 --format bundle --out pkg.zip
+
+# Operations
+ccf reliability-check                       # platform + 20x readiness checks
 ```
 
 ## REST API (selected)
@@ -157,6 +214,15 @@ ccf serve --reload
 | GET | `/api/search?q=...` | Postgres full-text search over controls |
 | GET | `/api/systems/{id}/summary` | Compliance summary (coverage %, POA&Ms) |
 | PATCH | `/api/systems/{sid}/implementations/{cid}` | Upsert implementation state |
+| GET | `/api/fedramp/20x/ksis` · `/ksis/{id}` | KSI catalog |
+| POST | `/api/fedramp/20x/systems/{id}/validate` | Run deterministic KSI validation |
+| GET | `/api/fedramp/20x/systems/{id}/readiness` | 20x readiness rollup |
+| GET · POST | `/api/fedramp/20x/systems/{id}/dependencies` | Authorized dependencies |
+| POST · PATCH | `/api/fedramp/20x/assessor-reviews` | Assessor review workflow |
+| POST · PATCH | `/api/fedramp/20x/exceptions` | KSI exceptions |
+| GET | `/api/fedramp/20x/controls/{id}/ksis` | Reverse KSI↔control traceability |
+| GET | `/api/fedramp/20x/systems/{id}/package?format=json\|markdown\|oscal\|docx\|bundle` | Authorization package export |
+| GET | `/api/admin/reliability` | Reliability checks (503 on hard fail) |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -183,6 +249,16 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
 - `CCF_LOG_LEVEL`, `CCF_LOG_JSON`.
 - `CCF_API_HOST`, `CCF_API_PORT`, `CCF_API_CORS_ORIGINS`.
 - `CCF_WORKBOOK_PATH`.
+- `CCF_AUTH_ENABLED`, `CCF_AUTH_SESSION_SECRET` — enable auth/RBAC + set a strong
+  secret before serving federal data. The `auth_posture` reliability check **fails**
+  when auth is off or the default secret is used outside a dev environment.
+- `CCF_SCHEDULER_ENABLED`, `CCF_SCHEDULER_INTERVAL_HOURS` — in-app continuous
+  monitoring. Multi-replica safe: a Postgres advisory lock elects a single runner
+  per tick.
+- `CCF_FEDRAMP20X_OSCAL_VALIDATE` — validate the OSCAL-shaped export against the
+  bundled OSCAL-subset schema before returning it (`?validate=true` overrides per call).
+- `CCF_NOTIFY_WEBHOOK_URL`, `CCF_NOTIFY_MIN_SEVERITY` — Slack/Teams sink for alerts
+  (including KSI drift).
 
 ## Security posture (today vs. roadmap)
 

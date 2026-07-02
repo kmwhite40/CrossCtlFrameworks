@@ -19,8 +19,13 @@ import uvicorn
 from alembic import command
 from alembic.config import Config
 
+from ccf import db as ccf_db
 from ccf.api.main import create_app
 from ccf.config import get_settings
+
+# Browser e2e: excluded from the default `pytest` run (it drives a real server +
+# Chromium and owns the process's event loop). Run on demand:  pytest -m e2e
+pytestmark = pytest.mark.e2e
 
 playwright_api = pytest.importorskip("playwright.sync_api")
 
@@ -77,3 +82,7 @@ def test_fedramp20x_ui_renders_in_browser() -> None:
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+        # The app bound the global async engine to uvicorn's (now-dead) event loop;
+        # reset it so later DB-backed tests recreate it on their own loop.
+        ccf_db._engine = None
+        ccf_db._session_factory = None

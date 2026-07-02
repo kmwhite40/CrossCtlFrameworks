@@ -104,4 +104,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-ra --strict-markers"
+# Browser e2e tests are opt-in (they run a live server + Chromium). Run with
+# `pytest -m e2e`; the default suite excludes them.
+addopts = "-ra --strict-markers -m 'not e2e'"
+markers = [
+    "e2e: browser end-to-end tests (live server + Playwright; run with -m e2e)",
+]
