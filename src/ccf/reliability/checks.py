@@ -449,6 +449,34 @@ async def _check_ai_action_review_backlog(session: AsyncSession) -> Check:
     return Check("ai_action_review_backlog", PASS, f"{pending} AI action(s) awaiting review.")
 
 
+async def _check_ai_agent_governance(session: AsyncSession) -> Check:
+    """Flag high-risk / unapproved-production / unmonitored / overdue AI agents."""
+    if not await _regclass(session, "ccf.ai_agents"):
+        return Check("ai_agent_governance", PASS, "No AI agent inventory yet.")
+    problems = (
+        await session.execute(
+            text(
+                "SELECT "
+                "count(*) FILTER (WHERE production_access AND approval_status <> 'approved'), "
+                "count(*) FILTER (WHERE risk_rating IN ('high','critical') "
+                "  AND monitoring_coverage = 'none'), "
+                "count(*) FILTER (WHERE next_review_on IS NOT NULL "
+                "  AND next_review_on < CURRENT_DATE)"
+                " FROM ccf.ai_agents"
+            )
+        )
+    ).first()
+    unapproved_prod, high_no_mon, overdue = (problems or (0, 0, 0))
+    if unapproved_prod or high_no_mon:
+        return Check(
+            "ai_agent_governance", WARN,
+            f"{unapproved_prod} agent(s) with unapproved production access; "
+            f"{high_no_mon} high-risk without monitoring; {overdue} overdue review.",
+            "Review /ai-agents; approve, monitor, or engage the kill-switch.",
+        )
+    return Check("ai_agent_governance", PASS, "AI agent governance healthy.")
+
+
 async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
     """Assurance-graph tables present; warn when the graph has never been built."""
     if not await _regclass(session, "ccf.assurance_build_runs"):
@@ -645,6 +673,7 @@ _CHECKS = [
     _check_ai_disabled_safe_default,
     _check_ai_guardrail_violations,
     _check_ai_action_review_backlog,
+    _check_ai_agent_governance,
     _check_ssp_service,
     _check_audit_write,
     _check_background,

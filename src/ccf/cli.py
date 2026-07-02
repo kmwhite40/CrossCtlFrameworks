@@ -643,6 +643,120 @@ def fr20x_monitor() -> None:
     console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
+ai_agents_app = typer.Typer(help="AI agent governance — inventory, risk, approval, kill-switch")
+app.add_typer(ai_agents_app, name="ai-agents")
+
+
+@ai_agents_app.command(name="list")
+def ai_agents_list() -> None:
+    """List inventoried AI agents."""
+    from .models_ai_agents import AiAgent  # noqa: PLC0415
+
+    async def _run() -> list[tuple[int, str, str | None, str]]:
+        async with session_scope() as session:
+            rows = (await session.execute(select(AiAgent).order_by(AiAgent.name))).scalars().all()
+            return [(a.id, a.name, a.risk_rating, a.approval_status) for a in rows]
+
+    for aid, name, rating, status in asyncio.run(_run()):
+        console.print(f"[cyan]#{aid}[/cyan] {name} — risk {rating or '?'}, {status}")
+
+
+@ai_agents_app.command(name="create")
+def ai_agents_create(
+    name: str = typer.Option(..., "--name"),
+    autonomy: str = typer.Option("low", "--autonomy"),
+    production: bool = typer.Option(False, "--production/--no-production"),
+) -> None:
+    """Inventory a new AI agent (scores risk on creation)."""
+    from .ai_governance import risk_assess  # noqa: PLC0415
+    from .models_ai_agents import AiAgent  # noqa: PLC0415
+
+    async def _run() -> tuple[int, str]:
+        async with session_scope() as session:
+            agent = AiAgent(name=name, autonomy_level=autonomy, production_access=production)
+            session.add(agent)
+            await session.flush()
+            a = await risk_assess(session, agent, actor="cli")
+            await session.commit()
+            return agent.id, a.rating
+
+    aid, rating = asyncio.run(_run())
+    console.print(f"[green]agent #{aid}[/green] created — risk {rating}")
+
+
+@ai_agents_app.command(name="risk-assess")
+def ai_agents_risk_assess(agent_id: int = typer.Option(..., "--agent-id")) -> None:
+    """Re-score an agent's risk."""
+    from .ai_governance import risk_assess  # noqa: PLC0415
+    from .models_ai_agents import AiAgent  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            agent = await session.get(AiAgent, agent_id)
+            if agent is None:
+                return "not_found"
+            a = await risk_assess(session, agent, actor="cli")
+            await session.commit()
+            return f"{a.score} ({a.rating})"
+
+    out = asyncio.run(_run())
+    if out == "not_found":
+        console.print("[red]Agent not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Risk: [cyan]{out}[/cyan]")
+
+
+@ai_agents_app.command(name="approve")
+def ai_agents_approve(agent_id: int = typer.Option(..., "--agent-id")) -> None:
+    """Approve an AI agent."""
+    _ai_agent_decision(agent_id, "approved", None)
+
+
+@ai_agents_app.command(name="kill-switch")
+def ai_agents_kill_switch(
+    agent_id: int = typer.Option(..., "--agent-id"),
+    reason: str = typer.Option("", "--reason"),
+) -> None:
+    """Engage an AI agent's kill-switch."""
+    from .ai_governance import engage_kill_switch  # noqa: PLC0415
+    from .models_ai_agents import AiAgent  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            agent = await session.get(AiAgent, agent_id)
+            if agent is None:
+                return "not_found"
+            await engage_kill_switch(session, agent, reason=reason or None, actor="cli")
+            await session.commit()
+            return agent.kill_switch_status
+
+    out = asyncio.run(_run())
+    if out == "not_found":
+        console.print("[red]Agent not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Kill-switch: [red]{out}[/red]")
+
+
+def _ai_agent_decision(agent_id: int, decision: str, note: str | None) -> None:
+    from .ai_governance import review_agent  # noqa: PLC0415
+    from .models_ai_agents import AiAgent  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            agent = await session.get(AiAgent, agent_id)
+            if agent is None:
+                return "not_found"
+            await review_agent(session, agent, decision=decision, reviewer="cli", note=note)
+            await session.commit()
+            return agent.approval_status
+
+    out = asyncio.run(_run())
+    if out == "not_found":
+        console.print("[red]Agent not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Agent {agent_id}: [green]{out}[/green]")
+
+
 ai_actions_app = typer.Typer(help="Typed AI GRC actions — list, run, review, approve/reject")
 app.add_typer(ai_actions_app, name="ai-actions")
 

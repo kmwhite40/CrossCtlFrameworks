@@ -906,3 +906,62 @@ async def assurance_rebuild(
     await assurance_builder.rebuild(session, org_id=_principal_org(request))
     await session.commit()
     return RedirectResponse("/assurance", status_code=303)
+
+
+# ── AI agent governance ──────────────────────────────────────────────────────
+@router.get("/ai-agents", response_class=HTMLResponse)
+async def ai_agents_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    from ...models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org = _principal_org(request)
+    stmt = select(AiAgent).order_by(AiAgent.name)
+    if org is not None:
+        stmt = stmt.where(AiAgent.organization_id == org)
+    agents = (await session.execute(stmt)).scalars().all()
+    metrics = {
+        "total": len(agents),
+        "approved": sum(1 for a in agents if a.approval_status == "approved"),
+        "high_risk": sum(1 for a in agents if a.risk_rating in ("high", "critical")),
+        "engaged": sum(1 for a in agents if a.kill_switch_status == "engaged"),
+    }
+    return templates.TemplateResponse(
+        request, "ai_agents.html", {"active": "ai_agents", "agents": agents, "metrics": metrics}
+    )
+
+
+@router.post("/ai-agents")
+async def ai_agents_create_ui(
+    request: Request,
+    name: str = Form(...),
+    autonomy_level: str = Form("low"),
+    production: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    from ...ai_governance import risk_assess  # noqa: PLC0415
+    from ...models_ai_agents import AiAgent  # noqa: PLC0415
+
+    agent = AiAgent(
+        organization_id=_principal_org(request), name=name, autonomy_level=autonomy_level,
+        production_access=bool(production),
+    )
+    session.add(agent)
+    await session.flush()
+    await risk_assess(session, agent, actor=_actor(request))
+    await session.commit()
+    return RedirectResponse("/ai-agents", status_code=303)
+
+
+@router.post("/ai-agents/{aid}/kill-switch")
+async def ai_agents_kill_ui(
+    aid: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    from ...ai_governance import engage_kill_switch  # noqa: PLC0415
+    from ...models_ai_agents import AiAgent  # noqa: PLC0415
+
+    agent = await session.get(AiAgent, aid)
+    if agent is not None:
+        await engage_kill_switch(session, agent, reason="UI", actor=_actor(request))
+        await session.commit()
+    return RedirectResponse("/ai-agents", status_code=303)

@@ -73,6 +73,7 @@ async def _contribute(session: AsyncSession, org_id: int, g: _Graph) -> dict[str
     await run("scans", _scans(session, org_id, g))
     await run("control_tests", _control_tests(session, org_id, g))
     await run("evidence_objects", _evidence_objects(session, org_id, g))
+    await run("ai_agents", _ai_agents(session, org_id, g))
     return stats
 
 
@@ -238,6 +239,30 @@ async def _evidence_objects(session: AsyncSession, org_id: int, g: _Graph) -> No
         ek = g.node("evidence_object", o.id, o.title, o.status, framework=o.framework)
         if o.system_id is not None:
             g.edge(("system", str(o.system_id)), ek, "documented_by")
+
+
+async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
+    from ..models_ai_agents import AiAgent  # noqa: PLC0415
+
+    for a in (
+        await session.execute(select(AiAgent).where(AiAgent.organization_id == org_id))
+    ).scalars().all():
+        ak = g.node("ai_agent", a.id, a.name, a.approval_status,
+                    risk_rating=a.risk_rating, autonomy=a.autonomy_level)
+        targets: list[tuple[str, list[Any], str]] = [
+            ("system", list(a.system_ids or []), "accesses"),
+            ("vendor", list(a.vendor_ids or []), "depends_on"),
+            ("control", list(a.control_ids or []), "governed_by"),
+            ("poam", [], "n/a"),
+        ]
+        if a.system_id is not None:
+            g.edge(ak, ("system", str(a.system_id)), "accesses", 0.9)
+        for ttype, ids, rel in targets:
+            for tid in ids:
+                # Only connect to nodes the builder already created this run.
+                g.edge(ak, (ttype, str(tid)), rel, 0.7)
+        for rid in list(a.risk_ids or []):
+            g.edge(ak, ("risk", str(rid)), "introduces_risk", 0.7)
 
 
 async def rebuild_org(session: AsyncSession, org_id: int) -> AssuranceGraphBuildRun:

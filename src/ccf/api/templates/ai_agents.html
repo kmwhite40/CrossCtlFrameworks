@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}AI agents · Concord{% endblock %}
+{% block heading %}AI agent governance{% endblock %}
+{% block subtitle %}<p class="page__subtitle">AI agents are privileged non-human actors. Inventory them, score risk, approve, monitor, and engage a kill-switch — mapped into the assurance graph.</p>{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Agents</div><div class="kpi__value">{{ metrics.total }}</div></div>
+  <div class="kpi"><div class="kpi__label">Approved</div><div class="kpi__value">{{ metrics.approved }}</div></div>
+  <div class="kpi"><div class="kpi__label">High risk</div><div class="kpi__value">{{ metrics.high_risk }}</div></div>
+  <div class="kpi"><div class="kpi__label">Kill-switch engaged</div><div class="kpi__value">{{ metrics.engaged }}</div></div>
+</div>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/ai-agents" class="card__body filters">
+    <input class="input" name="name" required placeholder="Agent name">
+    <select class="select" name="autonomy_level" aria-label="Autonomy">
+      {% for a in ['low','medium','high','full'] %}<option value="{{ a }}">{{ a }} autonomy</option>{% endfor %}
+    </select>
+    <label class="dim" style="font-size:13px"><input type="checkbox" name="production" value="1"> production access</label>
+    <button class="btn btn--primary" type="submit"><i data-lucide="bot"></i> Inventory agent</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Agents</div><span class="dim" style="font-size:13px">{{ agents|length }}</span></div>
+  {% if agents %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Name</th><th>Autonomy</th><th>Prod</th><th>Oversight</th><th>Risk</th><th>Approval</th><th>Kill-switch</th><th></th></tr></thead>
+    <tbody>
+      {% for a in agents %}<tr>
+        <td><strong>{{ a.name }}</strong>{% if a.model_provider %}<div class="dim" style="font-size:12px">{{ a.model_provider }}</div>{% endif %}</td>
+        <td class="dim">{{ a.autonomy_level }}</td>
+        <td>{% if a.production_access %}<span class="chip chip--warn">yes</span>{% else %}<span class="dim">no</span>{% endif %}</td>
+        <td class="dim">{{ a.human_oversight }}</td>
+        <td>{% if a.risk_rating in ('high','critical') %}<span class="chip chip--err">{{ a.risk_rating }}</span>{% elif a.risk_rating=='moderate' %}<span class="chip chip--warn">moderate</span>{% elif a.risk_rating %}<span class="chip chip--ok">{{ a.risk_rating }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>{% if a.approval_status=='approved' %}<span class="chip chip--ok">approved</span>{% elif a.approval_status=='rejected' %}<span class="chip chip--err">rejected</span>{% else %}<span class="dim">draft</span>{% endif %}</td>
+        <td>{% if a.kill_switch_status=='engaged' %}<span class="chip chip--err">engaged</span>{% else %}<span class="dim">ready</span>{% endif %}</td>
+        <td>{% if a.kill_switch_status!='engaged' %}<form method="post" action="/ai-agents/{{ a.id }}/kill-switch"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="power-off"></i> Kill</button></form>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No AI agents inventoried yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

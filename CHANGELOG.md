@@ -7,6 +7,17 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **AI agent governance** (`ccf/ai_governance/`, `models_ai_agents.py`,
+  migration 0033) — inventory AI agents as privileged non-human actors with their
+  autonomy, data access, tools, and system/vendor/policy/control mappings. Pure
+  risk scorer (autonomy, regulated/production access, external action, oversight,
+  monitoring coverage → 0-100 + rating) runs on create/update; approval workflow,
+  monitoring events, incidents, and audited kill-switch. Agents become nodes in
+  the assurance graph (agent→system/vendor/control/risk edges), with
+  `GET /api/ai-agents/{id}/assurance-impact`. API `GET/POST /api/ai-agents*`;
+  CLI `ccf ai-agents list|create|risk-assess|approve|kill-switch`; `/ai-agents`
+  UI; `ai_agent_governance` reliability check (unapproved production access,
+  high-risk-without-monitoring, overdue review).
 - **Typed agentic GRC action layer** (`ccf/ai_actions/`, `models_ai_actions.py`,
   migration 0032) — AI executes *typed*, auditable actions (draft POA&M
   remediation, propose control test, find evidence for a control, draft
