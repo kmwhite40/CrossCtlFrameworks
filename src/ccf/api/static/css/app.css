@@ -324,6 +324,7 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .btn--ghost { background: transparent; color: var(--accent); }
 .btn--ghost:hover { background: var(--accent-soft); }
 .btn--sm { min-height: 32px; padding: 0 14px; font-size: 13px; }
+.btn--lg { min-height: 50px; padding: 0 26px; font-size: 17px; }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
 
 /* ════════════════════════════════════════════════════════════

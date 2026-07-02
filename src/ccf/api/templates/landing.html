@@ -1,78 +1,82 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Concord — cross-framework compliance command console</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <meta name="color-scheme" content="light dark" />
+  <title>Concord — cross-framework compliance platform</title>
+  <link rel="icon" type="image/svg+xml" href="/static/img/logo-mark.svg?v={{ asset_v }}" />
   <link rel="icon" type="image/png" href="/static/img/favicon.png?v={{ asset_v }}" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v={{ asset_v }}" />
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
+  <script>
+    // Match the app's chosen theme (light-first), applied before paint.
+    (function(){ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('concord:theme') || 'light'); } catch(e){} })();
+  </script>
   <script src="/static/vendor/lucide.min.js" defer></script>
   <style>
-    :root {
-      --cc-bg: #0a0d1e; --cc-light: #8b93ff; --cc-highlight: #2dd4bf;
-      --cc-glow-1: rgba(111,123,255,0.8); --cc-glow-2: rgba(90,99,240,0.55);
-      --cc-highlight-glow: rgba(45,212,191,0.7);
-    }
-    @keyframes lp-rise { 0% { transform: translateY(100%); opacity: 0; } 10% { opacity: 1; } 100% { transform: translateY(-5%); opacity: 0; } }
-    @keyframes lp-fade { 0%,100% { opacity: 0; } 5%,85% { opacity: 0.8; } }
-    @keyframes lp-floorGlow { 0%,100% { transform: translateX(-50%) scale(0.95); opacity: 0.6; } 50% { transform: translateX(-50%) scale(1.05); opacity: 1; } }
-    @keyframes lp-mainGlow { from { opacity: 0.45; filter: blur(30px); } to { opacity: 0.75; filter: blur(18px); } }
-    @keyframes lp-moveGrid { from { background-position: 0 0; } to { background-position: -100px -50px; } }
-    @keyframes lp-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
-    .lp-scene { position: fixed; inset: 0; z-index: 0; overflow: hidden; perspective: 700px;
-      background: radial-gradient(80% 60% at 50% 110%, rgba(111,123,255,0.18), transparent 60%), var(--cc-bg); }
-    .lp-floor { position: absolute; left: 50%; bottom: -12%; width: 240%; height: 95%;
-      transform: translateX(-50%) rotateX(76deg); transform-origin: bottom center;
-      background-image: linear-gradient(var(--cc-light) 1px, transparent 1px), linear-gradient(90deg, var(--cc-light) 1px, transparent 1px);
-      background-size: 48px 48px; opacity: 0.22; animation: lp-moveGrid 4s linear infinite;
-      -webkit-mask-image: linear-gradient(to top, black, transparent 72%); mask-image: linear-gradient(to top, black, transparent 72%); }
-    .lp-scene::before { content: ""; position: absolute; left: 50%; bottom: 4%; width: 70%; height: 220px; transform: translateX(-50%);
-      background: radial-gradient(ellipse at center, var(--cc-glow-1), transparent 70%); filter: blur(50px); animation: lp-floorGlow 5s ease-in-out infinite; }
-    .lp-column { position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; transform: translateX(-50%);
-      background: linear-gradient(to top, transparent, var(--cc-light) 45%, transparent); animation: lp-mainGlow 3s ease-in-out infinite alternate; }
-    .lp-beam { position: absolute; bottom: 0; height: 62vh; background: linear-gradient(to top, transparent, var(--cc-light));
-      box-shadow: 0 0 8px var(--cc-glow-1), 0 0 16px var(--cc-glow-2); animation-name: lp-rise, lp-fade;
-      animation-timing-function: ease-out, ease-in-out; animation-iteration-count: infinite, infinite; will-change: transform, opacity; }
-    .lp-beam.secondary { background: linear-gradient(to top, transparent, var(--cc-highlight)); box-shadow: 0 0 8px var(--cc-highlight-glow), 0 0 18px var(--cc-highlight-glow); }
+    .lp-scene { position: fixed; inset: 0; z-index: 0; overflow: hidden;
+      background:
+        radial-gradient(70% 55% at 50% -10%, var(--accent-soft), transparent 60%),
+        var(--bg); }
     .lp-wrap { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; }
-    .lp-nav { display: flex; align-items: center; gap: 14px; padding: 20px 28px; }
-    .lp-brand { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; color: #fff; text-decoration: none; }
-    .lp-mark { width: 34px; height: 34px; border-radius: 10px; object-fit: cover; display: block; box-shadow: var(--glow); }
-    .lp-logo { width: clamp(108px, 16vw, 156px); height: auto; border-radius: 28px; margin-bottom: 26px; filter: drop-shadow(0 18px 50px rgba(111,123,255,0.45)); animation: lp-float 6s ease-in-out infinite; }
-    @keyframes lp-float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
-    .lp-nav a.lp-link { color: var(--text-dim); text-decoration: none; font-size: 14px; }
-    .lp-nav a.lp-link:hover { color: #fff; }
-    .lp-hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 40px 24px 80px; }
-    .lp-hero > * { animation: lp-up .6s cubic-bezier(.2,.7,.2,1) backwards; }
-    .lp-hero > *:nth-child(2){animation-delay:.08s} .lp-hero > *:nth-child(3){animation-delay:.16s} .lp-hero > *:nth-child(4){animation-delay:.24s} .lp-hero > *:nth-child(5){animation-delay:.32s}
-    .lp-eyebrow { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--brand-300); border: 1px solid var(--glass-border); background: var(--glass); border-radius: 999px; padding: 6px 14px; }
-    .lp-title { font-size: clamp(40px, 7vw, 80px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.04; color: #fff; margin: 22px 0 0; max-width: 16ch; }
-    .lp-title .grad { background: linear-gradient(135deg, hsl(235 100% 82%), hsl(172 70% 62%)); -webkit-background-clip: text; background-clip: text; color: transparent; }
-    .lp-sub { margin: 22px auto 0; max-width: 60ch; color: var(--text-dim); font-size: clamp(15px, 2vw, 18px); line-height: 1.6; }
-    .lp-cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 34px; }
-    .lp-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; margin-top: 56px; width: min(880px, 92vw); }
-    @media (max-width: 640px){ .lp-stats { grid-template-columns: 1fr 1fr; } .lp-nav .lp-link { display:none; } }
-    .lp-stat { background: var(--glass); border: 1px solid var(--glass-border); border-radius: var(--radius-lg); padding: 18px; -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); text-align: left; }
-    .lp-stat b { display: block; font-size: 28px; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
-    .lp-stat span { font-size: 12.5px; color: var(--text-mute); }
-    .lp-foot { text-align: center; padding: 22px; color: var(--text-mute); font-size: 12.5px; }
-    @media (prefers-reduced-motion: reduce) { .lp-floor, .lp-column, .lp-beam, .lp-scene::before, .lp-hero > * { animation: none; } }
+
+    .lp-nav { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 20px;
+      height: var(--topnav-h); padding: 0 24px; max-width: var(--maxw); margin: 0 auto; width: 100%;
+      background: rgba(255,255,255,.82); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+      border-bottom: 1px solid var(--border); }
+    html[data-theme="dark"] .lp-nav { background: rgba(22,22,24,.72); }
+    .lp-brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 17px; letter-spacing: -.01em; color: var(--text); text-decoration: none; }
+    .lp-brand img { width: 26px; height: 26px; border-radius: 7px; display: block; }
+    .lp-nav .lp-link { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
+    .lp-nav .lp-link:hover { color: var(--text); }
+
+    .lp-hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: clamp(56px, 12vh, 120px) 24px 72px; max-width: var(--maxw); margin: 0 auto; width: 100%; }
+    .lp-hero > * { animation: lp-up .55s cubic-bezier(.2,.7,.2,1) backwards; }
+    .lp-hero > *:nth-child(2){animation-delay:.06s} .lp-hero > *:nth-child(3){animation-delay:.12s}
+    .lp-hero > *:nth-child(4){animation-delay:.18s} .lp-hero > *:nth-child(5){animation-delay:.24s} .lp-hero > *:nth-child(6){animation-delay:.30s}
+    @keyframes lp-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+    .lp-logo { width: clamp(60px, 9vw, 84px); height: auto; margin-bottom: 28px; }
+    .lp-eyebrow { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500;
+      color: var(--text-secondary); border: 1px solid var(--border); background: var(--bg-elevated);
+      border-radius: 999px; padding: 7px 14px; box-shadow: var(--shadow-xs); }
+    .lp-eyebrow svg { width: 14px; height: 14px; color: var(--accent); }
+    .lp-title { font-family: var(--font-display); font-size: clamp(40px, 6.6vw, 76px); font-weight: 700;
+      letter-spacing: -.045em; line-height: .98; color: var(--text); margin: 24px 0 0; max-width: 16ch; }
+    .lp-title .grad { color: var(--accent); }
+    .lp-sub { margin: 22px auto 0; max-width: 62ch; color: var(--text-secondary); font-size: clamp(17px, 2vw, 21px); line-height: 1.5; }
+    .lp-cta { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 34px; }
+
+    .lp-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 16px; margin-top: 64px; width: min(940px, 100%); }
+    .lp-stat { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-sm); padding: 24px; text-align: left; }
+    .lp-stat b { display: block; font-family: var(--font-display); font-size: clamp(28px, 3vw, 40px); font-weight: 700; color: var(--text); letter-spacing: -.04em; line-height: 1; }
+    .lp-stat span { display: block; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
+
+    .lp-features { max-width: var(--maxw); margin: 0 auto; width: 100%; padding: 8px 24px 96px;
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+    .lp-feature { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-sm); padding: 28px; }
+    .lp-feature__icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); margin-bottom: 16px; }
+    .lp-feature__icon svg { width: 20px; height: 20px; }
+    .lp-feature h3 { font-size: 19px; font-weight: 600; letter-spacing: -.02em; color: var(--text); margin: 0; }
+    .lp-feature p { margin: 8px 0 0; font-size: 15px; line-height: 1.5; color: var(--text-secondary); }
+
+    .lp-foot { text-align: center; padding: 28px; color: var(--text-muted); font-size: 13px; border-top: 1px solid var(--border); }
+    .lp-foot a { color: var(--accent); text-decoration: none; }
+
+    @media (max-width: 860px) { .lp-features { grid-template-columns: 1fr; } }
+    @media (max-width: 640px) { .lp-stats { grid-template-columns: 1fr 1fr; } .lp-nav .lp-link { display: none; } }
+    @media (prefers-reduced-motion: reduce) { .lp-hero > * { animation: none; } }
   </style>
 </head>
 <body>
-  <div class="lp-scene" aria-hidden="true">
-    <div class="lp-floor"></div>
-    <div class="lp-column"></div>
-    <div class="lp-beams" id="lp-beams"></div>
-  </div>
+  <div class="lp-scene" aria-hidden="true"></div>
 
   <div class="lp-wrap">
     <nav class="lp-nav">
-      <a class="lp-brand" href="/"><img class="lp-mark" src="/static/img/logo-512.png?v={{ asset_v }}" alt="Concord" width="34" height="34" /> Concord</a>
+      <a class="lp-brand" href="/"><img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="26" height="26" /> Concord</a>
       <span style="flex:1"></span>
       <a class="lp-link" href="/docs">API docs</a>
       <a class="btn btn--secondary btn--sm" href="/dashboard"><i data-lucide="layout-dashboard"></i> Dashboard</a>
@@ -80,11 +84,11 @@
     </nav>
 
     <main class="lp-hero">
-      <img class="lp-logo" src="/static/img/logo-512.png?v={{ asset_v }}" alt="Concord" width="156" height="156" />
-      <span class="lp-eyebrow"><i data-lucide="sparkles" style="width:14px;height:14px"></i> CMMC L2 · NIST 800-171 · 26 frameworks</span>
+      <img class="lp-logo" src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="Concord" width="84" height="84" />
+      <span class="lp-eyebrow"><i data-lucide="sparkles"></i> CMMC L2 · NIST 800-171 · 26 frameworks</span>
       <h1 class="lp-title">Cross-framework compliance, <span class="grad">in concord.</span></h1>
       <p class="lp-sub">Live SPRS scoring, an SSP &amp; SAR generator, an assessor workflow, evidence and
-        POA&amp;M tracking, OSCAL export, and a tamper-evident audit trail — one command console for your
+        POA&amp;M tracking, OSCAL export, and a tamper-evident audit trail — one workspace for your
         entire control program.</p>
       <div class="lp-cta">
         <a class="btn btn--primary btn--lg" href="/dashboard">Enter dashboard <i data-lucide="arrow-right"></i></a>
@@ -98,25 +102,27 @@
       </div>
     </main>
 
-    <footer class="lp-foot">Concord — cross-framework compliance platform · <a class="lp-link" href="/dashboard" style="color:var(--brand-300)">open the app →</a></footer>
+    <section class="lp-features">
+      <div class="lp-feature">
+        <div class="lp-feature__icon"><i data-lucide="gauge"></i></div>
+        <h3>Score in real time</h3>
+        <p>Live SPRS and CMMC L2 scoring as controls change, with cross-framework impact you can see at a glance.</p>
+      </div>
+      <div class="lp-feature">
+        <div class="lp-feature__icon"><i data-lucide="file-signature"></i></div>
+        <h3>Author the package</h3>
+        <p>Compose SSP and SAR narratives from the derivation, fill parameters once, and export FedRAMP-style documents and OSCAL.</p>
+      </div>
+      <div class="lp-feature">
+        <div class="lp-feature__icon"><i data-lucide="scroll-text"></i></div>
+        <h3>Prove it held</h3>
+        <p>Evidence, POA&amp;Ms, risks, and a tamper-evident audit trail keep every decision accountable and assessment-ready.</p>
+      </div>
+    </section>
+
+    <footer class="lp-foot">Concord — cross-framework compliance platform · <a href="/dashboard">open the app →</a></footer>
   </div>
 
-  <script>
-    (function () {
-      var root = document.getElementById('lp-beams');
-      if (!root || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-      var n = 70;
-      for (var i = 0; i < n; i++) {
-        var rise = Math.random() * 3 + 5;
-        var b = document.createElement('div');
-        b.className = 'lp-beam' + (Math.random() < 0.15 ? ' secondary' : '');
-        b.style.left = (Math.random() * 100) + '%';
-        b.style.width = (Math.floor(Math.random() * 2) + 1) + 'px';
-        b.style.animationDelay = (Math.random() * 6) + 's';
-        b.style.animationDuration = rise + 's, ' + rise + 's';
-        root.appendChild(b);
-      }
-    })();
-  </script>
+  <script>document.addEventListener('DOMContentLoaded', () => { if (window.lucide) window.lucide.createIcons(); });</script>
 </body>
 </html>
