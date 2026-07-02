@@ -88,6 +88,21 @@ async def scan_system(
             regressions=len(regressions),
             readiness_pct=readiness["readiness_pct"],
         )
+        # Fan to the notification sink (Slack/Teams webhook honours notify_min_severity).
+        await bus.notify(
+            session,
+            category="conmon",
+            title=f"FedRAMP 20x KSI drift: {system.name}",
+            body=(
+                f"{len(regressions)} KSI(s) regressed; readiness now "
+                f"{readiness['readiness_pct']}% ({readiness['status']})."
+            ),
+            org_id=system.organization_id,
+            severity="warning",
+            entity_type="system",
+            entity_id=system.id,
+            dedupe_key=f"20x-drift:{system.id}:{sorted(r['ksi'] for r in regressions)}",
+        )
         try:
             from ..api.metrics import KSI_DRIFT_EVENTS  # noqa: PLC0415
 

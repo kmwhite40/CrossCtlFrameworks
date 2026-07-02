@@ -44,7 +44,11 @@ def _entry_gaps(entry: dict[str, Any]) -> list[str]:
         gaps.append("no control origination")
     # Any ODP slot the control defines but the entry hasn't filled.
     defined = {d.get("key") for d in entry.get("odp_definitions") or []}
-    filled = {k for k, v in (entry.get("odp_values") or {}).items() if v}
+    # A value of 0 / 0.0 is a legitimately-filled parameter — only None/blank count
+    # as unfilled.
+    filled = {
+        k for k, v in (entry.get("odp_values") or {}).items() if v is not None and str(v).strip()
+    }
     missing_odp = defined - filled
     if missing_odp:
         gaps.append(f"{len(missing_odp)} unfilled parameter(s)")
@@ -74,9 +78,13 @@ def assess(project_metadata: dict[str, Any], entries: list[dict[str, Any]]) -> d
         else (len(REQUIRED_METADATA) - len(missing_sections)) / len(REQUIRED_METADATA)
     )
     score = round(100 * (0.8 * control_pct + 0.2 * section_pct), 1)
+    # "Ready" means genuinely done: every control complete (the 80/20 blend must
+    # not let a high score mask empty controls), all required front matter present,
+    # and at least one control in the SSP.
+    ready = bool(total) and complete == total and not missing_sections
     return {
         "score": score,
-        "ready": score >= 95 and not missing_sections,
+        "ready": ready,
         "controls_total": total,
         "controls_complete": complete,
         "missing_sections": missing_sections,

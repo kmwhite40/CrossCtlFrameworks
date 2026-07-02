@@ -13,10 +13,16 @@ from .config import get_settings
 
 def configure_logging() -> None:
     settings = get_settings()
+    # Resolve the level defensively: an unknown/misspelled CCF_LOG_LEVEL must not
+    # crash startup (logging.getLevelName returns a "Level FOO" string for unknown
+    # names, which structlog's filtering wrapper would reject). Fall back to INFO.
+    level = logging.getLevelName(settings.log_level.upper())
+    if not isinstance(level, int):
+        level = logging.INFO
     logging.basicConfig(
         format="%(message)s",
         stream=sys.stdout,
-        level=settings.log_level.upper(),
+        level=level,
     )
 
     processors: list[structlog.types.Processor] = [
@@ -33,9 +39,7 @@ def configure_logging() -> None:
 
     structlog.configure(
         processors=processors,
-        wrapper_class=structlog.make_filtering_bound_logger(
-            logging.getLevelName(settings.log_level.upper())
-        ),
+        wrapper_class=structlog.make_filtering_bound_logger(level),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )

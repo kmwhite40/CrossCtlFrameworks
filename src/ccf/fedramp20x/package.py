@@ -310,7 +310,8 @@ def render_markdown(pkg: dict[str, Any]) -> str:
             )
     else:
         lines.append("_No dependencies recorded._")
-    lines += ["", f"**Open POA&Ms:** {sum(1 for p in pkg['poams'] if p['status'] != 'closed')}", ""]
+    open_poams = sum(1 for p in pkg["poams"] if p["status"] in ("open", "in_progress"))
+    lines += ["", f"**Open POA&Ms:** {open_poams}", ""]
     return "\n".join(lines)
 
 

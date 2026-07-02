@@ -8,7 +8,7 @@ the platform's tenant-isolation pattern.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -30,9 +30,11 @@ from ...fedramp20x import (
 from ...governance import bus
 from ...models import (
     KSI,
+    POAM,
     FedRAMP20xProfile,
     FedRAMPDependency,
     KSIAssessorReview,
+    KSIException,
     KSIState,
     KSIValidationResult,
     System,
@@ -427,6 +429,35 @@ def _review_out(r: KSIAssessorReview) -> dict[str, Any]:
     }
 
 
+async def _maybe_open_finding_poam(
+    session: AsyncSession, *, system_id: int, ksi_id: int, review: KSIAssessorReview
+) -> None:
+    """When an assessor opens a finding, create an idempotent POA&M for the gap."""
+    if review.status != "finding_opened":
+        return
+    ksi = (await session.execute(select(KSI).where(KSI.id == ksi_id))).scalar_one_or_none()
+    ident = ksi.identifier if ksi else f"KSI {ksi_id}"
+    title = f"{ident} — assessor finding"
+    exists = (
+        await session.execute(
+            select(POAM.id).where(POAM.system_id == system_id, POAM.title == title)
+        )
+    ).scalar_one_or_none()
+    if exists is not None:
+        return
+    session.add(
+        POAM(
+            system_id=system_id,
+            title=title,
+            weakness=(review.finding or f"Assessor opened a finding against {ident}.").strip(),
+            severity="moderate",
+            status="open",
+            source="assessment",
+            identified_on=datetime.now(UTC).date(),
+        )
+    )
+
+
 @router.post("/assessor-reviews", status_code=201)
 async def create_review(
     body: AssessorReviewIn,
@@ -448,6 +479,7 @@ async def create_review(
         st.assessor_status = body.status
         st.reviewer_user_id = principal.user_id
     await session.flush()
+    await _maybe_open_finding_poam(session, system_id=body.system_id, ksi_id=body.ksi_id, review=rv)
     await bus.emit(
         session,
         verb="reviewed",
@@ -488,6 +520,7 @@ async def update_review(
         if st is not None:
             st.assessor_status = body.status
     await session.flush()
+    await _maybe_open_finding_poam(session, system_id=rv.system_id, ksi_id=rv.ksi_id, review=rv)
     await bus.emit(
         session,
         verb="updated",
@@ -499,3 +532,155 @@ async def update_review(
     )
     await session.commit()
     return _review_out(rv)
+
+
+@router.get("/assessor-reviews")
+async def list_reviews(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+    system_id: int | None = None,
+    ksi_id: int | None = None,
+    limit: int = Query(200, le=1000),
+) -> list[dict[str, Any]]:
+    """List assessor reviews (history), newest first, org-scoped."""
+    stmt = select(KSIAssessorReview).order_by(KSIAssessorReview.reviewed_at.desc()).limit(limit)
+    if system_id is not None:
+        await _require_system(session, system_id, principal)
+        stmt = stmt.where(KSIAssessorReview.system_id == system_id)
+    elif principal.org_id is not None:
+        stmt = stmt.where(
+            KSIAssessorReview.system_id.in_(
+                select(System.id).where(System.organization_id == principal.org_id)
+            )
+        )
+    if ksi_id is not None:
+        stmt = stmt.where(KSIAssessorReview.ksi_id == ksi_id)
+    return [_review_out(r) for r in (await session.execute(stmt)).scalars().all()]
+
+
+# --- KSI exceptions ---------------------------------------------------------
+
+
+class ExceptionIn(BaseModel):
+    system_id: int
+    ksi_id: int
+    rationale: str
+    status: str = Field("open", pattern=r"^(open|accepted|closed)$")
+    risk_id: int | None = None
+    expires_on: str | None = None
+
+
+class ExceptionPatch(BaseModel):
+    rationale: str | None = None
+    status: str | None = Field(None, pattern=r"^(open|accepted|closed)$")
+    risk_id: int | None = None
+    expires_on: str | None = None
+
+
+def _exc_out(e: KSIException) -> dict[str, Any]:
+    return {
+        "id": e.id,
+        "system_id": e.system_id,
+        "ksi_id": e.ksi_id,
+        "rationale": e.rationale,
+        "status": e.status,
+        "risk_id": e.risk_id,
+        "expires_on": e.expires_on.isoformat() if e.expires_on else None,
+    }
+
+
+@router.get("/systems/{system_id}/exceptions")
+async def list_exceptions(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    await _require_system(session, system_id, principal)
+    rows = (
+        await session.execute(
+            select(KSIException)
+            .where(KSIException.system_id == system_id)
+            .order_by(KSIException.created_at.desc())
+        )
+    ).scalars().all()
+    return [_exc_out(e) for e in rows]
+
+
+@router.post("/exceptions", status_code=201)
+async def create_exception(
+    body: ExceptionIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "platform_admin", "isso")),
+) -> dict[str, Any]:
+    await _require_system(session, body.system_id, principal)
+    exc = KSIException(
+        system_id=body.system_id,
+        ksi_id=body.ksi_id,
+        rationale=body.rationale,
+        status=body.status,
+        risk_id=body.risk_id,
+        expires_on=date.fromisoformat(body.expires_on) if body.expires_on else None,
+    )
+    session.add(exc)
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="ksi_exception",
+        entity_id=exc.id,
+        summary=f"KSI exception ({body.status}) for KSI {body.ksi_id}",
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    await session.commit()
+    return _exc_out(exc)
+
+
+@router.patch("/exceptions/{exception_id}")
+async def update_exception(
+    exception_id: int,
+    body: ExceptionPatch,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "platform_admin", "isso")),
+) -> dict[str, Any]:
+    exc = (
+        await session.execute(select(KSIException).where(KSIException.id == exception_id))
+    ).scalar_one_or_none()
+    if exc is None:
+        raise HTTPException(404, "exception not found")
+    await _require_system(session, exc.system_id, principal)
+    data = body.model_dump(exclude_none=True)
+    if "expires_on" in data:
+        exc.expires_on = date.fromisoformat(data.pop("expires_on"))
+    for field_name, value in data.items():
+        setattr(exc, field_name, value)
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="updated",
+        entity_type="ksi_exception",
+        entity_id=exc.id,
+        summary=f"KSI exception {exc.status} for KSI {exc.ksi_id}",
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    await session.commit()
+    return _exc_out(exc)
+
+
+# --- reverse KSI<->control traceability -------------------------------------
+
+
+@router.get("/controls/{identifier}/ksis")
+async def ksis_for_control(
+    identifier: str,
+    session: AsyncSession = Depends(get_session),
+    _p: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Which KSIs a NIST control supports (reverse of KSI.nist_refs)."""
+    norm = validation.normalize_control(identifier)
+    matches = []
+    for k in await catalog.list_ksis(session):
+        if any(validation.normalize_control(c) == norm for c in (k.nist_refs or [])):
+            matches.append({"identifier": k.identifier, "name": k.name, "category": k.category})
+    return {"control": identifier, "normalized": norm, "ksis": matches}

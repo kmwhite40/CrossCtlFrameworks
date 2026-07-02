@@ -388,6 +388,45 @@ async def test_fedramp20x_ui_pages_and_forms() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exceptions_traceability_and_findings_poam() -> None:
+    async with _client() as c:
+        await c.post("/api/fedramp/20x/ksis/seed")
+        sid = await _fresh_system("BatchCso")
+        ksi = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-01")).json()
+
+        # KSI exception CRUD.
+        exc = await c.post(
+            "/api/fedramp/20x/exceptions",
+            json={"system_id": sid, "ksi_id": ksi["id"], "rationale": "compensating control"},
+        )
+        assert exc.status_code == 201
+        listed = (await c.get(f"/api/fedramp/20x/systems/{sid}/exceptions")).json()
+        assert any(e["rationale"] == "compensating control" for e in listed)
+        patched = await c.patch(
+            f"/api/fedramp/20x/exceptions/{exc.json()['id']}", json={"status": "accepted"}
+        )
+        assert patched.json()["status"] == "accepted"
+
+        # Reverse traceability: IA-2 supports KSI-IAM-01.
+        trace = (await c.get("/api/fedramp/20x/controls/IA-2/ksis")).json()
+        assert any(k["identifier"] == "KSI-IAM-01" for k in trace["ksis"])
+
+        # Assessor "finding_opened" auto-opens a POA&M; list endpoint returns history.
+        await c.post(f"/api/fedramp/20x/systems/{sid}/validate")
+        await c.post(
+            "/api/fedramp/20x/assessor-reviews",
+            json={
+                "system_id": sid, "ksi_id": ksi["id"], "status": "finding_opened",
+                "finding": "MFA not enforced for break-glass",
+            },
+        )
+        reviews = (await c.get(f"/api/fedramp/20x/assessor-reviews?system_id={sid}")).json()
+        assert any(r["status"] == "finding_opened" for r in reviews)
+        poams = (await c.get(f"/api/poams?system_id={sid}")).json()
+        assert any("assessor finding" in p["title"] for p in poams)
+
+
+@pytest.mark.asyncio
 async def test_continuous_monitoring_detects_drift() -> None:
     async with session_scope() as s:
         await catalog.seed_ksis(s)

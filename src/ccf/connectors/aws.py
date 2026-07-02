@@ -83,11 +83,15 @@ class AwsGovCloudConnector(ConfigConnector):
         if not self.is_configured():
             return []
         out: list[CapturedParameter] = []
-        try:
-            out.extend(await self._capture_log_retention())
-        except Exception as e:  # best-effort — never break the caller
-            log.warning("connector.aws.capture_failed", error=str(e)[:200])
-            return []
+        # Isolate each sub-capture: one failing AWS call (throttling, a single
+        # service permission gap) must not discard parameters other calls captured.
+        for sub in (self._capture_log_retention,):
+            try:
+                out.extend(await sub())
+            except Exception as e:  # best-effort — never break the caller
+                log.warning(
+                    "connector.aws.capture_failed", capture=sub.__name__, error=str(e)[:200]
+                )
         return out
 
     async def _capture_log_retention(self) -> list[CapturedParameter]:

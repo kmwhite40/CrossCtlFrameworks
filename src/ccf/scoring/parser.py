@@ -83,9 +83,10 @@ def split_objectives(text: str) -> list[dict[str, str]]:
     for i, m in enumerate(matches):
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        body = text[start:end].strip().rstrip(";").strip()
-        # Trailing connectors like "and"/"or" left dangling before the next item.
-        body = re.sub(r"\b(and|or)$", "", body).strip()
+        body = text[start:end].strip()
+        # Trailing connectors like "and"/"or" left dangling before the next item,
+        # then any separator punctuation they were joined with ("...defined; and").
+        body = re.sub(r"\b(and|or)$", "", body).strip().rstrip(";").strip()
         parts.append({"label": m.group(1), "text": body})
     return parts
 

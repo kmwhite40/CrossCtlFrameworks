@@ -77,6 +77,18 @@
       <div class="card__body">{{ control.related_controls }}</div>
     </div>
     {% endif %}
+
+    {% if supporting_ksis %}
+    <div class="card" style="margin-top:16px">
+      <div class="card__header"><div class="card__title">FedRAMP 20x KSIs supported by this control</div>
+        <div class="card__subtitle">Implementing this control contributes to {{ supporting_ksis | length }} Key Security Indicator(s).</div></div>
+      <div class="card__body">
+        {% for k in supporting_ksis %}
+          <a class="chip" href="/fedramp20x" title="{{ k.name }}">{{ k.identifier }}</a>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
   </div>
 
   <!-- Assessment -->

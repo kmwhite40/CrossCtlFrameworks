@@ -257,6 +257,17 @@ async def control_detail(
         fw = m.framework.name if m.framework else "Other"
         grouped.setdefault(fw, []).append(m)
 
+    # Reverse FedRAMP 20x traceability: which KSIs does this control support?
+    from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
+    from ...fedramp20x.validation import normalize_control  # noqa: PLC0415
+
+    norm = normalize_control(ctl.identifier)
+    supporting_ksis = [
+        k
+        for k in await ksi_catalog.list_ksis(session)
+        if any(normalize_control(c) == norm for c in (k.nist_refs or []))
+    ]
+
     return templates.TemplateResponse(
         request,
         "control_detail.html",
@@ -264,6 +275,7 @@ async def control_detail(
             "active": "controls",
             "control": ctl,
             "grouped": grouped,
+            "supporting_ksis": supporting_ksis,
         },
     )
 
@@ -1860,6 +1872,7 @@ async def fedramp20x_page(
         KSI,
         FedRAMP20xProfile,
         FedRAMPDependency,
+        KSIException,
         KSIState,
     )
 
@@ -1880,6 +1893,8 @@ async def fedramp20x_page(
     assessor: dict[int, str] = {}
     profile = None
     dependencies: list[FedRAMPDependency] = []
+    exceptions: list[KSIException] = []
+    ksi_names: dict[int, str] = {k.id: k.identifier for k in ksis}
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
         for s in (
@@ -1901,6 +1916,17 @@ async def fedramp20x_page(
             .scalars()
             .all()
         )
+        exceptions = list(
+            (
+                await session.execute(
+                    select(KSIException)
+                    .where(KSIException.system_id == system_id)
+                    .order_by(KSIException.created_at.desc())
+                )
+            )
+            .scalars()
+            .all()
+        )
     return templates.TemplateResponse(
         request,
         "fedramp20x.html",
@@ -1910,6 +1936,7 @@ async def fedramp20x_page(
             "by_category": by_category,
             "ksi_total": len(ksis),
             "ksis": ksis,
+            "ksi_names": ksi_names,
             "systems": systems,
             "system_id": system_id,
             "readiness": readiness,
@@ -1917,6 +1944,7 @@ async def fedramp20x_page(
             "assessor": assessor,
             "profile": profile,
             "dependencies": dependencies,
+            "exceptions": exceptions,
         },
     )
 
@@ -2020,6 +2048,35 @@ async def fedramp20x_record_review(
         ).scalar_one_or_none()
         if state is not None:
             state.assessor_status = status
+        await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+@router.post("/fedramp20x/{system_id}/exception")
+async def fedramp20x_add_exception(
+    request: Request,
+    system_id: int,
+    ksi_id: int = Form(...),
+    rationale: str = Form(...),
+    status: str = Form("open"),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Record a KSI exception / deviation for a system."""
+    from ...models import KSIException  # noqa: PLC0415
+
+    if (
+        rationale.strip()
+        and status in ("open", "accepted", "closed")
+        and await _fedramp20x_system_visible(request, session, system_id)
+    ):
+        session.add(
+            KSIException(
+                system_id=system_id,
+                ksi_id=ksi_id,
+                rationale=rationale.strip(),
+                status=status,
+            )
+        )
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 

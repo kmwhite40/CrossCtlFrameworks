@@ -19,7 +19,7 @@ from fastapi import Request, Response
 from sqlalchemy import select
 
 from ..config import get_settings
-from ..db import get_session_factory
+from ..db import get_session_factory, set_session_tenant
 from ..logging import get_logger
 from ..models import AuditLog
 
@@ -127,6 +127,10 @@ async def audit_middleware(
         }
         factory = get_session_factory()
         async with factory() as session:
+            # Reset the tenant/role context: this session may reuse a pooled
+            # connection left scoped (SET ROLE ccf_app + tenant GUC) by a prior
+            # request. The audit trail must write unscoped, never as a stale tenant.
+            await set_session_tenant(session, None)
             prev = (
                 await session.execute(
                     select(AuditLog.row_hash).order_by(AuditLog.id.desc()).limit(1)

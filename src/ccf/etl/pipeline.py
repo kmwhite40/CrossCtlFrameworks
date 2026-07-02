@@ -49,7 +49,10 @@ log = get_logger(__name__)
 ASSESSMENT_SHEET = "SP.800-53Ar5_assessment"
 BOOL_STRINGS_TRUE = {"x", "yes", "y", "true", "t", "1"}
 BOOL_STRINGS_FALSE = {"no", "n", "false", "f", "0"}
-FAMILY_RE = re.compile(r"\(([A-Z]{2,3})\)\s*(.*)")
+# Family label may carry the code as a leading OR trailing parenthetical:
+# "(AC) Access Control" or "Access Control (AC)". Search (not match) so either
+# position is recognised, and prefer the text outside the parenthetical as the name.
+FAMILY_RE = re.compile(r"\(([A-Z]{2,3})\)")
 
 
 def _clean(v: Any) -> Any:
@@ -130,11 +133,14 @@ async def _ensure_family(
 ) -> int | None:
     if not raw:
         return None
-    m = FAMILY_RE.match(raw.strip())
+    label = raw.strip()
+    m = FAMILY_RE.search(label)
     if m:
-        code, name = m.group(1), (m.group(2).strip().title() or raw)
+        code = m.group(1)
+        # The name is whatever text sits outside the "(XX)" parenthetical.
+        name = FAMILY_RE.sub("", label).strip(" -").strip().title() or label
     else:
-        code, name = raw[:16].upper(), raw
+        code, name = label[:16].upper(), label
     if code in cache:
         return cache[code]
     obj = (
@@ -146,6 +152,13 @@ async def _ensure_family(
         await session.flush()
     cache[code] = obj.id
     return obj.id
+
+
+def _sheet_headers(ws: Any) -> list[str]:
+    """The first (header) row of a worksheet, normalized to strings."""
+    for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+        return [str(h) if h is not None else f"col_{idx}" for idx, h in enumerate(row)]
+    return []
 
 
 def _iter_sheet_rows(ws: Any) -> Iterable[tuple[int, list[str], tuple[Any, ...]]]:
@@ -168,6 +181,14 @@ async def _ingest_assessment(
 ) -> dict[str, int]:
     stats = {"rows": 0, "mappings": 0, "rejected": 0}
     family_cache: dict[str, int] = {}
+
+    # Validate the header contract BEFORE touching existing data — this runs even
+    # when the sheet is header-only (no data rows), and a contract failure aborts
+    # the run without wiping the catalog.
+    header_set = set(_sheet_headers(ws))
+    diff = validate_headers(header_set, load_contract())
+    if diff.added:
+        log.info("ingest.header_drift", new_headers_count=len(diff.added))
 
     await session.execute(delete(FrameworkMapping))
     await session.execute(delete(Control))
@@ -201,17 +222,7 @@ async def _ingest_assessment(
     history_controls: list[ControlHistory] = []
     seen_identifiers: set[str] = set()
 
-    # Validate headers against the contract once.
-    first = True
-    header_set: set[str] = set()
-
     for row_idx, headers, row in _iter_sheet_rows(ws):
-        if first:
-            header_set = set(headers)
-            diff = validate_headers(header_set, load_contract())
-            if diff.added:
-                log.info("ingest.header_drift", new_headers_count=len(diff.added))
-            first = False
 
         record = dict(zip(headers, row, strict=False))
         identifier = _clean(record.get("identifier"))

@@ -90,8 +90,9 @@ def summarize_results(results: Iterable[AssessmentControlResult]) -> dict[str, A
     total = assessed = reviewed = 0
     for r in results:
         total += 1
-        by_finding[r.finding] = by_finding.get(r.finding, 0) + 1
-        if r.finding != "not_assessed":
+        finding = r.finding or "not_assessed"
+        by_finding[finding] = by_finding.get(finding, 0) + 1
+        if finding != "not_assessed":
             assessed += 1
         if r.reviewed:
             reviewed += 1
@@ -99,9 +100,9 @@ def summarize_results(results: Iterable[AssessmentControlResult]) -> dict[str, A
             r.domain or "?", {"total": 0, "satisfied": 0, "other_than_satisfied": 0}
         )
         dom["total"] += 1
-        if r.finding == "satisfied":
+        if finding == "satisfied":
             dom["satisfied"] += 1
-        elif r.finding == "other_than_satisfied":
+        elif finding == "other_than_satisfied":
             dom["other_than_satisfied"] += 1
     return {
         "total": total,

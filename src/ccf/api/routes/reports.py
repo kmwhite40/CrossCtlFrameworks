@@ -26,7 +26,9 @@ from ...models import (
     Organization,
     System,
 )
+from ...auth import Principal
 from ...reporting import report_to_docx, report_to_xlsx
+from ..auth_deps import get_principal
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])

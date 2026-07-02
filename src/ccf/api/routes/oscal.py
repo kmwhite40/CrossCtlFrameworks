@@ -16,7 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...auth import Principal
 from ...models import ControlImplementation, SSPControlEntry, SSPProject, System
+from ..auth_deps import get_principal
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/oscal", tags=["oscal"])
@@ -26,9 +28,11 @@ router = APIRouter(prefix="/api/oscal", tags=["oscal"])
 async def component_definition(
     system_id: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    if sys is None:
+    # Scope to the caller's org (global/auth-off principals are unscoped).
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
 
     impls = (
@@ -97,12 +101,14 @@ def _component_definition_doc(
 async def ssp_export(
     project_id: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Emit an OSCAL 1.1 System Security Plan from a saved SSP project."""
     proj = (
         await session.execute(select(SSPProject).where(SSPProject.id == project_id))
     ).scalar_one_or_none()
-    if proj is None:
+    # Scope to the caller's org (global/auth-off principals are unscoped).
+    if proj is None or (principal.org_id is not None and proj.organization_id != principal.org_id):
         raise HTTPException(404, "SSP project not found")
     entries = (
         (
