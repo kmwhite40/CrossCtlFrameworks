@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import POAM, CatalogSource, Policy, Risk, System, Task, Vendor
+from ..models_grc import AuditEngagement, AuditRequest, RegulatoryUpdate
 from . import bus
 
 ATO_WINDOW_DAYS = 90
@@ -51,7 +52,10 @@ async def _escalate_overdue_tasks(session: AsyncSession, today: date, org_id: in
 
 async def run(session: AsyncSession, *, today: date, org_id: int | None = None) -> dict[str, Any]:
     """Raise/refresh org-level notifications. Returns counts by category."""
-    counts = {"ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0}
+    counts = {
+        "ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0,
+        "regulatory": 0, "audit": 0,
+    }
     counts["tasks_escalated"] = await _escalate_overdue_tasks(session, today, org_id)
 
     # ATO expiring / expired.
@@ -182,5 +186,59 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
             dedupe_key=f"risk-review:{r.id}:{r.next_review_on}",
         )
         counts["risk"] += 1
+
+    # Regulatory changes with an assessment/response due (open dispositions only).
+    reg_stmt = select(RegulatoryUpdate).where(
+        RegulatoryUpdate.due_on.is_not(None),
+        RegulatoryUpdate.due_on <= horizon,
+        RegulatoryUpdate.status.not_in(("closed", "dismissed", "implemented")),
+    )
+    if org_id is not None:
+        reg_stmt = reg_stmt.where(RegulatoryUpdate.organization_id == org_id)
+    for u in (await session.execute(reg_stmt)).scalars().all():
+        overdue = u.due_on is not None and u.due_on < today
+        await bus.notify(
+            session,
+            category="regulatory",
+            title=(
+                f"Regulatory change {'overdue' if overdue else 'due'}: {u.title}"
+            ),
+            body=f"{u.framework_impacted or 'framework'} · due {u.due_on}.",
+            org_id=org_id,
+            severity="warning" if overdue else "info",
+            entity_type="regulatory_update",
+            entity_id=u.id,
+            dedupe_key=f"regulatory-due:{u.id}:{u.due_on}",
+        )
+        counts["regulatory"] += 1
+
+    # Overdue audit evidence requests (PBC), rolled up per engagement.
+    audit_stmt = (
+        select(AuditRequest, AuditEngagement.name)
+        .join(AuditEngagement, AuditRequest.engagement_id == AuditEngagement.id)
+        .where(
+            AuditRequest.status.in_(("open", "in_progress")),
+            AuditRequest.due_on.is_not(None),
+            AuditRequest.due_on < today,
+        )
+    )
+    if org_id is not None:
+        audit_stmt = audit_stmt.where(AuditEngagement.organization_id == org_id)
+    overdue_reqs: dict[int, tuple[str, int]] = {}
+    for req, eng_name in (await session.execute(audit_stmt)).all():
+        name, n = overdue_reqs.get(req.engagement_id, (eng_name, 0))
+        overdue_reqs[req.engagement_id] = (name, n + 1)
+    for eng_id, (eng_name, n) in overdue_reqs.items():
+        await bus.notify(
+            session,
+            category="audit",
+            title=f"{n} overdue evidence request(s): {eng_name}",
+            org_id=org_id,
+            severity="warning",
+            entity_type="audit_engagement",
+            entity_id=eng_id,
+            dedupe_key=f"audit-overdue:{eng_id}",
+        )
+        counts["audit"] += n
 
     return counts

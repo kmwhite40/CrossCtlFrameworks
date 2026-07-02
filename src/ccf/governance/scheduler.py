@@ -17,7 +17,7 @@ from ..config import get_settings
 from ..db import session_scope
 from ..etl.sources import poll as poll_sources
 from ..logging import get_logger
-from . import collection, conmon, digest
+from . import collection, conmon, control_tests, digest
 
 log = get_logger(__name__)
 
@@ -38,6 +38,8 @@ async def run_cycle() -> dict[str, Any]:
             out["digest"] = await digest.run(session, today=today)
         with contextlib.suppress(Exception):
             out["collection"] = await collection.collect_all(session)
+        with contextlib.suppress(Exception):
+            out["control_tests"] = await control_tests.run_due(session, today=today)
         with contextlib.suppress(Exception):
             from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy import keeps startup light
 
