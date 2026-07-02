@@ -23,6 +23,7 @@ from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
+    ai_actions,
     approvals,
     artifacts,
     assessments,
@@ -140,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(assurance.router)
     app.include_router(packages.router)
     app.include_router(packages.delta_router)
+    app.include_router(ai_actions.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)

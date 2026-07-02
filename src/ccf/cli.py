@@ -643,6 +643,109 @@ def fr20x_monitor() -> None:
     console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
+ai_actions_app = typer.Typer(help="Typed AI GRC actions — list, run, review, approve/reject")
+app.add_typer(ai_actions_app, name="ai-actions")
+
+
+@ai_actions_app.command(name="list")
+def ai_actions_list() -> None:
+    """List the registered typed AI actions."""
+    from .ai_actions import ACTIONS  # noqa: PLC0415
+
+    for a in ACTIONS.values():
+        mut = f" → {a.allowed_mutation}" if a.allowed_mutation else ""
+        console.print(f"[cyan]{a.key}[/cyan] — {a.title}{mut}")
+
+
+@ai_actions_app.command(name="run")
+def ai_actions_run(
+    action_key: str = typer.Argument(...),
+    entity_type: str = typer.Option(..., "--entity-type"),
+    entity_id: str = typer.Option(..., "--entity-id"),
+) -> None:
+    """Run a typed AI action against an entity (deterministic stub)."""
+    from .ai_actions import run_action, service  # noqa: PLC0415
+
+    async def _run() -> tuple[int, str]:
+        async with session_scope() as session:
+            try:
+                r = await run_action(
+                    session, action_key=action_key, entity_type=entity_type,
+                    entity_id=entity_id, org_id=None, actor="cli",
+                )
+            except service.AiActionError as e:
+                await session.commit()
+                return -1, str(e)
+            await session.commit()
+            return r.id, r.status
+
+    rid, status = asyncio.run(_run())
+    if rid < 0:
+        console.print(f"[red]{status}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]run #{rid}[/green] — status {status}")
+
+
+@ai_actions_app.command(name="review-queue")
+def ai_actions_review_queue() -> None:
+    """List AI action runs awaiting human review."""
+    from .models_ai_actions import AiActionRun  # noqa: PLC0415
+
+    async def _run() -> list[tuple[int, str, str]]:
+        async with session_scope() as session:
+            rows = (
+                await session.execute(
+                    select(AiActionRun).where(AiActionRun.status == "pending_review")
+                )
+            ).scalars().all()
+            return [(r.id, r.action_key, f"{r.entity_type}:{r.entity_id}") for r in rows]
+
+    for rid, key, target in asyncio.run(_run()):
+        console.print(f"[cyan]#{rid}[/cyan] {key} → {target}")
+
+
+@ai_actions_app.command(name="approve")
+def ai_actions_approve(run_id: int = typer.Option(..., "--run-id")) -> None:
+    """Approve an AI action run (applies its declared mutation)."""
+    _ai_decision(run_id, approve=True, reason=None)
+
+
+@ai_actions_app.command(name="reject")
+def ai_actions_reject(
+    run_id: int = typer.Option(..., "--run-id"),
+    reason: str = typer.Option("", "--reason"),
+) -> None:
+    """Reject an AI action run (record preserved)."""
+    _ai_decision(run_id, approve=False, reason=reason or None)
+
+
+def _ai_decision(run_id: int, *, approve: bool, reason: str | None) -> None:
+    from .ai_actions import service  # noqa: PLC0415
+    from .models_ai_actions import AiActionRun  # noqa: PLC0415
+
+    async def _run() -> str:
+        async with session_scope() as session:
+            run = await session.get(AiActionRun, run_id)
+            if run is None:
+                return "not_found"
+            try:
+                if approve:
+                    await service.approve_run(session, run, reviewer="cli")
+                else:
+                    await service.reject_run(session, run, reviewer="cli", note=reason)
+            except service.AiActionError as e:
+                await session.commit()
+                return f"blocked: {e}"
+            await session.commit()
+            return run.status
+
+    status = asyncio.run(_run())
+    if status == "not_found":
+        console.print("[red]Run not found.[/red]")
+        raise typer.Exit(1)
+    console.print(f"Run {run_id}: [cyan]{status}[/cyan]")
+
+
 package_app = typer.Typer(help="Authorization packages — list, diff, replay")
 app.add_typer(package_app, name="package")
 

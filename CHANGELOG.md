@@ -7,6 +7,18 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **Typed agentic GRC action layer** (`ccf/ai_actions/`, `models_ai_actions.py`,
+  migration 0032) — AI executes *typed*, auditable actions (draft POA&M
+  remediation, propose control test, find evidence for a control, draft
+  questionnaire answer, …) rather than free-form chat. Optional and **disabled by
+  default**: a deterministic, citation-first stub provider runs locally with no AI
+  credentials. Every run stores input/output hashes + citations; **authoritative
+  mutations happen only on human approval**, gated by guardrails (no cross-tenant
+  retrieval, no uncited citation-required mutation, no trust package without
+  provenance). API `GET/POST /api/ai-actions*`, review queue, approve/reject,
+  guardrail-violations; CLI `ccf ai-actions list|run|review-queue|approve|reject`;
+  `ai_disabled_safe_default` / `ai_guardrail_violations` / `ai_action_review_backlog`
+  reliability checks.
 - **Authorization package provenance, diff & replay** (`ccf/packages/`,
   `models_packages.py`, migration 0031) — persists the normalized *facts*
   (per-KSI/control/evidence/dependency/risk/POA&M/readiness) a package was

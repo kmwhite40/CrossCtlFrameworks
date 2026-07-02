@@ -78,6 +78,17 @@ class Settings(BaseSettings):
     anthropic_model: str = Field(default="claude-sonnet-5")
     anthropic_base_url: str = Field(default="https://api.anthropic.com")
 
+    # Typed, auditable AI actions. Disabled by default: with AI off, actions run
+    # against a deterministic, citation-first stub provider (safe for local/dev and
+    # tests). AI never mutates an authoritative record without human approval.
+    ai_enabled: bool = Field(default=False)
+    ai_provider: str = Field(default="stub")  # none|stub|anthropic|openai|local
+    ai_model: str | None = Field(default=None)
+    ai_require_human_approval: bool = Field(default=True)
+    ai_max_context_docs: int = Field(default=8)
+    ai_store_prompts: bool = Field(default=True)
+    ai_allow_uncited_drafts: bool = Field(default=False)
+
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
     # read-only reader stay open; turn on for shared/production deployments.
     auth_enabled: bool = Field(default=False)

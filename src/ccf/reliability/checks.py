@@ -405,6 +405,50 @@ async def _check_evidence_replayability(session: AsyncSession) -> Check:
     return Check("evidence_replayability", PASS, "Evidence replays reproducible.")
 
 
+async def _check_ai_disabled_safe_default(_s: AsyncSession) -> Check:
+    """AI is optional; confirm it is off by default (or requires human approval)."""
+    s = get_settings()
+    if not s.ai_enabled:
+        return Check("ai_disabled_safe_default", PASS, "AI actions disabled (deterministic stub).")
+    if not s.ai_require_human_approval:
+        return Check(
+            "ai_disabled_safe_default", WARN,
+            "AI enabled with human approval NOT required.",
+            "Set CCF_AI_REQUIRE_HUMAN_APPROVAL=true.",
+        )
+    return Check("ai_disabled_safe_default", PASS, "AI enabled with human approval required.")
+
+
+async def _check_ai_guardrail_violations(session: AsyncSession) -> Check:
+    """Surface AI guardrail violations (cross-tenant / uncited-mutation blocks)."""
+    if not await _regclass(session, "ccf.ai_guardrail_violations"):
+        return Check("ai_guardrail_violations", PASS, "No AI guardrail table yet.")
+    n = await _count(session, "ccf.ai_guardrail_violations") or 0
+    if n:
+        return Check(
+            "ai_guardrail_violations", WARN, f"{n} AI guardrail violation(s) recorded.",
+            "Review /api/ai-actions/guardrail-violations.",
+        )
+    return Check("ai_guardrail_violations", PASS, "No AI guardrail violations.")
+
+
+async def _check_ai_action_review_backlog(session: AsyncSession) -> Check:
+    """Warn on a growing AI action review backlog."""
+    if not await _regclass(session, "ccf.ai_action_runs"):
+        return Check("ai_action_review_backlog", PASS, "No AI action runs yet.")
+    pending = (
+        await session.execute(
+            text("SELECT count(*) FROM ccf.ai_action_runs WHERE status = 'pending_review'")
+        )
+    ).scalar() or 0
+    if pending > 25:
+        return Check(
+            "ai_action_review_backlog", WARN, f"{pending} AI action runs awaiting review.",
+            "Work the /api/ai-actions/review-queue.",
+        )
+    return Check("ai_action_review_backlog", PASS, f"{pending} AI action(s) awaiting review.")
+
+
 async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
     """Assurance-graph tables present; warn when the graph has never been built."""
     if not await _regclass(session, "ccf.assurance_build_runs"):
@@ -598,6 +642,9 @@ _CHECKS = [
     _check_evidence_confidence_freshness,
     _check_evidence_replayability,
     _check_assurance_graph_freshness,
+    _check_ai_disabled_safe_default,
+    _check_ai_guardrail_violations,
+    _check_ai_action_review_backlog,
     _check_ssp_service,
     _check_audit_write,
     _check_background,
