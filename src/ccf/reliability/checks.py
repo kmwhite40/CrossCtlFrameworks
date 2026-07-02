@@ -312,14 +312,15 @@ async def _check_package_service(_s: AsyncSession) -> Check:
             "dependencies": [],
         }
         errors = pkg.validate_oscal(pkg.to_oscal_shaped(sample))
+        mode = pkg.validation_mode()
         if errors:
             return Check(
                 "fedramp20x_package_export", FAIL,
-                f"OSCAL structural validation failed: {errors[:3]}",
+                f"OSCAL validation ({mode}) failed: {errors[:3]}",
             )
         return Check(
             "fedramp20x_package_export", PASS,
-            "Package export (JSON/MD/OSCAL-shaped) OK; OSCAL structurally valid.",
+            f"Package export (JSON/MD/DOCX/bundle/OSCAL) OK; OSCAL valid ({mode}).",
         )
     except Exception as exc:
         return Check("fedramp20x_package_export", FAIL, f"Package export error: {exc}")

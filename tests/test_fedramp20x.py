@@ -177,6 +177,8 @@ def test_validate_oscal_accepts_valid_and_flags_broken() -> None:
     }
     good = package.to_oscal_shaped(pkg)
     assert package.validate_oscal(good) == []
+    # jsonschema is a core dependency, so schema-mode validation is the active path.
+    assert package.validation_mode() == "jsonschema"
 
     # Break required structure: drop metadata + result uuid.
     del good["assessment-results"]["metadata"]
@@ -186,6 +188,9 @@ def test_validate_oscal_accepts_valid_and_flags_broken() -> None:
     assert any("uuid" in e for e in errors)
     # Wrong top-level shape.
     assert package.validate_oscal({"nope": 1})
+
+    # The structural fallback agrees on a valid document (parity check).
+    assert package._validate_oscal_structural(package.to_oscal_shaped(pkg)) == []
 
 
 def test_oscal_shaped_and_markdown_render() -> None:

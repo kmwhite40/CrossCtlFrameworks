@@ -6,10 +6,11 @@ linkage, a continuous-monitoring summary, and the system authorization status
 into a single structured document. Renders to JSON, Markdown, and an
 OSCAL-*shaped* JSON structure.
 
-NOTE: the OSCAL-ready output follows OSCAL naming/nesting conventions to ease a
-future full export, but it is NOT validated against the official OSCAL schema and
-does not claim OSCAL compliance. FedRAMP 20x package requirements are still
-evolving; treat this as a foundation, not a submission artifact.
+NOTE: the OSCAL-ready output follows OSCAL naming/nesting conventions. It is
+validated against a Concord-maintained OSCAL-*subset* JSON Schema
+(``oscal_ksi.schema.json``) when ``jsonschema`` is installed — this is NOT the
+official OSCAL schema and does not claim full OSCAL compliance. FedRAMP 20x package
+requirements are still evolving; treat this as a foundation, not a submission artifact.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import io
 import json
 import zipfile
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -172,9 +174,9 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "disclaimer": (
-            "Foundation output. Not an official FedRAMP submission; OSCAL-shaped "
-            "sections are not schema-validated. KSI catalog is representative and "
-            "evolving."
+            "Foundation output. Not an official FedRAMP submission. OSCAL-shaped "
+            "sections are validated against a Concord OSCAL-subset schema, not the "
+            "official OSCAL schema. KSI catalog is representative and evolving."
         ),
         "system": {
             "id": system.id,
@@ -376,14 +378,47 @@ def to_oscal_shaped(pkg: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def validate_oscal(doc: dict[str, Any]) -> list[str]:
-    """Structurally validate an OSCAL-shaped assessment-results document.
+SCHEMA_PATH = Path(__file__).with_name("oscal_ksi.schema.json")
 
-    Checks the required OSCAL assessment-results structure/keys/types that Concord
-    emits — NOT full official OSCAL schema conformance (no schema library is
-    bundled). Returns a list of human-readable error strings; empty means the
-    document is structurally sound.
+
+def validation_mode() -> str:
+    """Which validation backend ``validate_oscal`` will use: 'jsonschema' or 'structural'."""
+    try:
+        import jsonschema  # noqa: F401,PLC0415
+
+        return "jsonschema" if SCHEMA_PATH.is_file() else "structural"
+    except Exception:
+        return "structural"
+
+
+def _validate_oscal_schema(doc: dict[str, Any]) -> list[str]:
+    """Validate against the bundled JSON Schema (Concord subset, not official OSCAL)."""
+    import jsonschema  # noqa: PLC0415
+
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = jsonschema.Draft202012Validator(schema)
+    return [
+        f"{'/'.join(str(p) for p in e.absolute_path) or 'root'}: {e.message}"
+        for e in sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+    ]
+
+
+def validate_oscal(doc: dict[str, Any]) -> list[str]:
+    """Validate an OSCAL-shaped assessment-results document.
+
+    Prefers JSON Schema validation against the bundled Concord subset schema
+    (``oscal_ksi.schema.json``) when ``jsonschema`` is installed; otherwise falls
+    back to built-in structural checks. Either way this validates the subset
+    Concord emits — it is NOT a claim of full official OSCAL conformance. Returns a
+    list of human-readable error strings; empty means valid.
     """
+    if validation_mode() == "jsonschema":
+        return _validate_oscal_schema(doc)
+    return _validate_oscal_structural(doc)
+
+
+def _validate_oscal_structural(doc: dict[str, Any]) -> list[str]:
+    """Fallback structural validation used when ``jsonschema`` is unavailable."""
     errors: list[str] = []
 
     def req(obj: dict[str, Any], key: str, where: str, typ: type | tuple[type, ...]) -> Any:

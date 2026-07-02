@@ -165,3 +165,33 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         # Audit attributes the mutation to the authenticated principal.
         entries = (await c.get("/api/audit", headers=ha)).json()
         assert any(e["actor"] == "admin@a.test" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_oscal_and_reports_are_org_scoped(auth_on: None) -> None:
+    """Export endpoints must not leak another tenant's data (IDOR regression)."""
+    org_a, token_a = await _mk_user("admin@oscal-a.test", "OscalOrgA", "admin")
+    _org_b, token_b = await _mk_user("admin@oscal-b.test", "OscalOrgB", "admin")
+    sys_a = await _mk_system(org_a, "OscalA-Enclave")
+    ha = {"Authorization": f"Bearer {token_a}"}
+    hb = {"Authorization": f"Bearer {token_b}"}
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        # OSCAL component-definition: owner 200, cross-tenant 404, anonymous 401.
+        url = f"/api/oscal/component-definition/{sys_a}"
+        assert (await c.get(url, headers=ha)).status_code == 200
+        assert (await c.get(url, headers=hb)).status_code == 404
+        assert (await c.get(url)).status_code == 401
+
+        # OSCAL SSP export honors the SSP project's org boundary.
+        proj = (
+            await c.post("/api/ssp/projects", json={"customer_name": "OscalA SSP"}, headers=ha)
+        ).json()
+        assert (await c.get(f"/api/oscal/ssp/{proj['id']}", headers=ha)).status_code == 200
+        assert (await c.get(f"/api/oscal/ssp/{proj['id']}", headers=hb)).status_code == 404
+
+        # Report builder: cross-tenant system id → 404; anonymous → 401.
+        assert (
+            await c.get(f"/api/reports/build?system_id={sys_a}", headers=hb)
+        ).status_code == 404
+        assert (await c.get("/api/reports/build")).status_code == 401
