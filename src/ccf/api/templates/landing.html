@@ -1,127 +1,260 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
+  <meta name="color-scheme" content="dark" />
   <title>Concord — cross-framework compliance platform</title>
   <link rel="icon" type="image/svg+xml" href="/static/img/logo-mark.svg?v={{ asset_v }}" />
   <link rel="icon" type="image/png" href="/static/img/favicon.png?v={{ asset_v }}" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v={{ asset_v }}" />
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
-  <script>
-    // Match the app's chosen theme (light-first), applied before paint.
-    (function(){ try { document.documentElement.setAttribute('data-theme', localStorage.getItem('concord:theme') || 'light'); } catch(e){} })();
-  </script>
   <script src="/static/vendor/lucide.min.js" defer></script>
   <style>
-    .lp-scene { position: fixed; inset: 0; z-index: 0; overflow: hidden;
+    /* ---- Dark, editorial "asset defense" landing, scoped locally ---- */
+    :root, html[data-theme="dark"], html[data-theme="light"] { color-scheme: dark; }
+    .lp {
+      --bg:        #08090b;
+      --bg-2:      #0d0f12;
+      --panel:     rgba(255,255,255,.045);
+      --panel-2:   rgba(255,255,255,.07);
+      --border:    rgba(255,255,255,.10);
+      --border-2:  rgba(255,255,255,.16);
+      --text:      #f4f6f8;
+      --dim:       #9aa1ab;
+      --mute:      #5f656e;
+      --accent:    #7ee3b8;             /* mint glow, echoing the reference */
+      --accent-2:  #cfe9dd;
+      --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+      --maxw: 1200px;
+      position: relative; min-height: 100vh; color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
       background:
-        radial-gradient(70% 55% at 50% -10%, var(--accent-soft), transparent 60%),
-        var(--bg); }
-    .lp-wrap { position: relative; z-index: 1; min-height: 100vh; display: flex; flex-direction: column; }
+        radial-gradient(120% 80% at 50% -18%, rgba(150,220,190,.14), transparent 55%),
+        radial-gradient(90% 60% at 84% 8%, rgba(120,170,200,.10), transparent 55%),
+        radial-gradient(70% 50% at 12% 40%, rgba(90,120,160,.08), transparent 60%),
+        var(--bg);
+      overflow: hidden;
+    }
+    .lp * { box-sizing: border-box; }
+    .lp a { text-decoration: none; }
 
-    .lp-nav { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 20px;
-      height: var(--topnav-h); padding: 0 24px; max-width: var(--maxw); margin: 0 auto; width: 100%;
-      background: rgba(255,255,255,.82); -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
-      border-bottom: 1px solid var(--border); }
-    html[data-theme="dark"] .lp-nav { background: rgba(22,22,24,.72); }
-    .lp-brand { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; font-size: 17px; letter-spacing: -.01em; color: var(--text); text-decoration: none; }
-    .lp-brand img { width: 26px; height: 26px; border-radius: 7px; display: block; }
-    .lp-nav .lp-link { color: var(--text-secondary); text-decoration: none; font-size: 14px; }
-    .lp-nav .lp-link:hover { color: var(--text); }
+    /* grain / vignette overlay */
+    .lp::after {
+      content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+      background: radial-gradient(120% 120% at 50% 30%, transparent 60%, rgba(0,0,0,.55) 100%);
+    }
 
-    .lp-hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-      text-align: center; padding: clamp(56px, 12vh, 120px) 24px 72px; max-width: var(--maxw); margin: 0 auto; width: 100%; }
-    .lp-hero > * { animation: lp-up .55s cubic-bezier(.2,.7,.2,1) backwards; }
+    /* faint network wires behind everything */
+    .lp-wires { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; pointer-events: none; opacity: .5; }
+    .lp-wires path { fill: none; stroke: rgba(255,255,255,.09); stroke-width: 1; }
+
+    /* ---------- floating pill nav ---------- */
+    .lp-topbar { position: relative; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+      gap: 16px; max-width: var(--maxw); margin: 0 auto; padding: 22px 24px 0; }
+    .lp-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--text); font-weight: 600; font-size: 16px; letter-spacing: -.01em; }
+    .lp-brand__mark { width: 28px; height: 28px; display: block; }
+    .lp-brand__mark rect { fill: rgba(255,255,255,.06); stroke: var(--border-2); }
+    .lp-brand__mark path { stroke: var(--accent); }
+    .lp-pill { display: flex; align-items: center; gap: 4px; padding: 6px; border-radius: 999px;
+      background: rgba(255,255,255,.05); border: 1px solid var(--border); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+    .lp-pill a { color: var(--dim); font-size: 13.5px; font-weight: 450; padding: 8px 14px; border-radius: 999px; transition: color .15s, background .15s; }
+    .lp-pill a:hover { color: var(--text); background: rgba(255,255,255,.06); }
+    .lp-pill a.is-active { color: var(--text); background: rgba(255,255,255,.09); }
+    .lp-account { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-size: 13.5px; font-weight: 500; }
+    .lp-account svg { width: 18px; height: 18px; color: var(--dim); }
+
+    /* ---------- hero ---------- */
+    .lp-hero { position: relative; z-index: 4; max-width: var(--maxw); margin: 0 auto;
+      min-height: calc(100vh - 90px); display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: 40px 24px 96px; }
+    .lp-hero > * { animation: lp-up .6s cubic-bezier(.2,.7,.2,1) backwards; }
     .lp-hero > *:nth-child(2){animation-delay:.06s} .lp-hero > *:nth-child(3){animation-delay:.12s}
-    .lp-hero > *:nth-child(4){animation-delay:.18s} .lp-hero > *:nth-child(5){animation-delay:.24s} .lp-hero > *:nth-child(6){animation-delay:.30s}
-    @keyframes lp-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+    .lp-hero > *:nth-child(4){animation-delay:.18s} .lp-hero > *:nth-child(5){animation-delay:.24s}
+    @keyframes lp-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 
-    .lp-logo { width: clamp(60px, 9vw, 84px); height: auto; margin-bottom: 28px; }
-    .lp-eyebrow { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500;
-      color: var(--text-secondary); border: 1px solid var(--border); background: var(--bg-elevated);
-      border-radius: 999px; padding: 7px 14px; box-shadow: var(--shadow-xs); }
-    .lp-eyebrow svg { width: 14px; height: 14px; color: var(--accent); }
-    .lp-title { font-family: var(--font-display); font-size: clamp(40px, 6.6vw, 76px); font-weight: 700;
-      letter-spacing: -.045em; line-height: .98; color: var(--text); margin: 24px 0 0; max-width: 16ch; }
-    .lp-title .grad { color: var(--accent); }
-    .lp-sub { margin: 22px auto 0; max-width: 62ch; color: var(--text-secondary); font-size: clamp(17px, 2vw, 21px); line-height: 1.5; }
-    .lp-cta { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 34px; }
+    .lp-play { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+      border: 1px solid var(--border-2); background: rgba(255,255,255,.05); color: var(--text); margin-bottom: 30px; }
+    .lp-play svg { width: 16px; height: 16px; margin-left: 2px; }
 
-    .lp-stats { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 16px; margin-top: 64px; width: min(940px, 100%); }
-    .lp-stat { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xl);
-      box-shadow: var(--shadow-sm); padding: 24px; text-align: left; }
-    .lp-stat b { display: block; font-family: var(--font-display); font-size: clamp(28px, 3vw, 40px); font-weight: 700; color: var(--text); letter-spacing: -.04em; line-height: 1; }
-    .lp-stat span { display: block; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
+    .lp-badge { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--accent-2);
+      border: 1px solid var(--border); background: rgba(126,227,184,.06); border-radius: 999px; padding: 8px 16px; }
+    .lp-badge svg { width: 14px; height: 14px; color: var(--accent); }
+    .lp-badge .arw { color: var(--dim); }
 
-    .lp-features { max-width: var(--maxw); margin: 0 auto; width: 100%; padding: 8px 24px 96px;
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
-    .lp-feature { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-sm); padding: 28px; }
-    .lp-feature__icon { width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); margin-bottom: 16px; }
-    .lp-feature__icon svg { width: 20px; height: 20px; }
-    .lp-feature h3 { font-size: 19px; font-weight: 600; letter-spacing: -.02em; color: var(--text); margin: 0; }
-    .lp-feature p { margin: 8px 0 0; font-size: 15px; line-height: 1.5; color: var(--text-secondary); }
+    .lp-title { font-family: var(--font-display); font-weight: 600; font-size: clamp(44px, 8vw, 96px);
+      line-height: .96; letter-spacing: -.045em; margin: 26px 0 0; max-width: 15ch; }
+    .lp-title .dim { color: #6f7681; }
 
-    .lp-foot { text-align: center; padding: 28px; color: var(--text-muted); font-size: 13px; border-top: 1px solid var(--border); }
-    .lp-foot a { color: var(--accent); text-decoration: none; }
+    .lp-sub { margin: 24px auto 0; max-width: 58ch; color: var(--dim); font-size: clamp(15px, 1.6vw, 18px); line-height: 1.55; }
 
-    @media (max-width: 860px) { .lp-features { grid-template-columns: 1fr; } }
-    @media (max-width: 640px) { .lp-stats { grid-template-columns: 1fr 1fr; } .lp-nav .lp-link { display: none; } }
-    @media (prefers-reduced-motion: reduce) { .lp-hero > * { animation: none; } }
+    .lp-cta { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 34px; }
+    .lp-btn { display: inline-flex; align-items: center; gap: 8px; height: 46px; padding: 0 22px; border-radius: 999px;
+      font-size: 14.5px; font-weight: 550; transition: transform .12s ease, background .15s, border-color .15s; }
+    .lp-btn svg { width: 16px; height: 16px; }
+    .lp-btn:active { transform: translateY(1px); }
+    .lp-btn--primary { background: #f4f6f8; color: #0a0b0d; }
+    .lp-btn--primary:hover { background: #fff; }
+    .lp-btn--ghost { background: rgba(255,255,255,.05); color: var(--text); border: 1px solid var(--border-2); }
+    .lp-btn--ghost:hover { background: rgba(255,255,255,.09); border-color: rgba(255,255,255,.28); }
+
+    /* ---------- scattered network nodes ---------- */
+    .lp-node { position: absolute; z-index: 3; display: flex; align-items: center; gap: 10px; animation: lp-fade 1s ease .5s backwards; }
+    @keyframes lp-fade { from { opacity: 0; } to { opacity: 1; } }
+    .lp-node__dot { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0;
+      border: 1px solid var(--border-2); background: rgba(255,255,255,.04); color: var(--accent-2); }
+    .lp-node__dot svg { width: 15px; height: 15px; }
+    .lp-node__txt b { display: block; font-size: 13.5px; font-weight: 550; color: var(--text); letter-spacing: -.01em; }
+    .lp-node__txt span { display: block; font-size: 11px; color: var(--mute); font-variant-numeric: tabular-nums; }
+    .lp-node--tl { top: 20%; left: 4%; }
+    .lp-node--tr { top: 17%; right: 5%; }
+    .lp-node--bl { bottom: 26%; left: 5%; }
+    .lp-node--br { bottom: 24%; right: 6%; }
+    .lp-node--tr .lp-node__txt, .lp-node--br .lp-node__txt { text-align: right; }
+    .lp-node--tr, .lp-node--br { flex-direction: row-reverse; }
+
+    /* ---------- corner meta ---------- */
+    .lp-corner { position: absolute; z-index: 4; bottom: 28px; display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 12.5px; }
+    .lp-corner--l { left: 24px; }
+    .lp-corner--r { right: 24px; flex-direction: column; align-items: flex-end; gap: 8px; }
+    .lp-corner__ring { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--border-2); color: var(--text); }
+    .lp-corner__ring svg { width: 15px; height: 15px; }
+    .lp-corner__label { color: var(--text); font-weight: 500; }
+    .lp-track { display: flex; gap: 5px; }
+    .lp-track i { display: block; width: 22px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.16); }
+    .lp-track i.on { background: var(--accent); }
+
+    /* ---------- second panel (features) ---------- */
+    .lp-more { position: relative; z-index: 4; background: var(--bg-2); border-top: 1px solid var(--border); }
+    .lp-more__in { max-width: var(--maxw); margin: 0 auto; padding: 88px 24px 96px; }
+    .lp-more h2 { font-family: var(--font-display); font-weight: 600; font-size: clamp(28px, 4vw, 44px); letter-spacing: -.03em; margin: 0; max-width: 20ch; }
+    .lp-more p.lead { margin: 16px 0 0; color: var(--dim); font-size: 17px; max-width: 56ch; line-height: 1.55; }
+    .lp-grid { margin-top: 48px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+    .lp-card { border: 1px solid var(--border); border-radius: 20px; padding: 28px; background: var(--panel);
+      transition: border-color .2s, background .2s, transform .2s; }
+    .lp-card:hover { border-color: var(--border-2); background: var(--panel-2); transform: translateY(-2px); }
+    .lp-card__ic { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center;
+      background: rgba(126,227,184,.10); color: var(--accent); margin-bottom: 18px; }
+    .lp-card__ic svg { width: 20px; height: 20px; }
+    .lp-card h3 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+    .lp-card p { margin: 8px 0 0; font-size: 14.5px; line-height: 1.55; color: var(--dim); }
+
+    .lp-foot { position: relative; z-index: 4; background: var(--bg-2); text-align: center; padding: 26px;
+      color: var(--mute); font-size: 13px; border-top: 1px solid var(--border); }
+    .lp-foot a { color: var(--accent-2); }
+
+    @media (max-width: 980px) {
+      .lp-grid { grid-template-columns: 1fr; }
+      .lp-node--tl, .lp-node--bl { left: 2%; }
+      .lp-node--tr, .lp-node--br { right: 2%; }
+    }
+    @media (max-width: 720px) {
+      .lp-pill { display: none; }
+      .lp-node { display: none; }
+      .lp-corner { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) { .lp-hero > *, .lp-node { animation: none; } }
   </style>
 </head>
 <body>
-  <div class="lp-scene" aria-hidden="true"></div>
+  <div class="lp">
+    <!-- network wires -->
+    <svg class="lp-wires" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+      <path d="M120 200 C 360 260, 420 380, 600 400" />
+      <path d="M1060 170 C 820 240, 760 360, 600 400" />
+      <path d="M130 560 C 340 500, 430 440, 600 400" />
+      <path d="M1050 560 C 830 500, 740 450, 600 400" />
+      <path d="M120 200 C 300 120, 900 120, 1060 170" />
+    </svg>
 
-  <div class="lp-wrap">
-    <nav class="lp-nav">
-      <a class="lp-brand" href="/"><img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="26" height="26" /> Concord</a>
-      <span style="flex:1"></span>
-      <a class="lp-link" href="/docs">API docs</a>
-      <a class="btn btn--secondary btn--sm" href="/dashboard"><i data-lucide="layout-dashboard"></i> Dashboard</a>
-      <a class="btn btn--primary btn--sm" href="/posture"><i data-lucide="shield-check"></i> Launch</a>
-    </nav>
+    <!-- scattered nodes -->
+    <div class="lp-node lp-node--tl" aria-hidden="true">
+      <div class="lp-node__dot"><i data-lucide="shield"></i></div>
+      <div class="lp-node__txt"><b>CMMC L2</b><span>110 practices</span></div>
+    </div>
+    <div class="lp-node lp-node--tr" aria-hidden="true">
+      <div class="lp-node__dot"><i data-lucide="git-branch"></i></div>
+      <div class="lp-node__txt"><b>NIST 800-171</b><span>121,944 maps</span></div>
+    </div>
+    <div class="lp-node lp-node--bl" aria-hidden="true">
+      <div class="lp-node__dot"><i data-lucide="cloud"></i></div>
+      <div class="lp-node__txt"><b>FedRAMP 20x</b><span>51 KSIs</span></div>
+    </div>
+    <div class="lp-node lp-node--br" aria-hidden="true">
+      <div class="lp-node__dot"><i data-lucide="globe"></i></div>
+      <div class="lp-node__txt"><b>ISO 27001</b><span>26 frameworks</span></div>
+    </div>
 
+    <!-- nav -->
+    <header class="lp-topbar">
+      <a class="lp-brand" href="/">
+        <svg class="lp-brand__mark" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="1" y="1" width="30" height="30" rx="8" stroke-width="1"/>
+          <path d="M22 9.2 A8.2 8.2 0 1 0 22 22.8" stroke-width="3.2" stroke-linecap="round"/>
+          <path d="M21.4 14.1 A3.4 3.4 0 1 0 21.4 17.9" stroke-width="2.4" stroke-linecap="round" opacity="0.85"/>
+        </svg> Concord</a>
+      <nav class="lp-pill">
+        <a class="is-active" href="/">Home</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/controls">Controls</a>
+        <a href="/frameworks">Frameworks</a>
+        <a href="/fedramp20x">FedRAMP 20x</a>
+        <a href="/docs">API</a>
+      </nav>
+      <a class="lp-account" href="/dashboard"><i data-lucide="shield-check"></i> Launch app</a>
+    </header>
+
+    <!-- hero -->
     <main class="lp-hero">
-      <img class="lp-logo" src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="Concord" width="84" height="84" />
-      <span class="lp-eyebrow"><i data-lucide="sparkles"></i> CMMC L2 · NIST 800-171 · 26 frameworks</span>
-      <h1 class="lp-title">Cross-framework compliance, <span class="grad">in concord.</span></h1>
-      <p class="lp-sub">Live SPRS scoring, an SSP &amp; SAR generator, an assessor workflow, evidence and
-        POA&amp;M tracking, OSCAL export, and a tamper-evident audit trail — one workspace for your
-        entire control program.</p>
+      <div class="lp-play"><i data-lucide="play"></i></div>
+      <span class="lp-badge"><i data-lucide="sparkles"></i> Score once, satisfy many frameworks <span class="arw">→</span></span>
+      <h1 class="lp-title">One workspace for <span class="dim">Control Defense</span></h1>
+      <p class="lp-sub">Live SPRS &amp; CMMC L2 scoring, an SSP &amp; SAR generator, an assessor workflow,
+        evidence and POA&amp;M tracking, OSCAL export, and a tamper-evident audit trail — cross-framework, in concord.</p>
       <div class="lp-cta">
-        <a class="btn btn--primary btn--lg" href="/dashboard">Enter dashboard <i data-lucide="arrow-right"></i></a>
-        <a class="btn btn--secondary btn--lg" href="/posture">View posture</a>
-      </div>
-      <div class="lp-stats">
-        <div class="lp-stat"><b>110</b><span>CMMC L2 practices, scored live</span></div>
-        <div class="lp-stat"><b>121,944</b><span>framework mappings</span></div>
-        <div class="lp-stat"><b>26</b><span>canonical frameworks</span></div>
-        <div class="lp-stat"><b>SPRS</b><span>+ SSP, SAR &amp; OSCAL output</span></div>
+        <a class="lp-btn lp-btn--primary" href="/dashboard">Open app <i data-lucide="arrow-up-right"></i></a>
+        <a class="lp-btn lp-btn--ghost" href="/posture">View posture</a>
       </div>
     </main>
 
-    <section class="lp-features">
-      <div class="lp-feature">
-        <div class="lp-feature__icon"><i data-lucide="gauge"></i></div>
-        <h3>Score in real time</h3>
-        <p>Live SPRS and CMMC L2 scoring as controls change, with cross-framework impact you can see at a glance.</p>
-      </div>
-      <div class="lp-feature">
-        <div class="lp-feature__icon"><i data-lucide="file-signature"></i></div>
-        <h3>Author the package</h3>
-        <p>Compose SSP and SAR narratives from the derivation, fill parameters once, and export FedRAMP-style documents and OSCAL.</p>
-      </div>
-      <div class="lp-feature">
-        <div class="lp-feature__icon"><i data-lucide="scroll-text"></i></div>
-        <h3>Prove it held</h3>
-        <p>Evidence, POA&amp;Ms, risks, and a tamper-evident audit trail keep every decision accountable and assessment-ready.</p>
-      </div>
-    </section>
-
-    <footer class="lp-foot">Concord — cross-framework compliance platform · <a href="/dashboard">open the app →</a></footer>
+    <!-- corner meta -->
+    <div class="lp-corner lp-corner--l" aria-hidden="true">
+      <div class="lp-corner__ring"><i data-lucide="arrow-down"></i></div>
+      <span><span class="lp-corner__label">01/02</span> · Scroll down</span>
+    </div>
+    <div class="lp-corner lp-corner--r" aria-hidden="true">
+      <span class="lp-corner__label">Compliance horizons</span>
+      <div class="lp-track"><i class="on"></i><i></i></div>
+    </div>
   </div>
+
+  <!-- second panel -->
+  <section class="lp-more">
+    <div class="lp-more__in">
+      <h2>From derivation to authorization, without leaving the platform.</h2>
+      <p class="lead">Concord normalizes 5,400 SP 800-53A objectives and 550+ cross-framework mappings, then
+        drives the whole control program off a single source of truth.</p>
+      <div class="lp-grid">
+        <div class="lp-card">
+          <div class="lp-card__ic"><i data-lucide="gauge"></i></div>
+          <h3>Score in real time</h3>
+          <p>Live SPRS and CMMC L2 scoring as controls change, with cross-framework impact you can see at a glance.</p>
+        </div>
+        <div class="lp-card">
+          <div class="lp-card__ic"><i data-lucide="file-signature"></i></div>
+          <h3>Author the package</h3>
+          <p>Compose SSP and SAR narratives from the derivation, fill parameters once, and export FedRAMP-style documents and OSCAL.</p>
+        </div>
+        <div class="lp-card">
+          <div class="lp-card__ic"><i data-lucide="scroll-text"></i></div>
+          <h3>Prove it held</h3>
+          <p>Evidence, POA&amp;Ms, risks, and a tamper-evident audit trail keep every decision accountable and assessment-ready.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="lp-foot">Concord — cross-framework compliance platform · <a href="/dashboard">open the app →</a></footer>
 
   <script>document.addEventListener('DOMContentLoaded', () => { if (window.lucide) window.lucide.createIcons(); });</script>
 </body>
