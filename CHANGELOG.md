@@ -32,6 +32,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - `GET /api/personnel/summary` rollup (headcount, screening gaps, overdue
   training, open reviews, pending decisions). Migration 0025; all tenant-isolated.
 
+### Added — vendor security questionnaires (TPRM)
+- **Questionnaire templates** (`ccf.questionnaire_templates`) with a built-in
+  CAIQ-Lite (10 weighted questions); organizations can define their own.
+- **Vendor assessments** (`ccf.vendor_questionnaires` + `ccf.questionnaire_responses`)
+  — instantiate for a vendor, answer, and `submit` to score security posture
+  (weighted 0-100 → low/moderate/high/critical rating; `no` answers flagged).
+  `review` pushes the rating onto the Vendor record and can open a deduped
+  remediation Task per flagged gap. Scoring is a pure function in
+  `ccf.governance.tprm`. Migration 0026; all tenant-isolated.
+
 ## [0.2.0] — 2026-04-15
 
 ### Added — data & governance

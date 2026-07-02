@@ -49,6 +49,7 @@ from .routes import (
     poams,
     policies,
     posture,
+    questionnaires,
     reliability,
     reports,
     risks,
@@ -151,6 +152,7 @@ def create_app() -> FastAPI:
     app.include_router(risks.router)
     app.include_router(scans.router)
     app.include_router(personnel.router)
+    app.include_router(questionnaires.router)
     app.include_router(users.router)
     app.include_router(reports.router)
     # FedRAMP 20x layer (separate from traditional FedRAMP scoring).

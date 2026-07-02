@@ -105,6 +105,13 @@ Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/acces
   getting a retain/revoke/modify decision. `GET /api/personnel/summary` rolls up
   screening gaps, overdue training, and pending access decisions.
 
+Vendor security questionnaires (TPRM, `/api/questionnaires`):
+- **Templates** (built-in CAIQ-Lite + custom) drive weighted question sets.
+  Instantiate one for a vendor, answer it, and **submit** to score security
+  posture (weighted 0-100 → low/moderate/high/critical); `no` answers are flagged.
+- **Review** pushes the rating onto the Vendor record and can open a deduped
+  remediation task per flagged gap. Scoring is pure (`ccf.governance.tprm`).
+
 GRC operating system (server-rendered modules under the **Governance** nav, each
 backed by a JSON API and covered by reliability checks):
 - **Executive dashboard** (`/executive`) — a single consolidated rollup: average
