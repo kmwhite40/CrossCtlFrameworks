@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}{{ q.name }} · Concord{% endblock %}
+{% block heading %}{{ q.name }}{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Answer each control question, then submit to score. Reviewing pushes the risk rating onto the vendor and can open a remediation task per gap.</p>{% endblock %}
+{% block content %}
+
+<div class="row" style="gap:12px;align-items:center;margin-bottom:16px">
+  <span class="chip {% if q.status=='reviewed' %}chip--ok{% elif q.status=='submitted' %}chip--warn{% endif %}">{{ q.status }}</span>
+  {% if q.score is not none %}<span class="dim">Score <strong>{{ q.score }}</strong></span>{% endif %}
+  {% if q.risk_rating %}<span class="chip {% if q.risk_rating=='low' %}chip--ok{% elif q.risk_rating in ('high','critical') %}chip--err{% else %}chip--warn{% endif %}">{{ q.risk_rating }} risk</span>{% endif %}
+  <span style="flex:1"></span>
+  <form method="post" action="/vendor-questionnaires/{{ q.id }}/review" class="row" style="gap:8px">
+    <label class="dim" style="font-size:13px"><input type="checkbox" name="open_tasks" value="1"> open tasks for gaps</label>
+    <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="check-circle"></i> Score &amp; review</button>
+  </form>
+</div>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Questions</div><span class="dim" style="font-size:13px">{{ q.responses|length }}</span></div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>#</th><th>Domain</th><th>Question</th><th>Wt</th><th>Answer</th></tr></thead>
+    <tbody>
+      {% for r in q.responses %}<tr>
+        <td class="mono dim">{{ r.question_id }}</td>
+        <td class="dim">{{ r.domain or '—' }}</td>
+        <td>{{ r.question_text }}</td>
+        <td class="dim">{{ r.weight }}</td>
+        <td>
+          <form method="post" action="/vendor-questionnaires/{{ q.id }}/responses/{{ r.id }}" class="row" style="gap:6px">
+            <select class="select select--sm" name="answer" aria-label="Answer" onchange="this.form.submit()">
+              {% for a in ['unanswered','yes','partial','no','na'] %}<option value="{{ a }}" {% if r.answer==a %}selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+          </form>
+        </td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<p style="margin-top:16px"><a class="btn btn--ghost btn--sm" href="/vendor-questionnaires"><i data-lucide="arrow-left"></i> All questionnaires</a></p>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

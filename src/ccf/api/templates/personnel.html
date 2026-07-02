@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}Personnel & access · Concord{% endblock %}
+{% block heading %}Personnel &amp; access{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Workforce security lifecycle — onboarding assigns awareness training and screening; offboarding opens an access-revocation task. Access reviews certify who keeps access.</p>{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Active personnel</div><div class="kpi__value">{{ summary.active_personnel }}</div></div>
+  <div class="kpi"><div class="kpi__label">Screening incomplete</div><div class="kpi__value">{{ summary.screening_incomplete }}</div></div>
+  <div class="kpi"><div class="kpi__label">Training overdue</div><div class="kpi__value">{{ summary.training_overdue }}</div></div>
+  <div class="kpi"><div class="kpi__label">Open access reviews</div><div class="kpi__value">{{ summary.open_access_reviews }}</div></div>
+</div>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/personnel" class="card__body filters">
+    <input class="input" name="full_name" required placeholder="Full name">
+    <input class="input" name="email" placeholder="Email">
+    <input class="input" name="position" placeholder="Position">
+    <select class="select" name="employment_type" aria-label="Employment type">
+      {% for t in ['employee','contractor'] %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <select class="select" name="risk_designation" aria-label="Risk designation">
+      {% for r in ['low','moderate','high'] %}<option value="{{ r }}">{{ r }} risk</option>{% endfor %}
+    </select>
+    <select class="select" name="background_check_status" aria-label="Screening">
+      {% for s in ['not_started','initiated','in_progress','completed','waived'] %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="user-plus"></i> Onboard</button>
+  </form>
+</section>
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">People</div><span class="dim" style="font-size:13px">{{ people|length }}</span></div>
+  {% if people %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Name</th><th>Position</th><th>Type</th><th>Risk</th><th>Screening</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {% for p in people %}<tr>
+        <td><strong>{{ p.full_name }}</strong>{% if p.email %}<div class="dim" style="font-size:12px">{{ p.email }}</div>{% endif %}</td>
+        <td class="dim">{{ p.position or '—' }}</td>
+        <td class="dim">{{ p.employment_type }}</td>
+        <td>{% if p.risk_designation=='high' %}<span class="chip chip--err">high</span>{% elif p.risk_designation=='moderate' %}<span class="chip chip--warn">moderate</span>{% else %}<span class="chip">low</span>{% endif %}</td>
+        <td>{% if p.background_check_status in ('completed','waived') %}<span class="chip chip--ok">{{ p.background_check_status }}</span>{% else %}<span class="chip chip--warn">{{ p.background_check_status }}</span>{% endif %}</td>
+        <td>{% if p.status=='active' %}<span class="chip chip--ok">active</span>{% else %}<span class="dim">{{ p.status }}</span>{% endif %}</td>
+        <td>{% if p.status=='active' %}<form method="post" action="/personnel/{{ p.id }}/offboard"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="user-minus"></i> Offboard</button></form>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No personnel yet.</div>{% endif %}
+</section>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">New access review</div></div>
+  <form method="post" action="/access-reviews" class="card__body filters">
+    <input class="input" name="name" required placeholder="Review name (e.g. Q3 Prod Access)">
+    <input class="input" name="reviewer" placeholder="Reviewer">
+    <input class="input" name="due_on" type="date" aria-label="Due date">
+    <button class="btn btn--primary" type="submit"><i data-lucide="clipboard-check"></i> Start review</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Access reviews</div><span class="dim" style="font-size:13px">{{ reviews|length }}</span></div>
+  {% if reviews %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Name</th><th>Reviewer</th><th>Status</th><th>Due</th></tr></thead>
+    <tbody>
+      {% for r in reviews %}<tr>
+        <td><strong>{{ r.name }}</strong></td>
+        <td class="dim">{{ r.reviewer or '—' }}</td>
+        <td>{% if r.status=='completed' %}<span class="chip chip--ok">completed</span>{% else %}<span class="chip chip--warn">{{ r.status }}</span>{% endif %}</td>
+        <td class="dim">{{ r.due_on or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No access reviews yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Vendor questionnaires · Concord{% endblock %}
+{% block heading %}Vendor security questionnaires{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Send a CAIQ-style assessment to a vendor, capture answers, and score third-party security posture into a risk rating that flows onto the vendor record.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">New assessment</div><span class="dim" style="font-size:13px">{{ template.name }} · {{ template.questions|length }} questions</span></div>
+  <form method="post" action="/vendor-questionnaires" class="card__body filters">
+    <select class="select" name="vendor_id" required aria-label="Vendor">
+      {% for v in vendors %}<option value="{{ v.id }}">{{ v.name }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit" {% if not vendors %}disabled{% endif %}><i data-lucide="clipboard-list"></i> Send questionnaire</button>
+  </form>
+  {% if not vendors %}<div class="card__body dim">Add a vendor first (Governance → not yet? use the API) to send a questionnaire.</div>{% endif %}
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Questionnaires</div><span class="dim" style="font-size:13px">{{ questionnaires|length }}</span></div>
+  {% if questionnaires %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Assessment</th><th>Status</th><th>Score</th><th>Risk</th><th>Submitted</th><th></th></tr></thead>
+    <tbody>
+      {% for q in questionnaires %}<tr>
+        <td><strong>{{ q.name }}</strong></td>
+        <td>{% if q.status=='reviewed' %}<span class="chip chip--ok">reviewed</span>{% elif q.status=='submitted' %}<span class="chip chip--warn">submitted</span>{% else %}<span class="dim">{{ q.status }}</span>{% endif %}</td>
+        <td>{{ q.score if q.score is not none else '—' }}</td>
+        <td>{% if q.risk_rating=='low' %}<span class="chip chip--ok">low</span>{% elif q.risk_rating=='critical' or q.risk_rating=='high' %}<span class="chip chip--err">{{ q.risk_rating }}</span>{% elif q.risk_rating %}<span class="chip chip--warn">{{ q.risk_rating }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td class="dim">{{ q.submitted_on or '—' }}</td>
+        <td><a class="btn btn--ghost btn--sm" href="/vendor-questionnaires/{{ q.id }}"><i data-lucide="arrow-right"></i> Open</a></td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No questionnaires yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

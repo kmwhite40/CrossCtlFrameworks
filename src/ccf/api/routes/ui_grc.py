@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ...governance import control_tests, insights, personnel, tprm
 from ...ingest import parse_scan, reconcile_findings
-from ...models import Task, Vendor
+from ...models import ScanIngestion, System, Task, Vendor
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -29,7 +29,7 @@ from ...models_grc import (
     TrustAccessRequest,
     TrustProfile,
 )
-from ...models_people import AccessReview, Person, TrainingRecord
+from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ..deps import get_session
 from .grc import _MOCK_DISCOVERY, CONNECTOR_TYPES
@@ -399,3 +399,310 @@ async def audit_add_finding(
     session.add(AuditFinding(engagement_id=eng_id, title=title, severity=severity))
     await session.commit()
     return RedirectResponse(f"/audit-workspace/{eng_id}", status_code=303)
+
+
+def _actor(request: Request) -> str:
+    principal = getattr(request.state, "principal", None)
+    return getattr(principal, "email", None) or "user"
+
+
+def _parse_date(raw: str) -> date | None:
+    if raw:
+        with contextlib.suppress(ValueError):
+            return date.fromisoformat(raw)
+    return None
+
+
+# ── Personnel & Access ───────────────────────────────────────────────────────
+@router.get("/personnel", response_class=HTMLResponse)
+async def personnel_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    people_stmt = select(Person).order_by(Person.full_name)
+    ar_stmt = select(AccessReview).order_by(AccessReview.id.desc())
+    if org is not None:
+        people_stmt = people_stmt.where(Person.organization_id == org)
+        ar_stmt = ar_stmt.where(AccessReview.organization_id == org)
+    people = (await session.execute(people_stmt)).scalars().all()
+    reviews = (await session.execute(ar_stmt)).scalars().all()
+    summary = await personnel.summary(session, org_id=org)
+    return templates.TemplateResponse(
+        request,
+        "personnel.html",
+        {"active": "personnel", "people": people, "reviews": reviews, "summary": summary},
+    )
+
+
+@router.post("/personnel")
+async def personnel_create(
+    request: Request,
+    full_name: str = Form(...),
+    email: str = Form(""),
+    employment_type: str = Form("employee"),
+    position: str = Form(""),
+    risk_designation: str = Form("low"),
+    background_check_status: str = Form("not_started"),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    p = Person(
+        organization_id=org,
+        full_name=full_name,
+        email=email or None,
+        employment_type=employment_type,
+        position=position or None,
+        risk_designation=risk_designation,
+        background_check_status=background_check_status,
+        status="active",
+    )
+    session.add(p)
+    await session.flush()
+    await personnel.onboard(session, p, actor=_actor(request))
+    await session.commit()
+    return RedirectResponse("/personnel", status_code=303)
+
+
+@router.post("/personnel/{pid}/offboard")
+async def personnel_offboard(
+    pid: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    p = await session.get(Person, pid)
+    if p is not None:
+        await personnel.offboard(session, p, actor=_actor(request))
+        await session.commit()
+    return RedirectResponse("/personnel", status_code=303)
+
+
+@router.post("/access-reviews")
+async def access_review_create(
+    request: Request,
+    name: str = Form(...),
+    reviewer: str = Form(""),
+    due_on: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    session.add(
+        AccessReview(
+            organization_id=org,
+            name=name,
+            reviewer=reviewer or None,
+            status="open",
+            due_on=_parse_date(due_on),
+        )
+    )
+    await session.commit()
+    return RedirectResponse("/personnel", status_code=303)
+
+
+# ── Scan ingestion ───────────────────────────────────────────────────────────
+@router.get("/scans", response_class=HTMLResponse)
+async def scans_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    ing_stmt = select(ScanIngestion).order_by(ScanIngestion.id.desc()).limit(50)
+    sys_stmt = select(System).order_by(System.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    ingestions = (await session.execute(ing_stmt)).scalars().all()
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    return templates.TemplateResponse(
+        request,
+        "scans.html",
+        {"active": "scans", "ingestions": ingestions, "systems": systems},
+    )
+
+
+@router.post("/scans")
+async def scans_upload(
+    request: Request,
+    system_id: int = Form(...),
+    scanner: str = Form("auto"),
+    file: UploadFile | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    if file is None:
+        raise HTTPException(400, "a scan file is required")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "uploaded scan file is empty")
+    resolved, findings = parse_scan(scanner, data, file.filename)
+    result = await reconcile_findings(
+        session, system_id=system_id, scanner=resolved, findings=findings
+    )
+    session.add(
+        ScanIngestion(
+            organization_id=_principal_org(request),
+            system_id=system_id,
+            scanner=resolved,
+            filename=file.filename,
+            findings_total=result.findings_total,
+            poams_created=result.created,
+            poams_updated=result.updated,
+            poams_reopened=result.reopened,
+            poams_closed=result.closed,
+            summary=result.as_dict(),
+        )
+    )
+    await session.commit()
+    return RedirectResponse("/scans", status_code=303)
+
+
+# ── Vendor questionnaires ────────────────────────────────────────────────────
+@router.get("/vendor-questionnaires", response_class=HTMLResponse)
+async def questionnaires_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    q_stmt = select(VendorQuestionnaire).order_by(VendorQuestionnaire.id.desc())
+    v_stmt = select(Vendor).order_by(Vendor.name)
+    if org is not None:
+        q_stmt = q_stmt.where(VendorQuestionnaire.organization_id == org)
+        v_stmt = v_stmt.where(Vendor.organization_id == org)
+    questionnaires = (await session.execute(q_stmt)).scalars().all()
+    vendors = (await session.execute(v_stmt)).scalars().all()
+    return templates.TemplateResponse(
+        request,
+        "vendor_questionnaires.html",
+        {
+            "active": "questionnaires",
+            "questionnaires": questionnaires,
+            "vendors": vendors,
+            "template": tprm.DEFAULT_TEMPLATE,
+        },
+    )
+
+
+@router.post("/vendor-questionnaires")
+async def questionnaire_create(
+    request: Request,
+    vendor_id: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    vendor = await session.get(Vendor, vendor_id)
+    if vendor is None:
+        raise HTTPException(404, "vendor not found")
+    template = tprm.DEFAULT_TEMPLATE
+    q = VendorQuestionnaire(
+        organization_id=org,
+        vendor_id=vendor_id,
+        template_key=template["key"],
+        name=f"{vendor.name} — {template['name']}",
+        status="sent",
+        sent_on=_now().date(),
+    )
+    session.add(q)
+    await session.flush()
+    for i, question in enumerate(template["questions"]):
+        session.add(
+            QuestionnaireResponse(
+                questionnaire_id=q.id,
+                question_id=str(question["id"]),
+                domain=question.get("domain"),
+                question_text=question.get("text", ""),
+                weight=int(question.get("weight", 1)),
+                answer="unanswered",
+                sort_order=i,
+            )
+        )
+    await session.commit()
+    return RedirectResponse(f"/vendor-questionnaires/{q.id}", status_code=303)
+
+
+@router.get("/vendor-questionnaires/{qid}", response_class=HTMLResponse)
+async def questionnaire_detail(
+    qid: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    q = (
+        await session.execute(
+            select(VendorQuestionnaire)
+            .options(selectinload(VendorQuestionnaire.responses))
+            .where(VendorQuestionnaire.id == qid)
+        )
+    ).scalar_one_or_none()
+    if q is None:
+        raise HTTPException(404, "questionnaire not found")
+    return templates.TemplateResponse(
+        request, "questionnaire_detail.html", {"active": "questionnaires", "q": q}
+    )
+
+
+@router.post("/vendor-questionnaires/{qid}/responses/{rid}")
+async def questionnaire_answer(
+    qid: int,
+    rid: int,
+    answer: str = Form(...),
+    detail: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    r = await session.get(QuestionnaireResponse, rid)
+    if r is not None and r.questionnaire_id == qid:
+        r.answer = answer
+        r.detail = detail or None
+        q = await session.get(VendorQuestionnaire, qid)
+        if q is not None and q.status in ("draft", "sent"):
+            q.status = "in_progress"
+        await session.commit()
+    return RedirectResponse(f"/vendor-questionnaires/{qid}", status_code=303)
+
+
+@router.post("/vendor-questionnaires/{qid}/review")
+async def questionnaire_review(
+    qid: int,
+    request: Request,
+    open_tasks: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    q = (
+        await session.execute(
+            select(VendorQuestionnaire)
+            .options(selectinload(VendorQuestionnaire.responses))
+            .where(VendorQuestionnaire.id == qid)
+        )
+    ).scalar_one_or_none()
+    if q is None:
+        raise HTTPException(404, "questionnaire not found")
+    scored = tprm.score_responses(
+        [
+            {"answer": r.answer, "weight": r.weight, "question_id": r.question_id}
+            for r in q.responses
+        ]
+    )
+    q.status = "reviewed"
+    q.reviewed_on = _now().date()
+    q.reviewer = _actor(request)
+    q.score = scored["score"]
+    q.risk_rating = scored["rating"]
+    vendor = await session.get(Vendor, q.vendor_id)
+    if vendor is not None:
+        vendor.risk_rating = scored["rating"]
+        vendor.last_reviewed_on = q.reviewed_on
+        if open_tasks and scored["flagged"]:
+            flagged = set(scored["flagged"])
+            for r in q.responses:
+                if r.question_id not in flagged:
+                    continue
+                dedupe = f"vendorq-gap:{q.id}:{r.question_id}"
+                exists = (
+                    await session.execute(select(Task).where(Task.dedupe_key == dedupe))
+                ).scalar_one_or_none()
+                if exists is None:
+                    session.add(
+                        Task(
+                            organization_id=_principal_org(request),
+                            title=f"Vendor security gap ({vendor.name}): {r.question_id}",
+                            description=r.question_text,
+                            kind="vendor_risk",
+                            priority="high" if r.weight >= 3 else "medium",
+                            status="open",
+                            source="auto",
+                            entity_type="vendor",
+                            entity_id=str(vendor.id),
+                            dedupe_key=dedupe,
+                        )
+                    )
+    await session.commit()
+    return RedirectResponse(f"/vendor-questionnaires/{qid}", status_code=303)

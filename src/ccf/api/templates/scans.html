@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Scan ingestion · Concord{% endblock %}
+{% block heading %}Vulnerability scan ingestion{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Upload a Nessus/Tenable <code>.nessus</code>, AWS Inspector JSON, or Qualys/CSV export. Findings reconcile into the system's POA&amp;Ms — new weaknesses open, fixed ones auto-close.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/scans" enctype="multipart/form-data" class="card__body filters">
+    <select class="select" name="system_id" required aria-label="System">
+      {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+    </select>
+    <select class="select" name="scanner" aria-label="Scanner">
+      {% for sc in ['auto','nessus','tenable','inspector','qualys','csv'] %}<option value="{{ sc }}">{{ sc }}</option>{% endfor %}
+    </select>
+    <input class="input" type="file" name="file" required aria-label="Scan file">
+    <button class="btn btn--primary" type="submit"><i data-lucide="upload"></i> Ingest scan</button>
+  </form>
+  {% if not systems %}<div class="card__body dim">Create a system first to attach scan findings.</div>{% endif %}
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Recent ingestions</div><span class="dim" style="font-size:13px">{{ ingestions|length }}</span></div>
+  {% if ingestions %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>When</th><th>Scanner</th><th>File</th><th>Findings</th><th>New</th><th>Updated</th><th>Reopened</th><th>Closed</th></tr></thead>
+    <tbody>
+      {% for i in ingestions %}<tr>
+        <td class="dim">{{ i.created_at.strftime('%Y-%m-%d %H:%M') if i.created_at else '—' }}</td>
+        <td><span class="chip">{{ i.scanner }}</span></td>
+        <td class="dim mono">{{ i.filename or '—' }}</td>
+        <td>{{ i.findings_total }}</td>
+        <td>{% if i.poams_created %}<span class="chip chip--warn">{{ i.poams_created }}</span>{% else %}0{% endif %}</td>
+        <td class="dim">{{ i.poams_updated }}</td>
+        <td>{% if i.poams_reopened %}<span class="chip chip--err">{{ i.poams_reopened }}</span>{% else %}0{% endif %}</td>
+        <td>{% if i.poams_closed %}<span class="chip chip--ok">{{ i.poams_closed }}</span>{% else %}0{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No scans ingested yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

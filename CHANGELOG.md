@@ -6,6 +6,15 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — server-rendered UI for the new modules
+- **Scan ingestion** page (`/scans`) — upload a scan and see reconciliation counts +
+  ingestion history.
+- **Personnel & access** page (`/personnel`) — onboard/offboard people, screening +
+  training KPIs, and access-review campaigns.
+- **Vendor questionnaires** (`/vendor-questionnaires` + detail) — send an assessment,
+  answer inline, and score/review to rate the vendor. All three appear under the
+  Governance mega-menu.
+
 ### Added — continuous controls monitoring (CCM parity)
 - **Vulnerability-scan ingestion → automated POA&Ms** (`src/ccf/ingest/scanners.py`,
   `POST /api/scans/ingest`). Parses Nessus/Tenable `.nessus` XML, AWS Inspector
