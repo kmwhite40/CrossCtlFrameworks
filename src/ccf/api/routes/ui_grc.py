@@ -1005,3 +1005,27 @@ async def packs_install_ui(
         )
         await session.commit()
     return RedirectResponse("/packs", status_code=303)
+
+
+# ── Concord self-assurance ───────────────────────────────────────────────────
+@router.get("/admin/self-assurance", response_class=HTMLResponse)
+async def self_assurance_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    from ...self_assurance import status as self_status  # noqa: PLC0415
+
+    st = await self_status(session)
+    return templates.TemplateResponse(
+        request, "self_assurance.html", {"active": "selfassurance", "st": st}
+    )
+
+
+@router.post("/admin/self-assurance/run")
+async def self_assurance_run_ui(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    from ...self_assurance import run_self_assessment  # noqa: PLC0415
+
+    await run_self_assessment(session, actor=_actor(request))
+    await session.commit()
+    return RedirectResponse("/admin/self-assurance", status_code=303)

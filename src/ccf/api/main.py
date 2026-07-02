@@ -63,6 +63,7 @@ from .routes import (
     scans,
     scoring,
     search,
+    self_assurance,
     ssp,
     systems,
     tasks,
@@ -144,6 +145,7 @@ def create_app() -> FastAPI:
     app.include_router(packages.router)
     app.include_router(packages.delta_router)
     app.include_router(packs.router)
+    app.include_router(self_assurance.router)
     app.include_router(ai_actions.router)
     app.include_router(ai_agents.router)
     app.include_router(controls.router)

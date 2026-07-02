@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Self-assurance · Concord{% endblock %}
+{% block heading %}Concord self-assurance{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Concord assessing Concord — its own controls (RLS, audit hash-chain, migrations, supply chain, AI guardrails) evidenced by the platform's reliability checks.</p>{% endblock %}
+{% block content %}
+
+{% if not st.initialized %}
+<section class="card"><div class="card__body dim" style="text-align:center;padding:40px">
+  Not initialized. Run <code>ccf self-assess init</code> or POST <code>/api/admin/self-assurance/init</code>.
+</div></section>
+{% else %}
+
+<div class="row" style="gap:12px;align-items:center;margin-bottom:16px">
+  <span class="chip {% if st.readiness_pct>=80 %}chip--ok{% elif st.readiness_pct>=50 %}chip--warn{% else %}chip--err{% endif %}">Readiness {{ st.readiness_pct }}%</span>
+  <span class="dim">{{ st.checks_passed }}/{{ st.checks_total }} reliability checks pass</span>
+  {% if st.last_run %}<span class="dim">· last run {{ st.last_run.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}
+  <span style="flex:1"></span>
+  <form method="post" action="/admin/self-assurance/run">
+    <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="refresh-cw"></i> Run self-assessment</button>
+  </form>
+</div>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Self-controls</div></div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>Status</th></tr></thead>
+    <tbody>
+      {% for cid, status in st.control_status.items() %}<tr>
+        <td class="mono">{{ cid }}</td>
+        <td>{% if status in ('implemented','inherited') %}<span class="chip chip--ok">{{ status }}</span>{% elif status=='partial' %}<span class="chip chip--warn">partial</span>{% elif status=='planned' %}<span class="dim">planned (CI-verified)</span>{% else %}<span class="chip chip--err">{{ status }}</span>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<p style="margin-top:16px"><a class="btn btn--ghost btn--sm" href="/api/admin/self-assurance/package" target="_blank" rel="noopener"><i data-lucide="package"></i> Export self-assurance package</a></p>
+{% endif %}
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

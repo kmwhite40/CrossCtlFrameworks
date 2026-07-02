@@ -7,6 +7,16 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **Concord-on-Concord self-assurance** (`ccf/self_assurance/`,
+  `models_self_assurance.py`, migration 0035, `docs/self-assurance.md`) — Concord
+  continuously assesses itself: a seeded *Concord Platform* system whose controls
+  (RLS, audit hash-chain, migrations, supply chain, AI guardrails) are evidenced by
+  the platform's own reliability checks, versioned + confidence-scored in the
+  evidence repository, and exportable as an authorization package (diffable +
+  replayable). Reuses the pack runtime (`concord-self-assurance` pack), evidence
+  confidence, and package export — no bespoke engine. API
+  `POST/GET /api/admin/self-assurance/init|run|status|package`; CLI `ccf self-assess
+  init|run|status|export-package`; `/admin/self-assurance` UI.
 - **Compliance pack runtime** (`ccf/packs/`, `models_packs.py`, migration 0034) —
   a local-first runtime for framework/control/evidence/rule packs (JSON manifests
   bundled under `ccf/packs/bundled/`; ships `ai-agent-governance`, `nist-ssdf-genai`,

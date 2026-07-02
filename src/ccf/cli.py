@@ -954,6 +954,78 @@ def fr20x_delta(
     console.print(asyncio.run(_run()))
 
 
+self_assess_app = typer.Typer(help="Concord-on-Concord — self-assess the platform")
+app.add_typer(self_assess_app, name="self-assess")
+
+
+@self_assess_app.command(name="init")
+def self_assess_init() -> None:
+    """Seed the Concord Platform system + self-assurance pack."""
+    from .self_assurance import init_self_assurance  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            out = await init_self_assurance(session, actor="cli")
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    console.print(
+        f"[green]initialized[/green] — system {out['system_id']}, {out['controls']} controls"
+    )
+
+
+@self_assess_app.command(name="run")
+def self_assess_run() -> None:
+    """Run Concord's self-assessment (reliability checks → self-controls)."""
+    from .self_assurance import run_self_assessment  # noqa: PLC0415
+
+    async def _run() -> tuple[float, int, int]:
+        async with session_scope() as session:
+            r = await run_self_assessment(session, actor="cli")
+            await session.commit()
+            return r.readiness_pct, r.checks_passed, r.checks_total
+
+    pct, passed, total = asyncio.run(_run())
+    console.print(f"[green]self-assurance readiness {pct}%[/green] — {passed}/{total} checks pass")
+
+
+@self_assess_app.command(name="status")
+def self_assess_status() -> None:
+    """Show the latest self-assurance status."""
+    from .self_assurance import status  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            return await status(session)
+
+    out = asyncio.run(_run())
+    if not out.get("initialized"):
+        console.print("[yellow]Not initialized — run `ccf self-assess init`.[/yellow]")
+        return
+    console.print(f"Readiness: [cyan]{out['readiness_pct']}%[/cyan]")
+    for cid, st in (out.get("control_status") or {}).items():
+        console.print(f"  {cid}: {st}")
+
+
+@self_assess_app.command(name="export-package")
+def self_assess_export() -> None:
+    """Export Concord's own authorization package."""
+    from .self_assurance import export_package  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            out = await export_package(session, actor="cli")
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    console.print(
+        f"[green]package #{out['package_id']}[/green] — "
+        f"readiness {out['readiness_pct']}%, {out['fact_count']} facts"
+    )
+
+
 packs_app = typer.Typer(help="Compliance packs — validate, install, coverage, test")
 app.add_typer(packs_app, name="packs")
 
