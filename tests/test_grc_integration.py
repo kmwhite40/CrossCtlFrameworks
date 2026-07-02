@@ -28,6 +28,7 @@ from ccf.models_grc import (
     ControlTest,
     ControlTestResult,
     RegulatoryUpdate,
+    TrustAccessRequest,
 )
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -298,6 +299,60 @@ async def test_connector_and_control_test_detail_pages_render() -> None:
 
         assert (await client.get("/connectors/999999")).status_code == 404
         assert (await client.get("/control-tests/999999")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_trust_and_regulatory_form_workflows() -> None:
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://t", follow_redirects=False) as c:
+        # Trust access request: create → approve.
+        r = await c.post(
+            "/trust/access-requests",
+            data={"requester_name": "Jane Auditor", "company": "C3PAO LLC"},
+        )
+        assert r.status_code == 303
+
+        # Regulatory: create → advance disposition.
+        r = await c.post(
+            "/regulatory", data={"title": "NIST 800-171 Rev 3", "status": "new"}
+        )
+        assert r.status_code == 303
+
+    async with session_scope() as s:
+        ar = (
+            await s.execute(
+                select(TrustAccessRequest).where(
+                    TrustAccessRequest.requester_name == "Jane Auditor"
+                )
+            )
+        ).scalars().first()
+        assert ar is not None and ar.status == "pending"
+        upd = (
+            await s.execute(
+                select(RegulatoryUpdate).where(RegulatoryUpdate.title == "NIST 800-171 Rev 3")
+            )
+        ).scalars().first()
+        assert upd is not None
+        ar_id, upd_id = ar.id, upd.id
+
+    async with AsyncClient(transport=transport, base_url="http://t", follow_redirects=False) as c:
+        assert (
+            await c.post(f"/trust/access-requests/{ar_id}/decide", data={"approve": "1"})
+        ).status_code == 303
+        assert (
+            await c.post(
+                f"/regulatory/{upd_id}/update",
+                data={"applicability": "applicable", "status": "in_progress", "owner": "Kevin"},
+            )
+        ).status_code == 303
+
+    async with session_scope() as s:
+        ar = await s.get(TrustAccessRequest, ar_id)
+        upd = await s.get(RegulatoryUpdate, upd_id)
+        assert ar.status == "approved" and ar.decided_at is not None
+        assert upd.applicability == "applicable"
+        assert upd.status == "in_progress"
+        assert upd.owner == "Kevin"
 
 
 @pytest.mark.asyncio
