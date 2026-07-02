@@ -25,7 +25,7 @@ async def data_quality(
     return await insights.data_quality(session, org_id=principal.org_id)
 
 
-@router.get("/controls/unified")
+@router.get("/mappings/unified")
 async def unified(
     limit: int = Query(25, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
