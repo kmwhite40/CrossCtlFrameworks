@@ -1,0 +1,85 @@
+{
+  "__comment": "Concord FedRAMP 20x observability dashboard. Import into Grafana with a Prometheus datasource scraping the Concord /metrics endpoint. Metrics are defined in src/ccf/api/metrics.py.",
+  "title": "Concord — FedRAMP 20x",
+  "uid": "concord-fedramp20x",
+  "tags": ["concord", "fedramp-20x", "compliance"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "templating": {
+    "list": [
+      {
+        "name": "system_id",
+        "type": "query",
+        "datasource": {"type": "prometheus", "uid": "${DS_PROMETHEUS}"},
+        "query": "label_values(ccf_fedramp20x_readiness_pct, system_id)",
+        "includeAll": true,
+        "multi": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "20x readiness (%) by system",
+      "type": "gauge",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0},
+      "fieldConfig": {
+        "defaults": {
+          "min": 0, "max": 100, "unit": "percent",
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": 0},
+            {"color": "orange", "value": 50},
+            {"color": "yellow", "value": 75},
+            {"color": "green", "value": 90}
+          ]}
+        }
+      },
+      "targets": [
+        {"expr": "ccf_fedramp20x_readiness_pct{system_id=~\"$system_id\"}", "legendFormat": "system {{system_id}}"}
+      ]
+    },
+    {
+      "id": 2,
+      "title": "KSI validation results (rate by status)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0},
+      "targets": [
+        {"expr": "sum by (status) (rate(ccf_ksi_validations_total[5m]))", "legendFormat": "{{status}}"}
+      ]
+    },
+    {
+      "id": 3,
+      "title": "KSI drift events (total)",
+      "type": "stat",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0},
+      "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "thresholds"},
+        "thresholds": {"mode": "absolute", "steps": [
+          {"color": "green", "value": 0}, {"color": "red", "value": 1}]}}},
+      "targets": [
+        {"expr": "sum(ccf_ksi_drift_events_total)", "legendFormat": "drift"}
+      ]
+    },
+    {
+      "id": 4,
+      "title": "validate_system duration (p95)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(ccf_fedramp20x_validation_duration_seconds_bucket[5m])))", "legendFormat": "p95"}
+      ]
+    },
+    {
+      "id": 5,
+      "title": "KSI validations — cumulative by status",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "sum by (status) (ccf_ksi_validations_total)", "legendFormat": "{{status}}"}
+      ]
+    }
+  ]
+}
