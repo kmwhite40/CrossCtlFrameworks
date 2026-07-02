@@ -20,7 +20,7 @@ from .db import session_scope
 from .etl import ingest_workbook
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
-from .governance import conmon, digest, scheduler
+from .governance import conmon, digest, insights, scheduler
 from .logging import configure_logging
 from .models import (
     CatalogSource,
@@ -311,6 +311,21 @@ def scheduler_run() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="data-quality")
+def data_quality() -> None:
+    """Run GRC data-quality checks (gaps that would undermine an assessment)."""
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await insights.data_quality(session)
+        console.print(
+            f"[green]Data quality[/green] — {result['total_issues']} issue(s); "
+            f"failing: {', '.join(result['failing_checks']) or 'none'}"
+        )
+
+    asyncio.run(_run())
+
+
 @app.command(name="score")
 def score(system_id: int = typer.Argument(..., help="System id to score")) -> None:
     """Print the live SPRS score for a system."""
@@ -597,6 +612,23 @@ def fr20x_dep_check(system_id: int = typer.Option(..., "--system-id")) -> None:
     for d in deps:
         t.add_row(d.name, d.provider or "", d.fedramp_status, d.dependency_risk or "")
     console.print(t)
+
+
+@fedramp20x_app.command(name="monitor")
+def fr20x_monitor() -> None:
+    """Continuous-monitoring sweep: re-validate all 20x systems and report drift."""
+    from .fedramp20x.monitoring import scan  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            return await scan(session)
+
+    out = asyncio.run(_run())
+    console.print(
+        f"[green]Scanned {out['systems_scanned']} system(s)[/green] — "
+        f"{out['drift_events']} with KSI drift"
+    )
+    console.print_json(json.dumps(out.get("systems", []), default=str))
 
 
 if __name__ == "__main__":

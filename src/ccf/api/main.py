@@ -40,6 +40,7 @@ from .routes import (
     fedramp20x,
     frameworks,
     health,
+    insights,
     mappings,
     notifications,
     oscal,
@@ -160,6 +161,7 @@ def create_app() -> FastAPI:
     app.include_router(vendors.router)
     app.include_router(artifacts.router)
     app.include_router(diagrams.router)
+    app.include_router(insights.router)
     app.include_router(ui.router)
     return app
 

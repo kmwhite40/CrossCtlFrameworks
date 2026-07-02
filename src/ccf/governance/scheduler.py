@@ -38,6 +38,10 @@ async def run_cycle() -> dict[str, Any]:
             out["digest"] = await digest.run(session, today=today)
         with contextlib.suppress(Exception):
             out["collection"] = await collection.collect_all(session)
+        with contextlib.suppress(Exception):
+            from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy import keeps startup light
+
+            out["fedramp20x"] = await monitoring.scan(session, today=today)
     log.info("scheduler.cycle", **{k: (v if isinstance(v, int) else "ok") for k, v in out.items()})
     return out
 

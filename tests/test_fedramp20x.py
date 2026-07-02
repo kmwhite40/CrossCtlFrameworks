@@ -9,18 +9,19 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.fedramp20x import catalog, package, readiness, validation
+from ccf.fedramp20x import catalog, monitoring, package, readiness, validation
 from ccf.fedramp20x.readiness import compute_readiness
 from ccf.fedramp20x.validation import SystemContext, evaluate_rule, normalize_control
 from ccf.models import (
     KSI,
     Control,
     ControlImplementation,
+    Event,
     FedRAMPDependency,
     KSIState,
     Organization,
@@ -306,6 +307,44 @@ async def test_api_flow_end_to_end() -> None:
             json={"status": "closed"},
         )
         assert patched.status_code == 200 and patched.json()["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_continuous_monitoring_detects_drift() -> None:
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    sid = await _fresh_system("MonCso")
+
+    # A system enters continuous monitoring once it has KSI state — validate once.
+    async with session_scope() as s:
+        await validation.validate_system(s, system_id=sid)
+
+    # A clean sweep with the control still implemented shows no regression.
+    async with session_scope() as s:
+        row = next(r for r in (await monitoring.scan(s))["systems"] if r["system_id"] == sid)
+        assert row["regressions"] == 0
+
+    # Regress the supporting control, then the next sweep must flag drift + emit an event.
+    async with session_scope() as s:
+        await s.execute(
+            update(ControlImplementation)
+            .where(ControlImplementation.system_id == sid)
+            .values(status="not_implemented")
+        )
+    async with session_scope() as s:
+        mine = next(r for r in (await monitoring.scan(s))["systems"] if r["system_id"] == sid)
+        assert mine["regressions"] >= 1
+    async with session_scope() as s:
+        drift = (
+            (
+                await s.execute(
+                    select(Event).where(Event.entity_type == "system", Event.verb == "drift")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert any(str(sid) == e.entity_id for e in drift)
 
 
 @pytest.mark.asyncio
