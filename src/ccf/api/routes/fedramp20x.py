@@ -12,12 +12,13 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...config import get_settings
 from ...fedramp20x import (
     DEPENDENCY_STATUSES,
     READINESS_STATUSES,
@@ -360,13 +361,25 @@ async def export_package(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
     format: str = Query("json", pattern=r"^(json|markdown|oscal)$"),
+    validate: bool | None = Query(
+        None, description="Structurally validate OSCAL output (defaults to CCF setting)"
+    ),
 ) -> Any:
     await _require_system(session, system_id, principal)
     pkg = await package.build_package(session, system_id=system_id)
     if format == "markdown":
         return PlainTextResponse(package.render_markdown(pkg))
     if format == "oscal":
-        return package.to_oscal_shaped(pkg)
+        oscal = package.to_oscal_shaped(pkg)
+        do_validate = get_settings().fedramp20x_oscal_validate if validate is None else validate
+        if do_validate:
+            errors = package.validate_oscal(oscal)
+            if errors:
+                raise HTTPException(
+                    422, {"detail": "OSCAL structural validation failed", "errors": errors}
+                )
+            return JSONResponse(oscal, headers={"X-OSCAL-Validation": "structural-pass"})
+        return oscal
     return pkg
 
 

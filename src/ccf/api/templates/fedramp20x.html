@@ -68,13 +68,90 @@
 </section>
 {% endif %}
 
+{% if system_id %}
+<section class="card" style="margin-bottom:12px">
+  <div class="card__header"><div class="card__title">Cloud Service Offering profile</div>
+    <div class="card__subtitle">Environment + authorization-boundary front matter for the 20x package.</div></div>
+  <div class="card__body">
+    <form method="post" action="/fedramp20x/{{ system_id }}/profile" class="grid" style="gap:10px">
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <label>Service name<br><input name="service_name" value="{{ profile.service_name or '' if profile else '' }}"></label>
+        <label>Deployment model<br>
+          <select name="deployment_model">
+            {% set dm = profile.deployment_model if profile else '' %}
+            <option value="" {{ 'selected' if not dm else '' }}>—</option>
+            {% for m in ['iaas','paas','saas'] %}<option value="{{ m }}" {{ 'selected' if dm == m else '' }}>{{ m|upper }}</option>{% endfor %}
+          </select>
+        </label>
+        <label>Cloud environment<br><input name="cloud_environment" value="{{ profile.cloud_environment or '' if profile else '' }}" placeholder="azure_gov / aws_govcloud / m365_gcc_high"></label>
+      </div>
+      <label>Authorization boundary<br><textarea name="boundary_description" rows="2" style="width:100%">{{ profile.boundary_description or '' if profile else '' }}</textarea></label>
+      <div class="row" style="gap:10px;flex-wrap:wrap">
+        <label style="flex:1">Cryptographic boundary<br><input name="cryptographic_boundary" style="width:100%" value="{{ profile.cryptographic_boundary or '' if profile else '' }}"></label>
+        <label style="flex:1">Logging boundary<br><input name="logging_boundary" style="width:100%" value="{{ profile.logging_boundary or '' if profile else '' }}"></label>
+      </div>
+      <div><button class="btn btn--primary" type="submit"><i data-lucide="save"></i> Save profile</button>
+        {% if profile %}<span class="dim" style="margin-left:8px">Readiness status: <strong>{{ profile.readiness_status }}</strong></span>{% endif %}</div>
+    </form>
+  </div>
+</section>
+
+<section class="card" style="margin-bottom:12px">
+  <div class="card__header"><div class="card__title">FedRAMP-authorized dependencies</div>
+    <div class="card__subtitle">Underlying IaaS/PaaS/SaaS the offering relies on.</div></div>
+  <div class="card__body">
+    <table class="table">
+      <thead><tr><th>Name</th><th>Provider</th><th>Type</th><th>FedRAMP status</th><th>Risk</th></tr></thead>
+      <tbody>
+      {% for d in dependencies %}
+        <tr>
+          <td>{{ d.name }}</td><td class="dim">{{ d.provider or '' }}</td><td class="dim">{{ d.service_type or '' }}</td>
+          <td><span class="badge badge--{{ 'ok' if d.fedramp_status == 'authorized' else ('warn' if d.fedramp_status in ('in_process','unknown') else 'bad') }}">{{ d.fedramp_status }}</span></td>
+          <td class="dim">{{ d.dependency_risk or '' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="dim">No dependencies recorded.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <form method="post" action="/fedramp20x/{{ system_id }}/dependencies" class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
+      <input name="name" placeholder="Service name" required>
+      <input name="provider" placeholder="Provider">
+      <select name="service_type" title="Service type" aria-label="Service type"><option value="">type…</option><option>iaas</option><option>paas</option><option>saas</option></select>
+      <select name="fedramp_status" title="FedRAMP status" aria-label="FedRAMP status"><option value="unknown">unknown</option><option value="authorized">authorized</option><option value="in_process">in_process</option><option value="not_authorized">not_authorized</option></select>
+      <select name="dependency_risk" title="Dependency risk" aria-label="Dependency risk"><option value="">risk…</option><option>low</option><option>moderate</option><option>high</option><option>critical</option></select>
+      <button class="btn" type="submit"><i data-lucide="plus"></i> Add</button>
+    </form>
+  </div>
+</section>
+
+<section class="card" style="margin-bottom:12px">
+  <div class="card__header"><div class="card__title">Assessor review</div>
+    <div class="card__subtitle">Record a 3PAO verdict for a KSI (reflected on its state).</div></div>
+  <div class="card__body">
+    <form method="post" action="/fedramp20x/{{ system_id }}/assessor-review" class="row" style="gap:8px;flex-wrap:wrap">
+      <select name="ksi_id" title="KSI" aria-label="KSI" required>
+        <option value="">Select KSI…</option>
+        {% for k in ksis %}<option value="{{ k.id }}">{{ k.identifier }} — {{ k.name }}</option>{% endfor %}
+      </select>
+      <select name="status" title="Review status" aria-label="Review status" required>
+        {% for s in ['in_review','accepted','rejected','needs_clarification','retest_required','finding_opened','closed'] %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
+      </select>
+      <input name="assessor" placeholder="Assessor / 3PAO">
+      <input name="notes" placeholder="Notes" style="flex:1;min-width:180px">
+      <button class="btn" type="submit"><i data-lucide="clipboard-check"></i> Record</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+
 {% for category, items in by_category.items() %}
 <section class="card" style="margin-bottom:12px">
   <div class="card__header"><div class="card__title">{{ category }}</div>
     <div class="card__subtitle">{{ items | length }} indicator(s)</div></div>
   <div class="card__body">
     <table class="table">
-      <thead><tr><th>KSI</th><th>Name</th><th>Automation</th><th>NIST refs</th>{% if system_id %}<th>Status</th>{% endif %}</tr></thead>
+      <thead><tr><th>KSI</th><th>Name</th><th>Automation</th><th>NIST refs</th>{% if system_id %}<th>Status</th><th>Assessor</th>{% endif %}</tr></thead>
       <tbody>
       {% for k in items %}
         <tr>
@@ -87,6 +164,7 @@
             {% set st = states.get(k.id, 'not_tested') %}
             <span class="badge badge--{{ 'ok' if st == 'pass' else ('warn' if st in ('warn','manual_review_required') else ('bad' if st == 'fail' else 'muted')) }}">{{ st }}</span>
           </td>
+          <td class="dim">{{ assessor.get(k.id, 'not_reviewed') }}</td>
           {% endif %}
         </tr>
       {% endfor %}

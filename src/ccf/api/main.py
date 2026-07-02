@@ -57,6 +57,7 @@ from .routes import (
     systems,
     tasks,
     ui,
+    ui_grc,
     users,
     vendors,
     worksheets,

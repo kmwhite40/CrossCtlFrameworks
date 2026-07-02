@@ -1,360 +1,1523 @@
 {
   "$comment": [
     "FedRAMP 20x Key Security Indicator (KSI) catalog — Concord seed data.",
-    "KSI family identifiers (CED/CMT/CNA/IAM/INR/MLA/PIY/RPL/SVC/TPR) follow the",
-    "FedRAMP 20x Phase One Key Security Indicators. FedRAMP 20x is an evolving",
-    "pilot program; the indicator wording, expected outcomes, and control mappings",
-    "below are REPRESENTATIVE and intended to be updated as FedRAMP publishes final",
-    "machine-readable KSI definitions. Update this file (not business logic) and",
-    "re-run `ccf fedramp20x seed-ksi` to refresh the catalog.",
+    "Families and indicator IDs follow the published FedRAMP 20x Phase One Key",
+    "Security Indicators (KSI-CED/CMT/CNA/IAM/INR/MLA/PIY/RPL/SVC/TPR). Indicator",
+    "wording is summarized and the NIST SP 800-53 / CMMC mappings and machine-",
+    "readable validation rules are Concord's REPRESENTATIVE interpretation for",
+    "automated evaluation. FedRAMP 20x is an evolving pilot; update this file (not",
+    "business logic) and re-run `ccf fedramp20x seed-ksi` when FedRAMP publishes",
+    "final machine-readable KSI definitions. This is not an official FedRAMP artifact.",
     "",
-    "'rule' is a deterministic validation spec evaluated by ccf.fedramp20x.validation.",
-    "Supported rule kinds: control_state, control_any, evidence_present,",
-    "dependency_authorized, profile_field, connector_capture, manual. See that module."
+    "rule kinds evaluated by ccf.fedramp20x.validation: control_state, control_any,",
+    "evidence_present, dependency_authorized, profile_field, connector_capture,",
+    "any_of (best-of composite), manual."
   ],
-  "version": "20x-phase1-representative-2026.07",
+  "version": "20x-phase1-2025.faithful.1",
   "categories": [
-    {"key": "IAM", "name": "Identity and Access Management"},
-    {"key": "CNA", "name": "Cloud Native Architecture"},
-    {"key": "SVC", "name": "Service Configuration"},
-    {"key": "MLA", "name": "Monitoring, Logging, and Auditing"},
-    {"key": "CMT", "name": "Change Management"},
-    {"key": "PIY", "name": "Policy and Inventory"},
-    {"key": "RPL", "name": "Recovery Planning"},
-    {"key": "INR", "name": "Incident Response"},
-    {"key": "CED", "name": "Cybersecurity Education"},
-    {"key": "TPR", "name": "Third-Party Information Resources"}
+    {
+      "key": "IAM",
+      "name": "Identity and Access Management"
+    },
+    {
+      "key": "CNA",
+      "name": "Cloud Native Architecture"
+    },
+    {
+      "key": "SVC",
+      "name": "Service Configuration"
+    },
+    {
+      "key": "MLA",
+      "name": "Monitoring, Logging, and Auditing"
+    },
+    {
+      "key": "CMT",
+      "name": "Change Management"
+    },
+    {
+      "key": "PIY",
+      "name": "Policy and Inventory"
+    },
+    {
+      "key": "RPL",
+      "name": "Recovery Planning"
+    },
+    {
+      "key": "INR",
+      "name": "Incident Reporting"
+    },
+    {
+      "key": "CED",
+      "name": "Cybersecurity Education"
+    },
+    {
+      "key": "TPR",
+      "name": "Third-Party Information Resources"
+    }
   ],
   "ksis": [
     {
       "identifier": "KSI-IAM-01",
       "category": "IAM",
       "name": "Phishing-resistant MFA",
-      "description": "Enforce phishing-resistant multi-factor authentication for all human users.",
-      "expected_outcome": "All interactive user access requires phishing-resistant MFA.",
+      "description": "Enforce multi-factor authentication using phishing-resistant authenticators for all users.",
+      "expected_outcome": "Enforce multi-factor authentication using phishing-resistant authenticators for all users.",
       "validation_method": "automated",
       "validation_frequency": "continuous",
       "automation_level": "automated",
       "evidence_required": true,
-      "nist_refs": ["IA-2", "IA-2(1)", "IA-2(2)", "IA-2(8)"],
-      "cmmc_refs": ["IA.L2-3.5.3"],
-      "provider_services": ["Entra ID Conditional Access", "AWS IAM Identity Center"],
-      "rule": {"kind": "control_state", "controls": ["IA-2"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "IA-2",
+        "IA-2(1)",
+        "IA-2(2)"
+      ],
+      "cmmc_refs": [
+        "IA.L2-3.5.3"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "IA-2"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 0
     },
     {
       "identifier": "KSI-IAM-02",
       "category": "IAM",
-      "name": "Least-privilege authorization",
-      "description": "Grant access using least privilege and role-based authorization.",
-      "expected_outcome": "Access is role-based and reviewed; no standing broad privilege.",
+      "name": "Strong or passwordless authentication",
+      "description": "Enforce strong passwords or passwordless methods per current guidance.",
+      "expected_outcome": "Enforce strong passwords or passwordless methods per current guidance.",
       "validation_method": "automated",
       "validation_frequency": "monthly",
       "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["AC-2", "AC-3", "AC-6", "AC-6(1)"],
-      "cmmc_refs": ["AC.L2-3.1.5"],
-      "provider_services": ["Entra PIM", "AWS IAM"],
-      "rule": {"kind": "control_any", "controls": ["AC-6", "AC-3", "AC-2"], "states": ["implemented", "inherited", "partial"]}
+      "nist_refs": [
+        "IA-5",
+        "IA-5(1)"
+      ],
+      "cmmc_refs": [
+        "IA.L2-3.5.7"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "IA-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 1
     },
     {
       "identifier": "KSI-IAM-03",
       "category": "IAM",
-      "name": "Centralized identity lifecycle",
-      "description": "Provision and de-provision identities through a central authority.",
-      "expected_outcome": "Joiner/mover/leaver events flow through a single identity provider.",
+      "name": "Secure service/API authentication",
+      "description": "Enforce appropriately secure authentication to APIs and service accounts.",
+      "expected_outcome": "Enforce appropriately secure authentication to APIs and service accounts.",
       "validation_method": "automated",
       "validation_frequency": "monthly",
       "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["AC-2", "AC-2(1)", "IA-4"],
-      "cmmc_refs": ["AC.L2-3.1.1"],
-      "provider_services": ["Entra ID", "AWS IAM Identity Center"],
-      "rule": {"kind": "control_state", "controls": ["AC-2"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "IA-2",
+        "IA-9",
+        "SC-8"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "IA-2",
+          "IA-9",
+          "SC-8"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 2
+    },
+    {
+      "identifier": "KSI-IAM-04",
+      "category": "IAM",
+      "name": "Least-privilege, RBAC/ABAC, just-in-time authorization",
+      "description": "Use a least-privileged, role/attribute-based, just-in-time authorization model.",
+      "expected_outcome": "Use a least-privileged, role/attribute-based, just-in-time authorization model.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "AC-2",
+        "AC-3",
+        "AC-6",
+        "AC-6(1)"
+      ],
+      "cmmc_refs": [
+        "AC.L2-3.1.5"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "AC-6",
+          "AC-3",
+          "AC-2"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 3
+    },
+    {
+      "identifier": "KSI-IAM-05",
+      "category": "IAM",
+      "name": "Zero-trust design principles",
+      "description": "Apply zero-trust design principles, including short-lived sessions and continuous verification.",
+      "expected_outcome": "Apply zero-trust design principles, including short-lived sessions and continuous verification.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "AC-2",
+        "AC-11",
+        "AC-12",
+        "SC-7"
+      ],
+      "cmmc_refs": [
+        "AC.L2-3.1.10"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "any_of",
+        "rules": [
+          {
+            "kind": "connector_capture",
+            "captures": [
+              "inactivity_period"
+            ]
+          },
+          {
+            "kind": "control_any",
+            "controls": [
+              "AC-11",
+              "AC-12",
+              "AC-2"
+            ],
+            "states": [
+              "implemented",
+              "inherited",
+              "partial"
+            ]
+          }
+        ]
+      },
+      "sort_order": 4
+    },
+    {
+      "identifier": "KSI-IAM-06",
+      "category": "IAM",
+      "name": "Secure compromised privileged accounts",
+      "description": "Automatically disable or secure privileged accounts on detection of compromise or anomaly.",
+      "expected_outcome": "Automatically disable or secure privileged accounts on detection of compromise or anomaly.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "AC-2",
+        "AC-2(13)",
+        "IR-4"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "AC-2",
+          "IR-4"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 5
     },
     {
       "identifier": "KSI-CNA-01",
       "category": "CNA",
-      "name": "Deny-by-default network posture",
-      "description": "Configure network traffic to deny by default and permit by exception.",
-      "expected_outcome": "Ingress/egress is default-deny with explicit, documented allowances.",
+      "name": "Limit inbound and outbound traffic",
+      "description": "Configure all information resources to limit inbound and outbound traffic (default-deny).",
+      "expected_outcome": "Configure all information resources to limit inbound and outbound traffic (default-deny).",
       "validation_method": "automated",
       "validation_frequency": "continuous",
       "automation_level": "automated",
       "evidence_required": true,
-      "nist_refs": ["SC-7", "SC-7(5)", "AC-4"],
-      "cmmc_refs": ["SC.L2-3.13.6"],
-      "provider_services": ["Azure NSG", "AWS Security Groups"],
-      "rule": {"kind": "control_state", "controls": ["SC-7"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "SC-7",
+        "SC-7(5)"
+      ],
+      "cmmc_refs": [
+        "SC.L2-3.13.6"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "SC-7"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 6
     },
     {
       "identifier": "KSI-CNA-02",
       "category": "CNA",
-      "name": "High availability and rapid recovery",
-      "description": "Design the service for high availability and rapid, automated recovery.",
-      "expected_outcome": "Service survives component failure and recovers within objectives.",
-      "validation_method": "manual",
-      "validation_frequency": "annual",
-      "automation_level": "manual",
+      "name": "Minimize attack surface and lateral movement",
+      "description": "Design systems to minimize the attack surface and limit lateral movement.",
+      "expected_outcome": "Design systems to minimize the attack surface and limit lateral movement.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["CP-10", "SC-6", "SC-36"],
-      "cmmc_refs": [],
-      "provider_services": ["Availability Zones", "Auto Scaling"],
-      "rule": {"kind": "manual"}
+      "nist_refs": [
+        "CM-7",
+        "SC-7",
+        "SC-7(21)"
+      ],
+      "cmmc_refs": [
+        "CM.L2-3.4.6"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CM-7",
+          "SC-7"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 7
     },
     {
       "identifier": "KSI-CNA-03",
       "category": "CNA",
-      "name": "Immutable, minimal attack surface",
-      "description": "Use immutable infrastructure and minimize the attack surface.",
-      "expected_outcome": "Components are rebuilt from known-good images; unused services disabled.",
+      "name": "Enforce traffic flow controls",
+      "description": "Enforce traffic flow controls between components and boundaries.",
+      "expected_outcome": "Enforce traffic flow controls between components and boundaries.",
       "validation_method": "automated",
-      "validation_frequency": "monthly",
+      "validation_frequency": "continuous",
+      "automation_level": "automated",
+      "evidence_required": true,
+      "nist_refs": [
+        "AC-4",
+        "SC-7"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "AC-4"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 8
+    },
+    {
+      "identifier": "KSI-CNA-04",
+      "category": "CNA",
+      "name": "Strong cryptography for internal communications",
+      "description": "Use strong cryptography to protect communications between components.",
+      "expected_outcome": "Use strong cryptography to protect communications between components.",
+      "validation_method": "automated",
+      "validation_frequency": "continuous",
+      "automation_level": "automated",
+      "evidence_required": true,
+      "nist_refs": [
+        "SC-8",
+        "SC-8(1)",
+        "SC-13"
+      ],
+      "cmmc_refs": [
+        "SC.L2-3.13.8"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "SC-8"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 9
+    },
+    {
+      "identifier": "KSI-CNA-05",
+      "category": "CNA",
+      "name": "Denial-of-service protection",
+      "description": "Provide denial-of-service protection for internet-facing resources.",
+      "expected_outcome": "Provide denial-of-service protection for internet-facing resources.",
+      "validation_method": "automated",
+      "validation_frequency": "continuous",
       "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["CM-7", "CM-7(1)", "SA-8"],
-      "cmmc_refs": ["CM.L2-3.4.6", "CM.L2-3.4.7"],
-      "provider_services": ["Container images", "IaC pipelines"],
-      "rule": {"kind": "control_any", "controls": ["CM-7"], "states": ["implemented", "inherited", "partial"]}
+      "nist_refs": [
+        "SC-5"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "SC-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 10
+    },
+    {
+      "identifier": "KSI-CNA-06",
+      "category": "CNA",
+      "name": "High availability and rapid recovery",
+      "description": "Design systems for high availability and rapid, automated recovery.",
+      "expected_outcome": "Design systems for high availability and rapid, automated recovery.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "CP-10",
+        "SC-6"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 11
+    },
+    {
+      "identifier": "KSI-CNA-07",
+      "category": "CNA",
+      "name": "Follow provider security best practices",
+      "description": "Implement cloud-native resources per the host provider's documented best practices.",
+      "expected_outcome": "Implement cloud-native resources per the host provider's documented best practices.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "SA-8",
+        "CM-6"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 12
     },
     {
       "identifier": "KSI-SVC-01",
       "category": "SVC",
-      "name": "Encryption in transit",
-      "description": "Encrypt all network traffic with strong, current cryptography.",
-      "expected_outcome": "All data in transit uses FIPS-validated TLS.",
+      "name": "Harden and review configurations",
+      "description": "Harden and periodically review network and system configurations.",
+      "expected_outcome": "Harden and periodically review network and system configurations.",
       "validation_method": "automated",
-      "validation_frequency": "continuous",
-      "automation_level": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["SC-8", "SC-8(1)", "SC-13"],
-      "cmmc_refs": ["SC.L2-3.13.8"],
-      "provider_services": ["TLS 1.2+", "Managed certificates"],
-      "rule": {"kind": "control_state", "controls": ["SC-8"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "CM-6",
+        "CM-2"
+      ],
+      "cmmc_refs": [
+        "CM.L2-3.4.1",
+        "CM.L2-3.4.2"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "CM-6"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 13
     },
     {
       "identifier": "KSI-SVC-02",
       "category": "SVC",
-      "name": "Encryption at rest",
-      "description": "Encrypt data at rest using validated cryptographic modules.",
-      "expected_outcome": "All stored federal data is encrypted with managed keys.",
+      "name": "Encrypt network traffic",
+      "description": "Encrypt or otherwise secure all network traffic.",
+      "expected_outcome": "Encrypt or otherwise secure all network traffic.",
       "validation_method": "automated",
       "validation_frequency": "continuous",
       "automation_level": "automated",
       "evidence_required": true,
-      "nist_refs": ["SC-13", "SC-28", "SC-28(1)"],
-      "cmmc_refs": ["SC.L2-3.13.16"],
-      "provider_services": ["Storage Service Encryption", "AWS KMS"],
-      "rule": {"kind": "control_state", "controls": ["SC-28"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "SC-8",
+        "SC-8(1)"
+      ],
+      "cmmc_refs": [
+        "SC.L2-3.13.8"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "SC-8"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 14
     },
     {
       "identifier": "KSI-SVC-03",
       "category": "SVC",
-      "name": "Centralized secrets management",
-      "description": "Manage keys and secrets through a dedicated secrets service.",
-      "expected_outcome": "Secrets are stored in a vault, rotated, and never hard-coded.",
-      "validation_method": "automated",
-      "validation_frequency": "monthly",
-      "automation_level": "partial",
-      "evidence_required": true,
-      "nist_refs": ["SC-12", "IA-5", "IA-5(1)"],
-      "cmmc_refs": ["IA.L2-3.5.10"],
-      "provider_services": ["Azure Key Vault", "AWS Secrets Manager"],
-      "rule": {"kind": "evidence_present", "controls": ["SC-12"]}
-    },
-    {
-      "identifier": "KSI-MLA-01",
-      "category": "MLA",
-      "name": "Centralized security logging",
-      "description": "Centrally collect and retain security-relevant logs.",
-      "expected_outcome": "Logs from all components are aggregated and retained per policy.",
+      "name": "Encrypt data at rest",
+      "description": "Encrypt all federal and sensitive information at rest.",
+      "expected_outcome": "Encrypt all federal and sensitive information at rest.",
       "validation_method": "automated",
       "validation_frequency": "continuous",
       "automation_level": "automated",
       "evidence_required": true,
-      "nist_refs": ["AU-2", "AU-6", "AU-6(3)", "AU-12"],
-      "cmmc_refs": ["AU.L2-3.3.1"],
-      "provider_services": ["Azure Monitor", "AWS CloudTrail"],
-      "rule": {"kind": "control_state", "controls": ["AU-6"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "SC-28",
+        "SC-28(1)",
+        "SC-13"
+      ],
+      "cmmc_refs": [
+        "SC.L2-3.13.16"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "SC-28"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 15
     },
     {
-      "identifier": "KSI-MLA-02",
-      "category": "MLA",
-      "name": "Continuous vulnerability monitoring",
-      "description": "Continuously scan for and track vulnerabilities.",
-      "expected_outcome": "Vulnerabilities are detected, prioritized, and remediated on a cadence.",
-      "validation_method": "automated",
-      "validation_frequency": "weekly",
-      "automation_level": "partial",
-      "evidence_required": true,
-      "nist_refs": ["RA-5", "RA-5(2)", "SI-2"],
-      "cmmc_refs": ["RA.L2-3.11.2", "SI.L2-3.14.1"],
-      "provider_services": ["Defender for Cloud", "AWS Inspector"],
-      "rule": {"kind": "control_any", "controls": ["RA-5", "SI-2"], "states": ["implemented", "inherited", "partial"]}
-    },
-    {
-      "identifier": "KSI-CMT-01",
-      "category": "CMT",
-      "name": "Controlled change management",
-      "description": "Manage changes through a documented, approved process.",
-      "expected_outcome": "Changes are reviewed, approved, and traceable.",
-      "validation_method": "manual",
-      "validation_frequency": "monthly",
-      "automation_level": "partial",
-      "evidence_required": true,
-      "nist_refs": ["CM-3", "CM-4", "CM-5"],
-      "cmmc_refs": ["CM.L2-3.4.3"],
-      "provider_services": ["Change tickets", "IaC pipelines"],
-      "rule": {"kind": "control_any", "controls": ["CM-3", "CM-5"], "states": ["implemented", "inherited", "partial"]}
-    },
-    {
-      "identifier": "KSI-CMT-02",
-      "category": "CMT",
-      "name": "Baseline configuration enforcement",
-      "description": "Maintain and enforce secure baseline configurations.",
-      "expected_outcome": "Deviations from baseline are detected and corrected.",
+      "identifier": "KSI-SVC-04",
+      "category": "SVC",
+      "name": "Central configuration management",
+      "description": "Manage configuration centrally with drift detection.",
+      "expected_outcome": "Manage configuration centrally with drift detection.",
       "validation_method": "automated",
       "validation_frequency": "continuous",
       "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["CM-2", "CM-2(2)", "CM-6"],
-      "cmmc_refs": ["CM.L2-3.4.1", "CM.L2-3.4.2"],
-      "provider_services": ["Azure Policy", "AWS Config"],
-      "rule": {"kind": "control_state", "controls": ["CM-6"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "CM-2",
+        "CM-2(2)",
+        "CM-6"
+      ],
+      "cmmc_refs": [
+        "CM.L2-3.4.1"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CM-2",
+          "CM-6"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 16
     },
     {
-      "identifier": "KSI-PIY-01",
-      "category": "PIY",
-      "name": "Complete asset inventory",
-      "description": "Maintain a complete, current inventory of system components.",
-      "expected_outcome": "All components inside the boundary are inventoried and attributed.",
+      "identifier": "KSI-SVC-05",
+      "category": "SVC",
+      "name": "Cryptographic integrity enforcement",
+      "description": "Enforce system and component integrity through cryptographic means.",
+      "expected_outcome": "Enforce system and component integrity through cryptographic means.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "SI-7",
+        "SC-13"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "SI-7",
+          "SC-13"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 17
+    },
+    {
+      "identifier": "KSI-SVC-06",
+      "category": "SVC",
+      "name": "Automated key and certificate management",
+      "description": "Use automated key management to manage, protect, and rotate keys and certificates.",
+      "expected_outcome": "Use automated key management to manage, protect, and rotate keys and certificates.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "SC-12",
+        "SC-12(1)",
+        "IA-5"
+      ],
+      "cmmc_refs": [
+        "IA.L2-3.5.10"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "SC-12"
+        ]
+      },
+      "sort_order": 18
+    },
+    {
+      "identifier": "KSI-SVC-07",
+      "category": "SVC",
+      "name": "Risk-informed patching",
+      "description": "Apply security patches using a consistent, risk-informed approach.",
+      "expected_outcome": "Apply security patches using a consistent, risk-informed approach.",
       "validation_method": "automated",
       "validation_frequency": "weekly",
       "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["CM-8", "CM-8(1)", "PM-5"],
-      "cmmc_refs": ["CM.L2-3.4.1"],
-      "provider_services": ["Resource inventory", "Tagging"],
-      "rule": {"kind": "control_state", "controls": ["CM-8"], "states": ["implemented", "inherited"]}
+      "nist_refs": [
+        "SI-2",
+        "SI-2(2)",
+        "RA-5"
+      ],
+      "cmmc_refs": [
+        "SI.L2-3.14.1"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "SI-2",
+          "RA-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 19
+    },
+    {
+      "identifier": "KSI-MLA-01",
+      "category": "MLA",
+      "name": "Centralized, tamper-resistant logging (SIEM)",
+      "description": "Operate a SIEM or similar for centralized, tamper-resistant logging.",
+      "expected_outcome": "Operate a SIEM or similar for centralized, tamper-resistant logging.",
+      "validation_method": "automated",
+      "validation_frequency": "continuous",
+      "automation_level": "automated",
+      "evidence_required": true,
+      "nist_refs": [
+        "AU-6",
+        "AU-6(3)",
+        "AU-9",
+        "AU-12"
+      ],
+      "cmmc_refs": [
+        "AU.L2-3.3.1"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "any_of",
+        "rules": [
+          {
+            "kind": "connector_capture",
+            "captures": [
+              "audit_retention_period"
+            ]
+          },
+          {
+            "kind": "control_state",
+            "controls": [
+              "AU-6"
+            ],
+            "states": [
+              "implemented",
+              "inherited"
+            ]
+          }
+        ]
+      },
+      "sort_order": 20
+    },
+    {
+      "identifier": "KSI-MLA-02",
+      "category": "MLA",
+      "name": "Regular log review and audit",
+      "description": "Regularly review and audit logs for anomalous or unauthorized activity.",
+      "expected_outcome": "Regularly review and audit logs for anomalous or unauthorized activity.",
+      "validation_method": "automated",
+      "validation_frequency": "weekly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "AU-6",
+        "AU-6(1)"
+      ],
+      "cmmc_refs": [
+        "AU.L2-3.3.5"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "AU-6"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 21
+    },
+    {
+      "identifier": "KSI-MLA-03",
+      "category": "MLA",
+      "name": "Rapid vulnerability detection and remediation",
+      "description": "Rapidly detect and remediate or mitigate vulnerabilities.",
+      "expected_outcome": "Rapidly detect and remediate or mitigate vulnerabilities.",
+      "validation_method": "automated",
+      "validation_frequency": "weekly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "RA-5",
+        "SI-2"
+      ],
+      "cmmc_refs": [
+        "RA.L2-3.11.2"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "RA-5",
+          "SI-2"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 22
+    },
+    {
+      "identifier": "KSI-MLA-04",
+      "category": "MLA",
+      "name": "Authenticated vulnerability scanning",
+      "description": "Perform authenticated vulnerability scanning.",
+      "expected_outcome": "Perform authenticated vulnerability scanning.",
+      "validation_method": "automated",
+      "validation_frequency": "weekly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "RA-5",
+        "RA-5(5)"
+      ],
+      "cmmc_refs": [
+        "RA.L2-3.11.2"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "RA-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 23
+    },
+    {
+      "identifier": "KSI-MLA-05",
+      "category": "MLA",
+      "name": "IaC and configuration evaluation",
+      "description": "Perform infrastructure-as-code and configuration evaluation and testing.",
+      "expected_outcome": "Perform infrastructure-as-code and configuration evaluation and testing.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-2",
+        "CM-3",
+        "SA-11"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "CM-2"
+        ]
+      },
+      "sort_order": 24
+    },
+    {
+      "identifier": "KSI-MLA-06",
+      "category": "MLA",
+      "name": "Central remediation tracking",
+      "description": "Centrally track and prioritize remediation of identified vulnerabilities.",
+      "expected_outcome": "Centrally track and prioritize remediation of identified vulnerabilities.",
+      "validation_method": "automated",
+      "validation_frequency": "weekly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "RA-5",
+        "CA-5",
+        "SI-2"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "RA-5",
+          "CA-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 25
+    },
+    {
+      "identifier": "KSI-CMT-01",
+      "category": "CMT",
+      "name": "Log and monitor system modifications",
+      "description": "Log and monitor system modifications.",
+      "expected_outcome": "Log and monitor system modifications.",
+      "validation_method": "automated",
+      "validation_frequency": "continuous",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-3",
+        "AU-6"
+      ],
+      "cmmc_refs": [
+        "CM.L2-3.4.3"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CM-3",
+          "AU-6"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 26
+    },
+    {
+      "identifier": "KSI-CMT-02",
+      "category": "CMT",
+      "name": "Immutable redeployment of changes",
+      "description": "Execute changes by redeploying version-controlled, immutable resources.",
+      "expected_outcome": "Execute changes by redeploying version-controlled, immutable resources.",
+      "validation_method": "manual",
+      "validation_frequency": "monthly",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-3",
+        "CM-5"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 27
+    },
+    {
+      "identifier": "KSI-CMT-03",
+      "category": "CMT",
+      "name": "Automated change testing and validation",
+      "description": "Implement automated testing and validation of changes before deployment.",
+      "expected_outcome": "Implement automated testing and validation of changes before deployment.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-3",
+        "SA-11"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "CM-3"
+        ]
+      },
+      "sort_order": 28
+    },
+    {
+      "identifier": "KSI-CMT-04",
+      "category": "CMT",
+      "name": "Documented change-management procedure",
+      "description": "Maintain a documented change-management procedure.",
+      "expected_outcome": "Maintain a documented change-management procedure.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-3",
+        "CM-9"
+      ],
+      "cmmc_refs": [
+        "CM.L2-3.4.3"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "CM-3"
+        ]
+      },
+      "sort_order": 29
+    },
+    {
+      "identifier": "KSI-CMT-05",
+      "category": "CMT",
+      "name": "Evaluate change risk and impact",
+      "description": "Evaluate the risk and potential impact of any change.",
+      "expected_outcome": "Evaluate the risk and potential impact of any change.",
+      "validation_method": "automated",
+      "validation_frequency": "monthly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-4",
+        "CM-4(1)"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CM-4"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 30
+    },
+    {
+      "identifier": "KSI-PIY-01",
+      "category": "PIY",
+      "name": "Current information-resource inventory",
+      "description": "Maintain an up-to-date inventory of information resources.",
+      "expected_outcome": "Maintain an up-to-date inventory of information resources.",
+      "validation_method": "automated",
+      "validation_frequency": "weekly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CM-8",
+        "CM-8(1)",
+        "PM-5"
+      ],
+      "cmmc_refs": [
+        "CM.L2-3.4.1"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_state",
+        "controls": [
+          "CM-8"
+        ],
+        "states": [
+          "implemented",
+          "inherited"
+        ]
+      },
+      "sort_order": 31
     },
     {
       "identifier": "KSI-PIY-02",
       "category": "PIY",
-      "name": "Documented security policies",
-      "description": "Maintain approved, current security policies and procedures.",
-      "expected_outcome": "Policies exist, are approved, and are reviewed on a cadence.",
+      "name": "Security policies for all resources",
+      "description": "Maintain policies describing the security objectives of all information resources.",
+      "expected_outcome": "Maintain policies describing the security objectives of all information resources.",
       "validation_method": "manual",
       "validation_frequency": "annual",
       "automation_level": "manual",
       "evidence_required": true,
-      "nist_refs": ["PL-1", "PL-2", "PM-1"],
+      "nist_refs": [
+        "PL-1",
+        "PL-2",
+        "PM-1"
+      ],
       "cmmc_refs": [],
       "provider_services": [],
-      "rule": {"kind": "evidence_present", "controls": ["PL-2"]}
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "PL-2"
+        ]
+      },
+      "sort_order": 32
+    },
+    {
+      "identifier": "KSI-PIY-03",
+      "category": "PIY",
+      "name": "Vulnerability disclosure program",
+      "description": "Maintain a vulnerability disclosure program.",
+      "expected_outcome": "Maintain a vulnerability disclosure program.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "RA-5",
+        "SI-5"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "RA-5"
+        ]
+      },
+      "sort_order": 33
+    },
+    {
+      "identifier": "KSI-PIY-04",
+      "category": "PIY",
+      "name": "Secure SDLC / secure-by-design",
+      "description": "Build security into the SDLC, aligned with CISA Secure by Design.",
+      "expected_outcome": "Build security into the SDLC, aligned with CISA Secure by Design.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "SA-3",
+        "SA-8",
+        "SA-15"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "SA-3"
+        ]
+      },
+      "sort_order": 34
+    },
+    {
+      "identifier": "KSI-PIY-05",
+      "category": "PIY",
+      "name": "Documented evaluation methods",
+      "description": "Document the methods used to evaluate information-resource implementations.",
+      "expected_outcome": "Document the methods used to evaluate information-resource implementations.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "CA-2",
+        "CA-8"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 35
+    },
+    {
+      "identifier": "KSI-PIY-06",
+      "category": "PIY",
+      "name": "Dedicated security staff, budget, and executive support",
+      "description": "Have dedicated staff and budget for security with executive support.",
+      "expected_outcome": "Have dedicated staff and budget for security with executive support.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "PM-2",
+        "PM-3"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 36
+    },
+    {
+      "identifier": "KSI-PIY-07",
+      "category": "PIY",
+      "name": "Documented supply-chain risk decisions",
+      "description": "Document risk-management decisions for software supply-chain security.",
+      "expected_outcome": "Document risk-management decisions for software supply-chain security.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "SR-3",
+        "SR-5",
+        "SR-11"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "SR-3"
+        ]
+      },
+      "sort_order": 37
     },
     {
       "identifier": "KSI-RPL-01",
       "category": "RPL",
-      "name": "Tested backup and recovery",
-      "description": "Back up federal data and test restoration on a defined cadence.",
-      "expected_outcome": "Backups exist, are protected, and restores are periodically tested.",
+      "name": "Defined RTO and RPO",
+      "description": "Define Recovery Time Objectives (RTO) and Recovery Point Objectives (RPO).",
+      "expected_outcome": "Define Recovery Time Objectives (RTO) and Recovery Point Objectives (RPO).",
       "validation_method": "manual",
-      "validation_frequency": "quarterly",
-      "automation_level": "partial",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
       "evidence_required": true,
-      "nist_refs": ["CP-9", "CP-10", "CP-4"],
+      "nist_refs": [
+        "CP-2",
+        "CP-2(3)"
+      ],
       "cmmc_refs": [],
-      "provider_services": ["Backup vaults", "Geo-redundant storage"],
-      "rule": {"kind": "control_any", "controls": ["CP-9", "CP-10"], "states": ["implemented", "inherited", "partial"]}
+      "provider_services": [],
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 38
     },
     {
       "identifier": "KSI-RPL-02",
       "category": "RPL",
-      "name": "Recovery objectives defined",
-      "description": "Define and document RTO/RPO recovery objectives.",
-      "expected_outcome": "Recovery objectives are documented and validated against tests.",
+      "name": "Recovery plan aligned to objectives",
+      "description": "Develop and maintain a recovery plan aligned with the RTO and RPO.",
+      "expected_outcome": "Develop and maintain a recovery plan aligned with the RTO and RPO.",
+      "validation_method": "automated",
+      "validation_frequency": "annual",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CP-2",
+        "CP-10"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CP-2",
+          "CP-10"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 39
+    },
+    {
+      "identifier": "KSI-RPL-03",
+      "category": "RPL",
+      "name": "Backups aligned to recovery objectives",
+      "description": "Perform system backups aligned with the recovery objectives.",
+      "expected_outcome": "Perform system backups aligned with the recovery objectives.",
+      "validation_method": "automated",
+      "validation_frequency": "quarterly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "CP-9",
+        "CP-9(1)"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CP-9"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 40
+    },
+    {
+      "identifier": "KSI-RPL-04",
+      "category": "RPL",
+      "name": "Regular recovery testing",
+      "description": "Regularly test the capability to recover from incidents and contingencies.",
+      "expected_outcome": "Regularly test the capability to recover from incidents and contingencies.",
       "validation_method": "manual",
       "validation_frequency": "annual",
       "automation_level": "manual",
       "evidence_required": true,
-      "nist_refs": ["CP-2", "CP-2(3)"],
+      "nist_refs": [
+        "CP-4",
+        "CP-4(1)"
+      ],
       "cmmc_refs": [],
       "provider_services": [],
-      "rule": {"kind": "manual"}
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "CP-4"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 41
     },
     {
       "identifier": "KSI-INR-01",
       "category": "INR",
-      "name": "Incident response capability",
-      "description": "Maintain and exercise an incident response capability.",
-      "expected_outcome": "IR plan exists, roles assigned, and incidents are handled and reported.",
-      "validation_method": "manual",
+      "name": "Report incidents per FedRAMP requirements",
+      "description": "Report incidents according to FedRAMP requirements and provider policies.",
+      "expected_outcome": "Report incidents according to FedRAMP requirements and provider policies.",
+      "validation_method": "automated",
       "validation_frequency": "annual",
-      "automation_level": "manual",
+      "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["IR-4", "IR-6", "IR-8"],
-      "cmmc_refs": ["IR.L2-3.6.1", "IR.L2-3.6.2"],
+      "nist_refs": [
+        "IR-6",
+        "IR-6(1)"
+      ],
+      "cmmc_refs": [
+        "IR.L2-3.6.2"
+      ],
       "provider_services": [],
-      "rule": {"kind": "control_any", "controls": ["IR-4", "IR-8"], "states": ["implemented", "inherited", "partial"]}
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "IR-6"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 42
     },
     {
       "identifier": "KSI-INR-02",
       "category": "INR",
-      "name": "US-CERT / FedRAMP incident reporting",
-      "description": "Report incidents to the required authorities within mandated timelines.",
-      "expected_outcome": "A defined path reports incidents to CISA/FedRAMP within SLAs.",
+      "name": "Maintain and review an incident log",
+      "description": "Maintain a log of incidents and periodically review past incidents.",
+      "expected_outcome": "Maintain a log of incidents and periodically review past incidents.",
+      "validation_method": "automated",
+      "validation_frequency": "quarterly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "IR-4",
+        "IR-5"
+      ],
+      "cmmc_refs": [
+        "IR.L2-3.6.1"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "IR-4",
+          "IR-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 43
+    },
+    {
+      "identifier": "KSI-INR-03",
+      "category": "INR",
+      "name": "After-action reports and lessons learned",
+      "description": "Generate after-action reports and incorporate lessons learned.",
+      "expected_outcome": "Generate after-action reports and incorporate lessons learned.",
       "validation_method": "manual",
       "validation_frequency": "annual",
       "automation_level": "manual",
       "evidence_required": true,
-      "nist_refs": ["IR-6", "IR-6(1)"],
-      "cmmc_refs": ["IR.L2-3.6.2"],
+      "nist_refs": [
+        "IR-4",
+        "IR-4(1)"
+      ],
+      "cmmc_refs": [],
       "provider_services": [],
-      "rule": {"kind": "evidence_present", "controls": ["IR-6"]}
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "IR-4"
+        ]
+      },
+      "sort_order": 44
     },
     {
       "identifier": "KSI-CED-01",
       "category": "CED",
       "name": "Security awareness training",
-      "description": "Provide role-based security awareness training to all personnel.",
-      "expected_outcome": "Personnel complete security training on hire and annually.",
+      "description": "Ensure all employees receive security awareness training.",
+      "expected_outcome": "Ensure all employees receive security awareness training.",
       "validation_method": "manual",
       "validation_frequency": "annual",
       "automation_level": "manual",
       "evidence_required": true,
-      "nist_refs": ["AT-2", "AT-2(2)", "AT-3"],
-      "cmmc_refs": ["AT.L2-3.2.1", "AT.L2-3.2.2"],
+      "nist_refs": [
+        "AT-2",
+        "AT-2(2)"
+      ],
+      "cmmc_refs": [
+        "AT.L2-3.2.1"
+      ],
       "provider_services": [],
-      "rule": {"kind": "evidence_present", "controls": ["AT-2"]}
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "AT-2"
+        ]
+      },
+      "sort_order": 45
+    },
+    {
+      "identifier": "KSI-CED-02",
+      "category": "CED",
+      "name": "Role-specific training for high-risk roles",
+      "description": "Require role-specific training for high-risk roles.",
+      "expected_outcome": "Require role-specific training for high-risk roles.",
+      "validation_method": "manual",
+      "validation_frequency": "annual",
+      "automation_level": "manual",
+      "evidence_required": true,
+      "nist_refs": [
+        "AT-3",
+        "AT-3(2)"
+      ],
+      "cmmc_refs": [
+        "AT.L2-3.2.2"
+      ],
+      "provider_services": [],
+      "rule": {
+        "kind": "evidence_present",
+        "controls": [
+          "AT-3"
+        ]
+      },
+      "sort_order": 46
     },
     {
       "identifier": "KSI-TPR-01",
       "category": "TPR",
-      "name": "FedRAMP-authorized dependencies",
-      "description": "Use FedRAMP-authorized services for underlying cloud dependencies.",
-      "expected_outcome": "All underlying IaaS/PaaS/SaaS dependencies are FedRAMP authorized.",
+      "name": "Identify third-party resources",
+      "description": "Identify all third-party information resources.",
+      "expected_outcome": "Identify all third-party information resources.",
       "validation_method": "automated",
       "validation_frequency": "quarterly",
-      "automation_level": "automated",
+      "automation_level": "partial",
       "evidence_required": true,
-      "nist_refs": ["SA-9", "SA-9(1)", "SR-3"],
+      "nist_refs": [
+        "SA-9",
+        "SR-8"
+      ],
       "cmmc_refs": [],
       "provider_services": [],
-      "rule": {"kind": "dependency_authorized"}
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "SA-9",
+          "SR-8"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 47
     },
     {
       "identifier": "KSI-TPR-02",
       "category": "TPR",
-      "name": "Third-party risk management",
-      "description": "Assess and monitor the risk of third-party information resources.",
-      "expected_outcome": "Third parties are risk-assessed and monitored over time.",
+      "name": "Use FedRAMP-authorized services",
+      "description": "Confirm services that store, process, or transmit federal information are FedRAMP authorized.",
+      "expected_outcome": "Confirm services that store, process, or transmit federal information are FedRAMP authorized.",
+      "validation_method": "automated",
+      "validation_frequency": "quarterly",
+      "automation_level": "automated",
+      "evidence_required": true,
+      "nist_refs": [
+        "SA-9",
+        "SA-9(1)",
+        "SR-3"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "dependency_authorized"
+      },
+      "sort_order": 48
+    },
+    {
+      "identifier": "KSI-TPR-03",
+      "category": "TPR",
+      "name": "Prioritize supply-chain risk mitigation",
+      "description": "Identify and prioritize mitigation of potential supply-chain risks.",
+      "expected_outcome": "Identify and prioritize mitigation of potential supply-chain risks.",
       "validation_method": "manual",
       "validation_frequency": "annual",
       "automation_level": "manual",
       "evidence_required": true,
-      "nist_refs": ["SR-6", "SA-9"],
+      "nist_refs": [
+        "SR-5",
+        "SR-6"
+      ],
       "cmmc_refs": [],
       "provider_services": [],
-      "rule": {"kind": "manual"}
+      "rule": {
+        "kind": "manual"
+      },
+      "sort_order": 49
+    },
+    {
+      "identifier": "KSI-TPR-04",
+      "category": "TPR",
+      "name": "Monitor third-party software",
+      "description": "Monitor third-party software for vulnerabilities and incidents.",
+      "expected_outcome": "Monitor third-party software for vulnerabilities and incidents.",
+      "validation_method": "automated",
+      "validation_frequency": "quarterly",
+      "automation_level": "partial",
+      "evidence_required": true,
+      "nist_refs": [
+        "SR-6",
+        "RA-5",
+        "SI-5"
+      ],
+      "cmmc_refs": [],
+      "provider_services": [],
+      "rule": {
+        "kind": "control_any",
+        "controls": [
+          "SR-6",
+          "RA-5"
+        ],
+        "states": [
+          "implemented",
+          "inherited",
+          "partial"
+        ]
+      },
+      "sort_order": 50
     }
   ]
 }

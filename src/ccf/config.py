@@ -84,6 +84,11 @@ class Settings(BaseSettings):
     auth_session_secret: str = Field(default="dev-insecure-change-me")
     auth_session_ttl_hours: int = Field(default=12)
 
+    # FedRAMP 20x: when true, the OSCAL-shaped package export is structurally
+    # validated against Concord's OSCAL-subset checks before it is returned
+    # (structural validation only — not official OSCAL schema conformance).
+    fedramp20x_oscal_validate: bool = Field(default=False)
+
     @property
     def is_sqlite(self) -> bool:
         return "sqlite" in str(self.database_url)

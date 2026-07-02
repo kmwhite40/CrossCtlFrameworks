@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Audit workspace · Concord{% endblock %}
+{% block heading %}Audit collaboration workspace{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Manage audit engagements, evidence requests (PBC), and findings through to closure.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/audit-workspace" class="card__body filters">
+    <input class="input" name="name" required placeholder="Engagement name (C3PAO CMMC L2)">
+    <input class="input" name="auditor_org" placeholder="Auditor org">
+    <input class="input" name="framework" placeholder="Framework">
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Open engagement</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Engagements</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Engagement</th><th>Auditor</th><th>Framework</th><th>Status</th><th>Target</th><th></th></tr></thead>
+    <tbody>
+      {% for e in rows %}<tr>
+        <td><strong>{{ e.name }}</strong></td>
+        <td class="dim">{{ e.auditor_org or '—' }}</td>
+        <td>{% if e.framework %}<span class="chip chip--brand">{{ e.framework }}</span>{% else %}—{% endif %}</td>
+        <td><span class="chip {% if e.status=='closed' %}chip--ok{% elif e.status=='fieldwork' %}chip--warn{% else %}chip{% endif %}">{{ e.status }}</span></td>
+        <td class="dim">{{ e.target_on or '—' }}</td>
+        <td><a class="btn btn--ghost btn--sm" href="/audit-workspace/{{ e.id }}"><i data-lucide="arrow-right"></i> Open</a></td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No audit engagements yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

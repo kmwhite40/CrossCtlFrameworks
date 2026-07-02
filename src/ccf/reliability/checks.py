@@ -294,10 +294,10 @@ async def _check_package_service(_s: AsyncSession) -> Check:
     try:
         from ..fedramp20x import package as pkg  # noqa: PLC0415
 
-        for attr in ("build_package", "render_markdown", "to_oscal_shaped"):
+        for attr in ("build_package", "render_markdown", "to_oscal_shaped", "validate_oscal"):
             if not hasattr(pkg, attr):
                 return Check("fedramp20x_package_export", FAIL, f"package.{attr} missing.")
-        # Smoke the OSCAL-shaped transform on a minimal package.
+        # Smoke the OSCAL-shaped transform on a minimal package + structurally validate it.
         sample = {
             "system": {"id": 0, "name": "sample"},
             "generated_at": datetime.now(UTC).isoformat(),
@@ -306,8 +306,16 @@ async def _check_package_service(_s: AsyncSession) -> Check:
             "ksis": [],
             "dependencies": [],
         }
-        pkg.to_oscal_shaped(sample)
-        return Check("fedramp20x_package_export", PASS, "Package export (JSON/MD/OSCAL-shaped) OK.")
+        errors = pkg.validate_oscal(pkg.to_oscal_shaped(sample))
+        if errors:
+            return Check(
+                "fedramp20x_package_export", FAIL,
+                f"OSCAL structural validation failed: {errors[:3]}",
+            )
+        return Check(
+            "fedramp20x_package_export", PASS,
+            "Package export (JSON/MD/OSCAL-shaped) OK; OSCAL structurally valid.",
+        )
     except Exception as exc:
         return Check("fedramp20x_package_export", FAIL, f"Package export error: {exc}")
 

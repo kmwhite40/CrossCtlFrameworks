@@ -370,3 +370,54 @@ def to_oscal_shaped(pkg: dict[str, Any]) -> dict[str, Any]:
             ],
         }
     }
+
+
+def validate_oscal(doc: dict[str, Any]) -> list[str]:
+    """Structurally validate an OSCAL-shaped assessment-results document.
+
+    Checks the required OSCAL assessment-results structure/keys/types that Concord
+    emits — NOT full official OSCAL schema conformance (no schema library is
+    bundled). Returns a list of human-readable error strings; empty means the
+    document is structurally sound.
+    """
+    errors: list[str] = []
+
+    def req(obj: dict[str, Any], key: str, where: str, typ: type | tuple[type, ...]) -> Any:
+        if key not in obj:
+            errors.append(f"{where}: missing required key '{key}'")
+            return None
+        if not isinstance(obj[key], typ):
+            errors.append(f"{where}.{key}: expected {typ}, got {type(obj[key]).__name__}")
+            return None
+        return obj[key]
+
+    if not isinstance(doc, dict):
+        return ["root: document must be an object"]
+    ar = req(doc, "assessment-results", "root", dict)
+    if ar is None:
+        return errors
+    req(ar, "uuid", "assessment-results", str)
+    meta = req(ar, "metadata", "assessment-results", dict)
+    if isinstance(meta, dict):
+        for key in ("title", "last-modified", "oscal-version"):
+            req(meta, key, "assessment-results.metadata", str)
+    results = req(ar, "results", "assessment-results", list)
+    if isinstance(results, list):
+        if not results:
+            errors.append("assessment-results.results: must contain at least one result")
+        for i, res in enumerate(results):
+            where = f"results[{i}]"
+            if not isinstance(res, dict):
+                errors.append(f"{where}: must be an object")
+                continue
+            req(res, "uuid", where, str)
+            req(res, "title", where, str)
+            for coll in ("observations", "findings"):
+                items = res.get(coll, [])
+                if not isinstance(items, list):
+                    errors.append(f"{where}.{coll}: expected list")
+                    continue
+                for j, it in enumerate(items):
+                    if not isinstance(it, dict) or "uuid" not in it:
+                        errors.append(f"{where}.{coll}[{j}]: missing 'uuid'")
+    return errors

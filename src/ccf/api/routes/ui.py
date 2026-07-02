@@ -1856,7 +1856,12 @@ async def fedramp20x_page(
 ) -> HTMLResponse:
     from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
     from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
-    from ...models import KSI, KSIState  # noqa: PLC0415
+    from ...models import (  # noqa: PLC0415
+        KSI,
+        FedRAMP20xProfile,
+        FedRAMPDependency,
+        KSIState,
+    )
 
     org = _principal_org(request)
     ksis = await ksi_catalog.list_ksis(session)
@@ -1872,16 +1877,30 @@ async def fedramp20x_page(
 
     readiness = None
     states: dict[int, str] = {}
+    assessor: dict[int, str] = {}
+    profile = None
+    dependencies: list[FedRAMPDependency] = []
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
-        states = {
-            s.ksi_id: s.status
-            for s in (
-                await session.execute(select(KSIState).where(KSIState.system_id == system_id))
+        for s in (
+            await session.execute(select(KSIState).where(KSIState.system_id == system_id))
+        ).scalars():
+            states[s.ksi_id] = s.status
+            assessor[s.ksi_id] = s.assessor_status
+        profile = (
+            await session.execute(
+                select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
+            )
+        ).scalar_one_or_none()
+        dependencies = list(
+            (
+                await session.execute(
+                    select(FedRAMPDependency).where(FedRAMPDependency.system_id == system_id)
+                )
             )
             .scalars()
             .all()
-        }
+        )
     return templates.TemplateResponse(
         request,
         "fedramp20x.html",
@@ -1890,12 +1909,130 @@ async def fedramp20x_page(
             "asset_v": _asset_version(),
             "by_category": by_category,
             "ksi_total": len(ksis),
+            "ksis": ksis,
             "systems": systems,
             "system_id": system_id,
             "readiness": readiness,
             "states": states,
+            "assessor": assessor,
+            "profile": profile,
+            "dependencies": dependencies,
         },
     )
+
+
+@router.post("/fedramp20x/{system_id}/profile")
+async def fedramp20x_save_profile(
+    request: Request,
+    system_id: int,
+    service_name: str = Form(""),
+    deployment_model: str = Form(""),
+    cloud_environment: str = Form(""),
+    boundary_description: str = Form(""),
+    cryptographic_boundary: str = Form(""),
+    logging_boundary: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Upsert the FedRAMP 20x Cloud Service Offering profile for a system."""
+    from ...models import FedRAMP20xProfile  # noqa: PLC0415
+
+    if not await _fedramp20x_system_visible(request, session, system_id):
+        return RedirectResponse("/fedramp20x", status_code=303)
+    profile = (
+        await session.execute(
+            select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
+        )
+    ).scalar_one_or_none()
+    if profile is None:
+        profile = FedRAMP20xProfile(system_id=system_id)
+        session.add(profile)
+    profile.service_name = service_name.strip() or None
+    profile.deployment_model = deployment_model.strip() or None
+    profile.cloud_environment = cloud_environment.strip() or None
+    profile.boundary_description = boundary_description.strip() or None
+    profile.cryptographic_boundary = cryptographic_boundary.strip() or None
+    profile.logging_boundary = logging_boundary.strip() or None
+    await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+@router.post("/fedramp20x/{system_id}/dependencies")
+async def fedramp20x_add_dependency(
+    request: Request,
+    system_id: int,
+    name: str = Form(...),
+    provider: str = Form(""),
+    service_type: str = Form(""),
+    fedramp_status: str = Form("unknown"),
+    dependency_risk: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Add a FedRAMP-authorized (or not) dependency to a system."""
+    from ...models import FedRAMPDependency  # noqa: PLC0415
+
+    if name.strip() and await _fedramp20x_system_visible(request, session, system_id):
+        session.add(
+            FedRAMPDependency(
+                system_id=system_id,
+                name=name.strip(),
+                provider=provider.strip() or None,
+                service_type=service_type.strip() or None,
+                fedramp_status=fedramp_status.strip() or "unknown",
+                dependency_risk=dependency_risk.strip() or None,
+            )
+        )
+        await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+@router.post("/fedramp20x/{system_id}/assessor-review")
+async def fedramp20x_record_review(
+    request: Request,
+    system_id: int,
+    ksi_id: int = Form(...),
+    status: str = Form(...),
+    assessor: str = Form(""),
+    notes: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Record an assessor review for one KSI and reflect it on the KSI state."""
+    from ...fedramp20x import ASSESSOR_STATUSES  # noqa: PLC0415
+    from ...models import KSIAssessorReview, KSIState  # noqa: PLC0415
+
+    if status in ASSESSOR_STATUSES and await _fedramp20x_system_visible(
+        request, session, system_id
+    ):
+        session.add(
+            KSIAssessorReview(
+                system_id=system_id,
+                ksi_id=ksi_id,
+                assessor=assessor.strip() or None,
+                status=status,
+                notes=notes.strip() or None,
+            )
+        )
+        state = (
+            await session.execute(
+                select(KSIState).where(
+                    KSIState.system_id == system_id, KSIState.ksi_id == ksi_id
+                )
+            )
+        ).scalar_one_or_none()
+        if state is not None:
+            state.assessor_status = status
+        await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+async def _fedramp20x_system_visible(
+    request: Request, session: AsyncSession, system_id: int
+) -> bool:
+    """True if the system exists and is in the caller's org (or caller is unscoped)."""
+    org = _principal_org(request)
+    stmt = select(System.id).where(System.id == system_id)
+    if org is not None:
+        stmt = stmt.where(System.organization_id == org)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
 @router.get("/admin/reliability", response_class=HTMLResponse)

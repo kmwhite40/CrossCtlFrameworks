@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Trust Center · Concord{% endblock %}
+{% block heading %}Trust Center{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Your security posture summary, approved artifacts, and access-request workflow — internal-first, shareable on request.</p>{% endblock %}
+{% block content %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Posture summary</div>
+    <div class="row" style="gap:8px">
+      <a class="btn btn--secondary" href="/api/trust/package?fmt=md"><i data-lucide="download"></i> Export package (.md)</a>
+      <a class="btn btn--ghost" href="/api/trust/package?fmt=json">JSON</a>
+    </div>
+  </div>
+  <form method="post" action="/trust" class="card__body stack" style="gap:12px">
+    <label class="field-group"><span class="dim" style="font-size:12px">Headline</span>
+      <input class="input" name="headline" value="{{ t.headline if t else '' }}" placeholder="Acme — Security &amp; Compliance"></label>
+    <label class="field-group"><span class="dim" style="font-size:12px">Summary</span>
+      <textarea class="input" name="summary" rows="3" placeholder="How we protect CUI…">{{ t.summary if t else '' }}</textarea></label>
+    <div><button class="btn btn--primary" type="submit"><i data-lucide="save"></i> Save</button></div>
+  </form>
+</section>
+
+<div class="cols-2">
+  <section class="card">
+    <div class="card__header"><div class="card__title">Framework status</div></div>
+    <div class="card__body stack" style="gap:6px">
+      {% for b in (t.framework_badges if t else []) %}
+      <div class="row between"><span>{{ b.framework }}</span><span class="chip chip--info">{{ b.status }}</span></div>
+      {% else %}<div class="dim">No framework badges yet. Add via <span class="mono">PUT /api/trust/profile</span>.</div>{% endfor %}
+    </div>
+  </section>
+  <section class="card">
+    <div class="card__header"><div class="card__title">FAQ</div></div>
+    <div class="card__body stack" style="gap:8px">
+      {% for f in (t.faq if t else []) %}
+      <div><strong>{{ f.q }}</strong><div class="dim" style="font-size:13px">{{ f.a }}</div></div>
+      {% else %}<div class="dim">No FAQ entries yet.</div>{% endfor %}
+    </div>
+  </section>
+</div>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

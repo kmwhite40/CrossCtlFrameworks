@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Control tests · Concord{% endblock %}
+{% block heading %}Continuous control tests{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Define repeatable tests per control. A failing run opens a critical alert and a remediation task automatically.</p>{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Tests</div><div class="kpi__value">{{ metrics.total }}</div></div>
+  <div class="kpi"><div class="kpi__label">Passing</div><div class="kpi__value">{{ metrics.passing }}</div></div>
+  <div class="kpi"><div class="kpi__label">Failing</div><div class="kpi__value">{{ metrics.failing }}</div></div>
+  <div class="kpi"><div class="kpi__label">Untested</div><div class="kpi__value">{{ metrics.untested }}</div></div>
+</div>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/control-tests" class="card__body filters">
+    <input class="input" name="control_id" required placeholder="Control id (AC.L2-3.1.10)">
+    <input class="input" name="name" required placeholder="Test name">
+    <select class="select" name="method" aria-label="Method">
+      {% for m in ['manual','automated','connector'] %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
+    </select>
+    <select class="select" name="frequency" aria-label="Frequency">
+      {% for f in ['','daily','weekly','monthly','quarterly','annual'] %}<option value="{{ f }}">{{ f or 'no schedule' }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add test</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Test definitions</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>Test</th><th>Method</th><th>Frequency</th><th>Last result</th><th>Last tested</th></tr></thead>
+    <tbody>
+      {% for r in rows %}<tr>
+        <td class="mono">{{ r.control_id }}</td>
+        <td><strong>{{ r.name }}</strong></td>
+        <td class="dim">{{ r.method }}</td>
+        <td class="dim">{{ r.frequency or '—' }}</td>
+        <td>{% if r.last_status %}<span class="chip {% if r.last_status=='pass' %}chip--ok{% elif r.last_status=='fail' %}chip--err{% else %}chip--warn{% endif %}">{{ r.last_status }}</span>{% else %}<span class="dim">untested</span>{% endif %}</td>
+        <td class="dim">{{ r.last_tested_at.strftime('%Y-%m-%d') if r.last_tested_at else '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No control tests defined yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

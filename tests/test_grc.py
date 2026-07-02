@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ccf.api.routes.grc import CONNECTOR_TYPES, _MOCK_DISCOVERY
+from ccf.api.routes.grc import _MOCK_DISCOVERY, CONNECTOR_TYPES
 from ccf.models_grc import (
     AuditEngagement,
     ConnectorConfig,

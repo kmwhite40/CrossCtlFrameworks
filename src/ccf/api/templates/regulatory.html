@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Regulatory change · Concord{% endblock %}
+{% block heading %}Regulatory change management{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Track framework and regulatory updates, assess applicability, and drive control/policy/system impact to closure.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/regulatory" class="card__body filters">
+    <input class="input" name="title" required placeholder="e.g. NIST 800-171 Rev 3 released">
+    <input class="input" name="source" placeholder="Source (NIST, DoD…)">
+    <input class="input" name="framework_impacted" placeholder="Framework">
+    <input class="input" type="date" name="due_on" aria-label="Due date">
+    <select class="select" name="status" aria-label="Status">
+      {% for s in ['new','assessing','in_progress','implemented','closed'] %}<option value="{{ s }}">{{ s|replace('_',' ') }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Log update</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Register</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Title</th><th>Source</th><th>Framework</th><th>Applicability</th><th>Status</th><th>Due</th><th>Owner</th></tr></thead>
+    <tbody>
+      {% for r in rows %}<tr>
+        <td><strong>{{ r.title }}</strong></td>
+        <td class="dim">{{ r.source or '—' }}</td>
+        <td>{% if r.framework_impacted %}<span class="chip chip--brand">{{ r.framework_impacted }}</span>{% else %}—{% endif %}</td>
+        <td class="dim">{{ r.applicability }}</td>
+        <td><span class="chip {% if r.status in ('new','assessing') %}chip--warn{% elif r.status in ('implemented','closed') %}chip--ok{% else %}chip{% endif %}">{{ r.status|replace('_',' ') }}</span></td>
+        <td class="dim">{{ r.due_on or '—' }}</td>
+        <td class="dim">{{ r.owner or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No regulatory updates logged yet.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

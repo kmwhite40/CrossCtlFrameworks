@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Connectors · Concord{% endblock %}
+{% block heading %}Cloud connectors{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Register cloud/SaaS connectors for evidence collection. Sync runs a mock discovery until live credentials are wired.</p>{% endblock %}
+{% block content %}
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <form method="post" action="/connectors" class="card__body filters">
+    <input class="input" name="name" required placeholder="e.g. Prod AWS GovCloud">
+    <select class="select" name="connector_type" aria-label="Type">
+      {% for t in types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <input class="input" name="environment" placeholder="Environment (us-gov-west-1…)">
+    <button class="btn btn--primary" type="submit"><i data-lucide="plug"></i> Add connector</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Registered connectors</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Name</th><th>Type</th><th>Environment</th><th>Status</th><th>Last sync</th><th>Objects</th><th>Evidence</th><th></th></tr></thead>
+    <tbody>
+      {% for c in rows %}<tr>
+        <td><strong>{{ c.name }}</strong></td>
+        <td><span class="chip chip--brand">{{ c.connector_type }}</span></td>
+        <td class="dim">{{ c.environment or '—' }}</td>
+        <td><span class="chip {% if c.status=='configured' %}chip--ok{% elif c.status=='error' %}chip--err{% else %}chip{% endif %}">{{ c.status|replace('_',' ') }}</span></td>
+        <td class="dim">{{ c.last_sync.strftime('%Y-%m-%d %H:%M') if c.last_sync else '—' }}</td>
+        <td>{{ c.objects_discovered }}</td>
+        <td>{{ c.evidence_produced }}</td>
+        <td><form method="post" action="/connectors/{{ c.id }}/sync"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="refresh-cw"></i> Sync</button></form></td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No connectors yet. Supported: {{ types|join(', ') }}.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

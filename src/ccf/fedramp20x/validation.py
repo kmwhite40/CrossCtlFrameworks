@@ -27,6 +27,7 @@ from sqlalchemy.orm import selectinload
 from ..logging import get_logger
 from ..models import (
     KSI,
+    CaptureSnapshot,
     Control,
     ControlImplementation,
     Evidence,
@@ -34,7 +35,18 @@ from ..models import (
     FedRAMPDependency,
     KSIState,
     KSIValidationResult,
+    System,
 )
+
+# Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
+_VERDICT_RANK = {
+    "pass": 4,
+    "warn": 3,
+    "manual_review_required": 2,
+    "fail": 1,
+    "not_applicable": 0,
+    "not_tested": 0,
+}
 
 log = get_logger(__name__)
 
@@ -105,6 +117,17 @@ def evaluate_rule(  # noqa: PLR0911
             failure_reason=manual_hint,
             assessor_review_required=True,
         )
+
+    if kind == "any_of":
+        # Prefer the strongest signal — e.g. a live connector capture over a
+        # control-state fallback. Returns the best-ranked sub-verdict.
+        sub = [evaluate_rule(r, ctx, ksi=ksi) for r in rule.get("rules", [])]
+        if not sub:
+            return Verdict(
+                "manual_review_required", "low", "any_of",
+                failure_reason="any_of rule has no sub-rules.", assessor_review_required=True,
+            )
+        return max(sub, key=lambda v: _VERDICT_RANK.get(v.status, 0))
 
     if kind in ("control_state", "control_any"):
         present = {c: ctx.impl_status.get(c) for c in controls}
@@ -273,6 +296,23 @@ async def build_context(session: AsyncSession, system_id: int) -> SystemContext:
             "backup_recovery_boundary": profile.backup_recovery_boundary,
             "administrative_access_boundary": profile.administrative_access_boundary,
         }
+
+    # Live connector-capture signal (org-scoped): what the cloud connectors last
+    # captured. Keyed by odp_key and NIST id so connector_capture rules can match
+    # either. Empty when no connector is configured -> those rules stay manual.
+    org_id = (
+        await session.execute(select(System.organization_id).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if org_id is not None:
+        caps = (
+            await session.execute(
+                select(CaptureSnapshot).where(CaptureSnapshot.organization_id == org_id)
+            )
+        ).scalars().all()
+        for c in caps:
+            ctx.captures.add(c.odp_key)
+            if c.nist_id:
+                ctx.captures.add(c.nist_id)
     return ctx
 
 

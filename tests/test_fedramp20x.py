@@ -20,6 +20,7 @@ from ccf.fedramp20x.readiness import compute_readiness
 from ccf.fedramp20x.validation import SystemContext, evaluate_rule, normalize_control
 from ccf.models import (
     KSI,
+    CaptureSnapshot,
     Control,
     ControlImplementation,
     Event,
@@ -124,6 +125,32 @@ def test_readiness_not_started_when_empty() -> None:
     )
     assert r.status == "not_started"
     assert r.readiness_pct == 0
+
+
+def test_validate_oscal_accepts_valid_and_flags_broken() -> None:
+    pkg = {
+        "system": {"id": 1, "name": "Demo"},
+        "generated_at": "2026-07-02T00:00:00Z",
+        "disclaimer": "foundation",
+        "readiness": {"readiness_pct": 0, "status": "not_started"},
+        "ksis": [
+            {"identifier": "KSI-IAM-01", "name": "MFA", "category": "IAM", "status": "fail",
+             "automation_level": "automated", "nist_refs": ["IA-2"],
+             "validation": {"failure_reason": "x"}, "assessor_review": None},
+        ],
+        "dependencies": [],
+    }
+    good = package.to_oscal_shaped(pkg)
+    assert package.validate_oscal(good) == []
+
+    # Break required structure: drop metadata + result uuid.
+    del good["assessment-results"]["metadata"]
+    good["assessment-results"]["results"][0].pop("uuid")
+    errors = package.validate_oscal(good)
+    assert any("metadata" in e for e in errors)
+    assert any("uuid" in e for e in errors)
+    # Wrong top-level shape.
+    assert package.validate_oscal({"nope": 1})
 
 
 def test_oscal_shaped_and_markdown_render() -> None:
@@ -246,8 +273,8 @@ async def test_validate_and_score_via_service() -> None:
         by_id = {r["ksi_identifier"]: r for r in results}
         # IA-2 implemented -> KSI-IAM-01 passes.
         assert by_id["KSI-IAM-01"]["validation_status"] == "pass"
-        # A manual KSI requires assessor review.
-        assert by_id["KSI-CNA-02"]["assessor_review_required"] is True
+        # A manual KSI (CNA-06 high availability) requires assessor review.
+        assert by_id["KSI-CNA-06"]["assessor_review_required"] is True
 
         score = await readiness.score_system(s, system_id=sid, persist=True)
         assert 0 <= score["readiness_pct"] <= 100
@@ -295,6 +322,12 @@ async def test_api_flow_end_to_end() -> None:
         assert "FedRAMP 20x Package" in md.text
         oscal = await c.get(f"/api/fedramp/20x/systems/{sid}/package?format=oscal")
         assert "assessment-results" in oscal.json()
+        # With structural validation requested, the OSCAL export passes + is flagged.
+        validated = await c.get(
+            f"/api/fedramp/20x/systems/{sid}/package?format=oscal&validate=true"
+        )
+        assert validated.status_code == 200
+        assert validated.headers.get("X-OSCAL-Validation") == "structural-pass"
 
         # Assessor review creates a record and reflects on state.
         ksi_id = one["id"]
@@ -308,6 +341,50 @@ async def test_api_flow_end_to_end() -> None:
             json={"status": "closed"},
         )
         assert patched.status_code == 200 and patched.json()["status"] == "closed"
+
+
+@pytest.mark.asyncio
+async def test_fedramp20x_ui_pages_and_forms() -> None:
+    async with _client() as c:
+        await c.post("/api/fedramp/20x/ksis/seed")
+        sid = await _fresh_system("UiCso")
+
+        # The dashboard renders the catalog and, for a system, the readiness panel.
+        page = await c.get(f"/fedramp20x?system_id={sid}")
+        assert page.status_code == 200
+        assert "Cloud Service Offering profile" in page.text
+        assert "FedRAMP-authorized dependencies" in page.text
+        assert "Assessor review" in page.text
+
+        # Profile form persists (303 redirect back to the page).
+        r = await c.post(
+            f"/fedramp20x/{sid}/profile",
+            data={"service_name": "UI CSO", "deployment_model": "saas"},
+            follow_redirects=False,
+        )
+        assert r.status_code == 303
+        prof = (await c.get(f"/api/fedramp/20x/systems/{sid}/profile")).json()
+        assert prof["service_name"] == "UI CSO" and prof["deployment_model"] == "saas"
+
+        # Dependency add form persists.
+        await c.post(
+            f"/fedramp20x/{sid}/dependencies",
+            data={"name": "UI Blob", "fedramp_status": "authorized"},
+            follow_redirects=False,
+        )
+        deps = (await c.get(f"/api/fedramp/20x/systems/{sid}/dependencies")).json()
+        assert any(d["name"] == "UI Blob" for d in deps["dependencies"])
+
+        # Assessor review form records + reflects on KSI state.
+        await c.post(f"/api/fedramp/20x/systems/{sid}/validate")
+        ksi = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-01")).json()
+        await c.post(
+            f"/fedramp20x/{sid}/assessor-review",
+            data={"ksi_id": str(ksi["id"]), "status": "accepted", "assessor": "3PAO"},
+            follow_redirects=False,
+        )
+        reviewed = await c.get(f"/fedramp20x?system_id={sid}")
+        assert "accepted" in reviewed.text
 
 
 @pytest.mark.asyncio
@@ -348,6 +425,61 @@ async def test_continuous_monitoring_detects_drift() -> None:
         assert any(str(sid) == e.entity_id for e in drift)
 
 
+def test_any_of_returns_best_verdict() -> None:
+    ksi = {"identifier": "KSI-X", "category": "MLA"}
+    rule = {
+        "kind": "any_of",
+        "rules": [
+            {"kind": "connector_capture", "captures": ["audit_retention_period"]},
+            {"kind": "control_state", "controls": ["AU-6"], "states": ["implemented"]},
+        ],
+    }
+    # Neither signal present -> best is the control_state fail (beats manual? no: fail<manual).
+    v = evaluate_rule(rule, SystemContext(), ksi=ksi)
+    assert v.status in ("manual_review_required", "fail")
+    # Connector capture present -> passes via the live signal.
+    v = evaluate_rule(rule, SystemContext(captures={"audit_retention_period"}), ksi=ksi)
+    assert v.status == "pass" and v.source == "connector_capture"
+    # No capture but control implemented -> passes via fallback.
+    v = evaluate_rule(rule, SystemContext(impl_status={"AU-6": "implemented"}), ksi=ksi)
+    assert v.status == "pass" and v.source == "control_state"
+
+
+@pytest.mark.asyncio
+async def test_connector_capture_drives_validation() -> None:
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    sid = await _fresh_system("CapCso")
+    # Resolve the system's org and record a connector capture for it.
+    async with session_scope() as s:
+        org_id = (
+            await s.execute(select(System.organization_id).where(System.id == sid))
+        ).scalar_one()
+        assert (
+            await s.execute(select(Organization.id).where(Organization.id == org_id))
+        ).scalar_one_or_none() == org_id
+        await s.execute(
+            delete(CaptureSnapshot).where(CaptureSnapshot.organization_id == org_id)
+        )
+        s.add(
+            CaptureSnapshot(
+                organization_id=org_id,
+                connector="aws_govcloud",
+                odp_key="audit_retention_period",
+                value="365 days",
+                nist_id="3.3.1",
+            )
+        )
+    # KSI-MLA-01 is any_of[connector_capture(audit_retention_period), control_state(AU-6)];
+    # the capture alone should drive it to pass even with no AU-6 implementation.
+    async with session_scope() as s:
+        results = {
+            r["ksi_identifier"]: r for r in await validation.validate_system(s, system_id=sid)
+        }
+        assert results["KSI-MLA-01"]["validation_status"] == "pass"
+        assert results["KSI-MLA-01"]["source"] == "connector_capture"
+
+
 @pytest.mark.asyncio
 async def test_validation_emits_prometheus_metrics() -> None:
     async with session_scope() as s:
@@ -375,5 +507,5 @@ async def test_dependency_context_flows_into_validation() -> None:
         results = {
             r["ksi_identifier"]: r for r in await validation.validate_system(s, system_id=sid)
         }
-        # A non-authorized dependency fails the dependency KSI.
-        assert results["KSI-TPR-01"]["validation_status"] == "fail"
+        # A non-authorized dependency fails the dependency KSI (TPR-02).
+        assert results["KSI-TPR-02"]["validation_status"] == "fail"
