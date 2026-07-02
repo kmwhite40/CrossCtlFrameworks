@@ -22,7 +22,7 @@
     <thead><tr><th>Name</th><th>Type</th><th>Environment</th><th>Status</th><th>Last sync</th><th>Objects</th><th>Evidence</th><th></th></tr></thead>
     <tbody>
       {% for c in rows %}<tr>
-        <td><strong>{{ c.name }}</strong></td>
+        <td><a href="/connectors/{{ c.id }}"><strong>{{ c.name }}</strong></a></td>
         <td><span class="chip chip--brand">{{ c.connector_type }}</span></td>
         <td class="dim">{{ c.environment or '—' }}</td>
         <td><span class="chip {% if c.status=='configured' %}chip--ok{% elif c.status=='error' %}chip--err{% else %}chip{% endif %}">{{ c.status|replace('_',' ') }}</span></td>

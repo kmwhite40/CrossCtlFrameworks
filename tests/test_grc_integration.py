@@ -13,8 +13,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.governance import control_tests, digest, exporter, insights
@@ -257,6 +259,45 @@ async def test_digest_flags_overdue_regulatory_and_audit() -> None:
         }
         assert "regulatory" in cats
         assert "audit" in cats
+
+
+@pytest.mark.asyncio
+async def test_connector_and_control_test_detail_pages_render() -> None:
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Detail Pages Org")
+        conn = ConnectorConfig(
+            organization_id=org_id,
+            name="Prod AWS GovCloud",
+            connector_type="aws_govcloud",
+            status="configured",
+            objects_discovered=290,
+            evidence_produced=29,
+        )
+        s.add(conn)
+        test = ControlTest(
+            organization_id=org_id,
+            system_id=sys_id,
+            control_id="AC.L2-3.1.7",
+            name="Detail render test",
+            method="manual",
+        )
+        s.add(test)
+        await s.flush()
+        conn_id, test_id = conn.id, test.id
+        await control_tests.record_result(s, test, status="fail", detail="drift detected")
+
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://t") as client:
+        r_conn = await client.get(f"/connectors/{conn_id}")
+        assert r_conn.status_code == 200
+        assert "Prod AWS GovCloud" in r_conn.text and "Objects discovered" in r_conn.text
+
+        r_test = await client.get(f"/control-tests/{test_id}")
+        assert r_test.status_code == 200
+        assert "Detail render test" in r_test.text and "drift detected" in r_test.text
+
+        assert (await client.get("/connectors/999999")).status_code == 404
+        assert (await client.get("/control-tests/999999")).status_code == 404
 
 
 @pytest.mark.asyncio

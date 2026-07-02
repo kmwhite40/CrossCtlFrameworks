@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ...governance import control_tests, insights, personnel, tprm
 from ...ingest import parse_scan, reconcile_findings
-from ...models import ScanIngestion, System, Task, Vendor
+from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -252,6 +252,30 @@ async def connectors_sync(
         c.last_sync = _now()
         await session.commit()
     return RedirectResponse("/connectors", status_code=303)
+
+
+@router.get("/connectors/{cfg_id}", response_class=HTMLResponse)
+async def connector_detail(
+    cfg_id: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    cap_stmt = (
+        select(CaptureSnapshot)
+        .where(CaptureSnapshot.connector == c.connector_type)
+        .order_by(CaptureSnapshot.captured_at.desc())
+        .limit(50)
+    )
+    if org is not None:
+        cap_stmt = cap_stmt.where(CaptureSnapshot.organization_id == org)
+    captures = (await session.execute(cap_stmt)).scalars().all()
+    return templates.TemplateResponse(
+        request,
+        "connector_detail.html",
+        {"active": "connectors", "c": c, "captures": captures},
+    )
 
 
 # ── Control Tests ────────────────────────────────────────────────────────────
