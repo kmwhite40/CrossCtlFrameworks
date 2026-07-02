@@ -4,6 +4,21 @@ All notable changes to Concord will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added — continuous controls monitoring (CCM parity)
+- **Vulnerability-scan ingestion → automated POA&Ms** (`src/ccf/ingest/scanners.py`,
+  `POST /api/scans/ingest`). Parses Nessus/Tenable `.nessus` XML, AWS Inspector
+  JSON, and generic/Qualys CSV; reconciles findings into the POA&M register
+  (open / update / reopen / auto-close) with severity-driven SLA due dates.
+  Idempotent re-ingest; provenance in new `ccf.scan_ingestions` (migration 0023,
+  which also adds `poams.scanner` + `poams.finding_uid`).
+- **Assertion-based control tests** — optional `assertion` JSON on `ControlTest`
+  (migration 0024) evaluated against the latest connector capture; on-demand via
+  `POST /api/control-tests/{id}/evaluate` and in the scheduler auto-run.
+- **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` (OSCAL 1.1
+  plan-of-action-and-milestones).
+
 ## [0.2.0] — 2026-04-15
 
 ### Added — data & governance

@@ -78,6 +78,21 @@ SP 800-53** through each KSI's control mapping.
   dependencies, assessor review, exceptions, and package export. Reverse
   KSI↔control traceability appears on each control's detail page.
 
+Continuous-controls-monitoring (parity with commercial CCM/GRC platforms):
+- **Vulnerability-scan ingestion → automated POA&Ms** — `POST /api/scans/ingest`
+  parses Nessus/Tenable `.nessus` XML, AWS Inspector JSON, and generic/Qualys CSV,
+  then **reconciles** findings into the POA&M register: new weaknesses open POA&Ms
+  with severity-driven SLA due dates (Crit 15 / High 30 / Mod 90 / Low 180 days),
+  recurring ones update in place, and fixed ones **auto-close** when they drop out of
+  the latest scan (re-ingest is idempotent). Provenance is kept in `ccf.scan_ingestions`.
+- **Assertion-based control tests** — a `ControlTest` can carry a machine-checkable
+  `assertion` (`{odp_key, operator, value}`) evaluated against the latest live
+  connector capture, so a test asserts real posture (`mfa_enforced == true`,
+  `retention_days >= 90`) instead of only that the connector synced. Run on demand via
+  `POST /api/control-tests/{id}/evaluate` or automatically in the scheduler cycle.
+- **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` emits an OSCAL 1.1
+  plan-of-action-and-milestones (alongside the existing OSCAL SSP + Component Definition).
+
 Observability: Prometheus metrics (`ccf_ksi_validations_total`,
 `ccf_fedramp20x_validation_duration_seconds`, `ccf_ksi_drift_events_total`,
 `ccf_fedramp20x_readiness_pct`) with a ready-to-import Grafana dashboard at
@@ -97,6 +112,8 @@ src/ccf/
 ├── etl/
 │   ├── frameworks.py    canonical framework catalog + header classifier
 │   └── pipeline.py      workbook → Postgres (all sheets, dedup-safe)
+├── ingest/
+│   └── scanners.py      vuln-scan (Nessus/Tenable/Inspector/Qualys/CSV) → POA&M reconcile
 └── api/
     ├── main.py          FastAPI app factory, CORS, lifespan
     ├── deps.py          get_session dependency

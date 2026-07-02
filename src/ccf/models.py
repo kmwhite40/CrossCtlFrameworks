@@ -617,6 +617,11 @@ class POAM(Base):
     original_due_on: Mapped[date | None] = mapped_column(Date)  # for deviation tracking
     risk_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.risks.id", ondelete="SET NULL"))
     vendor_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.vendors.id", ondelete="SET NULL"))
+    # Scanner-ingested findings (source='scan'): the tool that reported it and a
+    # stable per-system fingerprint so re-ingesting the same scan reconciles
+    # (updates/reopens/auto-closes) instead of creating duplicate POA&Ms.
+    scanner: Mapped[str | None] = mapped_column(String(32))  # nessus|tenable|qualys|inspector|csv
+    finding_uid: Mapped[str | None] = mapped_column(String(64), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -1253,6 +1258,29 @@ class MonitoringRun(Base):
     findings: Mapped[int] = mapped_column(Integer, default=0)
     tasks_created: Mapped[int] = mapped_column(Integer, default=0)
     notifications_created: Mapped[int] = mapped_column(Integer, default=0)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+class ScanIngestion(Base):
+    """Provenance for one vulnerability-scan import and the POA&Ms it reconciled."""
+
+    __tablename__ = "scan_ingestions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    scanner: Mapped[str] = mapped_column(String(32))  # nessus|tenable|qualys|inspector|csv
+    filename: Mapped[str | None] = mapped_column(String(512))
+    findings_total: Mapped[int] = mapped_column(Integer, default=0)
+    poams_created: Mapped[int] = mapped_column(Integer, default=0)
+    poams_updated: Mapped[int] = mapped_column(Integer, default=0)
+    poams_reopened: Mapped[int] = mapped_column(Integer, default=0)
+    poams_closed: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 

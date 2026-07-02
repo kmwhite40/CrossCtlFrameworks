@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
-from ..models import Task
+from ..models import CaptureSnapshot, Task
 from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
 from . import bus
 
@@ -26,6 +26,64 @@ log = get_logger(__name__)
 
 # How stale a test result may be before the test is re-run, by frequency.
 _FREQ_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 91, "annual": 365}
+
+
+def _coerce(v: str) -> object:
+    """Interpret a captured string as a bool/number when it clearly is one."""
+    t = v.strip().lower()
+    if t in ("true", "enabled", "yes", "on"):
+        return True
+    if t in ("false", "disabled", "no", "off"):
+        return False
+    try:
+        return float(v)
+    except ValueError:
+        return v
+
+
+def evaluate_assertion(assertion: dict[str, Any], captured: str) -> tuple[bool, str]:
+    """Check a captured value against an assertion. Returns ``(passed, detail)``.
+
+    Assertion shape: ``{"odp_key", "operator", "value"}`` where operator is one
+    of equals, not_equals, contains, gte, lte, gt, lt. Numeric operators coerce
+    both sides to floats; equality coerces booleans/numbers so ``"enabled"``
+    satisfies ``value: "true"``.
+    """
+    op = str(assertion.get("operator", "equals")).lower()
+    expected_raw = str(assertion.get("value", ""))
+    actual = _coerce(captured)
+    expected = _coerce(expected_raw)
+
+    if op in ("equals", "eq", "=="):
+        ok = actual == expected
+    elif op in ("not_equals", "ne", "!="):
+        ok = actual != expected
+    elif op == "contains":
+        ok = expected_raw.lower() in captured.lower()
+    elif op in ("gte", "gt", "lte", "lt"):
+        try:
+            a, e = float(captured), float(expected_raw)
+        except ValueError:
+            return False, f"non-numeric value {captured!r} for operator {op}"
+        ok = {"gte": a >= e, "gt": a > e, "lte": a <= e, "lt": a < e}[op]
+    else:
+        return False, f"unknown assertion operator: {op}"
+    verdict = "meets" if ok else "violates"
+    return ok, f"captured {captured!r} {verdict} {op} {expected_raw!r}"
+
+
+async def _latest_capture(session: AsyncSession, test: ControlTest) -> CaptureSnapshot | None:
+    odp_key = (test.assertion or {}).get("odp_key")
+    if not odp_key:
+        return None
+    stmt = select(CaptureSnapshot).where(
+        CaptureSnapshot.connector == test.connector_type,
+        CaptureSnapshot.odp_key == odp_key,
+    )
+    if test.organization_id is not None:
+        stmt = stmt.where(CaptureSnapshot.organization_id == test.organization_id)
+    stmt = stmt.order_by(CaptureSnapshot.captured_at.desc())
+    return (await session.execute(stmt)).scalars().first()
 
 
 def _is_due(test: ControlTest, today: date) -> bool:
@@ -72,6 +130,32 @@ def _evaluate(test: ControlTest, conn: ConnectorConfig | None, today: date) -> t
         f"Connector '{conn.name}' current ({conn.objects_discovered} objects, "
         f"synced {conn.last_sync.date()})."
     )
+
+
+async def evaluate_test(
+    session: AsyncSession, test: ControlTest, today: date
+) -> tuple[str, str, str | None]:
+    """Evaluate one connector-backed test → ``(status, detail, evidence_ref)``.
+
+    When the test carries a machine-checkable ``assertion``, the latest captured
+    value for its ``odp_key`` is checked (real pass/fail on posture). Otherwise
+    it falls back to the connector-freshness heuristic in :func:`_evaluate`.
+    """
+    if test.assertion and test.assertion.get("odp_key"):
+        snap = await _latest_capture(session, test)
+        if snap is None:
+            return (
+                "warn",
+                f"No captured value for '{test.assertion['odp_key']}' from "
+                f"{test.connector_type} yet — run collection first.",
+                None,
+            )
+        ok, detail = evaluate_assertion(test.assertion, snap.value)
+        ref = f"{snap.connector}:{snap.odp_key}@{snap.captured_at.date()}"
+        return ("pass" if ok else "fail", detail, ref)
+    conn = await _connector_for(session, test)
+    status, detail = _evaluate(test, conn, today)
+    return status, detail, (conn.name if conn else None)
 
 
 async def _alert_on_failure(
@@ -161,14 +245,13 @@ async def run_due(session: AsyncSession, *, today: date | None = None) -> dict[s
     for test in tests:
         if not _is_due(test, today):
             continue
-        conn = await _connector_for(session, test)
-        status, detail = _evaluate(test, conn, today)
+        status, detail, evidence_ref = await evaluate_test(session, test, today)
         session.add(
             ControlTestResult(
                 control_test_id=test.id,
                 status=status,
                 detail=detail,
-                evidence_ref=(conn.name if conn else None),
+                evidence_ref=evidence_ref,
             )
         )
         test.last_status = status

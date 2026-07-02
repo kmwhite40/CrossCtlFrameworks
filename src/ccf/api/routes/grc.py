@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
-from ...governance import bus
+from ...governance import bus, control_tests
 from ...models import Task
 from ...models_grc import (
     AuditEngagement,
@@ -585,6 +585,9 @@ class ControlTestIn(BaseModel):
     connector_type: str | None = None
     frequency: str | None = None
     expected: str | None = None
+    # Optional machine-checkable assertion evaluated against captured config,
+    # e.g. {"odp_key": "mfa_enforced", "operator": "equals", "value": "true"}.
+    assertion: dict[str, Any] | None = None
     system_id: int | None = None
     active: bool = True
 
@@ -601,7 +604,9 @@ def _test_out(t: ControlTest) -> dict[str, Any]:
         "control_id": t.control_id,
         "name": t.name,
         "method": t.method,
+        "connector_type": t.connector_type,
         "frequency": t.frequency,
+        "assertion": t.assertion,
         "active": t.active,
         "last_status": t.last_status,
         "last_tested_at": t.last_tested_at,
@@ -706,6 +711,42 @@ async def run_control_test(
     )
     await session.commit()
     return {"test_id": t.id, "status": body.status, "last_tested_at": t.last_tested_at}
+
+
+@router.post("/control-tests/{test_id}/evaluate")
+async def evaluate_control_test(
+    test_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Evaluate a connector-backed test now against the latest captured config.
+
+    Runs the test's machine-checkable assertion (or connector-freshness
+    heuristic) immediately and records the result — the on-demand counterpart to
+    the scheduler's auto-run. Returns the derived status + evidence reference.
+    """
+    t = await session.get(ControlTest, test_id)
+    if t is None or (principal.org_id is not None and t.organization_id != principal.org_id):
+        raise HTTPException(404, "control test not found")
+    status, detail, evidence_ref = await control_tests.evaluate_test(
+        session, t, _now().date()
+    )
+    await control_tests.record_result(
+        session,
+        t,
+        status=status,
+        detail=detail,
+        evidence_ref=evidence_ref,
+        actor=principal.email or "user",
+    )
+    await session.commit()
+    return {
+        "test_id": t.id,
+        "status": status,
+        "detail": detail,
+        "evidence_ref": evidence_ref,
+        "last_tested_at": t.last_tested_at,
+    }
 
 
 @router.get("/control-tests/{test_id}/results")

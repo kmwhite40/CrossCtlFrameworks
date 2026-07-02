@@ -211,6 +211,11 @@ class ControlTest(Base):
     connector_type: Mapped[str | None] = mapped_column(String(32))
     frequency: Mapped[str | None] = mapped_column(String(32))
     expected: Mapped[str | None] = mapped_column(Text)
+    # Optional machine-checkable assertion for connector-backed tests, e.g.
+    # {"odp_key": "mfa_enforced", "operator": "equals", "value": "true"}. When
+    # present the auto-runner evaluates the captured value instead of only
+    # checking that the connector synced. See ccf.governance.control_tests.
+    assertion: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_status: Mapped[str | None] = mapped_column(String(8))  # pass|fail|warn
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

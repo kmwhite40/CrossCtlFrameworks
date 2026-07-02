@@ -17,11 +17,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
-from ...models import ControlImplementation, SSPControlEntry, SSPProject, System
+from ...models import (
+    POAM,
+    Control,
+    ControlImplementation,
+    SSPControlEntry,
+    SSPProject,
+    System,
+)
 from ..auth_deps import get_principal
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/oscal", tags=["oscal"])
+
+# OSCAL POA&M item status maps to the assessment-log lifecycle NIST expects.
+_OSCAL_POAM_STATE = {
+    "open": "open",
+    "in_progress": "investigating",
+    "completed": "closed",
+    "closed": "closed",
+    "risk_accepted": "risk-accepted",
+}
+_OSCAL_SEVERITY = {"low": "low", "moderate": "moderate", "high": "high", "critical": "critical"}
 
 
 @router.get("/component-definition/{system_id}")
@@ -194,3 +211,91 @@ async def ssp_export(
             },
         }
     }
+
+
+@router.get("/poam/{system_id}")
+async def poam_export(
+    system_id: int,
+    include_closed: bool = False,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Emit an OSCAL 1.1 Plan of Action and Milestones for a system's POA&Ms."""
+    sys = (
+        await session.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "system not found")
+
+    stmt = (
+        select(POAM)
+        .where(POAM.system_id == system_id)
+        .options(selectinload(POAM.milestones))
+        .order_by(POAM.id)
+    )
+    if not include_closed:
+        stmt = stmt.where(POAM.status.not_in(("closed", "completed")))
+    poams = (await session.execute(stmt)).scalars().all()
+
+    # Resolve control identifiers for POA&Ms tied to a catalog control.
+    control_ids = {p.control_id for p in poams if p.control_id is not None}
+    ctl_map: dict[int, str] = {}
+    if control_ids:
+        rows = (
+            await session.execute(
+                select(Control.id, Control.identifier).where(Control.id.in_(control_ids))
+            )
+        ).all()
+        ctl_map = {cid: ident for cid, ident in rows}
+
+    poam_items = [_poam_item(p, ctl_map) for p in poams]
+    now = datetime.now(UTC).isoformat()
+    return {
+        "plan-of-action-and-milestones": {
+            "uuid": str(uuid.uuid4()),
+            "metadata": {
+                "title": f"Plan of Action and Milestones — {sys.name}",
+                "last-modified": now,
+                "version": "1.0.0",
+                "oscal-version": "1.1.2",
+                "published": now,
+            },
+            "system-id": {
+                "identifier-type": "https://ietf.org/rfc/rfc4122",
+                "id": str(sys.id),
+            },
+            "poam-items": poam_items,
+        }
+    }
+
+
+def _poam_item(p: POAM, ctl_map: dict[int, str]) -> dict[str, Any]:
+    props = [
+        {"name": "severity", "value": _OSCAL_SEVERITY.get(p.severity, p.severity)},
+        {"name": "status", "value": _OSCAL_POAM_STATE.get(p.status, p.status)},
+    ]
+    if p.control_id is not None and p.control_id in ctl_map:
+        props.append({"name": "control-id", "value": ctl_map[p.control_id].lower()})
+    if p.source:
+        props.append({"name": "origin", "value": p.source})
+    if p.scanner:
+        props.append({"name": "scanner", "value": p.scanner})
+    if p.due_on is not None:
+        props.append({"name": "scheduled-completion-date", "value": p.due_on.isoformat()})
+    if p.identified_on is not None:
+        props.append({"name": "identified-date", "value": p.identified_on.isoformat()})
+
+    item: dict[str, Any] = {
+        "uuid": str(uuid.uuid4()),
+        "title": p.title,
+        "description": p.weakness or p.title,
+        "props": props,
+    }
+    milestones = list(p.milestones or [])
+    if milestones:
+        item["remarks"] = "\n".join(
+            f"- Milestone: {m.description} [{m.status}]"
+            + (f" due {m.due_on.isoformat()}" if m.due_on else "")
+            for m in milestones
+        )
+    return item
