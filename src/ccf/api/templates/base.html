@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -7,9 +7,6 @@
   <title>{% block title %}Concord{% endblock %}</title>
   <link rel="icon" type="image/png" href="/static/img/favicon.png?v={{ asset_v }}" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v={{ asset_v }}" />
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
   <script src="/static/vendor/htmx.min.js" defer></script>
   <script src="/static/vendor/alpine.min.js" defer></script>
@@ -19,107 +16,170 @@
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 
-<div class="app">
-  <!-- Topbar spans both columns -->
-  <header class="topbar" role="banner">
-    <a href="/" class="topbar__brand">
-      <img class="topbar__brand-mark" src="/static/img/logo-512.png?v={{ asset_v }}" alt="Concord" width="34" height="34" />
-      <span class="topbar__wordmark">Concord</span>
+{#- ─────────────────────────────────────────────────────────────────────────
+    Information architecture. One source of truth drives the global nav, the
+    mega menus, the section nav, and the mobile menu. `members` are the route
+    `active` keys that belong to a product area; `links` are that area's
+    sub-navigation (a `key` marks the active section link).
+   ───────────────────────────────────────────────────────────────────────── -#}
+{% set nav_groups = [
+  {'key':'dashboard','label':'Dashboard','href':'/dashboard','members':['dashboard'],'links':[]},
+  {'key':'compliance','label':'Compliance','href':'/posture',
+   'members':['posture','controls','frameworks','coverage','mappings','search','worksheets','diff'],
+   'links':[
+     {'key':'posture','label':'Overview','href':'/posture','desc':'Compliance posture across frameworks.'},
+     {'key':'controls','label':'Controls','href':'/controls','desc':'Browse NIST, CMMC, FedRAMP, CIS, and ISO controls.'},
+     {'key':'frameworks','label':'Frameworks','href':'/frameworks','desc':'Manage source frameworks and baselines.'},
+     {'key':'coverage','label':'Coverage','href':'/coverage','desc':'Review coverage gaps and inherited controls.'},
+     {'key':'mappings','label':'Mappings','href':'/mappings','desc':'Search crosswalks and control relationships.'},
+     {'key':'search','label':'Search','href':'/search','desc':'Full-text search across the catalog.'},
+     {'key':'worksheets','label':'Worksheets','href':'/worksheets','desc':'View the source workbook tabs.'},
+     {'key':'diff','label':'Workbook diff','href':'/diff','desc':'Compare workbook versions.'}]},
+  {'key':'assessments','label':'Assessments','href':'/assessments','members':['assessments','scoring','ssp'],
+   'links':[
+     {'key':'assessments','label':'Overview','href':'/assessments','desc':'Run assessments and view findings.'},
+     {'key':'scoring','label':'Live scoring','href':'/scoring','desc':'Score controls in real time.'},
+     {'key':'ssp','label':'SSP builder','href':'/ssp','desc':'Compose system security plans.'}]},
+  {'key':'systems','label':'Systems','href':'/systems','members':['systems','intake'],
+   'links':[
+     {'key':'systems','label':'Overview','href':'/systems','desc':'Systems, ownership, and boundaries.'},
+     {'key':'intake','label':'System intake','href':'/intake','desc':'Onboard a new system.'}]},
+  {'key':'fedramp20x','label':'FedRAMP 20x','href':'/fedramp20x','members':['fedramp20x'],
+   'links':[
+     {'key':'fedramp20x','label':'KSI catalog & readiness','href':'/fedramp20x','desc':'Key Security Indicators, validation, and 20x readiness.'}]},
+  {'key':'evidence','label':'Evidence','href':'/ingestions','members':['evidence','ingestions'],
+   'links':[
+     {'key':'ingestions','label':'Ingestions','href':'/ingestions','desc':'Workbook ingestion runs and provenance.'},
+     {'key':'worksheets','label':'Worksheets','href':'/worksheets','desc':'Evidence source tabs.'}]},
+  {'key':'reports','label':'Reports','href':'/reports','members':['reports'],'links':[]},
+  {'key':'governance','label':'Governance','href':'/governance',
+   'members':['governance','tasks','diagrams','poams','risks','audit','reliability'],
+   'links':[
+     {'key':'governance','label':'Overview','href':'/governance','desc':'Command center for compliance work.'},
+     {'key':'tasks','label':'Tasks','href':'/governance#tasks','desc':'Assign and track tasks.'},
+     {'key':'diagrams','label':'Diagrams','href':'/governance#diagrams','desc':'Boundary and data-flow diagrams.'},
+     {'key':'poams','label':'POA&Ms','href':'/poams','desc':'Plan of action & milestones.'},
+     {'key':'risks','label':'Risks','href':'/risks','desc':'Risk register and residual risk.'},
+     {'key':'audit','label':'Audit trail','href':'/audit','desc':'Immutable activity log.'},
+     {'key':'reliability','label':'Reliability','href':'/admin/reliability','desc':'System reliability and readiness checks.'}]},
+  {'key':'ai','label':'AI','href':'/posture','members':[],'links':[]}
+] %}
+{% set ns = namespace(cur=none) %}
+{% for g in nav_groups %}{% if active in g.members %}{% set ns.cur = g %}{% endif %}{% endfor %}
+
+<header class="globalnav" role="banner">
+  <nav class="globalnav__inner" aria-label="Global navigation">
+    <a href="/" class="globalnav__brand">
+      <img src="/static/img/logo-512.png?v={{ asset_v }}" alt="" width="26" height="26" />
+      <span>Concord</span>
     </a>
 
-    <button type="button" class="topbar__cmd" onclick="openPalette()" aria-label="Search Concord">
-      <i data-lucide="search"></i>
-      <span>Search Concord</span>
-      <kbd>⌘K</kbd>
-    </button>
+    <div class="globalnav__links">
+      {% for g in nav_groups %}
+      <div class="gnav-item{% if g.links %} gnav-item--has-menu{% endif %}">
+        <a class="gnav-link" href="{{ g.href }}"
+           {% if g.links %}aria-haspopup="true" aria-expanded="false"{% endif %}
+           {% if ns.cur and ns.cur.key == g.key %}aria-current="page"{% endif %}>{{ g.label }}</a>
+        {% if g.links %}
+        <div class="megamenu" role="menu" aria-label="{{ g.label }}">
+          <div class="megamenu__inner">
+            <p class="megamenu__title">{{ g.label }}</p>
+            <div class="megamenu__grid">
+              {% for l in g.links %}
+              <a class="megamenu__item" role="menuitem" href="{{ l.href }}">
+                <span class="megamenu__item-label">{{ l.label }}</span>
+                <span class="megamenu__item-desc">{{ l.desc }}</span>
+              </a>
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
 
-    <div class="topbar__right">
-      <a class="topbar__pill" href="/posture"><i data-lucide="sparkles"></i> Ask Concord</a>
-      <button type="button" class="topbar__btn" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
+    <div class="globalnav__tools">
+      <button type="button" class="globalnav__icon" onclick="openPalette()" aria-label="Search Concord" title="Search  ⌘K">
+        <i data-lucide="search"></i>
+      </button>
+      <button type="button" class="globalnav__icon" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
         <i data-lucide="sun-moon"></i>
       </button>
-      <a class="topbar__btn" href="/docs" aria-label="API docs" title="API docs">
-        <i data-lucide="circle-help"></i>
-      </a>
-      <div class="topbar__user" role="group" aria-label="Account">
-        <span class="topbar__avatar">C</span>
-        <span class="topbar__user-meta">
-          <strong>Compliance</strong>
-          <small>Concord Workspace</small>
-        </span>
+      <div class="gnav-item gnav-item--menu-right">
+        <button type="button" class="globalnav__profile" aria-haspopup="true" aria-expanded="false" aria-label="Workspace and profile">C</button>
+        <div class="megamenu megamenu--right" role="menu" aria-label="Workspace">
+          <div class="megamenu__inner">
+            <p class="megamenu__title">Workspace</p>
+            <div class="menu-list">
+              <a class="menu-list__item" role="menuitem" href="/systems">Systems</a>
+              <a class="menu-list__item" role="menuitem" href="/users">Users</a>
+              <a class="menu-list__item" role="menuitem" href="/settings">Settings</a>
+              <a class="menu-list__item" role="menuitem" href="/docs">API docs</a>
+              <button type="button" class="menu-list__item" role="menuitem" onclick="toggleTheme()">Toggle theme</button>
+              {% if settings.readonly %}<span class="menu-list__note">Read-only workspace</span>{% endif %}
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
-  </header>
-
-  <!-- Icon rail -->
-  <aside class="sidebar" role="navigation" aria-label="Primary">
-    <div class="sidebar__group sidebar__group--toggle">
-      <button type="button" class="nav-link rail-toggle" onclick="toggleSidebar()" aria-label="Collapse or expand sidebar" title="Toggle sidebar">
-        <i data-lucide="panel-left"></i><span class="nav-link__label">Collapse menu</span>
+      <button type="button" class="globalnav__burger" aria-label="Open menu" aria-expanded="false" aria-controls="mobilenav" onclick="toggleMobileNav()">
+        <i data-lucide="menu"></i>
       </button>
     </div>
-    <div class="sidebar__group">
-      <div class="sidebar__group-title">Workspace</div>
-      <a class="nav-link" href="/dashboard"  title="Dashboard"      {% if active=='dashboard'  %}aria-current="page"{% endif %}><i data-lucide="layout-dashboard"></i><span class="nav-link__label">Dashboard</span></a>
-      <a class="nav-link" href="/posture"    title="Posture"        {% if active=='posture'    %}aria-current="page"{% endif %}><i data-lucide="shield-check"></i><span class="nav-link__label">Posture</span></a>
-      <a class="nav-link" href="/scoring"    title="Live scoring"   {% if active=='scoring'    %}aria-current="page"{% endif %}><i data-lucide="gauge"></i><span class="nav-link__label">Live scoring</span></a>
-      <a class="nav-link" href="/ssp"        title="SSP builder"    {% if active=='ssp'        %}aria-current="page"{% endif %}><i data-lucide="file-signature"></i><span class="nav-link__label">SSP builder</span></a>
-      <a class="nav-link" href="/assessments" title="Assessments"  {% if active=='assessments' %}aria-current="page"{% endif %}><i data-lucide="clipboard-check"></i><span class="nav-link__label">Assessments</span></a>
-    </div>
-    <div class="sidebar__group">
-      <div class="sidebar__group-title">Catalog</div>
-      <a class="nav-link" href="/controls"   title="Controls"       {% if active=='controls'   %}aria-current="page"{% endif %}><i data-lucide="list-checks"></i><span class="nav-link__label">Controls</span></a>
-      <a class="nav-link" href="/frameworks" title="Frameworks"     {% if active=='frameworks' %}aria-current="page"{% endif %}><i data-lucide="layers"></i><span class="nav-link__label">Frameworks</span></a>
-      <a class="nav-link" href="/coverage"   title="Coverage"       {% if active=='coverage'   %}aria-current="page"{% endif %}><i data-lucide="grid-3x3"></i><span class="nav-link__label">Coverage</span></a>
-      <a class="nav-link" href="/mappings"   title="Mapping search" {% if active=='mappings'   %}aria-current="page"{% endif %}><i data-lucide="git-compare-arrows"></i><span class="nav-link__label">Mapping search</span></a>
-      <a class="nav-link" href="/search"     title="Search"         {% if active=='search'     %}aria-current="page"{% endif %}><i data-lucide="search"></i><span class="nav-link__label">Search</span></a>
-      <a class="nav-link" href="/worksheets" title="Worksheets"     {% if active=='worksheets' %}aria-current="page"{% endif %}><i data-lucide="sheet"></i><span class="nav-link__label">Worksheets</span></a>
-      <a class="nav-link" href="/diff"       title="Workbook diff"  {% if active=='diff'       %}aria-current="page"{% endif %}><i data-lucide="diff"></i><span class="nav-link__label">Workbook diff</span></a>
-    </div>
-    {% if not settings.readonly %}
-    <div class="sidebar__group">
-      <div class="sidebar__group-title">Operations</div>
-      <a class="nav-link" href="/intake"     title="System intake"  {% if active=='intake'     %}aria-current="page"{% endif %}><i data-lucide="wand-2"></i><span class="nav-link__label">System intake</span></a>
-      <a class="nav-link" href="/reports"    title="Reports"        {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i><span class="nav-link__label">Reports</span></a>
-      <a class="nav-link" href="/systems"    title="Systems"        {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i><span class="nav-link__label">Systems</span></a>
-      <a class="nav-link" href="/poams"      title="POA&amp;Ms"     {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i><span class="nav-link__label">POA&amp;Ms</span></a>
-      <a class="nav-link" href="/risks"      title="Risks"          {% if active=='risks'      %}aria-current="page"{% endif %}><i data-lucide="triangle-alert"></i><span class="nav-link__label">Risks</span></a>
-      <a class="nav-link" href="/users"      title="Users"          {% if active=='users'      %}aria-current="page"{% endif %}><i data-lucide="users"></i><span class="nav-link__label">Users</span></a>
-    </div>
-    <div class="sidebar__group">
-      <div class="sidebar__group-title">Governance</div>
-      <a class="nav-link" href="/governance" title="Command center" {% if active=='governance' %}aria-current="page"{% endif %}><i data-lucide="gauge"></i><span class="nav-link__label">Command center</span></a>
-      <a class="nav-link" href="/governance#tasks" title="Tasks"     {% if active=='tasks'      %}aria-current="page"{% endif %}><i data-lucide="check-square"></i><span class="nav-link__label">Tasks</span></a>
-      <a class="nav-link" href="/governance#diagrams" title="Diagrams" {% if active=='diagrams'  %}aria-current="page"{% endif %}><i data-lucide="workflow"></i><span class="nav-link__label">Diagrams</span></a>
-    </div>
-    <div class="sidebar__group">
-      <div class="sidebar__group-title">Admin</div>
-      <a class="nav-link" href="/audit"      title="Audit trail"    {% if active=='audit'      %}aria-current="page"{% endif %}><i data-lucide="scroll-text"></i><span class="nav-link__label">Audit trail</span></a>
-      <a class="nav-link" href="/ingestions" title="Ingestions"     {% if active=='ingestions' %}aria-current="page"{% endif %}><i data-lucide="database"></i><span class="nav-link__label">Ingestions</span></a>
-      <a class="nav-link" href="/settings"   title="Settings"       {% if active=='settings'   %}aria-current="page"{% endif %}><i data-lucide="settings"></i><span class="nav-link__label">Settings</span></a>
-    </div>
-    {% else %}
-    <div class="sidebar__group">
-      <span class="nav-link" style="cursor:default;opacity:.75" title="Read-only (SQLite)"><i data-lucide="eye"></i><span class="nav-link__label">Read-only</span></span>
-    </div>
-    {% endif %}
-  </aside>
+  </nav>
+</header>
 
-  <!-- Main -->
-  <main class="main" id="main" tabindex="-1">
-    {% block breadcrumbs %}{% endblock %}
-    <div class="page">
-      <div class="page__header">
-        <div>
-          <h1 class="page__title">{% block heading %}{% endblock %}</h1>
-          {% block subtitle %}{% endblock %}
-        </div>
-        <div class="row" style="gap:8px">{% block actions %}{% endblock %}</div>
-      </div>
-      {% block content %}{% endblock %}
+{#- Section navigation — auto-rendered for the current product area. A page may
+    override this block to supply its own section nav. -#}
+{% block section_nav %}
+{% if ns.cur and ns.cur.links %}
+<nav class="sectionnav" aria-label="Section navigation">
+  <div class="sectionnav__inner">
+    <span class="sectionnav__title">{{ ns.cur.label }}</span>
+    {% for l in ns.cur.links %}
+    <a class="sectionnav__link" href="{{ l.href }}"
+       {% if l.key == active %}aria-current="page"{% endif %}>{{ l.label }}</a>
+    {% endfor %}
+  </div>
+</nav>
+{% endif %}
+{% endblock %}
+
+{#- Mobile navigation — slide-down, grouped by product area. -#}
+<div id="mobilenav" class="mobilenav" hidden>
+  <div class="mobilenav__panel" role="dialog" aria-modal="true" aria-label="Menu">
+    {% for g in nav_groups %}
+    <div class="mobilenav__group">
+      <a class="mobilenav__head" href="{{ g.href }}">{{ g.label }}</a>
+      {% for l in g.links %}
+      <a class="mobilenav__link" href="{{ l.href }}">{{ l.label }}</a>
+      {% endfor %}
     </div>
-  </main>
+    {% endfor %}
+    <div class="mobilenav__group">
+      <span class="mobilenav__head mobilenav__head--muted">Workspace</span>
+      <a class="mobilenav__link" href="/users">Users</a>
+      <a class="mobilenav__link" href="/settings">Settings</a>
+      <a class="mobilenav__link" href="/docs">API docs</a>
+    </div>
+  </div>
 </div>
+
+<main class="main" id="main" tabindex="-1">
+  {% block breadcrumbs %}{% endblock %}
+
+  <section class="page-hero">
+    {% set _eyebrow %}{% block hero_eyebrow %}{{ ns.cur.label if ns.cur else '' }}{% endblock %}{% endset %}
+    {% if _eyebrow|trim %}<p class="eyebrow">{{ _eyebrow }}</p>{% endif %}
+    <h1 class="page-hero__title page__title">{% block hero_title %}{% block heading %}{% endblock %}{% endblock %}</h1>
+    <div class="page-hero__copy">{% block hero_subtitle %}{% block subtitle %}{% endblock %}{% endblock %}</div>
+    <div class="page-hero__actions">{% block hero_actions %}{% block actions %}{% endblock %}{% endblock %}</div>
+  </section>
+
+  <div class="page">
+    {% block content %}{% endblock %}
+  </div>
+</main>
 
 <!-- Command palette -->
 <div id="cmd-backdrop" class="cmd-backdrop" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
