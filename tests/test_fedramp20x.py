@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import date
 from types import SimpleNamespace as N
 
@@ -125,6 +127,39 @@ def test_readiness_not_started_when_empty() -> None:
     )
     assert r.status == "not_started"
     assert r.readiness_pct == 0
+
+
+def test_docx_and_bundle_render() -> None:
+    pkg = {
+        "system": {"id": 1, "name": "Demo"},
+        "generated_at": "2026-07-02T00:00:00Z",
+        "disclaimer": "foundation",
+        "readiness": {
+            "readiness_pct": 42, "status": "validation_in_progress", "ksi_pass_rate": 50,
+            "automation_coverage": 30, "evidence_completeness": 20, "conmon_coverage": 10,
+            "assessor_completion": 0, "dependency_readiness": 100, "open_exceptions": 0,
+            "high_risk_findings": 1, "manual_review_burden": 2,
+        },
+        "cloud_service_offering": None,
+        "ksis": [
+            {"identifier": "KSI-IAM-01", "name": "MFA", "category": "IAM", "status": "pass",
+             "automation_level": "automated", "nist_refs": ["IA-2"],
+             "validation": {"evidence_refs": ["IA-2:implemented"]}, "assessor_review": None},
+        ],
+        "dependencies": [{"name": "Blob", "provider": "Azure", "fedramp_status": "authorized",
+                          "dependency_risk": "low"}],
+        "poams": [],
+    }
+    docx = package.to_docx(pkg)
+    assert docx[:2] == b"PK" and len(docx) > 1000  # zip-based OOXML
+
+    bundle = package.to_bundle(pkg)
+    with zipfile.ZipFile(io.BytesIO(bundle)) as z:
+        names = set(z.namelist())
+    assert {"package.json", "package.md", "oscal.json", "evidence-manifest.json"} <= names
+    assert package.evidence_manifest(pkg) == [
+        {"ksi": "KSI-IAM-01", "evidence_ref": "IA-2:implemented"}
+    ]
 
 
 def test_validate_oscal_accepts_valid_and_flags_broken() -> None:
@@ -328,6 +363,12 @@ async def test_api_flow_end_to_end() -> None:
         )
         assert validated.status_code == 200
         assert validated.headers.get("X-OSCAL-Validation") == "structural-pass"
+        # Binary exports: DOCX (OOXML) and a zip bundle with attachment headers.
+        docx = await c.get(f"/api/fedramp/20x/systems/{sid}/package?format=docx")
+        assert docx.status_code == 200 and docx.content[:2] == b"PK"
+        assert "attachment" in docx.headers.get("content-disposition", "")
+        bundle = await c.get(f"/api/fedramp/20x/systems/{sid}/package?format=bundle")
+        assert bundle.status_code == 200 and bundle.headers["content-type"] == "application/zip"
 
         # Assessor review creates a record and reflects on state.
         ksi_id = one["id"]

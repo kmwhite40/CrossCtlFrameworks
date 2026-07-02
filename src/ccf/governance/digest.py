@@ -196,16 +196,14 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
     if org_id is not None:
         reg_stmt = reg_stmt.where(RegulatoryUpdate.organization_id == org_id)
     for u in (await session.execute(reg_stmt)).scalars().all():
-        overdue = u.due_on is not None and u.due_on < today
+        is_overdue = u.due_on is not None and u.due_on < today
         await bus.notify(
             session,
             category="regulatory",
-            title=(
-                f"Regulatory change {'overdue' if overdue else 'due'}: {u.title}"
-            ),
+            title=(f"Regulatory change {'overdue' if is_overdue else 'due'}: {u.title}"),
             body=f"{u.framework_impacted or 'framework'} · due {u.due_on}.",
             org_id=org_id,
-            severity="warning" if overdue else "info",
+            severity="warning" if is_overdue else "info",
             entity_type="regulatory_update",
             entity_id=u.id,
             dedupe_key=f"regulatory-due:{u.id}:{u.due_on}",

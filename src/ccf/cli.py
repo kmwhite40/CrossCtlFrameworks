@@ -527,27 +527,39 @@ def fr20x_validate(system_id: int = typer.Option(..., "--system-id")) -> None:
 @fedramp20x_app.command(name="export-package")
 def fr20x_export(
     system_id: int = typer.Option(..., "--system-id"),
-    fmt: str = typer.Option("json", "--format", help="json | markdown | oscal"),
+    fmt: str = typer.Option("json", "--format", help="json | markdown | oscal | docx | bundle"),
     out: Path = typer.Option(None, "--out", help="Write to a file instead of stdout"),
 ) -> None:
     """Export the FedRAMP 20x authorization-package foundation."""
-    from .fedramp20x.package import build_package, render_markdown, to_oscal_shaped  # noqa: PLC0415
+    from .fedramp20x import package as pkg_mod  # noqa: PLC0415
 
-    async def _run() -> str:
+    binary_formats = {"docx", "bundle"}
+
+    async def _run() -> str | bytes:
         async with session_scope() as session:
-            pkg = await build_package(session, system_id=system_id)
+            pkg = await pkg_mod.build_package(session, system_id=system_id)
         if fmt == "markdown":
-            return render_markdown(pkg)
+            return pkg_mod.render_markdown(pkg)
         if fmt == "oscal":
-            return json.dumps(to_oscal_shaped(pkg), indent=2, default=str)
+            return json.dumps(pkg_mod.to_oscal_shaped(pkg), indent=2, default=str)
+        if fmt == "docx":
+            return pkg_mod.to_docx(pkg)
+        if fmt == "bundle":
+            return pkg_mod.to_bundle(pkg)
         return json.dumps(pkg, indent=2, default=str)
 
-    text = asyncio.run(_run())
+    data = asyncio.run(_run())
+    if fmt in binary_formats and not out:
+        console.print(f"[red]--out is required for --format {fmt} (binary output).[/red]")
+        raise typer.Exit(code=2)
     if out:
-        Path(out).write_text(text, encoding="utf-8")
-        console.print(f"[green]Wrote[/green] {out} ({len(text):,} bytes)")
+        if isinstance(data, bytes):
+            Path(out).write_bytes(data)
+        else:
+            Path(out).write_text(data, encoding="utf-8")
+        console.print(f"[green]Wrote[/green] {out} ({len(data):,} bytes)")
     else:
-        console.print(text)
+        console.print(data)
 
 
 @fedramp20x_app.command(name="list-gaps")

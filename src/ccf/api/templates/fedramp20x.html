@@ -42,7 +42,13 @@
         <i data-lucide="play"></i> Run validation
       </button>
       <a class="btn" href="/api/fedramp/20x/systems/{{ system_id }}/package?format=markdown" target="_blank">
-        <i data-lucide="file-text"></i> Export package
+        <i data-lucide="file-text"></i> Markdown
+      </a>
+      <a class="btn" href="/api/fedramp/20x/systems/{{ system_id }}/package?format=docx">
+        <i data-lucide="file-type-2"></i> DOCX
+      </a>
+      <a class="btn" href="/api/fedramp/20x/systems/{{ system_id }}/package?format=bundle">
+        <i data-lucide="package"></i> Bundle (zip)
       </a>
     </div>
     {% endif %}

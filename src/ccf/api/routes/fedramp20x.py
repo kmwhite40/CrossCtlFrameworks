@@ -12,7 +12,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -362,15 +362,30 @@ async def export_package(
     system_id: int,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
-    format: str = Query("json", pattern=r"^(json|markdown|oscal)$"),
+    format: str = Query("json", pattern=r"^(json|markdown|oscal|docx|bundle)$"),
     validate: bool | None = Query(
         None, description="Structurally validate OSCAL output (defaults to CCF setting)"
     ),
 ) -> Any:
-    await _require_system(session, system_id, principal)
+    system = await _require_system(session, system_id, principal)
     pkg = await package.build_package(session, system_id=system_id)
+    slug = system.name.replace(" ", "_")
     if format == "markdown":
         return PlainTextResponse(package.render_markdown(pkg))
+    if format == "docx":
+        return Response(
+            package.to_docx(pkg),
+            media_type=(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            headers={"Content-Disposition": f'attachment; filename="{slug}_20x.docx"'},
+        )
+    if format == "bundle":
+        return Response(
+            package.to_bundle(pkg),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{slug}_20x_bundle.zip"'},
+        )
     if format == "oscal":
         oscal = package.to_oscal_shaped(pkg)
         do_validate = get_settings().fedramp20x_oscal_validate if validate is None else validate

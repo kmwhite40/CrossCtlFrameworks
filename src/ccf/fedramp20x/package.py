@@ -14,6 +14,9 @@ evolving; treat this as a foundation, not a submission artifact.
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
 from datetime import UTC, datetime
 from typing import Any
 
@@ -422,3 +425,82 @@ def validate_oscal(doc: dict[str, Any]) -> list[str]:
                     if not isinstance(it, dict) or "uuid" not in it:
                         errors.append(f"{where}.{coll}[{j}]: missing 'uuid'")
     return errors
+
+
+def to_docx(pkg: dict[str, Any]) -> bytes:
+    """Render the package as a Word (.docx) brief. Reuses python-docx (a core dep)."""
+    from docx import Document  # noqa: PLC0415 — heavy optional import kept local
+    from docx.shared import Pt  # noqa: PLC0415
+
+    doc = Document()
+    doc.add_heading(f"FedRAMP 20x Package — {pkg['system']['name']}", level=0)
+    doc.add_paragraph(f"Generated {pkg['generated_at']}").runs[0].italic = True
+    doc.add_paragraph(pkg["disclaimer"])
+
+    r = pkg["readiness"]
+    doc.add_heading("20x Readiness", level=1)
+    for label, key in (
+        ("Overall readiness", "readiness_pct"),
+        ("Lifecycle status", "status"),
+        ("KSI pass rate", "ksi_pass_rate"),
+        ("Automation coverage", "automation_coverage"),
+        ("Evidence completeness", "evidence_completeness"),
+        ("Assessor completion", "assessor_completion"),
+        ("Dependency readiness", "dependency_readiness"),
+        ("High-risk findings", "high_risk_findings"),
+        ("Manual-review burden", "manual_review_burden"),
+    ):
+        p = doc.add_paragraph()
+        run = p.add_run(f"{label}: ")
+        run.bold = True
+        p.add_run(str(r.get(key)))
+
+    doc.add_heading("Key Security Indicators", level=1)
+    table = doc.add_table(rows=1, cols=4)
+    table.style = "Light Grid Accent 1"
+    hdr = table.rows[0].cells
+    hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "KSI", "Category", "Status", "Assessor"
+    for k in pkg["ksis"]:
+        row = table.add_row().cells
+        row[0].text = k["identifier"]
+        row[1].text = k["category"]
+        row[2].text = k["status"]
+        row[3].text = (k.get("assessor_review") or {}).get("status", "not_reviewed")
+
+    if pkg["dependencies"]:
+        doc.add_heading("Authorized dependencies", level=1)
+        for d in pkg["dependencies"]:
+            doc.add_paragraph(
+                f"{d['name']} ({d.get('provider') or 'n/a'}) — {d['fedramp_status']}",
+                style="List Bullet",
+            )
+
+    for s in doc.styles:
+        if s.name == "Normal":
+            s.font.size = Pt(10)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def evidence_manifest(pkg: dict[str, Any]) -> list[dict[str, Any]]:
+    """Flat manifest of every evidence reference cited across the package's KSIs."""
+    manifest: list[dict[str, Any]] = []
+    for k in pkg["ksis"]:
+        for ref in ((k.get("validation") or {}).get("evidence_refs") or []):
+            manifest.append({"ksi": k["identifier"], "evidence_ref": ref})
+    return manifest
+
+
+def to_bundle(pkg: dict[str, Any]) -> bytes:
+    """Zip the full package: JSON, Markdown, OSCAL-shaped JSON, and an evidence manifest."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("package.json", json.dumps(pkg, indent=2, default=str))
+        z.writestr("package.md", render_markdown(pkg))
+        z.writestr("oscal.json", json.dumps(to_oscal_shaped(pkg), indent=2, default=str))
+        z.writestr(
+            "evidence-manifest.json", json.dumps(evidence_manifest(pkg), indent=2, default=str)
+        )
+        z.writestr("README.txt", pkg["disclaimer"] + "\n")
+    return buf.getvalue()
