@@ -20,6 +20,7 @@ from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import sign_session, verify_password
 from ...config import get_settings
+from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
 from ...models import (
@@ -46,6 +47,7 @@ from ...models import (
     SSPProject,
     StatementTemplate,
     System,
+    SystemProfile,
     Task,
     User,
     Vendor,
@@ -1371,6 +1373,71 @@ async def governance_scan(
     await digest_engine.run(session, today=today, org_id=org)
     await session.commit()
     return RedirectResponse("/governance", status_code=303)
+
+
+@router.get("/intake", response_class=HTMLResponse)
+async def intake_page(request: Request) -> HTMLResponse:
+    """The system-definition questionnaire that kicks off automated derivation."""
+    return templates.TemplateResponse(
+        request,
+        "intake.html",
+        {"active": "intake", "questions": automation_engine.QUESTIONNAIRE, "result": None},
+    )
+
+
+@router.post("/intake", response_class=HTMLResponse)
+async def intake_submit(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """Create the system + profile from the answers, derive, and show the result."""
+    form = await request.form()
+    name = str(form.get("system_name") or "").strip()
+    if not name:
+        raise HTTPException(400, "system name is required")
+    multi = {"data_types", "endpoint_scope", "workloads", "frameworks"}
+    single = {"environment_type", "cloud_platform", "identity_model", "connectivity"}
+    answers: dict[str, Any] = {"system_name": name}
+    prof: dict[str, Any] = {}
+    for key in multi:
+        prof[key] = form.getlist(key)
+        answers[key] = prof[key]
+    for key in single:
+        val = str(form.get(key) or "").strip() or None
+        prof[key] = val
+        answers[key] = val
+
+    org = _principal_org(request)
+    if org is None:
+        latest = (
+            await session.execute(select(Organization).order_by(Organization.id.desc()).limit(1))
+        ).scalar_one_or_none()
+        if latest is None:
+            latest = Organization(name="Default Organization")
+            session.add(latest)
+            await session.flush()
+        org = latest.id
+
+    system = System(organization_id=org, name=name)
+    session.add(system)
+    await session.flush()
+    profile = SystemProfile(system_id=system.id, answers=answers, **prof)
+    session.add(profile)
+    await session.flush()
+    result = await automation_engine.derive_system(
+        session, system_id=system.id, org_id=org, profile=profile
+    )
+    await session.commit()
+    return templates.TemplateResponse(
+        request,
+        "intake.html",
+        {
+            "active": "intake",
+            "questions": automation_engine.QUESTIONNAIRE,
+            "result": result,
+            "system_id": system.id,
+            "system_name": name,
+        },
+    )
 
 
 @router.get("/login", response_class=HTMLResponse)

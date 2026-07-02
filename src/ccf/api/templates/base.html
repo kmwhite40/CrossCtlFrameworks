@@ -79,6 +79,7 @@
     {% if not settings.readonly %}
     <div class="sidebar__group">
       <div class="sidebar__group-title">Operations</div>
+      <a class="nav-link" href="/intake"     title="System intake"  {% if active=='intake'     %}aria-current="page"{% endif %}><i data-lucide="wand-2"></i><span class="nav-link__label">System intake</span></a>
       <a class="nav-link" href="/reports"    title="Reports"        {% if active=='reports'    %}aria-current="page"{% endif %}><i data-lucide="file-text"></i><span class="nav-link__label">Reports</span></a>
       <a class="nav-link" href="/systems"    title="Systems"        {% if active=='systems'    %}aria-current="page"{% endif %}><i data-lucide="server"></i><span class="nav-link__label">Systems</span></a>
       <a class="nav-link" href="/poams"      title="POA&amp;Ms"     {% if active=='poams'      %}aria-current="page"{% endif %}><i data-lucide="clipboard-list"></i><span class="nav-link__label">POA&amp;Ms</span></a>

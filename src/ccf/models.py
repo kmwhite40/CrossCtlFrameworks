@@ -334,6 +334,65 @@ class System(Base):
     __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_system_org_name"),)
 
 
+class SystemProfile(Base):
+    """The environment definition that drives control applicability + inheritance.
+
+    Captured via the intake questionnaire; ``derivation`` holds the computed
+    per-control result (responsibility, state, source) so coverage, SPRS, SSP,
+    and POA&M all read from one snapshot.
+    """
+
+    __tablename__ = "system_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    system_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    environment_type: Mapped[str | None] = mapped_column(String(32))  # cloud|hybrid|on_prem|enclave
+    cloud_platform: Mapped[str | None] = mapped_column(String(32))  # m365_gcc_high|azure_gov|...
+    tenant_ref: Mapped[str | None] = mapped_column(String(255))
+    identity_model: Mapped[str | None] = mapped_column(String(32))
+    connectivity: Mapped[str | None] = mapped_column(String(32))
+    cui_present: Mapped[bool] = mapped_column(Boolean, default=True)
+    workloads: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    endpoint_scope: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    data_types: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    inherited_sources: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # vendor ids/keys
+    frameworks: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # targeted framework codes
+    answers: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict
+    )  # raw questionnaire answers
+    derivation: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # control_id -> result
+    derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FrameworkControl(Base):
+    """An uploadable control from any framework — lets new frameworks be added
+    without a code change or the NIST workbook. Keyed by (framework_code, identifier)."""
+
+    __tablename__ = "framework_controls"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    framework_code: Mapped[str] = mapped_column(String(64), index=True)
+    identifier: Mapped[str] = mapped_column(String(128), index=True)
+    title: Mapped[str | None] = mapped_column(String(512))
+    description: Mapped[str | None] = mapped_column(Text)
+    family: Mapped[str | None] = mapped_column(String(64))
+    baseline: Mapped[str | None] = mapped_column(String(32))  # low|moderate|high|l1|l2|...
+    default_responsibility: Mapped[str | None] = mapped_column(String(16))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    source: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("framework_code", "identifier", name="uq_framework_control"),
+    )
+
+
 class ControlImplementation(Base):
     __tablename__ = "control_implementations"
 

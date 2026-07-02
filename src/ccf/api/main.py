@@ -27,6 +27,7 @@ from .routes import (
     assessments,
     audit,
     auth,
+    automation,
     catalog,
     conmon,
     controls,
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(reports.router)
     # Enterprise governance layer.
+    app.include_router(automation.router)
     app.include_router(conmon.router)
     app.include_router(tasks.router)
     app.include_router(notifications.router)
