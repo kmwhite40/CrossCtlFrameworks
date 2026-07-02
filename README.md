@@ -32,6 +32,9 @@ accent, soft shadows, no chrome-heavy glassmorphism.
 - **Provides a compliance-ops layer** — organizations, systems (FIPS-199 +
   FedRAMP baseline + ATO status), per-system control implementations,
   evidence, assessments, POA&Ms, risks, and an `audit_log`.
+- **Enforces access & tenancy** — session-cookie + bearer-token auth,
+  separation-of-duties RBAC on writes, PostgreSQL **row-level security** on every
+  tenant-owned table, and a SHA-256 **audit hash-chain** over all mutations.
 - **Serves a UI** at `/` — a top-navigation shell (global nav → section nav →
   page hero) with dashboards, a faceted control browser, per-control detail with
   grouped cross-framework mappings, a framework catalog, a cross-framework
@@ -93,6 +96,15 @@ Continuous-controls-monitoring (parity with commercial CCM/GRC platforms):
 - **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` emits an OSCAL 1.1
   plan-of-action-and-milestones (alongside the existing OSCAL SSP + Component Definition).
 
+Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/access-reviews`):
+- **People** with PS-2 risk designation, PS-3 background screening, and PS-4/PS-5
+  lifecycle. Onboarding auto-assigns baseline **AT-2** awareness training and opens a
+  screening task; **offboarding** opens a high-priority access-revocation task.
+- **Security training** (AT-2/AT-3) assignment + completion with evidence, and
+  **access-certification reviews** (AC-2) whose completion is gated on every grant
+  getting a retain/revoke/modify decision. `GET /api/personnel/summary` rolls up
+  screening gaps, overdue training, and pending access decisions.
+
 Observability: Prometheus metrics (`ccf_ksi_validations_total`,
 `ccf_fedramp20x_validation_duration_seconds`, `ccf_ksi_drift_events_total`,
 `ccf_fedramp20x_readiness_pct`) with a ready-to-import Grafana dashboard at
@@ -108,7 +120,8 @@ src/ccf/
 ├── db.py                async SQLAlchemy engine + session_scope
 ├── models.py            SQLAlchemy 2.0 ORM (reference + operational layers)
 ├── schemas.py           Pydantic v2 API schemas
-├── cli.py               Typer entrypoint: ingest / serve / stats / search / show
+├── cli.py               Typer entrypoint: ingest / serve / stats / search / show /
+│                        score / ssp-generate / fedramp20x / reliability-check / …
 ├── etl/
 │   ├── frameworks.py    canonical framework catalog + header classifier
 │   └── pipeline.py      workbook → Postgres (all sheets, dedup-safe)
@@ -128,7 +141,7 @@ src/ccf/
     ├── templates/       Jinja2 (base, dashboard, controls, detail, search, …)
     └── static/
 
-migrations/              Alembic (baseline 0001_baseline.py)
+migrations/              Alembic (0001 baseline → RLS-enforced multi-tenant schema)
 tests/                   unit + integration (Postgres required)
 .github/workflows/ci.yml lint · typecheck · test · SBOM · Trivy · Docker build
 ```
@@ -142,7 +155,13 @@ tests/                   unit + integration (Postgres required)
 - `ccf.ingestion_runs` — provenance: source path, SHA-256, timing, stats JSONB.
 - Operational: `ccf.organizations`, `ccf.users`, `ccf.systems`,
   `ccf.control_implementations`, `ccf.evidence`, `ccf.assessments`,
-  `ccf.assessment_results`, `ccf.poams`, `ccf.risks`, `ccf.audit_log`.
+  `ccf.assessment_results`, `ccf.poams`, `ccf.risks`, `ccf.audit_log` — plus the
+  governance (tasks, policies, vendors, approvals, connectors, audit workspace,
+  trust center) and FedRAMP 20x (KSIs, states, validation history, dependencies)
+  tables.
+- Every tenant-owned table is protected by **row-level security** keyed on the
+  `ccf.tenant_id` session GUC; `ccf.audit_log` carries a `prev_hash`/`row_hash`
+  chain for tamper evidence.
 
 ## Quickstart
 
@@ -277,22 +296,47 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
 - `CCF_NOTIFY_WEBHOOK_URL`, `CCF_NOTIFY_MIN_SEVERITY` — Slack/Teams sink for alerts
   (including KSI drift).
 
-## Security posture (today vs. roadmap)
+## Security posture
 
-Today: non-root container, tini PID 1, HEALTHCHECK, typed pydantic config,
-SBOM in CI, Trivy/pip-audit in CI, Alembic-managed schema, structured logs.
+Shipped today:
 
-Roadmap (see design review in git history): DB role split
-(`ccf_migrator`/`ccf_etl`/`ccf_app`/`ccf_ro`), append-only `ccf_audit` schema
-with `REVOKE UPDATE,DELETE`, OIDC login + RBAC on writes, RLS for multi-tenant,
-pgaudit, workbook object-store with object lock, cosign-signed images, OTEL
-tracing + Prometheus `/metrics`, runbooks and SLOs.
+- **AuthN / AuthZ** — session-cookie + bearer-token authentication
+  (`CCF_AUTH_ENABLED`) and a separation-of-duties RBAC model
+  (`admin` / `control_owner` / `assessor` / `viewer`, plus a
+  draft → submitted → approved approval workflow). An `auth_posture` reliability
+  check **fails** when auth is off or the default session secret is used outside a
+  dev environment.
+- **Multi-tenant isolation** — PostgreSQL **row-level security** on every
+  tenant-owned table (org- and system-scoped policies keyed on a `ccf.tenant_id`
+  session GUC + a non-superuser `ccf_app` role), a database-enforced backstop
+  beneath the application-layer org scoping. An unset GUC = bypass, so
+  CLI / ETL / migrations run unscoped.
+- **Tamper-evident audit** — every mutation is recorded in `ccf.audit_log` with a
+  SHA-256 hash chain; `/api/audit/verify` re-checks the chain.
+- **Supply chain & container** — non-root image, tini PID 1, HEALTHCHECK, typed
+  pydantic config, structured logs, and CycloneDX SBOM + `pip-audit` + Trivy in CI.
+- **Observability** — Prometheus `/metrics` (HTTP + FedRAMP 20x series) with a
+  bundled Grafana dashboard.
+
+Roadmap (see design review in git history): OIDC / SSO login, a finer DB role split
+(`ccf_migrator` / `ccf_etl` / `ccf_app` / `ccf_ro`), an append-only `ccf_audit`
+schema with `REVOKE UPDATE,DELETE`, pgaudit, a workbook object-store with object
+lock, cosign-signed images, OTEL tracing, and published runbooks / SLOs.
 
 ## Project status
 
-Early. The ingestion pipeline, data model, API, UI, CLI, Alembic baseline,
-Docker/Compose, CI, and initial test suite are in place. Authentication,
-SCD-2 history, OSCAL export, and production runbooks are next.
+Active development; feature-complete across the core platform. In place: the
+ingestion pipeline, data model, REST API + HTMX UI + Typer CLI, CMMC L2 live
+scoring, the SSP builder, the enterprise governance layer, FedRAMP 20x
+(KSIs → validation → readiness → authorization package), continuous-controls
+monitoring (scan ingestion → POA&M reconciliation), OSCAL export (Component
+Definition / SSP / POA&M), session + bearer authentication with
+separation-of-duties RBAC, database-enforced multi-tenant RLS, a tamper-evident
+audit hash-chain, Alembic-managed schema, Docker/Compose, CI, and a reliability
+self-check subsystem. The suite runs 130+ tests against a real Postgres.
+
+Next: OIDC / SSO, SCD-2 history, official OSCAL schema conformance, a finer
+DB-role split, and published production runbooks / SLOs.
 
 ---
 

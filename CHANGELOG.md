@@ -19,6 +19,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` (OSCAL 1.1
   plan-of-action-and-milestones).
 
+### Added — personnel & access (workforce security lifecycle)
+- **People** (`ccf.people`) with PS-2 risk designation, PS-3 background screening,
+  and PS-4/PS-5 employment lifecycle. Creating a person runs onboarding
+  (assigns baseline AT-2 awareness training + opens a screening task);
+  `POST /api/personnel/{id}/offboard` opens a high-priority access-revocation task.
+- **Security training** (`ccf.training_records`, AT-2/AT-3) — assign + complete
+  with evidence; overdue tracking feeds the personnel summary.
+- **Access reviews** (`ccf.access_reviews` + `ccf.access_review_items`, AC-2) —
+  certification campaigns; completion is blocked until every item has a
+  retain/revoke/modify decision.
+- `GET /api/personnel/summary` rollup (headcount, screening gaps, overdue
+  training, open reviews, pending decisions). Migration 0025; all tenant-isolated.
+
 ## [0.2.0] — 2026-04-15
 
 ### Added — data & governance
