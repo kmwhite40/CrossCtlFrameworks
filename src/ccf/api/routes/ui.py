@@ -1311,9 +1311,48 @@ async def ssp_save_entry(
             narratives.append({"label": tmpl.title, "text": text})
     entry.part_narratives = narratives
     await session.commit()
-    return HTMLResponse(
-        '<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>'
-        "<script>if(window.lucide)lucide.createIcons();</script>"
+    await session.refresh(entry)
+
+    # Re-render the whole entry form so an applied canned statement (and any
+    # other change) is reflected immediately — the previous chip-only response
+    # left the form showing stale narratives, so applies looked like no-ops.
+    odp_definitions = (
+        await session.execute(
+            select(ScoringControl.odp_definitions).where(
+                ScoringControl.control_id == entry.control_id
+            )
+        )
+    ).scalar()
+    template_rows = (
+        (await session.execute(select(StatementTemplate).order_by(StatementTemplate.sort_order)))
+        .scalars()
+        .all()
+    )
+
+    def odp_defs_for(_control_id: str) -> list[dict[str, Any]]:
+        return list(odp_definitions or [])
+
+    def templates_for(_control_id: str, dom: str | None) -> list[StatementTemplate]:
+        return [
+            t
+            for t in template_rows
+            if (t.scope == "control" and t.control_id == entry.control_id)
+            or (t.scope == "domain" and t.domain == dom)
+            or t.scope == "global"
+        ]
+
+    return templates.TemplateResponse(
+        request,
+        "_ssp_entry.html",
+        {
+            "project": proj,
+            "e": entry,
+            "status_options": ssp_constants.IMPLEMENTATION_STATUS_OPTIONS,
+            "origination_options": ssp_constants.CONTROL_ORIGINATION_OPTIONS,
+            "odp_defs_for": odp_defs_for,
+            "templates_for": templates_for,
+            "just_saved": True,
+        },
     )
 
 

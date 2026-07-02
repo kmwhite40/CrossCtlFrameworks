@@ -1,0 +1,89 @@
+{# One SSP control entry form. Rendered inline on the detail page and returned
+   by the save endpoint so an applied canned statement shows immediately. #}
+<form method="post" action="/ssp/{{ project.id }}/entry/{{ e.id }}"
+      hx-post="/ssp/{{ project.id }}/entry/{{ e.id }}" hx-target="this" hx-swap="outerHTML"
+      class="card" style="border:1px solid var(--ink-200)">
+  <div class="card__body stack" style="gap:10px">
+    <div class="row between">
+      <div>
+        <span class="mono" style="font-weight:700">{{ e.control_id }}</span>
+        <span class="dim">· NIST {{ e.nist_id }}</span>
+        <div style="font-weight:600;margin-top:2px">{{ e.title }}</div>
+      </div>
+      <div class="row" style="gap:8px;align-items:center">
+        <span id="saved-{{ e.id }}">{% if just_saved %}<span class="chip chip--ok"><i data-lucide="check"></i> Saved</span>{% endif %}</span>
+        <button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="save"></i> Save</button>
+      </div>
+    </div>
+    {% if e.requirement %}<div class="dim" style="font-size:12px">{{ e.requirement }}</div>{% endif %}
+
+    <label class="field-group"><span class="dim" style="font-size:12px">Responsible role</span>
+      <input class="input" name="responsible_role" value="{{ e.responsible_role or '' }}"></label>
+
+    <div class="row" style="gap:24px;flex-wrap:wrap">
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:4px">Implementation status</div>
+        {% for opt in status_options %}
+        <label class="row" style="gap:6px;font-size:13px">
+          <input type="checkbox" name="status::{{ opt }}" {% if opt in (e.implementation_status or []) %}checked{% endif %}> {{ opt }}
+        </label>
+        {% endfor %}
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:4px">Control origination</div>
+        {% for opt in origination_options %}
+        <label class="row" style="gap:6px;font-size:13px">
+          <input type="checkbox" name="orig::{{ opt }}" {% if opt in (e.control_origination or []) %}checked{% endif %}> {{ opt }}
+        </label>
+        {% endfor %}
+      </div>
+    </div>
+
+    {% set odps = odp_defs_for(e.control_id) %}
+    {% if odps %}
+    <div class="stack" style="gap:6px;border:1px dashed var(--ink-300);border-radius:var(--radius);padding:10px">
+      <div class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">
+        <i data-lucide="pencil-line"></i> Organization-defined parameters (fill in the blank)
+      </div>
+      {% for odp in odps %}
+      <label class="field-group">
+        <span class="dim" style="font-size:12px">{{ odp.label }}{% if odp.guidance %} — <span style="font-style:italic">{{ odp.guidance }}</span>{% endif %}</span>
+        {% if odp.kind == 'selection' and odp.choices %}
+        <select class="select" name="odp::{{ odp.key }}">
+          <option value="">(choose…)</option>
+          {% for c in odp.choices %}<option value="{{ c }}" {% if (e.odp_values or {}).get(odp.key)==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
+        </select>
+        {% else %}
+        <input class="input" name="odp::{{ odp.key }}"
+               value="{{ (e.odp_values or {}).get(odp.key, '') }}"
+               placeholder="{{ odp.suggested or 'organization-defined value' }}">
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% set choices = templates_for(e.control_id, e.domain) %}
+    {% if choices %}
+    <div class="row" style="gap:8px;align-items:end;flex-wrap:wrap">
+      <label class="field-group" style="flex:1;min-width:220px">
+        <span class="dim" style="font-size:12px">Apply a canned implementation statement</span>
+        <select class="select" name="apply_template">
+          <option value="">(none — keep current narrative)</option>
+          {% for t in choices %}<option value="{{ t.key }}">{{ t.title }}</option>{% endfor %}
+        </select>
+      </label>
+      <span class="dim" style="font-size:11px">Saving with a template selected appends it, rendered with the parameters above.</span>
+    </div>
+    {% endif %}
+
+    <div class="dim" style="font-size:12px">What is the solution and how is it implemented?</div>
+    {% for part in e.part_narratives or [] %}
+    <label class="field-group">
+      <span class="dim" style="font-size:12px">Part [{{ part.label or '—' }}]</span>
+      <textarea class="input" name="part::{{ part.label }}" rows="2">{{ part.text }}</textarea>
+    </label>
+    {% endfor %}
+  </div>
+  <script>if(window.lucide)lucide.createIcons();</script>
+</form>
