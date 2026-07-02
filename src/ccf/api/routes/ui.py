@@ -697,7 +697,8 @@ async def mappings_page(
         .all()
     )
     results: Sequence[Any] = ()
-    if q and len(q) >= 2:
+    q = q.strip() if q else q
+    if q:
         stmt = (
             select(
                 Control.identifier,

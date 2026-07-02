@@ -40,7 +40,18 @@
     </tbody>
   </table></div>
   <div class="card__footer"><span class="dim" style="font-size:12px">Long values are clamped — hover a value to see the full text, or open the control. Tip: choose a framework to narrow results.</span></div>
-  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No matches.</div>{% endif %}
+  {% else %}
+  <div class="card__body dim" style="text-align:center;padding:40px">
+    {% if framework %}
+      No mappings in <strong>{{ (frameworks | selectattr('code','equalto',framework) | map(attribute='name') | first) or framework }}</strong>
+      contain “<span class="mono">{{ q }}</span>”. Try <a href="/mappings?q={{ q | urlencode }}">Any framework</a>,
+      or search a reference used by that framework.
+    {% else %}
+      No mappings contain “<span class="mono">{{ q }}</span>”. Search a control’s reference in another
+      framework — e.g. <span class="mono">6.1</span> (CIS), <span class="mono">A.8.9</span> (ISO), or <span class="mono">ac-2</span>.
+    {% endif %}
+  </div>
+  {% endif %}
 </section>
 {% endif %}
 {% endblock %}
