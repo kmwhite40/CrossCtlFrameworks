@@ -8,6 +8,8 @@ it is independent of pre-existing data in the shared test DB.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -15,9 +17,16 @@ from sqlalchemy import select
 
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.governance import control_tests, exporter, insights
-from ccf.models import POAM, Organization, Risk, System, Task
-from ccf.models_grc import ControlTest, ControlTestResult
+from ccf.governance import control_tests, digest, exporter, insights
+from ccf.models import POAM, Notification, Organization, Risk, System, Task
+from ccf.models_grc import (
+    AuditEngagement,
+    AuditRequest,
+    ConnectorConfig,
+    ControlTest,
+    ControlTestResult,
+    RegulatoryUpdate,
+)
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -165,6 +174,89 @@ async def test_record_result_fail_opens_alert_and_dedup_task() -> None:
             await s.execute(select(Task).where(Task.dedupe_key == dedupe))
         ).scalars().all()
         assert len(tasks2) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_due_auto_evaluates_connector_backed_test() -> None:
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "AutoRun Org")
+        s.add(
+            ConnectorConfig(
+                organization_id=org_id,
+                name="Prod AWS GovCloud",
+                connector_type="aws_govcloud",
+                status="configured",
+                last_sync=datetime.now(UTC),
+                objects_discovered=290,
+            )
+        )
+        test = ControlTest(
+            organization_id=org_id,
+            system_id=sys_id,
+            control_id="AC.L2-3.1.5",
+            name="IAM least-privilege sync",
+            method="connector",
+            connector_type="aws_govcloud",
+            frequency="daily",
+            active=True,
+            last_tested_at=datetime.now(UTC) - timedelta(days=3),  # overdue
+        )
+        s.add(test)
+        await s.flush()
+
+        counts = await control_tests.run_due(s, today=datetime.now(UTC).date())
+        assert counts["evaluated"] >= 1
+        await s.refresh(test)
+        assert test.last_status == "pass"  # configured + fresh + objects>0
+        results = (
+            await s.execute(
+                select(ControlTestResult).where(ControlTestResult.control_test_id == test.id)
+            )
+        ).scalars().all()
+        assert len(results) == 1 and results[0].status == "pass"
+
+
+@pytest.mark.asyncio
+async def test_digest_flags_overdue_regulatory_and_audit() -> None:
+    async with session_scope() as s:
+        org_id, _ = await _make_org_system(s, "Digest Org")
+        today = datetime.now(UTC).date()
+        s.add(
+            RegulatoryUpdate(
+                organization_id=org_id,
+                title="Overdue reg change",
+                framework_impacted="NIST 800-171",
+                status="assessing",
+                due_on=today - timedelta(days=5),
+            )
+        )
+        eng = AuditEngagement(organization_id=org_id, name="C3PAO CMMC L2")
+        s.add(eng)
+        await s.flush()
+        s.add(
+            AuditRequest(
+                engagement_id=eng.id,
+                title="Provide access-control policy",
+                status="open",
+                due_on=today - timedelta(days=3),
+            )
+        )
+        await s.flush()
+
+        counts = await digest.run(s, today=today, org_id=org_id)
+        assert counts["regulatory"] >= 1
+        assert counts["audit"] >= 1
+
+        cats = {
+            n.category
+            for n in (
+                await s.execute(
+                    select(Notification).where(Notification.organization_id == org_id)
+                )
+            ).scalars().all()
+        }
+        assert "regulatory" in cats
+        assert "audit" in cats
 
 
 @pytest.mark.asyncio
