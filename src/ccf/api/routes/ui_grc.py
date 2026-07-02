@@ -25,6 +25,7 @@ from ...models_grc import (
     AuditRequest,
     ConnectorConfig,
     ControlTest,
+    ControlTestResult,
     RegulatoryUpdate,
     TrustAccessRequest,
     TrustProfile,
@@ -317,6 +318,29 @@ async def control_tests_run(
             )
             await session.commit()
     return RedirectResponse("/control-tests", status_code=303)
+
+
+@router.get("/control-tests/{test_id}", response_class=HTMLResponse)
+async def control_test_detail(
+    test_id: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    test = await session.get(ControlTest, test_id)
+    if test is None or (org is not None and test.organization_id != org):
+        raise HTTPException(404, "control test not found")
+    results = (
+        await session.execute(
+            select(ControlTestResult)
+            .where(ControlTestResult.control_test_id == test_id)
+            .order_by(ControlTestResult.run_at.desc())
+            .limit(100)
+        )
+    ).scalars().all()
+    return templates.TemplateResponse(
+        request,
+        "control_test_detail.html",
+        {"active": "controltests", "test": test, "results": results},
+    )
 
 
 # ── Audit Workspace ──────────────────────────────────────────────────────────

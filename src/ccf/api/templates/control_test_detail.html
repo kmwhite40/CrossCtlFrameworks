@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}{{ test.name }} · Control test · Concord{% endblock %}
+{% block heading %}{{ test.name }}{% endblock %}
+{% block subtitle %}<p class="page__subtitle"><span class="mono">{{ test.control_id }}</span> · {{ test.method }}{% if test.frequency %} · {{ test.frequency }}{% endif %}</p>{% endblock %}
+{% block actions %}<a class="btn btn--ghost" href="/control-tests"><i data-lucide="arrow-left"></i> All control tests</a>{% endblock %}
+{% block content %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Last result</div><div class="kpi__value">{% if test.last_status %}<span class="chip {% if test.last_status=='pass' %}chip--ok{% elif test.last_status=='fail' %}chip--err{% else %}chip--warn{% endif %}">{{ test.last_status }}</span>{% else %}<span class="dim">untested</span>{% endif %}</div></div>
+  <div class="kpi"><div class="kpi__label">Last tested</div><div class="kpi__value" style="font-size:20px">{{ test.last_tested_at.strftime('%Y-%m-%d') if test.last_tested_at else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Method</div><div class="kpi__value" style="font-size:20px">{{ test.method }}</div></div>
+  <div class="kpi"><div class="kpi__label">Runs recorded</div><div class="kpi__value">{{ results|length }}</div></div>
+</div>
+
+{% if test.description or test.connector_type or test.assertion %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Definition</div></div>
+  <div class="card__body stack" style="gap:8px">
+    {% if test.description %}<div>{{ test.description }}</div>{% endif %}
+    {% if test.connector_type %}<div class="dim">Connector: <span class="chip chip--info">{{ test.connector_type }}</span></div>{% endif %}
+    {% if test.assertion %}<div class="dim">Assertion: <span class="mono">{{ test.assertion.get('odp_key','') }} {{ test.assertion.get('operator','') }} {{ test.assertion.get('value','') }}</span></div>{% endif %}
+    {% if test.expected %}<div class="dim">Expected: {{ test.expected }}</div>{% endif %}
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Result history</div><span class="chip chip--brand">{{ results|length }}</span></div>
+  {% if results %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>When</th><th>Result</th><th>Detail</th><th>Evidence</th></tr></thead>
+    <tbody>
+      {% for r in results %}<tr>
+        <td class="dim">{{ r.run_at.strftime('%Y-%m-%d %H:%M') if r.run_at else '—' }}</td>
+        <td><span class="chip {% if r.status=='pass' %}chip--ok{% elif r.status=='fail' %}chip--err{% else %}chip--warn{% endif %}">{{ r.status }}</span></td>
+        <td>{{ r.detail or '—' }}</td>
+        <td class="dim mono">{{ r.evidence_ref or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No runs recorded yet. Record one from the <a href="/control-tests">control-tests page</a>.</div>{% endif %}
+</section>
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

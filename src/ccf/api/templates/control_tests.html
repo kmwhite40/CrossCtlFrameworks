@@ -33,7 +33,7 @@
     <tbody>
       {% for r in rows %}<tr>
         <td class="mono">{{ r.control_id }}</td>
-        <td><strong>{{ r.name }}</strong></td>
+        <td><a href="/control-tests/{{ r.id }}"><strong>{{ r.name }}</strong></a></td>
         <td class="dim">{{ r.method }}</td>
         <td class="dim">{{ r.frequency or '—' }}</td>
         <td>{% if r.last_status %}<span class="chip {% if r.last_status=='pass' %}chip--ok{% elif r.last_status=='fail' %}chip--err{% else %}chip--warn{% endif %}">{{ r.last_status }}</span>{% else %}<span class="dim">untested</span>{% endif %}</td>
