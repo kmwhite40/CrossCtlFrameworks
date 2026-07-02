@@ -8,8 +8,11 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+from alembic import command
+from alembic.config import Config
 
 from ccf import db as ccf_db
+from ccf.config import get_settings
 
 # Run against a real Postgres — CI service container; locally, docker compose.
 os.environ.setdefault(
@@ -22,12 +25,36 @@ os.environ.setdefault(
 )
 
 
-@pytest.fixture
+@pytest.fixture(scope="session", autouse=True)
+def clean_migrated_db() -> None:
+    """Start every test session from a clean, fully-migrated schema.
+
+    The suite is designed to run against a fresh database (CI uses a throwaway
+    Postgres container). Locally the DB persists between runs, so tests that seed
+    and assert exact state would fail on a second run. Resetting to ``base`` then
+    ``head`` once, up front, makes ``pytest`` deterministic on repeat runs without
+    a manual drop — and, crucially, does it BEFORE any test module runs rather than
+    mid-session (a mid-session downgrade wipes data other modules depend on)."""
+    if not str(get_settings().database_url_sync).startswith("postgresql"):
+        return  # SQLite reader build manages its own schema
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
+    command.downgrade(cfg, "base")
+    command.upgrade(cfg, "head")
+
+
+@pytest.fixture(autouse=True)
 async def fresh_engine() -> AsyncIterator[None]:
     """pytest-asyncio uses a per-test event loop; the global asyncpg engine binds
     to whichever loop created it. Dispose + reset it after each test so the next
-    test gets a fresh engine on its own loop. Opt-in per test module via
-    ``pytestmark = pytest.mark.usefixtures("fresh_engine")``."""
+    test always gets a fresh engine on its own loop — otherwise a module that
+    doesn't reset leaks an engine bound to a now-closed loop and the next module's
+    first DB test raises ``RuntimeError: Event loop is closed``.
+
+    Autouse so no module can forget it. Disposal happens in the test's own (still
+    open) loop; sync/pure tests that never built an engine are a no-op. The app
+    factory resolves the engine lazily per request, so module-scoped app fixtures
+    keep working across the reset."""
     yield
     if ccf_db._engine is not None:
         await ccf_db._engine.dispose()

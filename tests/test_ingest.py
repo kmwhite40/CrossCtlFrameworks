@@ -21,6 +21,10 @@ from ccf.models import Control, Framework, FrameworkMapping, Worksheet
 
 @pytest.fixture(scope="session", autouse=True)
 def apply_migrations() -> None:
+    # Reset to a clean schema before ingesting so control/mapping counts are
+    # deterministic regardless of what earlier modules seeded. (conftest's
+    # ``clean_migrated_db`` already cleaned the session start; this gives the
+    # modules that run after this one a clean slate too.)
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
     command.downgrade(cfg, "base")
