@@ -7,6 +7,19 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **External collaboration portal** (`ccf/portal/`, `models_portal.py`,
+  migration 0036, `docs/portal.md`) — scoped, expiring, token-authenticated,
+  fully-audited external access for customers/assessors/vendors with no internal
+  account and no cross-tenant leakage. A bearer-token grant carries an expiry, a
+  revoke flag, and an explicit allow-list of shared packages/evidence; the service
+  is the single authorization boundary (resolve → clamp the session to the grant's
+  tenant → return only shared artifacts → audit every access). API
+  `POST/GET /api/admin/portal/grants` (+ `/{id}/revoke`), token-authed
+  `GET /api/portal/session` + `POST /api/portal/comments`, and a standalone
+  `/portal` HTML view. All 7 tables RLS-isolated (share join-tables via a subquery
+  against their parent grant's org). Reliability checks
+  `external_access_scope_integrity` (fails on any cross-tenant share),
+  `external_grant_expiration`, `external_portal_audit_completeness`.
 - **Concord-on-Concord self-assurance** (`ccf/self_assurance/`,
   `models_self_assurance.py`, migration 0035, `docs/self-assurance.md`) — Concord
   continuously assesses itself: a seeded *Concord Platform* system whose controls
@@ -150,6 +163,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   `review` pushes the rating onto the Vendor record and can open a deduped
   remediation Task per flagged gap. Scoring is a pure function in
   `ccf.governance.tprm`. Migration 0026; all tenant-isolated.
+
+### Changed — UI & navigation
+- **Consolidated the primary navigation** from 11 top-level items into 5
+  lifecycle buckets — **Dashboard · Compliance · Authorization · Operations ·
+  Insights** — plus a right-side pinned strip (Executive, FedRAMP 20x, AI Gov)
+  kept one click from anywhere. Every href/active-key preserved; the mega-menu,
+  section nav, and mobile sheet all derive from the regrouped `nav_groups`.
+- **Extracted the dashboard overview aggregation** into
+  `ccf.analytics.overview.dashboard_overview()` — a single guarded aggregator
+  (catalog coverage, per-system readiness, finding/POA&M posture, risk bands,
+  ConMon health) that degrades gracefully on an empty database.
+
+### Fixed — UI
+- Overview cards no longer clip their tile content: removed `content-visibility`
+  paint-containment from `.ovw-card` and made the inner grids shrink-safe
+  (`minmax(0,1fr)`, `repeat(auto-fit, …)` for the system tiles). No horizontal
+  overflow at 360–1440px.
+- WCAG AA contrast fixes (muted text, info chip), an invisible "Overdue" KPI, a
+  modernized skip-link, `aria-label`s on all placeholder-only inputs, 44px
+  touch targets on coarse pointers, and a live-region for toasts.
 
 ## [0.2.0] — 2026-04-15
 

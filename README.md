@@ -9,8 +9,10 @@ and their 550+ cross-framework mappings, and exposes the data through a FastAPI
 service with an HTMX + Alpine web UI, a Typer CLI, and a REST API.
 
 The interface is a calm, editorial, **top-navigation** shell (no permanent
-sidebar): a global nav with per-area mega menus, a contextual section nav, and
-an editorial hero on every page. It is **light-first** with a neutral graphite
+sidebar): a global nav with per-area mega menus organized into five
+authorization-lifecycle buckets — **Dashboard · Compliance · Authorization ·
+Operations · Insights** — a contextual section nav, and an editorial hero on
+every page. It is **light-first** with a neutral graphite
 dark mode, built on a small design-token system in
 [`app.css`](src/ccf/api/static/css/app.css) — system typography, a single blue
 accent, soft shadows, no chrome-heavy glassmorphism.
@@ -50,6 +52,16 @@ accent, soft shadows, no chrome-heavy glassmorphism.
   server-rendered UI, and alert-digest integration (see below).
 - **Self-checks** via a reliability subsystem (`ccf reliability-check` /
   `/api/admin/reliability`) covering DB, migrations, core services, and the 20x layer.
+- **Runs a continuous-authorization layer** — an **assurance graph**
+  (authorization digital twin + impact analysis), **evidence confidence scoring**
+  with reproducible digests, **authorization packages** with provenance, diff, and
+  replay, a **typed, citation-first, human-approved AI action layer** (optional,
+  disabled by default), **AI-agent governance** (privileged non-human actors with
+  risk scoring + kill-switch), a **compliance-pack runtime** (local-first
+  framework/control/evidence/rule packs), **Concord-on-Concord self-assurance**
+  (Concord continuously assessing itself), and an **external collaboration portal**
+  (scoped, expiring, token-authenticated, fully-audited access for
+  customers/assessors/vendors with no internal account).
 
 ## FedRAMP 20x
 
@@ -339,6 +351,15 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET · POST | `/api/connector-configs` (+ `/{id}/sync`) | Cloud connector registry |
 | GET · POST | `/api/trust/access-requests` (+ `/{id}/decide`) | Trust Center access workflow |
 | GET | `/api/admin/reliability` | Reliability checks (503 on hard fail) |
+| GET | `/api/assurance/systems/{id}/graph` (+ `/impact`) | Assurance graph + change-impact analysis |
+| GET · POST | `/api/evidence-repo` (+ versions, review, download) | Versioned, content-addressed evidence with WORM lock |
+| GET · POST | `/api/packages` (+ `/{id}/diff`, `/{id}/replay`) | Authorization packages: provenance, diff, replay |
+| GET · POST | `/api/ai-actions` (+ `/{id}/approve`) | Typed, citation-first, human-approved AI actions |
+| GET · POST | `/api/ai-agents` (+ `/{id}/kill-switch`) | AI-agent inventory, risk scoring, kill-switch |
+| GET · POST | `/api/packs` (+ `/{key}/install\|coverage\|test`) | Compliance-pack runtime |
+| POST · GET | `/api/admin/self-assurance/init\|run\|status\|package` | Concord-on-Concord self-assurance |
+| POST · GET | `/api/admin/portal/grants` (+ `/{id}/revoke`) | Issue/list/revoke external portal grants |
+| GET · POST | `/api/portal/session` · `/api/portal/comments` | External portal (token-authenticated) |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -375,6 +396,10 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   bundled OSCAL-subset schema before returning it (`?validate=true` overrides per call).
 - `CCF_NOTIFY_WEBHOOK_URL`, `CCF_NOTIFY_MIN_SEVERITY` — Slack/Teams sink for alerts
   (including KSI drift).
+- `CCF_AI_ENABLED`, `CCF_AI_PROVIDER` — the AI action layer is **disabled by
+  default**; when enabled it stays citation-first and human-approved. Local/dev
+  runs with a deterministic stub and no cloud credentials. The
+  `ai_disabled_safe_default` reliability check confirms the safe default.
 
 ## Security posture
 
@@ -412,14 +437,20 @@ scoring, the SSP builder, the enterprise governance layer, FedRAMP 20x
 monitoring (scan ingestion → POA&M reconciliation + assertion-based control
 tests), the workforce-security lifecycle (personnel, training, access reviews)
 and vendor security questionnaires — each with an API, a UI, and alert-digest
-integration — OSCAL export (Component Definition / SSP / POA&M), session + bearer
+integration — OSCAL export (Component Definition / SSP / POA&M) with official
+schema conformance, OIDC / SSO with JIT provisioning + SCIM, session + bearer
 authentication with separation-of-duties RBAC, database-enforced multi-tenant RLS,
-a tamper-evident audit hash-chain, Alembic-managed schema, Docker/Compose, CI, and
-a reliability self-check subsystem. The suite runs 150+ tests against a real
-Postgres.
+and a tamper-evident audit hash-chain. Also in place: the **continuous-authorization
+layer** — assurance graph, evidence confidence scoring, authorization-package
+provenance/diff/replay, a typed citation-first AI action layer, AI-agent
+governance, a compliance-pack runtime, Concord-on-Concord self-assurance, and an
+external collaboration portal. Alembic-managed schema (36 migrations),
+Docker/Compose, CI, and a reliability self-check subsystem. The suite runs 200+
+tests against a real Postgres.
 
-Next: OIDC / SSO, SCD-2 history, official OSCAL schema conformance, a finer
-DB-role split, and published production runbooks / SLOs.
+Next: business-impact risk quantification, a deterministic assurance-query layer,
+SCD-2 history, a finer DB-role split, wiring the real AI provider behind the
+disabled-by-default flag, and published production runbooks / SLOs.
 
 ---
 
