@@ -21,8 +21,8 @@
   --bg-inset: #f0f0f2;
 
   --text: #1d1d1f;
-  --text-secondary: #6e6e73;
-  --text-muted: #86868b;
+  --text-secondary: #6e6e73;   /* 5.07:1 on --bg-elevated — WCAG AA */
+  --text-muted: #737378;       /* 4.72:1 — WCAG AA (was #86868b, 3.6:1, failed) */
   --text-inverse: #ffffff;
 
   --border: rgba(0,0,0,.08);
@@ -38,6 +38,8 @@
   --warning: #ff9f0a; --warning-soft: rgba(255,159,10,.14);
   --danger:  #ff453a; --danger-soft:  rgba(255,69,58,.12);
   --info:    #007aff; --info-soft:    rgba(0,122,255,.10);
+  /* Text-on-soft-tint variants — darkened for WCAG AA on the *-soft chip backgrounds. */
+  --info-ink: #0a5bd0;
 
   /* ── Geometry / elevation ───────────────────────────── */
   --radius-sm: 8px; --radius: 12px; --radius-lg: 18px; --radius-xl: 24px; --radius-2xl: 32px;
@@ -88,8 +90,8 @@ body {
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 
-.skip-link { position: absolute; left: -9999px; top: 8px; background: var(--accent); color: #fff; padding: 8px 14px; border-radius: var(--radius); z-index: 1000; font-weight: 600; font-size: 14px; }
-.skip-link:focus { left: 8px; }
+.skip-link { position: fixed; left: 8px; top: 8px; background: var(--accent); color: var(--text-inverse); padding: 8px 14px; border-radius: var(--radius); z-index: 100; font-weight: 600; font-size: 14px; transform: translateY(-160%); transition: transform .18s ease; }
+.skip-link:focus { transform: translateY(0); }
 
 .label { font-size: 13px; font-weight: 500; color: var(--text-secondary); letter-spacing: 0; text-transform: none; }
 .eyebrow { font-size: 15px; font-weight: 600; letter-spacing: 0; color: var(--accent); margin: 0 0 14px; }
@@ -354,7 +356,7 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .chip--ok    { background: var(--success-soft); color: #1f8f3a; }
 .chip--warn  { background: var(--warning-soft); color: #9a5a00; }
 .chip--err   { background: var(--danger-soft);  color: #b42318; }
-.chip--info  { background: var(--info-soft);    color: var(--info); }
+.chip--info  { background: var(--info-soft);    color: var(--info-ink); }
 .chip--ghost { background: transparent; border-color: var(--border); color: var(--text-secondary); }
 
 /* ════════════════════════════════════════════════════════════
@@ -456,6 +458,7 @@ html[data-theme="dark"] {
   --accent-hover: #46a6ff;
   --accent-pressed: #147ce5;
   --accent-soft: rgba(41,151,255,.16);
+  --info-ink: #6cb2ff;   /* light blue chip text on dark tint */
 
   --shadow-xs: 0 1px 2px rgba(0,0,0,.4);
   --shadow-sm: 0 4px 14px rgba(0,0,0,.5);
