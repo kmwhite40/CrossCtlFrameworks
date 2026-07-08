@@ -132,52 +132,17 @@ async def landing(request: Request) -> HTMLResponse:
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    controls_ct = (await session.execute(select(func.count(Control.id)))).scalar_one()
-    mapping_ct = (await session.execute(select(func.count(FrameworkMapping.id)))).scalar_one()
-    frameworks_ct = (await session.execute(select(func.count(Framework.id)))).scalar_one()
-    worksheets_ct = (await session.execute(select(func.count(Worksheet.id)))).scalar_one()
+    """Operational overview: compliance readiness, vulnerability response, ConMon ops."""
+    from ...analytics.overview import dashboard_overview  # noqa: PLC0415
 
-    by_family = (
-        await session.execute(
-            select(ControlFamily.code, ControlFamily.name, func.count(Control.id))
-            .join(Control, Control.family_id == ControlFamily.id, isouter=True)
-            .group_by(ControlFamily.id)
-            .order_by(ControlFamily.code)
-        )
-    ).all()
-    by_baseline = {
-        "low": (
-            await session.execute(
-                select(func.count()).select_from(Control).where(Control.fisma_low.is_(True))
-            )
-        ).scalar_one(),
-        "mod": (
-            await session.execute(
-                select(func.count()).select_from(Control).where(Control.fisma_mod.is_(True))
-            )
-        ).scalar_one(),
-        "high": (
-            await session.execute(
-                select(func.count()).select_from(Control).where(Control.fisma_high.is_(True))
-            )
-        ).scalar_one(),
-    }
-    last_run = (
-        await session.execute(select(IngestionRun).order_by(IngestionRun.id.desc()).limit(1))
-    ).scalar_one_or_none()
-
+    overview = await dashboard_overview(session, org_id=_principal_org(request))
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "active": "dashboard",
-            "controls_ct": controls_ct,
-            "mapping_ct": mapping_ct,
-            "frameworks_ct": frameworks_ct,
-            "worksheets_ct": worksheets_ct,
-            "by_family": by_family,
-            "by_baseline": by_baseline,
-            "last_run": last_run,
+            "overview": overview,
+            "asset_v": _asset_version(),
         },
     )
 
