@@ -9,7 +9,7 @@
 <div class="cols-4" style="margin-bottom:16px">
   <div class="kpi"><div class="kpi__label">Total</div><div class="kpi__value">{{ metrics.total }}</div></div>
   <div class="kpi"><div class="kpi__label">Open</div><div class="kpi__value">{{ metrics.open }}</div></div>
-  <div class="kpi"><div class="kpi__label">Overdue</div><div class="kpi__value" style="color:{% if metrics.overdue %}#f9a8a8{% else %}#fff{% endif %}">{{ metrics.overdue }}</div></div>
+  <div class="kpi"><div class="kpi__label">Overdue</div><div class="kpi__value"{% if metrics.overdue %} style="color:var(--danger-ink)"{% endif %}>{{ metrics.overdue }}</div></div>
   <div class="kpi"><div class="kpi__label">High / Critical</div><div class="kpi__value">{{ metrics.high }}</div></div>
 </div>
 
