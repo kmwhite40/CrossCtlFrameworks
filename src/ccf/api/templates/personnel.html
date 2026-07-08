@@ -13,9 +13,9 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/personnel" class="card__body filters">
-    <input class="input" name="full_name" required placeholder="Full name">
-    <input class="input" name="email" placeholder="Email">
-    <input class="input" name="position" placeholder="Position">
+    <input aria-label="Full name" class="input" name="full_name" required placeholder="Full name">
+    <input aria-label="Email" class="input" name="email" placeholder="Email">
+    <input aria-label="Position" class="input" name="position" placeholder="Position">
     <select class="select" name="employment_type" aria-label="Employment type">
       {% for t in ['employee','contractor'] %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
     </select>
@@ -52,8 +52,8 @@
 <section class="card card--elevated" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">New access review</div></div>
   <form method="post" action="/access-reviews" class="card__body filters">
-    <input class="input" name="name" required placeholder="Review name (e.g. Q3 Prod Access)">
-    <input class="input" name="reviewer" placeholder="Reviewer">
+    <input aria-label="Review name (e.g. Q3 Prod Access)" class="input" name="name" required placeholder="Review name (e.g. Q3 Prod Access)">
+    <input aria-label="Reviewer" class="input" name="reviewer" placeholder="Reviewer">
     <input class="input" name="due_on" type="date" aria-label="Due date">
     <button class="btn btn--primary" type="submit"><i data-lucide="clipboard-check"></i> Start review</button>
   </form>

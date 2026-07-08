@@ -7,8 +7,8 @@
 <section class="card" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">Invite a user</div></div>
   <form id="user-form" class="card__body filters">
-    <input class="input" name="email" type="email" placeholder="name@org.example" required />
-    <input class="input" name="full_name" placeholder="Full name" />
+    <input aria-label="name@org.example" class="input" name="email" type="email" placeholder="name@org.example" required />
+    <input aria-label="Full name" class="input" name="full_name" placeholder="Full name" />
     <select class="select" name="organization_id" required aria-label="Organization">
       {% for o in organizations %}<option value="{{ o.id }}">{{ o.name }}</option>{% else %}
       <option value="" disabled>Create an organization first</option>

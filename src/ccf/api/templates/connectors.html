@@ -6,11 +6,11 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/connectors" class="card__body filters">
-    <input class="input" name="name" required placeholder="e.g. Prod AWS GovCloud">
+    <input aria-label="e.g. Prod AWS GovCloud" class="input" name="name" required placeholder="e.g. Prod AWS GovCloud">
     <select class="select" name="connector_type" aria-label="Type">
       {% for t in types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
     </select>
-    <input class="input" name="environment" placeholder="Environment (us-gov-west-1…)">
+    <input aria-label="Environment (us-gov-west-1)" class="input" name="environment" placeholder="Environment (us-gov-west-1…)">
     <button class="btn btn--primary" type="submit"><i data-lucide="plug"></i> Add connector</button>
   </form>
 </section>

@@ -37,7 +37,7 @@
     <form method="post" action="/intake" class="stack" style="gap:16px">
       <label class="field-group">
         <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">System / enclave name</span>
-        <input class="input" name="system_name" required placeholder="e.g. CUI Enclave — GCC High">
+        <input aria-label="e.g. CUI Enclave — GCC High" class="input" name="system_name" required placeholder="e.g. CUI Enclave — GCC High">
       </label>
       {% for q in questions if q.id != 'system_name' %}
       <div class="field-group">

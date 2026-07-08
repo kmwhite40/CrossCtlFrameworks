@@ -13,10 +13,10 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/evidence" class="card__body filters">
-    <input class="input" name="title" required placeholder="Evidence title (e.g. SOC 2 Type II)">
-    <input class="input" name="control_id" placeholder="Control (AC-2)">
-    <input class="input" name="framework" placeholder="Framework (FEDRAMP)">
-    <input class="input" name="owner" placeholder="Owner">
+    <input aria-label="Evidence title (e.g. SOC 2 Type II)" class="input" name="title" required placeholder="Evidence title (e.g. SOC 2 Type II)">
+    <input aria-label="Control (AC-2)" class="input" name="control_id" placeholder="Control (AC-2)">
+    <input aria-label="Framework (FEDRAMP)" class="input" name="framework" placeholder="Framework (FEDRAMP)">
+    <input aria-label="Owner" class="input" name="owner" placeholder="Owner">
     <button class="btn btn--primary" type="submit"><i data-lucide="file-plus"></i> New object</button>
   </form>
   <div class="card__body dim" style="font-size:13px">Upload versions, submit, review, and download via the <code>/api/evidence-repo</code> API.</div>

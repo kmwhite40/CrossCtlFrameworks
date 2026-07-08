@@ -72,7 +72,7 @@
         style="gap:12px;flex-wrap:wrap;align-items:flex-end">
     <label class="field-group">
       <span class="dim" style="font-size:12px">Customer / organization *</span>
-      <input class="input" name="organization_name" required placeholder="Acme Defense LLC"
+      <input aria-label="Acme Defense LLC" class="input" name="organization_name" required placeholder="Acme Defense LLC"
              list="scoring-org-list" autocomplete="off">
       <datalist id="scoring-org-list">
         {% for o in organizations %}<option value="{{ o.name }}">{% endfor %}
@@ -80,7 +80,7 @@
     </label>
     <label class="field-group">
       <span class="dim" style="font-size:12px">System name *</span>
-      <input class="input" name="system_name" required placeholder="CUI Enclave">
+      <input aria-label="CUI Enclave" class="input" name="system_name" required placeholder="CUI Enclave">
     </label>
     <label class="field-group">
       <span class="dim" style="font-size:12px">FedRAMP baseline</span>

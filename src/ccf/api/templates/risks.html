@@ -7,7 +7,7 @@
 <section class="card" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">Record a risk</div></div>
   <form class="card__body filters" id="risk-form">
-    <input class="input" name="title" placeholder="Risk title" required />
+    <input aria-label="Risk title" class="input" name="title" placeholder="Risk title" required />
     <select class="select" name="system_id" aria-label="System"><option value="">(no system)</option>
       {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
     </select>

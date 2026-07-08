@@ -6,7 +6,7 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form class="card__body filters" method="get" action="/mappings">
-    <input class="input" name="q" value="{{ q }}" placeholder="Search mapping value (e.g. A.8.9, AC-2, MFA)…" />
+    <input aria-label="Search mapping value (e.g. A.8.9, AC-2, MFA)" class="input" name="q" value="{{ q }}" placeholder="Search mapping value (e.g. A.8.9, AC-2, MFA)…" />
     <select class="select" name="framework" aria-label="Framework"><option value="">Any framework</option>
       {% for f in frameworks %}<option value="{{ f.code }}" {% if f.code==framework %}selected{% endif %}>{{ f.name }}</option>{% endfor %}
     </select>

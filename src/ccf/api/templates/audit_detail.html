@@ -9,7 +9,7 @@
   <section class="card">
     <div class="card__header"><div class="card__title">Evidence requests (PBC)</div><span class="chip chip--brand">{{ e.requests|length }}</span></div>
     <form method="post" action="/audit-workspace/{{ e.id }}/requests" class="card__body filters">
-      <input class="input" name="title" required placeholder="Request an artifact…">
+      <input aria-label="Request an artifact" class="input" name="title" required placeholder="Request an artifact…">
       <input class="input" type="date" name="due_on" aria-label="Due">
       <button class="btn btn--secondary" type="submit"><i data-lucide="plus"></i> Add</button>
     </form>
@@ -26,7 +26,7 @@
   <section class="card">
     <div class="card__header"><div class="card__title">Findings</div><span class="chip chip--brand">{{ e.findings|length }}</span></div>
     <form method="post" action="/audit-workspace/{{ e.id }}/findings" class="card__body filters">
-      <input class="input" name="title" required placeholder="Finding title…">
+      <input aria-label="Finding title" class="input" name="title" required placeholder="Finding title…">
       <select class="select" name="severity" aria-label="Severity">
         {% for s in ['low','moderate','high','critical'] %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
       </select>

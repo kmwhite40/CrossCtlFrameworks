@@ -12,11 +12,11 @@
     <form method="post" action="/systems/orgs" class="card__body" style="display:grid;gap:10px">
       <label style="display:flex;flex-direction:column;gap:6px">
         <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Name</span>
-        <input class="input" name="name" required placeholder="Acme Corp" />
+        <input aria-label="Acme Corp" class="input" name="name" required placeholder="Acme Corp" />
       </label>
       <label style="display:flex;flex-direction:column;gap:6px">
         <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Description</span>
-        <input class="input" name="description" placeholder="Optional" />
+        <input aria-label="Optional" class="input" name="description" placeholder="Optional" />
       </label>
       <button type="submit" class="btn btn--primary"><i data-lucide="building-2"></i> Create organization</button>
     </form>
@@ -36,7 +36,7 @@
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <label style="display:flex;flex-direction:column;gap:6px">
           <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">System name</span>
-          <input class="input" name="name" required placeholder="Customer Portal Prod" />
+          <input aria-label="Customer Portal Prod" class="input" name="name" required placeholder="Customer Portal Prod" />
         </label>
         <label style="display:flex;flex-direction:column;gap:6px">
           <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Baseline</span>
@@ -50,7 +50,7 @@
       </div>
       <label style="display:flex;flex-direction:column;gap:6px">
         <span class="dim" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em">Description</span>
-        <input class="input" name="description" placeholder="Optional" />
+        <input aria-label="Optional" class="input" name="description" placeholder="Optional" />
       </label>
       <button type="submit" class="btn btn--primary"><i data-lucide="server"></i> Create system</button>
     </form>

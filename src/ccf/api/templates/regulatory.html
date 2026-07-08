@@ -6,9 +6,9 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/regulatory" class="card__body filters">
-    <input class="input" name="title" required placeholder="e.g. NIST 800-171 Rev 3 released">
-    <input class="input" name="source" placeholder="Source (NIST, DoD…)">
-    <input class="input" name="framework_impacted" placeholder="Framework">
+    <input aria-label="e.g. NIST 800-171 Rev 3 released" class="input" name="title" required placeholder="e.g. NIST 800-171 Rev 3 released">
+    <input aria-label="Source (NIST, DoD)" class="input" name="source" placeholder="Source (NIST, DoD…)">
+    <input aria-label="Framework" class="input" name="framework_impacted" placeholder="Framework">
     <input class="input" type="date" name="due_on" aria-label="Due date">
     <select class="select" name="status" aria-label="Status">
       {% for s in ['new','assessing','in_progress','implemented','closed'] %}<option value="{{ s }}">{{ s|replace('_',' ') }}</option>{% endfor %}

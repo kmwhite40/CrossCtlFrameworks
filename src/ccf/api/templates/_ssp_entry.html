@@ -54,7 +54,7 @@
           {% for c in odp.choices %}<option value="{{ c }}" {% if (e.odp_values or {}).get(odp.key)==c %}selected{% endif %}>{{ c }}</option>{% endfor %}
         </select>
         {% else %}
-        <input class="input" name="odp::{{ odp.key }}"
+        <input aria-label="{{ odp.suggested or 'organization-defined value' }}" class="input" name="odp::{{ odp.key }}"
                value="{{ (e.odp_values or {}).get(odp.key, '') }}"
                placeholder="{{ odp.suggested or 'organization-defined value' }}">
         {% endif %}

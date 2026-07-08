@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ q.name }} — Vendor Security Assessment</title>
+  <link rel="icon" type="image/svg+xml" href="/static/img/logo-mark.svg?v={{ asset_v }}" />
+  <script src="/static/vendor/lucide.min.js" defer></script>
+  {% set ans_meta = {
+    'yes':        ('Yes',        '#16794a', '#e7f6ee'),
+    'partial':    ('Partial',    '#9a5a00', '#fdf1dd'),
+    'no':         ('No',         '#b42318', '#fdeceb'),
+    'na':         ('N/A',        '#5f656e', '#f0f0f2'),
+    'unanswered': ('Unanswered', '#86868b', '#f5f5f7')
+  } %}
+  {% macro rating_color(r) %}{% if r=='low' %}#16794a{% elif r=='moderate' %}#9a5a00{% else %}#b42318{% endif %}{% endmacro %}
+  {% macro rating_bg(r) %}{% if r=='low' %}#e7f6ee{% elif r=='moderate' %}#fdf1dd{% else %}#fdeceb{% endif %}{% endmacro %}
+  <style>
+    :root {
+      --ink: #1d1d1f; --dim: #6e6e73; --mute: #86868b;
+      --line: #e6e6ea; --line-2: #d5d5db; --panel: #fbfbfd; --accent: #0071e3;
+      --paper: #ffffff;
+      --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+      --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { font-family: var(--font); color: var(--ink); background: #ececed; line-height: 1.5;
+      font-size: 14px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+    /* screen-only floating action bar */
+    .bar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
+      padding: 12px 20px; background: rgba(255,255,255,.86); -webkit-backdrop-filter: saturate(180%) blur(16px);
+      backdrop-filter: saturate(180%) blur(16px); border-bottom: 1px solid var(--line); }
+    .bar__sp { flex: 1; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px; border-radius: 10px;
+      font-size: 14px; font-weight: 550; text-decoration: none; border: 1px solid var(--line-2); background: #fff; color: var(--ink); cursor: pointer; }
+    .btn svg { width: 16px; height: 16px; }
+    .btn--primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .btn--primary:hover { background: #0077ed; }
+    .btn:hover { border-color: var(--mute); }
+
+    /* the page */
+    .sheet { max-width: 820px; margin: 24px auto; background: var(--paper); border-radius: 14px;
+      box-shadow: 0 10px 40px rgba(0,0,0,.12); overflow: hidden; }
+    .pad { padding: 44px 52px; }
+
+    /* cover header */
+    .cover { padding: 40px 52px; background:
+        radial-gradient(120% 140% at 100% -20%, rgba(0,113,227,.10), transparent 60%), #fff;
+      border-bottom: 1px solid var(--line); }
+    .cover__top { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 13px; font-weight: 500; }
+    .cover__top img { width: 22px; height: 22px; }
+    .cover__eyebrow { margin: 22px 0 0; font-size: 12px; font-weight: 650; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+    .cover h1 { font-family: var(--display); font-size: 34px; line-height: 1.1; letter-spacing: -.03em; margin: 8px 0 0; max-width: 22ch; }
+    .cover__vendor { margin: 6px 0 0; color: var(--dim); font-size: 15px; }
+
+    .hero { display: grid; grid-template-columns: auto 1fr; gap: 32px; align-items: center; margin-top: 30px; }
+    .ring { --sz: 132px; width: var(--sz); height: var(--sz); position: relative; flex-shrink: 0; }
+    .ring svg { transform: rotate(-90deg); }
+    .ring__c { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; }
+    .ring__c b { font-family: var(--display); font-size: 34px; letter-spacing: -.03em; line-height: 1; }
+    .ring__c span { display: block; font-size: 11px; color: var(--mute); margin-top: 3px; letter-spacing: .04em; }
+
+    .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px; }
+    .fact { }
+    .fact dt { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--mute); font-weight: 600; }
+    .fact dd { margin: 3px 0 0; font-size: 15px; font-weight: 550; }
+    .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 11px; border-radius: 999px; font-size: 12.5px; font-weight: 600; }
+
+    /* sections */
+    .sec { margin-top: 34px; }
+    .sec__h { display: flex; align-items: baseline; gap: 10px; margin: 0 0 14px; }
+    .sec__h h2 { font-family: var(--display); font-size: 17px; letter-spacing: -.01em; margin: 0; }
+    .sec__h .n { color: var(--mute); font-size: 13px; }
+    .rule { height: 1px; background: var(--line); margin: 0 0 16px; }
+
+    .summary { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; font-size: 14px; color: #38383c; }
+    .summary--empty { color: var(--mute); font-style: italic; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--mute);
+      font-weight: 600; padding: 0 10px 8px; border-bottom: 1px solid var(--line-2); }
+    td { padding: 10px; border-bottom: 1px solid var(--line); vertical-align: top; font-size: 13.5px; }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .dombar { height: 6px; border-radius: 4px; background: #eef0f2; overflow: hidden; min-width: 90px; }
+    .dombar i { display: block; height: 100%; border-radius: 4px; }
+
+    /* Q&A */
+    .qgroup { margin-top: 20px; break-inside: avoid; }
+    .qgroup__h { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
+    .qgroup__h h3 { font-size: 14px; font-weight: 650; margin: 0; }
+    .qgroup__h .cnt { color: var(--mute); font-size: 12px; }
+    .qrow { display: grid; grid-template-columns: 58px 1fr auto; gap: 12px; align-items: start;
+      padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; margin-bottom: 7px; break-inside: avoid; }
+    .qrow--gap { border-color: #f3c9c4; background: #fef7f6; }
+    .qid { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 11.5px; color: var(--mute); padding-top: 2px; }
+    .qtext { font-size: 13.5px; }
+    .qtext .det { display: block; margin-top: 5px; font-size: 12.5px; color: var(--dim); }
+    .qtext .ev { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; font-size: 11.5px; color: var(--accent); }
+    .qtext .ev svg { width: 12px; height: 12px; }
+    .qwt { font-size: 11px; color: var(--mute); margin-top: 4px; }
+    .abadge { justify-self: end; white-space: nowrap; }
+
+    .foot { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); display: flex;
+      justify-content: space-between; color: var(--mute); font-size: 11.5px; }
+
+    @media print {
+      @page { size: A4; margin: 16mm 14mm; }
+      body { background: #fff; }
+      .bar { display: none; }
+      .sheet { max-width: none; margin: 0; border-radius: 0; box-shadow: none; }
+      .cover { padding-left: 0; padding-right: 0; }
+      .pad { padding-left: 0; padding-right: 0; }
+      .qrow, .qgroup, tr { break-inside: avoid; }
+    }
+    @media (max-width: 640px) {
+      .hero { grid-template-columns: 1fr; gap: 20px; }
+      .facts { grid-template-columns: 1fr; }
+      .pad, .cover { padding-left: 22px; padding-right: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <a class="btn" href="/vendor-questionnaires/{{ q.id }}"><i data-lucide="arrow-left"></i> Back</a>
+    <span class="bar__sp"></span>
+    <button type="button" class="btn btn--primary" onclick="window.print()"><i data-lucide="download"></i> Download PDF</button>
+  </div>
+
+  {% set circ = 339.292 %}{# 2*pi*54 #}
+  {% set score = scored.score or 0 %}
+  {% set rc = rating_color(scored.rating)|trim %}
+  {% set rbg = rating_bg(scored.rating)|trim %}
+
+  <div class="sheet">
+    <!-- COVER -->
+    <header class="cover">
+      <div class="cover__top">
+        <img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" /> <strong>Concord</strong> · Third-Party Risk
+      </div>
+      <p class="cover__eyebrow">Vendor Security Assessment</p>
+      <h1>{{ vendor.name if vendor else q.name }}</h1>
+      <p class="cover__vendor">{{ q.name }}</p>
+
+      <div class="hero">
+        <div class="ring">
+          <svg width="132" height="132" viewBox="0 0 132 132">
+            <circle cx="66" cy="66" r="54" fill="none" stroke="#eef0f2" stroke-width="14"/>
+            {% if score > 0 %}<circle cx="66" cy="66" r="54" fill="none" stroke="{{ rc }}" stroke-width="14" stroke-linecap="round"
+              stroke-dasharray="{{ circ }}" stroke-dashoffset="{{ (circ * (1 - score / 100))|round(2) }}"/>{% endif %}
+          </svg>
+          <div class="ring__c">
+            <b>{{ score }}</b><span>/ 100</span>
+          </div>
+        </div>
+        <dl class="facts">
+          <div class="fact"><dt>Risk rating</dt><dd><span class="pill" style="color:{{ rc }};background:{{ rbg }}">{{ scored.rating|capitalize }} risk</span></dd></div>
+          <div class="fact"><dt>Status</dt><dd style="text-transform:capitalize">{{ q.status|replace('_',' ') }}</dd></div>
+          <div class="fact"><dt>Questions answered</dt><dd>{{ scored.answered }} / {{ scored.total }}</dd></div>
+          <div class="fact"><dt>Flagged gaps</dt><dd>{{ scored.flagged|length }}</dd></div>
+          <div class="fact"><dt>Submitted</dt><dd>{{ q.submitted_on or '—' }}</dd></div>
+          <div class="fact"><dt>Reviewed by</dt><dd>{{ q.reviewer or '—' }}{% if q.reviewed_on %} · {{ q.reviewed_on }}{% endif %}</dd></div>
+        </dl>
+      </div>
+    </header>
+
+    <div class="pad">
+      <!-- SUMMARY -->
+      <section class="sec">
+        <div class="sec__h"><h2>Reviewer summary</h2></div>
+        <div class="rule"></div>
+        {% if q.summary %}
+          <div class="summary">{{ q.summary }}</div>
+        {% else %}
+          <div class="summary summary--empty">No reviewer summary was recorded for this assessment.</div>
+        {% endif %}
+      </section>
+
+      <!-- DOMAIN BREAKDOWN -->
+      <section class="sec">
+        <div class="sec__h"><h2>Domain breakdown</h2><span class="n">{{ domain_rows|length }} domains</span></div>
+        <div class="rule"></div>
+        <table>
+          <thead><tr><th>Domain</th><th class="num">Questions</th><th class="num">Gaps</th><th>Score</th><th class="num">Rating</th></tr></thead>
+          <tbody>
+            {% for d in domain_rows %}
+            {% set dc = rating_color(d.rating)|trim %}
+            <tr>
+              <td><strong>{{ d.domain }}</strong></td>
+              <td class="num">{{ d.total }}</td>
+              <td class="num">{% if d.gaps %}<span style="color:#b42318;font-weight:600">{{ d.gaps }}</span>{% else %}0{% endif %}</td>
+              <td>
+                <div style="display:flex;align-items:center;gap:10px">
+                  <div class="dombar"><i style="width:{{ d.score }}%;background:{{ dc }}"></i></div>
+                  <span style="font-variant-numeric:tabular-nums;font-weight:600;min-width:34px">{{ d.score }}</span>
+                </div>
+              </td>
+              <td class="num" style="color:{{ dc }};font-weight:600;text-transform:capitalize">{{ d.rating }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <!-- FULL RESPONSES -->
+      <section class="sec">
+        <div class="sec__h"><h2>Assessment responses</h2><span class="n">{{ responses|length }} questions</span></div>
+        <div class="rule"></div>
+        {% for d in domain_rows %}
+        <div class="qgroup">
+          <div class="qgroup__h"><h3>{{ d.domain }}</h3><span class="cnt">{{ d['items']|length }} question{{ 's' if d['items']|length != 1 }}</span></div>
+          {% for r in d['items'] %}
+          {% set meta = ans_meta.get(r.answer, ans_meta['unanswered']) %}
+          <div class="qrow{% if r.answer=='no' %} qrow--gap{% endif %}">
+            <div class="qid">{{ r.question_id }}</div>
+            <div class="qtext">
+              {{ r.question_text }}
+              {% if r.detail %}<span class="det">{{ r.detail }}</span>{% endif %}
+              {% if r.evidence_ref %}<span class="ev"><i data-lucide="paperclip"></i>{{ r.evidence_ref }}</span>{% endif %}
+              <div class="qwt">Weight {{ r.weight }}</div>
+            </div>
+            <span class="abadge pill" style="color:{{ meta[1] }};background:{{ meta[2] }}">{{ meta[0] }}</span>
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </section>
+
+      <div class="foot">
+        <span>Concord — cross-framework compliance platform</span>
+        <span>Generated {{ generated.strftime('%Y-%m-%d %H:%M UTC') }} · Assessment #{{ q.id }}</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      if (window.lucide) window.lucide.createIcons();
+      // Auto-open the print dialog when linked with ?print=1
+      if (new URLSearchParams(location.search).get('print') === '1') {
+        setTimeout(() => window.print(), 350);
+      }
+    });
+  </script>
+</body>
+</html>

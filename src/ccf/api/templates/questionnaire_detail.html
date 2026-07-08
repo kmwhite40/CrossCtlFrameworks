@@ -9,6 +9,7 @@
   {% if q.score is not none %}<span class="dim">Score <strong>{{ q.score }}</strong></span>{% endif %}
   {% if q.risk_rating %}<span class="chip {% if q.risk_rating=='low' %}chip--ok{% elif q.risk_rating in ('high','critical') %}chip--err{% else %}chip--warn{% endif %}">{{ q.risk_rating }} risk</span>{% endif %}
   <span style="flex:1"></span>
+  <a class="btn btn--ghost btn--sm" href="/vendor-questionnaires/{{ q.id }}/export" target="_blank" rel="noopener"><i data-lucide="file-down"></i> Export PDF</a>
   <form method="post" action="/vendor-questionnaires/{{ q.id }}/review" class="row" style="gap:8px">
     <label class="dim" style="font-size:13px"><input type="checkbox" name="open_tasks" value="1"> open tasks for gaps</label>
     <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="check-circle"></i> Score &amp; review</button>

@@ -51,6 +51,9 @@
     if (!el) {
       el = document.createElement('div');
       el.id = 'toasts'; el.className = 'toasts';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      el.setAttribute('aria-atomic', 'false');
       document.body.appendChild(el);
     }
     return el;

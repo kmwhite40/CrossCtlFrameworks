@@ -13,7 +13,7 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/ai-agents" class="card__body filters">
-    <input class="input" name="name" required placeholder="Agent name">
+    <input aria-label="Agent name" class="input" name="name" required placeholder="Agent name">
     <select class="select" name="autonomy_level" aria-label="Autonomy">
       {% for a in ['low','medium','high','full'] %}<option value="{{ a }}">{{ a }} autonomy</option>{% endfor %}
     </select>

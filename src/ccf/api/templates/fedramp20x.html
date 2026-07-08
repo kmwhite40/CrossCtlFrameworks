@@ -89,7 +89,7 @@
             {% for m in ['iaas','paas','saas'] %}<option value="{{ m }}" {{ 'selected' if dm == m else '' }}>{{ m|upper }}</option>{% endfor %}
           </select>
         </label>
-        <label>Cloud environment<br><input name="cloud_environment" value="{{ profile.cloud_environment or '' if profile else '' }}" placeholder="azure_gov / aws_govcloud / m365_gcc_high"></label>
+        <label>Cloud environment<br><input aria-label="azure_gov / aws_govcloud / m365_gcc_high" name="cloud_environment" value="{{ profile.cloud_environment or '' if profile else '' }}" placeholder="azure_gov / aws_govcloud / m365_gcc_high"></label>
       </div>
       <label>Authorization boundary<br><textarea name="boundary_description" rows="2" style="width:100%">{{ profile.boundary_description or '' if profile else '' }}</textarea></label>
       <div class="row" style="gap:10px;flex-wrap:wrap">
@@ -121,8 +121,8 @@
       </tbody>
     </table>
     <form method="post" action="/fedramp20x/{{ system_id }}/dependencies" class="row" style="gap:8px;flex-wrap:wrap;margin-top:10px">
-      <input name="name" placeholder="Service name" required>
-      <input name="provider" placeholder="Provider">
+      <input aria-label="Service name" name="name" placeholder="Service name" required>
+      <input aria-label="Provider" name="provider" placeholder="Provider">
       <select name="service_type" title="Service type" aria-label="Service type"><option value="">type…</option><option>iaas</option><option>paas</option><option>saas</option></select>
       <select name="fedramp_status" title="FedRAMP status" aria-label="FedRAMP status"><option value="unknown">unknown</option><option value="authorized">authorized</option><option value="in_process">in_process</option><option value="not_authorized">not_authorized</option></select>
       <select name="dependency_risk" title="Dependency risk" aria-label="Dependency risk"><option value="">risk…</option><option>low</option><option>moderate</option><option>high</option><option>critical</option></select>
@@ -143,8 +143,8 @@
       <select name="status" title="Review status" aria-label="Review status" required>
         {% for s in ['in_review','accepted','rejected','needs_clarification','retest_required','finding_opened','closed'] %}<option value="{{ s }}">{{ s }}</option>{% endfor %}
       </select>
-      <input name="assessor" placeholder="Assessor / 3PAO">
-      <input name="notes" placeholder="Notes" style="flex:1;min-width:180px">
+      <input aria-label="Assessor / 3PAO" name="assessor" placeholder="Assessor / 3PAO">
+      <input aria-label="Notes" name="notes" placeholder="Notes" style="flex:1;min-width:180px">
       <button class="btn" type="submit"><i data-lucide="clipboard-check"></i> Record</button>
     </form>
   </div>
@@ -174,7 +174,7 @@
         {% for k in ksis %}<option value="{{ k.id }}">{{ k.identifier }} — {{ k.name }}</option>{% endfor %}
       </select>
       <select name="status" title="Exception status" aria-label="Exception status"><option value="open">open</option><option value="accepted">accepted</option><option value="closed">closed</option></select>
-      <input name="rationale" placeholder="Rationale" style="flex:1;min-width:200px" required>
+      <input aria-label="Rationale" name="rationale" placeholder="Rationale" style="flex:1;min-width:200px" required>
       <button class="btn" type="submit"><i data-lucide="file-warning"></i> Add exception</button>
     </form>
   </div>

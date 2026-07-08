@@ -1,81 +1,324 @@
 {% extends "base.html" %}
-{% block title %}Dashboard · Concord{% endblock %}
-{% block heading %}Compliance dashboard{% endblock %}
+{% from "_charts.html" import donut, gauge, sparkline, minibars %}
+{% set d = overview %}
+{% set SEV = {'critical':'#ef4444','high':'#f97316','moderate':'#eab308','low':'#22c55e','unknown':'#64748b','none':'#64748b'} %}
+{% set OUT = {'pass':'#22c55e','warn':'#eab308','fail':'#ef4444','untested':'#64748b','not_tested':'#64748b','manual_review_required':'#38bdf8'} %}
+{% set PRI = {'critical':'#ef4444','high':'#f97316','medium':'#eab308','low':'#22c55e'} %}
+{% macro badge(pct) %}
+  {% if pct >= 80 %}<span class="ovw-badge ovw-badge--ok">High readiness</span>
+  {% elif pct >= 50 %}<span class="ovw-badge ovw-badge--warn">Moderate</span>
+  {% else %}<span class="ovw-badge ovw-badge--low">Getting started</span>{% endif %}
+{% endmacro %}
+{% block title %}Overview · Concord{% endblock %}
+{% block heading %}Platform overview{% endblock %}
 {% block subtitle %}
-  <p class="page__subtitle">NIST SP 800-53A Rev 5 catalog with cross-framework coverage.</p>
+  <p class="page__subtitle">Compliance readiness, vulnerability response, and continuous-monitoring operations — at a glance.</p>
 {% endblock %}
 {% block actions %}
-  <a href="/reports" class="btn btn--secondary"><i data-lucide="file-text"></i> Build report</a>
+  <a href="/executive" class="btn btn--secondary"><i data-lucide="bar-chart-3"></i> Executive rollup</a>
   <a href="/controls" class="btn btn--primary"><i data-lucide="list-checks"></i> Browse controls</a>
 {% endblock %}
 {% block content %}
+<div class="ovw">
 
-<section class="grid-cards">
-  {% set cards = [
-    ('Controls', controls_ct, 'list-checks', '/controls'),
-    ('Framework mappings', mapping_ct, 'git-compare-arrows', '/frameworks'),
-    ('Frameworks', frameworks_ct, 'layers', '/frameworks'),
-    ('Worksheets', worksheets_ct, 'sheet', '/worksheets'),
-  ] %}
-  {% for label, value, icon, href in cards %}
-    <a class="kpi" href="{{ href }}">
-      <span class="kpi__trend"><i data-lucide="{{ icon }}"></i></span>
-      <span class="kpi__label">{{ label }}</span>
-      <span class="kpi__value">{{ '{:,}'.format(value) }}</span>
-      <span class="kpi__meta">Last ingest
-        {% if last_run %}&middot; {{ last_run.started_at.strftime('%Y-%m-%d') }}{% endif %}
-      </span>
-    </a>
-  {% endfor %}
-</section>
+  {# ── Column 1 · Compliance & Audit Readiness ───────────────────────────── #}
+  <section class="ovw-col">
+    <header class="ovw-colhead ovw-colhead--a">
+      <h2>Compliance &amp; Audit Readiness</h2>
+      <p>Cross-framework control coverage and per-system authorization readiness across the catalog.</p>
+    </header>
 
-<section class="grid-2-1">
-  <div class="card">
-    <div class="card__header">
-      <div><div class="card__title">Controls by family</div>
-        <div class="card__subtitle">NIST SP 800-53 Rev 5 control families</div></div>
-      <a href="/controls" class="btn btn--ghost btn--sm">View all <i data-lucide="arrow-right"></i></a>
-    </div>
-    <div class="card__body">
-      <div class="grid-cards">
-        {% for code, name, count in by_family %}
-          <a href="/controls?family={{ code }}" class="tile">
-            <div class="row between"><span class="chip chip--brand">{{ code }}</span><strong>{{ count }}</strong></div>
-            <div class="dim" style="font-size:12px;margin-top:4px">{{ name }}</div>
+    <div class="ovw-card">
+      <div class="ovw-card__title">Cross-framework coverage</div>
+      <div class="ovw-fw">
+        {% for f in d.frameworks %}
+          <a class="ovw-fw__tile" href="/frameworks/{{ f.code }}">
+            <div class="ovw-fw__top">
+              {{ gauge(f.coverage_pct, size=56, thickness=6, color='var(--accent)') }}
+              <div class="ovw-fw__meta">
+                <div class="ovw-fw__name" title="{{ f.name }}">{{ f.code }}</div>
+                {{ badge(f.coverage_pct) }}
+              </div>
+            </div>
+            <div class="ovw-fw__num">{{ '{:,}'.format(f.mapped_controls) }}</div>
+            <div class="ovw-fw__sub">Controls mapped · {{ '{:,}'.format(f.mappings) }} mappings</div>
           </a>
+        {% else %}
+          <div class="ovw-empty">No frameworks ingested yet — run <code>ccf ingest</code>.</div>
         {% endfor %}
       </div>
     </div>
-  </div>
 
-  <div class="card">
-    <div class="card__header">
-      <div class="card__title">FISMA baselines</div>
-    </div>
-    <div class="card__body">
-      {% for key, label, color in [('low','Low','var(--ok-500)'),('mod','Moderate','var(--warn-500)'),('high','High','var(--err-500)')] %}
-        {% set v = by_baseline[key] %}
-        {% set pct = (v / (controls_ct or 1) * 100) | round(1) %}
-        <a href="/controls?baseline={{ key }}" class="bar-row" style="padding:10px 0">
-          <span style="width:90px">{{ label }}</span>
-          <span class="bar-row__track"><span class="bar-row__fill" style="width:{{ pct }}%;background:{{ color }}"></span></span>
-          <span style="width:72px;text-align:right"><strong>{{ '{:,}'.format(v) }}</strong> <span class="dim">&middot; {{ pct }}%</span></span>
+    <div class="ovw-card">
+      <div class="ovw-card__title">Catalog &amp; FISMA baselines</div>
+      <div class="ovw-statrow">
+        <a class="ovw-stat" href="/controls"><span class="ovw-stat__v">{{ '{:,}'.format(d.catalog.controls) }}</span><span class="ovw-stat__l">Controls</span></a>
+        <a class="ovw-stat" href="/frameworks"><span class="ovw-stat__v">{{ '{:,}'.format(d.catalog.frameworks) }}</span><span class="ovw-stat__l">Frameworks</span></a>
+        <a class="ovw-stat" href="/frameworks"><span class="ovw-stat__v">{{ '{:,}'.format(d.catalog.mappings) }}</span><span class="ovw-stat__l">Mappings</span></a>
+      </div>
+      {% set bl = d.catalog.baseline %}
+      {% for key, label, color in [('low','Low','#22c55e'),('mod','Moderate','#eab308'),('high','High','#ef4444')] %}
+        {% set v = bl[key] %}
+        {% set pct = (v / (d.catalog.controls or 1) * 100) | round(1) %}
+        <a href="/controls?baseline={{ key }}" class="ovw-bar">
+          <span class="ovw-bar__lab">{{ label }}</span>
+          <span class="ovw-bar__track"><span class="ovw-bar__fill" style="width:{{ pct }}%;background:{{ color }}"></span></span>
+          <span class="ovw-bar__val">{{ '{:,}'.format(v) }} <span class="dim">· {{ pct }}%</span></span>
         </a>
       {% endfor %}
+    </div>
 
-      <hr style="border:none;border-top:1px solid var(--ink-200);margin:16px 0">
+    <div class="ovw-card">
+      <div class="ovw-card__title">System authorization readiness</div>
+      <div class="ovw-fw">
+        {% for s in d.readiness[:4] %}
+          {% set p = [[s.sprs_percentage, 0]|max, 100]|min %}
+          <a class="ovw-fw__tile" href="/systems/{{ s.system_id }}">
+            <div class="ovw-fw__top">
+              {{ gauge(p, size=56, thickness=6, color='var(--accent)') }}
+              <div class="ovw-fw__meta">
+                <div class="ovw-fw__name" title="{{ s.name }}">{{ s.name }}</div>
+                {{ badge(p) }}
+              </div>
+            </div>
+            <div class="ovw-fw__num">{{ '{:,}'.format(s.impl_met) }}</div>
+            <div class="ovw-fw__sub">Controls met · {{ '{:,}'.format(s.impl_total) }} total</div>
+          </a>
+        {% else %}
+          <div class="ovw-empty">No systems yet — <a href="/systems">create one</a> to track readiness.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
 
-      <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em;font-weight:600">Ingestion</div>
-      {% if last_run %}
-        <div class="row" style="margin-top:6px">
-          <span class="chip {% if last_run.status=='succeeded' %}chip--ok{% else %}chip--err{% endif %}">{{ last_run.status }}</span>
-          <span class="dim">{{ last_run.started_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+  {# ── Column 2 · Vulnerability / POA&M Response ──────────────────────────── #}
+  <section class="ovw-col">
+    <header class="ovw-colhead ovw-colhead--b">
+      <h2>Vulnerability Response</h2>
+      <p>Findings and POA&amp;Ms triaged by severity, tracked to SLA, and driven down over time.</p>
+    </header>
+
+    <div class="ovw-statrow ovw-statrow--big">
+      <div class="ovw-bigstat ovw-bigstat--b">
+        <span class="ovw-bigstat__v">{{ '{:,}'.format(d.systems_total) }}</span>
+        <span class="ovw-bigstat__l">Systems</span>
+      </div>
+      <a class="ovw-bigstat ovw-bigstat--b" href="/poams">
+        <span class="ovw-bigstat__v">{{ '{:,}'.format(d.findings_total) }}</span>
+        <span class="ovw-bigstat__l">Open findings</span>
+      </a>
+    </div>
+
+    <div class="ovw-card">
+      <div class="ovw-card__title">Active findings by severity</div>
+      <div class="ovw-donutrow">
+        {% set segs = [] %}
+        {% for it in d.findings_by_severity %}{% set _ = segs.append({'value': it.count, 'color': SEV[it.key]}) %}{% endfor %}
+        {{ donut(segs, size=124, center='{:,}'.format(d.findings_total), caption='Total') }}
+        <div class="chart-legend">
+          {% for it in d.findings_by_severity %}
+            {% set pct = (it.count / (d.findings_total or 1) * 100) | round(1) %}
+            <div class="chart-legend__item">
+              <span class="chart-legend__dot" style="background:{{ SEV[it.key] }}"></span>
+              <span class="chart-legend__val">{{ '{:,}'.format(it.count) }}</span>
+              <span class="chart-legend__lab">{{ it.key | capitalize }} <span class="dim">· {{ pct }}%</span></span>
+            </div>
+          {% endfor %}
         </div>
+      </div>
+    </div>
+
+    <div class="ovw-split">
+      <div class="ovw-card">
+        <div class="ovw-card__title">SLA status</div>
+        <div class="ovw-donutrow ovw-donutrow--center">
+          {{ gauge(d.sla.on_track_pct, size=100, thickness=10,
+                   color=('#22c55e' if d.sla.overdue == 0 else '#f97316'),
+                   label='{}%'.format(d.sla.on_track_pct | round | int)) }}
+          <div class="ovw-mini">
+            <div><strong>{{ d.sla.on_track }}</strong> on track</div>
+            <div class="ovw-mini__bad"><strong>{{ d.sla.overdue }}</strong> overdue</div>
+          </div>
+        </div>
+      </div>
+      <div class="ovw-card">
+        <div class="ovw-card__title">Findings MTTR</div>
+        <div class="ovw-mttr">{{ d.mttr.latest }}<span> days</span></div>
+        <div class="ovw-card__sub">avg · {{ d.mttr.closed_total }} closed / yr</div>
+        {{ sparkline(d.mttr.series, height=48, color='var(--accent)') }}
+      </div>
+    </div>
+
+    <div class="ovw-card">
+      <div class="ovw-card__title">Risk register by residual band</div>
+      {% set rb = d.risk_by_band %}
+      {% set rtotal = rb.values() | sum %}
+      <div class="ovw-donutrow">
+        {% set rsegs = [] %}
+        {% for k in ['critical','high','moderate','low','unknown'] %}{% set _ = rsegs.append({'value': rb[k], 'color': SEV[k]}) %}{% endfor %}
+        {{ donut(rsegs, size=124, center='{:,}'.format(rtotal), caption='Risks') }}
+        <div class="chart-legend">
+          {% for k in ['critical','high','moderate','low','unknown'] %}
+            {% if rb[k] %}
+            <div class="chart-legend__item">
+              <span class="chart-legend__dot" style="background:{{ SEV[k] }}"></span>
+              <span class="chart-legend__val">{{ rb[k] }}</span>
+              <span class="chart-legend__lab">{{ k | capitalize }}</span>
+            </div>
+            {% endif %}
+          {% endfor %}
+          {% if not rtotal %}<div class="ovw-empty">No open risks.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {# ── Column 3 · Continuous-Monitoring Operations ───────────────────────── #}
+  <section class="ovw-col">
+    <header class="ovw-colhead ovw-colhead--c">
+      <h2>Continuous-Monitoring Ops</h2>
+      <p>Automated control tests, KSI validation, evidence freshness, and the remediation task queue.</p>
+    </header>
+
+    <div class="ovw-card">
+      <div class="ovw-card__title">Control test outcomes</div>
+      {% set ct = d.control_tests %}
+      <div class="ovw-donutrow">
+        {% set ctsegs = [{'value':ct['pass'],'color':OUT['pass']},{'value':ct.warn,'color':OUT.warn},{'value':ct.fail,'color':OUT.fail},{'value':ct.untested,'color':OUT.untested}] %}
+        {{ donut(ctsegs, size=112, center='{:,}'.format(ct.total), caption='Tests') }}
+        <div class="chart-legend">
+          {% for k, lab in [('pass','Passing'),('warn','Warning'),('fail','Failing'),('untested','Untested')] %}
+            {% if ct[k] %}<div class="chart-legend__item"><span class="chart-legend__dot" style="background:{{ OUT[k] }}"></span><span class="chart-legend__val">{{ ct[k] }}</span><span class="chart-legend__lab">{{ lab }}</span></div>{% endif %}
+          {% endfor %}
+          {% if not ct.total %}<div class="ovw-empty">No control tests defined.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="ovw-card">
+      <div class="ovw-card__title">FedRAMP 20x KSI validation</div>
+      {% set k = d.ksi %}
+      <div class="ovw-donutrow">
+        {% set ksegs = [{'value':k['pass'],'color':OUT['pass']},{'value':k.warn,'color':OUT.warn},{'value':k.fail,'color':OUT.fail},{'value':k.manual_review_required,'color':OUT.manual_review_required},{'value':k.not_tested,'color':OUT.not_tested}] %}
+        {{ donut(ksegs, size=112, center='{:,}'.format(k.total), caption='KSI states') }}
+        <div class="chart-legend">
+          {% for kk, lab in [('pass','Pass'),('warn','Warn'),('fail','Fail'),('manual_review_required','Manual'),('not_tested','Not tested')] %}
+            {% if k[kk] %}<div class="chart-legend__item"><span class="chart-legend__dot" style="background:{{ OUT[kk] }}"></span><span class="chart-legend__val">{{ k[kk] }}</span><span class="chart-legend__lab">{{ lab }}</span></div>{% endif %}
+          {% endfor %}
+          {% if not k.total %}<div class="ovw-empty">No KSI states yet.</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <div class="ovw-card">
+      <div class="ovw-card__title">Open tasks by priority</div>
+      {% set tk = d.tasks %}
+      {% set trows = [{'label':'Crit','value':tk.critical,'color':PRI.critical},{'label':'High','value':tk.high,'color':PRI.high},{'label':'Med','value':tk.medium,'color':PRI.medium},{'label':'Low','value':tk.low,'color':PRI.low}] %}
+      {% if tk.total %}
+        {{ minibars(trows, height=104) }}
+        <div class="ovw-card__sub">{{ tk.total }} open remediation task(s)</div>
       {% else %}
-        <div class="dim" style="margin-top:6px">No ingestion recorded.</div>
+        <div class="ovw-empty">Task queue is clear.</div>
       {% endif %}
     </div>
-  </div>
-</section>
 
+    <div class="ovw-card">
+      <div class="ovw-card__title">Evidence freshness</div>
+      {% set ev = d.evidence %}
+      {% set epct = (ev.fresh / (ev.total or 1) * 100) | round | int %}
+      <div class="ovw-donutrow ovw-donutrow--center">
+        {{ gauge(epct, size=100, thickness=10, color=('#22c55e' if ev.expired == 0 else '#f97316'), label=(epct ~ '%')) }}
+        <div class="ovw-mini">
+          <div><strong>{{ ev.fresh }}</strong> fresh</div>
+          <div><strong>{{ ev.expiring_soon }}</strong> expiring</div>
+          <div class="ovw-mini__bad"><strong>{{ ev.expired }}</strong> expired</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<style>
+  .ovw { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 20px; align-items: start; }
+  @media (max-width: 1100px) { .ovw { grid-template-columns: 1fr; } }
+  .ovw-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .ovw-colhead { padding-bottom: 4px; }
+  .ovw-colhead h2 { font-size: 19px; font-weight: 650; letter-spacing: -.02em; margin: 0; color: var(--text); }
+  .ovw-colhead p { margin: 6px 0 10px; font-size: 13px; color: var(--text-secondary); line-height: 1.45; }
+  .ovw-colhead::after { content: ""; display: block; height: 3px; border-radius: 3px; background: var(--accent); opacity: .9; }
+  .ovw-colhead--a::after { background: linear-gradient(90deg,#38bdf8,#22c55e); }
+  .ovw-colhead--b::after { background: linear-gradient(90deg,#f97316,#ef4444); }
+  .ovw-colhead--c::after { background: linear-gradient(90deg,#a78bfa,#38bdf8); }
+
+  .ovw-card { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px; box-shadow: var(--shadow-xs);
+    content-visibility: auto; contain-intrinsic-size: auto 260px; }  /* skip paint/layout for off-screen cards */
+  .ovw-card__title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--text-secondary); margin-bottom: 14px; }
+  .ovw-card__sub { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+  .ovw-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1380px) and (min-width: 1101px) { .ovw-split { grid-template-columns: 1fr; } }
+
+  .ovw-fw { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .ovw-fw__tile { display: block; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-subtle); color: inherit; text-decoration: none; transition: transform .15s ease, box-shadow .15s ease; }
+  .ovw-fw__tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+  .ovw-fw__top { display: flex; align-items: center; gap: 10px; }
+  .ovw-fw__meta { min-width: 0; }
+  .ovw-fw__name { font-weight: 600; font-size: 14px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ovw-fw__num { font-family: var(--font-display, inherit); font-size: 30px; font-weight: 700; letter-spacing: -.03em; color: var(--text); margin-top: 10px; line-height: 1; }
+  .ovw-fw__sub { font-size: 11.5px; color: var(--text-secondary); margin-top: 4px; }
+
+  .ovw-badge { display: inline-block; margin-top: 5px; font-size: 10.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; }
+  .ovw-badge--ok { background: rgba(34,197,94,.15); color: #16a34a; }
+  .ovw-badge--warn { background: rgba(234,179,8,.16); color: #a16207; }
+  .ovw-badge--low { background: rgba(100,116,139,.16); color: #64748b; }
+  html[data-theme="dark"] .ovw-badge--ok { color: #6ee7a0; }
+  html[data-theme="dark"] .ovw-badge--warn { color: #f5c14e; }
+
+  .ovw-statrow { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 6px; }
+  .ovw-stat { display: flex; flex-direction: column; align-items: center; padding: 10px 4px; border-radius: var(--radius-md); background: var(--bg-subtle); border: 1px solid var(--border); color: inherit; text-decoration: none; }
+  .ovw-stat__v { font-size: 20px; font-weight: 700; letter-spacing: -.02em; color: var(--text); }
+  .ovw-stat__l { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+
+  .ovw-statrow--big { grid-template-columns: 1fr 1fr; }
+  .ovw-bigstat { display: flex; flex-direction: column; padding: 18px 20px; border-radius: var(--radius-lg); background: var(--bg-elevated); border: 1px solid var(--border); border-top: 3px solid var(--accent); color: inherit; text-decoration: none; box-shadow: var(--shadow-xs); }
+  .ovw-bigstat--b { border-top-color: #f97316; }
+  .ovw-bigstat__v { font-family: var(--font-display, inherit); font-size: 40px; font-weight: 700; letter-spacing: -.04em; line-height: 1; color: var(--text); }
+  .ovw-bigstat__l { font-size: 13px; color: var(--text-secondary); margin-top: 8px; }
+
+  .ovw-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; padding: 6px 0; color: inherit; text-decoration: none; }
+  .ovw-bar__lab { width: 68px; color: var(--text-secondary); }
+  .ovw-bar__track { flex: 1; height: 8px; background: var(--bg-inset); border-radius: 999px; overflow: hidden; }
+  .ovw-bar__fill { height: 100%; border-radius: 999px; transition: width .55s cubic-bezier(.4,0,.2,1); }
+  .ovw-bar__val { width: 96px; text-align: right; color: var(--text); }
+
+  .ovw-donutrow { display: flex; align-items: center; gap: 18px; }
+  .ovw-donutrow--center { justify-content: flex-start; }
+  .ovw-mini { font-size: 13px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 4px; }
+  .ovw-mini strong { color: var(--text); font-size: 15px; }
+  .ovw-mini__bad strong { color: #ef4444; }
+  .ovw-mttr { font-family: var(--font-display, inherit); font-size: 34px; font-weight: 700; letter-spacing: -.03em; color: var(--text); }
+  .ovw-mttr span { font-size: 15px; font-weight: 500; color: var(--text-secondary); margin-left: 4px; }
+
+  .ovw-empty { font-size: 13px; color: var(--text-secondary); padding: 8px 0; }
+  .ovw-empty a { color: var(--accent); }
+
+  /* chart primitives */
+  .chart-donut { position: relative; display: inline-grid; place-items: center; flex: none; }
+  .chart-donut__center { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; text-align: center; }
+  .chart-donut__value { font-family: var(--font-display, inherit); font-size: 22px; font-weight: 700; letter-spacing: -.03em; color: var(--text); line-height: 1; }
+  .chart-donut__cap { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+  .chart-gauge { position: relative; display: inline-grid; place-items: center; flex: none; }
+  .chart-gauge__label { position: absolute; font-size: 13px; font-weight: 700; color: var(--text); }
+  .chart-legend { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+  .chart-legend__item { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+  .chart-legend__dot { width: 9px; height: 9px; border-radius: 3px; flex: none; align-self: center; }
+  .chart-legend__val { font-weight: 700; color: var(--text); min-width: 30px; }
+  .chart-legend__lab { color: var(--text-secondary); }
+  .chart-spark { display: block; width: 100%; margin-top: 10px; }
+  .chart-spark--empty { display: grid; place-items: center; font-size: 12px; color: var(--text-secondary); }
+  .chart-bars { display: flex; align-items: flex-end; gap: 10px; padding-top: 8px; }
+  .chart-bars__col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; }
+  .chart-bars__bar { width: 100%; max-width: 30px; border-radius: 6px 6px 0 0; min-height: 3px; transition: height .5s cubic-bezier(.4,0,.2,1); }
+  .chart-bars__lab { font-size: 11px; color: var(--text-secondary); }
+</style>
 {% endblock %}

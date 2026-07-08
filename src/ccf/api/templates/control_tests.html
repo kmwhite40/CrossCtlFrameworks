@@ -13,8 +13,8 @@
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/control-tests" class="card__body filters">
-    <input class="input" name="control_id" required placeholder="Control id (AC.L2-3.1.10)">
-    <input class="input" name="name" required placeholder="Test name">
+    <input aria-label="Control id (AC.L2-3.1.10)" class="input" name="control_id" required placeholder="Control id (AC.L2-3.1.10)">
+    <input aria-label="Test name" class="input" name="name" required placeholder="Test name">
     <select class="select" name="method" aria-label="Method">
       {% for m in ['manual','automated','connector'] %}<option value="{{ m }}">{{ m }}</option>{% endfor %}
     </select>

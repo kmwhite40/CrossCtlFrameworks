@@ -1,0 +1,106 @@
+{# Hand-rolled, dependency-free SVG chart macros (theme-aware via CSS tokens). #}
+
+{# Donut / ring. segments: list of {value, color}. Renders a segmented ring with
+   an optional centred value + caption. #}
+{% macro donut(segments, size=132, thickness=13, center=None, caption=None) %}
+  {% set r = (size - thickness) / 2 %}
+  {% set c = 2 * 3.1415926 * r %}
+  {% set total = (segments | sum(attribute='value')) or 1 %}
+  <div class="chart-donut" style="width:{{ size }}px;height:{{ size }}px">
+    <svg viewBox="0 0 {{ size }} {{ size }}" width="{{ size }}" height="{{ size }}">
+      <circle cx="{{ size/2 }}" cy="{{ size/2 }}" r="{{ r }}" fill="none"
+              stroke="var(--bg-inset)" stroke-width="{{ thickness }}"/>
+      {% set ns = namespace(acc=0) %}
+      {% for seg in segments if seg.value > 0 %}
+        {% set frac = seg.value / total %}
+        {% set len = frac * c %}
+        <circle cx="{{ size/2 }}" cy="{{ size/2 }}" r="{{ r }}" fill="none"
+                stroke="{{ seg.color }}" stroke-width="{{ thickness }}"
+                stroke-dasharray="{{ len }} {{ c - len }}"
+                stroke-dashoffset="{{ -ns.acc }}" stroke-linecap="butt"
+                transform="rotate(-90 {{ size/2 }} {{ size/2 }})"/>
+        {% set ns.acc = ns.acc + len %}
+      {% endfor %}
+    </svg>
+    {% if center is not none %}
+      <div class="chart-donut__center">
+        <span class="chart-donut__value">{{ center }}</span>
+        {% if caption %}<span class="chart-donut__cap">{{ caption }}</span>{% endif %}
+      </div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+{# Radial gauge (single 0-100 value). #}
+{% macro gauge(pct, size=76, thickness=8, color='var(--accent)', label=None) %}
+  {% set p = [[pct, 0] | max, 100] | min %}
+  {% set r = (size - thickness) / 2 %}
+  {% set c = 2 * 3.1415926 * r %}
+  {% set len = (p / 100) * c %}
+  <div class="chart-gauge" style="width:{{ size }}px;height:{{ size }}px">
+    <svg viewBox="0 0 {{ size }} {{ size }}" width="{{ size }}" height="{{ size }}">
+      <circle cx="{{ size/2 }}" cy="{{ size/2 }}" r="{{ r }}" fill="none"
+              stroke="var(--bg-inset)" stroke-width="{{ thickness }}"/>
+      <circle cx="{{ size/2 }}" cy="{{ size/2 }}" r="{{ r }}" fill="none"
+              stroke="{{ color }}" stroke-width="{{ thickness }}"
+              stroke-dasharray="{{ len }} {{ c - len }}" stroke-linecap="round"
+              transform="rotate(-90 {{ size/2 }} {{ size/2 }})"/>
+    </svg>
+    <span class="chart-gauge__label">{{ label if label is not none else (p | round | int ~ '%') }}</span>
+  </div>
+{% endmacro %}
+
+{# Sparkline / trend line from a numeric series. #}
+{% macro sparkline(series, width=260, height=64, color='var(--accent)', fill=true) %}
+  {% set n = series | length %}
+  {% if n < 2 %}
+    <div class="chart-spark chart-spark--empty" style="height:{{ height }}px">no trend yet</div>
+  {% else %}
+    {% set hi = (series | max) or 1 %}
+    {% set lo = series | min %}
+    {% set span = (hi - lo) or 1 %}
+    {% set pad = 4 %}
+    {% set ns = namespace(pts=[], area='') %}
+    {% for v in series %}
+      {% set x = pad + (loop.index0 / (n - 1)) * (width - 2*pad) %}
+      {% set y = pad + (1 - (v - lo) / span) * (height - 2*pad) %}
+      {% set _ = ns.pts.append('%.1f,%.1f' % (x, y)) %}
+    {% endfor %}
+    <svg class="chart-spark" viewBox="0 0 {{ width }} {{ height }}" width="100%" height="{{ height }}"
+         preserveAspectRatio="none">
+      {% if fill %}
+        <polygon fill="{{ color }}" fill-opacity="0.10"
+                 points="{{ pad }},{{ height - pad }} {{ ns.pts | join(' ') }} {{ width - pad }},{{ height - pad }}"/>
+      {% endif %}
+      <polyline fill="none" stroke="{{ color }}" stroke-width="2"
+                stroke-linejoin="round" stroke-linecap="round" points="{{ ns.pts | join(' ') }}"/>
+    </svg>
+  {% endif %}
+{% endmacro %}
+
+{# Vertical mini bar chart from rows of {label, value, color?}. #}
+{% macro minibars(rows, height=120, color='var(--accent)') %}
+  {% set hi = (rows | map(attribute='value') | max) or 1 %}
+  <div class="chart-bars" style="height:{{ height }}px">
+    {% for row in rows %}
+      {% set h = (row.value / hi * 100) if hi else 0 %}
+      <div class="chart-bars__col" title="{{ row.label }}: {{ row.value }}">
+        <span class="chart-bars__bar" style="height:{{ h }}%;background:{{ row.color | default(color) }}"></span>
+        <span class="chart-bars__lab">{{ row.label }}</span>
+      </div>
+    {% endfor %}
+  </div>
+{% endmacro %}
+
+{# Legend row for a donut/segment set. items: list of {label, count, color}. #}
+{% macro legend(items) %}
+  <div class="chart-legend">
+    {% for it in items %}
+      <div class="chart-legend__item">
+        <span class="chart-legend__dot" style="background:{{ it.color }}"></span>
+        <span class="chart-legend__val">{{ '{:,}'.format(it.count) }}</span>
+        <span class="chart-legend__lab">{{ it.label }}</span>
+      </div>
+    {% endfor %}
+  </div>
+{% endmacro %}
