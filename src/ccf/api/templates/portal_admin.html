@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}External portal · Concord{% endblock %}
+{% block heading %}External collaboration portal{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Issue scoped, expiring, token-authenticated access to shared packages and evidence — for customers, assessors, and vendors, with no internal account and every access audited.</p>{% endblock %}
+{% block content %}
+
+{% if org_id is none %}
+<section class="card"><div class="card__body dim" style="text-align:center;padding:40px">
+  Select an organization to manage its external grants.
+</div></section>
+{% else %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Grants</div><div class="kpi__value">{{ rows|length }}</div></div>
+  <div class="kpi"><div class="kpi__label">Active</div><div class="kpi__value">{{ rows|selectattr('g.revoked','equalto',false)|list|length }}</div></div>
+  <div class="kpi"><div class="kpi__label">Shareable packages</div><div class="kpi__value">{{ packages|length }}</div></div>
+  <div class="kpi"><div class="kpi__label">Shareable evidence</div><div class="kpi__value">{{ evidence|length }}</div></div>
+</div>
+
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Issue a grant</div></div>
+  <form method="post" action="/admin/portal/grants" class="card__body">
+    <input type="hidden" name="organization_id" value="{{ org_id }}">
+    <div class="filters" style="margin-bottom:12px">
+      <input class="input" name="principal_name" required placeholder="Recipient name (e.g. Acme 3PAO)" aria-label="Recipient name">
+      <select class="select" name="kind" aria-label="Recipient kind">
+        {% for k in ['customer','assessor','vendor'] %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
+      </select>
+      <input class="input" name="ttl_days" type="number" min="1" value="30" aria-label="Days until expiry" title="Days until expiry">
+      <input class="input" name="label" placeholder="Label (optional)" aria-label="Label">
+    </div>
+    <div class="grid-2-1" style="gap:16px">
+      <fieldset style="border:1px solid var(--border);border-radius:var(--radius-md);padding:12px">
+        <legend class="dim" style="font-size:12px;padding:0 6px">Packages to share</legend>
+        {% for p in packages %}
+          <label class="dim" style="display:block;font-size:13px;padding:3px 0"><input type="checkbox" name="package_ids" value="{{ p.id }}"> {{ p.label }} <span class="mono">#{{ p.id }}</span></label>
+        {% else %}<span class="dim" style="font-size:13px">No packages yet.</span>{% endfor %}
+      </fieldset>
+      <fieldset style="border:1px solid var(--border);border-radius:var(--radius-md);padding:12px">
+        <legend class="dim" style="font-size:12px;padding:0 6px">Evidence to share</legend>
+        {% for e in evidence %}
+          <label class="dim" style="display:block;font-size:13px;padding:3px 0"><input type="checkbox" name="evidence_ids" value="{{ e.id }}"> {{ e.title }} <span class="mono">#{{ e.id }}</span></label>
+        {% else %}<span class="dim" style="font-size:13px">No evidence yet.</span>{% endfor %}
+      </fieldset>
+    </div>
+    <div style="margin-top:12px"><button class="btn btn--primary" type="submit"><i data-lucide="link"></i> Issue grant</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Grants</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Recipient</th><th>Kind</th><th>Expires</th><th>Status</th><th>Share link</th><th></th></tr></thead>
+    <tbody>
+      {% for r in rows %}<tr>
+        <td><strong>{{ r.principal.name if r.principal else '—' }}</strong>{% if r.g.label %}<div class="dim" style="font-size:12px">{{ r.g.label }}</div>{% endif %}</td>
+        <td class="dim">{{ r.g.kind }}</td>
+        <td class="dim">{{ r.g.expires_at.date() if r.g.expires_at else 'never' }}</td>
+        <td>{% if r.status=='revoked' %}<span class="chip chip--err">revoked</span>{% elif r.status=='expired' %}<span class="chip chip--warn">expired</span>{% else %}<span class="chip chip--ok">active</span>{% endif %}</td>
+        <td>{% if not r.g.revoked %}<button class="btn btn--ghost btn--sm" type="button" data-copy="{{ request.base_url }}portal?token={{ r.g.token }}" title="Copy share link"><i data-lucide="copy"></i> Copy</button>{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>{% if not r.g.revoked %}<form method="post" action="/admin/portal/grants/{{ r.g.id }}/revoke"><input type="hidden" name="organization_id" value="{{ org_id }}"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="ban"></i> Revoke</button></form>{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No grants issued yet.</div>{% endif %}
+</section>
+
+{% endif %}
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

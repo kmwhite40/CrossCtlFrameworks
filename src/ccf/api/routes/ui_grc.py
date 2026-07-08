@@ -1029,3 +1029,101 @@ async def self_assurance_run_ui(
     await run_self_assessment(session, actor=_actor(request))
     await session.commit()
     return RedirectResponse("/admin/self-assurance", status_code=303)
+
+
+# ── External collaboration portal (admin) ────────────────────────────────────
+# NB: the page lives at /admin/portal, NOT /portal* — the latter is a public
+# prefix (the external, token-authenticated surface) and would bypass the gate.
+@router.get("/admin/portal", response_class=HTMLResponse)
+async def portal_admin_page(
+    request: Request,
+    organization_id: int | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    from ...models_packages import AuthorizationPackage  # noqa: PLC0415
+    from ...models_portal import ExternalPrincipal  # noqa: PLC0415
+    from ...portal import list_grants  # noqa: PLC0415
+
+    org_id = organization_id if organization_id is not None else _principal_org(request)
+    rows: list[dict[str, Any]] = []
+    packages: list[Any] = []
+    evidence: list[Any] = []
+    if org_id is not None:
+        grants = await list_grants(session, org_id=org_id)
+        principals = {
+            p.id: p
+            for p in (
+                await session.execute(
+                    select(ExternalPrincipal).where(ExternalPrincipal.organization_id == org_id)
+                )
+            ).scalars().all()
+        }
+        _now = datetime.now(UTC)
+        rows = [
+            {"g": g,
+             "principal": principals.get(g.principal_id) if g.principal_id else None,
+             "status": ("revoked" if g.revoked
+                        else "expired" if (g.expires_at and g.expires_at < _now)
+                        else "active")}
+            for g in grants
+        ]
+        packages = list(
+            (
+                await session.execute(
+                    select(AuthorizationPackage)
+                    .where(AuthorizationPackage.organization_id == org_id)
+                    .order_by(AuthorizationPackage.id.desc())
+                )
+            ).scalars().all()
+        )
+        evidence = list(
+            (
+                await session.execute(
+                    select(EvidenceObject)
+                    .where(EvidenceObject.organization_id == org_id)
+                    .order_by(EvidenceObject.id.desc())
+                )
+            ).scalars().all()
+        )
+    return templates.TemplateResponse(
+        request, "portal_admin.html",
+        {"active": "portaladmin", "org_id": org_id, "rows": rows,
+         "packages": packages, "evidence": evidence},
+    )
+
+
+@router.post("/admin/portal/grants")
+async def portal_admin_create(
+    request: Request,
+    organization_id: int = Form(...),
+    principal_name: str = Form(...),
+    kind: str = Form("customer"),
+    ttl_days: int = Form(30),
+    label: str = Form(""),
+    package_ids: list[int] = Form(default=[]),
+    evidence_ids: list[int] = Form(default=[]),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    from ...portal import create_grant  # noqa: PLC0415
+
+    await create_grant(
+        session, org_id=organization_id, principal_name=principal_name, kind=kind,
+        package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
+        label=label or None, actor=_actor(request),
+    )
+    await session.commit()
+    return RedirectResponse(f"/admin/portal?organization_id={organization_id}", status_code=303)
+
+
+@router.post("/admin/portal/grants/{grant_id}/revoke")
+async def portal_admin_revoke(
+    request: Request,
+    grant_id: int,
+    organization_id: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    from ...portal import revoke_grant  # noqa: PLC0415
+
+    await revoke_grant(session, grant_id, actor=_actor(request))
+    await session.commit()
+    return RedirectResponse(f"/admin/portal?organization_id={organization_id}", status_code=303)

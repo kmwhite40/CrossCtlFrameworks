@@ -277,3 +277,34 @@ async def test_audit_completeness_check_warns_on_grant_without_audit() -> None:
             g = await s.get(ExternalAccessGrant, bare_id)
             if g is not None:
                 await s.delete(g)
+
+
+# --- internal admin UI ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_admin_portal_ui_lists_shareable_artifacts_and_issues_grant() -> None:
+    org = await _org("PortalAdminUI")
+    system = await _system(org, "AdminUISys")
+    async with session_scope() as s:
+        pkg = await pkg_service.create_package(
+            s, org_id=org, system_id=system, kind="json", label="AdminUI package"
+        )
+        pkg_id = pkg.id
+    async with _client() as c:
+        # The page renders and offers the org's package to share.
+        page = await c.get("/admin/portal", params={"organization_id": org})
+        assert page.status_code == 200
+        assert "AdminUI package" in page.text
+        # Issue a grant via the form.
+        issued = await c.post(
+            "/admin/portal/grants",
+            data={"organization_id": org, "principal_name": "UI Assessor",
+                  "kind": "assessor", "ttl_days": "30", "package_ids": str(pkg_id)},
+            follow_redirects=False,
+        )
+        assert issued.status_code == 303
+    # The new grant now appears on the page.
+    async with _client() as c:
+        page2 = await c.get("/admin/portal", params={"organization_id": org})
+        assert "UI Assessor" in page2.text
