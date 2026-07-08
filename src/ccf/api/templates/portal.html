@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Shared workspace · Concord</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <style>
+    .portal { max-width: 900px; margin: 0 auto; padding: 40px 24px 80px; }
+    .portal__head { display: flex; align-items: baseline; justify-content: space-between;
+      gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+    .portal__brand { font-weight: 700; font-size: 20px; letter-spacing: -.02em; }
+    .portal__sub { color: var(--text-secondary); font-size: 14px; margin: 0 0 28px; }
+    .portal__card { background: var(--bg-elevated); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); padding: 20px; margin-bottom: 20px; }
+    .portal__card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+      color: var(--text-secondary); margin: 0 0 14px; }
+    .portal__row { display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+    .portal__row:first-of-type { border-top: 0; }
+    .portal__empty { color: var(--text-muted); font-size: 14px; }
+    .portal__comment { padding: 10px 0; border-top: 1px solid var(--border); font-size: 14px; }
+    .portal__comment small { color: var(--text-muted); }
+    .portal__form { display: grid; gap: 10px; margin-top: 12px; }
+    .portal__form textarea, .portal__form input, .portal__form select {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius-md); background: var(--bg); color: var(--text); font: inherit; }
+    .portal__gate { text-align: center; padding: 64px 24px; color: var(--text-secondary); }
+  </style>
+</head>
+<body>
+  <main class="portal">
+    <div class="portal__head">
+      <span class="portal__brand">Concord</span>
+      {% if grant %}<span class="chip chip--info">{{ grant.kind }} access</span>{% endif %}
+    </div>
+
+    {% if not grant or not contents %}
+      <div class="portal__gate">
+        <h1>This link is invalid or has expired.</h1>
+        <p class="portal__sub">Ask your Concord contact to re-issue an access link.</p>
+      </div>
+    {% else %}
+      <p class="portal__sub">
+        Shared workspace{% if grant.label %} · {{ grant.label }}{% endif %}
+        {% if contents.grant.expires_at %} · access expires {{ contents.grant.expires_at.date() }}{% endif %}
+      </p>
+
+      <section class="portal__card">
+        <h2>Shared packages</h2>
+        {% for p in contents.packages %}
+          <div class="portal__row">
+            <div><strong>{{ p.label }}</strong> <span class="dim">· {{ p.kind }}</span></div>
+            <div class="dim">{% if p.readiness_pct is not none %}{{ p.readiness_pct }}% ready · {% endif %}{{ p.fact_count }} facts</div>
+          </div>
+        {% else %}
+          <div class="portal__empty">No packages shared.</div>
+        {% endfor %}
+      </section>
+
+      <section class="portal__card">
+        <h2>Shared evidence</h2>
+        {% for e in contents.evidence %}
+          <div class="portal__row">
+            <div><strong>{{ e.title }}</strong>{% if e.control_id %} <span class="mono dim">· {{ e.control_id }}</span>{% endif %}</div>
+            <span class="chip">{{ e.status }}</span>
+          </div>
+        {% else %}
+          <div class="portal__empty">No evidence shared.</div>
+        {% endfor %}
+      </section>
+
+      <section class="portal__card">
+        <h2>Discussion</h2>
+        {% for c in contents.comments %}
+          <div class="portal__comment">
+            {{ c.body }}
+            <div><small>{{ c.author or 'Anonymous' }} ({{ c.author_kind }}) · on {{ c.target_type }} {{ c.target_id }}</small></div>
+          </div>
+        {% else %}
+          <div class="portal__empty">No comments yet.</div>
+        {% endfor %}
+
+        <form class="portal__form" id="commentForm">
+          <input name="author" placeholder="Your name" aria-label="Your name" />
+          <div style="display:flex;gap:10px">
+            <select name="target_type" aria-label="Comment about">
+              <option value="package">Package</option>
+              <option value="evidence">Evidence</option>
+              <option value="finding">Finding</option>
+            </select>
+            <input name="target_id" placeholder="Item ID" aria-label="Item ID" required />
+          </div>
+          <textarea name="body" rows="3" placeholder="Add a comment…" aria-label="Comment" required></textarea>
+          <button class="btn btn--primary" type="submit">Post comment</button>
+        </form>
+      </section>
+    {% endif %}
+  </main>
+
+  <script>
+    // The grant token travels in the URL; the API authenticates on it.
+    (function () {
+      const form = document.getElementById('commentForm');
+      if (!form) return;
+      const token = new URLSearchParams(location.search).get('token') || '';
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const f = new FormData(form);
+        const res = await fetch('/api/portal/comments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+          body: JSON.stringify({
+            target_type: f.get('target_type'), target_id: f.get('target_id'),
+            body: f.get('body'), author: f.get('author') || null,
+          }),
+        });
+        if (res.ok) location.reload();
+        else alert('Could not post comment — your access link may have expired.');
+      });
+    })();
+  </script>
+</body>
+</html>

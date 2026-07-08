@@ -55,6 +55,7 @@ from .routes import (
     personnel,
     poams,
     policies,
+    portal,
     posture,
     questionnaires,
     reliability,
@@ -146,6 +147,9 @@ def create_app() -> FastAPI:
     app.include_router(packages.delta_router)
     app.include_router(packs.router)
     app.include_router(self_assurance.router)
+    app.include_router(portal.router)
+    app.include_router(portal.public_router)
+    app.include_router(portal.ui_router)
     app.include_router(ai_actions.router)
     app.include_router(ai_agents.router)
     app.include_router(controls.router)

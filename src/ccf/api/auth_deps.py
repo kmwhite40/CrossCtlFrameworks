@@ -25,6 +25,8 @@ _PUBLIC_PREFIXES = (
     "/auth/callback",
     "/auth/logout",
     "/api/scim",  # SCIM uses its own bearer token, not the user session
+    "/api/portal",  # external portal API — the grant token is the credential
+    "/portal",  # external portal UI — token supplied via ?token=
     "/login",
     "/logout",
     "/healthz",

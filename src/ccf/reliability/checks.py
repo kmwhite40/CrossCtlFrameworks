@@ -677,6 +677,83 @@ async def _check_control_tests_health(session: AsyncSession) -> Check:
         return Check("grc_control_test_health", WARN, f"Could not verify: {exc}")
 
 
+async def _check_external_access_scope_integrity(session: AsyncSession) -> Check:
+    """Fail if any portal share references an artifact outside its grant's tenant."""
+    if not await _regclass(session, "ccf.external_package_shares"):
+        return Check("external_access_scope_integrity", PASS, "External portal not deployed.")
+    row = (
+        await session.execute(
+            text(
+                "SELECT "
+                "(SELECT count(*) FROM ccf.external_package_shares s "
+                " JOIN ccf.external_access_grants g ON g.id = s.grant_id "
+                " JOIN ccf.authorization_packages p ON p.id = s.package_id "
+                " WHERE p.organization_id IS DISTINCT FROM g.organization_id), "
+                "(SELECT count(*) FROM ccf.external_evidence_shares s "
+                " JOIN ccf.external_access_grants g ON g.id = s.grant_id "
+                " JOIN ccf.evidence_objects e ON e.id = s.evidence_object_id "
+                " WHERE e.organization_id IS DISTINCT FROM g.organization_id)"
+            )
+        )
+    ).first()
+    pkg_leak, ev_leak = row or (0, 0)
+    if pkg_leak or ev_leak:
+        return Check(
+            "external_access_scope_integrity", FAIL,
+            f"{pkg_leak} package + {ev_leak} evidence share(s) cross a tenant boundary.",
+            "Revoke the offending grants; a share must reference its grant's own tenant.",
+        )
+    return Check("external_access_scope_integrity", PASS, "All portal shares are within-tenant.")
+
+
+async def _check_external_grant_expiration(session: AsyncSession) -> Check:
+    """Warn on expired external grants that were never revoked (hygiene)."""
+    if not await _regclass(session, "ccf.external_access_grants"):
+        return Check("external_grant_expiration", PASS, "External portal not deployed.")
+    n = int(
+        (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM ccf.external_access_grants "
+                    "WHERE NOT revoked AND expires_at IS NOT NULL AND expires_at < now()"
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    if n:
+        return Check(
+            "external_grant_expiration", WARN,
+            f"{n} expired external grant(s) not yet revoked.",
+            "Revoke stale grants in the portal admin; expired tokens already deny access.",
+        )
+    return Check("external_grant_expiration", PASS, "No expired, un-revoked external grants.")
+
+
+async def _check_external_portal_audit_completeness(session: AsyncSession) -> Check:
+    """Warn if any external grant lacks a portal audit trail (e.g. a direct insert)."""
+    if not await _regclass(session, "ccf.external_access_grants"):
+        return Check("external_portal_audit_completeness", PASS, "External portal not deployed.")
+    n = int(
+        (
+            await session.execute(
+                text(
+                    "SELECT count(*) FROM ccf.external_access_grants g WHERE NOT EXISTS ("
+                    "SELECT 1 FROM ccf.external_portal_audit_events e WHERE e.grant_id = g.id)"
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    if n:
+        return Check(
+            "external_portal_audit_completeness", WARN,
+            f"{n} external grant(s) have no portal audit trail.",
+            "Every grant should record an issuance event; investigate any direct inserts.",
+        )
+    return Check("external_portal_audit_completeness", PASS, "Every external grant is audited.")
+
+
 _CHECKS = [
     _check_database,
     _check_migrations,
@@ -716,6 +793,9 @@ _CHECKS = [
     _check_grc_api,
     _check_grc_ui,
     _check_control_tests_health,
+    _check_external_access_scope_integrity,
+    _check_external_grant_expiration,
+    _check_external_portal_audit_completeness,
 ]
 
 
