@@ -754,6 +754,27 @@ async def _check_external_portal_audit_completeness(session: AsyncSession) -> Ch
     return Check("external_portal_audit_completeness", PASS, "Every external grant is audited.")
 
 
+async def _check_query_templates_health(session: AsyncSession) -> Check:
+    """Run every assurance query template (default params) to catch schema drift."""
+    try:
+        from ..queries import REGISTRY, run_query  # noqa: PLC0415
+    except Exception:  # pragma: no cover - query layer optional
+        return Check("query_templates_health", PASS, "Assurance query layer not deployed.")
+    broken: list[str] = []
+    for key in REGISTRY:
+        try:
+            await run_query(session, key, {}, org_id=None)
+        except Exception as exc:
+            broken.append(f"{key}: {exc}")
+    if broken:
+        return Check(
+            "query_templates_health", FAIL,
+            f"{len(broken)} query template(s) failed: {'; '.join(broken)[:180]}",
+            "Fix the template SQL or restore the columns/tables it references.",
+        )
+    return Check("query_templates_health", PASS, f"All {len(REGISTRY)} query templates run.")
+
+
 _CHECKS = [
     _check_database,
     _check_migrations,
@@ -796,6 +817,7 @@ _CHECKS = [
     _check_external_access_scope_integrity,
     _check_external_grant_expiration,
     _check_external_portal_audit_completeness,
+    _check_query_templates_health,
 ]
 
 
