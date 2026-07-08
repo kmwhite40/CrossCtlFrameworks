@@ -147,6 +147,13 @@ body {
 .gnav-link[aria-current="page"] { color: var(--text); font-weight: 500; background: var(--bg-inset); }
 
 .globalnav__tools { display: flex; align-items: center; gap: 6px; }
+/* Pinned quick-access links — always one click, visually a distinct utility zone. */
+.globalnav__pinned { display: flex; align-items: center; gap: 2px; padding-right: 4px;
+  margin-right: 2px; border-right: 1px solid var(--border); }
+.globalnav__pinned a { font-size: 13px; font-weight: 500; color: var(--text-secondary);
+  padding: 6px 10px; border-radius: 8px; text-decoration: none; white-space: nowrap;
+  transition: background-color .18s ease, color .18s ease; }
+.globalnav__pinned a:hover { background: var(--bg-inset); color: var(--text); }
 .globalnav__icon {
   width: 34px; height: 34px; border-radius: 999px; display: grid; place-items: center;
   color: var(--text-secondary); background: transparent; border: none; cursor: pointer;
@@ -439,6 +446,7 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 7px; border-r
    ════════════════════════════════════════════════════════════ */
 @media (max-width: 900px) {
   .globalnav__links { display: none; }
+  .globalnav__pinned { display: none; }  /* pinned links move into the mobile sheet */
   .gnav-item--menu-right { display: none; }
   .globalnav__burger { display: grid; }
   .globalnav__brand { margin-right: auto; }

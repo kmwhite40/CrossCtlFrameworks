@@ -23,67 +23,65 @@
     `active` keys that belong to a product area; `links` are that area's
     sub-navigation (a `key` marks the active section link).
    ───────────────────────────────────────────────────────────────────────── -#}
+{#- Primary navigation, organized by the authorization lifecycle:
+    define compliance → authorize systems → operate the program → report. -#}
 {% set nav_groups = [
   {'key':'dashboard','label':'Dashboard','href':'/dashboard','members':['dashboard'],'links':[]},
   {'key':'compliance','label':'Compliance','href':'/posture',
-   'members':['posture','controls','frameworks','coverage','mappings','search','worksheets','diff'],
+   'members':['posture','controls','frameworks','coverage','mappings','search','worksheets','diff','packs'],
    'links':[
      {'key':'posture','label':'Overview','href':'/posture','desc':'Compliance posture across frameworks.'},
      {'key':'controls','label':'Controls','href':'/controls','desc':'Browse NIST, CMMC, FedRAMP, CIS, and ISO controls.'},
      {'key':'frameworks','label':'Frameworks','href':'/frameworks','desc':'Manage source frameworks and baselines.'},
      {'key':'coverage','label':'Coverage','href':'/coverage','desc':'Review coverage gaps and inherited controls.'},
      {'key':'mappings','label':'Mappings','href':'/mappings','desc':'Search crosswalks and control relationships.'},
+     {'key':'packs','label':'Compliance packs','href':'/packs','desc':'Install framework/control/evidence/rule packs.'},
      {'key':'search','label':'Search','href':'/search','desc':'Full-text search across the catalog.'},
      {'key':'worksheets','label':'Worksheets','href':'/worksheets','desc':'View the source workbook tabs.'},
      {'key':'diff','label':'Workbook diff','href':'/diff','desc':'Compare workbook versions.'}]},
-  {'key':'assessments','label':'Assessments','href':'/assessments','members':['assessments','scoring','ssp'],
+  {'key':'authorization','label':'Authorization','href':'/systems',
+   'members':['systems','intake','ssp','assessments','scoring','fedramp20x','assurance'],
    'links':[
-     {'key':'assessments','label':'Overview','href':'/assessments','desc':'Run assessments and view findings.'},
+     {'key':'systems','label':'Systems','href':'/systems','desc':'Systems, ownership, and boundaries.'},
+     {'key':'intake','label':'System intake','href':'/intake','desc':'Onboard a new system.'},
+     {'key':'ssp','label':'SSP builder','href':'/ssp','desc':'Compose system security plans.'},
+     {'key':'assessments','label':'Assessments','href':'/assessments','desc':'Run assessments and view findings.'},
      {'key':'scoring','label':'Live scoring','href':'/scoring','desc':'Score controls in real time.'},
-     {'key':'ssp','label':'SSP builder','href':'/ssp','desc':'Compose system security plans.'}]},
-  {'key':'systems','label':'Systems','href':'/systems','members':['systems','intake'],
-   'links':[
-     {'key':'systems','label':'Overview','href':'/systems','desc':'Systems, ownership, and boundaries.'},
-     {'key':'intake','label':'System intake','href':'/intake','desc':'Onboard a new system.'}]},
-  {'key':'fedramp20x','label':'FedRAMP 20x','href':'/fedramp20x','members':['fedramp20x'],
-   'links':[
-     {'key':'fedramp20x','label':'KSI catalog & readiness','href':'/fedramp20x','desc':'Key Security Indicators, validation, and 20x readiness.'}]},
-  {'key':'assurance','label':'Assurance','href':'/assurance','members':['assurance'],
-   'links':[
+     {'key':'fedramp20x','label':'FedRAMP 20x / KSI','href':'/fedramp20x','desc':'Key Security Indicators, validation, and 20x readiness.'},
      {'key':'assurance','label':'Assurance graph','href':'/assurance','desc':'Authorization digital twin + impact analysis.'}]},
-  {'key':'aigov','label':'AI Governance','href':'/ai-agents','members':['ai_agents'],
+  {'key':'operations','label':'Operations','href':'/governance',
+   'members':['governance','evidence','ingestions','evidence_repo','scans','controltests','poams','risks','connectors','personnel','questionnaires','ai_agents','auditws','regulatory','tasks','diagrams'],
    'links':[
-     {'key':'ai_agents','label':'AI agents','href':'/ai-agents','desc':'Govern AI agents as privileged non-human actors.'}]},
-  {'key':'packs','label':'Packs','href':'/packs','members':['packs'],
-   'links':[
-     {'key':'packs','label':'Compliance packs','href':'/packs','desc':'Install framework/control/evidence/rule packs.'}]},
-  {'key':'evidence','label':'Evidence','href':'/ingestions','members':['evidence','ingestions'],
-   'links':[
+     {'key':'governance','label':'Overview','href':'/governance','desc':'Command center for day-to-day compliance work.'},
+     {'key':'evidence_repo','label':'Evidence repository','href':'/evidence','desc':'Versioned evidence with review and WORM lock.'},
      {'key':'ingestions','label':'Ingestions','href':'/ingestions','desc':'Workbook ingestion runs and provenance.'},
-     {'key':'worksheets','label':'Worksheets','href':'/worksheets','desc':'Evidence source tabs.'}]},
-  {'key':'reports','label':'Reports','href':'/reports','members':['reports'],'links':[]},
-  {'key':'governance','label':'Governance','href':'/governance',
-   'members':['governance','executive','tasks','diagrams','poams','risks','audit','reliability','trust','auditws','regulatory','connectors','controltests','personnel','questionnaires','scans','evidence_repo','selfassurance'],
-   'links':[
-     {'key':'governance','label':'Overview','href':'/governance','desc':'Command center for compliance work.'},
-     {'key':'executive','label':'Executive dashboard','href':'/executive','desc':'Consolidated posture, risk, POA&M, and data-quality rollup.'},
-     {'key':'tasks','label':'Tasks','href':'/governance#tasks','desc':'Assign and track tasks.'},
-     {'key':'diagrams','label':'Diagrams','href':'/governance#diagrams','desc':'Boundary and data-flow diagrams.'},
+     {'key':'scans','label':'Scan ingestion','href':'/scans','desc':'Import Nessus/Inspector/CSV scans → auto-POA&Ms.'},
+     {'key':'controltests','label':'Control tests','href':'/control-tests','desc':'Continuous control test definitions and results.'},
      {'key':'poams','label':'POA&Ms','href':'/poams','desc':'Plan of action & milestones.'},
      {'key':'risks','label':'Risks','href':'/risks','desc':'Risk register and residual risk.'},
-     {'key':'controltests','label':'Control tests','href':'/control-tests','desc':'Continuous control test definitions and results.'},
-     {'key':'scans','label':'Scan ingestion','href':'/scans','desc':'Import Nessus/Inspector/CSV scans → auto-POA&Ms.'},
-     {'key':'evidence_repo','label':'Evidence repository','href':'/evidence','desc':'Versioned evidence with review and WORM lock.'},
+     {'key':'connectors','label':'Connectors','href':'/connectors','desc':'Cloud/SaaS evidence connectors.'},
      {'key':'personnel','label':'Personnel & access','href':'/personnel','desc':'Onboarding, training, screening, and access reviews.'},
      {'key':'questionnaires','label':'Vendor questionnaires','href':'/vendor-questionnaires','desc':'Third-party security assessments and risk scoring.'},
+     {'key':'ai_agents','label':'AI governance','href':'/ai-agents','desc':'Govern AI agents as privileged non-human actors.'},
      {'key':'auditws','label':'Audit workspace','href':'/audit-workspace','desc':'Engagements, evidence requests, and findings.'},
      {'key':'regulatory','label':'Regulatory change','href':'/regulatory','desc':'Track framework and regulatory updates.'},
-     {'key':'connectors','label':'Connectors','href':'/connectors','desc':'Cloud/SaaS evidence connectors.'},
+     {'key':'tasks','label':'Tasks','href':'/governance#tasks','desc':'Assign and track tasks.'},
+     {'key':'diagrams','label':'Diagrams','href':'/governance#diagrams','desc':'Boundary and data-flow diagrams.'}]},
+  {'key':'insights','label':'Insights','href':'/reports',
+   'members':['reports','executive','trust','audit','reliability','selfassurance'],
+   'links':[
+     {'key':'reports','label':'Reports','href':'/reports','desc':'Generate and export compliance reports.'},
+     {'key':'executive','label':'Executive dashboard','href':'/executive','desc':'Consolidated posture, risk, POA&M, and data-quality rollup.'},
      {'key':'trust','label':'Trust center','href':'/trust','desc':'Security posture summary and access requests.'},
      {'key':'audit','label':'Audit trail','href':'/audit','desc':'Immutable activity log.'},
      {'key':'reliability','label':'Reliability','href':'/admin/reliability','desc':'System reliability and readiness checks.'},
-     {'key':'selfassurance','label':'Self-assurance','href':'/admin/self-assurance','desc':'Concord assessing Concord — controls, evidence, package.'}]},
-  {'key':'ai','label':'AI','href':'/posture','members':[],'links':[]}
+     {'key':'selfassurance','label':'Self-assurance','href':'/admin/self-assurance','desc':'Concord assessing Concord — controls, evidence, package.'}]}
+] %}
+{#- Pinned quick-access: reachable in one click from anywhere, never buried. -#}
+{% set nav_pinned = [
+  {'label':'Executive','href':'/executive'},
+  {'label':'FedRAMP 20x','href':'/fedramp20x'},
+  {'label':'AI Gov','href':'/ai-agents'}
 ] %}
 {% set ns = namespace(cur=none) %}
 {% for g in nav_groups %}{% if active in g.members %}{% set ns.cur = g %}{% endif %}{% endfor %}
@@ -121,6 +119,9 @@
     </div>
 
     <div class="globalnav__tools">
+      <nav class="globalnav__pinned" aria-label="Quick access">
+        {% for p in nav_pinned %}<a href="{{ p.href }}">{{ p.label }}</a>{% endfor %}
+      </nav>
       <button type="button" class="globalnav__icon" onclick="openPalette()" aria-label="Search Concord" title="Search  ⌘K">
         <i data-lucide="search"></i>
       </button>
@@ -177,6 +178,10 @@
       {% endfor %}
     </div>
     {% endfor %}
+    <div class="mobilenav__group">
+      <span class="mobilenav__head mobilenav__head--muted">Quick access</span>
+      {% for p in nav_pinned %}<a class="mobilenav__link" href="{{ p.href }}">{{ p.label }}</a>{% endfor %}
+    </div>
     <div class="mobilenav__group">
       <span class="mobilenav__head mobilenav__head--muted">Workspace</span>
       <a class="mobilenav__link" href="/users">Users</a>
