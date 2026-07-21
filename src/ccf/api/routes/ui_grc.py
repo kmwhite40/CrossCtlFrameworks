@@ -1034,18 +1034,24 @@ async def self_assurance_run_ui(
 # ── External collaboration portal (admin) ────────────────────────────────────
 # NB: the page lives at /admin/portal, NOT /portal* — the latter is a public
 # prefix (the external, token-authenticated surface) and would bypass the gate.
-@router.get("/admin/portal", response_class=HTMLResponse)
-async def portal_admin_page(
+async def _portal_admin_context(
     request: Request,
-    organization_id: int | None = None,
+    session: AsyncSession,
+    org_id: int | None,
     issued_token: str | None = None,
-    session: AsyncSession = Depends(get_session),
-) -> HTMLResponse:
+) -> dict[str, Any]:
+    """Build the template context for the portal-admin page.
+
+    Shared by the GET page and the POST-grant handler so the latter can
+    render the page directly — with the freshly issued plaintext token — in
+    the response body instead of round-tripping it through a redirect query
+    param (which would land in access logs / browser history; see the
+    ``issued_link`` note below).
+    """
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
     from ...portal import list_grants  # noqa: PLC0415
 
-    org_id = organization_id if organization_id is not None else _principal_org(request)
     rows: list[dict[str, Any]] = []
     packages: list[Any] = []
     evidence: list[Any] = []
@@ -1086,15 +1092,26 @@ async def portal_admin_page(
                 )
             ).scalars().all()
         )
+    # The plaintext token, when present, comes straight from the in-memory
+    # grant just issued in this same request — never from a query param — so
+    # it never transits a URL (IA-09: the DB stores only the hash).
     issued_link = f"{request.base_url}portal?token={issued_token}" if issued_token else None
-    return templates.TemplateResponse(
-        request, "portal_admin.html",
-        {"active": "portaladmin", "org_id": org_id, "rows": rows,
-         "packages": packages, "evidence": evidence, "issued_link": issued_link},
-    )
+    return {"active": "portaladmin", "org_id": org_id, "rows": rows,
+            "packages": packages, "evidence": evidence, "issued_link": issued_link}
 
 
-@router.post("/admin/portal/grants")
+@router.get("/admin/portal", response_class=HTMLResponse)
+async def portal_admin_page(
+    request: Request,
+    organization_id: int | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    org_id = organization_id if organization_id is not None else _principal_org(request)
+    context = await _portal_admin_context(request, session, org_id)
+    return templates.TemplateResponse(request, "portal_admin.html", context)
+
+
+@router.post("/admin/portal/grants", response_class=HTMLResponse)
 async def portal_admin_create(
     request: Request,
     organization_id: int = Form(...),
@@ -1105,9 +1122,7 @@ async def portal_admin_create(
     package_ids: list[int] = Form(default=[]),
     evidence_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
-) -> RedirectResponse:
-    from urllib.parse import quote  # noqa: PLC0415
-
+) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
 
     grant = await create_grant(
@@ -1116,14 +1131,15 @@ async def portal_admin_create(
         label=label or None, actor=_actor(request),
     )
     # The plaintext token is only ever available on this in-memory `grant`
-    # (IA-09: the DB stores its hash only) — carry it through the redirect so
-    # the page can show it exactly once, right after issuance.
-    issued_token = quote(grant.token or "")
+    # (IA-09: the DB stores its hash only). Render the page directly with it
+    # in the template context — never put it in a redirect URL/query param,
+    # where it would land in web-server access logs and browser history.
+    issued_token = grant.token or ""
     await session.commit()
-    return RedirectResponse(
-        f"/admin/portal?organization_id={organization_id}&issued_token={issued_token}",
-        status_code=303,
+    context = await _portal_admin_context(
+        request, session, organization_id, issued_token=issued_token
     )
+    return templates.TemplateResponse(request, "portal_admin.html", context)
 
 
 @router.post("/admin/portal/grants/{grant_id}/revoke")

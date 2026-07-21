@@ -18,7 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
-from ...auth import sign_session, verify_password
+from ...auth import Principal, sign_session, verify_password
 from ...config import get_settings
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
@@ -66,7 +66,7 @@ from ...ssp.platforms import (
     services_for,
 )
 from ...ssp.seed import seed_project_entries
-from ..auth_deps import SESSION_COOKIE
+from ..auth_deps import SESSION_COOKIE, require_role
 from ..deps import get_session
 from .diff import diff_workbook
 from .scoring import compute_summary
@@ -1561,6 +1561,7 @@ async def audit_page(
     session: AsyncSession = Depends(get_session),
     entity_type: str | None = Query(None),
     action: str | None = Query(None),
+    _principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> HTMLResponse:
     stmt = select(AuditLog).order_by(AuditLog.id.desc()).limit(200)
     if entity_type:

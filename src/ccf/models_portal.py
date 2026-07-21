@@ -87,7 +87,8 @@ class ExternalAccessGrant(Base):
     @token.setter
     def token(self, value: str) -> None:
         self._token_plain = value
-        self.token_hash = hash_token(value)
+        if value:
+            self.token_hash = hash_token(value)
 
 
 class ExternalPackageShare(Base):

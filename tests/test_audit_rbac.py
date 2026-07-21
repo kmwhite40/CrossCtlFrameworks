@@ -2,6 +2,11 @@
 require a privileged role once auth is enabled — the audit trail spans every
 tenant's mutations and audit_log has no organization_id column to scope it
 (see the DATA-06 note in ``ccf.api.routes.audit``).
+
+The server-rendered ``/audit`` HTML page (``ccf.api.routes.ui.audit_page``)
+reads the same table and must carry the identical gate — otherwise a
+non-privileged, authenticated user could browse every tenant's audit trail
+through the UI even though the JSON API refuses them.
 """
 
 from __future__ import annotations
@@ -158,3 +163,26 @@ async def test_chain_verify_still_works_for_admin() -> None:
         # only prove the role gate doesn't break the verify endpoint for an admin.
         assert "ok" in body
         assert body["checked"] >= 1
+
+
+# --- the server-rendered /audit HTML page carries the same gate ----------------
+
+
+@pytest.mark.asyncio
+async def test_audit_page_viewer_refused() -> None:
+    token = await _mk_user(
+        "viewer-page@audit-rbac.test", "Audit RBAC Viewer Page Org", "viewer"
+    )
+    async with _client() as c:
+        r = await c.get("/audit", headers=_auth(token))
+        assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_audit_page_admin_allowed() -> None:
+    token = await _mk_user(
+        "admin-page@audit-rbac.test", "Audit RBAC Admin Page Org", "admin"
+    )
+    async with _client() as c:
+        r = await c.get("/audit", headers=_auth(token))
+        assert r.status_code == 200

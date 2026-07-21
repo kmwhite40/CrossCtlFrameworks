@@ -103,6 +103,24 @@ async def test_grant_token_persisted_as_hash_not_plaintext() -> None:
         assert await portal.resolve_grant(s, "not-the-token") is None
 
 
+def test_token_setter_guards_empty_value_like_user_api_token() -> None:
+    """Symmetry with ``User.api_token``: assigning a falsy token must not clobber
+    (or attempt to null out) ``token_hash`` — it's a non-nullable column, so
+    setting it to ``None`` would be both wrong behavior and a type violation.
+    """
+    grant = ExternalAccessGrant(kind="customer")
+    grant.token = "a-real-token-value"
+    real_hash = grant.token_hash
+    assert real_hash == hash_token("a-real-token-value")
+
+    # Re-assigning an empty value leaves the persisted hash untouched.
+    grant.token = ""
+    assert grant.token_hash == real_hash
+    # ...but the in-memory plaintext reflects the last assignment, matching
+    # ``User.api_token``'s behavior of always mirroring the last set value.
+    assert grant.token == ""
+
+
 @pytest.mark.asyncio
 async def test_resolve_rejects_expired_grant() -> None:
     org = await _org("PortalExpired")
@@ -322,15 +340,25 @@ async def test_admin_portal_ui_lists_shareable_artifacts_and_issues_grant() -> N
         page = await c.get("/admin/portal", params={"organization_id": org})
         assert page.status_code == 200
         assert "AdminUI package" in page.text
-        # Issue a grant via the form.
+        # Issue a grant via the form. The response renders the admin page
+        # directly (no redirect) so the one-time plaintext token never
+        # transits a URL/query param — see the finding-4 fix note in
+        # ui_grc.py's portal_admin_create.
         issued = await c.post(
             "/admin/portal/grants",
             data={"organization_id": org, "principal_name": "UI Assessor",
                   "kind": "assessor", "ttl_days": "30", "package_ids": str(pkg_id)},
             follow_redirects=False,
         )
-        assert issued.status_code == 303
-    # The new grant now appears on the page.
+        assert issued.status_code == 200
+        assert issued.url == "http://t/admin/portal/grants"
+        assert "issued_token" not in str(issued.url)
+        assert "token=" not in str(issued.url)
+        assert "UI Assessor" in issued.text
+        # The one-time share link (which embeds the plaintext token) is shown
+        # in the response body, not the URL.
+        assert "portal?token=" in issued.text
+    # The new grant now appears on the page on a plain reload too.
     async with _client() as c:
         page2 = await c.get("/admin/portal", params={"organization_id": org})
         assert "UI Assessor" in page2.text
