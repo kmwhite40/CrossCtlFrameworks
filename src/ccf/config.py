@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     ai_store_prompts: bool = Field(default=True)
     ai_allow_uncited_drafts: bool = Field(default=False)
 
+    # Organization-scoped AI provider credentials (Slice 3a). Credentials are stored
+    # envelope-encrypted; the data-encryption key is wrapped by a pluggable key
+    # provider. "local" wraps with ai_credential_master_key (set a strong random
+    # value in any shared deployment); aws_kms/azure_kv/gcp_sm/vault are future
+    # drop-ins. With no master key configured, credential storage is disabled
+    # (fail-closed) rather than storing keys unwrapped.
+    ai_credential_key_provider: str = Field(default="local")  # local|aws_kms|azure_kv|gcp_sm|vault
+    ai_credential_master_key: str | None = Field(default=None)
+
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
     # read-only reader stay open; turn on for shared/production deployments.
     auth_enabled: bool = Field(default=False)
@@ -144,3 +153,35 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+_DEV_ENVS = frozenset({"dev", "local", "test"})
+_DEFAULT_SESSION_SECRET = "dev-insecure-change-me"
+
+
+def enforce_secure_config(settings: Settings) -> list[str]:
+    """Fail closed on insecure configuration outside a dev environment (IA-01/IA-11).
+
+    Raises ``RuntimeError`` — refusing startup — when ``env`` is not dev/local/test and
+    a hard-unsafe setting is active (auth disabled, or the default session secret,
+    which together let any request act as an unscoped global admin). Returns a list of
+    non-fatal warnings (e.g. wildcard CORS) for the caller to log. In dev environments
+    it is a no-op so local/reader use stays frictionless.
+    """
+    env = (settings.env or "").lower()
+    if env in _DEV_ENVS:
+        return []
+    problems: list[str] = []
+    warnings: list[str] = []
+    if not settings.auth_enabled:
+        problems.append("auth is disabled (set CCF_AUTH_ENABLED=true)")
+    if settings.auth_session_secret == _DEFAULT_SESSION_SECRET:
+        problems.append("session secret is the insecure default (set CCF_AUTH_SESSION_SECRET)")
+    if settings.api_cors_origins == ["*"]:
+        warnings.append("CORS is wildcard '*' — restrict CCF_API_CORS_ORIGINS in production")
+    if problems:
+        raise RuntimeError(
+            f"Refusing to start: insecure configuration for env={env!r}: "
+            + "; ".join(problems)
+        )
+    return warnings
