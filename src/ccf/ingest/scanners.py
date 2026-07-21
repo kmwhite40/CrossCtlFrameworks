@@ -395,6 +395,12 @@ async def reconcile_findings(
                 res.unchanged += 1
 
     # Auto-close open POA&Ms whose finding no longer appears in the latest scan.
+    # ACCEPTED EXCEPTION to the interactive POA&M closure gate / separation-of-duties
+    # (ISSM-08/09, enforced in api/routes/poams.py): scan absence is itself the
+    # remediation evidence, and this is an automated, non-interactive path. The
+    # closure is auditable — every auto-closed POA&M is stamped with the scanner +
+    # date note below (and, via the API layer, the audit_log). It deliberately does
+    # not require a milestone/evidence artifact or a separate approver.
     for uid, poam in by_uid.items():
         if uid in seen or poam.status not in _OPEN_STATES:
             continue

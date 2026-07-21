@@ -172,8 +172,12 @@ def _milestones_satisfy_closure(obj: POAM) -> bool:
 
 
 async def _has_closure_evidence(session: AsyncSession, obj: POAM) -> bool:
-    """A closure artifact: evidence collected against the control
-    implementation this POA&M remediates (same system + control)."""
+    """A closure artifact: *dated* evidence collected against the control this
+    POA&M remediates (same system + control) that post-dates the weakness.
+
+    Requires ``Evidence.collected_on`` to be present and, when the POA&M records
+    an ``identified_on``, on/after it — so pre-existing evidence that predates the
+    weakness cannot satisfy closure (it does not demonstrate remediation)."""
     if obj.control_id is None:
         return False
     stmt = (
@@ -182,9 +186,12 @@ async def _has_closure_evidence(session: AsyncSession, obj: POAM) -> bool:
         .where(
             ControlImplementation.system_id == obj.system_id,
             ControlImplementation.control_id == obj.control_id,
+            Evidence.collected_on.is_not(None),
         )
-        .limit(1)
     )
+    if obj.identified_on is not None:
+        stmt = stmt.where(Evidence.collected_on >= obj.identified_on)
+    stmt = stmt.limit(1)
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 

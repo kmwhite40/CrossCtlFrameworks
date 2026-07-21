@@ -134,6 +134,46 @@ async def test_close_poam_succeeds_with_linked_evidence_and_no_milestones() -> N
 
 
 @pytest.mark.asyncio
+async def test_close_poam_rejected_when_evidence_predates_the_weakness() -> None:
+    """Pre-existing evidence that predates the POA&M's identified_on does not
+    demonstrate remediation and must not satisfy the closure gate (review finding)."""
+    _org_id, sys_id = await _make_system("PoamGateOrg4b")
+    async with session_scope() as s:
+        ctrl = Control(identifier="AC-EVID-OLD-1", control_name="Test control old")
+        s.add(ctrl)
+        await s.flush()
+        impl = ControlImplementation(system_id=sys_id, control_id=ctrl.id, status="implemented")
+        s.add(impl)
+        await s.flush()
+        s.add(
+            Evidence(
+                implementation_id=impl.id,
+                kind="attestation",
+                title="stale attestation collected before the weakness",
+                collected_on=date(2020, 1, 1),
+            )
+        )
+        await s.flush()
+        control_id = ctrl.id
+
+    async with _client() as c:
+        created = await c.post(
+            "/api/poams",
+            json={
+                "system_id": sys_id,
+                "control_id": control_id,
+                "title": "Weak spot",
+                "identified_on": date.today().isoformat(),
+            },
+        )
+        pid = created.json()["id"]
+        # only pre-dated evidence exists → closure must be rejected
+        r = await c.post(f"/api/poams/{pid}/close")
+        assert r.status_code == 409, r.text
+        assert (await c.get(f"/api/poams/{pid}")).json()["status"] == "open"
+
+
+@pytest.mark.asyncio
 async def test_patch_poam_to_closed_is_gated_same_as_close_route() -> None:
     """PATCH /api/poams/{id} {"status": "closed"} must not bypass the gate that
     guards the dedicated /close route."""
