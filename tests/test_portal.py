@@ -291,6 +291,53 @@ async def test_scope_integrity_check_flags_cross_tenant_share() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scope_integrity_failure_alerts_but_does_not_gate_readyz() -> None:
+    """A cross-tenant data leak is a global condition: it must surface in the
+    full reliability suite (so it gets fixed) but must NOT pull every container
+    out of rotation via /readyz — that would be a fleet-wide outage that can't
+    self-heal, since the admin UI needed to fix the leak would itself be down."""
+    org_a = await _org("ScopeGateA")
+    org_b = await _org("ScopeGateB")
+    system_b = await _system(org_b, "GateBSys")
+    async with session_scope() as s:
+        pkg_b = await pkg_service.create_package(
+            s, org_id=org_b, system_id=system_b, kind="json", label="Gate B pkg"
+        )
+        grant_a = await portal.create_grant(s, org_id=org_a, principal_name="GateA")
+        grant_a_id, pkg_b_id = grant_a.id, pkg_b.id
+    async with session_scope() as s:
+        bad = ExternalPackageShare(grant_id=grant_a_id, package_id=pkg_b_id)
+        s.add(bad)
+        await s.flush()
+        bad_id = bad.id
+    try:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            assert (await _check_external_access_scope_integrity(s)).status == "fail"
+        async with _client() as c:
+            # /readyz stays 200: this check is not in the readiness-gating subset.
+            ready = await c.get("/readyz")
+            assert ready.status_code == 200
+            assert ready.json()["status"] == "ready"
+            names = {chk["name"] for chk in ready.json()["checks"]}
+            assert "external_access_scope_integrity" not in names
+
+            # The full reliability suite still surfaces the failure.
+            report = await c.get("/api/admin/reliability")
+            assert report.status_code == 503  # overall FAIL because this check FAILed
+            body = report.json()
+            flagged = next(
+                chk for chk in body["checks"] if chk["name"] == "external_access_scope_integrity"
+            )
+            assert flagged["status"] == "fail"
+    finally:
+        async with session_scope() as s:  # clean up so global reliability stays green
+            leak = await s.get(ExternalPackageShare, bad_id)
+            if leak is not None:
+                await s.delete(leak)
+
+
+@pytest.mark.asyncio
 async def test_grant_expiration_check_warns_on_stale_live_grant() -> None:
     org = await _org("ExpChk")
     async with session_scope() as s:

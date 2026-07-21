@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
@@ -49,12 +50,14 @@ async def test_readyz_returns_200_when_blocking_checks_pass() -> None:
     assert body["failing_checks"] == []
     names = {chk["name"] for chk in body["checks"]}
     # The full blocking subset actually ran (not the whole ~40-check suite).
+    # external_access_scope_integrity is a global data-integrity condition, not
+    # a per-instance readiness signal, so it is intentionally excluded here —
+    # see BLOCKING_CHECKS in ccf.reliability.checks.
     assert names == {
         "database_connectivity",
         "alembic_migration_status",
         "required_tables",
         "auth_posture",
-        "external_access_scope_integrity",
     }
 
 
@@ -79,6 +82,25 @@ async def test_readyz_returns_503_and_names_failing_check(
     assert body["status"] == "not_ready"
     assert "auth_posture" in body["failing_checks"]
     failing_check = next(chk for chk in body["checks"] if chk["name"] == "auth_posture")
+    assert failing_check["status"] == "fail"
+
+
+@pytest.mark.asyncio
+async def test_readyz_returns_503_when_migrations_are_behind_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A schema that is behind alembic head is unsafe to serve traffic from (it
+    may be missing columns/tables a newer code path expects) and must gate
+    readiness just like a missing alembic_version row does — not just WARN."""
+    monkeypatch.setattr(ScriptDirectory, "get_current_head", lambda self: "drifted0000head")
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        r = await c.get("/readyz")
+    assert r.status_code == 503
+    body = r.json()
+    assert body["status"] == "not_ready"
+    assert "alembic_migration_status" in body["failing_checks"]
+    failing_check = next(chk for chk in body["checks"] if chk["name"] == "alembic_migration_status")
     assert failing_check["status"] == "fail"
 
 

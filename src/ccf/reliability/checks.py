@@ -86,9 +86,13 @@ async def _check_migrations(session: AsyncSession) -> Check:
             )
         if current == head:
             return Check("alembic_migration_status", PASS, f"At head ({head}).")
+        # Behind-head is a readiness FAILURE, not just a WARN: a container serving
+        # traffic against a stale schema can crash or corrupt data on code paths
+        # that assume the newer schema. This check is in BLOCKING_CHECKS, so a
+        # FAIL here pulls the instance out of rotation via /readyz.
         return Check(
             "alembic_migration_status",
-            WARN,
+            FAIL,
             f"DB at {current}; head is {head}.",
             "Run `alembic upgrade head`.",
         )
@@ -826,19 +830,26 @@ _CHECKS = [
 # Kept small and cheap on purpose: /readyz runs on every rotation decision, so it
 # must not pay for the full ~40-check suite (e.g. query_templates_health, which
 # exercises every assurance query template). Each entry here can return FAIL for
-# a condition that means the container should NOT receive traffic:
+# a condition that means THIS container should NOT receive traffic:
 #   - database_connectivity: no DB, no service.
-#   - alembic_migration_status: schema not migrated (no alembic_version row).
+#   - alembic_migration_status: schema behind head or unmigrated — unsafe to
+#     serve against a stale/partial schema.
 #   - required_tables: core tables missing (broken/partial migration).
 #   - auth_posture: auth disabled (or default secret) outside dev — go-live gate.
-#   - external_access_scope_integrity: a portal share crosses a tenant boundary,
-#     i.e. row-level isolation has been violated (RLS/tenant-boundary gate).
+#
+# external_access_scope_integrity is deliberately NOT here even though it can
+# FAIL: it detects a cross-tenant data leak, which is a GLOBAL data condition,
+# not a per-instance/per-process one. Every container reads the same database,
+# so putting it in BLOCKING_CHECKS would 503 the entire fleet simultaneously
+# on a single bad data row — and since the admin UI needed to fix that row
+# lives on the very containers pulled from rotation, the outage couldn't
+# self-heal. It stays in the full check suite (_CHECKS) below so it still
+# surfaces via /api/admin/reliability and alerts, just without gating readiness.
 BLOCKING_CHECKS = [
     _check_database,
     _check_migrations,
     _check_core_tables,
     _check_auth_posture,
-    _check_external_access_scope_integrity,
 ]
 
 

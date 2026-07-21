@@ -6,9 +6,13 @@ container — that's what ``/readyz`` pulling it from rotation is for).
 
 ``/readyz`` is a readiness probe: it runs the *blocking* subset of the
 reliability checks (``ccf.reliability.checks.BLOCKING_CHECKS`` — DB
-connectivity, migration status, required tables, auth posture, tenant/RLS
-boundary integrity) and returns 503 naming any FAILing check, so an unsafe
-container is kept out of rotation instead of serving traffic.
+connectivity, migration status, required tables, auth posture) and returns
+503 naming any FAILing check, so an unsafe container is kept out of rotation
+instead of serving traffic. Global data-integrity conditions (e.g. a
+cross-tenant scope leak) are deliberately excluded from this subset — they
+alert via the full reliability suite instead of gating readiness, since a bad
+data row shouldn't 503 the whole fleet at once (see the comment above
+``BLOCKING_CHECKS``).
 """
 
 from __future__ import annotations
