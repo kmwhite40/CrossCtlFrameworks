@@ -1,10 +1,13 @@
-"""Render an SSP project to a FedRAMP Appendix A style ``.docx``.
+"""Render a CMMC Level 2 / NIST SP 800-171 Rev.2 SSP project to ``.docx``.
 
-The layout mirrors ``CMMC_L2_SSP_Appendix_A_NIST_800-171_FedRAMP_Style.docx``:
-a cover/metadata block, usage notes, control-origination definitions, then one
-section per CMMC domain containing, for each control, a *Control Summary
-Information* table and a *What is the solution and how is it implemented?* table
-with one row per NIST 800-171A determination part.
+The document covers the 110 CMMC Level 2 practices (NIST SP 800-171 Rev.2) —
+it is not a FedRAMP SSP and does not contain NIST SP 800-53 content. The
+layout format resembles a FedRAMP-style Appendix A (the source template was
+``CMMC_L2_SSP_Appendix_A_NIST_800-171_FedRAMP_Style.docx``): a cover/metadata
+block, usage notes, control-origination definitions, then one section per
+CMMC domain containing, for each control, a *Control Summary Information*
+table and a *What is the solution and how is it implemented?* table with one
+row per NIST 800-171A determination part.
 """
 
 from __future__ import annotations
@@ -136,7 +139,7 @@ def _cover(doc: Any, project: Mapping[str, Any]) -> None:
     centered(project.get("title") or "System Security Plan (SSP)", 26, True, ACCENT)
     centered("Appendix A — CMMC Level 2 Security Requirements", 15, True)
     centered(
-        "NIST SP 800-171 Rev. 2  ·  documented in the FedRAMP SSP Appendix A control style",
+        "NIST SP 800-171 Rev. 2  ·  System Security Plan, documented in an Appendix-A layout",
         11,
         False,
         RGBColor(0x6B, 0x72, 0x80),
@@ -215,7 +218,9 @@ def _kv_table(doc: Any, rows: Sequence[tuple[str, str]]) -> None:
 
 
 def _system_characterization(doc: Any, project: Mapping[str, Any]) -> None:
-    """FedRAMP-style front matter: categorization, roles, boundary, interconnections."""
+    """Front matter (FedRAMP-Appendix-A-style layout): categorization, roles,
+    boundary, interconnections — content is CMMC L2 / NIST 800-171, not 800-53.
+    """
     meta: Mapping[str, Any] = project.get("metadata_json") or {}
     fips = meta.get("fips199") or {}
     roles = meta.get("roles") or {}

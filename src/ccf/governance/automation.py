@@ -92,7 +92,11 @@ QUESTIONNAIRE: list[dict[str, Any]] = [
         "prompt": "Target framework(s)?",
         "type": "multi",
         "field": "frameworks",
-        "options": ["CMMC_L2", "NIST_800_171", "NIST_800_53", "FedRAMP", "CIS"],
+        # Only frameworks the SSP pipeline actually produces are selectable here.
+        # The generator is hardwired to the 110 CMMC L2 / NIST 800-171 Rev.2
+        # practices; it does not produce a FedRAMP SSP or an 800-53 catalog, so
+        # those are intentionally not offered as SSP-target frameworks.
+        "options": ["CMMC_L2", "NIST_800_171", "CIS"],
     },
 ]
 

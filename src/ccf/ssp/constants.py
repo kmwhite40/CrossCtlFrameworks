@@ -1,4 +1,8 @@
-"""Shared CMMC / FedRAMP SSP vocabulary used by seeding, the API, and the docx."""
+"""Shared CMMC Level 2 / NIST SP 800-171 Rev.2 SSP vocabulary used by seeding,
+the API, and the docx generator. This is not a FedRAMP or NIST SP 800-53
+vocabulary; some field names (e.g. Control Origination) use FedRAMP-style
+terminology adapted for CMMC, but the content is CMMC/800-171.
+"""
 
 from __future__ import annotations
 
