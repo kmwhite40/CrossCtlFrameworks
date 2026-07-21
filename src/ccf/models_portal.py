@@ -100,7 +100,9 @@ class ExternalPackageShare(Base):
     grant_id: Mapped[int] = mapped_column(
         ForeignKey("ccf.external_access_grants.id", ondelete="CASCADE"), index=True
     )
-    package_id: Mapped[int] = mapped_column(Integer)
+    package_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.authorization_packages.id", ondelete="CASCADE")
+    )
 
     grant: Mapped[ExternalAccessGrant] = relationship(back_populates="package_shares")
 
@@ -114,7 +116,9 @@ class ExternalEvidenceShare(Base):
     grant_id: Mapped[int] = mapped_column(
         ForeignKey("ccf.external_access_grants.id", ondelete="CASCADE"), index=True
     )
-    evidence_object_id: Mapped[int] = mapped_column(Integer)
+    evidence_object_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.evidence_objects.id", ondelete="CASCADE")
+    )
 
     grant: Mapped[ExternalAccessGrant] = relationship(back_populates="evidence_shares")
 
