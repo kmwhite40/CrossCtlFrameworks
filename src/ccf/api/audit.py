@@ -32,7 +32,7 @@ _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 _ACTION = {"POST": "create", "PUT": "update", "PATCH": "update", "DELETE": "delete"}
 _SKIP_PREFIXES = ("/metrics", "/healthz", "/readyz", "/livez", "/static", "/api/audit")
 _ID_RE = re.compile(r"\d+")
-_REDACT = ("password", "token", "secret", "api_token")
+_REDACT = ("password", "token", "secret", "api_token", "key", "credential", "private")
 _GENESIS = "0" * 64
 _MAX_BODY = 8_192
 

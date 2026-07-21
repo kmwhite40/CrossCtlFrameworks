@@ -36,7 +36,7 @@
       {% for t in tasks %}
       <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px">
         <div>
-          <span class="chip {% if t.priority=='critical' or t.priority=='high' %}chip--warn{% else %}chip--ghost{% endif %}">{{ t.priority }}</span>
+          <span class="chip {% if t.priority=='critical' %}chip--err{% elif t.priority=='high' %}chip--warn{% else %}chip--ghost{% endif %}">{{ t.priority }}</span>
           <span style="font-weight:600">{{ t.title }}</span>
           <div class="dim" style="font-size:12px">{{ t.kind }} · {{ t.status }}{% if t.due_on %} · due {{ t.due_on }}{% endif %}{% if t.source=='auto' %} · auto{% endif %}</div>
         </div>
@@ -51,7 +51,7 @@
       {% for n in notifs %}
       <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px;{% if n.read_at %}opacity:.6{% endif %}">
         <div>
-          <span class="chip {% if n.severity=='critical' %}chip--warn{% elif n.severity=='warning' %}chip--info{% else %}chip--ghost{% endif %}">{{ n.severity }}</span>
+          <span class="chip {% if n.severity=='critical' %}chip--err{% elif n.severity=='warning' %}chip--warn{% else %}chip--ghost{% endif %}">{{ n.severity }}</span>
           <span style="font-weight:600">{{ n.title }}</span>
           <div class="dim" style="font-size:12px">{{ n.category }}{% if n.body %} · {{ n.body }}{% endif %}</div>
         </div>
