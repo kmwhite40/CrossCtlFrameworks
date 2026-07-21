@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
+from ...config import get_settings
 from ...governance import bus
-from ...models import POAM, PoamMilestone, System
+from ...models import POAM, Approval, ControlImplementation, Evidence, PoamMilestone, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
@@ -159,6 +160,60 @@ async def _require_poam(session: AsyncSession, pid: int, principal: Principal) -
     return obj
 
 
+# --- Closure gate (ISSM-08/09): a POA&M can only close once the weakness is
+# validated (all milestones complete) or corroborated by a closure evidence
+# artifact, and — when auth is enabled — with a separation-of-duties approval
+# from a principal other than the one who submitted it. -----------------------
+
+
+def _milestones_satisfy_closure(obj: POAM) -> bool:
+    ms = obj.milestones or []
+    return bool(ms) and all(m.status == "completed" for m in ms)
+
+
+async def _has_closure_evidence(session: AsyncSession, obj: POAM) -> bool:
+    """A closure artifact: evidence collected against the control
+    implementation this POA&M remediates (same system + control)."""
+    if obj.control_id is None:
+        return False
+    stmt = (
+        select(Evidence.id)
+        .join(ControlImplementation, Evidence.implementation_id == ControlImplementation.id)
+        .where(
+            ControlImplementation.system_id == obj.system_id,
+            ControlImplementation.control_id == obj.control_id,
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def _is_approved(session: AsyncSession, entity_type: str, entity_id: int | str) -> bool:
+    row = (
+        await session.execute(
+            select(Approval).where(
+                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
+            )
+        )
+    ).scalar_one_or_none()
+    return row is not None and row.state == "approved"
+
+
+async def _require_closure_gate(session: AsyncSession, obj: POAM) -> None:
+    if not _milestones_satisfy_closure(obj) and not await _has_closure_evidence(session, obj):
+        raise HTTPException(
+            409,
+            "cannot close: requires either all milestones completed or a linked closure "
+            "evidence artifact for the remediated control",
+        )
+    if get_settings().auth_enabled and not await _is_approved(session, "poam", obj.id):
+        raise HTTPException(
+            409,
+            "cannot close: requires an approved review (submit for approval, then have a "
+            "different principal approve it — separation of duties)",
+        )
+
+
 @router.get("")
 async def list_poams(
     session: AsyncSession = Depends(get_session),
@@ -265,6 +320,8 @@ async def create_poam(
             raise HTTPException(404, "system not found")
     data = body.model_dump(exclude_none=True)
     obj = POAM(**data)
+    if data.get("status") == "closed":
+        await _require_closure_gate(session, obj)
     if obj.due_on is not None and obj.original_due_on is None:
         obj.original_due_on = obj.due_on  # capture the baseline for deviation tracking
     session.add(obj)
@@ -301,7 +358,10 @@ async def update_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if data.get("status") == "closed":
+        await _require_closure_gate(session, obj)
+    for k, v in data.items():
         setattr(obj, k, v)
     await bus.emit(
         session,
@@ -324,6 +384,7 @@ async def close_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
+    await _require_closure_gate(session, obj)
     obj.status = "closed"
     obj.closed_on = date.today()
     await bus.emit(

@@ -17,9 +17,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...config import get_settings
 from ...governance import bus
 from ...governance.risk import band, compute_scores
-from ...models import Risk, System, Task
+from ...models import Approval, Risk, System, Task
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
@@ -106,6 +107,39 @@ def _rescore(obj: Risk) -> None:
     obj.inherent_score, obj.residual_score = compute_scores(
         obj.likelihood, obj.impact, obj.treatment
     )
+
+
+# --- Acceptance gate (ISSM-08/09): a risk can only move to 'accepted' with a
+# named owner and an expiration/review date, and — when auth is enabled — with
+# an AO-role approval recorded via the existing Approval workflow. -----------
+
+
+async def _is_approved(session: AsyncSession, entity_type: str, entity_id: int | str) -> bool:
+    row = (
+        await session.execute(
+            select(Approval).where(
+                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
+            )
+        )
+    ).scalar_one_or_none()
+    return row is not None and row.state == "approved"
+
+
+async def _require_acceptance_gate(
+    session: AsyncSession, *, owner_user_id: int | None, next_review_on: object, risk_id: int | str
+) -> None:
+    if owner_user_id is None or next_review_on is None:
+        raise HTTPException(
+            409,
+            "risk acceptance requires an owner (owner_user_id) and an expiration/"
+            "next_review_on date",
+        )
+    if get_settings().auth_enabled and not await _is_approved(session, "risk", risk_id):
+        raise HTTPException(
+            409,
+            "risk acceptance requires an approved authorizing-official review (submit for "
+            "approval, then have an AO/admin approve it)",
+        )
 
 
 async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *, verb: str) -> None:
@@ -220,7 +254,23 @@ async def create_risk(
         ).scalar_one_or_none()
         if ok is None:
             raise HTTPException(404, "system not found")
-    obj = Risk(**body.model_dump(exclude_none=True))
+    data = body.model_dump(exclude_none=True)
+    if data.get("status") == "accepted":
+        if data.get("owner_user_id") is None or data.get("next_review_on") is None:
+            raise HTTPException(
+                409,
+                "risk acceptance requires an owner (owner_user_id) and an expiration/"
+                "next_review_on date",
+            )
+        if get_settings().auth_enabled:
+            # A brand-new risk cannot already carry an approved SoD review — it
+            # must be created open, then accepted via PATCH after submit/approve.
+            raise HTTPException(
+                409,
+                "risk acceptance requires an approved authorizing-official review; create "
+                "the risk first, then accept it once approved",
+            )
+    obj = Risk(**data)
     _rescore(obj)
     session.add(obj)
     await session.flush()
@@ -238,7 +288,15 @@ async def update_risk(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_risk(session, rid, principal)
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if data.get("status") == "accepted":
+        await _require_acceptance_gate(
+            session,
+            owner_user_id=data.get("owner_user_id", obj.owner_user_id),
+            next_review_on=data.get("next_review_on", obj.next_review_on),
+            risk_id=rid,
+        )
+    for k, v in data.items():
         setattr(obj, k, v)
     _rescore(obj)
     await session.flush()
