@@ -61,7 +61,8 @@ class ExternalAccessGrant(Base):
     label: Mapped[str | None] = mapped_column(String(255))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
-    scope: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # {package_ids, evidence_ids}
+    # {package_ids, evidence_ids}
+    scope: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     package_shares: Mapped[list[ExternalPackageShare]] = relationship(
