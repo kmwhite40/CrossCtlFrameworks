@@ -622,6 +622,10 @@ class POAM(Base):
     # (updates/reopens/auto-closes) instead of creating duplicate POA&Ms.
     scanner: Mapped[str | None] = mapped_column(String(32))  # nessus|tenable|qualys|inspector|csv
     finding_uid: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Stable back-reference to the originating record for any source (e.g.
+    # "assessment:{assessment_control_result_id}"), so re-running generation
+    # from that origin is idempotent on this reference rather than a title match.
+    source_ref: Mapped[str | None] = mapped_column(String(128), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
