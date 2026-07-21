@@ -23,6 +23,7 @@ from datetime import date, timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import delete
 
 from ccf.analytics import overview, posture
 from ccf.analytics.overview import _severity_breakdown
@@ -99,6 +100,21 @@ async def test_dashboard_risk_and_ops_blocks_are_org_scoped_in_query() -> None:
     depth beyond RLS: this asserts the query itself is filtered, using two
     orgs seeded in the same test run against the same (unfiltered-by-RLS)
     session."""
+    ksi_ids: list[int] = []
+    try:
+        await _dashboard_risk_and_ops_blocks_are_org_scoped_in_query(ksi_ids)
+    finally:
+        # KSI (``ccf.ksis``) is the GLOBAL FedRAMP 20x catalog table — the
+        # suite's DB reset only runs once per session, so leaked rows here
+        # inflate test_fedramp20x.py::test_seed_catalog_is_idempotent's exact
+        # row count for every test that runs after this one. KSIState rows
+        # cascade-delete (ondelete="CASCADE") along with their KSI parent.
+        if ksi_ids:
+            async with session_scope() as s:
+                await s.execute(delete(KSI).where(KSI.id.in_(ksi_ids)))
+
+
+async def _dashboard_risk_and_ops_blocks_are_org_scoped_in_query(ksi_ids: list[int]) -> None:
     org_a, sys_a = await _org_and_system("DashScopeOrgA")
     org_b, sys_b = await _org_and_system("DashScopeOrgB")
 
@@ -144,6 +160,7 @@ async def test_dashboard_risk_and_ops_blocks_are_org_scoped_in_query() -> None:
         ksi_2 = KSI(identifier="KSI-SCOPE-TEST-2", category="IAM", name="scope-test-ksi-2")
         s.add_all([ksi_1, ksi_2])
         await s.flush()
+        ksi_ids.extend([ksi_1.id, ksi_2.id])
         s.add_all(
             [
                 KSIState(system_id=sys_a, ksi_id=ksi_1.id, status="fail"),
