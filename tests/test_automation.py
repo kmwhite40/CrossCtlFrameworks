@@ -8,6 +8,7 @@ from ccf.governance.automation import (
     _COVERAGE_TO_STATE,
     _platform_state,
     na_control_ids,
+    ssp_overlay_for,
 )
 from ccf.scoring.engine import _MET
 
@@ -38,10 +39,15 @@ def test_m365_per_practice_inheritance() -> None:
 
 
 def test_platform_domain_default_and_fallback() -> None:
-    # Azure Gov: PE inherited by domain default; AC falls back to customer.
+    # Azure Gov: PE inherited by domain default; AC has no per-control or
+    # per-domain coverage data for Azure, so it's flagged "unknown" (needs
+    # manual responsibility assignment) rather than silently guessed as
+    # "customer" (FR-12) — see ssp/constants.py needs_manual_responsibility_assignment.
     assert _platform_state("azure_gov", N(m365_coverage_status=None, domain="PE"))[0] == "inherited"
-    assert _platform_state("azure_gov", N(m365_coverage_status=None, domain="AC"))[1] == "customer"
-    # Unknown/none platform -> customer.
+    assert _platform_state("azure_gov", N(m365_coverage_status=None, domain="AC"))[1] == "unknown"
+    # No cloud platform at all -> nothing can be inherited, so "customer" is a
+    # correct, non-guessed default (not the same situation as an unmapped
+    # domain on a *known* cloud platform, above).
     assert _platform_state("none", N(m365_coverage_status=None, domain="PE"))[1] == "customer"
 
 
@@ -49,3 +55,13 @@ def test_coverage_states_are_scoring_met() -> None:
     # inherited + not_applicable must be states the SPRS engine treats as met.
     assert _COVERAGE_TO_STATE["Microsoft Coverage"][0] in _MET
     assert _COVERAGE_TO_STATE["Not Applicable"][0] in _MET
+
+
+def test_unknown_responsibility_overlay_does_not_assert_a_confident_origination() -> None:
+    """An 'unknown' control (no per-control/per-domain coverage data on this
+    platform) must not have the profile-driven SSP overlay overwrite it with a
+    confident customer/system-specific origination — the seed layer's
+    manual-assignment flag (ssp/constants.py) must survive untouched."""
+    derivation = {"AC.L2-3.1.1": {"responsibility": "unknown", "state": "not_implemented"}}
+    overlay = ssp_overlay_for("AC.L2-3.1.1", derivation)
+    assert overlay["control_origination"] == []

@@ -93,6 +93,87 @@ COVERAGE_TO_ORIGINATION: dict[str, list[str]] = {
     "Not Applicable": ["Organization System Specific"],
 }
 
+# Domain-level responsibility for platforms whose cloud coverage is only known
+# per CMMC domain rather than per individual control (Microsoft 365 is the only
+# platform with per-practice data — see COVERAGE_TO_ORIGINATION above). Keyed by
+# the SSP authoring platform code (see ssp/platforms.py PLATFORMS), then CMMC
+# domain, to a responsibility bucket. ``ccf.governance.automation`` derives its
+# per-practice scoring responsibility from this same table (translating its
+# intake-questionnaire ``cloud_platform`` code to this SSP platform code first)
+# so a platform's SPRS-scoring responsibility and its SSP control origination
+# never disagree.
+#
+# A domain not listed here has no known per-control *or* per-domain responsibility
+# for that platform — origination must not be guessed; see
+# ``needs_manual_responsibility_assignment``.
+PLATFORM_DOMAIN_RESPONSIBILITY: dict[str, dict[str, str]] = {
+    "azure": {
+        "PE": "inherited",
+        "MA": "shared",
+        "SC": "shared",
+        "AU": "shared",
+        "CM": "shared",
+        "SI": "shared",
+    },
+    "aws_govcloud": {
+        "PE": "inherited",
+        "MA": "shared",
+        "SC": "shared",
+        "AU": "shared",
+        "CM": "shared",
+        "SI": "shared",
+    },
+}
+
+# Responsibility bucket -> control origination, reusing CONTROL_ORIGINATION_OPTIONS.
+# Deliberately has no "system-specific"/"organization implemented" entry for
+# "inherited"/"shared" — a provider-performed or provider-shared control must
+# never render as purely organization/system-specific.
+RESPONSIBILITY_TO_ORIGINATION: dict[str, list[str]] = {
+    "inherited": ["Inherited"],
+    "shared": ["Shared"],
+    "customer": ["Configured by Customer / Business Owner"],
+}
+
+# Clear flag used (in ``responsible_role``, not ``control_origination`` — origination
+# stays within CONTROL_ORIGINATION_OPTIONS) when a non-M365 platform has no
+# per-control or per-domain responsibility data for a control, so an assessor must
+# assign responsibility explicitly instead of the seed silently guessing one.
+MANUAL_RESPONSIBILITY_FLAG = "Requires Manual Responsibility Assignment"
+
+
+def platform_responsibility(platform: str, domain: str | None) -> str | None:
+    """Responsibility bucket ('inherited' | 'shared') for a non-M365 platform's
+    domain, from the domain-level coverage table, or ``None`` if this
+    platform/domain combination has no per-control or per-domain data (see
+    :func:`needs_manual_responsibility_assignment`)."""
+    return PLATFORM_DOMAIN_RESPONSIBILITY.get(platform, {}).get((domain or "").upper())
+
+
+def needs_manual_responsibility_assignment(platform: str, domain: str | None) -> bool:
+    """True when a non-M365 platform has no per-control/per-domain responsibility
+    data for this control, so origination can't be derived and must be flagged
+    for a human to assign explicitly rather than silently defaulted."""
+    return platform != "m365" and platform_responsibility(platform, domain) is None
+
+
+def platform_origination(
+    platform: str, coverage_status: str | None, domain: str | None
+) -> list[str]:
+    """Control origination for a control on the SSP project's *selected* platform.
+
+    Microsoft 365 has per-practice coverage data (``coverage_status``, from the
+    scoring matrix' M365 placemat) — see :func:`default_origination`. Every other
+    platform only has the domain-level table above: a covered domain's origination
+    reflects who actually performs the control on that platform (never copies the
+    M365 split); a domain with no per-control/per-domain data is left unset here
+    rather than silently defaulted (see :func:`needs_manual_responsibility_assignment`).
+    """
+    if platform == "m365":
+        return default_origination(coverage_status)
+    resp = platform_responsibility(platform, domain)
+    return list(RESPONSIBILITY_TO_ORIGINATION.get(resp or "", []))
+
 
 def section_number(domain: str) -> str:
     return DOMAINS.get(domain, ("3.x", domain))[0]

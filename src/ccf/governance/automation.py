@@ -30,6 +30,7 @@ from ..models import (
     Vendor,
 )
 from ..scoring.engine import deduction_for, score_system
+from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
 from ..ssp.platforms import GOV_ENVIRONMENTS, platform_label, services_for
 from ..ssp.seed import seed_project_entries
@@ -108,27 +109,35 @@ _COVERAGE_TO_STATE: dict[str, tuple[str, str]] = {
     "Not Applicable": ("not_applicable", "customer"),
 }
 
+# Intake-questionnaire cloud_platform code -> SSP authoring platform code (see
+# ssp/platforms.py PLATFORMS). Defined here (rather than only near
+# generate_ssp/generate_statements below, where it's also used) because
+# _PLATFORM_DOMAIN needs it to translate into ssp/constants.py's canonical
+# per-platform domain responsibility table.
+PLATFORM_TO_SSP = {
+    "m365_gcc_high": "m365",
+    "azure_gov": "azure",
+    "aws_govcloud": "aws_govcloud",
+}
+
+_RESP_TO_STATE = {"inherited": "inherited", "shared": "partial"}
+
 # For platforms without per-practice data, a per-CMMC-domain default.
-# domain -> (state, responsibility)
+# domain -> (state, responsibility). Sourced from ssp/constants.py's
+# PLATFORM_DOMAIN_RESPONSIBILITY (translated from this module's cloud_platform
+# codes to SSP platform codes via PLATFORM_TO_SSP) so this module's SPRS-scoring
+# responsibility and ssp/seed.py's SSP control origination never disagree — one
+# table, not two hand-maintained copies.
 _PLATFORM_DOMAIN: dict[str, dict[str, tuple[str, str]]] = {
-    "azure_gov": {
-        "PE": ("inherited", "inherited"),
-        "MA": ("partial", "shared"),
-        "SC": ("partial", "shared"),
-        "AU": ("partial", "shared"),
-        "CM": ("partial", "shared"),
-        "SI": ("partial", "shared"),
-    },
-    "aws_govcloud": {
-        "PE": ("inherited", "inherited"),
-        "MA": ("partial", "shared"),
-        "SC": ("partial", "shared"),
-        "AU": ("partial", "shared"),
-        "CM": ("partial", "shared"),
-        "SI": ("partial", "shared"),
-    },
+    cloud_code: {
+        domain: (_RESP_TO_STATE[resp], resp)
+        for domain, resp in ssp_constants.PLATFORM_DOMAIN_RESPONSIBILITY.get(ssp_code, {}).items()
+    }
+    for cloud_code, ssp_code in PLATFORM_TO_SSP.items()
+    if ssp_code in ssp_constants.PLATFORM_DOMAIN_RESPONSIBILITY
 }
 _DEFAULT_CUSTOMER = ("not_implemented", "customer")
+_DEFAULT_UNKNOWN = ("not_implemented", "unknown")
 
 # Applicability (N/A) rules: predicate over the profile -> CMMC control ids N/A.
 _MOBILE_CTRLS = {"AC.L2-3.1.18", "AC.L2-3.1.19"}
@@ -171,10 +180,18 @@ def _platform_state(platform: str | None, sc: ScoringControl) -> tuple[str, str,
     if platform == "m365_gcc_high":
         state, resp = _COVERAGE_TO_STATE.get(sc.m365_coverage_status or "", _DEFAULT_CUSTOMER)
         return state, resp, "platform:m365_gcc_high"
-    dom = _PLATFORM_DOMAIN.get(platform or "", {})
-    if sc.domain in dom:
-        state, resp = dom[sc.domain]
-        return state, resp, f"platform:{platform}"
+    if platform in _PLATFORM_DOMAIN:
+        dom = _PLATFORM_DOMAIN[platform]
+        if sc.domain in dom:
+            state, resp = dom[sc.domain]
+            return state, resp, f"platform:{platform}"
+        # A recognized cloud platform with no per-control or per-domain coverage
+        # data for this domain — don't silently guess "customer" (FR-12); flag
+        # it "unknown" so SSP origination and coverage rollups surface it for
+        # manual responsibility assignment instead of a false-confident default.
+        return (*_DEFAULT_UNKNOWN, f"platform:{platform}")
+    # No cloud platform selected (or an unrecognized code) — nothing can be
+    # inherited, so "customer" is the correct, non-guessed default here.
     return (*_DEFAULT_CUSTOMER, "customer")
 
 
@@ -236,7 +253,10 @@ async def derive_system(
         )
         by_resp[resp] = by_resp.get(resp, 0) + 1
         by_state[state] = by_state.get(state, 0) + 1
-        if state in ("not_implemented", "planned") and resp in ("customer", "shared"):
+        # "unknown" (no per-control/per-domain coverage data) is a gap too — it
+        # still needs a POA&M/triage entry, just like customer/shared, rather
+        # than being silently treated as covered.
+        if state in ("not_implemented", "planned") and resp in ("customer", "shared", "unknown"):
             gaps.append(sc)
 
         # Upsert the CMMC scoring state so SPRS reflects the derivation.
@@ -329,18 +349,17 @@ async def _seed_gap_poams(
 
 
 # --- Profile -> SSP projection ----------------------------------------------
-
-# profile cloud platform -> SSP authoring platform code.
-PLATFORM_TO_SSP = {
-    "m365_gcc_high": "m365",
-    "azure_gov": "azure",
-    "aws_govcloud": "aws_govcloud",
-}
+# (PLATFORM_TO_SSP is defined earlier, alongside _PLATFORM_DOMAIN, which needs
+# it too.)
 _RESP_TO_ORIGINATION = {
     "inherited": ["Inherited"],
     "shared": ["Shared"],
     "customer": ["Configured by Customer / Business Owner"],
     "not_applicable": [],
+    # No per-control/per-domain coverage data (see ssp/constants.py
+    # needs_manual_responsibility_assignment) — leave origination unset rather
+    # than overwriting seed.py's manual-assignment flag with a confident guess.
+    "unknown": [],
 }
 _STATE_TO_STATUS = {
     "inherited": ["Implemented"],
@@ -474,7 +493,7 @@ async def generate_statements(
             include_captured=include_captured,
             mark_draft=mark_draft,
         )
-        if ai_ready and responsibility in ("customer", "shared"):
+        if ai_ready and responsibility in ("customer", "shared", "unknown"):
             ai_text = await ai.draft_narrative(
                 e.control_id, e.requirement or "", environment, services
             )
