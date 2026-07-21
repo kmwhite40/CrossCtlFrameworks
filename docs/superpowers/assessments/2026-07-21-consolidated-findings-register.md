@@ -256,3 +256,40 @@ finding-vocabulary unification), CISO-01..06/08 (aggregation + prod-readiness �
 DATA-01..12 (schema/security → dedicated security slice), FR-14 (FedRAMP-2026 label-only),
 and the FedRAMP 800-53r5 pipeline (FR-01 future program). Manual SSP-editor PATCH of
 `control_origination` is not yet validated against derived responsibility (noted follow-up).
+
+---
+
+## Security slice resolutions (2026-07-21, subagent-driven, same branch)
+
+5 TDD tasks + a test-determinism fix + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **IA-03** — RLS regression test now covers **all ~108 policy-bound tables** structurally
+  (live `pg_policy` enumeration asserting ENABLE+FORCE) plus behavioral cross-tenant
+  isolation checks on 7 representative predicate shapes.
+- **IA-04 / DATA-01** — `tenant_isolation` RLS added to `poam_milestones` (parent-join) and
+  `organizations` (self), ENABLE+FORCE (migration `0039`).
+- **IA-02** — audit-read endpoints (`list_audit`, `verify_chain`) **and** the `/audit` HTML
+  page now `require_role("admin","assessor")`. (True per-tenant row scoping still needs
+  `audit_log.organization_id` — **DATA-06**, deferred, documented in code.)
+- **DATA-08 / DATA-10** — unique constraints on vendors/policies/fedramp_dependencies/
+  pack_mappings/people natural keys, with an in-migration dedupe (migration `0040`);
+  integrity validator `unique_keys` findings 5→0.
+- **IA-09** — bearer tokens (`User.api_token`, portal grant tokens) now **stored hashed**
+  (SHA-256, plaintext columns dropped, hash-in-place backfill so live tokens keep working;
+  migration `0041`). Auth hashes-then-compares. **Bonus:** `/api/auth/login` and the
+  grants-list endpoint were re-leaking plaintext tokens on every call — now dropped; the
+  admin issuance flow reveals the token once in the response body (not a redirect URL).
+
+**Whole-branch review findings (all fixed, commit `1a4e2c7`):** the `/audit` UI page
+initially bypassed the API's role gate (cross-tenant exposure via a second path); the grant
+token setter didn't guard empty; the admin redirect leaked the token in a URL query param.
+
+**New follow-ups noted:** **DATA-06** (audit_log needs an `organization_id` column + RLS for
+true per-tenant audit isolation), and **portal-link hardening** — the external portal access
+link is `…/portal?token=<plaintext>` by design (magic-link delivery); exchanging the
+link-token for a session cookie on first use would keep it out of portal access logs.
+
+**Still open → later slices:** DATA-02/03/04/06/07/09/11/12 (portal FKs, framework_controls
+org-scope, soft-delete/cascade, audit org-column, dangling-pointer FKs, evidence-store
+bridge), IA-05/06/07/08/10 (per-org connector creds, scheduler scoping, evidence digest
+verify, WORM enforcement, AI flag wiring), ISSM-04..13, CISO-01..08.
