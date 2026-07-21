@@ -41,8 +41,13 @@ async def _impl_coverage(session: AsyncSession, system_id: int) -> dict[str, int
     return {"total": total, "met": met, "by_status": counts}
 
 
-def _org_system_subq(org_id: int | None) -> Any:
-    """Subquery of System ids in an org (or all systems when org_id is None)."""
+def org_system_subq(org_id: int | None) -> Any:
+    """Subquery of System ids in an org (or all systems when org_id is None).
+
+    Public (not module-private) because ``ccf.analytics.overview`` reuses it to
+    scope its own ``_block`` functions to the same org — a scoped dashboard must
+    be provably org-filtered in the query itself, not only via RLS.
+    """
     stmt = select(System.id)
     if org_id is not None:
         stmt = stmt.where(System.organization_id == org_id)
@@ -141,7 +146,7 @@ async def poam_aging(
     """
     stmt = select(POAM).where(POAM.status.in_(("open", "in_progress")))
     if org_id is not None:
-        stmt = stmt.where(POAM.system_id.in_(_org_system_subq(org_id)))
+        stmt = stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
     rows = (await session.execute(stmt)).scalars().all()
     buckets = {"0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, "unknown": 0}
     overdue = 0
@@ -175,8 +180,8 @@ async def poam_aging(
         POAM.status == "completed", POAM.closed_on.is_(None)
     )
     if org_id is not None:
-        accepted_stmt = accepted_stmt.where(POAM.system_id.in_(_org_system_subq(org_id)))
-        dq_stmt = dq_stmt.where(POAM.system_id.in_(_org_system_subq(org_id)))
+        accepted_stmt = accepted_stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
+        dq_stmt = dq_stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
     accepted = (await session.execute(accepted_stmt)).scalar_one()
     completed_missing_closure = (await session.execute(dq_stmt)).scalar_one()
 
@@ -203,7 +208,7 @@ async def evidence_freshness(
         stmt = (
             stmt.join(
                 ControlImplementation, ControlImplementation.id == Evidence.implementation_id
-            ).where(ControlImplementation.system_id.in_(_org_system_subq(org_id)))
+            ).where(ControlImplementation.system_id.in_(org_system_subq(org_id)))
         )
     rows = (await session.execute(stmt)).all()
     horizon = today + timedelta(days=EXPIRING_WINDOW_DAYS)
@@ -241,7 +246,7 @@ async def org_summary(
     risk_stmt = select(Risk.status, func.count()).group_by(Risk.status)
     ato_stmt = select(System.ato_status, func.count()).group_by(System.ato_status)
     if org_id is not None:
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(_org_system_subq(org_id)))
+        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_system_subq(org_id)))
         ato_stmt = ato_stmt.where(System.organization_id == org_id)
     risk_rows = (await session.execute(risk_stmt)).all()
     ato_rows = (await session.execute(ato_stmt)).all()

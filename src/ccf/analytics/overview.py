@@ -4,9 +4,15 @@ One async call that assembles the operational-overview metrics the ``/dashboard`
 page renders — catalog coverage, per-system readiness, POA&M/finding posture, risk
 bands, and continuous-monitoring health. Every section is guarded so the dashboard
 degrades gracefully on an empty/partly-seeded database (each block returns zeros
-rather than raising). Tenant isolation is handled by the request session's RLS
-context, so callers pass ``org_id`` only when they also want the explicit scoping
-that :mod:`ccf.analytics.posture` applies.
+rather than raising).
+
+Tenant isolation is enforced at the DB session level via RLS, but every
+tenant-owned ``_block`` function here also filters on ``org_id`` explicitly when
+one is given — defense-in-depth so a scoped dashboard is provably org-filtered
+in the query itself, not only via RLS. The two blocks over shared reference
+data (``_catalog``, ``_framework_tiles``) are the deliberate exception: the
+control catalog and framework mappings are identical for every tenant, so they
+stay global and ignore ``org_id``.
 """
 
 from __future__ import annotations
@@ -35,7 +41,30 @@ _SEV_ORDER = ("critical", "high", "moderate", "low")
 _BAND_ORDER = ("critical", "high", "moderate", "low", "unknown")
 
 
+def _severity_breakdown(by_sev: dict[str, int]) -> list[dict[str, Any]]:
+    """Turn a severity→count tally into ordered chart segments.
+
+    Every count in ``by_sev`` lands somewhere: known severities keep their
+    ``_SEV_ORDER`` slot, anything else (an out-of-vocabulary or future
+    severity value) is folded into a catch-all ``"other"`` segment. That
+    partition is exhaustive, so ``sum(seg["count"] for seg in result) ==
+    sum(by_sev.values())`` always holds — the severity chart can never
+    silently drop rows that the headline total still counts.
+    """
+    other_count = sum(n for sev, n in by_sev.items() if sev not in _SEV_ORDER)
+    segments = [{"key": s, "count": by_sev.get(s, 0)} for s in _SEV_ORDER if by_sev.get(s, 0)]
+    if other_count:
+        segments.append({"key": "other", "count": other_count})
+    if not segments:
+        # Nothing open: keep the full vocabulary at zero so the donut still
+        # renders a legend instead of an empty list.
+        segments = [{"key": s, "count": 0} for s in _SEV_ORDER]
+    return segments
+
+
 async def _catalog(session: AsyncSession) -> dict[str, Any]:
+    # Deliberately global / not org_id-scoped: the control catalog, frameworks,
+    # mappings, and worksheets are shared reference data, not tenant-owned.
     controls = (await session.execute(select(func.count(Control.id)))).scalar_one()
     return {
         "controls": controls,
@@ -63,7 +92,11 @@ async def _catalog(session: AsyncSession) -> dict[str, Any]:
 
 
 async def _framework_tiles(session: AsyncSession, limit: int = 6) -> list[dict[str, Any]]:
-    """Top frameworks by mapping volume, with a coverage ratio for a gauge."""
+    """Top frameworks by mapping volume, with a coverage ratio for a gauge.
+
+    Deliberately global / not org_id-scoped: frameworks and their mappings to the
+    control catalog are shared reference data, identical for every tenant.
+    """
     total_controls = (await session.execute(select(func.count(Control.id)))).scalar_one() or 0
     rows = (
         await session.execute(
@@ -94,26 +127,36 @@ async def _framework_tiles(session: AsyncSession, limit: int = 6) -> list[dict[s
     return tiles
 
 
-async def _risk_by_band(session: AsyncSession) -> dict[str, int]:
+async def _risk_by_band(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
+    """Open risk register, bucketed by residual-exposure band.
+
+    Excludes ``closed`` risks — the same population rule ``posture.org_summary``
+    uses for ``risks_by_status`` (a "closed" status there just isn't excluded
+    from the breakdown; summing every non-closed status count reconciles
+    exactly to the total returned here) so the heatmap and the status
+    breakdown agree on what counts as an open risk.
+    """
     out = dict.fromkeys(_BAND_ORDER, 0)
-    for score, status in (
-        await session.execute(select(Risk.residual_score, Risk.status))
-    ).all():
+    stmt = select(Risk.residual_score, Risk.status)
+    if org_id is not None:
+        stmt = stmt.where(Risk.system_id.in_(posture.org_system_subq(org_id)))
+    for score, status in (await session.execute(stmt)).all():
         if status == "closed":
             continue
         out[band(score)] += 1
     return out
 
 
-async def _mttr_trend(session: AsyncSession, months: int = 12) -> dict[str, Any]:
+async def _mttr_trend(
+    session: AsyncSession, org_id: int | None = None, months: int = 12
+) -> dict[str, Any]:
     """Mean days-to-close for POA&Ms, bucketed by close month over the past year."""
     from ..models import POAM  # noqa: PLC0415 - local to keep the import surface small
 
-    rows = (
-        await session.execute(
-            select(POAM.identified_on, POAM.closed_on).where(POAM.closed_on.is_not(None))
-        )
-    ).all()
+    stmt = select(POAM.identified_on, POAM.closed_on).where(POAM.closed_on.is_not(None))
+    if org_id is not None:
+        stmt = stmt.where(POAM.system_id.in_(posture.org_system_subq(org_id)))
+    rows = (await session.execute(stmt)).all()
     now = datetime.now(UTC).date()
     # Build the trailing-`months` window as (year, month) keys.
     keys: list[tuple[int, int]] = []
@@ -137,12 +180,11 @@ async def _mttr_trend(session: AsyncSession, months: int = 12) -> dict[str, Any]
     return {"series": series, "closed_total": closed_total, "latest": latest}
 
 
-async def _control_tests(session: AsyncSession) -> dict[str, int]:
-    rows = (
-        await session.execute(
-            select(ControlTest.last_status, func.count()).group_by(ControlTest.last_status)
-        )
-    ).all()
+async def _control_tests(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
+    stmt = select(ControlTest.last_status, func.count()).group_by(ControlTest.last_status)
+    if org_id is not None:
+        stmt = stmt.where(ControlTest.organization_id == org_id)
+    rows = (await session.execute(stmt)).all()
     out = {"pass": 0, "warn": 0, "fail": 0, "untested": 0, "total": 0}
     for status, n in rows:
         out["total"] += n
@@ -150,10 +192,11 @@ async def _control_tests(session: AsyncSession) -> dict[str, int]:
     return out
 
 
-async def _ksi_states(session: AsyncSession) -> dict[str, int]:
-    rows = (
-        await session.execute(select(KSIState.status, func.count()).group_by(KSIState.status))
-    ).all()
+async def _ksi_states(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
+    stmt = select(KSIState.status, func.count()).group_by(KSIState.status)
+    if org_id is not None:
+        stmt = stmt.where(KSIState.system_id.in_(posture.org_system_subq(org_id)))
+    rows = (await session.execute(stmt)).all()
     out = {
         "pass": 0, "warn": 0, "fail": 0, "not_tested": 0,
         "manual_review_required": 0, "total": 0,
@@ -164,14 +207,15 @@ async def _ksi_states(session: AsyncSession) -> dict[str, int]:
     return out
 
 
-async def _tasks_by_priority(session: AsyncSession) -> dict[str, int]:
-    rows = (
-        await session.execute(
-            select(Task.priority, func.count())
-            .where(Task.status.in_(("open", "in_progress")))
-            .group_by(Task.priority)
-        )
-    ).all()
+async def _tasks_by_priority(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
+    stmt = (
+        select(Task.priority, func.count())
+        .where(Task.status.in_(("open", "in_progress")))
+        .group_by(Task.priority)
+    )
+    if org_id is not None:
+        stmt = stmt.where(Task.organization_id == org_id)
+    rows = (await session.execute(stmt)).all()
     out = {"critical": 0, "high": 0, "medium": 0, "low": 0}
     for priority, n in rows:
         out[priority if priority in out else "medium"] += n
@@ -186,11 +230,11 @@ async def dashboard_overview(
     today = datetime.now(UTC).date()
     summary = await posture.org_summary(session, today=today, org_id=org_id)
     poam = summary["poam_aging"]
-    by_sev = poam.get("by_severity", {})
-    findings_by_severity = [
-        {"key": s, "count": by_sev.get(s, 0)} for s in _SEV_ORDER if by_sev.get(s, 0)
-    ] or [{"key": s, "count": by_sev.get(s, 0)} for s in _SEV_ORDER]
     open_total = poam.get("open_total", 0)
+    # by_severity is tallied over the exact same open/in_progress POA&M rows
+    # that produce open_total (see posture.poam_aging), so _severity_breakdown
+    # partitioning those counts keeps sum(findings_by_severity) == findings_total.
+    findings_by_severity = _severity_breakdown(poam.get("by_severity", {}))
     overdue = poam.get("overdue", 0)
     # No-due-date POA&Ms are neither on-track nor overdue — they're a visibility
     # gap. Excluding them from on_track (rather than defaulting to on-track) is
@@ -239,10 +283,10 @@ async def dashboard_overview(
             "accepted": poam.get("accepted", 0),
             "data_quality": poam.get("data_quality", {}),
         },
-        "mttr": await _mttr_trend(session),
-        "risk_by_band": await _risk_by_band(session),
+        "mttr": await _mttr_trend(session, org_id=org_id),
+        "risk_by_band": await _risk_by_band(session, org_id=org_id),
         # Continuous-monitoring operations
-        "control_tests": await _control_tests(session),
-        "ksi": await _ksi_states(session),
-        "tasks": await _tasks_by_priority(session),
+        "control_tests": await _control_tests(session, org_id=org_id),
+        "ksi": await _ksi_states(session, org_id=org_id),
+        "tasks": await _tasks_by_priority(session, org_id=org_id),
     }
