@@ -28,6 +28,12 @@ class EvidenceError(ValueError):
     """Raised on an invalid evidence-repository operation (e.g. locked object)."""
 
 
+class EvidenceIntegrityError(EvidenceError):
+    """Raised when stored evidence bytes fail SHA-256 verification against the
+    digest recorded at upload time (IA-07: tampered or corrupted blob detected
+    on read)."""
+
+
 async def create_object(
     session: AsyncSession,
     *,
@@ -146,6 +152,13 @@ async def read_version(
     data = get_backend().get(version.storage_ref)
     if data is None:
         raise EvidenceError("stored content is unavailable")
+    recomputed = hashlib.sha256(data).hexdigest()
+    if recomputed != version.sha256:
+        raise EvidenceIntegrityError(
+            f"integrity check failed for evidence version {version.id}: "
+            f"stored digest {version.sha256} does not match recomputed digest "
+            f"{recomputed} (content may be tampered or corrupted)"
+        )
     return version, data
 
 

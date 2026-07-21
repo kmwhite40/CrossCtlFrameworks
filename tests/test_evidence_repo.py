@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 from datetime import date
+from pathlib import Path
 
 import pytest
 from alembic import command
@@ -109,6 +110,47 @@ async def test_expired_evidence_is_flagged() -> None:
     async with session_scope() as s:
         obj = await s.get(EvidenceObject, oid)
         assert obj.status == "expired"
+
+
+@pytest.mark.asyncio
+async def test_read_version_returns_untampered_bytes() -> None:
+    async with session_scope() as s:
+        org = Organization(name="EvIntegrityOkOrg")
+        s.add(org)
+        await s.flush()
+        obj = await service.create_object(s, org_id=org.id, title="Integrity ok")
+        await service.add_version(s, obj, data=b"authentic bytes")
+        obj_id = obj.id
+
+    async with session_scope() as s:
+        obj = await s.get(EvidenceObject, obj_id)
+        ver, data = await service.read_version(s, obj)
+        assert data == b"authentic bytes"
+        assert ver.sha256 == hashlib.sha256(b"authentic bytes").hexdigest()
+
+
+@pytest.mark.asyncio
+async def test_read_version_detects_tampered_bytes_on_disk() -> None:
+    """A real local-storage round trip: corrupt the on-disk blob, then verify
+    ``read_version`` recomputes the digest and refuses to serve it silently."""
+    async with session_scope() as s:
+        org = Organization(name="EvIntegrityTamperOrg")
+        s.add(org)
+        await s.flush()
+        obj = await service.create_object(s, org_id=org.id, title="Integrity tamper")
+        version = await service.add_version(s, obj, data=b"authentic bytes")
+        obj_id, version_id, storage_ref = obj.id, version.id, version.storage_ref
+
+    # Corrupt the stored blob directly on disk — same length, different content,
+    # so this can't be caught by anything other than a digest re-check.
+    path = Path(storage_ref[len("file://") :])
+    assert path.is_file()
+    path.write_bytes(b"tampered bytes!")
+
+    async with session_scope() as s:
+        obj = await s.get(EvidenceObject, obj_id)
+        with pytest.raises(service.EvidenceIntegrityError):
+            await service.read_version(s, obj, version_id=version_id)
 
 
 @pytest.mark.asyncio
