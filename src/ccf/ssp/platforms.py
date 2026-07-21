@@ -99,6 +99,42 @@ _SERVICES: dict[str, dict[str, str]] = {
 }
 
 
+# FIPS 140-2/140-3 validated-module + key-custody language appended to SC-family
+# (System and Communications Protection) statements only. Per FR-08, generic
+# "TLS/encryption" service names read as boilerplate to an assessor — the platform's
+# validated cryptographic module and key custody must be named. The specific
+# certificate number / KMS key ARN is never fabricated; it is left as an
+# organization-defined placeholder using the same bracket convention completeness.py
+# already treats as unresolved (see ssp/odp.py's "[ORGANIZATION-DEFINED: ...]").
+_FIPS_KEY_CUSTODY: dict[str, str] = {
+    "m365": (
+        "Cryptographic protection relies on FIPS 140-2 validated cryptographic modules "
+        "within Microsoft's FIPS 140 validated boundary (Microsoft Purview Information "
+        "Protection / Azure RMS encryption); key custody is [ORGANIZATION-DEFINED: FIPS "
+        "140-2 certificate number and key-custody owner (Microsoft-managed key vs. "
+        "customer key)]."
+    ),
+    "azure": (
+        "Cryptographic protection relies on Azure Key Vault backed by FIPS 140-2 "
+        "validated hardware security modules; key custody is [ORGANIZATION-DEFINED: "
+        "FIPS 140-2 certificate number and Key Vault/Managed HSM key-custody owner]."
+    ),
+    "aws_govcloud": (
+        "Cryptographic protection relies on AWS KMS FIPS 140-2 validated endpoints; "
+        "key custody is [ORGANIZATION-DEFINED: FIPS 140-2 certificate number and KMS "
+        "customer-managed-key custody owner]."
+    ),
+}
+
+
+def _fips_key_custody_note(platform: str, domain: str | None) -> str:
+    """Return the platform's FIPS-validated-module/key-custody sentence for
+    SC-family statements, or "" for every other control family."""
+    if (domain or "").upper() != "SC":
+        return ""
+    return _FIPS_KEY_CUSTODY.get(platform, "")
+
+
 def normalize_platform(platform: str | None) -> str:
     return platform if platform in PLATFORMS else DEFAULT_PLATFORM
 
@@ -127,6 +163,9 @@ def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, 
         body = f"The organization meets this objective using {services} on {label}."
     if plat == "m365" and rec.m365_implementation_statement:
         body += f" Microsoft 365 reference: {rec.m365_implementation_statement.strip()}"
+    note = _fips_key_custody_note(plat, rec.domain)
+    if note:
+        body += f" {note}"
     return body
 
 
@@ -141,9 +180,13 @@ def customer_responsibility_statement(platform: str | None, rec: ScoringControl)
     env = GOV_ENVIRONMENTS[plat]
     services = services_for(plat, rec.domain)
     obj = (rec.requirement or rec.title or "this requirement").strip().rstrip(".")
-    return (
+    text = (
         f"{constants.DRAFT_PREFIX}As a customer responsibility within {env}, the organization "
         f"configures and maintains {services} to satisfy {obj}. Organization-defined parameters "
         f"and configuration settings are established by the System Owner and evidenced in the "
         f"{env} tenant/account configuration."
     )
+    note = _fips_key_custody_note(plat, rec.domain)
+    if note:
+        text += f" {note}"
+    return text
