@@ -53,6 +53,130 @@ _OSCAL_POAM_STATE = {
 }
 _OSCAL_SEVERITY = {"low": "low", "moderate": "moderate", "high": "high", "critical": "critical"}
 
+# Both OSCAL exports must cite the same catalog the project is actually built
+# against — CMMC Level 2 / NIST SP 800-171 Rev. 2 — not NIST SP 800-53.
+_OSCAL_BASELINE_NAME = "CMMC Level 2 (NIST SP 800-171 Rev. 2)"
+_OSCAL_PROFILE_HREF = (
+    "https://raw.githubusercontent.com/usnistgov/oscal-content/main/"
+    "nist.gov/SP800-171/rev2/json/NIST_SP-800-171_rev2_PROFILE.json"
+)
+
+# Marker used when a docx-front-matter field is absent from ``metadata_json`` —
+# never fall back to a false constant like "cui"/"operational".
+_PLACEHOLDER = "UNSPECIFIED"
+
+# metadata_json["roles"] key -> (OSCAL role-id, human title). Mirrors the roles
+# rendered in ssp/generator.py's "1.2 Roles and Responsibilities" table.
+_OSCAL_ROLES: tuple[tuple[str, str, str], ...] = (
+    ("system_owner", "system-owner", "System Owner"),
+    ("isso", "isso", "Information System Security Officer"),
+    ("issm", "issm", "Information System Security Manager"),
+    ("authorizing_official", "authorizing-official", "Authorizing Official"),
+)
+
+# metadata_json["operational_status"] (free text) -> OSCAL status.state enum.
+_OSCAL_STATUS_STATES = {
+    "operational": "operational",
+    "under development": "under-development",
+    "under-development": "under-development",
+    "under major modification": "under-major-modification",
+    "under-major-modification": "under-major-modification",
+    "disposition": "disposition",
+    "other": "other",
+}
+
+
+def _placeholder(what: str) -> str:
+    return f"{_PLACEHOLDER} — {what} not set in SSP project metadata"
+
+
+def _meta_str(value: Any, what: str) -> str:
+    """Return ``value`` stripped, or a clearly-marked placeholder when absent."""
+    text = str(value).strip() if value not in (None, "") else ""
+    return text or _placeholder(what)
+
+
+def _oscal_status(meta: dict[str, Any]) -> dict[str, Any]:
+    raw = str(meta.get("operational_status") or "").strip()
+    if not raw:
+        return {"state": "other", "remarks": _placeholder("operational_status")}
+    state = _OSCAL_STATUS_STATES.get(raw.lower())
+    if state is None:
+        return {"state": "other", "remarks": raw}
+    return {"state": state}
+
+
+def _oscal_information_types(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    fips = meta.get("fips199") or {}
+    title = _meta_str(meta.get("system_type"), "system_type")
+
+    def impact(level: str) -> dict[str, str]:
+        return {"base": _meta_str(fips.get(level), f"fips199.{level}")}
+
+    return [
+        {
+            "uuid": str(uuid.uuid4()),
+            "title": title,
+            "description": title,
+            "confidentiality-impact": impact("confidentiality"),
+            "integrity-impact": impact("integrity"),
+            "availability-impact": impact("availability"),
+        }
+    ]
+
+
+def _oscal_roles_and_parties(
+    meta: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build OSCAL metadata roles/parties/responsible-parties from
+    ``metadata_json["roles"]`` — the same source the docx "Roles and
+    Responsibilities" table reads."""
+    roles_meta = meta.get("roles") or {}
+    roles: list[dict[str, Any]] = []
+    parties: list[dict[str, Any]] = []
+    responsible_parties: list[dict[str, Any]] = []
+    for key, role_id, title in _OSCAL_ROLES:
+        roles.append({"id": role_id, "title": title})
+        entry = roles_meta.get(key) or {}
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        party_uuid = str(uuid.uuid4())
+        party: dict[str, Any] = {"uuid": party_uuid, "type": "person", "name": name}
+        email = str(entry.get("email") or "").strip()
+        if email:
+            party["email-addresses"] = [email]
+        parties.append(party)
+        responsible_parties.append({"role-id": role_id, "party-uuids": [party_uuid]})
+    return roles, parties, responsible_parties
+
+
+def _oscal_system_implementation(
+    proj: SSPProject, meta: dict[str, Any], responsible_parties: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Minimal but structurally-real system-implementation: the one system
+    component the SSP describes, plus one user per filled responsible role."""
+    users = [
+        {
+            "uuid": str(uuid.uuid4()),
+            "title": rp["role-id"],
+            "role-ids": [rp["role-id"]],
+        }
+        for rp in responsible_parties
+    ]
+    return {
+        "users": users,
+        "components": [
+            {
+                "uuid": str(uuid.uuid4()),
+                "type": "software",
+                "title": proj.system_name or proj.customer_name,
+                "description": _meta_str(meta.get("system_type"), "system_type"),
+                "status": _oscal_status(meta),
+            }
+        ],
+    }
+
 
 @router.get("/component-definition/{system_id}")
 async def component_definition(
@@ -116,8 +240,9 @@ def _component_definition_doc(
                     "control-implementations": [
                         {
                             "uuid": str(uuid.uuid4()),
-                            "source": "https://doi.org/10.6028/NIST.SP.800-53r5",
-                            "description": "NIST SP 800-53 Rev 5 baseline as captured by Concord.",
+                            "source": _OSCAL_PROFILE_HREF,
+                            "description": f"{_OSCAL_BASELINE_NAME} baseline as captured by "
+                            "Concord.",
                             "implemented-requirements": implemented_reqs,
                         }
                     ],
@@ -184,21 +309,32 @@ async def ssp_export(
             }
         )
 
+    # Source categorization, boundary, and roles from the same
+    # project.metadata_json the docx SSP (ssp/generator.py) renders, so the two
+    # exports report the same facts about the system.
+    meta: dict[str, Any] = proj.metadata_json or {}
+    fips = meta.get("fips199") or {}
+    roles, parties, responsible_parties = _oscal_roles_and_parties(meta)
+
     now = datetime.now(UTC).isoformat()
+    metadata: dict[str, Any] = {
+        "title": f"{proj.customer_name} — {proj.title}",
+        "last-modified": now,
+        "version": proj.version,
+        "oscal-version": "1.1.2",
+        "published": now,
+        "roles": roles,
+    }
+    if parties:
+        metadata["parties"] = parties
+    if responsible_parties:
+        metadata["responsible-parties"] = responsible_parties
+
     return {
         "system-security-plan": {
             "uuid": str(uuid.uuid4()),
-            "metadata": {
-                "title": f"{proj.customer_name} — {proj.title}",
-                "last-modified": now,
-                "version": proj.version,
-                "oscal-version": "1.1.2",
-                "published": now,
-            },
-            "import-profile": {
-                "href": "https://raw.githubusercontent.com/usnistgov/oscal-content/main/"
-                "nist.gov/SP800-171/rev2/json/NIST_SP-800-171_rev2_PROFILE.json"
-            },
+            "metadata": metadata,
+            "import-profile": {"href": _OSCAL_PROFILE_HREF},
             "system-characteristics": {
                 "system-ids": [
                     {"identifier-type": "https://ietf.org/rfc/rfc4122", "id": str(proj.id)}
@@ -206,20 +342,20 @@ async def ssp_export(
                 "system-name": proj.system_name or proj.customer_name,
                 "description": f"CMMC Level 2 enclave for {proj.customer_name} "
                 f"({proj.platform}).",
-                "security-sensitivity-level": "cui",
-                "system-information": {
-                    "information-types": [
-                        {
-                            "uuid": str(uuid.uuid4()),
-                            "title": "Controlled Unclassified Information",
-                            "description": "CUI processed, stored, or transmitted by the system.",
-                        }
-                    ]
+                "security-sensitivity-level": _meta_str(fips.get("overall"), "fips199.overall"),
+                "system-information": {"information-types": _oscal_information_types(meta)},
+                "status": _oscal_status(meta),
+                "authorization-boundary": {
+                    "description": _meta_str(
+                        meta.get("authorization_boundary"), "authorization_boundary"
+                    )
                 },
-                "status": {"state": "operational"},
             },
+            "system-implementation": _oscal_system_implementation(
+                proj, meta, responsible_parties
+            ),
             "control-implementation": {
-                "description": "CMMC L2 (NIST SP 800-171 Rev. 2) control implementations.",
+                "description": f"{_OSCAL_BASELINE_NAME} control implementations.",
                 "implemented-requirements": implemented_reqs,
             },
         }
