@@ -9,15 +9,17 @@ which no new versions may be added.
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..models_evidence import (
     EvidenceAccessEvent,
     EvidenceObject,
+    EvidenceRetentionPolicy,
     EvidenceReview,
     EvidenceVersion,
 )
@@ -64,6 +66,31 @@ async def create_object(
     return obj
 
 
+async def _resolve_retention_days(session: AsyncSession, obj: EvidenceObject) -> int:
+    """WORM retention window (days) for ``obj``: a framework-specific
+    :class:`EvidenceRetentionPolicy` beats an org-wide one, which beats the
+    configured default (``evidence_object_lock_retention_days``)."""
+    policies = (
+        (
+            await session.execute(
+                select(EvidenceRetentionPolicy).where(
+                    EvidenceRetentionPolicy.organization_id == obj.organization_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if obj.framework:
+        match = next((p for p in policies if p.applies_to_framework == obj.framework), None)
+        if match:
+            return match.retain_days
+    org_wide = next((p for p in policies if p.applies_to_framework is None), None)
+    if org_wide:
+        return org_wide.retain_days
+    return get_settings().evidence_object_lock_retention_days
+
+
 async def add_version(
     session: AsyncSession,
     obj: EvidenceObject,
@@ -73,12 +100,26 @@ async def add_version(
     media_type: str | None = None,
     uploaded_by: str | None = None,
 ) -> EvidenceVersion:
-    """Store ``data`` as the next immutable version; returns it. Fails if locked."""
+    """Store ``data`` as the next immutable version; returns it. Fails if locked.
+
+    When ``evidence_object_lock_enabled`` is set, this requests storage-level
+    WORM for the write: on ``evidence_backend=s3`` a retention-derived
+    ``ObjectLockRetainUntilDate`` is computed (per-framework
+    :class:`EvidenceRetentionPolicy`, else the org-wide policy, else the
+    configured default) so the S3 COMPLIANCE lock is valid; on the local
+    backend, which cannot enforce object-level immutability, the request
+    degrades to a logged warning rather than a false immutability claim — see
+    :meth:`ccf.evidence.storage.LocalStorage.put`.
+    """
     if obj.immutable_lock:
         raise EvidenceError("evidence object is locked (approved); create a new object instead")
     digest = hashlib.sha256(data).hexdigest()
     backend = get_backend()
-    ref = backend.put(digest, data, media_type)
+    retain_until = None
+    if get_settings().evidence_object_lock_enabled:
+        retain_days = await _resolve_retention_days(session, obj)
+        retain_until = datetime.now(UTC) + timedelta(days=retain_days)
+    ref = backend.put(digest, data, media_type, retain_until=retain_until)
     next_no = (
         await session.execute(
             select(func.coalesce(func.max(EvidenceVersion.version), 0)).where(

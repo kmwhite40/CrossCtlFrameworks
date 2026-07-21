@@ -136,10 +136,46 @@ class Settings(BaseSettings):
     # pluggable storage backend. Local filesystem by default (no external deps);
     # 's3' targets an S3-compatible, optionally object-locked (WORM) bucket via
     # boto3 when installed, degrading to local storage otherwise.
-    evidence_backend: str = Field(default="local")  # local|s3
+    #
+    # IMPORTANT: true WORM/immutability is only storage-enforced with
+    # evidence_backend="s3" *and* evidence_object_lock_enabled=True on a bucket
+    # that has S3 Object Lock enabled. With evidence_backend="local", the
+    # filesystem has no immutability guarantee — approval-time locking
+    # (EvidenceObject.immutable_lock) is application-level only (it blocks new
+    # versions through the API, but does not protect bytes on disk from direct
+    # modification), and a WORM request against it is logged as
+    # "evidence.worm_not_storage_enforced" rather than silently claimed.
+    evidence_backend: str = Field(
+        default="local",
+        description=(
+            "Evidence content-storage backend: local|s3. True, storage-enforced "
+            "WORM requires 's3' with evidence_object_lock_enabled and a bucket "
+            "with S3 Object Lock enabled — the local backend cannot enforce "
+            "immutability at the storage layer."
+        ),
+    )
     evidence_local_dir: Path = Field(default=Path("./data/evidence"))
     evidence_s3_bucket: str | None = Field(default=None)
-    evidence_object_lock_enabled: bool = Field(default=False)
+    evidence_object_lock_enabled: bool = Field(
+        default=False,
+        description=(
+            "Request WORM/object-lock on evidence writes. Only storage-enforced "
+            "when evidence_backend='s3' (S3 Object Lock, COMPLIANCE mode, with an "
+            "ObjectLockRetainUntilDate derived from the applicable retention "
+            "policy/default). On evidence_backend='local' this cannot be "
+            "storage-enforced: the write proceeds but logs "
+            "'evidence.worm_not_storage_enforced' instead of a false immutability "
+            "claim."
+        ),
+    )
+    evidence_object_lock_retention_days: int = Field(
+        default=365,
+        description=(
+            "Default retention window (days) used to derive the S3 "
+            "ObjectLockRetainUntilDate when evidence_object_lock_enabled is set "
+            "and no per-organization/framework EvidenceRetentionPolicy applies."
+        ),
+    )
 
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
