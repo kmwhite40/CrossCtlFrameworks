@@ -141,6 +141,13 @@ RESPONSIBILITY_TO_ORIGINATION: dict[str, list[str]] = {
 # assign responsibility explicitly instead of the seed silently guessing one.
 MANUAL_RESPONSIBILITY_FLAG = "Requires Manual Responsibility Assignment"
 
+# Flag appended to ``responsible_role`` when no real named role (the project's
+# system_owner / ISSO from SSP front-matter metadata) was available and the
+# generic domain-level label was used instead (FR-13). completeness.py checks
+# for this token so a bare "{Domain} Lead / System Owner" fallback can't
+# silently satisfy a "named responsible party" gate.
+GENERIC_ROLE_FLAG = "Generic Role — No Named Party on File"
+
 
 def platform_responsibility(platform: str, domain: str | None) -> str | None:
     """Responsibility bucket ('inherited' | 'shared') for a non-M365 platform's
@@ -183,8 +190,19 @@ def domain_name(domain: str) -> str:
     return DOMAINS.get(domain, (domain, domain))[1]
 
 
-def responsible_role_for(domain: str) -> str:
-    return f"{domain_name(domain)} Lead / System Owner"
+def responsible_role_for(domain: str, named_role: str | None = None) -> str:
+    """Responsible role for a domain's controls.
+
+    Prefers a real named role (e.g. the project's system_owner or ISSO, read
+    from SSP front-matter ``roles`` metadata by the caller) when supplied.
+    Falls back to the generic domain-level label only when no named role
+    exists — and flags that fallback with :data:`GENERIC_ROLE_FLAG` so it
+    can't silently satisfy a "named responsible party" completeness gate
+    (FR-13; see ``ssp/completeness.py``).
+    """
+    if named_role and named_role.strip():
+        return named_role.strip()
+    return f"{domain_name(domain)} Lead / System Owner — {GENERIC_ROLE_FLAG}"
 
 
 def default_origination(coverage_status: str | None) -> list[str]:

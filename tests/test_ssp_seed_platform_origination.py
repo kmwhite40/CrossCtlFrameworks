@@ -35,7 +35,7 @@ def _migrate() -> None:
     command.upgrade(cfg, "head")
 
 
-async def _make_project(platform: str) -> int:
+async def _make_project(platform: str, metadata_json: dict | None = None) -> int:
     """Seed the real scoring catalog and a real SSP project on ``platform``
     through the production seeding function; return the project id."""
     async with session_scope() as s:
@@ -48,6 +48,7 @@ async def _make_project(platform: str) -> int:
             customer_name="Acme Co",
             system_name="Acme Sys",
             platform=platform,
+            metadata_json=metadata_json or {},
         )
         s.add(proj)
         await s.flush()
@@ -138,6 +139,43 @@ async def test_non_m365_control_without_per_control_coverage_is_flagged_for_manu
     ac = entries["AC.L2-3.1.1"]
     assert ac.control_origination == []
     assert constants.MANUAL_RESPONSIBILITY_FLAG in (ac.responsible_role or "")
+
+
+@pytest.mark.asyncio
+async def test_no_named_role_falls_back_to_generic_flagged_domain_label() -> None:
+    """FR-13: a project with no roles metadata gets the generic domain label,
+    flagged so it can't silently satisfy a named-responsible-party gate."""
+    m365_id = await _make_project("m365")
+    entries = await _entries_by_control(m365_id)
+    ac = entries["AC.L2-3.1.1"]
+    assert "Access Control Lead / System Owner" in (ac.responsible_role or "")
+    assert constants.GENERIC_ROLE_FLAG in (ac.responsible_role or "")
+
+
+@pytest.mark.asyncio
+async def test_named_system_owner_metadata_is_used_over_generic_label() -> None:
+    """FR-13: when the project's SSP front-matter has a real named System
+    Owner, seeding must prefer that name over the generic domain label."""
+    m365_id = await _make_project(
+        "m365", metadata_json={"roles": {"system_owner": {"name": "Jane Doe"}}}
+    )
+    entries = await _entries_by_control(m365_id)
+    ac = entries["AC.L2-3.1.1"]
+    assert "Jane Doe" in (ac.responsible_role or "")
+    assert constants.GENERIC_ROLE_FLAG not in (ac.responsible_role or "")
+    assert "Lead / System Owner" not in (ac.responsible_role or "")
+
+
+@pytest.mark.asyncio
+async def test_named_isso_metadata_used_when_no_system_owner_name() -> None:
+    """Falls back to the named ISSO when no system_owner name is on file."""
+    m365_id = await _make_project(
+        "m365", metadata_json={"roles": {"isso": {"name": "John Smith"}}}
+    )
+    entries = await _entries_by_control(m365_id)
+    ac = entries["AC.L2-3.1.1"]
+    assert "John Smith" in (ac.responsible_role or "")
+    assert constants.GENERIC_ROLE_FLAG not in (ac.responsible_role or "")
 
 
 @pytest.mark.asyncio

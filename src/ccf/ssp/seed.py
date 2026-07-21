@@ -59,14 +59,37 @@ def _narratives(rec: ScoringControl, platform: str) -> list[dict[str, str]]:
     return out
 
 
-def _responsible_role(rec: ScoringControl, platform: str) -> str:
-    role = constants.responsible_role_for(rec.domain)
+def _named_role_from_metadata(project_metadata: dict[str, Any] | None) -> str | None:
+    """The project's real named responsible party from SSP front-matter
+    ``roles`` metadata (FR-13) — prefers the named System Owner, falling back
+    to the named ISSO, so seeding never has to guess a generic label when a
+    real name is already on file."""
+    roles = (project_metadata or {}).get("roles") or {}
+    owner = (roles.get("system_owner") or {}).get("name")
+    if owner and str(owner).strip():
+        return f"{str(owner).strip()} (System Owner)"
+    isso = (roles.get("isso") or {}).get("name")
+    if isso and str(isso).strip():
+        return f"{str(isso).strip()} (ISSO)"
+    return None
+
+
+def _responsible_role(
+    rec: ScoringControl, platform: str, project_metadata: dict[str, Any] | None = None
+) -> str:
+    named = _named_role_from_metadata(project_metadata)
+    role = constants.responsible_role_for(rec.domain, named_role=named)
     if constants.needs_manual_responsibility_assignment(platform, rec.domain):
         role = f"{role} — {constants.MANUAL_RESPONSIBILITY_FLAG}"
     return role
 
 
-def build_entries(rec: ScoringControl, order: int, platform: str) -> SSPControlEntry:
+def build_entries(
+    rec: ScoringControl,
+    order: int,
+    platform: str,
+    project_metadata: dict[str, Any] | None = None,
+) -> SSPControlEntry:
     plat = normalize_platform(platform)
     return SSPControlEntry(
         control_id=rec.control_id,
@@ -74,7 +97,7 @@ def build_entries(rec: ScoringControl, order: int, platform: str) -> SSPControlE
         domain=rec.domain,
         title=rec.title,
         requirement=rec.requirement,
-        responsible_role=_responsible_role(rec, plat),
+        responsible_role=_responsible_role(rec, plat, project_metadata),
         implementation_status=["Planned"],
         control_origination=constants.platform_origination(
             plat, rec.m365_coverage_status, rec.domain
@@ -99,6 +122,7 @@ async def seed_project_entries(
     status is preserved.
     """
     plat = normalize_platform(platform or project.platform or "m365")
+    project_metadata = project.metadata_json or {}
     controls = (
         (await session.execute(select(ScoringControl).order_by(ScoringControl.sort_order)))
         .scalars()
@@ -125,10 +149,10 @@ async def seed_project_entries(
             current.control_origination = constants.platform_origination(
                 plat, rec.m365_coverage_status, rec.domain
             )
-            current.responsible_role = _responsible_role(rec, plat)
+            current.responsible_role = _responsible_role(rec, plat, project_metadata)
             current.sort_order = order
         else:
-            entry = build_entries(rec, order, plat)
+            entry = build_entries(rec, order, plat, project_metadata)
             entry.project_id = project.id
             session.add(entry)
         touched += 1

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .constants import GENERIC_ROLE_FLAG
 from .statements import DRAFT_PREFIX
 
 # Front-matter fields an enterprise SSP must carry (dotted paths in metadata_json).
@@ -66,8 +67,16 @@ def _entry_gaps(entry: dict[str, Any]) -> list[str]:
         # [DRAFT] marker or an unfilled ODP placeholder isn't a real,
         # human-reviewed statement yet.
         gaps.append("draft narrative — needs review")
-    if not entry.get("responsible_role"):
+    role = entry.get("responsible_role")
+    if not role:
         gaps.append("no responsible role")
+    elif GENERIC_ROLE_FLAG in str(role):
+        # ssp/seed.py falls back to a generic "{Domain} Lead / System Owner"
+        # label (flagged with GENERIC_ROLE_FLAG) when no named system_owner/
+        # ISSO role is on file (FR-13). That bare fallback names a function,
+        # not a person — it must not silently satisfy the "named responsible
+        # party" gate.
+        gaps.append("responsible role is a generic fallback — not a named party")
     statuses = entry.get("implementation_status") or []
     if not statuses:
         gaps.append("no implementation status")

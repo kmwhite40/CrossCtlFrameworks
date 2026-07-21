@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ccf.ssp.completeness import assess
+from ccf.ssp.constants import GENERIC_ROLE_FLAG
 from ccf.ssp.statements import DRAFT_PREFIX
 
 _FULL_META = {
@@ -137,6 +138,27 @@ def test_selection_placeholder_with_qualifier_is_caught() -> None:
     r = assess(_FULL_META, [entry])
     gaps = r["control_gaps"][0]["gaps"]
     assert "draft narrative — needs review" in gaps
+
+
+def test_generic_fallback_responsible_role_does_not_satisfy_named_party_gate() -> None:
+    """FR-13: ssp/seed.py falls back to the generic "{Domain} Lead / System
+    Owner" label (flagged with GENERIC_ROLE_FLAG) when no named system_owner/
+    ISSO role is on file. That bare fallback must not silently count as a
+    real, named responsible party — it must still be gapped."""
+    bad = _entry(responsible_role=f"Access Control Lead / System Owner — {GENERIC_ROLE_FLAG}")
+    r = assess(_FULL_META, [bad])
+    gaps = r["control_gaps"][0]["gaps"]
+    assert any("responsible role" in g and "generic" in g.lower() for g in gaps)
+    assert r["controls_complete"] == 0
+
+
+def test_named_responsible_role_has_no_generic_role_gap() -> None:
+    """A real name (or a human-entered role like "System Owner" with no
+    generic-fallback flag) does not trip the new gate."""
+    good = _entry(responsible_role="Jane Doe (System Owner)")
+    r = assess(_FULL_META, [good])
+    assert r["control_gaps"] == []
+    assert r["controls_complete"] == 1
 
 
 def test_complete_entry_with_control_implementation_evidence_has_no_new_gaps() -> None:
