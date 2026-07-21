@@ -289,7 +289,40 @@ true per-tenant audit isolation), and **portal-link hardening** — the external
 link is `…/portal?token=<plaintext>` by design (magic-link delivery); exchanging the
 link-token for a session cookie on first use would keep it out of portal access logs.
 
-**Still open → later slices:** DATA-02/03/04/06/07/09/11/12 (portal FKs, framework_controls
-org-scope, soft-delete/cascade, audit org-column, dangling-pointer FKs, evidence-store
-bridge), IA-05/06/07/08/10 (per-org connector creds, scheduler scoping, evidence digest
-verify, WORM enforcement, AI flag wiring), ISSM-04..13, CISO-01..08.
+**Still open after the security slice:** DATA-02/03/04/06/07/09/11/12, IA-05/06/07/08/10,
+ISSM-04..13, CISO-01..08 (→ Slice 6, below).
+
+---
+
+## Slice 6 resolutions (2026-07-21, subagent-driven — production readiness)
+
+4 TDD tasks + a crypto dep bump + a test-isolation fix + a whole-branch review + a fix
+wave. **RESOLVED:**
+
+- **CISO-04** — `/readyz` now runs the **blocking reliability checks** and returns 503
+  (listing failures) when any fails, incl. **migration drift** (DB behind head) and auth
+  posture; `/healthz` stays a cheap liveness probe. The cross-tenant integrity check was
+  demoted out of the fleet-gating subset (it alerts, doesn't 503 the whole fleet).
+- **CISO-01 / CISO-06** — residual (`risk_accepted`) POA&Ms and `completed`-without-
+  `closed_on` are now surfaced (residual + data-quality buckets); overdue falls back
+  `due_on → scheduled_completion → original_due_on` and null-due items land in a
+  "no due date" bucket excluded from on-track (`on_track + overdue + no_due_date ==
+  open_total`).
+- **CISO-05 / CISO-11** — the risk heatmap and risk-status breakdown now use one
+  population (both exclude `closed`, both org-scoped); dashboard block queries are
+  org-scoped in SQL (defense-in-depth beyond RLS); `findings_by_severity` sums to the
+  headline total with a catch-all bucket.
+- **CISO-08** — CI `pip-audit` is now **blocking** (no allowlist); the Slice-3a
+  `cryptography` pin was bumped to `>=46` to clear 4 real advisories (verified on 49.0.0).
+
+**Whole-branch review findings (all fixed, commit `f36d124`):** migration *drift* returned
+WARN not FAIL (readiness stayed 200 with pending migrations); the global cross-tenant
+integrity check was fleet-gating (one bad row → un-self-healable fleet outage). Both fixed.
+
+**Still open (tracked, not blocking this slice):** DATA-02/03/04/06/07/09/11/12,
+IA-05/06/07/08/10, ISSM-04..13, CISO-09/10 (minor decision-support polish), plus the
+dependency-hygiene follow-up (transitive advisories the now-blocking pip-audit may surface)
+and the portal magic-link token-in-URL hardening.
+
+**Production-readiness recommendation:** see
+`2026-07-21-production-readiness-recommendation.md`.
