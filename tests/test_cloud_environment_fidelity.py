@@ -22,10 +22,13 @@ that).
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from ccf.config import get_settings
 from ccf.db import session_scope
@@ -65,14 +68,21 @@ async def _make_system(session, name: str) -> System:
     return sys
 
 
-async def _seed_controls(session, prefix: str) -> None:
+async def _seed_controls(session, prefix: str) -> list[str]:
     """One customer-responsibility-ish domain (AC) and one physically-inherited
     domain (PE) — enough to exercise both the "unknown" and "inherited"
-    responsibility branches of the platform derivation."""
+    responsibility branches of the platform derivation.
+
+    Returns the ``control_id``s created so the caller can remove them again —
+    ``ScoringControl`` (``ccf.scoring_controls``) is a GLOBAL, shared table and
+    the suite's DB reset only runs once per session, so anything inserted here
+    must be cleaned up by the test or it leaks into every later test (e.g.
+    test_enterprise.py's fixed-110-row CMMC catalog assertions)."""
+    control_ids = [f"AC.{prefix}-3.1.1", f"PE.{prefix}-3.10.1"]
     session.add_all(
         [
             ScoringControl(
-                control_id=f"AC.{prefix}-3.1.1",
+                control_id=control_ids[0],
                 nist_id=f"AC-{prefix}-1",
                 domain="AC",
                 title="Access Control",
@@ -82,7 +92,7 @@ async def _seed_controls(session, prefix: str) -> None:
                 sort_order=1,
             ),
             ScoringControl(
-                control_id=f"PE.{prefix}-3.10.1",
+                control_id=control_ids[1],
                 nist_id=f"PE-{prefix}-1",
                 domain="PE",
                 title="Physical Access",
@@ -94,6 +104,32 @@ async def _seed_controls(session, prefix: str) -> None:
         ]
     )
     await session.flush()
+    return control_ids
+
+
+@asynccontextmanager
+async def _seeded_system(
+    name: str, prefix: str, cloud_platform: str | None
+) -> AsyncIterator[tuple[SSPProject, dict, list[SSPControlEntry]]]:
+    """Seed a system with a throwaway pair of prefixed ``ScoringControl`` rows,
+    generate its SSP, and yield ``(proj, cov, entries)`` — then ALWAYS delete
+    the ``ScoringControl`` rows this created (even if the test body raises),
+    so the global catalog is left exactly as found for every other test in
+    the suite."""
+    control_ids: list[str] = []
+    try:
+        async with session_scope() as session:
+            sys = await _make_system(session, name)
+            control_ids = await _seed_controls(session, prefix)
+            proj, cov = await _generate(session, sys, cloud_platform)
+            entries = await _entries(session, proj)
+        yield proj, cov, entries
+    finally:
+        if control_ids:
+            async with session_scope() as session:
+                await session.execute(
+                    delete(ScoringControl).where(ScoringControl.control_id.in_(control_ids))
+                )
 
 
 async def _generate(
@@ -144,36 +180,36 @@ def _all_narrative_text(entries: list[SSPControlEntry]) -> str:
 
 @pytest.mark.asyncio
 async def test_azure_gov_statements_are_flagged_manual_evidence_required() -> None:
-    async with session_scope() as session:
-        sys = await _make_system(session, "Azure Fidelity Org 1")
-        await _seed_controls(session, "AZFLAG")
-        proj, _cov = await _generate(session, sys, "azure_gov")
-        entries = await _entries(session, proj)
-
-    assert entries, "expected seeded SSP entries"
-    text = _all_narrative_text(entries)
-    # Every entry — including the PE (physically-inherited) one that would
-    # otherwise read as already evidenced — carries the explicit flag.
-    for e in entries:
-        entry_text = "\n".join((p.get("text") or "") for p in e.part_narratives or [])
-        assert MANUAL_EVIDENCE_NOTE in entry_text, (
-            f"{e.control_id} narrative missing manual-evidence flag: {entry_text!r}"
-        )
-    assert "no automated capture connector exists for this platform" in text
+    async with _seeded_system("Azure Fidelity Org 1", "AZFLAG", "azure_gov") as (
+        _proj,
+        _cov,
+        entries,
+    ):
+        assert entries, "expected seeded SSP entries"
+        text = _all_narrative_text(entries)
+        # Every entry — including the PE (physically-inherited) one that would
+        # otherwise read as already evidenced — carries the explicit flag.
+        for e in entries:
+            entry_text = "\n".join((p.get("text") or "") for p in e.part_narratives or [])
+            assert MANUAL_EVIDENCE_NOTE in entry_text, (
+                f"{e.control_id} narrative missing manual-evidence flag: {entry_text!r}"
+            )
+        assert "no automated capture connector exists for this platform" in text
 
 
 @pytest.mark.asyncio
 async def test_azure_gov_platform_inherited_state_excluded_from_covered() -> None:
-    async with session_scope() as session:
-        sys = await _make_system(session, "Azure Fidelity Org 2")
-        await _seed_controls(session, "AZCOV")
-        _proj, cov = await _generate(session, sys, "azure_gov")
-
-    # PE derives "inherited" for azure (PLATFORM_DOMAIN_RESPONSIBILITY), but with
-    # no Azure capture connector that must not silently count as "covered".
-    assert cov["by_state"].get("inherited", 0) >= 1
-    assert cov["covered"] == 0
-    assert cov["manual_evidence_required"] >= 1
+    async with _seeded_system("Azure Fidelity Org 2", "AZCOV", "azure_gov") as (
+        _proj,
+        cov,
+        _entries,
+    ):
+        # PE derives "inherited" for azure (PLATFORM_DOMAIN_RESPONSIBILITY), but
+        # with no Azure capture connector that must not silently count as
+        # "covered".
+        assert cov["by_state"].get("inherited", 0) >= 1
+        assert cov["covered"] == 0
+        assert cov["manual_evidence_required"] >= 1
 
 
 @pytest.mark.asyncio
@@ -182,16 +218,15 @@ async def test_aws_govcloud_platform_inherited_state_still_counts_covered() -> N
     domain-responsibility shape (PE inherited) must still count as covered —
     proves the exclusion is connector-driven, not a blanket "no platform ever
     counts" regression."""
-    async with session_scope() as session:
-        sys = await _make_system(session, "AWS Fidelity Org 1")
-        await _seed_controls(session, "AWSCOV")
-        proj, cov = await _generate(session, sys, "aws_govcloud")
-        entries = await _entries(session, proj)
-
-    assert cov["covered"] >= 1
-    assert cov["manual_evidence_required"] == 0
-    text = _all_narrative_text(entries)
-    assert MANUAL_EVIDENCE_NOTE not in text
+    async with _seeded_system("AWS Fidelity Org 1", "AWSCOV", "aws_govcloud") as (
+        _proj,
+        cov,
+        entries,
+    ):
+        assert cov["covered"] >= 1
+        assert cov["manual_evidence_required"] == 0
+        text = _all_narrative_text(entries)
+        assert MANUAL_EVIDENCE_NOTE not in text
 
 
 # --- FR-07: environment label reflects the actual confirmed tenant tier -----
@@ -202,29 +237,27 @@ async def test_m365_unconfirmed_tier_does_not_render_gcc_high() -> None:
     """A profile with no cloud_platform selected still authors on the "m365"
     SSP platform (generate_ssp's default), but the tenant tier was never
     confirmed via intake — must not assert GCC High."""
-    async with session_scope() as session:
-        sys = await _make_system(session, "M365 Fidelity Org 1")
-        await _seed_controls(session, "M365U")
-        proj, _cov = await _generate(session, sys, None)
-        entries = await _entries(session, proj)
-
-    assert proj.platform == "m365"
-    text = _all_narrative_text(entries)
-    assert "GCC High" not in text
-    assert "Microsoft 365 (tenant tier not confirmed)" in text
+    async with _seeded_system("M365 Fidelity Org 1", "M365U", None) as (
+        proj,
+        _cov,
+        entries,
+    ):
+        assert proj.platform == "m365"
+        text = _all_narrative_text(entries)
+        assert "GCC High" not in text
+        assert "Microsoft 365 (tenant tier not confirmed)" in text
 
 
 @pytest.mark.asyncio
 async def test_m365_gcc_high_confirmed_tier_renders_gcc_high() -> None:
-    async with session_scope() as session:
-        sys = await _make_system(session, "M365 Fidelity Org 2")
-        await _seed_controls(session, "M365G")
-        proj, _cov = await _generate(session, sys, "m365_gcc_high")
-        entries = await _entries(session, proj)
-
-    assert proj.platform == "m365"
-    text = _all_narrative_text(entries)
-    assert "Microsoft 365 Government (GCC High)" in text
+    async with _seeded_system("M365 Fidelity Org 2", "M365G", "m365_gcc_high") as (
+        proj,
+        _cov,
+        entries,
+    ):
+        assert proj.platform == "m365"
+        text = _all_narrative_text(entries)
+        assert "Microsoft 365 Government (GCC High)" in text
 
 
 # --- Pure unit coverage of the new ssp/platforms.py helpers -----------------
