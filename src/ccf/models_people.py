@@ -21,6 +21,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -65,6 +66,8 @@ class Person(Base):
     training: Mapped[list[TrainingRecord]] = relationship(
         back_populates="person", cascade="all, delete-orphan"
     )
+
+    __table_args__ = (UniqueConstraint("organization_id", "email", name="uq_person_org_email"),)
 
 
 class TrainingRecord(Base):

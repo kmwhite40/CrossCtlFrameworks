@@ -134,6 +134,12 @@ class PackMapping(Base):
 
     pack: Mapped[CompliancePack] = relationship(back_populates="mappings")
 
+    __table_args__ = (
+        UniqueConstraint(
+            "pack_id", "control_id", "framework", name="uq_pack_mapping_pack_control_framework"
+        ),
+    )
+
 
 class PackEvidenceRequirement(Base):
     """An evidence requirement contributed by a pack."""

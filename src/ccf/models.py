@@ -1120,6 +1120,8 @@ class Policy(Base):
         back_populates="policy", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_policy_org_name"),)
+
 
 class PolicyVersion(Base):
     __tablename__ = "policy_versions"
@@ -1189,6 +1191,8 @@ class Vendor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_vendor_org_name"),)
 
 
 class Approval(Base):
@@ -1486,6 +1490,10 @@ class FedRAMPDependency(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("system_id", "name", name="uq_fedramp_dep_system_name"),
     )
 
 
