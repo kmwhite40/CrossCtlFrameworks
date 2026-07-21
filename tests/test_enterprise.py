@@ -160,12 +160,37 @@ async def test_oscal_ssp_export_shape() -> None:
                 json={"customer_name": "OscalCo", "platform": "aws_govcloud"},
             )
         ).json()["id"]
+
+        # security-sensitivity-level is sourced from the project's own
+        # fips199.overall metadata (the same field the docx SSP's "Security
+        # Categorization" section renders) — not a hardcoded constant. Set it
+        # so the assertion below is meaningful.
+        meta_resp = await c.put(
+            f"/api/ssp/projects/{pid}/metadata",
+            json={
+                "metadata_json": {"fips199": {"overall": "moderate"}},
+                "autofill": False,
+            },
+        )
+        assert meta_resp.status_code == 200, meta_resp.text
+
         doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
         ssp = doc["system-security-plan"]
         assert ssp["metadata"]["oscal-version"].startswith("1.1")
-        assert ssp["system-characteristics"]["security-sensitivity-level"] == "cui"
+        assert ssp["system-characteristics"]["security-sensitivity-level"] == "moderate"
         reqs = ssp["control-implementation"]["implemented-requirements"]
         assert len(reqs) == 110
         assert reqs[0]["control-id"] == "3.1.1"
         assert reqs[0]["statements"]
         assert (await c.get("/api/oscal/ssp/999999")).status_code == 404
+
+        # A project with no fips199 metadata gets a clearly-marked placeholder,
+        # never the old false "cui" constant.
+        pid2 = (
+            await c.post("/api/ssp/projects", json={"customer_name": "NoMetaCo"})
+        ).json()["id"]
+        doc2 = (await c.get(f"/api/oscal/ssp/{pid2}")).json()
+        sysc2 = doc2["system-security-plan"]["system-characteristics"]
+        level2 = sysc2["security-sensitivity-level"]
+        assert level2 != "cui"
+        assert "UNSPECIFIED" in level2
