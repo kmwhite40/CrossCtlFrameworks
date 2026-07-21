@@ -11,16 +11,19 @@ pass CI. This module closes that gap with two complementary checks:
    from the Postgres catalog (``pg_policy``/``pg_class``/``pg_namespace``) and
    asserts, for each, that ``relrowsecurity`` and ``relforcerowsecurity`` are
    both true. The enumerated set is compared against a hardcoded snapshot of
-   every table policied as of this writing (106 tables spanning migrations
-   0010 through 0037) — so the test fails loudly if a table's policy is
+   every table policied as of this writing (108 tables spanning migrations
+   0010 through 0039) — so the test fails loudly if a table's policy is
    dropped (it silently disappears from the live-enumerated set) or if RLS
    enforcement is disabled on a table that still has one.
 2. A BEHAVIORAL check (``test_rls_scopes_representative_org_scoped_tables``)
-   that extends the existing systems/fedramp_dependencies pattern to five more
-   practical, easy-to-seed tables covering both scoping shapes used across the
-   schema: direct ``organization_id`` (``ssp_projects``), ``system_id`` via the
-   owning system (``poams``, ``risks``, ``assessments``), and a multi-hop FK
-   chain (``evidence`` -> ``control_implementations`` -> ``systems``).
+   that extends the existing systems/fedramp_dependencies pattern to seven more
+   practical, easy-to-seed tables covering all scoping shapes used across the
+   schema: direct ``organization_id`` (``ssp_projects``, ``organizations``
+   itself), ``system_id`` via the owning system (``poams``, ``risks``,
+   ``assessments``), a multi-hop FK chain (``evidence`` ->
+   ``control_implementations`` -> ``systems``), and a two-hop parent chain via
+   a non-organization_id parent (``poam_milestones`` -> ``poams`` ->
+   ``systems``).
 
 Both tests seed only throwaway, uniquely-named orgs/systems/rows and clean up
 everything except the get-or-create orgs/systems themselves (same convention
@@ -46,6 +49,7 @@ from ccf.models import (
     ControlImplementation,
     Evidence,
     Organization,
+    PoamMilestone,
     Risk,
     SSPProject,
     System,
@@ -90,11 +94,12 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "external_principals", "external_questionnaire_requests", "fedramp20x_profiles",
         "fedramp20x_readiness_snapshots", "fedramp_dependencies", "group_role_mappings",
         "identity_providers", "ksi_assessor_reviews", "ksi_exceptions", "ksi_states",
-        "ksi_validation_results", "monitoring_runs", "notifications", "pack_controls",
-        "pack_evidence_requirements", "pack_install_runs", "pack_mappings", "pack_rules",
-        "pack_test_results", "people", "poams", "policies", "policy_attestations",
-        "policy_versions", "questionnaire_responses", "questionnaire_templates",
-        "regulatory_updates", "risks", "scan_ingestions", "scim_provisioning_events",
+        "ksi_validation_results", "monitoring_runs", "notifications", "organizations",
+        "pack_controls", "pack_evidence_requirements", "pack_install_runs", "pack_mappings",
+        "pack_rules", "pack_test_results", "people", "poam_milestones", "poams", "policies",
+        "policy_attestations", "policy_versions", "questionnaire_responses",
+        "questionnaire_templates", "regulatory_updates", "risks", "scan_ingestions",
+        "scim_provisioning_events",
         "scoring_statuses", "self_assurance_runs", "ssp_control_entries", "ssp_projects",
         "system_profiles", "systems", "tasks", "training_records", "trust_access_requests",
         "trust_profiles", "users", "vendor_questionnaires", "vendors", "webhooks",
@@ -141,7 +146,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 106
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 108
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
@@ -196,12 +201,15 @@ async def _assert_scoped_to_owner(
 
 @pytest.mark.asyncio
 async def test_rls_scopes_representative_org_scoped_tables() -> None:
-    """Behavioral RLS check on five practical, easy-to-seed tables.
+    """Behavioral RLS check on seven practical, easy-to-seed tables.
 
-    Covers both predicate shapes used across the schema: direct
-    ``organization_id`` (``ssp_projects``), ``system_id`` scoped via the owning
-    system (``poams``, ``risks``, ``assessments``), and a two-hop FK chain
-    (``evidence`` -> ``control_implementations`` -> ``systems``).
+    Covers every predicate shape used across the schema: direct
+    ``organization_id`` (``ssp_projects``, and ``organizations`` itself scoped
+    on its own primary key), ``system_id`` scoped via the owning system
+    (``poams``, ``risks``, ``assessments``), a two-hop FK chain (``evidence``
+    -> ``control_implementations`` -> ``systems``), and a two-hop parent chain
+    via a non-``organization_id`` parent (``poam_milestones`` -> ``poams`` ->
+    ``systems``).
     """
     if not str(get_settings().database_url).startswith("postgresql"):
         pytest.skip("RLS is a PostgreSQL feature")
@@ -211,6 +219,7 @@ async def test_rls_scopes_representative_org_scoped_tables() -> None:
     poam_a = poam_b = risk_a = risk_b = None
     ssp_a = ssp_b = assess_a = assess_b = None
     impl_a = impl_b = evidence_a = evidence_b = None
+    milestone_a = milestone_b = None
     control = None
 
     try:
@@ -250,7 +259,9 @@ async def test_rls_scopes_representative_org_scoped_tables() -> None:
             evidence_b = Evidence(
                 implementation_id=impl_b.id, kind="document", title="RlsCovEvidenceB"
             )
-            s.add_all([evidence_a, evidence_b])
+            milestone_a = PoamMilestone(poam_id=poam_a.id, description="RlsCovMilestoneA")
+            milestone_b = PoamMilestone(poam_id=poam_b.id, description="RlsCovMilestoneB")
+            s.add_all([evidence_a, evidence_b, milestone_a, milestone_b])
             await s.flush()
 
             poam_ids = (poam_a.id, poam_b.id)
@@ -258,19 +269,30 @@ async def test_rls_scopes_representative_org_scoped_tables() -> None:
             ssp_ids = (ssp_a.id, ssp_b.id)
             assess_ids = (assess_a.id, assess_b.id)
             evidence_ids = (evidence_a.id, evidence_b.id)
+            milestone_ids = (milestone_a.id, milestone_b.id)
 
         await _assert_scoped_to_owner(POAM, *poam_ids, org_a, org_b)
         await _assert_scoped_to_owner(Risk, *risk_ids, org_a, org_b)
         await _assert_scoped_to_owner(SSPProject, *ssp_ids, org_a, org_b)
         await _assert_scoped_to_owner(Assessment, *assess_ids, org_a, org_b)
         await _assert_scoped_to_owner(Evidence, *evidence_ids, org_a, org_b)
+        await _assert_scoped_to_owner(PoamMilestone, *milestone_ids, org_a, org_b)
+        # `organizations` is scoped on its own primary key: under tenant A only
+        # org A's own row is visible, not org B's (and vice versa).
+        await _assert_scoped_to_owner(Organization, org_a, org_b, org_a, org_b)
 
         # Cross-tenant INSERT is rejected by the WITH CHECK clause — spot-check on
-        # the deep-chain table, the hardest predicate to get wrong.
+        # the deep-chain tables, the hardest predicates to get wrong.
         with pytest.raises(Exception):  # noqa: B017 - asyncpg/psycopg raise a DB error
             async with session_scope() as s:
                 await set_session_tenant(s, org_a)
                 s.add(POAM(system_id=sys_b, title="RlsCovSmuggledPoam"))
+                await s.flush()
+
+        with pytest.raises(Exception):  # noqa: B017 - asyncpg/psycopg raise a DB error
+            async with session_scope() as s:
+                await set_session_tenant(s, org_a)
+                s.add(PoamMilestone(poam_id=poam_b.id, description="RlsCovSmuggledMilestone"))
                 await s.flush()
     finally:
         # Self-cleaning: remove every row this test created (but leave the
@@ -278,6 +300,13 @@ async def test_rls_scopes_representative_org_scoped_tables() -> None:
         # org-scoped and no other test asserts an unscoped total over them).
         async with session_scope() as s:
             await set_session_tenant(s, None)
+            await s.execute(
+                delete(PoamMilestone).where(
+                    PoamMilestone.description.in_(
+                        ["RlsCovMilestoneA", "RlsCovMilestoneB", "RlsCovSmuggledMilestone"]
+                    )
+                )
+            )
             await s.execute(
                 delete(Evidence).where(Evidence.title.in_(["RlsCovEvidenceA", "RlsCovEvidenceB"]))
             )
