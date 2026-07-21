@@ -968,6 +968,12 @@ class AuditLog(Base):
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    # SCOPING column only (DATA-06) — deliberately excluded from the row_hash/
+    # prev_hash chain payload (see ``ccf.api.audit.row_hash``) so it can be
+    # backfilled/corrected without invalidating the tamper-evident chain.
+    # NULL for system/global events (no resolvable tenant); RLS-enforced via the
+    # ``tenant_isolation`` policy added in migration 0044.
+    organization_id: Mapped[int | None] = mapped_column(Integer, index=True)
     actor: Mapped[str | None] = mapped_column(String(255))
     action: Mapped[str] = mapped_column(String(64))
     entity_type: Mapped[str] = mapped_column(String(64))

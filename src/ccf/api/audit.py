@@ -141,6 +141,13 @@ async def audit_middleware(
             or request.headers.get("x-actor")
             or get_settings().audit_default_actor
         )
+        # organization_id is a SCOPING column only (DATA-06) — resolved from the
+        # request principal and NEVER folded into `content`/the hash payload
+        # below, so existing chains and /api/audit/verify stay valid. NULL for
+        # unauthenticated requests or a global/unscoped principal (system events).
+        org_id = (
+            principal.org_id if principal is not None and principal.user_id is not None else None
+        )
         entity_type, entity_id = _entity(path)
         diff: dict[str, Any] = {"method": method, "path": path, "status": response.status_code}
         if body is not None:
@@ -165,7 +172,12 @@ async def audit_middleware(
                 )
             ).scalar_one_or_none() or _GENESIS
             session.add(
-                AuditLog(**content, prev_hash=prev, row_hash=row_hash(prev, content))
+                AuditLog(
+                    **content,
+                    organization_id=org_id,
+                    prev_hash=prev,
+                    row_hash=row_hash(prev, content),
+                )
             )
             await session.commit()
     except Exception as exc:  # pragma: no cover - audit must never break requests

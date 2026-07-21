@@ -11,8 +11,8 @@ pass CI. This module closes that gap with two complementary checks:
    from the Postgres catalog (``pg_policy``/``pg_class``/``pg_namespace``) and
    asserts, for each, that ``relrowsecurity`` and ``relforcerowsecurity`` are
    both true. The enumerated set is compared against a hardcoded snapshot of
-   every table policied as of this writing (108 tables spanning migrations
-   0010 through 0039) — so the test fails loudly if a table's policy is
+   every table policied as of this writing (109 tables spanning migrations
+   0010 through 0044) — so the test fails loudly if a table's policy is
    dropped (it silently disappears from the live-enumerated set) or if RLS
    enforcement is disabled on a table that still has one.
 2. A BEHAVIORAL check (``test_rls_scopes_representative_org_scoped_tables``)
@@ -24,6 +24,14 @@ pass CI. This module closes that gap with two complementary checks:
    ``control_implementations`` -> ``systems``), and a two-hop parent chain via
    a non-organization_id parent (``poam_milestones`` -> ``poams`` ->
    ``systems``).
+3. A dedicated behavioral check for ``audit_log`` (DATA-06,
+   ``test_rls_scopes_audit_log_with_system_rows_visible_to_all``) — its
+   predicate is a three-way OR (own org, or a NULL/system row) rather than the
+   plain two-way ownership check the other tables use, since audit_log rows
+   from system/unauthenticated events must stay visible to every scoped
+   tenant. Rows are inserted with a real hash-chain link (mirroring
+   ``ccf.api.audit``'s prev_hash/row_hash computation) so this test can't
+   corrupt the global chain for other tests that run ``/api/audit/verify``.
 
 Both tests seed only throwaway, uniquely-named orgs/systems/rows and clean up
 everything except the get-or-create orgs/systems themselves (same convention
@@ -39,12 +47,15 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ccf.api.audit import _GENESIS, row_hash
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
 from ccf.models import (
     POAM,
     Assessment,
+    AuditLog,
     Control,
     ControlImplementation,
     Evidence,
@@ -67,7 +78,7 @@ def _migrate() -> None:
 
 # Snapshot of every ccf-schema table carrying a `tenant_isolation` policy,
 # taken from `pg_policy`/`pg_class` on the fully-migrated schema (migrations
-# 0010 through 0037). If a future migration adds/removes RLS coverage, update
+# 0010 through 0044). If a future migration adds/removes RLS coverage, update
 # this set alongside it — that's the point: the test is living documentation
 # of exactly which tables are protected.
 EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
@@ -80,7 +91,7 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "artifacts", "assessment_control_results", "assessment_results", "assessments",
         "assurance_build_runs", "assurance_edges", "assurance_impacts", "assurance_nodes",
         "assurance_queries", "assurance_query_results", "assurance_snapshots", "audit_engagements",
-        "audit_findings", "audit_requests", "authorization_delta_memos",
+        "audit_findings", "audit_log", "audit_requests", "authorization_delta_memos",
         "authorization_package_artifacts", "authorization_package_diffs",
         "authorization_package_facts", "authorization_package_replay_runs",
         "authorization_packages", "capture_snapshots", "compliance_pack_versions",
@@ -146,7 +157,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 108
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 109
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
@@ -331,3 +342,109 @@ async def test_rls_scopes_representative_org_scoped_tables() -> None:
                 delete(Assessment).where(Assessment.name.in_(["RlsCovAssessA", "RlsCovAssessB"]))
             )
             await s.execute(delete(Control).where(Control.identifier == "RLS-COV-CTRL"))
+
+
+async def _add_chained_audit_row(
+    session: AsyncSession, *, organization_id: int | None, entity_id: str
+) -> AuditLog:
+    """Insert one ``audit_log`` row with a genuine hash-chain link, mirroring
+    ``ccf.api.audit``'s prev_hash/row_hash computation. ``organization_id`` is
+    deliberately kept OUT of the hashed content (matching production — it is a
+    scoping column only), so this helper both seeds valid RLS test data and
+    doubles as a regression guard: if a future change folded organization_id
+    into the hash, the chain-recompute assertion in the test below would
+    detect it.
+    """
+    content = {
+        "actor": "rls-coverage-test",
+        "action": "test",
+        "entity_type": "rls-cov-audit",
+        "entity_id": entity_id,
+        "diff": {},
+    }
+    prev = (
+        await session.execute(select(AuditLog.row_hash).order_by(AuditLog.id.desc()).limit(1))
+    ).scalar_one_or_none() or _GENESIS
+    row = AuditLog(
+        **content,
+        organization_id=organization_id,
+        prev_hash=prev,
+        row_hash=row_hash(prev, content),
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+@pytest.mark.asyncio
+async def test_rls_scopes_audit_log_with_system_rows_visible_to_all() -> None:
+    """``audit_log``'s ``tenant_isolation`` predicate (DATA-06) is a three-way
+    OR — a scoped tenant sees its own org's rows *and* NULL-org (system) rows,
+    but never another tenant's rows. This is a distinct predicate shape from
+    every other table ``_assert_scoped_to_owner`` covers above (plain
+    ownership, no NULL-visible-to-everyone branch), so it gets its own check.
+
+    Rows are inserted (and later deleted) with a real hash-chain link so this
+    test can never corrupt ``/api/audit/verify`` for any other test that runs
+    later in the same session — see ``_add_chained_audit_row``.
+    """
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("RLS is a PostgreSQL feature")
+
+    org_a, _sys_a, org_b, _sys_b = await _seed_two_orgs()
+
+    row_a_id = row_b_id = row_system_id = None
+    try:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            row_a = await _add_chained_audit_row(
+                s, organization_id=org_a, entity_id="RlsCovAuditA"
+            )
+            row_b = await _add_chained_audit_row(
+                s, organization_id=org_b, entity_id="RlsCovAuditB"
+            )
+            row_system = await _add_chained_audit_row(
+                s, organization_id=None, entity_id="RlsCovAuditSystem"
+            )
+            row_a_id, row_b_id, row_system_id = row_a.id, row_b.id, row_system.id
+
+        # Tenant A: sees its own row + the system row, never B's.
+        async with session_scope() as s:
+            await set_session_tenant(s, org_a)
+            ids = (await s.execute(select(AuditLog.id))).scalars().all()
+            assert row_a_id in ids and row_system_id in ids, "audit_log: own/system rows missing"
+            assert row_b_id not in ids, "audit_log: tenant A can see tenant B's row"
+
+        # Tenant B: sees its own row + the system row, never A's.
+        async with session_scope() as s:
+            await set_session_tenant(s, org_b)
+            ids = (await s.execute(select(AuditLog.id))).scalars().all()
+            assert row_b_id in ids and row_system_id in ids, "audit_log: own/system rows missing"
+            assert row_a_id not in ids, "audit_log: tenant B can see tenant A's row"
+
+        # organization_id is excluded from the hash payload: recomputing
+        # row_hash from the persisted content (sans organization_id) still
+        # matches the stored value.
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            row = (
+                await s.execute(select(AuditLog).where(AuditLog.id == row_a_id))
+            ).scalar_one()
+            content = {
+                "actor": row.actor,
+                "action": row.action,
+                "entity_type": row.entity_type,
+                "entity_id": row.entity_id,
+                "diff": row.diff,
+            }
+            assert row.row_hash == row_hash(row.prev_hash or _GENESIS, content)
+    finally:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            await s.execute(
+                delete(AuditLog).where(
+                    AuditLog.entity_id.in_(
+                        ["RlsCovAuditA", "RlsCovAuditB", "RlsCovAuditSystem"]
+                    )
+                )
+            )

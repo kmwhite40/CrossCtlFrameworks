@@ -1,8 +1,12 @@
 """Audit-trail read API.
 
 Access is gated to privileged roles (``admin``/``assessor``) because the audit
-trail spans every tenant's mutations — see the module-level note below on why
-row-level tenant scoping isn't applied yet (DATA-06).
+trail is a security-sensitive, tamper-evident record — see the module-level
+note below. As of DATA-06, ``audit_log`` also carries ``organization_id`` +
+a ``tenant_isolation`` RLS policy, so a scoped admin/assessor's rows are now
+additionally row-isolated to their own org (+ NULL-org system rows) by the
+tenant-clamped session both endpoints already receive via ``get_session``
+(``ccf.api.deps``), not just gated by role.
 """
 
 from __future__ import annotations
@@ -25,15 +29,17 @@ router = APIRouter(prefix="/api/audit", tags=["audit"])
 
 _GENESIS = "0" * 64
 
-# SECURITY (DATA-06, deferred): audit_log has no organization_id column, so we
-# cannot cheaply scope rows to the caller's tenant here. entity_type/entity_id
-# are a generic, per-record-type polymorphic reference (systems, ssp projects,
-# ksi_exceptions, ...) with no single join back to an organization, so deriving
-# scope from them per-request would be expensive and fragile — and getting it
-# wrong would silently drop rows a tenant is entitled to see (or leak rows they
-# aren't). Rather than fabricate that filter, these endpoints are restricted to
-# privileged, cross-tenant-trusted roles (admin/assessor) via require_role until
-# a real organization_id column + row-level security lands (DATA-06).
+# SECURITY (DATA-06, closed): audit_log now carries a real organization_id
+# column + tenant_isolation RLS policy (migration 0044), written by the audit
+# middleware from the request principal's org (NULL for system/global events).
+# entity_type/entity_id remain a generic, per-record-type polymorphic reference
+# (systems, ssp projects, ksi_exceptions, ...) with no single join back to an
+# organization, so app-layer filtering on those was never viable — but RLS
+# scoping on the new organization_id column, beneath the get_session tenant
+# clamp, doesn't need one. The require_role admin/assessor gate stays: a
+# non-privileged user still can't reach these endpoints at all, and the RLS
+# policy now additionally confines a privileged caller's own org-scoped
+# session to their own org's rows (+ NULL-org system rows).
 
 
 class AuditEntryOut(BaseModel):

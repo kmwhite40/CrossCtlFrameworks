@@ -1,7 +1,10 @@
 """RBAC gate on the audit-read API (IA-02): list_audit / verify_chain must
-require a privileged role once auth is enabled — the audit trail spans every
-tenant's mutations and audit_log has no organization_id column to scope it
-(see the DATA-06 note in ``ccf.api.routes.audit``).
+require a privileged role once auth is enabled — the role gate is independent
+of (and layered beneath) the per-tenant RLS scoping added in DATA-06 (see
+``tests/test_audit_tenant_scoping.py`` and the note in ``ccf.api.routes.audit``):
+a non-privileged user is refused outright regardless of tenant, while a
+privileged admin/assessor's own session is now additionally row-isolated to
+their own org.
 
 The server-rendered ``/audit`` HTML page (``ccf.api.routes.ui.audit_page``)
 reads the same table and must carry the identical gate — otherwise a
