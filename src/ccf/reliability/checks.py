@@ -821,15 +821,49 @@ _CHECKS = [
 ]
 
 
-async def run_checks(session: AsyncSession) -> list[Check]:
-    """Run all reliability checks; never raises — a crashed check becomes a FAIL."""
+# --- blocking subset (gates /readyz — unsafe-to-serve conditions only) ------
+#
+# Kept small and cheap on purpose: /readyz runs on every rotation decision, so it
+# must not pay for the full ~40-check suite (e.g. query_templates_health, which
+# exercises every assurance query template). Each entry here can return FAIL for
+# a condition that means the container should NOT receive traffic:
+#   - database_connectivity: no DB, no service.
+#   - alembic_migration_status: schema not migrated (no alembic_version row).
+#   - required_tables: core tables missing (broken/partial migration).
+#   - auth_posture: auth disabled (or default secret) outside dev — go-live gate.
+#   - external_access_scope_integrity: a portal share crosses a tenant boundary,
+#     i.e. row-level isolation has been violated (RLS/tenant-boundary gate).
+BLOCKING_CHECKS = [
+    _check_database,
+    _check_migrations,
+    _check_core_tables,
+    _check_auth_posture,
+    _check_external_access_scope_integrity,
+]
+
+
+async def _run(session: AsyncSession, checks: list[Any]) -> list[Check]:
     results: list[Check] = []
-    for fn in _CHECKS:
+    for fn in checks:
         try:
             results.append(await fn(session))
         except Exception as exc:
             results.append(Check(fn.__name__.lstrip("_"), FAIL, f"Check crashed: {exc}"))
     return results
+
+
+async def run_checks(session: AsyncSession) -> list[Check]:
+    """Run all reliability checks; never raises — a crashed check becomes a FAIL."""
+    return await _run(session, _CHECKS)
+
+
+async def run_blocking_checks(session: AsyncSession) -> list[Check]:
+    """Run only the checks that gate readiness (see ``BLOCKING_CHECKS``).
+
+    Never raises — a crashed check becomes a FAIL, which is the correct
+    fail-closed behavior for a readiness probe.
+    """
+    return await _run(session, BLOCKING_CHECKS)
 
 
 def summarize(checks: list[Check]) -> dict[str, Any]:
