@@ -177,3 +177,45 @@ recommendation and acceptance criterion above.
 A pre-existing design-polish item was surfaced (not from these edits): dashboard.html
 L284/L292/L322 (border-accent-on-rounded, layout-property animations) — logged for a
 future design pass, out of scope here.
+
+---
+
+## Slice 4 resolutions (2026-07-21, subagent-driven, branch `feat/catalog-currency-ssp-odp-connectors`)
+
+Executed via 7 TDD tasks + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **FR-02** — completeness now gates on real evidence (SSPControlEntry → system →
+  ControlImplementation → Evidence join, wired in the completeness route) and rejects
+  DRAFT/ODP-placeholder narratives. Proven by a production-path integration test.
+- **FR-08** — SC-family (SC-8/13/28) statements now name FIPS 140-2/140-3 validated
+  modules + key custody, with a marked cert placeholder.
+- **FR-09 / FR-10** — OSCAL SSP export sources categorization/boundary/roles from the
+  same `metadata_json` as the docx, emits system-implementation, and both OSCAL
+  artifacts cite one consistent baseline.
+- **ISSM-01** — ATO authorize write path (`POST /api/systems/{id}/authorize`),
+  admin-gated, refuses (409) when an open critical/high POA&M exists, audit-covered.
+- **ISSM-02 / ISSM-10** — assessment findings auto-generate provenanced
+  (source='assessment', control, due date, stable `source_ref` back-reference),
+  milestone-bearing, idempotent POA&Ms (migration `0038_poam_source_ref`).
+- **ISSM-03** — ConMon overdue controls + failed control tests now open idempotent
+  POA&Ms (source='conmon'/'control_test') alongside the existing Tasks/Notifications.
+- **Slice 3b** — org-admin AI settings surface (routes + minimal UI) over the vault +
+  gateway: add/test/rotate/revoke, masked, admin-gated, org-scoped; token never returned.
+
+**Whole-branch review findings (all fixed, commit `a107a74`):** the evidence gate was
+initially inert in production (keyed on dict fields the entry builder never emitted) —
+now wired to real records + covered by an integration test; `[Selection` token match;
+OSCAL impact `base` token validity; `control_tests` dedupe `system_id` filter.
+
+**New this slice (register addendum):** FR-14 — FedRAMP 2026 (CR26) terminology
+currency (see `2026-07-21-fedramp-2026-terminology-review.md`): no MUST-CHANGE;
+label-only SHOULD-CHANGE items on `fedramp20x/` surfaces deferred (enforcement 2027-01-01).
+
+Verification: full suite 347→(post-fix)-green except 1 known-flaky async test that passes
+in isolation; ruff + mypy clean across `src`/`tests`.
+
+**Still open (later slices):** FR-01 (catalog is CMMC/800-171, needs an architectural
+decision), FR-03/04/05/06/07/11/12/13 (statement quality + per-cloud origination →
+Slice 5), the ISSM approval-gating / risk-provenance items (ISSM-04..09, -11..13),
+CISO-01..06/08 (aggregation + prod-readiness → Slice 6), and the DATA schema/security
+items (→ dedicated security slice).
