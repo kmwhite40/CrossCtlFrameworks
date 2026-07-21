@@ -27,6 +27,26 @@ from ..ai.cipher import build_cipher, mask
 from ..config import get_settings
 from ..models_grc import ConnectorConfig
 
+# The field within each connector's secret bundle that actually identifies the
+# credential, in priority order — used to derive a meaningful ``key_last4``
+# instead of masking the tail of the serialized JSON bundle (which mostly
+# reflects whichever field happens to sort last and isn't a secret at all).
+_SECRET_FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "msgraph": ("client_secret",),
+    "aws_govcloud": ("secret_access_key", "profile"),
+}
+
+
+def _secret_display_value(connector_type: str, secret: dict[str, Any]) -> str:
+    """The value that should drive ``key_last4`` for this connector's secret."""
+    for field in _SECRET_FIELD_CANDIDATES.get(connector_type, ()):
+        value = secret.get(field)
+        if isinstance(value, str) and value:
+            return value
+    # Unknown connector type or a bundle missing its known secret field(s):
+    # fall back to the whole serialized bundle rather than surfacing nothing.
+    return json.dumps(secret, sort_keys=True)
+
 
 async def set_credential(
     session: AsyncSession,
@@ -66,7 +86,7 @@ async def set_credential(
     cipher = build_cipher(get_settings())  # raises if credential storage unavailable
     payload = json.dumps(secret, sort_keys=True)
     cfg.encrypted_credential = cipher.encrypt(payload)
-    cfg.key_last4 = mask(payload)
+    cfg.key_last4 = mask(_secret_display_value(connector_type, secret))
     cfg.status = "configured"
     cfg.error_message = None
     if actor is not None:

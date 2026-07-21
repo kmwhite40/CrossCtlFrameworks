@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...connectors import get_connector, list_connectors
+from ...connectors.credentials import resolve_credential
 from ...governance import automation
 from ...models import (
     Control,
@@ -423,9 +424,19 @@ async def connectors() -> list[dict[str, Any]]:
 
 
 @router.post("/connectors/{key}/verify")
-async def verify_connector(key: str) -> dict[str, Any]:
-    """Prove connectivity into the target environment (e.g. an AWS GovCloud account)."""
-    conn = get_connector(key)
+async def verify_connector(
+    key: str,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Prove connectivity into the target environment (e.g. an AWS GovCloud account).
+
+    Resolves the caller's own organization credential (IA-05) — never a
+    global/env fallback — so this only succeeds for an org that has bound its
+    own credential via ``/api/connector-settings/credentials/{connector_type}``.
+    """
+    credential = await resolve_credential(session, principal.org_id, key)
+    conn = get_connector(key, credential=credential)
     if conn is None:
         raise HTTPException(404, "unknown connector")
     return {"connector": conn.key, "configured": conn.is_configured(), **(await conn.verify())}
@@ -446,9 +457,14 @@ async def autofill_from_connector(
     values into each matching control's ``odp_values``. If the connector is not
     configured, returns ``configured=false`` plus its ``parameter_map`` so the
     caller can see what it would pull once credentials are set.
+
+    The connector credential is resolved strictly for the caller's own
+    organization (IA-05) — never a global/env fallback — via
+    :func:`ccf.connectors.credentials.resolve_credential`.
     """
     proj = await _require_project(session, project_id, principal)
-    conn = get_connector(connector)
+    credential = await resolve_credential(session, principal.org_id, connector)
+    conn = get_connector(connector, credential=credential)
     if conn is None:
         raise HTTPException(404, "unknown connector")
     if not conn.is_configured():
