@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ccf.ssp.completeness import assess
+from ccf.ssp.statements import DRAFT_PREFIX
 
 _FULL_META = {
     "system_type": "Cloud",
@@ -25,6 +26,7 @@ def _entry(**kw):
         control_origination=["Inherited"],
         odp_definitions=[],
         odp_values={},
+        evidence_ref="s3://evidence/default-config-export.pdf",
     )
     base.update(kw)
     return base
@@ -58,3 +60,78 @@ def test_control_gaps_detected() -> None:
     assert "no implementation narrative" in gaps
     assert "no responsible role" in gaps
     assert any("unfilled parameter" in g for g in gaps)
+
+
+def test_all_draft_ssp_with_no_evidence_is_not_ready() -> None:
+    """An SSP of auto-composed [DRAFT] statements with zero evidence must not
+    score 100% ready — draft narratives and unresolved ODP placeholders both
+    need a human to review them before the control counts as complete."""
+    draft_entry = _entry(
+        control_id="AC.L2-3.1.1",
+        part_narratives=[{"text": DRAFT_PREFIX + "The platform provides the capability."}],
+        evidence_ref=None,
+    )
+    placeholder_entry = _entry(
+        control_id="AC.L2-3.1.2",
+        part_narratives=[{"text": "Sessions are locked after [Assignment: inactivity period]."}],
+        evidence_ref=None,
+    )
+    r = assess(_FULL_META, [draft_entry, placeholder_entry])
+    assert r["ready"] is False
+    assert r["controls_complete"] == 0
+    assert r["score"] < 100.0
+    gap_map = {g["control_id"]: g["gaps"] for g in r["control_gaps"]}
+    assert "draft narrative — needs review" in gap_map["AC.L2-3.1.1"]
+    assert "draft narrative — needs review" in gap_map["AC.L2-3.1.2"]
+
+
+def test_implemented_without_evidence_is_gapped() -> None:
+    """A control marked Implemented (or Partially Implemented) with no linked
+    evidence — neither an entry-level evidence reference nor evidence on the
+    underlying control implementation — must be flagged, not scored complete."""
+    no_evidence = _entry(
+        control_id="AC.L2-3.1.1",
+        implementation_status=["Implemented"],
+        evidence_ref=None,
+    )
+    partial_no_evidence = _entry(
+        control_id="AC.L2-3.1.3",
+        implementation_status=["Partially Implemented"],
+        evidence_ref=None,
+    )
+    r = assess(_FULL_META, [no_evidence, partial_no_evidence])
+    assert r["ready"] is False
+    assert r["controls_complete"] == 0
+    gap_map = {g["control_id"]: g["gaps"] for g in r["control_gaps"]}
+    assert "implemented without evidence" in gap_map["AC.L2-3.1.1"]
+    assert "implemented without evidence" in gap_map["AC.L2-3.1.3"]
+
+
+def test_complete_entry_with_evidence_ref_has_no_new_gaps() -> None:
+    """A real (non-draft) narrative, filled ODPs, and an entry-level evidence
+    reference should not trip either new gate."""
+    good = _entry(
+        control_id="AC.L2-3.1.1",
+        part_narratives=[{"text": "The organization enforces MFA for all remote access."}],
+        implementation_status=["Implemented"],
+        evidence_ref="s3://evidence/ac-3.1.1-config-export.pdf",
+    )
+    r = assess(_FULL_META, [good])
+    assert r["control_gaps"] == []
+    assert r["controls_complete"] == 1
+    assert r["ready"] is True
+    assert r["score"] == 100.0
+
+
+def test_complete_entry_with_control_implementation_evidence_has_no_new_gaps() -> None:
+    """When there's no entry-level evidence reference, linked evidence on the
+    underlying control implementation also satisfies the evidence gate."""
+    good = _entry(
+        control_id="AC.L2-3.1.1",
+        part_narratives=[{"text": "The organization enforces MFA for all remote access."}],
+        implementation_status=["Implemented"],
+        control_implementation={"evidence": [{"title": "MFA config export"}]},
+    )
+    r = assess(_FULL_META, [good])
+    assert r["control_gaps"] == []
+    assert r["ready"] is True
