@@ -190,6 +190,13 @@ class ConnectorConfig(Base):
     evidence_produced: Mapped[int] = mapped_column(Integer, default=0)
     controls_impacted: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # Envelope-encrypted credential bundle (JSON secret payload) for the live
+    # config-capture connectors (ccf.connectors.*) — never plaintext. Reuses the
+    # Slice-3a cipher (ccf.ai.cipher); see ccf.connectors.credentials. One row
+    # per (organization_id, connector_type) is used for automated capture; only
+    # ``key_last4`` is ever surfaced to callers/UI.
+    encrypted_credential: Mapped[str | None] = mapped_column(Text)
+    key_last4: Mapped[str | None] = mapped_column(String(8))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

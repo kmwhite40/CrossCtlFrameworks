@@ -1,9 +1,15 @@
 """Connector-driven evidence collection + config-drift detection.
 
-Runs every configured config-capture connector, records what it captured as a
-baseline snapshot, and raises a drift alert when a value changes from the last
-capture (e.g. an MFA policy or log-retention setting drifted). This is the
-continuous side of the connectors — the Vanta/Drata evidence loop.
+Runs every config-capture connector this organization has its OWN bound
+credential for, records what it captured as a baseline snapshot, and raises a
+drift alert when a value changes from the last capture (e.g. an MFA policy or
+log-retention setting drifted). This is the continuous side of the connectors
+— the Vanta/Drata evidence loop.
+
+Credentials are resolved strictly per-organization (IA-05, see
+:mod:`ccf.connectors.credentials`): a connector with no credential bound to
+the org is skipped — never run under a global/no-identity credential and
+never attributed to an org that didn't produce it.
 """
 
 from __future__ import annotations
@@ -13,7 +19,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..connectors import list_connectors
+from ..connectors import connector_keys, get_connector
+from ..connectors.credentials import orgs_with_bound_credentials, resolve_credential
 from ..logging import get_logger
 from ..models import CaptureSnapshot
 from . import bus
@@ -21,12 +28,21 @@ from . import bus
 log = get_logger(__name__)
 
 
-async def collect_all(session: AsyncSession, *, org_id: int | None = None) -> dict[str, Any]:
-    """Capture from all configured connectors; snapshot values + detect drift."""
+async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
+    """Capture from every connector ``org_id`` has its own bound credential for.
+
+    A connector with no bound credential is reported in ``not_configured`` and
+    is never run — there is no global-credential fallback, so nothing is
+    written for it.
+    """
     captured = drift = 0
     ran: list[str] = []
-    for conn in list_connectors():
-        if not conn.is_configured():
+    not_configured: list[str] = []
+    for key in connector_keys():
+        credential = await resolve_credential(session, org_id, key)
+        conn = get_connector(key, credential=credential)
+        if conn is None or not conn.is_configured():
+            not_configured.append(key)
             continue
         ran.append(conn.key)
         try:
@@ -79,4 +95,33 @@ async def collect_all(session: AsyncSession, *, org_id: int | None = None) -> di
                 )
                 snap.value = cap.value
     await session.flush()
-    return {"connectors_run": ran, "captured": captured, "drift": drift}
+    return {
+        "organization_id": org_id,
+        "connectors_run": ran,
+        "not_configured": not_configured,
+        "captured": captured,
+        "drift": drift,
+    }
+
+
+async def collect_all(session: AsyncSession, *, org_id: int | None = None) -> dict[str, Any]:
+    """Capture config-drift evidence, attributed to the org whose credential ran.
+
+    With ``org_id`` set (the authenticated API path), scoped to that one
+    organization. With no ``org_id`` (the scheduler's global cycle), fans out
+    to every organization that has at least one bound connector credential —
+    each capture still runs under, and is attributed to, only that org's own
+    credential; organizations with no bound credential are never touched.
+    """
+    if org_id is not None:
+        return await collect_for_org(session, org_id)
+
+    org_ids = await orgs_with_bound_credentials(session)
+    per_org = [await collect_for_org(session, oid) for oid in org_ids]
+    ran = [f"{r['organization_id']}:{k}" for r in per_org for k in r["connectors_run"]]
+    return {
+        "organizations_processed": org_ids,
+        "connectors_run": ran,
+        "captured": sum(r["captured"] for r in per_org),
+        "drift": sum(r["drift"] for r in per_org),
+    }

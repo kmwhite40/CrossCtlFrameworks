@@ -3,9 +3,14 @@
 Reads AWS account configuration to inform organization-defined parameters.
 Live capture uses ``boto3`` (against ``us-gov-west-1`` by default); boto3 is an
 optional dependency, so this connector reports "not configured" unless it is
-installed *and* ``CCF_AWS_CAPTURE_ENABLED`` is set. The provider calls live
-behind ``_client`` — a single, clearly-marked integration seam — so wiring real
-credentials is additive and does not change the interface the API depends on.
+installed, the deployment has opted in via ``CCF_AWS_CAPTURE_ENABLED``, *and*
+the calling organization has its own bound credential (access key or named
+profile) passed in as ``credential`` — see :mod:`ccf.connectors.credentials`.
+There is no global/env credential fallback (IA-05): an org with no bound
+credential never captures under another org's or a shared account's identity.
+The provider calls live behind ``_session`` — a single, clearly-marked
+integration seam — so wiring real credentials is additive and does not change
+the interface the API depends on.
 """
 
 from __future__ import annotations
@@ -45,24 +50,47 @@ class AwsGovCloudConnector(ConfigConnector):
             return False
         return True
 
+    def _region(self) -> str:
+        c = self.credential or {}
+        region = c.get("region")
+        return region if isinstance(region, str) and region else get_settings().aws_region
+
     def is_configured(self) -> bool:
-        return bool(get_settings().aws_capture_enabled) and self._boto3_available()
+        if not (get_settings().aws_capture_enabled and self._boto3_available()):
+            return False
+        c = self.credential
+        if not c:
+            return False
+        return bool((c.get("access_key_id") and c.get("secret_access_key")) or c.get("profile"))
 
     def _session(self) -> Any:
         import boto3  # noqa: PLC0415
 
-        s = get_settings()
-        # A named profile or the ambient credential chain (env, SSO, IAM role).
-        return boto3.Session(profile_name=s.aws_profile) if s.aws_profile else boto3.Session()
+        c = self.credential or {}
+        # This org's own access key pair, or its own named profile — never the
+        # ambient credential chain / a global profile (IA-05: no cross-tenant
+        # attribution). ``is_configured`` guarantees one of these is present.
+        if c.get("access_key_id") and c.get("secret_access_key"):
+            return boto3.Session(
+                aws_access_key_id=c["access_key_id"],
+                aws_secret_access_key=c["secret_access_key"],
+                aws_session_token=c.get("session_token"),
+            )
+        return boto3.Session(profile_name=c["profile"])
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can connect into the GovCloud account (STS caller identity)."""
-        s = get_settings()
         if not self._boto3_available():
             return {"connected": False, "reason": "boto3 not installed"}
+        if not self.is_configured():
+            return {
+                "connected": False,
+                "reason": "AWS credentials not configured for this organization",
+            }
+        region = self._region()
 
         def _call() -> dict[str, Any]:
-            sts = self._session().client("sts", region_name=s.aws_region)
+            sts = self._session().client("sts", region_name=region)
             ident = sts.get_caller_identity()
             arn = ident.get("Arn", "")
             partition = arn.split(":")[1] if arn.count(":") >= 2 else "aws"
@@ -70,15 +98,15 @@ class AwsGovCloudConnector(ConfigConnector):
                 "connected": True,
                 "account": ident.get("Account"),
                 "arn": arn,
-                "region": s.aws_region,
+                "region": region,
                 "partition": partition,
-                "govcloud": partition == "aws-us-gov" or s.aws_region in GOVCLOUD_REGIONS,
+                "govcloud": partition == "aws-us-gov" or region in GOVCLOUD_REGIONS,
             }
 
         try:
             return await asyncio.to_thread(_call)
         except Exception as e:
-            return {"connected": False, "reason": str(e)[:200], "region": s.aws_region}
+            return {"connected": False, "reason": str(e)[:200], "region": region}
 
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():
@@ -103,7 +131,7 @@ class AwsGovCloudConnector(ConfigConnector):
         """
 
         def _read() -> str | None:
-            client = self._session().client("logs", region_name=get_settings().aws_region)
+            client = self._session().client("logs", region_name=self._region())
             retentions: list[int] = []
             paginator = client.get_paginator("describe_log_groups")
             for page in paginator.paginate():
@@ -131,7 +159,7 @@ class AwsGovCloudConnector(ConfigConnector):
         """EC2 default EBS encryption → encryption-at-rest signal (KSI-SVC-03)."""
 
         def _read() -> bool:
-            client = self._session().client("ec2", region_name=get_settings().aws_region)
+            client = self._session().client("ec2", region_name=self._region())
             return bool(client.get_ebs_encryption_by_default().get("EbsEncryptionByDefault"))
 
         if not await asyncio.to_thread(_read):
