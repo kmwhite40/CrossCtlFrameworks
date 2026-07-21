@@ -192,6 +192,11 @@ async def dashboard_overview(
     ] or [{"key": s, "count": by_sev.get(s, 0)} for s in _SEV_ORDER]
     open_total = poam.get("open_total", 0)
     overdue = poam.get("overdue", 0)
+    # No-due-date POA&Ms are neither on-track nor overdue — they're a visibility
+    # gap. Excluding them from on_track (rather than defaulting to on-track) is
+    # what keeps the invariant on_track + overdue + no_due_date == open_total.
+    no_due_date = poam.get("no_due_date", 0)
+    on_track = poam.get("on_track", max(open_total - overdue - no_due_date, 0))
 
     # Readiness cards: assessed systems first, ranked by SPRS %.
     systems = summary.get("systems", [])
@@ -222,12 +227,18 @@ async def dashboard_overview(
         "sla": {
             "open": open_total,
             "overdue": overdue,
-            "on_track": max(open_total - overdue, 0),
-            "on_track_pct": round(100 * (open_total - overdue) / open_total, 1)
-            if open_total
-            else 100.0,
+            "no_due_date": no_due_date,
+            "on_track": on_track,
+            "on_track_pct": round(100 * on_track / open_total, 1) if open_total else 100.0,
         },
         "poam_buckets": poam.get("buckets", {}),
+        # Residual risk (risk_accepted) and the "completed but no closed_on"
+        # data-quality gap — additive, so it doesn't disturb existing consumers of
+        # the fields above.
+        "poam_residual": {
+            "accepted": poam.get("accepted", 0),
+            "data_quality": poam.get("data_quality", {}),
+        },
         "mttr": await _mttr_trend(session),
         "risk_by_band": await _risk_by_band(session),
         # Continuous-monitoring operations
