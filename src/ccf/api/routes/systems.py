@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,8 +26,15 @@ from ...schemas import (
     SystemCreate,
     SystemOut,
 )
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
+
+# Severities that block authorization while an open weakness exists.
+_ATO_BLOCKING_SEVERITIES = ("critical", "high")
+# POA&M statuses that represent an unresolved weakness (mirrors compliance_summary).
+_ATO_BLOCKING_STATUSES = ("open", "in_progress")
+# Default authorization period when the caller doesn't specify an expiration.
+_DEFAULT_ATO_PERIOD_DAYS = 365
 
 router = APIRouter(prefix="/api/systems", tags=["systems"])
 
@@ -81,6 +89,62 @@ async def delete_system(
     sys = await require_system_in_scope(session, system_id, principal)
     await session.delete(sys)
     await session.commit()
+
+
+class AuthorizeRequest(BaseModel):
+    expires_on: date | None = None
+
+
+@router.post("/{system_id}/authorize", response_model=SystemOut)
+async def authorize_system(
+    system_id: int,
+    body: AuthorizeRequest = AuthorizeRequest(),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> SystemOut:
+    """Transition a system's ``ato_status`` toward "authorized".
+
+    Refuses (409) when the system has an open POA&M of critical/high severity —
+    an unresolved high-risk weakness must not be authorized away. Does not add
+    an approval workflow; that's a later slice (ISSM-08).
+    """
+    sys = await require_system_in_scope(session, system_id, principal)
+
+    blocking = (
+        await session.execute(
+            select(func.count(POAM.id))
+            .where(POAM.system_id == system_id)
+            .where(POAM.severity.in_(_ATO_BLOCKING_SEVERITIES))
+            .where(POAM.status.in_(_ATO_BLOCKING_STATUSES))
+        )
+    ).scalar_one()
+    if blocking:
+        raise HTTPException(
+            409,
+            "cannot authorize: system has an open critical/high severity POA&M",
+        )
+
+    previous_status = sys.ato_status
+    sys.ato_status = "authorized"
+    sys.ato_expires_on = body.expires_on or (
+        date.today() + timedelta(days=_DEFAULT_ATO_PERIOD_DAYS)
+    )
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="authorized",
+        entity_type="system",
+        entity_id=sys.id,
+        summary=(
+            f"System {sys.name} authorized ({previous_status or 'none'} → authorized), "
+            f"expires {sys.ato_expires_on}"
+        ),
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    await session.commit()
+    await session.refresh(sys)
+    return SystemOut.model_validate(sys)
 
 
 @router.get("/{system_id}/summary", response_model=ComplianceSummary)
