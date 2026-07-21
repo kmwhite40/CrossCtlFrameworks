@@ -93,15 +93,21 @@ def test_non_sc_sample_statement_byte_identical_to_before() -> None:
 
 
 def test_non_sc_customer_responsibility_statement_byte_identical_to_before() -> None:
+    """Regression pin, updated for FR-07: this call site only ever has the SSP
+    authoring platform code ("m365"), never the customer's confirmed tenant
+    tier, so it must render the neutral GOV_ENVIRONMENTS label rather than
+    asserting "GCC High" (see ccf.ssp.platforms.environment_for, used by
+    ccf.governance.automation.generate_statements when the confirmed tier
+    *is* available)."""
     rec = _rec(domain="AC", requirement="limit system access to authorized users")
     text = customer_responsibility_statement("m365", rec)
     expected = (
-        "[DRAFT] As a customer responsibility within Microsoft 365 Government (GCC High), the "
-        "organization configures and maintains Microsoft Entra ID Conditional Access, "
-        "role-based access control, and Intune device compliance to satisfy limit system access "
-        "to authorized users. Organization-defined parameters and configuration settings are "
-        "established by the System Owner and evidenced in the Microsoft 365 Government (GCC "
-        "High) tenant/account configuration."
+        "[DRAFT] As a customer responsibility within Microsoft 365 (tenant tier not "
+        "confirmed), the organization configures and maintains Microsoft Entra ID "
+        "Conditional Access, role-based access control, and Intune device compliance to "
+        "satisfy limit system access to authorized users. Organization-defined parameters "
+        "and configuration settings are established by the System Owner and evidenced in "
+        "the Microsoft 365 (tenant tier not confirmed) tenant/account configuration."
     )
     assert text == expected
 

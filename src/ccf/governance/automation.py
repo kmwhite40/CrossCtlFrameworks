@@ -32,7 +32,12 @@ from ..models import (
 from ..scoring.engine import deduction_for, score_system
 from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
-from ..ssp.platforms import GOV_ENVIRONMENTS, platform_label, services_for
+from ..ssp.platforms import (
+    MANUAL_EVIDENCE_NOTE,
+    environment_for,
+    has_capture_connector,
+    services_for,
+)
 from ..ssp.seed import seed_project_entries
 from . import ai, bus
 
@@ -443,7 +448,12 @@ async def generate_statements(
     ODP values, and live captured config; optionally drafts via AI when enabled.
     """
     ssp_plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", project.platform or "m365")
-    environment = GOV_ENVIRONMENTS.get(ssp_plat, platform_label(ssp_plat))
+    environment = environment_for(ssp_plat, profile.cloud_platform)
+    # No live capture connector exists for this platform (Azure/GCP/etc. today —
+    # see ssp/platforms.py CONNECTOR_PLATFORMS) — every statement composed below
+    # gets an explicit manual-evidence flag rather than reading as auto-evidenced
+    # (FR-06).
+    connector_backed = has_capture_connector(ssp_plat)
     derivation = profile.derivation or {}
 
     # Live captured config indexed by NIST id (from the connector collection loop).
@@ -474,7 +484,7 @@ async def generate_statements(
         .all()
     )
     ai_ready = use_ai and ai.is_configured()
-    drafts = ai_used = 0
+    drafts = ai_used = manual_evidence_required = 0
     for e in entries:
         row = derivation.get(e.control_id) or {}
         responsibility = row.get("responsibility", "customer")
@@ -500,11 +510,26 @@ async def generate_statements(
             if ai_text:
                 text = (stmt.DRAFT_PREFIX if mark_draft else "") + ai_text
                 ai_used += 1
+        if not connector_backed:
+            # Nothing about this platform has been technically verified by any
+            # capture connector — force review and make that explicit in the
+            # narrative itself, even for statements (e.g. "inherited") that
+            # would otherwise read as already evidenced (FR-06).
+            needs_review = True
+            if mark_draft and not text.startswith(stmt.DRAFT_PREFIX):
+                text = stmt.DRAFT_PREFIX + text
+            text = f"{text} {MANUAL_EVIDENCE_NOTE}"
+            manual_evidence_required += 1
         if needs_review:
             drafts += 1
         e.part_narratives = [{"label": "Implementation", "text": text}]
     await session.flush()
-    return {"entries": len(entries), "drafts": drafts, "ai_used": ai_used}
+    return {
+        "entries": len(entries),
+        "drafts": drafts,
+        "ai_used": ai_used,
+        "manual_evidence_required": manual_evidence_required,
+    }
 
 
 async def control_impact(session: AsyncSession, system_id: int) -> dict[str, Any]:
@@ -585,18 +610,36 @@ async def evidence_requirements(
 def coverage(profile: SystemProfile) -> dict[str, Any]:
     """Read the derivation snapshot into a coverage rollup for dashboards."""
     d = profile.derivation or {}
+    ssp_plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", "")
+    # No live capture connector exists for this platform (Azure/GCP/etc. — see
+    # ssp/platforms.py CONNECTOR_PLATFORMS): a "platform:"-sourced inherited
+    # state here is the derivation's own default assumption, never anything a
+    # connector actually captured, so it must not silently count as "covered"
+    # (FR-06). An explicit vendor inheritance (a customer-linked vendor's
+    # ``linked_controls``) is a deliberate human action, not a platform default,
+    # and is unaffected.
+    connector_backed = has_capture_connector(ssp_plat)
     by_resp: dict[str, int] = {}
     by_state: dict[str, int] = {}
+    covered = 0
+    manual_evidence_required = 0
     for row in d.values():
         by_resp[row["responsibility"]] = by_resp.get(row["responsibility"], 0) + 1
         by_state[row["state"]] = by_state.get(row["state"], 0) + 1
+        if row["state"] not in ("inherited", "implemented"):
+            continue
+        is_platform_sourced = str(row.get("source") or "").startswith("platform:")
+        if not connector_backed and is_platform_sourced:
+            manual_evidence_required += 1
+        else:
+            covered += 1
     total = len(d)
-    covered = by_state.get("inherited", 0) + by_state.get("implemented", 0)
     return {
         "total": total,
         "by_responsibility": by_resp,
         "by_state": by_state,
         "covered": covered,
         "coverage_pct": round(100 * covered / total, 1) if total else None,
+        "manual_evidence_required": manual_evidence_required,
         "derived_at": profile.derived_at.isoformat() if profile.derived_at else None,
     }

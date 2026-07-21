@@ -25,11 +25,48 @@ PLATFORMS: dict[str, str] = {
 }
 
 # Government-cloud environment names used in customer-responsibility drafts.
+#
+# "m365" deliberately does NOT assert a specific Government tier here: Microsoft
+# 365 spans commercial, GCC, GCC High, and DoD tenants, and this module only
+# ever sees the SSP authoring platform code ("m365") — never the customer's
+# actual tenant. Asserting "GCC High" without confirming that's the real tenant
+# is a factual claim this code cannot make (FR-07); use ``environment_for``
+# below when the caller *does* have the confirmed intake ``cloud_platform``
+# code (see ccf.governance.automation.PLATFORM_TO_SSP), which is the only
+# place "GCC High" language may be rendered. Azure and AWS GovCloud each have
+# exactly one government offering in PLATFORMS/the intake questionnaire, so
+# their labels are safe to assert outright regardless of caller context.
 GOV_ENVIRONMENTS: dict[str, str] = {
-    "m365": "Microsoft 365 Government (GCC High)",
+    "m365": "Microsoft 365 (tenant tier not confirmed)",
     "azure": "Microsoft Azure Government",
     "aws_govcloud": "AWS GovCloud (US)",
 }
+
+# The one intake questionnaire cloud_platform code (see
+# ccf.governance.automation.QUESTIONNAIRE / PLATFORM_TO_SSP) that confirms the
+# customer's Microsoft 365 tenant is specifically GCC High. Any other value
+# (None, "none", "aws_govcloud", "azure_gov", or simply absent because the SSP
+# project was authored directly without a derived profile) leaves the tier
+# unconfirmed, so "GCC High" must not be rendered.
+M365_GCC_HIGH_CLOUD_CODE = "m365_gcc_high"
+
+# Platforms with a live capture connector that can actually pull config/evidence
+# from the tenant (see ccf.connectors: msgraph.py = m365, aws.py = aws_govcloud).
+# Azure — and anything else added to PLATFORMS without a connector — has none;
+# its service catalog below stays usable for drafting, but callers must gate
+# statements built from it out of "implemented/evidenced" claims (FR-06). See
+# ``has_capture_connector`` and ``MANUAL_EVIDENCE_NOTE``.
+CONNECTOR_PLATFORMS: frozenset[str] = frozenset({"m365", "aws_govcloud"})
+
+# Appended to every auto-composed statement for a platform with no capture
+# connector, so a reviewer — and ccf.governance.automation's coverage rollup —
+# can tell the claim was never technically verified and needs a human to
+# attach evidence before the control counts as covered.
+MANUAL_EVIDENCE_NOTE = (
+    "[MANUAL-EVIDENCE-REQUIRED — NO CONNECTOR: no automated capture connector "
+    "exists for this platform; a human must attach evidence before this control "
+    "is considered evidenced.]"
+)
 
 PLATFORM_CHOICES = tuple(PLATFORMS)
 
@@ -141,6 +178,31 @@ def normalize_platform(platform: str | None) -> str:
 
 def platform_label(platform: str | None) -> str:
     return PLATFORMS.get(normalize_platform(platform), PLATFORMS[DEFAULT_PLATFORM])
+
+
+def has_capture_connector(platform: str | None) -> bool:
+    """True if a live capture connector exists to evidence this platform.
+
+    False for Azure (and anything else not wired to a connector) — the platform's
+    service catalog stays usable for drafting, but auto-composed statements built
+    from it must be gated out of "implemented/evidenced" claims (FR-06).
+    """
+    return normalize_platform(platform) in CONNECTOR_PLATFORMS
+
+
+def environment_for(platform: str | None, cloud_platform: str | None = None) -> str:
+    """Environment label for ``platform``, honoring the *confirmed* tenant tier.
+
+    ``cloud_platform`` is the raw intake questionnaire code (e.g. "m365_gcc_high",
+    "azure_gov", "aws_govcloud") when the caller has a SystemProfile to read it
+    from. "GCC High" is only ever rendered when that exact code is present;
+    otherwise the neutral ``GOV_ENVIRONMENTS`` default is used — "GCC High" is
+    never asserted without confirmation (FR-07).
+    """
+    plat = normalize_platform(platform)
+    if plat == "m365" and cloud_platform == M365_GCC_HIGH_CLOUD_CODE:
+        return "Microsoft 365 Government (GCC High)"
+    return GOV_ENVIRONMENTS.get(plat, platform_label(plat))
 
 
 def services_for(platform: str | None, domain: str | None) -> str:
