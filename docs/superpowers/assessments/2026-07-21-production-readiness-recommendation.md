@@ -15,6 +15,14 @@ asserted. Remaining items are **conditions** — integrity, governance, and evid
 gaps that must be cleared or explicitly risk-accepted by the Authorizing Official before
 Concord serves real CUI across multiple tenants at scale. No unmitigated Critical stands.
 
+> **Status update (post-Slice-7, 2026-07-21):** conditions **1 (portal FK integrity /
+> DATA-02), 2 (per-org connector credentials / IA-05), 3 (evidence integrity + WORM /
+> IA-07/08), and 5 (approval-gating & SoD / ISSM-08/09) are now CLEARED** in code (see the
+> Slice 7 resolutions in the register). **Remaining conditions: 4 (audit_log per-tenant
+> column / DATA-06), 6 (AI provenance in UI / CISO-02), 7 (destructive-delete safety /
+> DATA-04), and 8 (dependency hygiene).** The recommendation stays **Conditional Go** until
+> those four are cleared or AO-accepted; the numbering below is the original list.
+
 ## Blockers resolved this program (evidence-backed)
 
 | Was a blocker | Status |

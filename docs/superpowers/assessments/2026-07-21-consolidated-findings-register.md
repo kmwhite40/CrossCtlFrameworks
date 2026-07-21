@@ -326,3 +326,37 @@ and the portal magic-link token-in-URL hardening.
 
 **Production-readiness recommendation:** see
 `2026-07-21-production-readiness-recommendation.md`.
+
+---
+
+## Slice 7 resolutions (2026-07-21, subagent-driven — integrity & governance)
+
+5 TDD tasks + a whole-branch review + a fix wave. **RESOLVED** (clears 4 of the 8 go-live
+conditions):
+
+- **IA-07** (go-live cond. 3) — evidence `read_version` now recomputes SHA-256 and raises on
+  mismatch; integrity is enforced on the single read path (download + replay both go through it).
+- **IA-08** (cond. 3) — local backend no longer falsely claims WORM (logs
+  `evidence.worm_not_storage_enforced`); S3 object-lock requires a valid future retain-until;
+  config documents that true WORM needs `evidence_backend=s3` + object lock.
+- **DATA-02** (cond. 1) — external-portal share rows now have real FKs (ON DELETE CASCADE),
+  orphans deleted in the migration (`0042`); the highest-exposure surface can no longer
+  reference deleted/foreign artifacts.
+- **ISSM-08/09** (cond. 5) — POA&M closure requires completed milestones **or** dated
+  closure evidence that **post-dates** the weakness, plus (auth-on) an Approval by a different
+  principal (SoD); risk acceptance requires owner + expiry + (auth-on) AO approval; reuses the
+  Approval mechanism, gated on both the `/close` route and generic PATCH.
+- **IA-05** (cond. 2) — connector credentials stored **per-org, encrypted** (reusing the AI
+  cipher); capture refuses when an org has no bound credential (no silent global fallback);
+  snapshots attributed to the owning org; an admin-gated org-scoped API binds credentials and
+  `/verify`+`/autofill` resolve the caller's credential (masked, never returned).
+
+**Whole-branch review findings (all fixed):** per-org connector creds were unreachable via API
+(added the route + wired ssp routes, commit `184d29d`); the closure evidence gate accepted any
+pre-existing evidence (now recency-constrained + tested, `a29b54e`); scan-ingest auto-close
+documented as an accepted evidence-backed exception; `key_last4` now masks the real secret field.
+
+**Go-live conditions remaining (4 of 8):** DATA-06 (audit_log org column + RLS), CISO-02 (AI
+provenance visible in UI), DATA-04 (soft-delete / cascade safety), dependency hygiene. Plus
+tracked follow-ups: SSP connector routes fully wired to per-org creds, `risk_accepted` POA&M
+status parallel gate, portal magic-link token-in-URL hardening, the known-flaky audit-chain test.
