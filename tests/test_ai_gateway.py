@@ -45,7 +45,11 @@ async def test_set_credential_encrypts_and_masks() -> None:
         assert "encrypted_credential" not in view and view["key_last4"] == "…1234"
     # persisted as ciphertext
     async with session_scope() as s:
-        row = (await s.execute(select(AiProviderConfig))).scalar_one()
+        row = (
+            await s.execute(
+                select(AiProviderConfig).where(AiProviderConfig.organization_id == org_id)
+            )
+        ).scalar_one()
         assert _KEY not in (row.encrypted_credential or "")
 
 
