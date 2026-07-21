@@ -32,7 +32,7 @@ from sqlalchemy import delete, select
 
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.governance.automation import coverage, derive_system, generate_ssp
+from ccf.governance.automation import coverage, derive_system, generate_ssp, generate_statements
 from ccf.models import (
     Organization,
     ScoringControl,
@@ -40,13 +40,16 @@ from ccf.models import (
     SSPProject,
     System,
     SystemProfile,
+    Vendor,
 )
+from ccf.ssp.constants import GENERIC_ROLE_FLAG
 from ccf.ssp.platforms import (
     GOV_ENVIRONMENTS,
     MANUAL_EVIDENCE_NOTE,
     environment_for,
     has_capture_connector,
 )
+from ccf.ssp.seed import seed_project_entries
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -281,3 +284,125 @@ def test_environment_for_only_confirms_gcc_high_with_exact_intake_code() -> None
 def test_environment_for_azure_and_aws_unaffected_by_tier_param() -> None:
     assert environment_for("azure", "azure_gov") == "Microsoft Azure Government"
     assert environment_for("aws_govcloud", "aws_govcloud") == "AWS GovCloud (US)"
+
+
+# --- FR-13 / FR-11: statement-quality params reach the production compose() -
+
+
+@pytest.mark.asyncio
+async def test_named_system_owner_metadata_reaches_the_rendered_narrative() -> None:
+    """FR-13: ``ssp/seed.py`` already resolves a project's real named System
+    Owner (from front-matter ``roles`` metadata) onto ``SSPControlEntry.
+    responsible_role`` — but the production ``generate_statements`` compose()
+    call used to omit ``responsible_role`` entirely, so every rendered
+    narrative showed the generic flagged fallback even when a real name was
+    on file.
+
+    Drives the REAL sequence a user triggers through the API: create the SSP
+    (``generate_ssp``), edit the front matter to name a System Owner (the
+    ``PUT .../metadata`` route sets ``proj.metadata_json`` directly), reseed
+    to pick it up (``seed_project_entries(..., overwrite=True)`` — the same
+    function the reseed/regenerate routes call), then regenerate statements
+    (``generate_statements`` — the same function ``POST .../auto-statements``
+    calls). Asserts on the actual rendered narrative, not on ``stmt.compose()``
+    called directly."""
+    control_ids: list[str] = []
+    try:
+        async with session_scope() as session:
+            sys = await _make_system(session, "Named Role Org")
+            control_ids = await _seed_controls(session, "NAMEDROLE")
+            profile = SystemProfile(
+                system_id=sys.id, environment_type="cloud", cloud_platform="m365_gcc_high"
+            )
+            session.add(profile)
+            await session.flush()
+            await derive_system(
+                session,
+                system_id=sys.id,
+                org_id=sys.organization_id,
+                profile=profile,
+                create_poams=False,
+            )
+            proj_id = await generate_ssp(session, system=sys, profile=profile)
+            proj = await session.get(SSPProject, proj_id)
+            assert proj is not None
+
+            # The real "edit front matter" API action naming a System Owner.
+            proj.metadata_json = {"roles": {"system_owner": {"name": "Jane Doe"}}}
+            await session.flush()
+            # The real reseed action (picks the named role up onto entries).
+            await seed_project_entries(session, proj, overwrite=True, platform=proj.platform)
+            # The real "regenerate statements" API action.
+            await generate_statements(session, project=proj, profile=profile)
+            entries = await _entries(session, proj)
+
+        ac_entry = next(e for e in entries if e.control_id == control_ids[0])
+        assert ac_entry.responsible_role is not None
+        assert "Jane Doe" in ac_entry.responsible_role
+        text = "\n".join((p.get("text") or "") for p in ac_entry.part_narratives or [])
+        assert "Jane Doe" in text, f"named role missing from rendered narrative: {text!r}"
+        assert GENERIC_ROLE_FLAG not in text, f"generic fallback leaked into narrative: {text!r}"
+    finally:
+        if control_ids:
+            async with session_scope() as session:
+                await session.execute(
+                    delete(ScoringControl).where(ScoringControl.control_id.in_(control_ids))
+                )
+
+
+@pytest.mark.asyncio
+async def test_vendor_authorization_reaches_crm_ref_and_clears_needs_review() -> None:
+    """FR-11: a vendor's real ``authorization`` field (e.g. "FedRAMP High
+    Authorized") — already used to drive control inheritance in
+    ``_vendor_inheritance`` — used to never reach ``stmt.compose()``'s
+    ``crm_ref``, so a vendor-inherited control's narrative always claimed "no
+    leveraged-authorization ... is linked" even when a real one was on file.
+
+    Uses AWS GovCloud (a connector-backed platform per
+    ``has_capture_connector``) so the no-connector manual-evidence override
+    doesn't mask the effect being tested here; drives the real
+    ``derive_system`` + ``generate_ssp`` production path against a real
+    ``Vendor`` row, and asserts on the actual rendered narrative."""
+    control_ids: list[str] = []
+    try:
+        async with session_scope() as session:
+            sys = await _make_system(session, "Vendor CRM Org")
+            control_ids = await _seed_controls(session, "VENDORCRM")
+            session.add(
+                Vendor(
+                    organization_id=sys.organization_id,
+                    name="Acme Cloud Services",
+                    authorization="FedRAMP High Authorized",
+                    linked_controls=[control_ids[0]],
+                )
+            )
+            await session.flush()
+            profile = SystemProfile(
+                system_id=sys.id, environment_type="cloud", cloud_platform="aws_govcloud"
+            )
+            session.add(profile)
+            await session.flush()
+            await derive_system(
+                session,
+                system_id=sys.id,
+                org_id=sys.organization_id,
+                profile=profile,
+                create_poams=False,
+            )
+            proj_id = await generate_ssp(session, system=sys, profile=profile)
+            proj = await session.get(SSPProject, proj_id)
+            assert proj is not None
+            entries = await _entries(session, proj)
+
+        entry = next(e for e in entries if e.control_id == control_ids[0])
+        text = "\n".join((p.get("text") or "") for p in entry.part_narratives or [])
+        assert "FedRAMP High Authorized" in text, f"crm_ref missing from narrative: {text!r}"
+        assert "are linked and retained as evidence" in text
+        assert "cannot be considered evidenced" not in text
+        assert not text.startswith("[DRAFT]")
+    finally:
+        if control_ids:
+            async with session_scope() as session:
+                await session.execute(
+                    delete(ScoringControl).where(ScoringControl.control_id.in_(control_ids))
+                )

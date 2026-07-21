@@ -21,6 +21,7 @@ from ..models import (
     CaptureSnapshot,
     ControlImplementation,
     Evidence,
+    Policy,
     ScoringControl,
     ScoringStatus,
     SSPControlEntry,
@@ -474,6 +475,48 @@ async def generate_statements(
                 {"odp_key": snap.odp_key, "value": snap.value, "connector": snap.connector}
             )
 
+    # Real vendors, by name, for the ``crm_ref``/``frequency`` of a
+    # vendor-inherited control (source ``vendor:<name>`` — see
+    # ``_vendor_inheritance``) — ``authorization`` (e.g. "FedRAMP High
+    # Authorized") and ``review_frequency`` are only used when actually on
+    # file for that vendor, never fabricated (FR-11).
+    vendors_by_name: dict[str, Vendor] = {
+        v.name: v
+        for v in (
+            (
+                await session.execute(
+                    select(Vendor).where(
+                        (Vendor.organization_id == project.organization_id)
+                        | (Vendor.organization_id.is_(None))
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if v.status != "offboarded"
+    }
+
+    # Real governing policies, by control id, for ``policy_ref``/``frequency`` —
+    # only an active policy's name/review cadence is used, never fabricated.
+    policy_by_control: dict[str, Policy] = {}
+    for p in (
+        (
+            await session.execute(
+                select(Policy).where(
+                    (Policy.organization_id == project.organization_id)
+                    | (Policy.organization_id.is_(None))
+                )
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        if p.status != "active":
+            continue
+        for cid in p.linked_controls or []:
+            policy_by_control.setdefault(str(cid), p)
+
     entries = (
         (
             await session.execute(
@@ -490,11 +533,23 @@ async def generate_statements(
         responsibility = row.get("responsibility", "customer")
         services = services_for(ssp_plat, e.domain)
         captured = caps_by_nist.get(e.nist_id or "", [])
+        source = row.get("source")
+        policy = policy_by_control.get(e.control_id)
+        # A vendor-inherited control's real authorization reference/review
+        # cadence (only when actually on file for that vendor) — lets the
+        # inherited statement recognize the leveraged authorization instead
+        # of always reporting nothing linked (FR-11).
+        vendor = None
+        if str(source or "").startswith("vendor:"):
+            vendor = vendors_by_name.get(str(source).split(":", 1)[1])
+        crm_ref = vendor.authorization.strip() if vendor and vendor.authorization else None
+        vendor_frequency = vendor.review_frequency if vendor and vendor.review_frequency else None
+        frequency = vendor_frequency or (policy.review_frequency if policy else None)
         text, needs_review = stmt.compose(
             control_id=e.control_id,
             requirement=e.requirement,
             responsibility=responsibility,
-            source=row.get("source"),
+            source=source,
             environment=environment,
             services=services,
             odp_values=dict(e.odp_values or {}),
@@ -502,6 +557,15 @@ async def generate_statements(
             style=style,
             include_captured=include_captured,
             mark_draft=mark_draft,
+            # e.responsible_role is the project's real named role (or the
+            # honestly-flagged generic fallback) already resolved by
+            # ssp/seed.py from front-matter metadata — pass it through so the
+            # narrative reflects it verbatim instead of re-deriving a fresh
+            # unnamed generic label here (FR-13).
+            responsible_role=e.responsible_role,
+            frequency=frequency,
+            policy_ref=policy.name if policy else None,
+            crm_ref=crm_ref,
         )
         if ai_ready and responsibility in ("customer", "shared", "unknown"):
             ai_text = await ai.draft_narrative(
@@ -520,6 +584,14 @@ async def generate_statements(
                 text = stmt.DRAFT_PREFIX + text
             text = f"{text} {MANUAL_EVIDENCE_NOTE}"
             manual_evidence_required += 1
+            # A platform-derived "Implemented" status (never a vendor-linked
+            # one — see coverage()'s identical ``is_platform_sourced`` check)
+            # can't actually be evidenced without a capture connector; keep
+            # the docx status column consistent with the manual-evidence flag
+            # instead of still claiming full "Implemented" (Finding 2).
+            is_platform_sourced = str(source or "").startswith("platform:")
+            if is_platform_sourced and "Implemented" in (e.implementation_status or []):
+                e.implementation_status = ["Partially Implemented"]
         if needs_review:
             drafts += 1
         e.part_narratives = [{"label": "Implementation", "text": text}]
