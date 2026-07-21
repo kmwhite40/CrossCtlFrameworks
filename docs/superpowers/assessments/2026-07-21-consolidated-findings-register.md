@@ -214,8 +214,45 @@ label-only SHOULD-CHANGE items on `fedramp20x/` surfaces deferred (enforcement 2
 Verification: full suite 347→(post-fix)-green except 1 known-flaky async test that passes
 in isolation; ruff + mypy clean across `src`/`tests`.
 
-**Still open (later slices):** FR-01 (catalog is CMMC/800-171, needs an architectural
-decision), FR-03/04/05/06/07/11/12/13 (statement quality + per-cloud origination →
-Slice 5), the ISSM approval-gating / risk-provenance items (ISSM-04..09, -11..13),
+**Still open after Slice 4:** FR-01 + FR-03/04/05/06/07/11/12/13 (→ Slice 5, below),
+the ISSM approval-gating / risk-provenance items (ISSM-04..09, -11..13),
 CISO-01..06/08 (aggregation + prod-readiness → Slice 6), and the DATA schema/security
 items (→ dedicated security slice).
+
+---
+
+## Slice 5 resolutions (2026-07-21, subagent-driven, same branch)
+
+4 TDD tasks + a test-isolation fix + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **FR-01** — DECISION: relabel (not build 800-53). The generator now truthfully names
+  **CMMC L2 / NIST 800-171 Rev.2**; the "FedRAMP SSP Appendix A" cover claim and the
+  FedRAMP/800-53 framework picker options (verified unread no-ops) are removed. Building
+  a real 800-53r5 FedRAMP pipeline is a separate future program.
+- **FR-04/05/12** — control origination is now derived **per-platform** from a single
+  shared `PLATFORM_DOMAIN_RESPONSIBILITY` table, independent of M365 coverage; a
+  provider-performed control can never render system-specific; non-M365 controls lacking
+  per-control coverage carry a `MANUAL_RESPONSIBILITY_FLAG`.
+- **FR-06/07** — no-connector platforms (Azure/GCP) are flagged manual-evidence-required
+  and **excluded from readiness "covered"** (not just labeled), and their inherited
+  status is downgraded from "Implemented"; the environment label emits "GCC High" only
+  for a confirmed `m365_gcc_high` tier, never by default.
+- **FR-03/11/13** — `compose()` injects responsible role + frequency + evidence pointer
+  in **all** styles and this is now wired into the production `generate_statements` path
+  (named System Owner reaches the rendered narrative — proven by a production-path test);
+  inherited statements are `needs_review` and carry a customer-responsibility line unless
+  a **real** `crm_ref` (sourced from `Vendor.authorization`/`Policy`, never fabricated)
+  is linked; responsible role uses named roles when metadata provides them and a generic
+  fallback is honestly flagged (does not silently satisfy the completeness gate).
+
+**Whole-branch review findings (all fixed):** production `compose()` call omitted the new
+params so narratives falsely read "No Named Party on File" (commit `3bc91bb`); no-connector
+status consistency; `crm_ref` sourced from real records. **Test hygiene:** a new test
+leaked global `ScoringControl` rows → fixed (`bc75b62`); full suite now deterministic
+(393 passed + 1 known-flaky async test that passes in isolation).
+
+**Still open → later slices:** ISSM-04..09/11..13 (approval-gating, risk provenance,
+finding-vocabulary unification), CISO-01..06/08 (aggregation + prod-readiness → Slice 6),
+DATA-01..12 (schema/security → dedicated security slice), FR-14 (FedRAMP-2026 label-only),
+and the FedRAMP 800-53r5 pipeline (FR-01 future program). Manual SSP-editor PATCH of
+`control_origination` is not yet validated against derived responsibility (noted follow-up).
