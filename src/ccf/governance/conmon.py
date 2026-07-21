@@ -20,6 +20,7 @@ from ..models import (
     ControlImplementation,
     Evidence,
     MonitoringRun,
+    PoamMilestone,
     System,
     Task,
 )
@@ -30,6 +31,10 @@ DUE_SOON_DAYS = 30
 # healthy < due_soon < at_risk < overdue
 _RANK = {"healthy": 0, "due_soon": 1, "at_risk": 2, "overdue": 3}
 _OPEN_POAM = ("open", "in_progress")
+
+# ConMon health status -> POA&M severity, for the statuses that open one
+# (at_risk/overdue — the same guard the auto-task uses).
+_POAM_SEVERITY = {"overdue": "high", "at_risk": "moderate"}
 
 
 def _escalate(current: str, candidate: str) -> str:
@@ -107,7 +112,7 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
         ev_by_impl.setdefault(e.implementation_id, []).append(e)
     poams = (await session.execute(select(POAM).where(POAM.status.in_(_OPEN_POAM)))).scalars().all()
 
-    checked = findings = tasks_created = notes_created = 0
+    checked = findings = tasks_created = notes_created = poams_created = 0
     by_status: dict[str, int] = {"healthy": 0, "due_soon": 0, "at_risk": 0, "overdue": 0}
 
     for impl in impls:
@@ -153,11 +158,24 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
             if created:
                 tasks_created += 1
 
+            poam_created = await _upsert_poam(
+                session,
+                system_id=impl.system_id,
+                control_id=impl.control_id,
+                impl_id=impl.id,
+                title=title,
+                weakness=reason_text,
+                severity=_POAM_SEVERITY[status],
+                today=today,
+            )
+            if poam_created:
+                poams_created += 1
+
     run.controls_checked = checked
     run.findings = findings
     run.tasks_created = tasks_created
     run.notifications_created = notes_created
-    run.summary = {"by_status": by_status}
+    run.summary = {"by_status": by_status, "poams_created": poams_created}
     await session.flush()
     await bus.emit(
         session,
@@ -174,6 +192,7 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
         "findings": findings,
         "tasks_created": tasks_created,
         "notifications_created": notes_created,
+        "poams_created": poams_created,
         "by_status": by_status,
     }
 
@@ -218,6 +237,61 @@ async def _upsert_task(
             due_on=due_on,
         )
     )
+    return True
+
+
+async def _upsert_poam(
+    session: AsyncSession,
+    *,
+    system_id: int | None,
+    control_id: int,
+    impl_id: int,
+    title: str,
+    weakness: str,
+    severity: str,
+    today: date,
+) -> bool:
+    """Open a POA&M for an at-risk/overdue control (idempotent). True if new.
+
+    Dedupes on an OPEN POA&M sharing (system, control, source='conmon') so a
+    control that stays overdue/at-risk across scans is refreshed in place
+    rather than accruing duplicate POA&Ms. A POA&M a human has since closed or
+    accepted-risk'd is left alone — the next scan opens a fresh one if the
+    control is still unhealthy, matching how ``_upsert_task`` respects a
+    human's closure.
+    """
+    existing = (
+        await session.execute(
+            select(POAM).where(
+                POAM.system_id == system_id,
+                POAM.control_id == control_id,
+                POAM.source == "conmon",
+                POAM.status.in_(_OPEN_POAM),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.severity = severity
+        existing.weakness = weakness
+        return False
+    due = today + timedelta(days=14 if severity == "high" else 30)
+    poam = POAM(
+        system_id=system_id,
+        control_id=control_id,
+        title=title,
+        weakness=weakness,
+        severity=severity,
+        status="open",
+        source="conmon",
+        identified_on=today,
+        due_on=due,
+        original_due_on=due,
+        source_ref=f"conmon:impl:{impl_id}",
+    )
+    poam.milestones.append(
+        PoamMilestone(description=f"Remediate: {title}", due_on=due, status="pending", sort_order=0)
+    )
+    session.add(poam)
     return True
 
 
