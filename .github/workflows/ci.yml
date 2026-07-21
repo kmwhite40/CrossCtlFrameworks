@@ -66,7 +66,19 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: sbom, path: sbom.json }
       - name: pip-audit
-        run: pip-audit --strict || true
+        # Blocking: dependency vulnerabilities now fail the build. The four
+        # --ignore-vuln entries below are all "cryptography" advisories whose
+        # fixes require cryptography>=46, which pyproject.toml currently caps
+        # below (`cryptography>=42,<46`); bumping that pin is out of scope for
+        # this CI-hardening change and should be tracked as a follow-up. Do
+        # not add further ignores without the same justification (fix
+        # unavailable within the current dependency pins) and a comment.
+        run: >-
+          pip-audit --strict
+          --ignore-vuln PYSEC-2026-35
+          --ignore-vuln PYSEC-2026-36
+          --ignore-vuln PYSEC-2026-2141
+          --ignore-vuln GHSA-537c-gmf6-5ccf
       - name: Trivy fs scan
         uses: aquasecurity/trivy-action@v0.33.1
         with:
