@@ -242,6 +242,47 @@ async def test_control_test_warn_does_not_open_poam() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_control_test_poam_dedupe_scoped_to_system() -> None:
+    """The dedupe lookup must also match on system_id — defense-in-depth
+    consistency with ``conmon._upsert_poam`` — so a POA&M that happens to share
+    this test's ``source_ref`` but belongs to a DIFFERENT system is never
+    silently reused/mutated by this test's run."""
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "CtlTestSysScope Org")
+        _, other_sys_id = await _make_org_system(s, "CtlTestSysScope Other Org")
+        test = await _make_test(s, org_id, sys_id, control_id="AC.L2-3.1.9")
+        test_id = test.id
+        # A POA&M under the SAME source_ref but a DIFFERENT system_id — e.g. a
+        # data anomaly, or the test having been re-pointed to a new system
+        # since that POA&M was opened. It must never be matched by this run.
+        stray = POAM(
+            system_id=other_sys_id,
+            title="stray",
+            weakness="stray weakness",
+            severity="high",
+            status="open",
+            source="control_test",
+            source_ref=f"control_test:{test_id}",
+        )
+        s.add(stray)
+        await s.flush()
+        stray_id = stray.id
+
+    async with session_scope() as s:
+        test = (await s.execute(select(ControlTest).where(ControlTest.id == test_id))).scalar_one()
+        await control_tests.record_result(s, test, status="fail", detail="scoped failure")
+
+    async with session_scope() as s:
+        # The stray POA&M (wrong system) must be untouched.
+        stray = (await s.execute(select(POAM).where(POAM.id == stray_id))).scalar_one()
+        assert stray.weakness == "stray weakness"
+        # A new POA&M must exist for the test's actual system instead.
+        poams = await _open_poams(s, system_id=sys_id, source="control_test")
+        assert len(poams) == 1
+        assert "scoped failure" in (poams[0].weakness or "")
+
+
+@pytest.mark.asyncio
 async def test_control_test_poam_best_effort_links_catalog_control() -> None:
     """When the test's control id matches a row in the org's Control catalog,
     the POA&M links to it (nullable FK) instead of leaving it unset."""

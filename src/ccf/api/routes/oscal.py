@@ -107,22 +107,36 @@ def _oscal_status(meta: dict[str, Any]) -> dict[str, Any]:
 
 
 def _oscal_information_types(meta: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build the one information-type OSCAL expects, sourcing each impact
+    level's ``base`` from ``fips199``. ``base`` is an OSCAL token — it must
+    never hold a human-readable placeholder sentence (spaces/em-dash aren't
+    valid token characters). When a level's categorization is absent, the
+    impact object is omitted entirely (never fabricated) and the gap is
+    surfaced in ``remarks`` instead."""
     fips = meta.get("fips199") or {}
     title = _meta_str(meta.get("system_type"), "system_type")
 
-    def impact(level: str) -> dict[str, str]:
-        return {"base": _meta_str(fips.get(level), f"fips199.{level}")}
-
-    return [
-        {
-            "uuid": str(uuid.uuid4()),
-            "title": title,
-            "description": title,
-            "confidentiality-impact": impact("confidentiality"),
-            "integrity-impact": impact("integrity"),
-            "availability-impact": impact("availability"),
-        }
-    ]
+    info_type: dict[str, Any] = {
+        "uuid": str(uuid.uuid4()),
+        "title": title,
+        "description": title,
+    }
+    missing_levels: list[str] = []
+    for level, key in (
+        ("confidentiality", "confidentiality-impact"),
+        ("integrity", "integrity-impact"),
+        ("availability", "availability-impact"),
+    ):
+        value = str(fips.get(level) or "").strip()
+        if value:
+            info_type[key] = {"base": value}
+        else:
+            missing_levels.append(level)
+    if missing_levels:
+        info_type["remarks"] = _placeholder(
+            ", ".join(f"fips199.{level}" for level in missing_levels)
+        )
+    return [info_type]
 
 
 def _oscal_roles_and_parties(

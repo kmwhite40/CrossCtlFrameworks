@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -211,6 +212,10 @@ async def test_ssp_export_reflects_project_metadata() -> None:
         info_type = sysc["system-information"]["information-types"][0]
         assert info_type["confidentiality-impact"]["base"] == "moderate"
         assert info_type["availability-impact"]["base"] == "low"
+        # Every impact "base" present must be a valid OSCAL token (no
+        # whitespace) — a human-readable placeholder sentence is never valid.
+        for key in ("confidentiality-impact", "integrity-impact", "availability-impact"):
+            assert re.fullmatch(r"\S+", info_type[key]["base"])
 
         # Roles come from metadata_json["roles"] — same keys the docx "1.2 Roles
         # and Responsibilities" table reads.
@@ -247,6 +252,15 @@ async def test_ssp_export_placeholders_when_metadata_absent() -> None:
         assert sysc["status"]["state"] == "other"
         assert "UNSPECIFIED" in sysc["status"]["remarks"]
         assert "UNSPECIFIED" in sysc["authorization-boundary"]["description"]
+
+        # An unset categorization must never fabricate an impact "base" token —
+        # the confidentiality/integrity/availability-impact objects are omitted
+        # entirely (never a placeholder sentence with spaces/em-dash, which is
+        # not a valid OSCAL token) and the gap is noted in remarks instead.
+        info_type = sysc["system-information"]["information-types"][0]
+        for key in ("confidentiality-impact", "integrity-impact", "availability-impact"):
+            assert key not in info_type
+        assert "UNSPECIFIED" in info_type.get("remarks", "")
 
         # No roles filled in metadata -> no responsible-parties/parties claimed.
         meta = doc["system-security-plan"]["metadata"]

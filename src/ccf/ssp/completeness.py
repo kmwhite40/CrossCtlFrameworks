@@ -26,7 +26,7 @@ REQUIRED_METADATA = [
 # Unresolved organization-defined-parameter placeholders left in narrative text:
 # NIST-style bracket notation (see ssp/odp.py's _ASSIGNMENT_RE / _SELECTION_RE)
 # and the rendered "still blank" token odp.render() substitutes in.
-_ODP_PLACEHOLDER_TOKENS = ("[Assignment:", "[Selection:", "[ORGANIZATION-DEFINED:")
+_ODP_PLACEHOLDER_TOKENS = ("[Assignment:", "[Selection", "[ORGANIZATION-DEFINED:")
 
 # implementation_status values (ssp/constants.py IMPLEMENTATION_STATUS_OPTIONS)
 # that represent a claim of implementation strong enough to require evidence.

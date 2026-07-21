@@ -23,6 +23,9 @@ from ...auth import Principal
 from ...connectors import get_connector, list_connectors
 from ...governance import automation
 from ...models import (
+    Control,
+    ControlImplementation,
+    Evidence,
     ScoringControl,
     SSPControlEntry,
     SSPProject,
@@ -259,10 +262,33 @@ async def completeness(
             )
         ).all()
     }
+
+    # Real evidence linkage: a control counts as evidenced when its system's
+    # ControlImplementation (matched by catalog identifier == this entry's
+    # control_id, the same best-effort join ``governance/control_tests.py``
+    # uses) has at least one linked Evidence row. Without this, entries built
+    # by ``entry_to_dict`` carry no evidence_ref/control_implementation keys at
+    # all and ``_has_linked_evidence`` always reads as false.
+    evidence_by_control: dict[str, list[dict[str, Any]]] = {}
+    if proj.system_id is not None:
+        evidence_rows = (
+            await session.execute(
+                select(Control.identifier, Evidence.id)
+                .join(ControlImplementation, ControlImplementation.control_id == Control.id)
+                .join(Evidence, Evidence.implementation_id == ControlImplementation.id)
+                .where(ControlImplementation.system_id == proj.system_id)
+            )
+        ).all()
+        for identifier, evidence_id in evidence_rows:
+            evidence_by_control.setdefault(identifier, []).append({"id": evidence_id})
+
     rows = []
     for e in entries:
         d = entry_to_dict(e)
         d["odp_definitions"] = list(odp_map.get(e.control_id) or [])
+        linked = evidence_by_control.get(e.control_id)
+        if linked:
+            d["control_implementation"] = {"evidence": linked}
         rows.append(d)
     return ssp_completeness.assess(proj.metadata_json or {}, rows)
 

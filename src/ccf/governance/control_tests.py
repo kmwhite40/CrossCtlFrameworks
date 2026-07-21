@@ -205,12 +205,15 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
     ``ControlTest.control_id`` is a free-text catalog/practice id (e.g. a CMMC
     practice) rather than the FK'd int ``Control.id`` the POA&M column wants,
     and often has no matching row in the org's control catalog at all — so
-    dedupe keys off the test's own stable id (``source_ref``) rather than
-    (system, control, source) directly. That's equivalent grouping whenever
-    the control does resolve, and strictly safer when it doesn't: it never
-    collapses two different failing tests that both leave ``control_id`` null
-    into one POA&M, while still refreshing (not duplicating) the same test's
-    POA&M across repeated failures.
+    dedupe keys primarily off the test's own stable id (``source_ref``) rather
+    than (system, control, source) directly. That's equivalent grouping
+    whenever the control does resolve, and strictly safer when it doesn't: it
+    never collapses two different failing tests that both leave ``control_id``
+    null into one POA&M, while still refreshing (not duplicating) the same
+    test's POA&M across repeated failures. ``system_id`` is also included in
+    the lookup — defense-in-depth consistency with ``conmon._upsert_poam`` —
+    so a POA&M that happens to share this ``source_ref`` but belongs to a
+    different system is never matched/mutated.
 
     ``POAM.system_id`` is NOT NULL but ``ControlTest.system_id`` isn't — an
     org-wide test (not scoped to one system) has nothing to attach a POA&M to,
@@ -225,6 +228,7 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
     existing = (
         await session.execute(
             select(POAM).where(
+                POAM.system_id == test.system_id,
                 POAM.source == "control_test",
                 POAM.source_ref == source_ref,
                 POAM.status.in_(_OPEN_POAM),

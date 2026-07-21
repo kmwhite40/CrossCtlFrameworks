@@ -123,6 +123,22 @@ def test_complete_entry_with_evidence_ref_has_no_new_gaps() -> None:
     assert r["score"] == 100.0
 
 
+def test_selection_placeholder_with_qualifier_is_caught() -> None:
+    """NIST notation for a Selection placeholder is ``[Selection (one or more):
+    ...]`` (see ssp/odp.py's _SELECTION_RE) — not the bare ``[Selection: ...]``
+    the token list used to look for. An unresolved Selection placeholder using
+    the real NIST notation must still be flagged as a draft narrative."""
+    entry = _entry(
+        control_id="AC.L2-3.1.1",
+        part_narratives=[
+            {"text": "Access is limited to [Selection (one or more): keyboard; card; biometric]."}
+        ],
+    )
+    r = assess(_FULL_META, [entry])
+    gaps = r["control_gaps"][0]["gaps"]
+    assert "draft narrative — needs review" in gaps
+
+
 def test_complete_entry_with_control_implementation_evidence_has_no_new_gaps() -> None:
     """When there's no entry-level evidence reference, linked evidence on the
     underlying control implementation also satisfies the evidence gate."""
