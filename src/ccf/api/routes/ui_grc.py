@@ -1038,6 +1038,7 @@ async def self_assurance_run_ui(
 async def portal_admin_page(
     request: Request,
     organization_id: int | None = None,
+    issued_token: str | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
@@ -1085,10 +1086,11 @@ async def portal_admin_page(
                 )
             ).scalars().all()
         )
+    issued_link = f"{request.base_url}portal?token={issued_token}" if issued_token else None
     return templates.TemplateResponse(
         request, "portal_admin.html",
         {"active": "portaladmin", "org_id": org_id, "rows": rows,
-         "packages": packages, "evidence": evidence},
+         "packages": packages, "evidence": evidence, "issued_link": issued_link},
     )
 
 
@@ -1104,15 +1106,24 @@ async def portal_admin_create(
     evidence_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    from urllib.parse import quote  # noqa: PLC0415
+
     from ...portal import create_grant  # noqa: PLC0415
 
-    await create_grant(
+    grant = await create_grant(
         session, org_id=organization_id, principal_name=principal_name, kind=kind,
         package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
         label=label or None, actor=_actor(request),
     )
+    # The plaintext token is only ever available on this in-memory `grant`
+    # (IA-09: the DB stores its hash only) — carry it through the redirect so
+    # the page can show it exactly once, right after issuance.
+    issued_token = quote(grant.token or "")
     await session.commit()
-    return RedirectResponse(f"/admin/portal?organization_id={organization_id}", status_code=303)
+    return RedirectResponse(
+        f"/admin/portal?organization_id={organization_id}&issued_token={issued_token}",
+        status_code=303,
+    )
 
 
 @router.post("/admin/portal/grants/{grant_id}/revoke")

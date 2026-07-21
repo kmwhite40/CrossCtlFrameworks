@@ -50,11 +50,13 @@ async def login(
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "invalid credentials")
     _set_session_cookie(response, user.id)
+    # IA-09: the API token is stored hashed and shown only once, at
+    # issuance (CLI `user-create`) — a login response can no longer include
+    # it, since the plaintext isn't recoverable from `user.api_token_hash`.
     return {
         "email": user.email,
         "role": user.role,
         "organization_id": user.organization_id,
-        "api_token": user.api_token,
     }
 
 

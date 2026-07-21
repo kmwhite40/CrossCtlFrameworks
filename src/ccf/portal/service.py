@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth import hash_token
 from ..db import set_session_tenant
 from ..models_evidence import EvidenceObject
 from ..models_packages import AuthorizationPackage
@@ -146,7 +147,9 @@ async def resolve_grant(session: AsyncSession, token: str) -> ExternalAccessGran
         return None
     grant = (
         await session.execute(
-            select(ExternalAccessGrant).where(ExternalAccessGrant.token == token)
+            select(ExternalAccessGrant).where(
+                ExternalAccessGrant.token_hash == hash_token(token)
+            )
         )
     ).scalar_one_or_none()
     if grant is None or grant.revoked:

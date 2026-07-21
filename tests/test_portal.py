@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from ccf.api.main import create_app
+from ccf.auth import hash_token
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
 from ccf.evidence import service as ev_service
@@ -79,6 +80,27 @@ async def test_create_and_resolve_grant() -> None:
         assert resolved is not None
         assert resolved.organization_id == org
         assert resolved.kind == "assessor"
+
+
+@pytest.mark.asyncio
+async def test_grant_token_persisted_as_hash_not_plaintext() -> None:
+    """IA-09: the DB holds no reversible grant token; resolution works off the hash."""
+    org = await _org("PortalHashCheck")
+    async with session_scope() as s:
+        grant = await portal.create_grant(s, org_id=org, principal_name="Hash Check")
+        gid, token = grant.id, grant.token
+    async with session_scope() as s:
+        row = await s.get(ExternalAccessGrant, gid)
+        assert row is not None
+        assert row.token_hash is not None
+        assert row.token_hash != token
+        assert row.token_hash == hash_token(token)
+        # A freshly loaded instance never carries the plaintext.
+        assert row.token is None
+    async with session_scope() as s:
+        resolved = await portal.resolve_grant(s, token)
+        assert resolved is not None and resolved.id == gid
+        assert await portal.resolve_grant(s, "not-the-token") is None
 
 
 @pytest.mark.asyncio
@@ -197,9 +219,13 @@ async def test_admin_and_portal_api_end_to_end() -> None:
         token = created.json()["token"]
         assert token
 
+        # Issuance is the only place the plaintext token is ever returned — the
+        # list endpoint must not re-expose it (IA-09: no reversible token at rest).
         listed = await c.get("/api/admin/portal/grants", params={"organization_id": org})
         assert listed.status_code == 200
-        assert any(g["token"] == token for g in listed.json())
+        rows = listed.json()
+        assert any(g["id"] == created.json()["id"] for g in rows)
+        assert all("token" not in g for g in rows)
 
         # Portal session resolves with the bearer token and returns the shared package.
         sess = await c.get("/api/portal/session", headers={"Authorization": f"Bearer {token}"})

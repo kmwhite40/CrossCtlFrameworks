@@ -33,6 +33,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from .auth import hash_token
+
 
 class Base(DeclarativeBase):
     metadata: ClassVar[MetaData] = MetaData(schema="ccf")
@@ -293,10 +295,26 @@ class User(Base):
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
-    api_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # IA-09: only the one-way hash is persisted — see the ``api_token`` property
+    # below for the plaintext write/read-once path.
+    api_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     organization: Mapped[Organization] = relationship(back_populates="users")
+
+    @property
+    def api_token(self) -> str | None:
+        """Plaintext bearer token — available only in-memory, only on the
+        instance that just set it (issuance/rotation). Never persisted: the
+        DB holds ``api_token_hash`` only, so a freshly loaded ``User`` always
+        reports ``None`` here. Authenticate via ``api_token_hash`` instead.
+        """
+        return getattr(self, "_api_token_plain", None)
+
+    @api_token.setter
+    def api_token(self, value: str | None) -> None:
+        self._api_token_plain = value
+        self.api_token_hash = hash_token(value) if value else None
 
 
 class System(Base):

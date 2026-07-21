@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .auth import hash_token
 from .models import Base
 
 
@@ -57,7 +58,9 @@ class ExternalAccessGrant(Base):
         ForeignKey("ccf.external_principals.id", ondelete="SET NULL")
     )
     kind: Mapped[str] = mapped_column(String(16), default="customer")
-    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # IA-09: only the one-way hash is persisted — see the ``token`` property
+    # below for the plaintext write/read-once path.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     label: Mapped[str | None] = mapped_column(String(255))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -71,6 +74,20 @@ class ExternalAccessGrant(Base):
     evidence_shares: Mapped[list[ExternalEvidenceShare]] = relationship(
         back_populates="grant", cascade="all, delete-orphan"
     )
+
+    @property
+    def token(self) -> str | None:
+        """Plaintext grant token — available only in-memory, only on the
+        instance that just set it (issuance). Never persisted: the DB holds
+        ``token_hash`` only, so a freshly loaded grant always reports
+        ``None`` here. Resolve grants via ``token_hash`` instead.
+        """
+        return getattr(self, "_token_plain", None)
+
+    @token.setter
+    def token(self, value: str) -> None:
+        self._token_plain = value
+        self.token_hash = hash_token(value)
 
 
 class ExternalPackageShare(Base):

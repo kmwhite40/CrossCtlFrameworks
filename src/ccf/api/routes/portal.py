@@ -72,6 +72,8 @@ async def create_grant_endpoint(
         ttl_days=body.ttl_days, label=body.label, actor=principal.email,
     )
     await session.commit()
+    # IA-09: the plaintext token is shown exactly once, here at issuance — it
+    # is not persisted and cannot be recovered from `grant.token_hash`.
     return {"id": grant.id, "token": grant.token, "kind": grant.kind,
             "expires_at": grant.expires_at}
 
@@ -84,7 +86,7 @@ async def list_grants_endpoint(
 ) -> list[dict[str, Any]]:
     grants = await list_grants(session, org_id=organization_id)
     return [
-        {"id": g.id, "token": g.token, "kind": g.kind, "label": g.label,
+        {"id": g.id, "kind": g.kind, "label": g.label,
          "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at}
         for g in grants
     ]

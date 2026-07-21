@@ -14,10 +14,12 @@ from sqlalchemy import delete, select
 from ccf.api.main import create_app
 from ccf.auth import (
     hash_password,
+    hash_token,
     new_api_token,
     sign_session,
     verify_password,
     verify_session,
+    verify_token,
 )
 from ccf.config import get_settings
 from ccf.db import session_scope
@@ -43,6 +45,18 @@ def test_password_hash_roundtrip() -> None:
     assert not verify_password("x", None)
     # Two hashes of the same password differ (random salt) but both verify.
     assert hash_password("p") != hash_password("p")
+
+
+def test_hash_token_is_one_way_and_verifies() -> None:
+    token = new_api_token()
+    digest = hash_token(token)
+    assert digest != token
+    assert len(digest) == 64  # sha256 hex digest
+    assert hash_token(token) == digest  # deterministic, no salt — lookup-by-hash needs this
+    assert verify_token(token, digest)
+    assert not verify_token("wrong-token", digest)
+    assert not verify_token(token, None)
+    assert not verify_token("", digest)
 
 
 def test_session_sign_and_verify() -> None:
@@ -165,6 +179,30 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         # Audit attributes the mutation to the authenticated principal.
         entries = (await c.get("/api/audit", headers=ha)).json()
         assert any(e["actor"] == "admin@a.test" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_api_token_persisted_as_hash_not_plaintext(auth_on: None) -> None:
+    """IA-09: the DB holds no reversible token; auth works off the hash."""
+    _org_id, token = await _mk_user("hash-check@x.test", "HashCheckOrg", "admin")
+    async with session_scope() as s:
+        row = (
+            await s.execute(select(User).where(User.email == "hash-check@x.test"))
+        ).scalar_one()
+        assert row.api_token_hash is not None
+        assert row.api_token_hash != token
+        assert row.api_token_hash == hash_token(token)
+        # A freshly loaded instance never carries the plaintext — only the
+        # object that just set it (issuance) can read it back.
+        assert row.api_token is None
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        ok = await c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+        assert ok.status_code == 200
+        assert ok.json()["email"] == "hash-check@x.test"
+
+        bad = await c.get("/api/auth/me", headers={"Authorization": "Bearer not-the-token"})
+        assert bad.status_code == 401
 
 
 @pytest.mark.asyncio
