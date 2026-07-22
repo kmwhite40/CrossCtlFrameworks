@@ -29,6 +29,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -428,6 +429,18 @@ class FrameworkControl(Base):
     __table_args__ = (
         UniqueConstraint(
             "organization_id", "framework_code", "identifier", name="uq_framework_control"
+        ),
+        # Postgres unique constraints default to NULLS DISTINCT, so the
+        # constraint above does not stop two global (organization_id IS
+        # NULL) rows from colliding on (framework_code, identifier). This
+        # partial index restores that global uniqueness (migration 0047)
+        # without constraining per-org uploaded rows.
+        Index(
+            "uq_framework_controls_global",
+            "framework_code",
+            "identifier",
+            unique=True,
+            postgresql_where=text("organization_id IS NULL"),
         ),
     )
 

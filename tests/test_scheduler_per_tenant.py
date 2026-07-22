@@ -14,15 +14,17 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
-from sqlalchemy import delete, select
+import structlog.testing
+from sqlalchemy import delete, select, text
 
 from ccf.config import get_settings
 from ccf.connectors import CapturedParameter
 from ccf.connectors import credentials as connector_credentials
 from ccf.connectors.msgraph import MsGraphConnector
 from ccf.db import session_scope
+from ccf.governance import conmon
 from ccf.governance.scheduler import _run_per_tenant_cycle
-from ccf.models import CaptureSnapshot, Organization
+from ccf.models import CaptureSnapshot, MonitoringRun, Organization
 from ccf.models_grc import ConnectorConfig
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -123,4 +125,73 @@ async def test_run_per_tenant_cycle_attributes_captures_without_cross_org_leak(
         assert snap_a.value != snap_b.value
         assert snap_a.organization_id != snap_b.organization_id
     finally:
+        await _cleanup(org_a, org_b)
+
+
+async def test_run_per_tenant_cycle_contains_db_level_failure_to_one_org(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DB-level failure (Postgres transaction ABORTED) processing org A's
+    slice must not lose org B's work — nor propagate out of the cycle.
+
+    Pre-fix, ``contextlib.suppress`` swallows the Python-level exception but
+    leaves the shared session's underlying Postgres transaction ABORTED; the
+    *next* statement against that session (org B's ``set_session_tenant``)
+    then raises ``InFailedSqlTransactionError`` unsuppressed, which propagates
+    out of ``_run_per_tenant_cycle`` and rolls back the whole cycle at
+    ``session_scope`` — losing org B's work too. Post-fix, each org's steps
+    run inside their own SAVEPOINT (``session.begin_nested()``), so a DB
+    error in org A's slice only unwinds org A's savepoint; the session is
+    usable again for org B, and org B's ``MonitoringRun`` commits.
+    """
+    org_a = await _org("scheduler-fail-org-a")
+    org_b = await _org("scheduler-fail-org-b")
+
+    real_scan = conmon.scan
+
+    async def flaky_scan(session: object, *, today: date, org_id: int | None = None) -> dict:
+        if org_id == org_a:
+            # A genuine DB-level error (Postgres integer division by zero)
+            # aborts the current Postgres transaction, exactly like a real
+            # constraint violation or serialization failure would.
+            await session.execute(text("SELECT 1/0"))  # type: ignore[attr-defined]
+        return await real_scan(session, today=today, org_id=org_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(conmon, "scan", flaky_scan)
+
+    try:
+        with structlog.testing.capture_logs() as cap_logs:
+            async with session_scope() as s:
+                await _run_per_tenant_cycle(s, [org_a, org_b], today=date(2026, 7, 21))
+
+        # Org B's MonitoringRun must have been committed even though org A's
+        # slice hit a genuine DB-level error.
+        async with session_scope() as s:
+            runs_a = (
+                await s.execute(
+                    select(MonitoringRun).where(MonitoringRun.organization_id == org_a)
+                )
+            ).scalars().all()
+            runs_b = (
+                await s.execute(
+                    select(MonitoringRun).where(MonitoringRun.organization_id == org_b)
+                )
+            ).scalars().all()
+
+        assert runs_a == [], "org A's aborted-transaction work should be rolled back, not lost"
+        assert len(runs_b) == 1, "org B's work must still commit despite org A's DB failure"
+
+        warnings = [
+            e
+            for e in cap_logs
+            if e.get("event") == "scheduler.per_tenant_step_failed"
+            and e.get("log_level") == "warning"
+        ]
+        assert warnings, f"expected a scheduler.per_tenant_step_failed warning, got: {cap_logs}"
+        assert warnings[0]["org_id"] == org_a
+    finally:
+        async with session_scope() as s:
+            await s.execute(
+                delete(MonitoringRun).where(MonitoringRun.organization_id.in_([org_a, org_b]))
+            )
         await _cleanup(org_a, org_b)

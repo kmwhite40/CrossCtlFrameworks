@@ -27,6 +27,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from ccf.api.routes.automation import _upsert_controls
 from ccf.config import get_settings
@@ -192,6 +193,56 @@ async def test_two_orgs_upload_same_framework_code_independently() -> None:
                 )
             ).scalars().all()
             assert ids == [], "RLS did not block a cross-tenant SELECT by organization_id"
+    finally:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            await s.execute(
+                delete(FrameworkControl).where(FrameworkControl.framework_code == _CODE)
+            )
+
+
+@pytest.mark.asyncio
+async def test_two_global_rows_same_identifier_raise_integrity_error() -> None:
+    """Migration 0047: two NULL-org (global) rows for the same
+    ``(framework_code, identifier)`` must still collide.
+
+    0046's ``(organization_id, framework_code, identifier)`` unique
+    constraint defaults to Postgres' NULLS DISTINCT behavior, so two
+    NULL-org rows no longer collide on that constraint alone — the partial
+    unique index added in 0047 (``uq_framework_controls_global``, scoped to
+    ``organization_id IS NULL``) restores the old global-uniqueness
+    invariant for seeded/shared reference rows.
+    """
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("partial unique index is a PostgreSQL feature")
+
+    try:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            s.add(
+                FrameworkControl(
+                    organization_id=None,
+                    framework_code=_CODE,
+                    identifier="GLOBAL-DUP",
+                    title="First global row",
+                )
+            )
+        # First row committed. The second must collide with it on the
+        # partial unique index — let the IntegrityError propagate out of
+        # session_scope (which rolls back on exception) so pytest.raises
+        # observes it cleanly rather than a session left needing rollback.
+        with pytest.raises(IntegrityError):
+            async with session_scope() as s:
+                await set_session_tenant(s, None)
+                s.add(
+                    FrameworkControl(
+                        organization_id=None,
+                        framework_code=_CODE,
+                        identifier="GLOBAL-DUP",
+                        title="Second global row — must collide",
+                    )
+                )
+                await s.flush()
     finally:
         async with session_scope() as s:
             await set_session_tenant(s, None)

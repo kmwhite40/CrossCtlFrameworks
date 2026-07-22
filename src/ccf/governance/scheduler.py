@@ -63,25 +63,59 @@ async def _run_per_tenant_cycle(
 ) -> dict[str, Any]:
     """Run collection + ConMon + control-test auto-run for every organization.
 
-    Each organization's slice runs under its own ``set_session_tenant`` and a
-    failure in one org's job is isolated (``contextlib.suppress``) so it can
-    never block another org's — or another job's — work this cycle.
+    Each organization's slice runs under its own ``set_session_tenant`` and
+    each step is wrapped in its own SAVEPOINT (``session.begin_nested()``).
+    On a DB-level failure the whole *shared* Postgres transaction goes
+    ABORTED — a bare ``try/except`` around the step's own call would swallow
+    the Python exception but leave that abort in place, so the very next
+    statement on this session (even a later org's ``set_session_tenant``)
+    would itself raise and blow up the entire cycle. The savepoint contains
+    the abort to just that one step: on exception, ``begin_nested()`` issues
+    ``ROLLBACK TO SAVEPOINT``, which undoes that step's writes *and* clears
+    the abort, leaving the session fully usable for the next step/org.
     """
     collection_results: list[dict[str, Any]] = []
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
     for org_id in org_ids:
         await set_session_tenant(session, org_id)
-        with contextlib.suppress(Exception):
-            collection_results.append(await collection.collect_for_org(session, org_id))
-        with contextlib.suppress(Exception):
-            result = await conmon.scan(session, today=today, org_id=org_id)
-            conmon_results.append({"organization_id": org_id, **result})
-        with contextlib.suppress(Exception):
-            result = await control_tests.run_due(session, today=today, org_id=org_id)
-            control_test_results.append({"organization_id": org_id, **result})
+        try:
+            async with session.begin_nested():
+                collection_results.append(await collection.collect_for_org(session, org_id))
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="collection",
+                error=str(e)[:200],
+            )
+        try:
+            async with session.begin_nested():
+                result = await conmon.scan(session, today=today, org_id=org_id)
+                conmon_results.append({"organization_id": org_id, **result})
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="conmon",
+                error=str(e)[:200],
+            )
+        try:
+            async with session.begin_nested():
+                result = await control_tests.run_due(session, today=today, org_id=org_id)
+                control_test_results.append({"organization_id": org_id, **result})
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="control_tests",
+                error=str(e)[:200],
+            )
     # Back to bypass before any global step (or the advisory unlock) runs.
-    await set_session_tenant(session, None)
+    # Suppressed: a prior step's failure must not prevent the tenant clamp
+    # from being reset — mirrors the advisory-unlock suppress in run_cycle.
+    with contextlib.suppress(Exception):
+        await set_session_tenant(session, None)
     return {
         "collection": {
             "organizations_processed": [r["organization_id"] for r in collection_results],
