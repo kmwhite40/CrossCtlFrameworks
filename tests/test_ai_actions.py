@@ -20,7 +20,7 @@ from ccf.models import (
     System,
     Vendor,
 )
-from ccf.models_ai_actions import AiActionRun, AiGuardrailViolation
+from ccf.models_ai_actions import AiActionInput, AiActionRun, AiGuardrailViolation
 from ccf.models_evidence import EvidenceObject
 from ccf.models_tprm import QuestionnaireResponse, VendorQuestionnaire
 
@@ -65,7 +65,12 @@ async def test_list_and_stub_run_stores_hashes() -> None:
         )
         assert r.status_code == 201, r.text
         body = r.json()
-        assert body["status"] == "completed"  # advisory action, no approval needed
+        # generate_assessor_brief is registry-marked auto-apply (requires_approval=
+        # False), but ai_require_human_approval defaults to True, which overrides
+        # the registry and forces every action to pending_review (IA-10). This
+        # assertion used to read "completed" — that was the inert-flag bug the
+        # override now fixes; see test_ai_require_human_approval_overrides_registry.
+        assert body["status"] == "pending_review"
         assert body["input_hash"] and body["output_hash"]
         assert body["outputs"][0]["content"].startswith("[generate_assessor_brief]")
 
@@ -223,3 +228,95 @@ async def test_cross_tenant_retrieval_refused() -> None:
 @pytest.mark.asyncio
 async def test_ai_disabled_is_default() -> None:
     assert get_settings().ai_enabled is False  # safe default
+
+
+# --- IA-10: ai_store_prompts / ai_require_human_approval flags --------------
+
+
+@pytest.mark.asyncio
+async def test_ai_store_prompts_false_redacts_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    org_id, sys_id = await _system("AiOrgNoStore")
+    monkeypatch.setenv("CCF_AI_STORE_PROMPTS", "false")
+    get_settings.cache_clear()
+    try:
+        async with session_scope() as s:
+            run = await run_action(
+                s, action_key="generate_assessor_brief", entity_type="system",
+                entity_id=str(sys_id), org_id=org_id, actor="tester",
+            )
+            await s.commit()
+            run_id = run.id
+        async with session_scope() as s:
+            inputs = (
+                await s.execute(select(AiActionInput).where(AiActionInput.run_id == run_id))
+            ).scalars().all()
+            assert len(inputs) == 1
+            assert inputs[0].payload == {}  # raw prompt/input content not stored
+            assert inputs[0].hash  # run record + hash still kept
+            run_row = await s.get(AiActionRun, run_id)
+            assert run_row.input_hash  # unaffected by the flag
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_ai_store_prompts_default_still_stores_payload() -> None:
+    org_id, sys_id = await _system("AiOrgStoreDefault")
+    async with session_scope() as s:
+        run = await run_action(
+            s, action_key="generate_assessor_brief", entity_type="system",
+            entity_id=str(sys_id), org_id=org_id, actor="tester",
+        )
+        await s.commit()
+        run_id = run.id
+    async with session_scope() as s:
+        inputs = (
+            await s.execute(select(AiActionInput).where(AiActionInput.run_id == run_id))
+        ).scalars().all()
+        assert inputs[0].payload  # default True → raw content still stored
+        assert inputs[0].payload.get("entity_type") == "system"
+
+
+@pytest.mark.asyncio
+async def test_ai_require_human_approval_overrides_registry_auto_apply() -> None:
+    # generate_assessor_brief is registry requires_approval=False; the default
+    # ai_require_human_approval=True must force approval anyway (IA-10) — this
+    # is the behavior that was previously inert.
+    org_id, sys_id = await _system("AiOrgForceApproval")
+    async with session_scope() as s:
+        run = await run_action(
+            s, action_key="generate_assessor_brief", entity_type="system",
+            entity_id=str(sys_id), org_id=org_id, actor="tester",
+        )
+        assert run.status == "pending_review"
+
+
+@pytest.mark.asyncio
+async def test_ai_require_human_approval_false_defers_to_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id, sys_id = await _system("AiOrgDeferRegistry")
+    monkeypatch.setenv("CCF_AI_REQUIRE_HUMAN_APPROVAL", "false")
+    get_settings.cache_clear()
+    try:
+        async with session_scope() as s:
+            # registry-auto action → auto-apply once the override is turned off.
+            auto_run = await run_action(
+                s, action_key="generate_assessor_brief", entity_type="system",
+                entity_id=str(sys_id), org_id=org_id, actor="tester",
+            )
+            assert auto_run.status == "completed"
+        async with session_scope() as s:
+            poam = POAM(system_id=sys_id, title="X", severity="low", status="open")
+            s.add(poam)
+            await s.flush()
+            poam_id = poam.id
+            # registry-approval-required action → the override being off does not
+            # loosen this; it still requires approval.
+            gated_run = await run_action(
+                s, action_key="draft_poam_remediation", entity_type="poam",
+                entity_id=str(poam_id), org_id=org_id, actor="tester",
+            )
+            assert gated_run.status == "pending_review"
+    finally:
+        get_settings.cache_clear()

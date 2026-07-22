@@ -40,6 +40,17 @@ def _hash(obj: Any) -> str:
     ).hexdigest()
 
 
+def _effective_requires_approval(action: ActionDef, settings: Any) -> bool:
+    """Whether this run must stop for human approval before it may mutate (IA-10).
+
+    ``ai_require_human_approval`` is a tenant-wide *override*: when true (the
+    default) it forces approval even for an action the registry marks
+    auto-apply. It can never *loosen* an action the registry already requires
+    approval for — turning the flag off just defers to the registry.
+    """
+    return action.requires_approval or bool(settings.ai_require_human_approval)
+
+
 async def _audit(session: AsyncSession, **kw: Any) -> None:
     from ..api.audit import record_event  # noqa: PLC0415 — avoid import cycle
 
@@ -207,7 +218,7 @@ async def run_action(
         organization_id=org_id, action_key=action_key, entity_type=entity_type,
         entity_id=str(entity_id), actor=actor,
         provider=settings.ai_provider if settings.ai_enabled else "stub",
-        status="pending_review" if action.requires_approval else "completed",
+        status="pending_review" if _effective_requires_approval(action, settings) else "completed",
     )
     session.add(run)
     await session.flush()
@@ -236,9 +247,13 @@ async def run_action(
     run.output_hash = _hash(result["content"])
     run.summary = {"citation_count": len(citations), "uncited": uncited,
                    "mutation": action.allowed_mutation}
+    # IA-10: with ai_store_prompts=False, keep the run record + input_hash (so the
+    # run is still auditable/reproducible-by-hash) but do not persist the raw
+    # prompt/input content itself.
+    stored_payload = input_payload if settings.ai_store_prompts else {}
     session.add(AiActionInput(
         run_id=run.id, entity_type=entity_type, entity_id=str(entity_id),
-        payload=input_payload, hash=run.input_hash))
+        payload=stored_payload, hash=run.input_hash))
     session.add(AiActionOutput(
         run_id=run.id, content=result["content"], uncited=uncited,
         payload=result["payload"], hash=run.output_hash))
