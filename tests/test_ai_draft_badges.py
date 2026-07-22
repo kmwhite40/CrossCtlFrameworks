@@ -12,11 +12,13 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import POAM, Organization, SSPControlEntry, SSPProject, System
+from ccf.models_ai_actions import AiActionOutput
 from ccf.ssp.statements import DRAFT_PREFIX
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -157,6 +159,70 @@ async def test_poam_ai_remediation_shows_badge_human_remediation_does_not() -> N
     assert BADGE not in human_row
     assert BADGE in ai_row
     assert r.text.count(BADGE) == 1
+
+
+# --- a provider that returns text only via `content` (no structured payload key)
+# --- still gets the badge -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poam_content_only_provider_output_still_shows_badge() -> None:
+    """FINDING 4 regression: ``provenance.ai_written_poam_ids`` reads
+    ``AiApprovedMutation.payload["remediation_plan"]``, but
+    ``service._apply_mutation`` applies
+    ``payload.get("remediation_plan") or output.content`` — a provider that
+    returns the drafted remediation only via ``output.content`` (no structured
+    ``remediation_plan`` payload key) would previously get its text applied to
+    the POA&M with NO badge, since the stored mutation payload had nothing to
+    match against. Simulate that provider shape by stripping the structured
+    key from a real run's output before approving, and confirm the badge still
+    appears — proving the fix persists the *applied* text, not the raw
+    provider payload shape.
+    """
+    _org_id, sys_id = await _org_and_system("BadgePoamContentOnlyOrg")
+    async with session_scope() as s:
+        poam = POAM(
+            system_id=sys_id, title="Content-only AI weakness", severity="high", status="open"
+        )
+        s.add(poam)
+        await s.flush()
+        poam_id = poam.id
+
+    async with _client() as c:
+        run = (
+            await c.post(
+                "/api/ai-actions/draft_poam_remediation/run",
+                json={"entity_type": "poam", "entity_id": str(poam_id)},
+            )
+        ).json()
+        run_id = run["id"]
+
+        # Simulate a provider that only returns free text via `content`, with no
+        # structured `remediation_plan` payload key.
+        async with session_scope() as s:
+            output = (
+                await s.execute(select(AiActionOutput).where(AiActionOutput.run_id == run_id))
+            ).scalar_one()
+            content_only_text = output.content
+            output.payload = {
+                k: v for k, v in (output.payload or {}).items() if k != "remediation_plan"
+            }
+
+        approved = await c.post(f"/api/ai-actions/runs/{run_id}/approve")
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["mutation_applied"] is True
+
+        r = await c.get("/poams", params={"system_id": sys_id})
+        assert r.status_code == 200
+
+    async with session_scope() as s:
+        poam = await s.get(POAM, poam_id)
+        assert poam is not None
+        assert poam.remediation_plan == content_only_text
+
+    rows = re.findall(r"<tr>.*?</tr>", r.text, flags=re.S)
+    row = next(row for row in rows if "Content-only AI weakness" in row)
+    assert BADGE in row
 
 
 # --- an AI-drafted remediation plan that's since been hand-edited loses the badge

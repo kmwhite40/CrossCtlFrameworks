@@ -272,9 +272,19 @@ async def _apply_mutation(
     if action.allowed_mutation == "set_poam_remediation":
         poam = await session.get(POAM, int(run.entity_id or "0"))
         if poam is not None:
-            poam.remediation_plan = payload.get("remediation_plan") or output.content
+            # Prefer the structured payload key, but fall back to the free-text
+            # output (a provider may return the drafted remediation only via
+            # ``content``, with no structured ``remediation_plan`` key). Whichever
+            # text actually gets applied is echoed back in ``applied_text`` so the
+            # caller can persist *that* into AiApprovedMutation.payload — the AI
+            # provenance badge (ccf.ai_actions.provenance) reads
+            # payload["remediation_plan"], and it must reflect what was actually
+            # applied regardless of provider payload shape, or the badge silently
+            # fails to appear for content-only providers.
+            applied_text = payload.get("remediation_plan") or output.content
+            poam.remediation_plan = applied_text
             return {"mutation_type": "set_poam_remediation", "target_type": "poam",
-                    "target_id": run.entity_id}
+                    "target_id": run.entity_id, "applied_text": applied_text}
     elif action.allowed_mutation == "create_task":
         t = payload.get("task", {})
         task = Task(
@@ -349,10 +359,20 @@ async def approve_run(
         mutation = await _apply_mutation(session, run, action, output)
         run.mutation_applied = mutation["target_id"] is not None
         if run.mutation_applied:
+            # Persist what was actually applied, not just the raw output payload:
+            # for set_poam_remediation, _apply_mutation may have fallen back to
+            # output.content when the payload had no structured remediation_plan
+            # key. Echoing applied_text back into the stored payload keeps
+            # provenance.ai_written_poam_ids (which reads payload["remediation_plan"])
+            # accurate regardless of provider payload shape.
+            mutation_payload = dict(output.payload or {})
+            applied_text = mutation.get("applied_text")
+            if mutation["mutation_type"] == "set_poam_remediation" and applied_text is not None:
+                mutation_payload["remediation_plan"] = applied_text
             session.add(AiApprovedMutation(
                 organization_id=run.organization_id, run_id=run.id,
                 mutation_type=mutation["mutation_type"], target_type=mutation["target_type"],
-                target_id=mutation["target_id"], approved_by=reviewer, payload=output.payload))
+                target_id=mutation["target_id"], approved_by=reviewer, payload=mutation_payload))
 
     run.status = "approved"
     run.reviewer = reviewer

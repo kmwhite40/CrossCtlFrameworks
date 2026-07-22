@@ -19,6 +19,7 @@ from ...models import (
     ControlImplementation,
     Evidence,
     Risk,
+    ScoringStatus,
     System,
 )
 from ...schemas import (
@@ -89,9 +90,15 @@ async def create_system(
 
 
 async def _dependent_authorization_record_count(session: AsyncSession, system_id: int) -> int:
-    """Count POA&Ms, assessments, risks, and evidence attached to ``system_id``
-    (DATA-04 hard-delete guard) — evidence is reached through
-    ``control_implementations`` since it has no direct ``system_id`` FK."""
+    """Count POA&Ms, assessments, risks, evidence, control implementations, and
+    scoring statuses attached to ``system_id`` (DATA-04 hard-delete guard) —
+    evidence is reached through ``control_implementations`` since it has no
+    direct ``system_id`` FK. Control implementations and scoring statuses are
+    counted directly (not just their own dependents) because ``System.
+    implementations``/scoring statuses cascade-delete with the system
+    (``ondelete=CASCADE`` in models.py): a system with SSP control
+    implementation statements but no POA&M/assessment/risk/evidence must still
+    be refused a hard delete, or those statements are silently wiped."""
     poams = (
         await session.execute(select(func.count(POAM.id)).where(POAM.system_id == system_id))
     ).scalar_one()
@@ -113,7 +120,19 @@ async def _dependent_authorization_record_count(session: AsyncSession, system_id
             .where(ControlImplementation.system_id == system_id)
         )
     ).scalar_one()
-    return poams + assessments + risks + evidence
+    implementations = (
+        await session.execute(
+            select(func.count(ControlImplementation.id)).where(
+                ControlImplementation.system_id == system_id
+            )
+        )
+    ).scalar_one()
+    scoring_statuses = (
+        await session.execute(
+            select(func.count(ScoringStatus.id)).where(ScoringStatus.system_id == system_id)
+        )
+    ).scalar_one()
+    return poams + assessments + risks + evidence + implementations + scoring_statuses
 
 
 @router.delete("/{system_id}", status_code=204)

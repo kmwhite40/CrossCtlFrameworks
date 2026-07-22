@@ -527,7 +527,7 @@ async def poams_page(
             }
         )
 
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
     systems = (await session.execute(sys_stmt)).scalars().all()
@@ -635,7 +635,7 @@ async def risks_page(
 ) -> HTMLResponse:
     org = _principal_org(request)
     risk_stmt = select(Risk).order_by(Risk.created_at.desc())
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         org_systems = select(System.id).where(System.organization_id == org)
         risk_stmt = risk_stmt.where(Risk.system_id.in_(org_systems))
@@ -935,7 +935,7 @@ async def scoring_page(
     coverage: str | None = Query(None),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     orgs_stmt = select(Organization).order_by(Organization.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
@@ -1062,7 +1062,7 @@ async def scoring_create_system(
 async def ssp_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     org = _principal_org(request)
     proj_stmt = select(SSPProject).order_by(SSPProject.created_at.desc())
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     orgs_stmt = select(Organization).order_by(Organization.name)
     if org is not None:
         proj_stmt = proj_stmt.where(SSPProject.organization_id == org)
@@ -1619,7 +1619,7 @@ async def assessments_page(
 ) -> HTMLResponse:
     org = _principal_org(request)
     a_stmt = select(Assessment).order_by(Assessment.id.desc())
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         a_stmt = a_stmt.join(System, System.id == Assessment.system_id).where(
             System.organization_id == org
@@ -1867,7 +1867,7 @@ async def fedramp20x_page(
     for k in ksis:
         by_category.setdefault(k.category_name or k.category, []).append(k)
 
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
     systems = (await session.execute(sys_stmt)).scalars().all()

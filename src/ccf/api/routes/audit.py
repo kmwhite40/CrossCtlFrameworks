@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...db import set_session_tenant
 from ...models import AuditLog
 from ..audit import row_hash
 from ..auth_deps import require_role
@@ -84,7 +85,18 @@ async def verify_chain(
     """Recompute the audit hash chain and report whether it is intact.
 
     A mismatch means a row was modified, deleted, or inserted out of band.
+
+    The hash chain is GLOBAL (each row links to the previous row's hash across
+    all organizations — see the middleware in ``ccf.api.audit``), but this
+    session, like every request session, arrives tenant-clamped to the caller's
+    org by ``get_session`` (DATA-06 RLS). Walking only the RLS-visible subset
+    would see gaps in ``prev_hash``/``row_hash`` linkage that aren't real tamper
+    events, just rows belonging to other orgs — a false ``ok=False``. Reset the
+    tenant to unscoped for this read: the caller is already gated to
+    admin/assessor above, and the response leaks nothing beyond a boolean, a row
+    id, and counts.
     """
+    await set_session_tenant(session, None)
     rows = (await session.execute(select(AuditLog).order_by(AuditLog.id))).scalars().all()
     prev = _GENESIS
     checked = 0
