@@ -21,6 +21,7 @@ from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session, verify_password
 from ...config import get_settings
+from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
@@ -76,6 +77,14 @@ from .scoring import compute_summary
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# CR26 (FR-14): fedramp20x-only display-label rename ("authorized" ->
+# "Certified", "continuous_monitoring" -> "Ongoing Certification"). Registered
+# as a filter — not a context value — because it needs to apply at several
+# independent render sites inside fedramp20x.html (readiness status, profile
+# status, dependency status) without duplicating that mapping logic in Python
+# for each one. The underlying stored values are untouched; see
+# ccf.fedramp20x.cr26_display_label.
+templates.env.filters["cr26_label"] = cr26_display_label
 
 
 def _asset_version() -> str:
