@@ -239,6 +239,11 @@ async def build_report(
     today = datetime.now(UTC).date()
     posture = await org_summary(session, today=today, org_id=organization_id_i)
     risk_summary = {
+        # CISO-10 finding: this block is always the organization-wide posture
+        # (org_summary), even when the report itself is system-scoped via
+        # ``system_id`` — labeled explicitly so a reader can't mistake it for
+        # posture limited to the selected system.
+        "scope": "organization",
         "systems_total": posture["systems_total"],
         "systems_scored": posture["systems_scored"],
         "avg_sprs_score": posture["avg_sprs_score"],
@@ -285,6 +290,7 @@ async def build_report(
     writer.writerow(["POA&M / Risk Posture (reconciled to dashboard)"])
     worst = risk_summary["worst_system"] or {}
     for label, value in (
+        ("Scope", "Organization-wide (not limited to any selected system)"),
         ("Systems scored", risk_summary["systems_scored"]),
         ("Avg SPRS score", risk_summary["avg_sprs_score"]),
         ("Min (worst) SPRS score", risk_summary["min_sprs_score"]),

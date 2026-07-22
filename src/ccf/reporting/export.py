@@ -70,7 +70,14 @@ def _risk_summary_pairs(risk_summary: Mapping[str, Any] | None) -> list[tuple[st
     worst = risk_summary.get("worst_system") or {}
     risks_by_status = risk_summary.get("risks_by_status") or {}
     open_risks = sum(n for status, n in risks_by_status.items() if status != "closed")
+    scope = risk_summary.get("scope")
+    scope_label = (
+        "Organization-wide (not limited to any selected system)"
+        if scope == "organization"
+        else _cell(scope)
+    )
     return [
+        *([("Scope", scope_label)] if scope else []),
         ("Systems scored", _cell(risk_summary.get("systems_scored"))),
         ("Avg SPRS score", _cell(risk_summary.get("avg_sprs_score"))),
         ("Min (worst) SPRS score", _cell(risk_summary.get("min_sprs_score"))),

@@ -278,6 +278,55 @@ async def test_report_risk_summary_reconciles_to_org_summary() -> None:
         assert "Overdue POA&Ms,1" in csv_text
 
 
+@pytest.mark.asyncio
+async def test_system_scoped_report_labels_risk_posture_as_organization_wide() -> None:
+    """Finding: the posture/risk_summary block is always org-wide (org_summary),
+    even when the report itself is scoped to one system via ``system_id`` — it
+    must be labeled explicitly so a reader isn't misled into thinking it's
+    limited to that system."""
+    async with session_scope() as s:
+        org = Organization(name="ReportScopeLabelOrg")
+        s.add(org)
+        await s.flush()
+        sysm = System(organization_id=org.id, name="ReportScopeLabelSys", baseline="moderate")
+        s.add(sysm)
+        await s.flush()
+        org_id, sys_id = org.id, sysm.id
+
+    async with _client() as c:
+        j = await c.get(
+            "/api/reports/build",
+            params={"organization_id": org_id, "system_id": sys_id, "fmt": "json"},
+        )
+        assert j.status_code == 200
+        body = j.json()
+        assert body["risk_summary"]["scope"] == "organization"
+
+        csv_resp = await c.get(
+            "/api/reports/build",
+            params={"organization_id": org_id, "system_id": sys_id, "fmt": "csv"},
+        )
+        assert "Scope,Organization-wide" in csv_resp.text
+
+        xlsx_resp = await c.get(
+            "/api/reports/build",
+            params={"organization_id": org_id, "system_id": sys_id, "fmt": "xlsx"},
+        )
+        wb = openpyxl.load_workbook(io.BytesIO(xlsx_resp.content))
+        summary_text = "\n".join(
+            str(cell.value) for row in wb["Summary"].iter_rows() for cell in row if cell.value
+        )
+        assert "Organization-wide" in summary_text
+
+        docx_resp = await c.get(
+            "/api/reports/build",
+            params={"organization_id": org_id, "system_id": sys_id, "fmt": "docx"},
+        )
+        doc = Document(io.BytesIO(docx_resp.content))
+        docx_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Organization-wide" in docx_text
+
+
 # --- CISO-10: AI/last-editor provenance flag on report rows ----------------
 
 

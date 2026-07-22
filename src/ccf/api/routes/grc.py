@@ -481,7 +481,9 @@ async def add_finding(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     engagement = await session.get(AuditEngagement, eng_id)
-    if engagement is None:
+    if engagement is None or (
+        principal.org_id is not None and engagement.organization_id != principal.org_id
+    ):
         raise HTTPException(404, "engagement not found")
     if principal.org_id is not None and body.system_id is not None:
         ok = (
