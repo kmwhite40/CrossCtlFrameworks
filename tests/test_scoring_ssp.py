@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, ScoringStatus, System
+from ccf.models import POAM, Organization, ScoringStatus, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -96,20 +96,52 @@ async def test_live_score_recompute() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_system_cascades_and_404s() -> None:
+async def test_delete_system_soft_deletes_and_preserves_dependent_data() -> None:
+    """DATA-04: deleting a system must not CASCADE-wipe its authorization
+    record. It should soft-delete (hide from inventory, refuse a second
+    delete) while every dependent row — scoring statuses, POA&Ms — survives
+    and remains directly queryable."""
     async with _client() as c:
         await c.post("/api/scoring/seed")
         sid = await _fresh_system("DeleteMeSys")
-        # leave a dependent scoring status to exercise the cascade
+        # leave dependent records to prove they are NOT cascade-wiped
         await c.put(
             f"/api/scoring/systems/{sid}/controls/AC.L2-3.1.1", json={"state": "implemented"}
         )
         assert (await c.get(f"/api/scoring/systems/{sid}/score")).status_code == 200
+        poam = await c.post(
+            "/api/poams",
+            json={
+                "system_id": sid,
+                "title": "Soft-delete survives",
+                "severity": "high",
+                "status": "open",
+            },
+        )
+        assert poam.status_code == 201
+        poam_id = poam.json()["id"]
 
         assert (await c.delete(f"/api/systems/{sid}")).status_code == 204
-        # the system (and its scoring) is gone; a second delete 404s
-        assert (await c.get(f"/api/scoring/systems/{sid}/score")).status_code == 404
+        # hidden from inventory ...
+        listed = (await c.get("/api/systems")).json()
+        assert all(s["id"] != sid for s in listed)
+        # ... and a second delete 404s (soft-deleted systems are out of scope)
         assert (await c.delete(f"/api/systems/{sid}")).status_code == 404
+
+    # ... but the underlying rows are preserved — query the tables directly.
+    async with session_scope() as s:
+        sys_row = (await s.execute(select(System).where(System.id == sid))).scalar_one()
+        assert sys_row.deleted_at is not None
+
+        statuses = (
+            (await s.execute(select(ScoringStatus).where(ScoringStatus.system_id == sid)))
+            .scalars()
+            .all()
+        )
+        assert statuses, "scoring statuses must survive a system soft-delete"
+
+        poam_row = (await s.execute(select(POAM).where(POAM.id == poam_id))).scalar_one_or_none()
+        assert poam_row is not None, "POA&M must survive a system soft-delete"
 
 
 @pytest.mark.asyncio

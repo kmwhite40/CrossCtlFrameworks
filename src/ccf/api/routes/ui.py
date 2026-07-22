@@ -390,8 +390,10 @@ async def systems_page(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    orgs_stmt = select(Organization).order_by(Organization.name)
-    sys_stmt = select(System).order_by(System.name)
+    orgs_stmt = select(Organization).where(Organization.deleted_at.is_(None)).order_by(
+        Organization.name
+    )
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         orgs_stmt = orgs_stmt.where(Organization.id == org)
         sys_stmt = sys_stmt.where(System.organization_id == org)
@@ -456,9 +458,15 @@ async def delete_system_ui(
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     org = _principal_org(request)
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    sys = (
+        await session.execute(
+            select(System).where(System.id == system_id, System.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
     if sys is not None and (org is None or sys.organization_id == org):
-        await session.delete(sys)
+        # DATA-04: soft-delete only — a hard DELETE here would CASCADE away
+        # the system's POA&Ms/assessments/evidence/implementations/risks.
+        sys.deleted_at = datetime.now(UTC)
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
 
@@ -573,7 +581,11 @@ async def system_detail(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    sys = (
+        await session.execute(
+            select(System).where(System.id == system_id, System.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
     if sys is None or (org is not None and sys.organization_id != org):
         raise HTTPException(404, "system not found")
     impl_counts = (

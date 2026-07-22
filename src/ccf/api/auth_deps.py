@@ -110,8 +110,15 @@ async def get_principal(request: Request) -> Principal:
 
 def org_systems_subq(principal: Principal) -> Any:
     """Subquery of System ids in the principal's org. Callers apply it only when
-    ``principal.org_id`` is set (global principals are unscoped)."""
-    return select(System.id).where(System.organization_id == principal.org_id)
+    ``principal.org_id`` is set (global principals are unscoped).
+
+    Excludes soft-deleted systems (DATA-04) so a deleted system's id can no
+    longer be used to scope in new risks/scans/evidence/POA&Ms — its existing
+    dependent rows are preserved, just no longer reachable through this scope.
+    """
+    return select(System.id).where(
+        System.organization_id == principal.org_id, System.deleted_at.is_(None)
+    )
 
 
 def require_role(*roles: str) -> Callable[..., Awaitable[Principal]]:

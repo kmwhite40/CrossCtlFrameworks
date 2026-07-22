@@ -275,6 +275,10 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # DATA-04: soft-delete marker. Set instead of issuing a hard DELETE so the
+    # CASCADE to systems/users never fires; NULL means active. Callers must
+    # filter ``deleted_at IS NULL`` in list/get queries — see systems.py.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     systems: Mapped[list[System]] = relationship(back_populates="organization")
     users: Mapped[list[User]] = relationship(back_populates="organization")
@@ -343,6 +347,10 @@ class System(Base):
         default="none",
     )
     ato_expires_on: Mapped[date | None] = mapped_column(Date)
+    # DATA-04: soft-delete marker (see Organization.deleted_at). Set instead of
+    # a hard DELETE so the CASCADE to poams/assessments/evidence/implementations/
+    # risks never fires; NULL means active.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="systems")
     implementations: Mapped[list[ControlImplementation]] = relationship(
