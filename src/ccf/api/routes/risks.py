@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth import Principal
 from ...config import get_settings
 from ...governance import bus
+from ...governance.approvals import entity_state, entity_states
 from ...governance.risk import band, compute_scores
 from ...models import Approval, Risk, System, Task
 from ..auth_deps import get_principal, org_systems_subq
@@ -63,7 +64,7 @@ class RiskUpdate(BaseModel):
     vendor_id: int | None = None
 
 
-def _out(r: Risk) -> dict[str, Any]:
+def _out(r: Risk, approval_state: str | None = None) -> dict[str, Any]:
     return {
         "id": r.id,
         "system_id": r.system_id,
@@ -83,6 +84,11 @@ def _out(r: Risk) -> dict[str, Any]:
         "control_id": r.control_id,
         "vendor_id": r.vendor_id,
         "created_at": r.created_at.isoformat() if r.created_at else None,
+        # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
+        # (never submitted) | submitted (pending review) | approved | rejected. This
+        # does NOT drive the acceptance gate itself — see _require_acceptance_gate —
+        # it only makes the decision visible on the record.
+        "approval_state": approval_state,
     }
 
 
@@ -208,7 +214,8 @@ async def list_risks(
     if status:
         stmt = stmt.where(Risk.status == status)
     rows = (await session.execute(stmt)).scalars().all()
-    return [_out(r) for r in rows]
+    states = await entity_states(session, "risk", [r.id for r in rows])
+    return [_out(r, states.get(str(r.id))) for r in rows]
 
 
 @router.get("/heatmap")
@@ -228,13 +235,13 @@ async def heatmap(
         if r.likelihood in matrix and r.impact in levels:
             matrix[r.likelihood][r.impact] += 1
         by_band[band(r.residual_score)] += 1
+    top_rows = sorted(rows, key=lambda x: x.residual_score or 0, reverse=True)[:10]
+    top_states = await entity_states(session, "risk", [r.id for r in top_rows])
     return {
         "open_total": len(rows),
         "matrix": matrix,
         "by_residual_band": by_band,
-        "top": [
-            _out(r) for r in sorted(rows, key=lambda x: x.residual_score or 0, reverse=True)[:10]
-        ],
+        "top": [_out(r, top_states.get(str(r.id))) for r in top_rows],
     }
 
 
@@ -277,7 +284,8 @@ async def create_risk(
     await _post_write(session, obj, principal, verb="created")
     await session.commit()
     await session.refresh(obj)
-    return _out(obj)
+    state = await entity_state(session, "risk", obj.id)
+    return _out(obj, state)
 
 
 @router.patch("/{rid}")
@@ -303,7 +311,8 @@ async def update_risk(
     await _post_write(session, obj, principal, verb="updated")
     await session.commit()
     await session.refresh(obj)
-    return _out(obj)
+    state = await entity_state(session, "risk", obj.id)
+    return _out(obj, state)
 
 
 @router.get("/{rid}")
@@ -312,4 +321,6 @@ async def get_risk(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    return _out(await _require_risk(session, rid, principal))
+    obj = await _require_risk(session, rid, principal)
+    state = await entity_state(session, "risk", obj.id)
+    return _out(obj, state)

@@ -27,6 +27,7 @@ from ...assessment import (
     summarize_results,
 )
 from ...auth import Principal
+from ...governance.approvals import entity_state, entity_states
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, Assessment, AssessmentControlResult, Control, PoamMilestone, System
 from ..auth_deps import get_principal
@@ -67,6 +68,9 @@ class AssessmentOut(BaseModel):
     assessor: str | None
     started_on: date | None
     finished_on: date | None
+    # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
+    # (never submitted) | submitted (pending review) | approved | rejected.
+    approval_state: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -109,7 +113,13 @@ async def list_assessments(
             System.organization_id == principal.org_id
         )
     rows = (await session.execute(stmt)).scalars().all()
-    return [AssessmentOut.model_validate(r) for r in rows]
+    states = await entity_states(session, "assessment", [r.id for r in rows])
+    out = []
+    for r in rows:
+        item = AssessmentOut.model_validate(r)
+        item.approval_state = states.get(str(r.id))
+        out.append(item)
+    return out
 
 
 @router.post("", response_model=AssessmentOut, status_code=201)
@@ -132,7 +142,9 @@ async def create_assessment(
     await session.flush()
     await seed_assessment_results(session, a)
     await session.refresh(a)
-    return AssessmentOut.model_validate(a)
+    item = AssessmentOut.model_validate(a)
+    item.approval_state = await entity_state(session, "assessment", a.id)
+    return item
 
 
 @router.get("/{assessment_id}")
@@ -143,8 +155,10 @@ async def get_assessment(
 ) -> dict[str, Any]:
     a = await _require_assessment(session, assessment_id, principal)
     results = await _results(session, assessment_id)
+    item = AssessmentOut.model_validate(a)
+    item.approval_state = await entity_state(session, "assessment", a.id)
     return {
-        "assessment": AssessmentOut.model_validate(a).model_dump(),
+        "assessment": item.model_dump(),
         "summary": summarize_results(results),
         "results": [result_to_dict(r) for r in results],
     }

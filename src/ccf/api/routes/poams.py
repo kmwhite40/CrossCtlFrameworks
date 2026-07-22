@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from ...auth import Principal
 from ...config import get_settings
 from ...governance import bus
+from ...governance.approvals import entity_state, entity_states
 from ...models import POAM, Approval, ControlImplementation, Evidence, PoamMilestone, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
@@ -93,7 +94,7 @@ def _ms_out(m: PoamMilestone) -> dict[str, Any]:
     }
 
 
-def _out(p: POAM, today: date | None = None) -> dict[str, Any]:
+def _out(p: POAM, today: date | None = None, approval_state: str | None = None) -> dict[str, Any]:
     ms = list(p.milestones or [])
     done = sum(1 for m in ms if m.status == "completed")
     overdue = (
@@ -130,6 +131,11 @@ def _out(p: POAM, today: date | None = None) -> dict[str, Any]:
         "cost_estimate": p.cost_estimate,
         "risk_id": p.risk_id,
         "vendor_id": p.vendor_id,
+        # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
+        # (never submitted) | submitted (pending review) | approved | rejected. This
+        # does NOT drive the closure gate itself — see _require_closure_gate — it
+        # only makes the decision visible on the record.
+        "approval_state": approval_state,
         "overdue": overdue,
         "deviation": slipped,
         "milestone_total": len(ms),
@@ -237,7 +243,8 @@ async def list_poams(
         stmt = stmt.where(POAM.status == status)
     today = datetime.now(UTC).date()
     rows = (await session.execute(stmt)).scalars().all()
-    return [_out(p, today) for p in rows]
+    states = await entity_states(session, "poam", [p.id for p in rows])
+    return [_out(p, today, states.get(str(p.id))) for p in rows]
 
 
 @router.get("/export", response_model=None)
@@ -344,7 +351,8 @@ async def create_poam(
     )
     await session.commit()
     obj = await _require_poam(session, obj.id, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 @router.get("/{pid}")
@@ -354,7 +362,8 @@ async def get_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 @router.patch("/{pid}")
@@ -381,7 +390,8 @@ async def update_poam(
     )
     await session.commit()
     obj = await _require_poam(session, pid, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 @router.post("/{pid}/close")
@@ -405,7 +415,8 @@ async def close_poam(
     )
     await session.commit()
     obj = await _require_poam(session, pid, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 # --- Milestones --------------------------------------------------------------
