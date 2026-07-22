@@ -303,12 +303,22 @@ async def record_result(
     return res
 
 
-async def run_due(session: AsyncSession, *, today: date | None = None) -> dict[str, Any]:
-    """Auto-run every due connector-backed test. Returns per-status counts."""
+async def run_due(
+    session: AsyncSession, *, today: date | None = None, org_id: int | None = None
+) -> dict[str, Any]:
+    """Auto-run every due connector-backed test. Returns per-status counts.
+
+    With ``org_id`` set (the scheduler's per-tenant loop), scoped to that one
+    organization's tests only — paired with ``set_session_tenant`` by the
+    caller so RLS backstops this filter. ``org_id=None`` runs across every
+    organization's tests (used by direct/manual invocations).
+    """
     today = today or datetime.now(UTC).date()
     stmt = select(ControlTest).where(
         ControlTest.active.is_(True), ControlTest.method == "connector"
     )
+    if org_id is not None:
+        stmt = stmt.where(ControlTest.organization_id == org_id)
     tests = (await session.execute(stmt)).scalars().all()
     counts = {"evaluated": 0, "pass": 0, "warn": 0, "fail": 0}
     for test in tests:
