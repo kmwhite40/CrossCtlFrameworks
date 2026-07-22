@@ -129,6 +129,23 @@ async def audit_middleware(
     ):
         return response
 
+    # Idempotency guard (exception-safety hardening): Starlette's
+    # BaseHTTPMiddleware can, under certain exception/re-entry conditions,
+    # invoke this dispatch function more than once for what is logically the
+    # same client request — and because the ASGI ``scope`` (and therefore
+    # ``request.state``) is shared across those re-entries, a second pass
+    # would otherwise re-run the select-latest-hash + insert sequence below
+    # and write a duplicate ``AuditLog`` row. Both rows would be computed
+    # from the same ``prev_hash`` (whatever was latest before either insert),
+    # forking the hash chain — not just for this request, but permanently for
+    # every row appended afterwards, since ``/api/audit/verify`` walks a
+    # single linear chain. Setting the flag *before* the write (not after
+    # success) means a re-entrant pass never risks a duplicate, even if the
+    # first pass's write is slow or itself fails.
+    if getattr(request.state, "audit_recorded", False):
+        return response
+    request.state.audit_recorded = True
+
     try:
         principal = getattr(request.state, "principal", None)
         # A real authenticated user wins; the open SYSTEM principal (auth off,
