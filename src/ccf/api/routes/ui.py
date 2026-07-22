@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session, verify_password
@@ -66,6 +67,7 @@ from ...ssp.platforms import (
     services_for,
 )
 from ...ssp.seed import seed_project_entries
+from ...ssp.statements import is_draft_narrative
 from ..auth_deps import SESSION_COOKIE, require_role
 from ..deps import get_session
 from .diff import diff_workbook
@@ -497,6 +499,7 @@ async def poams_page(
     if system_id is not None:
         stmt = stmt.where(POAM.system_id == system_id)
     poams = (await session.execute(stmt)).scalars().all()
+    ai_remediation_ids = await ai_written_poam_ids(session, list(poams))
 
     rows = []
     metrics = {"total": 0, "open": 0, "overdue": 0, "high": 0}
@@ -520,6 +523,7 @@ async def poams_page(
                 "milestone_total": len(ms),
                 "milestone_done": done,
                 "progress": round(100 * done / len(ms)) if ms else None,
+                "ai_remediation": p.id in ai_remediation_ids,
             }
         )
 
@@ -1209,6 +1213,7 @@ async def ssp_detail(
             "platforms": PLATFORMS,
             "odp_defs_for": odp_defs_for,
             "templates_for": templates_for,
+            "is_draft_entry": lambda e: is_draft_narrative(e.part_narratives),
         },
     )
 
@@ -1341,6 +1346,7 @@ async def ssp_save_entry(
             "odp_defs_for": odp_defs_for,
             "templates_for": templates_for,
             "just_saved": True,
+            "is_draft_entry": lambda e: is_draft_narrative(e.part_narratives),
         },
     )
 

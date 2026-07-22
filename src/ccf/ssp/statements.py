@@ -37,6 +37,22 @@ def _params_clause(odp_values: dict[str, str], captured: list[dict[str, str]]) -
     return (" Organization-defined parameters — " + "; ".join(parts) + ".") if parts else ""
 
 
+def is_draft_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
+    """True if any part narrative still carries the machine-drafted marker.
+
+    ``compose()``'s ``needs_review`` flag is not persisted on the entry —
+    once a narrative is written to ``SSPControlEntry.part_narratives`` the
+    presence of :data:`DRAFT_PREFIX` in the stored text is the only durable
+    record that it hasn't been human-reviewed yet (CISO-02: AI-drafted
+    content must stay visibly distinguishable until a human clears it).
+    """
+    for part in part_narratives or []:
+        text = (part or {}).get("text") or ""
+        if text.startswith(DRAFT_PREFIX):
+            return True
+    return False
+
+
 STYLES = ("concise", "standard", "detailed")
 
 # Rendered when no real frequency/cadence was supplied — the same bracket
