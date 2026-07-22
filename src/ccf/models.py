@@ -398,11 +398,22 @@ class SystemProfile(Base):
 
 class FrameworkControl(Base):
     """An uploadable control from any framework — lets new frameworks be added
-    without a code change or the NIST workbook. Keyed by (framework_code, identifier)."""
+    without a code change or the NIST workbook. Keyed by (organization_id,
+    framework_code, identifier).
+
+    ``organization_id`` is NULL for globally-seeded/shared reference rows
+    (visible to every tenant) and set to the uploading tenant's org for
+    controls uploaded via ``POST /api/framework-controls/{code}`` (DATA-03) —
+    RLS-enforced via the ``tenant_isolation`` policy added in migration 0046,
+    following the ``audit_log``/0044 NULL-visible-to-all predicate shape.
+    """
 
     __tablename__ = "framework_controls"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
     framework_code: Mapped[str] = mapped_column(String(64), index=True)
     identifier: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str | None] = mapped_column(String(512))
@@ -415,7 +426,9 @@ class FrameworkControl(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint("framework_code", "identifier", name="uq_framework_control"),
+        UniqueConstraint(
+            "organization_id", "framework_code", "identifier", name="uq_framework_control"
+        ),
     )
 
 

@@ -11,8 +11,8 @@ pass CI. This module closes that gap with two complementary checks:
    from the Postgres catalog (``pg_policy``/``pg_class``/``pg_namespace``) and
    asserts, for each, that ``relrowsecurity`` and ``relforcerowsecurity`` are
    both true. The enumerated set is compared against a hardcoded snapshot of
-   every table policied as of this writing (109 tables spanning migrations
-   0010 through 0044) — so the test fails loudly if a table's policy is
+   every table policied as of this writing (110 tables spanning migrations
+   0010 through 0046) — so the test fails loudly if a table's policy is
    dropped (it silently disappears from the live-enumerated set) or if RLS
    enforcement is disabled on a table that still has one.
 2. A BEHAVIORAL check (``test_rls_scopes_representative_org_scoped_tables``)
@@ -78,7 +78,7 @@ def _migrate() -> None:
 
 # Snapshot of every ccf-schema table carrying a `tenant_isolation` policy,
 # taken from `pg_policy`/`pg_class` on the fully-migrated schema (migrations
-# 0010 through 0044). If a future migration adds/removes RLS coverage, update
+# 0010 through 0046). If a future migration adds/removes RLS coverage, update
 # this set alongside it — that's the point: the test is living documentation
 # of exactly which tables are protected.
 EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
@@ -103,7 +103,8 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "external_access_grants", "external_comments", "external_evidence_shares",
         "external_identities", "external_package_shares", "external_portal_audit_events",
         "external_principals", "external_questionnaire_requests", "fedramp20x_profiles",
-        "fedramp20x_readiness_snapshots", "fedramp_dependencies", "group_role_mappings",
+        "fedramp20x_readiness_snapshots", "fedramp_dependencies", "framework_controls",
+        "group_role_mappings",
         "identity_providers", "ksi_assessor_reviews", "ksi_exceptions", "ksi_states",
         "ksi_validation_results", "monitoring_runs", "notifications", "organizations",
         "pack_controls", "pack_evidence_requirements", "pack_install_runs", "pack_mappings",
@@ -157,7 +158,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 109
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 110
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

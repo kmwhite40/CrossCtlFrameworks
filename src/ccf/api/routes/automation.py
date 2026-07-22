@@ -369,13 +369,32 @@ async def _ensure_framework(session: AsyncSession, code: str, name: str | None) 
 
 
 async def _upsert_controls(
-    session: AsyncSession, code: str, rows: list[dict[str, Any]], source: str
+    session: AsyncSession,
+    code: str,
+    rows: list[dict[str, Any]],
+    source: str,
+    org_id: int | None,
 ) -> dict[str, int]:
+    """Insert/update this framework's controls, scoped to ``org_id`` (DATA-03).
+
+    Only rows owned by the caller's org (or, for an unscoped/global principal,
+    existing NULL-org/global rows) are eligible to be matched and updated —
+    a tenant's re-upload can never overwrite another tenant's rows or a
+    globally-shared reference row for the same ``(framework_code,
+    identifier)``. New rows are written with ``organization_id = org_id``.
+    """
+    org_filter = (
+        FrameworkControl.organization_id.is_(None)
+        if org_id is None
+        else FrameworkControl.organization_id == org_id
+    )
     existing = {
         fc.identifier: fc
         for fc in (
             await session.execute(
-                select(FrameworkControl).where(FrameworkControl.framework_code == code)
+                select(FrameworkControl).where(
+                    FrameworkControl.framework_code == code, org_filter
+                )
             )
         )
         .scalars()
@@ -392,6 +411,7 @@ async def _upsert_controls(
                 FrameworkControl(
                     framework_code=code,
                     identifier=ident,
+                    organization_id=org_id,
                     source=source,
                     **{
                         k: r.get(k)
@@ -424,7 +444,11 @@ async def upload_framework_controls_json(
     """Upload/replace a framework's controls as JSON (adds the framework if new)."""
     await _ensure_framework(session, code.upper(), body.name)
     counts = await _upsert_controls(
-        session, code.upper(), [c.model_dump() for c in body.controls], source="json_upload"
+        session,
+        code.upper(),
+        [c.model_dump() for c in body.controls],
+        source="json_upload",
+        org_id=principal.org_id,
     )
     await session.commit()
     return {"framework": code.upper(), **counts}
@@ -443,7 +467,9 @@ async def upload_framework_controls_csv(
     if not rows:
         raise HTTPException(400, "empty or unparseable CSV")
     await _ensure_framework(session, code.upper(), None)
-    counts = await _upsert_controls(session, code.upper(), rows, source=f"csv:{file.filename}")
+    counts = await _upsert_controls(
+        session, code.upper(), rows, source=f"csv:{file.filename}", org_id=principal.org_id
+    )
     await session.commit()
     return {"framework": code.upper(), **counts}
 
