@@ -34,6 +34,7 @@ class ObjectIn(BaseModel):
     description: str | None = None
     system_id: int | None = None
     control_id: str | None = None
+    implementation_id: int | None = None
     framework: str | None = None
     owner: str | None = None
     source_type: str = Field(
