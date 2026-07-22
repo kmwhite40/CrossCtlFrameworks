@@ -92,7 +92,7 @@ def _load_metadata():
             importlib.import_module(mod)
         except Exception as exc:  # pragma: no cover - defensive
             print(f"WARN: could not import {mod}: {exc}", file=sys.stderr)
-    from ccf.models import Base  # imported after modules register
+    from ccf.models import Base  # noqa: PLC0415 — imported after modules register
 
     return Base.metadata
 
@@ -131,7 +131,7 @@ def check_fk_naming(md) -> list[Finding]:
 
 
 def check_unique_keys(md) -> list[Finding]:
-    from sqlalchemy import UniqueConstraint
+    from sqlalchemy import UniqueConstraint  # noqa: PLC0415
 
     out: list[Finding] = []
     tables = {t.name: t for t in md.sorted_tables}
