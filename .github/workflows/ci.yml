@@ -71,15 +71,15 @@ jobs:
         # GHSA-537c-gmf6-5ccf) are resolved by the cryptography>=46 pin in
         # pyproject.toml. Do not add --ignore-vuln without a comment justifying
         # that no fix is available within the current pins.
-        # Audit third-party dependencies only. The local editable `ccf` package
-        # isn't on PyPI, so pip-audit can't audit it and (even with
-        # --skip-editable/without --strict) trips its exit code. Remove `ccf`
-        # first — its dependencies stay installed and are exactly what we scan —
-        # then audit. pip-audit still exits non-zero on any real dependency
-        # vulnerability, so the supply-chain gate remains blocking.
+        # Audit the pinned third-party dependencies. Auditing the live
+        # environment trips pip-audit's exit code on the local editable `ccf`
+        # package (not on PyPI). Instead freeze the deps excluding editables and
+        # audit that requirements file — clean exit, and pip-audit still fails on
+        # any real dependency vulnerability, so the supply-chain gate stays
+        # blocking.
         run: |
-          pip uninstall -y ccf
-          pip-audit
+          pip freeze --exclude-editable > audit-reqs.txt
+          pip-audit -r audit-reqs.txt
       - name: Trivy fs scan
         uses: aquasecurity/trivy-action@v0.33.1
         with:
