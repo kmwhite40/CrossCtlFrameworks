@@ -14,16 +14,19 @@ gate lets them through; the portal service is the real authorization boundary.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...auth import Principal
+from ...auth import Principal, sign_session, verify_session
+from ...config import get_settings
 from ...portal import (
     add_comment,
     create_grant,
@@ -31,6 +34,7 @@ from ...portal import (
     list_grants,
     record_access,
     resolve_grant,
+    resolve_grant_by_id,
     revoke_grant,
 )
 from ..auth_deps import require_role
@@ -42,6 +46,30 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/api/admin/portal", tags=["portal"])
 public_router = APIRouter(prefix="/api/portal", tags=["portal"])
 ui_router = APIRouter(tags=["portal"])
+
+# The browser-facing ``/portal`` UI exchanges a one-time link token for this
+# short-lived signed session cookie (IA-09: reduces token-in-URL exposure —
+# the plaintext link token no longer needs to travel in every subsequent
+# request/access-log line once the cookie is established). Deliberately a
+# *different* cookie from the internal ``concord_session`` — it carries a
+# grant id, not a user id, and must never be read by the internal auth path.
+PORTAL_SESSION_COOKIE = "concord_portal_session"
+_PORTAL_SESSION_MAX_TTL_HOURS = 24
+
+
+def _portal_cookie_ttl_hours(grant: Any) -> int:
+    """Cap the cookie's own lifetime at the grant's expiry (if any).
+
+    This is a courtesy, not the security boundary: every cookie-authenticated
+    request re-validates the grant against the DB (see ``_grant_from_cookie``),
+    so a grant that's revoked or expires mid-cookie-lifetime still gets
+    rejected regardless of what's baked into the cookie's signed payload.
+    """
+    if grant.expires_at is None:
+        return _PORTAL_SESSION_MAX_TTL_HOURS
+    remaining = grant.expires_at - datetime.now(UTC)
+    hours_left = max(1, int(remaining.total_seconds() // 3600) + 1)
+    return min(_PORTAL_SESSION_MAX_TTL_HOURS, hours_left)
 
 
 # --- admin (internal) ------------------------------------------------------
@@ -153,11 +181,58 @@ async def portal_comment(
     return {"id": comment.id}
 
 
-@ui_router.get("/portal", response_class=HTMLResponse)
+async def _grant_from_cookie(request: Request, session: AsyncSession) -> Any:
+    """Authenticate a portal request off the signed session cookie, if any.
+
+    Validates the HMAC signature + embedded expiry (``verify_session``) *and*
+    re-checks the referenced grant's live revoked/expiry state in the DB —
+    the cookie proves who issued it, not that the grant is still valid.
+    """
+    cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
+    if not cookie:
+        return None
+    grant_id = verify_session(cookie, get_settings().auth_session_secret)
+    if grant_id is None:
+        return None
+    return await resolve_grant_by_id(session, grant_id)
+
+
+@ui_router.get("/portal", response_class=HTMLResponse, response_model=None)
 async def portal_ui(
     request: Request, token: str = "", session: AsyncSession = Depends(get_session)
-) -> HTMLResponse:
-    grant = await resolve_grant(session, token) if token else None
+) -> HTMLResponse | RedirectResponse:
+    if token:
+        grant = await resolve_grant(session, token)
+        if grant is None:
+            return templates.TemplateResponse(
+                request, "portal.html", {"token": token, "grant": None, "contents": None},
+            )
+        # First use of the link token: exchange it for a short-lived signed
+        # session cookie scoped to this grant, then redirect to the same
+        # path with the token stripped from the query string — from here on
+        # the browser authenticates via the cookie, not a URL parameter that
+        # would otherwise sit in browser history and portal access logs.
+        settings = get_settings()
+        cookie_value = sign_session(
+            grant.id, settings.auth_session_secret,
+            ttl_hours=_portal_cookie_ttl_hours(grant),
+        )
+        remaining_params = {k: v for k, v in request.query_params.items() if k != "token"}
+        target = request.url.path
+        if remaining_params:
+            target = f"{target}?{urlencode(remaining_params)}"
+        redirect = RedirectResponse(url=target, status_code=303)
+        redirect.set_cookie(
+            PORTAL_SESSION_COOKIE,
+            cookie_value,
+            max_age=_portal_cookie_ttl_hours(grant) * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=settings.env == "prod",
+        )
+        return redirect
+
+    grant = await _grant_from_cookie(request, session)
     contents = None
     if grant is not None:
         contents = await grant_contents(session, grant)
@@ -166,5 +241,5 @@ async def portal_ui(
     return templates.TemplateResponse(
         request,
         "portal.html",
-        {"token": token, "grant": grant, "contents": contents},
+        {"token": "", "grant": grant, "contents": contents},
     )

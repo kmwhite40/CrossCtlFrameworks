@@ -138,6 +138,15 @@ async def revoke_grant(session: AsyncSession, grant_id: int, *, actor: str | Non
 # --- portal: token resolution + scoped contents ----------------------------
 
 
+def _valid(grant: ExternalAccessGrant | None) -> ExternalAccessGrant | None:
+    """Shared revoked/expired check used by every grant-lookup path."""
+    if grant is None or grant.revoked:
+        return None
+    if grant.expires_at is not None and grant.expires_at < _now():
+        return None
+    return grant
+
+
 async def resolve_grant(session: AsyncSession, token: str) -> ExternalAccessGrant | None:
     """Return the grant for a valid token, or None if unknown / revoked / expired.
 
@@ -152,11 +161,21 @@ async def resolve_grant(session: AsyncSession, token: str) -> ExternalAccessGran
             )
         )
     ).scalar_one_or_none()
-    if grant is None or grant.revoked:
-        return None
-    if grant.expires_at is not None and grant.expires_at < _now():
-        return None
-    return grant
+    return _valid(grant)
+
+
+async def resolve_grant_by_id(session: AsyncSession, grant_id: int) -> ExternalAccessGrant | None:
+    """Re-validate a grant by id, or None if unknown / revoked / expired.
+
+    Used to authenticate a portal request off a signed session cookie (which
+    carries only the grant id, not the bearer token): the cookie's signature
+    proves it was issued by us, but *not* that the grant is still good, so
+    every cookie-authenticated request re-checks revocation/expiry here
+    against the current DB row rather than trusting anything baked into the
+    cookie itself.
+    """
+    grant = await session.get(ExternalAccessGrant, grant_id)
+    return _valid(grant)
 
 
 async def grant_contents(session: AsyncSession, grant: ExternalAccessGrant) -> dict[str, Any]:

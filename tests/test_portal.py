@@ -18,6 +18,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from ccf.api.main import create_app
+from ccf.api.routes.portal import PORTAL_SESSION_COOKIE
 from ccf.auth import hash_token
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
@@ -410,6 +411,100 @@ async def test_admin_portal_ui_lists_shareable_artifacts_and_issues_grant() -> N
     async with _client() as c:
         page2 = await c.get("/admin/portal", params={"organization_id": org})
         assert "UI Assessor" in page2.text
+
+
+# --- portal UI: token→cookie session exchange (magic-link hardening) -------
+#
+# The external link is `…/portal?token=<plaintext>`. Leaving the token in the
+# URL after first use means it lands in browser history and portal access
+# logs on every subsequent navigation. The UI route now exchanges a valid
+# link token for a short-lived signed session cookie (scoped to the grant,
+# reusing ``ccf.auth.sign_session``/``verify_session``) on first use, and
+# redirects to the same path with the token stripped — later requests
+# authenticate off the cookie, which is re-validated against the live grant
+# (not just its own signature/exp) on every request.
+
+
+@pytest.mark.asyncio
+async def test_portal_ui_token_exchanges_for_cookie_and_strips_token_from_url() -> None:
+    org = await _org("PortalCookieExchange")
+    system = await _system(org, "CookieSys")
+    async with session_scope() as s:
+        pkg = await pkg_service.create_package(
+            s, org_id=org, system_id=system, kind="json", label="Cookie pkg"
+        )
+        grant = await portal.create_grant(
+            s, org_id=org, principal_name="Cookie Cust", package_ids=[pkg.id], ttl_days=30
+        )
+        token = grant.token
+
+    async with _client() as c:
+        first = await c.get("/portal", params={"token": token}, follow_redirects=False)
+        assert first.status_code == 303
+        location = first.headers["location"]
+        assert "token=" not in location
+        assert location.split("?")[0].endswith("/portal")
+        assert PORTAL_SESSION_COOKIE in first.cookies
+
+        # Following the redirect (same client → cookie jar carries the new
+        # session cookie, no token in the URL) authenticates and renders.
+        second = await c.get(location)
+        assert second.status_code == 200
+        assert "Cookie pkg" in second.text
+        assert "This link is invalid" not in second.text
+
+        # A follow-up request with no token at all, just the cookie already
+        # in the jar, also authenticates — the cookie, not the URL, now
+        # carries the session.
+        third = await c.get("/portal")
+        assert third.status_code == 200
+        assert "Cookie pkg" in third.text
+
+
+@pytest.mark.asyncio
+async def test_portal_ui_revoked_grant_rejected_even_with_valid_cookie() -> None:
+    org = await _org("PortalCookieRevoke")
+    async with session_scope() as s:
+        grant = await portal.create_grant(s, org_id=org, principal_name="Revoke Me", ttl_days=30)
+        gid, token = grant.id, grant.token
+
+    async with _client() as c:
+        first = await c.get("/portal", params={"token": token}, follow_redirects=False)
+        assert first.status_code == 303
+        assert PORTAL_SESSION_COOKIE in first.cookies
+
+        # The freshly issued cookie currently authenticates.
+        ok = await c.get("/portal")
+        assert ok.status_code == 200
+        assert "This link is invalid" not in ok.text
+
+        # Revoke the grant out-of-band (e.g. an admin action). The
+        # previously-issued cookie's signature/exp are still perfectly
+        # valid, but the per-request re-check against the live grant row
+        # must catch the revocation immediately.
+        async with session_scope() as s:
+            assert await portal.revoke_grant(s, gid, actor="admin@x") is True
+
+        after_revoke = await c.get("/portal")
+        assert after_revoke.status_code == 200
+        assert "This link is invalid" in after_revoke.text
+
+
+@pytest.mark.asyncio
+async def test_portal_ui_invalid_token_does_not_authenticate() -> None:
+    async with _client() as c:
+        resp = await c.get("/portal", params={"token": "not-a-real-token"})
+        assert resp.status_code == 200
+        assert "This link is invalid" in resp.text
+        assert PORTAL_SESSION_COOKIE not in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_portal_ui_no_token_no_cookie_shows_gate() -> None:
+    async with _client() as c:
+        resp = await c.get("/portal")
+        assert resp.status_code == 200
+        assert "This link is invalid" in resp.text
 
 
 # --- DATA-07/11: grant_id FKs on external_comments / questionnaire requests /
