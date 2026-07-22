@@ -80,13 +80,21 @@ jobs:
         run: |
           pip freeze --exclude-editable > audit-reqs.txt
           pip-audit -r audit-reqs.txt
+      # Install Trivy from Aqua's apt repo rather than aquasecurity/trivy-action:
+      # the action's bundled install.sh fails deterministically fetching the
+      # release binary in CI. The apt repo is maintained and has no GitHub
+      # release-download / API-rate-limit path.
+      - name: Install Trivy
+        run: |
+          sudo apt-get update && sudo apt-get install -y wget gnupg
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" \
+            | sudo tee /etc/apt/sources.list.d/trivy.list > /dev/null
+          sudo apt-get update && sudo apt-get install -y trivy
       - name: Trivy fs scan
-        uses: aquasecurity/trivy-action@v0.33.1
-        with:
-          scan-type: fs
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-          ignore-unfixed: "true"
+        # Same gate as before: block on fixable HIGH/CRITICAL filesystem findings.
+        run: trivy fs --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed .
 
   docker:
     name: docker build
