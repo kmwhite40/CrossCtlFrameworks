@@ -29,6 +29,7 @@ def _poam(**kw):
         owner_user_id=None,
         point_of_contact=None,
         source=None,
+        source_ref=None,
         remediation_plan=None,
         resources_required=None,
         cost_estimate=None,

@@ -163,6 +163,27 @@ class AuditFinding(Base):
     description: Mapped[str | None] = mapped_column(Text)
     management_response: Mapped[str | None] = mapped_column(Text)
     closure_evidence: Mapped[str | None] = mapped_column(String(1024))
+    # ISSM-04: findings were orphaned from the remediation program — no link to
+    # the system they concern, nor to any POA&M/Risk opened from them. These
+    # are nullable (a finding may be raised before the system/remediation is
+    # known) but let a finding be promoted into a provenanced POA&M ("promote
+    # to POA&M", mirroring the assessment->POA&M pattern) or Risk
+    # ("accept-finding -> Risk", mirroring the risks.py acceptance gate) and be
+    # traced both ways once it is. ``organization_id`` mirrors the parent
+    # engagement's org at creation time so findings can be scoped/filtered
+    # without a join.
+    system_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.systems.id", ondelete="SET NULL"), index=True
+    )
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="SET NULL"), index=True
+    )
+    poam_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.poams.id", ondelete="SET NULL"), index=True
+    )
+    risk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.risks.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     engagement: Mapped[AuditEngagement] = relationship(back_populates="findings")

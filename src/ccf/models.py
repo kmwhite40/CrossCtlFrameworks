@@ -715,6 +715,12 @@ class Risk(Base):
     description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(64))  # taxonomy: operational|technical|...
     source: Mapped[str | None] = mapped_column(String(32))
+    # ISSM-05: stable back-reference to the originating record (e.g.
+    # "audit_finding:{id}"), mirroring POAM.source_ref (0038) — so a Risk
+    # created from an accepted finding is traceable back to what generated it,
+    # and re-running that origin's promotion is idempotent on this reference
+    # rather than a title match.
+    source_ref: Mapped[str | None] = mapped_column(String(128), index=True)
     likelihood: Mapped[str | None] = mapped_column(
         Enum("low", "moderate", "high", name="risk_level", schema="ccf")
     )

@@ -22,6 +22,7 @@ from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...governance.risk import band, compute_scores
 from ...models import Approval, Risk, System, Task
+from ...models_grc import AuditFinding
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
@@ -49,6 +50,19 @@ class RiskCreate(BaseModel):
     vendor_id: int | None = None
 
 
+class RiskFromFindingIn(BaseModel):
+    """Optional overrides for the accept-finding -> Risk action; title,
+    description, and system_id are always taken from the finding itself so
+    the new Risk carries an accurate origin."""
+
+    category: str | None = None
+    likelihood: str | None = Field(None, pattern=LEVEL)
+    impact: str | None = Field(None, pattern=LEVEL)
+    treatment: str | None = Field(None, pattern=TREATMENT)
+    owner_user_id: int | None = None
+    next_review_on: date | None = None
+
+
 class RiskUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
@@ -72,6 +86,7 @@ def _out(r: Risk, approval_state: str | None = None) -> dict[str, Any]:
         "description": r.description,
         "category": r.category,
         "source": r.source,
+        "source_ref": r.source_ref,
         "likelihood": r.likelihood,
         "impact": r.impact,
         "treatment": r.treatment,
@@ -322,5 +337,65 @@ async def get_risk(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_risk(session, rid, principal)
+    state = await entity_state(session, "risk", obj.id)
+    return _out(obj, state)
+
+
+@router.post("/from-finding/{finding_id}", status_code=201)
+async def create_risk_from_finding(
+    finding_id: int,
+    body: RiskFromFindingIn | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """ISSM-05: accept-finding -> Risk. Opens a Risk carrying the finding's
+    origin (``source_ref``) so it is traceable back to what generated it. The
+    Risk is created ``open`` — moving it to ``accepted`` still goes through
+    the normal PATCH acceptance gate above (owner + expiry, + AO approval when
+    auth is enabled). Idempotent on the finding: one already accepted to a
+    Risk returns the existing Risk rather than creating a duplicate.
+    """
+    finding = await session.get(AuditFinding, finding_id)
+    if finding is None or (
+        principal.org_id is not None
+        and finding.organization_id is not None
+        and finding.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "audit finding not found")
+    if finding.risk_id is not None:
+        existing = await session.get(Risk, finding.risk_id)
+        if existing is not None:
+            state = await entity_state(session, "risk", existing.id)
+            return _out(existing, state)
+    if finding.system_id is None:
+        raise HTTPException(
+            400, "audit finding has no system_id set; set one before accepting to a risk"
+        )
+    if principal.org_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == finding.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "system not found")
+    data = (body or RiskFromFindingIn()).model_dump(exclude_none=True)
+    obj = Risk(
+        system_id=finding.system_id,
+        title=f"Audit finding: {finding.title}",
+        description=finding.description,
+        source="audit_finding",
+        source_ref=f"audit_finding:{finding.id}",
+        **data,
+    )
+    _rescore(obj)
+    session.add(obj)
+    await session.flush()
+    finding.risk_id = obj.id
+    await _post_write(session, obj, principal, verb="created")
+    await session.commit()
+    await session.refresh(obj)
     state = await entity_state(session, "risk", obj.id)
     return _out(obj, state)

@@ -5,7 +5,7 @@ Connector registry, and Control Tests. All mutations emit events onto the bus.
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -17,7 +17,8 @@ from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...governance import bus, control_tests
-from ...models import Task
+from ...ingest.scanners import SEVERITY_SLA_DAYS
+from ...models import POAM, System, Task
 from ...models_grc import (
     AuditEngagement,
     AuditFinding,
@@ -331,12 +332,34 @@ class FindingIn(BaseModel):
     title: str
     severity: str = "moderate"
     description: str | None = None
+    # ISSM-04: the system this finding concerns — required before it can be
+    # promoted to a POA&M or accepted to a Risk (both need a system to attach
+    # to), but optional here since a finding may be raised before that's known.
+    system_id: int | None = None
 
 
 class FindingUpdate(BaseModel):
     status: str | None = None
     management_response: str | None = None
     closure_evidence: str | None = None
+    system_id: int | None = None
+
+
+def _finding_out(f: AuditFinding) -> dict[str, Any]:
+    return {
+        "id": f.id,
+        "engagement_id": f.engagement_id,
+        "title": f.title,
+        "severity": f.severity,
+        "status": f.status,
+        "description": f.description,
+        "management_response": f.management_response,
+        "closure_evidence": f.closure_evidence,
+        "system_id": f.system_id,
+        "organization_id": f.organization_id,
+        "poam_id": f.poam_id,
+        "risk_id": f.risk_id,
+    }
 
 
 @router.get("/audit/engagements")
@@ -415,10 +438,7 @@ async def get_engagement(
             }
             for r in e.requests
         ],
-        "findings": [
-            {"id": f.id, "title": f.title, "severity": f.severity, "status": f.status}
-            for f in e.findings
-        ],
+        "findings": [_finding_out(f) for f in e.findings],
     }
 
 
@@ -460,9 +480,24 @@ async def add_finding(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    if (await session.get(AuditEngagement, eng_id)) is None:
+    engagement = await session.get(AuditEngagement, eng_id)
+    if engagement is None:
         raise HTTPException(404, "engagement not found")
-    f = AuditFinding(engagement_id=eng_id, **body.model_dump())
+    if principal.org_id is not None and body.system_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == body.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "system not found")
+    # ISSM-04: mirror the parent engagement's org so the finding is scoped
+    # without a join, even before it's ever promoted to a POA&M/Risk.
+    f = AuditFinding(
+        engagement_id=eng_id, organization_id=engagement.organization_id, **body.model_dump()
+    )
     session.add(f)
     await session.flush()
     await bus.emit(
@@ -475,7 +510,23 @@ async def add_finding(
         actor=principal.email,
     )
     await session.commit()
-    return {"id": f.id, "status": f.status}
+    return _finding_out(f)
+
+
+@router.get("/audit/findings/{find_id}")
+async def get_finding(
+    find_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    f = await session.get(AuditFinding, find_id)
+    if f is None or (
+        principal.org_id is not None
+        and f.organization_id is not None
+        and f.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "finding not found")
+    return _finding_out(f)
 
 
 @router.patch("/audit/findings/{find_id}")
@@ -488,10 +539,110 @@ async def update_finding(
     f = await session.get(AuditFinding, find_id)
     if f is None:
         raise HTTPException(404, "finding not found")
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if data.get("system_id") is not None and principal.org_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == data["system_id"], System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "system not found")
+    if data.get("status") == "closed":
+        closure_evidence = data.get("closure_evidence", f.closure_evidence)
+        if not closure_evidence:
+            raise HTTPException(
+                409, "cannot close finding: a closure_evidence artifact/reference is required"
+            )
+    for k, v in data.items():
         setattr(f, k, v)
     await session.commit()
-    return {"id": f.id, "status": f.status}
+    return _finding_out(f)
+
+
+@router.post("/audit/findings/{find_id}/promote-to-poam", status_code=201)
+async def promote_finding_to_poam(
+    find_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """ISSM-04: open a provenanced POA&M from an audit finding — reuses the
+    assessment->POA&M pattern (ISSM-02): a stable ``source_ref`` back-references
+    the finding so re-promoting it is idempotent (returns the existing POA&M)
+    rather than creating a duplicate.
+    """
+    f = await session.get(AuditFinding, find_id)
+    if f is None or (
+        principal.org_id is not None
+        and f.organization_id is not None
+        and f.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "finding not found")
+    if f.poam_id is not None:
+        existing = await session.get(POAM, f.poam_id)
+        if existing is not None:
+            return {
+                "id": existing.id,
+                "finding_id": f.id,
+                "title": existing.title,
+                "status": existing.status,
+                "system_id": existing.system_id,
+                "source": existing.source,
+                "source_ref": existing.source_ref,
+            }
+    if f.system_id is None:
+        raise HTTPException(
+            400, "audit finding has no system_id set; set one before promoting to a POA&M"
+        )
+    if principal.org_id is not None:
+        ok = (
+            await session.execute(
+                select(System.id).where(
+                    System.id == f.system_id, System.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "system not found")
+    today = datetime.now(UTC).date()
+    severity = f.severity if f.severity in ("low", "moderate", "high", "critical") else "moderate"
+    due = today + timedelta(days=SEVERITY_SLA_DAYS.get(severity, 90))
+    poam = POAM(
+        system_id=f.system_id,
+        title=f"Audit finding: {f.title}",
+        weakness=f.description or f.title,
+        severity=severity,
+        status="open",
+        identified_on=today,
+        due_on=due,
+        original_due_on=due,
+        source="audit_finding",
+        source_ref=f"audit_finding:{f.id}",
+    )
+    session.add(poam)
+    await session.flush()
+    f.poam_id = poam.id
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="poam",
+        entity_id=poam.id,
+        summary=f"POA&M opened from audit finding: {poam.title}",
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    await session.commit()
+    return {
+        "id": poam.id,
+        "finding_id": f.id,
+        "title": poam.title,
+        "status": poam.status,
+        "system_id": poam.system_id,
+        "source": poam.source,
+        "source_ref": poam.source_ref,
+    }
 
 
 # ── Cloud Connector registry ─────────────────────────────────────────────────

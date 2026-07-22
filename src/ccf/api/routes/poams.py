@@ -126,6 +126,7 @@ def _out(p: POAM, today: date | None = None, approval_state: str | None = None) 
         "owner_user_id": p.owner_user_id,
         "point_of_contact": p.point_of_contact,
         "source": p.source,
+        "source_ref": p.source_ref,
         "remediation_plan": p.remediation_plan,
         "resources_required": p.resources_required,
         "cost_estimate": p.cost_estimate,
@@ -224,6 +225,35 @@ async def _require_closure_gate(session: AsyncSession, obj: POAM) -> None:
             409,
             "cannot close: requires an approved review (submit for approval, then have a "
             "different principal approve it — separation of duties)",
+        )
+
+
+# --- risk_accepted gate: a POA&M can be routed to 'risk_accepted' instead of
+# remediation-driven 'closed' — a parallel path that, left ungated, let a
+# caller bypass the owner+expiry(+approval) discipline risks.py's own
+# acceptance gate enforces for an equivalent decision on the Risk register.
+# Reuses that same shape here so neither path can under-cut the other. -------
+
+
+async def _require_risk_accepted_gate(
+    session: AsyncSession,
+    *,
+    owner_user_id: int | None,
+    due_on: object,
+    poam_id: int | str | None,
+) -> None:
+    if owner_user_id is None or due_on is None:
+        raise HTTPException(
+            409,
+            "risk_accepted requires an owner (owner_user_id) and an expiration/due_on date",
+        )
+    if get_settings().auth_enabled and (
+        poam_id is None or not await _is_approved(session, "poam", poam_id)
+    ):
+        raise HTTPException(
+            409,
+            "risk_accepted requires an approved authorizing-official review (submit for "
+            "approval, then have an AO/admin approve it)",
         )
 
 
@@ -336,6 +366,13 @@ async def create_poam(
     obj = POAM(**data)
     if data.get("status") == "closed":
         await _require_closure_gate(session, obj)
+    elif data.get("status") == "risk_accepted":
+        # A brand-new POA&M cannot already carry an approved review — it must
+        # be created open, then moved to risk_accepted via PATCH once approved
+        # (mirrors create_risk's handling of status="accepted" in risks.py).
+        await _require_risk_accepted_gate(
+            session, owner_user_id=obj.owner_user_id, due_on=obj.due_on, poam_id=None
+        )
     if obj.due_on is not None and obj.original_due_on is None:
         obj.original_due_on = obj.due_on  # capture the baseline for deviation tracking
     session.add(obj)
@@ -377,6 +414,13 @@ async def update_poam(
     data = body.model_dump(exclude_none=True)
     if data.get("status") == "closed":
         await _require_closure_gate(session, obj)
+    elif data.get("status") == "risk_accepted":
+        await _require_risk_accepted_gate(
+            session,
+            owner_user_id=data.get("owner_user_id", obj.owner_user_id),
+            due_on=data.get("due_on", obj.due_on),
+            poam_id=pid,
+        )
     for k, v in data.items():
         setattr(obj, k, v)
     await bus.emit(
