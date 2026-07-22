@@ -8,6 +8,8 @@ a grant only exposes what was explicitly shared, and nothing crosses tenants.
 
 from __future__ import annotations
 
+import os
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -17,13 +19,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
+from ccf.api.auth_deps import SESSION_COOKIE
 from ccf.api.main import create_app
-from ccf.api.routes.portal import PORTAL_SESSION_COOKIE
-from ccf.auth import hash_token
+from ccf.api.routes.portal import PORTAL_SESSION_COOKIE, _portal_cookie_ttl_hours
+from ccf.auth import hash_token, sign_session
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
 from ccf.evidence import service as ev_service
-from ccf.models import Organization, System
+from ccf.models import Organization, System, User
 from ccf.models_portal import (
     ExternalAccessGrant,
     ExternalComment,
@@ -575,3 +578,123 @@ async def test_deleting_grant_nulls_comment_and_audit_event_reference() -> None:
         # The rows survive the grant's deletion; only the reference is cleared.
         assert comment.grant_id is None
         assert event.grant_id is None
+
+
+# --- C1: portal cookie / internal session domain separation ----------------
+#
+# ``sign_session``/``verify_session`` (ccf.auth) carry no audience/type claim.
+# Before the fix, the portal cookie (``concord_portal_session``) and the
+# internal login cookie (``concord_session``) were signed with the *same*
+# secret and the *same* payload shape (``{"uid": <int>, "exp": ...}``) — a
+# value minted for one verified as valid for the other. Grant ids and user
+# ids are independent serial sequences that both start from 1, so a real
+# collision is entirely plausible in production. These tests force an exact
+# id collision to prove the fix (a distinct, HMAC-derived portal signing key)
+# closes the hole regardless of any such collision, not just avoids it by luck.
+
+
+@pytest.fixture
+async def auth_on() -> AsyncIterator[None]:
+    os.environ["CCF_AUTH_ENABLED"] = "true"
+    os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"
+    get_settings.cache_clear()
+    yield
+    os.environ.pop("CCF_AUTH_ENABLED", None)
+    os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_portal_cookie_cannot_authenticate_internal_session(auth_on: None) -> None:
+    """A value minted as a portal session cookie must not authenticate the
+    internal ``concord_session`` cookie — even for a colliding user id."""
+    org = await _org("TokenConfusionA")
+    fake_id = 900_000_101  # arbitrary, far outside any sequence's natural range
+    async with session_scope() as s:
+        s.add(User(id=fake_id, email="confuse-a@x.test", organization_id=org,
+                    role="admin", active=True))
+        # Force the exact collision the finding describes: a grant sharing
+        # the internal user's id.
+        grant = ExternalAccessGrant(
+            id=fake_id, organization_id=org, kind="customer",
+            expires_at=datetime.now(UTC) + timedelta(days=1), revoked=False, scope={},
+        )
+        grant.token = "confuse-a-token-" + "z" * 10
+        s.add(grant)
+        await s.flush()
+        token = grant.token
+
+    async with _client() as c:
+        mint = await c.get("/portal", params={"token": token}, follow_redirects=False)
+        assert mint.status_code == 303
+        portal_cookie_value = mint.cookies[PORTAL_SESSION_COOKIE]
+
+        # Attacker replays the portal cookie's raw value under the INTERNAL
+        # cookie name against an internal-only route.
+        c.cookies.set(SESSION_COOKIE, portal_cookie_value)
+        resp = await c.get("/api/auth/me")
+        assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_internal_session_cannot_authenticate_portal_grant(auth_on: None) -> None:
+    """Conversely, a value minted as the internal login session cookie must
+    not authenticate a portal grant when replayed as
+    ``concord_portal_session`` — even for a colliding grant id."""
+    org = await _org("TokenConfusionB")
+    system = await _system(org, "ConfusionBSys")
+    fake_id = 900_000_202  # arbitrary, far outside any sequence's natural range
+    async with session_scope() as s:
+        pkg = await pkg_service.create_package(
+            s, org_id=org, system_id=system, kind="json", label="Confusion B secret pkg"
+        )
+        # A real, live, shared-content grant sharing the internal user's id.
+        grant = ExternalAccessGrant(
+            id=fake_id, organization_id=org, kind="customer",
+            expires_at=datetime.now(UTC) + timedelta(days=30), revoked=False,
+            scope={"package_ids": [pkg.id], "evidence_ids": []},
+        )
+        grant.token = "confuse-b-token-" + "y" * 10
+        s.add(grant)
+        await s.flush()
+        s.add(ExternalPackageShare(grant_id=grant.id, package_id=pkg.id))
+        s.add(User(id=fake_id, email="confuse-b@x.test", organization_id=org,
+                    role="admin", active=True))
+        await s.flush()
+
+    settings = get_settings()
+    # Exactly what an internal login would mint for this user id.
+    internal_cookie_value = sign_session(fake_id, settings.auth_session_secret, ttl_hours=1)
+
+    async with _client() as c:
+        c.cookies.set(PORTAL_SESSION_COOKIE, internal_cookie_value)
+        resp = await c.get("/portal")
+        assert resp.status_code == 200
+        assert "This link is invalid" in resp.text
+        assert "Confusion B secret pkg" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_portal_cookie_ttl_never_exceeds_grant_expiry() -> None:
+    """M1: the cookie's own signed lifetime must not exceed the grant's
+    expiry by rounding up to the next whole hour."""
+
+    class _Grant:
+        def __init__(self, expires_at: datetime | None) -> None:
+            self.expires_at = expires_at
+
+    # No expiry at all → capped at the max TTL.
+    assert _portal_cookie_ttl_hours(_Grant(None)) == 24
+
+    # 90 minutes left: flooring to 1 hour keeps the cookie inside the grant's
+    # remaining lifetime (the old ``// 3600 + 1`` formula rounded up to 2).
+    ninety_min = datetime.now(UTC) + timedelta(minutes=90)
+    assert _portal_cookie_ttl_hours(_Grant(ninety_min)) == 1
+
+    # 5 hours left → floors to 5, still well inside the grant's lifetime.
+    five_hours = datetime.now(UTC) + timedelta(hours=5, minutes=30)
+    assert _portal_cookie_ttl_hours(_Grant(five_hours)) == 5
+
+    # Far in the future → capped at the 24h ceiling.
+    far_future = datetime.now(UTC) + timedelta(days=10)
+    assert _portal_cookie_ttl_hours(_Grant(far_future)) == 24

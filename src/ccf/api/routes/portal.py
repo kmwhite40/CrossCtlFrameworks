@@ -14,6 +14,8 @@ gate lets them through; the portal service is the real authorization boundary.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -56,6 +58,30 @@ ui_router = APIRouter(tags=["portal"])
 PORTAL_SESSION_COOKIE = "concord_portal_session"
 _PORTAL_SESSION_MAX_TTL_HOURS = 24
 
+# Domain-separation label for deriving the portal cookie's own signing key
+# from the shared ``auth_session_secret`` (see ``_portal_secret``). Changing
+# this string invalidates every outstanding portal session cookie.
+_PORTAL_SECRET_LABEL = b"ccf-portal-session-v1"
+
+
+def _portal_secret(base_secret: str) -> str:
+    """Derive a signing key for portal session cookies that is cryptographically
+    independent of the internal login session key (``settings.auth_session_secret``,
+    used by ``concord_session`` — see ``ccf.auth.sign_session``/``verify_session``
+    and ``ccf.api.auth_deps._lookup_principal``).
+
+    ``sign_session``/``verify_session`` carry no audience/type claim — a value
+    signed with the *same* secret verifies as valid under *either* cookie name.
+    Without this derivation, a portal grant id and an internal user id can
+    collide (independent serial sequences, both starting from 1), letting an
+    external portal user replay their ``concord_portal_session`` value as
+    ``concord_session`` and authenticate as whichever internal user happens to
+    share that id — full account takeover. Deriving a distinct key here means
+    a portal-signed value's HMAC never verifies under the internal secret, and
+    vice versa, regardless of any id collision.
+    """
+    return hmac.new(base_secret.encode(), _PORTAL_SECRET_LABEL, hashlib.sha256).hexdigest()
+
 
 def _portal_cookie_ttl_hours(grant: Any) -> int:
     """Cap the cookie's own lifetime at the grant's expiry (if any).
@@ -64,11 +90,14 @@ def _portal_cookie_ttl_hours(grant: Any) -> int:
     request re-validates the grant against the DB (see ``_grant_from_cookie``),
     so a grant that's revoked or expires mid-cookie-lifetime still gets
     rejected regardless of what's baked into the cookie's signed payload.
+
+    Floors (rather than rounds up) the remaining time to whole hours so the
+    cookie's signed lifetime does not itself exceed the grant's expiry.
     """
     if grant.expires_at is None:
         return _PORTAL_SESSION_MAX_TTL_HOURS
     remaining = grant.expires_at - datetime.now(UTC)
-    hours_left = max(1, int(remaining.total_seconds() // 3600) + 1)
+    hours_left = max(1, int(remaining.total_seconds() // 3600))
     return min(_PORTAL_SESSION_MAX_TTL_HOURS, hours_left)
 
 
@@ -191,7 +220,7 @@ async def _grant_from_cookie(request: Request, session: AsyncSession) -> Any:
     cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
     if not cookie:
         return None
-    grant_id = verify_session(cookie, get_settings().auth_session_secret)
+    grant_id = verify_session(cookie, _portal_secret(get_settings().auth_session_secret))
     if grant_id is None:
         return None
     return await resolve_grant_by_id(session, grant_id)
@@ -213,9 +242,9 @@ async def portal_ui(
         # the browser authenticates via the cookie, not a URL parameter that
         # would otherwise sit in browser history and portal access logs.
         settings = get_settings()
+        ttl_hours = _portal_cookie_ttl_hours(grant)
         cookie_value = sign_session(
-            grant.id, settings.auth_session_secret,
-            ttl_hours=_portal_cookie_ttl_hours(grant),
+            grant.id, _portal_secret(settings.auth_session_secret), ttl_hours=ttl_hours,
         )
         remaining_params = {k: v for k, v in request.query_params.items() if k != "token"}
         target = request.url.path
@@ -225,7 +254,7 @@ async def portal_ui(
         redirect.set_cookie(
             PORTAL_SESSION_COOKIE,
             cookie_value,
-            max_age=_portal_cookie_ttl_hours(grant) * 3600,
+            max_age=ttl_hours * 3600,
             httponly=True,
             samesite="lax",
             secure=settings.env == "prod",
