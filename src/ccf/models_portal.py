@@ -132,7 +132,9 @@ class ExternalComment(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    grant_id: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
     target_type: Mapped[str] = mapped_column(String(24))  # evidence|finding|package
     target_id: Mapped[str] = mapped_column(String(64))
     author: Mapped[str | None] = mapped_column(String(255))
@@ -150,7 +152,9 @@ class ExternalQuestionnaireRequest(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    grant_id: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
     title: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), default="open")  # open|responded
     response_body: Mapped[str | None] = mapped_column(Text)
@@ -167,7 +171,9 @@ class ExternalPortalAuditEvent(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    grant_id: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
     action: Mapped[str] = mapped_column(String(24))  # view|download|comment|respond|denied
     target_type: Mapped[str | None] = mapped_column(String(24))
     target_id: Mapped[str | None] = mapped_column(String(64))

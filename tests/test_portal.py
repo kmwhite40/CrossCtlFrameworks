@@ -14,7 +14,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 
 from ccf.api.main import create_app
 from ccf.auth import hash_token
@@ -409,3 +410,73 @@ async def test_admin_portal_ui_lists_shareable_artifacts_and_issues_grant() -> N
     async with _client() as c:
         page2 = await c.get("/admin/portal", params={"organization_id": org})
         assert "UI Assessor" in page2.text
+
+
+# --- DATA-07/11: grant_id FKs on external_comments / questionnaire requests /
+# audit events (0049_portal_grant_ref_fks) -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_comment_with_nonexistent_grant_id_raises_integrity_error() -> None:
+    org = await _org("PortalGrantFkBadComment")
+    with pytest.raises(IntegrityError):
+        async with session_scope() as s:
+            s.add(
+                ExternalComment(
+                    organization_id=org,
+                    grant_id=999_999_999,
+                    target_type="evidence",
+                    target_id="1",
+                    author="Ghost",
+                    body="orphaned reference",
+                )
+            )
+            await s.flush()
+
+
+@pytest.mark.asyncio
+async def test_audit_event_with_nonexistent_grant_id_raises_integrity_error() -> None:
+    org = await _org("PortalGrantFkBadAudit")
+    with pytest.raises(IntegrityError):
+        async with session_scope() as s:
+            s.add(
+                ExternalPortalAuditEvent(
+                    organization_id=org,
+                    grant_id=999_999_999,
+                    action="view",
+                )
+            )
+            await s.flush()
+
+
+@pytest.mark.asyncio
+async def test_deleting_grant_nulls_comment_and_audit_event_reference() -> None:
+    org = await _org("PortalGrantFkCascade")
+    async with session_scope() as s:
+        grant = await portal.create_grant(s, org_id=org, principal_name="ToBeDeleted")
+        gid, token = grant.id, grant.token
+    async with session_scope() as s:
+        grant = await portal.resolve_grant(s, token)
+        await portal.record_access(s, grant, action="view", target_type="package", target_id="1")
+        await portal.add_comment(
+            s, grant, target_type="evidence", target_id="9", author="Talker", body="hi"
+        )
+
+    async with session_scope() as s:
+        await s.execute(delete(ExternalAccessGrant).where(ExternalAccessGrant.id == gid))
+
+    async with session_scope() as s:
+        comment = (
+            await s.execute(select(ExternalComment).where(ExternalComment.organization_id == org))
+        ).scalar_one()
+        event = (
+            await s.execute(
+                select(ExternalPortalAuditEvent).where(
+                    ExternalPortalAuditEvent.organization_id == org,
+                    ExternalPortalAuditEvent.action == "view",
+                )
+            )
+        ).scalar_one()
+        # The rows survive the grant's deletion; only the reference is cleared.
+        assert comment.grant_id is None
+        assert event.grant_id is None
