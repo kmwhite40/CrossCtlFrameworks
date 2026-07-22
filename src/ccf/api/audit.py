@@ -32,7 +32,7 @@ _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
 _ACTION = {"POST": "create", "PUT": "update", "PATCH": "update", "DELETE": "delete"}
 _SKIP_PREFIXES = ("/metrics", "/healthz", "/readyz", "/livez", "/static", "/api/audit")
 _ID_RE = re.compile(r"\d+")
-_REDACT = ("password", "token", "secret", "api_token")
+_REDACT = ("password", "token", "secret", "api_token", "key", "credential", "private")
 _GENESIS = "0" * 64
 _MAX_BODY = 8_192
 
@@ -129,6 +129,23 @@ async def audit_middleware(
     ):
         return response
 
+    # Idempotency guard (exception-safety hardening): Starlette's
+    # BaseHTTPMiddleware can, under certain exception/re-entry conditions,
+    # invoke this dispatch function more than once for what is logically the
+    # same client request — and because the ASGI ``scope`` (and therefore
+    # ``request.state``) is shared across those re-entries, a second pass
+    # would otherwise re-run the select-latest-hash + insert sequence below
+    # and write a duplicate ``AuditLog`` row. Both rows would be computed
+    # from the same ``prev_hash`` (whatever was latest before either insert),
+    # forking the hash chain — not just for this request, but permanently for
+    # every row appended afterwards, since ``/api/audit/verify`` walks a
+    # single linear chain. Setting the flag *before* the write (not after
+    # success) means a re-entrant pass never risks a duplicate, even if the
+    # first pass's write is slow or itself fails.
+    if getattr(request.state, "audit_recorded", False):
+        return response
+    request.state.audit_recorded = True
+
     try:
         principal = getattr(request.state, "principal", None)
         # A real authenticated user wins; the open SYSTEM principal (auth off,
@@ -140,6 +157,13 @@ async def audit_middleware(
             principal_email
             or request.headers.get("x-actor")
             or get_settings().audit_default_actor
+        )
+        # organization_id is a SCOPING column only (DATA-06) — resolved from the
+        # request principal and NEVER folded into `content`/the hash payload
+        # below, so existing chains and /api/audit/verify stay valid. NULL for
+        # unauthenticated requests or a global/unscoped principal (system events).
+        org_id = (
+            principal.org_id if principal is not None and principal.user_id is not None else None
         )
         entity_type, entity_id = _entity(path)
         diff: dict[str, Any] = {"method": method, "path": path, "status": response.status_code}
@@ -165,7 +189,12 @@ async def audit_middleware(
                 )
             ).scalar_one_or_none() or _GENESIS
             session.add(
-                AuditLog(**content, prev_hash=prev, row_hash=row_hash(prev, content))
+                AuditLog(
+                    **content,
+                    organization_id=org_id,
+                    prev_hash=prev,
+                    row_hash=row_hash(prev, content),
+                )
             )
             await session.commit()
     except Exception as exc:  # pragma: no cover - audit must never break requests

@@ -7,6 +7,15 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — continuous authorization
+- **Assurance query layer** (`ccf/queries/`) — a registry of deterministic,
+  parameterized query templates over the authorization data (no AI): expired
+  evidence, evidence expiring soon, controls failing across N systems, overdue
+  POA&Ms, external grants expiring soon, high-risk AI agents. Each template has a
+  typed param schema and a tenant-scoped SQL runner; the same template + params
+  always yields the same answer. API `GET /api/queries`,
+  `POST /api/queries/{key}/run|export` (CSV); a `/queries` UI (pick → parameterize
+  → results table → download CSV) in the Insights nav; `query_templates_health`
+  reliability check runs every template to catch schema drift.
 - **External collaboration portal** (`ccf/portal/`, `models_portal.py`,
   migration 0036, `docs/portal.md`) — scoped, expiring, token-authenticated,
   fully-audited external access for customers/assessors/vendors with no internal

@@ -14,16 +14,21 @@ gate lets them through; the portal service is the real authorization boundary.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...auth import Principal
+from ...auth import Principal, sign_session, verify_session
+from ...config import get_settings
 from ...portal import (
     add_comment,
     create_grant,
@@ -31,6 +36,7 @@ from ...portal import (
     list_grants,
     record_access,
     resolve_grant,
+    resolve_grant_by_id,
     revoke_grant,
 )
 from ..auth_deps import require_role
@@ -42,6 +48,57 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/api/admin/portal", tags=["portal"])
 public_router = APIRouter(prefix="/api/portal", tags=["portal"])
 ui_router = APIRouter(tags=["portal"])
+
+# The browser-facing ``/portal`` UI exchanges a one-time link token for this
+# short-lived signed session cookie (IA-09: reduces token-in-URL exposure —
+# the plaintext link token no longer needs to travel in every subsequent
+# request/access-log line once the cookie is established). Deliberately a
+# *different* cookie from the internal ``concord_session`` — it carries a
+# grant id, not a user id, and must never be read by the internal auth path.
+PORTAL_SESSION_COOKIE = "concord_portal_session"
+_PORTAL_SESSION_MAX_TTL_HOURS = 24
+
+# Domain-separation label for deriving the portal cookie's own signing key
+# from the shared ``auth_session_secret`` (see ``_portal_secret``). Changing
+# this string invalidates every outstanding portal session cookie.
+_PORTAL_SECRET_LABEL = b"ccf-portal-session-v1"
+
+
+def _portal_secret(base_secret: str) -> str:
+    """Derive a signing key for portal session cookies that is cryptographically
+    independent of the internal login session key (``settings.auth_session_secret``,
+    used by ``concord_session`` — see ``ccf.auth.sign_session``/``verify_session``
+    and ``ccf.api.auth_deps._lookup_principal``).
+
+    ``sign_session``/``verify_session`` carry no audience/type claim — a value
+    signed with the *same* secret verifies as valid under *either* cookie name.
+    Without this derivation, a portal grant id and an internal user id can
+    collide (independent serial sequences, both starting from 1), letting an
+    external portal user replay their ``concord_portal_session`` value as
+    ``concord_session`` and authenticate as whichever internal user happens to
+    share that id — full account takeover. Deriving a distinct key here means
+    a portal-signed value's HMAC never verifies under the internal secret, and
+    vice versa, regardless of any id collision.
+    """
+    return hmac.new(base_secret.encode(), _PORTAL_SECRET_LABEL, hashlib.sha256).hexdigest()
+
+
+def _portal_cookie_ttl_hours(grant: Any) -> int:
+    """Cap the cookie's own lifetime at the grant's expiry (if any).
+
+    This is a courtesy, not the security boundary: every cookie-authenticated
+    request re-validates the grant against the DB (see ``_grant_from_cookie``),
+    so a grant that's revoked or expires mid-cookie-lifetime still gets
+    rejected regardless of what's baked into the cookie's signed payload.
+
+    Floors (rather than rounds up) the remaining time to whole hours so the
+    cookie's signed lifetime does not itself exceed the grant's expiry.
+    """
+    if grant.expires_at is None:
+        return _PORTAL_SESSION_MAX_TTL_HOURS
+    remaining = grant.expires_at - datetime.now(UTC)
+    hours_left = max(1, int(remaining.total_seconds() // 3600))
+    return min(_PORTAL_SESSION_MAX_TTL_HOURS, hours_left)
 
 
 # --- admin (internal) ------------------------------------------------------
@@ -72,6 +129,8 @@ async def create_grant_endpoint(
         ttl_days=body.ttl_days, label=body.label, actor=principal.email,
     )
     await session.commit()
+    # IA-09: the plaintext token is shown exactly once, here at issuance — it
+    # is not persisted and cannot be recovered from `grant.token_hash`.
     return {"id": grant.id, "token": grant.token, "kind": grant.kind,
             "expires_at": grant.expires_at}
 
@@ -84,7 +143,7 @@ async def list_grants_endpoint(
 ) -> list[dict[str, Any]]:
     grants = await list_grants(session, org_id=organization_id)
     return [
-        {"id": g.id, "token": g.token, "kind": g.kind, "label": g.label,
+        {"id": g.id, "kind": g.kind, "label": g.label,
          "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at}
         for g in grants
     ]
@@ -151,11 +210,58 @@ async def portal_comment(
     return {"id": comment.id}
 
 
-@ui_router.get("/portal", response_class=HTMLResponse)
+async def _grant_from_cookie(request: Request, session: AsyncSession) -> Any:
+    """Authenticate a portal request off the signed session cookie, if any.
+
+    Validates the HMAC signature + embedded expiry (``verify_session``) *and*
+    re-checks the referenced grant's live revoked/expiry state in the DB —
+    the cookie proves who issued it, not that the grant is still valid.
+    """
+    cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
+    if not cookie:
+        return None
+    grant_id = verify_session(cookie, _portal_secret(get_settings().auth_session_secret))
+    if grant_id is None:
+        return None
+    return await resolve_grant_by_id(session, grant_id)
+
+
+@ui_router.get("/portal", response_class=HTMLResponse, response_model=None)
 async def portal_ui(
     request: Request, token: str = "", session: AsyncSession = Depends(get_session)
-) -> HTMLResponse:
-    grant = await resolve_grant(session, token) if token else None
+) -> HTMLResponse | RedirectResponse:
+    if token:
+        grant = await resolve_grant(session, token)
+        if grant is None:
+            return templates.TemplateResponse(
+                request, "portal.html", {"token": token, "grant": None, "contents": None},
+            )
+        # First use of the link token: exchange it for a short-lived signed
+        # session cookie scoped to this grant, then redirect to the same
+        # path with the token stripped from the query string — from here on
+        # the browser authenticates via the cookie, not a URL parameter that
+        # would otherwise sit in browser history and portal access logs.
+        settings = get_settings()
+        ttl_hours = _portal_cookie_ttl_hours(grant)
+        cookie_value = sign_session(
+            grant.id, _portal_secret(settings.auth_session_secret), ttl_hours=ttl_hours,
+        )
+        remaining_params = {k: v for k, v in request.query_params.items() if k != "token"}
+        target = request.url.path
+        if remaining_params:
+            target = f"{target}?{urlencode(remaining_params)}"
+        redirect = RedirectResponse(url=target, status_code=303)
+        redirect.set_cookie(
+            PORTAL_SESSION_COOKIE,
+            cookie_value,
+            max_age=ttl_hours * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=settings.env == "prod",
+        )
+        return redirect
+
+    grant = await _grant_from_cookie(request, session)
     contents = None
     if grant is not None:
         contents = await grant_contents(session, grant)
@@ -164,5 +270,5 @@ async def portal_ui(
     return templates.TemplateResponse(
         request,
         "portal.html",
-        {"token": token, "grant": grant, "contents": contents},
+        {"token": "", "grant": grant, "contents": contents},
     )

@@ -44,6 +44,12 @@ class EvidenceObject(Base):
     description: Mapped[str | None] = mapped_column(Text)
     system_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.systems.id", ondelete="SET NULL"))
     control_id: Mapped[str | None] = mapped_column(String(64))  # tag (e.g. AC-2)
+    # Real linkage to the legacy control-linked evidence store (DATA-09): nullable —
+    # only populated where a genuine control_implementations row backs this object.
+    # ``control_id`` above stays a free-text tag; this is the FK a join can trust.
+    implementation_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ccf.control_implementations.id", ondelete="SET NULL"), index=True
+    )
     framework: Mapped[str | None] = mapped_column(String(64))  # tag (e.g. FEDRAMP)
     owner: Mapped[str | None] = mapped_column(String(255))
     # How the evidence was produced — drives confidence scoring + replayability.

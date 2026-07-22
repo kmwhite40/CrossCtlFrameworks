@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
+from ...config import get_settings
 from ...governance import bus
-from ...models import POAM, PoamMilestone, System
+from ...governance.approvals import entity_state, entity_states
+from ...models import POAM, Approval, ControlImplementation, Evidence, PoamMilestone, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
@@ -92,7 +94,7 @@ def _ms_out(m: PoamMilestone) -> dict[str, Any]:
     }
 
 
-def _out(p: POAM, today: date | None = None) -> dict[str, Any]:
+def _out(p: POAM, today: date | None = None, approval_state: str | None = None) -> dict[str, Any]:
     ms = list(p.milestones or [])
     done = sum(1 for m in ms if m.status == "completed")
     overdue = (
@@ -124,11 +126,17 @@ def _out(p: POAM, today: date | None = None) -> dict[str, Any]:
         "owner_user_id": p.owner_user_id,
         "point_of_contact": p.point_of_contact,
         "source": p.source,
+        "source_ref": p.source_ref,
         "remediation_plan": p.remediation_plan,
         "resources_required": p.resources_required,
         "cost_estimate": p.cost_estimate,
         "risk_id": p.risk_id,
         "vendor_id": p.vendor_id,
+        # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
+        # (never submitted) | submitted (pending review) | approved | rejected. This
+        # does NOT drive the closure gate itself — see _require_closure_gate — it
+        # only makes the decision visible on the record.
+        "approval_state": approval_state,
         "overdue": overdue,
         "deviation": slipped,
         "milestone_total": len(ms),
@@ -159,6 +167,96 @@ async def _require_poam(session: AsyncSession, pid: int, principal: Principal) -
     return obj
 
 
+# --- Closure gate (ISSM-08/09): a POA&M can only close once the weakness is
+# validated (all milestones complete) or corroborated by a closure evidence
+# artifact, and — when auth is enabled — with a separation-of-duties approval
+# from a principal other than the one who submitted it. -----------------------
+
+
+def _milestones_satisfy_closure(obj: POAM) -> bool:
+    ms = obj.milestones or []
+    return bool(ms) and all(m.status == "completed" for m in ms)
+
+
+async def _has_closure_evidence(session: AsyncSession, obj: POAM) -> bool:
+    """A closure artifact: *dated* evidence collected against the control this
+    POA&M remediates (same system + control) that post-dates the weakness.
+
+    Requires ``Evidence.collected_on`` to be present and, when the POA&M records
+    an ``identified_on``, on/after it — so pre-existing evidence that predates the
+    weakness cannot satisfy closure (it does not demonstrate remediation)."""
+    if obj.control_id is None:
+        return False
+    stmt = (
+        select(Evidence.id)
+        .join(ControlImplementation, Evidence.implementation_id == ControlImplementation.id)
+        .where(
+            ControlImplementation.system_id == obj.system_id,
+            ControlImplementation.control_id == obj.control_id,
+            Evidence.collected_on.is_not(None),
+        )
+    )
+    if obj.identified_on is not None:
+        stmt = stmt.where(Evidence.collected_on >= obj.identified_on)
+    stmt = stmt.limit(1)
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def _is_approved(session: AsyncSession, entity_type: str, entity_id: int | str) -> bool:
+    row = (
+        await session.execute(
+            select(Approval).where(
+                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
+            )
+        )
+    ).scalar_one_or_none()
+    return row is not None and row.state == "approved"
+
+
+async def _require_closure_gate(session: AsyncSession, obj: POAM) -> None:
+    if not _milestones_satisfy_closure(obj) and not await _has_closure_evidence(session, obj):
+        raise HTTPException(
+            409,
+            "cannot close: requires either all milestones completed or a linked closure "
+            "evidence artifact for the remediated control",
+        )
+    if get_settings().auth_enabled and not await _is_approved(session, "poam", obj.id):
+        raise HTTPException(
+            409,
+            "cannot close: requires an approved review (submit for approval, then have a "
+            "different principal approve it — separation of duties)",
+        )
+
+
+# --- risk_accepted gate: a POA&M can be routed to 'risk_accepted' instead of
+# remediation-driven 'closed' — a parallel path that, left ungated, let a
+# caller bypass the owner+expiry(+approval) discipline risks.py's own
+# acceptance gate enforces for an equivalent decision on the Risk register.
+# Reuses that same shape here so neither path can under-cut the other. -------
+
+
+async def _require_risk_accepted_gate(
+    session: AsyncSession,
+    *,
+    owner_user_id: int | None,
+    due_on: object,
+    poam_id: int | str | None,
+) -> None:
+    if owner_user_id is None or due_on is None:
+        raise HTTPException(
+            409,
+            "risk_accepted requires an owner (owner_user_id) and an expiration/due_on date",
+        )
+    if get_settings().auth_enabled and (
+        poam_id is None or not await _is_approved(session, "poam", poam_id)
+    ):
+        raise HTTPException(
+            409,
+            "risk_accepted requires an approved authorizing-official review (submit for "
+            "approval, then have an AO/admin approve it)",
+        )
+
+
 @router.get("")
 async def list_poams(
     session: AsyncSession = Depends(get_session),
@@ -175,7 +273,8 @@ async def list_poams(
         stmt = stmt.where(POAM.status == status)
     today = datetime.now(UTC).date()
     rows = (await session.execute(stmt)).scalars().all()
-    return [_out(p, today) for p in rows]
+    states = await entity_states(session, "poam", [p.id for p in rows])
+    return [_out(p, today, states.get(str(p.id))) for p in rows]
 
 
 @router.get("/export", response_model=None)
@@ -265,6 +364,15 @@ async def create_poam(
             raise HTTPException(404, "system not found")
     data = body.model_dump(exclude_none=True)
     obj = POAM(**data)
+    if data.get("status") == "closed":
+        await _require_closure_gate(session, obj)
+    elif data.get("status") == "risk_accepted":
+        # A brand-new POA&M cannot already carry an approved review — it must
+        # be created open, then moved to risk_accepted via PATCH once approved
+        # (mirrors create_risk's handling of status="accepted" in risks.py).
+        await _require_risk_accepted_gate(
+            session, owner_user_id=obj.owner_user_id, due_on=obj.due_on, poam_id=None
+        )
     if obj.due_on is not None and obj.original_due_on is None:
         obj.original_due_on = obj.due_on  # capture the baseline for deviation tracking
     session.add(obj)
@@ -280,7 +388,8 @@ async def create_poam(
     )
     await session.commit()
     obj = await _require_poam(session, obj.id, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 @router.get("/{pid}")
@@ -290,7 +399,8 @@ async def get_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 @router.patch("/{pid}")
@@ -301,7 +411,17 @@ async def update_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if data.get("status") == "closed":
+        await _require_closure_gate(session, obj)
+    elif data.get("status") == "risk_accepted":
+        await _require_risk_accepted_gate(
+            session,
+            owner_user_id=data.get("owner_user_id", obj.owner_user_id),
+            due_on=data.get("due_on", obj.due_on),
+            poam_id=pid,
+        )
+    for k, v in data.items():
         setattr(obj, k, v)
     await bus.emit(
         session,
@@ -314,7 +434,8 @@ async def update_poam(
     )
     await session.commit()
     obj = await _require_poam(session, pid, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 @router.post("/{pid}/close")
@@ -324,6 +445,7 @@ async def close_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
+    await _require_closure_gate(session, obj)
     obj.status = "closed"
     obj.closed_on = date.today()
     await bus.emit(
@@ -337,7 +459,8 @@ async def close_poam(
     )
     await session.commit()
     obj = await _require_poam(session, pid, principal)
-    return _out(obj, datetime.now(UTC).date())
+    state = await entity_state(session, "poam", obj.id)
+    return _out(obj, datetime.now(UTC).date(), state)
 
 
 # --- Milestones --------------------------------------------------------------

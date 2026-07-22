@@ -17,7 +17,15 @@ from sqlalchemy import delete, select, update
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.fedramp20x import catalog, monitoring, package, readiness, validation
+from ccf.fedramp20x import (
+    CR26_DISPLAY_LABELS,
+    catalog,
+    cr26_display_label,
+    monitoring,
+    package,
+    readiness,
+    validation,
+)
 from ccf.fedramp20x.readiness import compute_readiness
 from ccf.fedramp20x.validation import SystemContext, evaluate_rule, normalize_control
 from ccf.models import (
@@ -54,6 +62,17 @@ def test_normalize_control_variants() -> None:
     assert normalize_control("AC-6(1)") == "AC-6"
     assert normalize_control("ac-2") == "AC-2"
     assert normalize_control("SC-7") == "SC-7"
+
+
+def test_cr26_display_label_mapping() -> None:
+    """FR-14: the CR26 rename is a display-only mapping, not a value change."""
+    assert cr26_display_label("authorized") == "Certified"
+    assert cr26_display_label("continuous_monitoring") == "Ongoing Certification"
+    # Values CR26 doesn't touch pass through unchanged.
+    assert cr26_display_label("not_started") == "not_started"
+    assert cr26_display_label("in_process") == "in_process"
+    assert cr26_display_label(None) == ""
+    assert set(CR26_DISPLAY_LABELS) == {"authorized", "continuous_monitoring"}
 
 
 def test_evaluate_control_state_pass_warn_fail() -> None:
@@ -431,6 +450,46 @@ async def test_fedramp20x_ui_pages_and_forms() -> None:
         )
         reviewed = await c.get(f"/fedramp20x?system_id={sid}")
         assert "accepted" in reviewed.text
+
+
+@pytest.mark.asyncio
+async def test_fedramp20x_cr26_display_labels() -> None:
+    """FR-14: fedramp20x UI shows CR26 labels; stored enum values stay unchanged."""
+    async with _client() as c:
+        await c.post("/api/fedramp/20x/ksis/seed")
+        sid = await _fresh_system("Cr26Cso")
+
+        # profile.readiness_status flows straight through score_system's
+        # "submitted" short-circuit (see readiness._derive_status), so this one
+        # field drives both the readiness-panel status and the profile status
+        # badge on the page.
+        prof = await c.put(
+            f"/api/fedramp/20x/systems/{sid}/profile",
+            json={"readiness_status": "continuous_monitoring"},
+        )
+        assert prof.status_code == 200
+        # Stored value is the raw enum, not the display label.
+        assert prof.json()["readiness_status"] == "continuous_monitoring"
+
+        dep = await c.post(
+            f"/api/fedramp/20x/systems/{sid}/dependencies",
+            json={"name": "CR26 Dep", "fedramp_status": "authorized"},
+        )
+        assert dep.status_code == 201
+        assert dep.json()["fedramp_status"] == "authorized"  # stored value unchanged
+
+        page = await c.get(f"/fedramp20x?system_id={sid}")
+        assert page.status_code == 200
+        assert "Ongoing Certification" in page.text  # readiness + profile status badges
+        assert "Certified" in page.text  # dependency status badge
+        # The raw stored value is still surfaced (as a tooltip) for continuity.
+        assert 'title="Stored value: continuous_monitoring"' in page.text
+        assert 'title="Stored value: authorized"' in page.text
+
+        # Independent confirmation via the API/model layer that the readiness
+        # status itself is still the unchanged enum value, not the label.
+        readiness_json = (await c.get(f"/api/fedramp/20x/systems/{sid}/readiness")).json()
+        assert readiness_json["status"] == "continuous_monitoring"
 
 
 @pytest.mark.asyncio

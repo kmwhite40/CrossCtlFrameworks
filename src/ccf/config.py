@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     ai_store_prompts: bool = Field(default=True)
     ai_allow_uncited_drafts: bool = Field(default=False)
 
+    # Organization-scoped AI provider credentials (Slice 3a). Credentials are stored
+    # envelope-encrypted; the data-encryption key is wrapped by a pluggable key
+    # provider. "local" wraps with ai_credential_master_key (set a strong random
+    # value in any shared deployment); aws_kms/azure_kv/gcp_sm/vault are future
+    # drop-ins. With no master key configured, credential storage is disabled
+    # (fail-closed) rather than storing keys unwrapped.
+    ai_credential_key_provider: str = Field(default="local")  # local|aws_kms|azure_kv|gcp_sm|vault
+    ai_credential_master_key: str | None = Field(default=None)
+
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
     # read-only reader stay open; turn on for shared/production deployments.
     auth_enabled: bool = Field(default=False)
@@ -127,10 +136,46 @@ class Settings(BaseSettings):
     # pluggable storage backend. Local filesystem by default (no external deps);
     # 's3' targets an S3-compatible, optionally object-locked (WORM) bucket via
     # boto3 when installed, degrading to local storage otherwise.
-    evidence_backend: str = Field(default="local")  # local|s3
+    #
+    # IMPORTANT: true WORM/immutability is only storage-enforced with
+    # evidence_backend="s3" *and* evidence_object_lock_enabled=True on a bucket
+    # that has S3 Object Lock enabled. With evidence_backend="local", the
+    # filesystem has no immutability guarantee — approval-time locking
+    # (EvidenceObject.immutable_lock) is application-level only (it blocks new
+    # versions through the API, but does not protect bytes on disk from direct
+    # modification), and a WORM request against it is logged as
+    # "evidence.worm_not_storage_enforced" rather than silently claimed.
+    evidence_backend: str = Field(
+        default="local",
+        description=(
+            "Evidence content-storage backend: local|s3. True, storage-enforced "
+            "WORM requires 's3' with evidence_object_lock_enabled and a bucket "
+            "with S3 Object Lock enabled — the local backend cannot enforce "
+            "immutability at the storage layer."
+        ),
+    )
     evidence_local_dir: Path = Field(default=Path("./data/evidence"))
     evidence_s3_bucket: str | None = Field(default=None)
-    evidence_object_lock_enabled: bool = Field(default=False)
+    evidence_object_lock_enabled: bool = Field(
+        default=False,
+        description=(
+            "Request WORM/object-lock on evidence writes. Only storage-enforced "
+            "when evidence_backend='s3' (S3 Object Lock, COMPLIANCE mode, with an "
+            "ObjectLockRetainUntilDate derived from the applicable retention "
+            "policy/default). On evidence_backend='local' this cannot be "
+            "storage-enforced: the write proceeds but logs "
+            "'evidence.worm_not_storage_enforced' instead of a false immutability "
+            "claim."
+        ),
+    )
+    evidence_object_lock_retention_days: int = Field(
+        default=365,
+        description=(
+            "Default retention window (days) used to derive the S3 "
+            "ObjectLockRetainUntilDate when evidence_object_lock_enabled is set "
+            "and no per-organization/framework EvidenceRetentionPolicy applies."
+        ),
+    )
 
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
@@ -144,3 +189,35 @@ class Settings(BaseSettings):
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()
+
+
+_DEV_ENVS = frozenset({"dev", "local", "test"})
+_DEFAULT_SESSION_SECRET = "dev-insecure-change-me"
+
+
+def enforce_secure_config(settings: Settings) -> list[str]:
+    """Fail closed on insecure configuration outside a dev environment (IA-01/IA-11).
+
+    Raises ``RuntimeError`` — refusing startup — when ``env`` is not dev/local/test and
+    a hard-unsafe setting is active (auth disabled, or the default session secret,
+    which together let any request act as an unscoped global admin). Returns a list of
+    non-fatal warnings (e.g. wildcard CORS) for the caller to log. In dev environments
+    it is a no-op so local/reader use stays frictionless.
+    """
+    env = (settings.env or "").lower()
+    if env in _DEV_ENVS:
+        return []
+    problems: list[str] = []
+    warnings: list[str] = []
+    if not settings.auth_enabled:
+        problems.append("auth is disabled (set CCF_AUTH_ENABLED=true)")
+    if settings.auth_session_secret == _DEFAULT_SESSION_SECRET:
+        problems.append("session secret is the insecure default (set CCF_AUTH_SESSION_SECRET)")
+    if settings.api_cors_origins == ["*"]:
+        warnings.append("CORS is wildcard '*' — restrict CCF_API_CORS_ORIGINS in production")
+    if problems:
+        raise RuntimeError(
+            f"Refusing to start: insecure configuration for env={env!r}: "
+            + "; ".join(problems)
+        )
+    return warnings

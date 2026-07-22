@@ -57,6 +57,26 @@ def new_api_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def hash_token(token: str) -> str:
+    """One-way SHA-256 hash of a bearer/grant token, for storage and lookup.
+
+    Unlike ``hash_password`` this is unsalted: the token itself is already a
+    high-entropy random secret (256 bits from :func:`new_api_token` /
+    ``secrets.token_urlsafe``), so a salt buys nothing against precomputation,
+    and a deterministic digest lets callers look the token up by
+    ``WHERE token_hash = hash_token(presented)`` instead of scanning every row.
+    The DB never holds a value the token can be recovered from.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def verify_token(token: str, stored_hash: str | None) -> bool:
+    """Constant-time check that ``token`` hashes to ``stored_hash``."""
+    if not token or not stored_hash:
+        return False
+    return hmac.compare_digest(hash_token(token), stored_hash)
+
+
 def sign_session(user_id: int, secret: str, *, ttl_hours: int, now: float | None = None) -> str:
     exp = int(now if now is not None else time.time()) + ttl_hours * 3600
     raw = json.dumps({"uid": user_id, "exp": exp}, separators=(",", ":")).encode()

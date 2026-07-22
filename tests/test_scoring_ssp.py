@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, ScoringStatus, System
+from ccf.models import POAM, Control, ControlImplementation, Organization, ScoringStatus, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -96,20 +96,92 @@ async def test_live_score_recompute() -> None:
 
 
 @pytest.mark.asyncio
-async def test_delete_system_cascades_and_404s() -> None:
+async def test_delete_system_soft_deletes_and_preserves_dependent_data() -> None:
+    """DATA-04: deleting a system must not CASCADE-wipe its authorization
+    record. It should soft-delete (hide from inventory, refuse a second
+    delete) while every dependent row — scoring statuses, POA&Ms — survives
+    and remains directly queryable."""
     async with _client() as c:
         await c.post("/api/scoring/seed")
         sid = await _fresh_system("DeleteMeSys")
-        # leave a dependent scoring status to exercise the cascade
+        # leave dependent records to prove they are NOT cascade-wiped
         await c.put(
             f"/api/scoring/systems/{sid}/controls/AC.L2-3.1.1", json={"state": "implemented"}
         )
         assert (await c.get(f"/api/scoring/systems/{sid}/score")).status_code == 200
+        poam = await c.post(
+            "/api/poams",
+            json={
+                "system_id": sid,
+                "title": "Soft-delete survives",
+                "severity": "high",
+                "status": "open",
+            },
+        )
+        assert poam.status_code == 201
+        poam_id = poam.json()["id"]
 
         assert (await c.delete(f"/api/systems/{sid}")).status_code == 204
-        # the system (and its scoring) is gone; a second delete 404s
-        assert (await c.get(f"/api/scoring/systems/{sid}/score")).status_code == 404
+        # hidden from inventory ...
+        listed = (await c.get("/api/systems")).json()
+        assert all(s["id"] != sid for s in listed)
+        # ... and a second delete 404s (soft-deleted systems are out of scope)
         assert (await c.delete(f"/api/systems/{sid}")).status_code == 404
+
+    # ... but the underlying rows are preserved — query the tables directly.
+    async with session_scope() as s:
+        sys_row = (await s.execute(select(System).where(System.id == sid))).scalar_one()
+        assert sys_row.deleted_at is not None
+
+        statuses = (
+            (await s.execute(select(ScoringStatus).where(ScoringStatus.system_id == sid)))
+            .scalars()
+            .all()
+        )
+        assert statuses, "scoring statuses must survive a system soft-delete"
+
+        poam_row = (await s.execute(select(POAM).where(POAM.id == poam_id))).scalar_one_or_none()
+        assert poam_row is not None, "POA&M must survive a system soft-delete"
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_refused_when_only_control_implementation_exists() -> None:
+    """FINDING 2 regression: the hard-delete dependent-record guard
+    (``_dependent_authorization_record_count`` in ``ccf.api.routes.systems``)
+    must count ``ControlImplementation`` (and ``ScoringStatus``) rows, not just
+    POA&Ms/assessments/risks/evidence. ``System.implementations`` cascades
+    (``ondelete=CASCADE`` in models.py), so a system with only an SSP control
+    implementation statement — no POA&M/assessment/risk/evidence — must still
+    be refused a hard delete, or ``?hard=true`` silently wipes it.
+    """
+    async with session_scope() as s:
+        org = Organization(name="HardDeleteGuardOrg")
+        s.add(org)
+        await s.flush()
+        sysm = System(organization_id=org.id, name="HardDeleteGuardSys")
+        s.add(sysm)
+        await s.flush()
+        ctrl = Control(identifier="HD.L2-1.1.1", control_name="Hard delete guard control")
+        s.add(ctrl)
+        await s.flush()
+        impl = ControlImplementation(system_id=sysm.id, control_id=ctrl.id, status="implemented")
+        s.add(impl)
+        await s.flush()
+        sid = sysm.id
+
+    async with _client() as c:
+        r = await c.delete(f"/api/systems/{sid}", params={"hard": "true"})
+        assert r.status_code == 409, r.text
+
+    async with session_scope() as s:
+        impl_row = (
+            await s.execute(
+                select(ControlImplementation).where(ControlImplementation.system_id == sid)
+            )
+        ).scalar_one_or_none()
+        assert impl_row is not None, "control implementation must survive the refused hard delete"
+        sys_row = (await s.execute(select(System).where(System.id == sid))).scalar_one_or_none()
+        assert sys_row is not None, "system row must survive the refused hard delete"
 
 
 @pytest.mark.asyncio

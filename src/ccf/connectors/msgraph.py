@@ -4,6 +4,11 @@ Reads tenant configuration via Microsoft Graph to inform organization-defined
 parameters. Uses client-credentials OAuth against the Government login/Graph
 endpoints by default (override via ``CCF_GRAPH_*`` settings for commercial).
 
+The tenant/client id + client secret are the calling organization's OWN app
+registration — passed in as ``credential`` (see :mod:`ccf.connectors.credentials`)
+and resolved per-org, never read from global settings (IA-05). Only the Graph
+cloud endpoint (Gov vs. commercial) is deployment-wide configuration.
+
 The OAuth + fetch plumbing is real and works once an app registration with the
 appropriate application permissions (e.g. ``Policy.Read.All``) is configured.
 The value→ODP mapping is deliberately conservative: we only emit a captured
@@ -40,18 +45,19 @@ class MsGraphConnector(ConfigConnector):
     }
 
     def is_configured(self) -> bool:
-        s = get_settings()
-        return bool(s.graph_tenant_id and s.graph_client_id and s.graph_client_secret)
+        c = self.credential
+        return bool(c and c.get("tenant_id") and c.get("client_id") and c.get("client_secret"))
 
     async def _token(self, client: httpx.AsyncClient) -> str | None:
         s = get_settings()
-        url = f"{s.graph_login_url}/{s.graph_tenant_id}/oauth2/v2.0/token"
+        c = self.credential or {}
+        url = f"{s.graph_login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
         resp = await client.post(
             url,
             data={
                 "grant_type": "client_credentials",
-                "client_id": s.graph_client_id,
-                "client_secret": s.graph_client_secret,
+                "client_id": c.get("client_id"),
+                "client_secret": c.get("client_secret"),
                 "scope": f"{s.graph_base_url}/.default",
             },
         )
@@ -60,16 +66,19 @@ class MsGraphConnector(ConfigConnector):
         return token if isinstance(token, str) else None
 
     async def verify(self) -> dict[str, Any]:
-        """Confirm we can obtain a Graph token for the configured Gov tenant."""
+        """Confirm we can obtain a Graph token for this org's Gov tenant."""
         s = get_settings()
         if not self.is_configured():
-            return {"connected": False, "reason": "graph credentials not configured"}
+            return {
+                "connected": False,
+                "reason": "graph credentials not configured for this organization",
+            }
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 token = await self._token(client)
             return {
                 "connected": bool(token),
-                "tenant": s.graph_tenant_id,
+                "tenant": (self.credential or {}).get("tenant_id"),
                 "graph_endpoint": s.graph_base_url,
             }
         except Exception as e:

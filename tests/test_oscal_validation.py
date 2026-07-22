@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
 from ccf.config import get_settings
+from ccf.db import session_scope
+from ccf.models import Organization, System
 from ccf.oscal import detect_kind, official_schema_available, validate_document
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -141,3 +144,161 @@ async def test_validate_route() -> None:
             "/api/oscal/validate?kind=poam", json={"plan-of-action-and-milestones": {}}
         )
         assert bad.json()["ok"] is False
+
+
+# --- SSP export sourced from project.metadata_json, matching the docx SSP ----
+
+
+def _client() -> AsyncClient:
+    return AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t")
+
+
+_METADATA = {
+    "system_type": "Cloud information system (CUI)",
+    "operational_status": "Under Development",
+    "fips199": {
+        "confidentiality": "moderate",
+        "integrity": "moderate",
+        "availability": "low",
+        "overall": "moderate",
+    },
+    "authorization_boundary": (
+        "The authorization boundary is the AWS GovCloud tenant and its managed "
+        "endpoints, identities, and security tooling."
+    ),
+    "roles": {
+        "system_owner": {"name": "Jane Owner", "email": "jane@example.com"},
+        "isso": {"name": "Ian Security"},
+        "authorizing_official": {"name": "Amy AO"},
+    },
+}
+
+
+@pytest.mark.asyncio
+async def test_ssp_export_reflects_project_metadata() -> None:
+    """The OSCAL SSP must report the same categorization, boundary, and roles
+    as the docx SSP — both read project.metadata_json, not a hardcoded value."""
+    async with _client() as c:
+        await c.post("/api/scoring/seed")
+        pid = (
+            await c.post(
+                "/api/ssp/projects",
+                json={
+                    "customer_name": "MetaCo",
+                    "system_name": "MetaSys",
+                    "platform": "aws_govcloud",
+                },
+            )
+        ).json()["id"]
+        meta_resp = await c.put(
+            f"/api/ssp/projects/{pid}/metadata",
+            json={"metadata_json": _METADATA, "autofill": False},
+        )
+        assert meta_resp.status_code == 200, meta_resp.text
+
+        doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
+        ssp = doc["system-security-plan"]
+        sysc = ssp["system-characteristics"]
+
+        # Categorization comes from fips199.overall, not a hardcoded "cui".
+        assert sysc["security-sensitivity-level"] == "moderate"
+        # Status comes from operational_status, not a hardcoded "operational".
+        assert sysc["status"]["state"] == "under-development"
+        # Authorization boundary is present and matches the docx source text.
+        assert (
+            sysc["authorization-boundary"]["description"]
+            == _METADATA["authorization_boundary"]
+        )
+        info_type = sysc["system-information"]["information-types"][0]
+        assert info_type["confidentiality-impact"]["base"] == "moderate"
+        assert info_type["availability-impact"]["base"] == "low"
+        # Every impact "base" present must be a valid OSCAL token (no
+        # whitespace) — a human-readable placeholder sentence is never valid.
+        for key in ("confidentiality-impact", "integrity-impact", "availability-impact"):
+            assert re.fullmatch(r"\S+", info_type[key]["base"])
+
+        # Roles come from metadata_json["roles"] — same keys the docx "1.2 Roles
+        # and Responsibilities" table reads.
+        names = {p["name"] for p in ssp["metadata"]["parties"]}
+        assert {"Jane Owner", "Ian Security", "Amy AO"} <= names
+        role_ids = {rp["role-id"] for rp in ssp["metadata"]["responsible-parties"]}
+        assert {"system-owner", "isso", "authorizing-official"} <= role_ids
+
+        # A minimal but present system-implementation makes this structurally
+        # an SSP: at least the one system component and the roles' users.
+        impl = ssp["system-implementation"]
+        assert impl["components"]
+        assert impl["components"][0]["title"] == "MetaSys"
+        assert len(impl["users"]) == 3
+
+        report = validate_document(doc)
+        assert report.ok, report.errors
+
+
+@pytest.mark.asyncio
+async def test_ssp_export_placeholders_when_metadata_absent() -> None:
+    """Absent metadata must surface a clearly-marked placeholder, never a false
+    constant like "cui"/"operational"."""
+    async with _client() as c:
+        await c.post("/api/scoring/seed")
+        pid = (
+            await c.post("/api/ssp/projects", json={"customer_name": "BareCo"})
+        ).json()["id"]
+        doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
+        sysc = doc["system-security-plan"]["system-characteristics"]
+
+        assert sysc["security-sensitivity-level"] != "cui"
+        assert "UNSPECIFIED" in sysc["security-sensitivity-level"]
+        assert sysc["status"]["state"] == "other"
+        assert "UNSPECIFIED" in sysc["status"]["remarks"]
+        assert "UNSPECIFIED" in sysc["authorization-boundary"]["description"]
+
+        # An unset categorization must never fabricate an impact "base" token —
+        # the confidentiality/integrity/availability-impact objects are omitted
+        # entirely (never a placeholder sentence with spaces/em-dash, which is
+        # not a valid OSCAL token) and the gap is noted in remarks instead.
+        info_type = sysc["system-information"]["information-types"][0]
+        for key in ("confidentiality-impact", "integrity-impact", "availability-impact"):
+            assert key not in info_type
+        assert "UNSPECIFIED" in info_type.get("remarks", "")
+
+        # No roles filled in metadata -> no responsible-parties/parties claimed.
+        meta = doc["system-security-plan"]["metadata"]
+        assert not meta.get("parties")
+        assert not meta.get("responsible-parties")
+        assert len(doc["system-security-plan"]["system-implementation"]["users"]) == 0
+
+        report = validate_document(doc)
+        assert report.ok, report.errors
+
+
+@pytest.mark.asyncio
+async def test_ssp_and_component_definition_cite_same_baseline() -> None:
+    """The SSP and component-definition exports must agree on which catalog the
+    system is actually built against (CMMC L2 / NIST SP 800-171 Rev. 2 today) —
+    not have the SSP claim a different baseline than the component definition."""
+    async with session_scope() as s:
+        org = Organization(name="BaselineOrg")
+        s.add(org)
+        await s.flush()
+        sysm = System(organization_id=org.id, name="BaselineSys", baseline="moderate")
+        s.add(sysm)
+        await s.flush()
+        sys_id = sysm.id
+
+    async with _client() as c:
+        await c.post("/api/scoring/seed")
+        pid = (
+            await c.post("/api/ssp/projects", json={"customer_name": "BaselineCo"})
+        ).json()["id"]
+
+        ssp_doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
+        comp_doc = (await c.get(f"/api/oscal/component-definition/{sys_id}")).json()
+
+    ssp_href = ssp_doc["system-security-plan"]["import-profile"]["href"]
+    comp_source = (
+        comp_doc["component-definition"]["components"][0]["control-implementations"][0]["source"]
+    )
+    assert "800-171" in ssp_href
+    assert comp_source == ssp_href
+    assert "800-53" not in comp_source

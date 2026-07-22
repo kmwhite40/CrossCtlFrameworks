@@ -86,9 +86,13 @@ async def _check_migrations(session: AsyncSession) -> Check:
             )
         if current == head:
             return Check("alembic_migration_status", PASS, f"At head ({head}).")
+        # Behind-head is a readiness FAILURE, not just a WARN: a container serving
+        # traffic against a stale schema can crash or corrupt data on code paths
+        # that assume the newer schema. This check is in BLOCKING_CHECKS, so a
+        # FAIL here pulls the instance out of rotation via /readyz.
         return Check(
             "alembic_migration_status",
-            WARN,
+            FAIL,
             f"DB at {current}; head is {head}.",
             "Run `alembic upgrade head`.",
         )
@@ -754,6 +758,27 @@ async def _check_external_portal_audit_completeness(session: AsyncSession) -> Ch
     return Check("external_portal_audit_completeness", PASS, "Every external grant is audited.")
 
 
+async def _check_query_templates_health(session: AsyncSession) -> Check:
+    """Run every assurance query template (default params) to catch schema drift."""
+    try:
+        from ..queries import REGISTRY, run_query  # noqa: PLC0415
+    except Exception:  # pragma: no cover - query layer optional
+        return Check("query_templates_health", PASS, "Assurance query layer not deployed.")
+    broken: list[str] = []
+    for key in REGISTRY:
+        try:
+            await run_query(session, key, {}, org_id=None)
+        except Exception as exc:
+            broken.append(f"{key}: {exc}")
+    if broken:
+        return Check(
+            "query_templates_health", FAIL,
+            f"{len(broken)} query template(s) failed: {'; '.join(broken)[:180]}",
+            "Fix the template SQL or restore the columns/tables it references.",
+        )
+    return Check("query_templates_health", PASS, f"All {len(REGISTRY)} query templates run.")
+
+
 _CHECKS = [
     _check_database,
     _check_migrations,
@@ -796,18 +821,60 @@ _CHECKS = [
     _check_external_access_scope_integrity,
     _check_external_grant_expiration,
     _check_external_portal_audit_completeness,
+    _check_query_templates_health,
 ]
 
 
-async def run_checks(session: AsyncSession) -> list[Check]:
-    """Run all reliability checks; never raises — a crashed check becomes a FAIL."""
+# --- blocking subset (gates /readyz — unsafe-to-serve conditions only) ------
+#
+# Kept small and cheap on purpose: /readyz runs on every rotation decision, so it
+# must not pay for the full ~40-check suite (e.g. query_templates_health, which
+# exercises every assurance query template). Each entry here can return FAIL for
+# a condition that means THIS container should NOT receive traffic:
+#   - database_connectivity: no DB, no service.
+#   - alembic_migration_status: schema behind head or unmigrated — unsafe to
+#     serve against a stale/partial schema.
+#   - required_tables: core tables missing (broken/partial migration).
+#   - auth_posture: auth disabled (or default secret) outside dev — go-live gate.
+#
+# external_access_scope_integrity is deliberately NOT here even though it can
+# FAIL: it detects a cross-tenant data leak, which is a GLOBAL data condition,
+# not a per-instance/per-process one. Every container reads the same database,
+# so putting it in BLOCKING_CHECKS would 503 the entire fleet simultaneously
+# on a single bad data row — and since the admin UI needed to fix that row
+# lives on the very containers pulled from rotation, the outage couldn't
+# self-heal. It stays in the full check suite (_CHECKS) below so it still
+# surfaces via /api/admin/reliability and alerts, just without gating readiness.
+BLOCKING_CHECKS = [
+    _check_database,
+    _check_migrations,
+    _check_core_tables,
+    _check_auth_posture,
+]
+
+
+async def _run(session: AsyncSession, checks: list[Any]) -> list[Check]:
     results: list[Check] = []
-    for fn in _CHECKS:
+    for fn in checks:
         try:
             results.append(await fn(session))
         except Exception as exc:
             results.append(Check(fn.__name__.lstrip("_"), FAIL, f"Check crashed: {exc}"))
     return results
+
+
+async def run_checks(session: AsyncSession) -> list[Check]:
+    """Run all reliability checks; never raises — a crashed check becomes a FAIL."""
+    return await _run(session, _CHECKS)
+
+
+async def run_blocking_checks(session: AsyncSession) -> list[Check]:
+    """Run only the checks that gate readiness (see ``BLOCKING_CHECKS``).
+
+    Never raises — a crashed check becomes a FAIL, which is the correct
+    fail-closed behavior for a readiness probe.
+    """
+    return await _run(session, BLOCKING_CHECKS)
 
 
 def summarize(checks: list[Check]) -> dict[str, Any]:

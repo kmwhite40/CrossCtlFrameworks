@@ -7,6 +7,7 @@ posture view enterprise GRC platforms lead with.
 
 from __future__ import annotations
 
+from .findings import canonical_finding_counts, system_finding_rollup
 from .posture import (
     evidence_freshness,
     org_summary,
@@ -16,9 +17,11 @@ from .posture import (
 )
 
 __all__ = [
+    "canonical_finding_counts",
     "evidence_freshness",
     "org_summary",
     "poam_aging",
     "sprs_for_system",
+    "system_finding_rollup",
     "systems_scorecard",
 ]

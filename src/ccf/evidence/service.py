@@ -9,15 +9,17 @@ which no new versions may be added.
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import get_settings
 from ..models_evidence import (
     EvidenceAccessEvent,
     EvidenceObject,
+    EvidenceRetentionPolicy,
     EvidenceReview,
     EvidenceVersion,
 )
@@ -28,6 +30,12 @@ class EvidenceError(ValueError):
     """Raised on an invalid evidence-repository operation (e.g. locked object)."""
 
 
+class EvidenceIntegrityError(EvidenceError):
+    """Raised when stored evidence bytes fail SHA-256 verification against the
+    digest recorded at upload time (IA-07: tampered or corrupted blob detected
+    on read)."""
+
+
 async def create_object(
     session: AsyncSession,
     *,
@@ -36,6 +44,7 @@ async def create_object(
     description: str | None = None,
     system_id: int | None = None,
     control_id: str | None = None,
+    implementation_id: int | None = None,
     framework: str | None = None,
     owner: str | None = None,
     source_type: str = "manual_upload",
@@ -47,6 +56,7 @@ async def create_object(
         description=description,
         system_id=system_id,
         control_id=control_id,
+        implementation_id=implementation_id,
         framework=framework,
         owner=owner,
         source_type=source_type,
@@ -58,6 +68,31 @@ async def create_object(
     return obj
 
 
+async def _resolve_retention_days(session: AsyncSession, obj: EvidenceObject) -> int:
+    """WORM retention window (days) for ``obj``: a framework-specific
+    :class:`EvidenceRetentionPolicy` beats an org-wide one, which beats the
+    configured default (``evidence_object_lock_retention_days``)."""
+    policies = (
+        (
+            await session.execute(
+                select(EvidenceRetentionPolicy).where(
+                    EvidenceRetentionPolicy.organization_id == obj.organization_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if obj.framework:
+        match = next((p for p in policies if p.applies_to_framework == obj.framework), None)
+        if match:
+            return match.retain_days
+    org_wide = next((p for p in policies if p.applies_to_framework is None), None)
+    if org_wide:
+        return org_wide.retain_days
+    return get_settings().evidence_object_lock_retention_days
+
+
 async def add_version(
     session: AsyncSession,
     obj: EvidenceObject,
@@ -67,12 +102,26 @@ async def add_version(
     media_type: str | None = None,
     uploaded_by: str | None = None,
 ) -> EvidenceVersion:
-    """Store ``data`` as the next immutable version; returns it. Fails if locked."""
+    """Store ``data`` as the next immutable version; returns it. Fails if locked.
+
+    When ``evidence_object_lock_enabled`` is set, this requests storage-level
+    WORM for the write: on ``evidence_backend=s3`` a retention-derived
+    ``ObjectLockRetainUntilDate`` is computed (per-framework
+    :class:`EvidenceRetentionPolicy`, else the org-wide policy, else the
+    configured default) so the S3 COMPLIANCE lock is valid; on the local
+    backend, which cannot enforce object-level immutability, the request
+    degrades to a logged warning rather than a false immutability claim — see
+    :meth:`ccf.evidence.storage.LocalStorage.put`.
+    """
     if obj.immutable_lock:
         raise EvidenceError("evidence object is locked (approved); create a new object instead")
     digest = hashlib.sha256(data).hexdigest()
     backend = get_backend()
-    ref = backend.put(digest, data, media_type)
+    retain_until = None
+    if get_settings().evidence_object_lock_enabled:
+        retain_days = await _resolve_retention_days(session, obj)
+        retain_until = datetime.now(UTC) + timedelta(days=retain_days)
+    ref = backend.put(digest, data, media_type, retain_until=retain_until)
     next_no = (
         await session.execute(
             select(func.coalesce(func.max(EvidenceVersion.version), 0)).where(
@@ -146,6 +195,13 @@ async def read_version(
     data = get_backend().get(version.storage_ref)
     if data is None:
         raise EvidenceError("stored content is unavailable")
+    recomputed = hashlib.sha256(data).hexdigest()
+    if recomputed != version.sha256:
+        raise EvidenceIntegrityError(
+            f"integrity check failed for evidence version {version.id}: "
+            f"stored digest {version.sha256} does not match recomputed digest "
+            f"{recomputed} (content may be tampered or corrupted)"
+        )
     return version, data
 
 
@@ -198,6 +254,7 @@ def object_summary(obj: EvidenceObject) -> dict[str, Any]:
         "status": obj.status,
         "owner": obj.owner,
         "control_id": obj.control_id,
+        "implementation_id": obj.implementation_id,
         "framework": obj.framework,
         "source_type": obj.source_type,
         "system_id": obj.system_id,

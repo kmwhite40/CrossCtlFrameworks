@@ -9,7 +9,7 @@ auto-create POA&Ms from every Other-Than-Satisfied finding.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -27,7 +27,9 @@ from ...assessment import (
     summarize_results,
 )
 from ...auth import Principal
-from ...models import POAM, Assessment, AssessmentControlResult, System
+from ...governance.approvals import entity_state, entity_states
+from ...ingest.scanners import SEVERITY_SLA_DAYS
+from ...models import POAM, Assessment, AssessmentControlResult, Control, PoamMilestone, System
 from ..auth_deps import get_principal
 from ..deps import get_session
 from .systems import require_system_in_scope
@@ -66,6 +68,9 @@ class AssessmentOut(BaseModel):
     assessor: str | None
     started_on: date | None
     finished_on: date | None
+    # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
+    # (never submitted) | submitted (pending review) | approved | rejected.
+    approval_state: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -108,7 +113,13 @@ async def list_assessments(
             System.organization_id == principal.org_id
         )
     rows = (await session.execute(stmt)).scalars().all()
-    return [AssessmentOut.model_validate(r) for r in rows]
+    states = await entity_states(session, "assessment", [r.id for r in rows])
+    out = []
+    for r in rows:
+        item = AssessmentOut.model_validate(r)
+        item.approval_state = states.get(str(r.id))
+        out.append(item)
+    return out
 
 
 @router.post("", response_model=AssessmentOut, status_code=201)
@@ -131,7 +142,9 @@ async def create_assessment(
     await session.flush()
     await seed_assessment_results(session, a)
     await session.refresh(a)
-    return AssessmentOut.model_validate(a)
+    item = AssessmentOut.model_validate(a)
+    item.approval_state = await entity_state(session, "assessment", a.id)
+    return item
 
 
 @router.get("/{assessment_id}")
@@ -142,8 +155,10 @@ async def get_assessment(
 ) -> dict[str, Any]:
     a = await _require_assessment(session, assessment_id, principal)
     results = await _results(session, assessment_id)
+    item = AssessmentOut.model_validate(a)
+    item.approval_state = await entity_state(session, "assessment", a.id)
     return {
-        "assessment": AssessmentOut.model_validate(a).model_dump(),
+        "assessment": item.model_dump(),
         "summary": summarize_results(results),
         "results": [result_to_dict(r) for r in results],
     }
@@ -193,36 +208,82 @@ async def poams_from_findings(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, int]:
-    """Create an open POA&M for each Other-Than-Satisfied finding (idempotent)."""
+    """Create a provenanced POA&M (with a seeded milestone) for each
+    Other-Than-Satisfied finding.
+
+    Idempotent on a stable back-reference to the originating assessment
+    control result (``source_ref``), not on the POA&M title — re-running
+    after a title edit, or after the same finding recurs, still creates
+    exactly one POA&M per finding.
+    """
     a = await _require_assessment(session, assessment_id, principal)
     results = await _results(session, assessment_id)
-    existing_titles = {
-        t
-        for (t,) in (
-            await session.execute(select(POAM.title).where(POAM.system_id == a.system_id))
+    findings = [r for r in results if r.finding == "other_than_satisfied"]
+
+    existing_refs = {
+        ref
+        for (ref,) in (
+            await session.execute(
+                select(POAM.source_ref).where(
+                    POAM.system_id == a.system_id, POAM.source_ref.is_not(None)
+                )
+            )
         ).all()
     }
+
+    # Best-effort link to the org's control catalog (a separate framework from
+    # the CMMC scoring matrix these findings are recorded against); left null
+    # when there's no catalog control with a matching identifier.
+    nist_ids = {r.nist_id for r in findings if r.nist_id}
+    control_by_identifier: dict[str, int] = {}
+    if nist_ids:
+        control_by_identifier = {
+            identifier: control_id
+            for identifier, control_id in (
+                await session.execute(
+                    select(Control.identifier, Control.id).where(
+                        Control.identifier.in_(nist_ids)
+                    )
+                )
+            ).all()
+        }
+
     today = datetime.now(UTC).date()
     created = 0
-    for r in results:
-        if r.finding != "other_than_satisfied":
+    for r in findings:
+        source_ref = f"assessment:{r.id}"
+        if source_ref in existing_refs:
             continue
-        title = f"{r.control_id} — {r.title or 'Other than satisfied'}"
-        if title in existing_titles:
-            continue
-        session.add(
-            POAM(
-                system_id=a.system_id,
-                title=title,
-                weakness=(
-                    f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
-                    f"{r.assessor_note or ''}"
-                ).strip(),
-                severity="moderate",
-                status="open",
-                identified_on=today,
+        due = today + timedelta(days=SEVERITY_SLA_DAYS.get("moderate", 90))
+        poam = POAM(
+            system_id=a.system_id,
+            control_id=control_by_identifier.get(r.nist_id) if r.nist_id else None,
+            title=f"{r.control_id} — {r.title or 'Other than satisfied'}",
+            weakness=(
+                f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
+                f"{r.assessor_note or ''}"
+            ).strip(),
+            severity="moderate",
+            status="open",
+            identified_on=today,
+            due_on=due,
+            original_due_on=due,
+            source="assessment",
+            source_ref=source_ref,
+        )
+        poam.milestones.append(
+            PoamMilestone(
+                description=(
+                    f"Remediate {r.control_id}"
+                    f"{f' ({r.nist_id})' if r.nist_id else ''}: "
+                    f"{r.title or 'other-than-satisfied finding'}"
+                ),
+                due_on=due,
+                status="pending",
+                sort_order=0,
             )
         )
+        session.add(poam)
         created += 1
     await session.commit()
     return {"created": created}

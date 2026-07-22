@@ -41,8 +41,13 @@ async def _impl_coverage(session: AsyncSession, system_id: int) -> dict[str, int
     return {"total": total, "met": met, "by_status": counts}
 
 
-def _org_system_subq(org_id: int | None) -> Any:
-    """Subquery of System ids in an org (or all systems when org_id is None)."""
+def org_system_subq(org_id: int | None) -> Any:
+    """Subquery of System ids in an org (or all systems when org_id is None).
+
+    Public (not module-private) because ``ccf.analytics.overview`` reuses it to
+    scope its own ``_block`` functions to the same org — a scoped dashboard must
+    be provably org-filtered in the query itself, not only via RLS.
+    """
     stmt = select(System.id)
     if org_id is not None:
         stmt = stmt.where(System.organization_id == org_id)
@@ -68,13 +73,16 @@ async def systems_scorecard(
                 .where(POAM.status.in_(("open", "in_progress")))
             )
         ).scalar_one()
+        # Overdue falls back to scheduled_completion / original_due_on when due_on
+        # is null, so a POA&M tracked only via those fields isn't silently excluded.
+        effective_due = func.coalesce(POAM.due_on, POAM.scheduled_completion, POAM.original_due_on)
         overdue_poams = (
             await session.execute(
                 select(func.count(POAM.id))
                 .where(POAM.system_id == sys.id)
                 .where(POAM.status.in_(("open", "in_progress")))
-                .where(POAM.due_on.is_not(None))
-                .where(POAM.due_on < today)
+                .where(effective_due.is_not(None))
+                .where(effective_due < today)
             )
         ).scalar_one()
         evidence_total = (
@@ -119,13 +127,30 @@ async def systems_scorecard(
 async def poam_aging(
     session: AsyncSession, *, today: date, org_id: int | None = None
 ) -> dict[str, Any]:
-    """Aging buckets for open POA&Ms by days since identification."""
+    """Aging buckets for open POA&Ms by days since identification.
+
+    Also surfaces two honesty signals that don't fit the open/overdue split:
+
+    - ``accepted``: POA&Ms with status ``risk_accepted`` — residual risk leadership
+      has formally accepted rather than remediated. These are excluded from
+      ``open_total`` (they aren't "open" work) but must not be invisible, so they
+      get their own bucket.
+    - ``data_quality.completed_missing_closure``: POA&Ms marked ``completed`` with
+      no ``closed_on`` date — a record that claims to be done but can't prove when,
+      which is a data-quality problem, not a clean close.
+
+    Overdue falls back to ``scheduled_completion`` then ``original_due_on`` when
+    ``due_on`` is null, and any open POA&M with none of the three lands in
+    ``no_due_date`` rather than defaulting to on-track. Invariant:
+    ``on_track + overdue + no_due_date == open_total``.
+    """
     stmt = select(POAM).where(POAM.status.in_(("open", "in_progress")))
     if org_id is not None:
-        stmt = stmt.where(POAM.system_id.in_(_org_system_subq(org_id)))
+        stmt = stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
     rows = (await session.execute(stmt)).scalars().all()
     buckets = {"0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, "unknown": 0}
     overdue = 0
+    no_due_date = 0
     by_severity: dict[str, int] = {}
     for p in rows:
         if p.identified_on is None:
@@ -140,14 +165,37 @@ async def poam_aging(
                 buckets["61-90"] += 1
             else:
                 buckets["90+"] += 1
-        if p.due_on is not None and p.due_on < today:
+        effective_due = p.due_on or p.scheduled_completion or p.original_due_on
+        if effective_due is None:
+            no_due_date += 1
+        elif effective_due < today:
             overdue += 1
         by_severity[p.severity] = by_severity.get(p.severity, 0) + 1
+
+    open_total = len(rows)
+    on_track = open_total - overdue - no_due_date
+
+    accepted_stmt = select(func.count(POAM.id)).where(POAM.status == "risk_accepted")
+    dq_stmt = select(func.count(POAM.id)).where(
+        POAM.status == "completed", POAM.closed_on.is_(None)
+    )
+    if org_id is not None:
+        accepted_stmt = accepted_stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
+        dq_stmt = dq_stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
+    accepted = (await session.execute(accepted_stmt)).scalar_one()
+    completed_missing_closure = (await session.execute(dq_stmt)).scalar_one()
+
     return {
-        "open_total": len(rows),
+        "open_total": open_total,
         "overdue": overdue,
+        "no_due_date": no_due_date,
+        "on_track": on_track,
         "buckets": buckets,
         "by_severity": by_severity,
+        # Residual risk: formally accepted, not remediated — visible, not silently
+        # dropped from every metric.
+        "accepted": accepted,
+        "data_quality": {"completed_missing_closure": completed_missing_closure},
     }
 
 
@@ -160,7 +208,7 @@ async def evidence_freshness(
         stmt = (
             stmt.join(
                 ControlImplementation, ControlImplementation.id == Evidence.implementation_id
-            ).where(ControlImplementation.system_id.in_(_org_system_subq(org_id)))
+            ).where(ControlImplementation.system_id.in_(org_system_subq(org_id)))
         )
     rows = (await session.execute(stmt)).all()
     horizon = today + timedelta(days=EXPIRING_WINDOW_DAYS)
@@ -195,10 +243,28 @@ async def org_summary(
     scored = [c for c in cards if c["controls_assessed"] > 0]
     avg_sprs = round(sum(c["sprs_score"] for c in scored) / len(scored), 1) if scored else None
 
+    # CISO-09: the average masks a failing system — surface the weakest
+    # assessed system explicitly rather than making leadership infer it from
+    # the mean. ``min()`` over ``scored`` (not ``cards``) so an unassessed
+    # system (no controls scored yet) can't falsely look like the worst
+    # performer at score 0.
+    worst = min(scored, key=lambda c: c["sprs_score"]) if scored else None
+    min_sprs = worst["sprs_score"] if worst else None
+    worst_system = (
+        {
+            "system_id": worst["system_id"],
+            "name": worst["name"],
+            "sprs_score": worst["sprs_score"],
+            "sprs_percentage": worst["sprs_percentage"],
+        }
+        if worst
+        else None
+    )
+
     risk_stmt = select(Risk.status, func.count()).group_by(Risk.status)
     ato_stmt = select(System.ato_status, func.count()).group_by(System.ato_status)
     if org_id is not None:
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(_org_system_subq(org_id)))
+        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_system_subq(org_id)))
         ato_stmt = ato_stmt.where(System.organization_id == org_id)
     risk_rows = (await session.execute(risk_stmt)).all()
     ato_rows = (await session.execute(ato_stmt)).all()
@@ -208,9 +274,16 @@ async def org_summary(
         "systems_total": len(cards),
         "systems_scored": len(scored),
         "avg_sprs_score": avg_sprs,
+        "min_sprs_score": min_sprs,
+        "worst_system": worst_system,
         "sprs_max": 110,
         "open_poams": poams["open_total"],
         "overdue_poams": poams["overdue"],
+        # Residual risk (risk_accepted) and the "completed but no closed_on" data-quality
+        # signal, surfaced at the top level so consumers don't have to reach into
+        # poam_aging to see them. Additive — existing keys above are unchanged.
+        "accepted_poams": poams["accepted"],
+        "poam_data_quality": poams["data_quality"],
         "evidence": evidence,
         "poam_aging": poams,
         "risks_by_status": {status: n for status, n in risk_rows},

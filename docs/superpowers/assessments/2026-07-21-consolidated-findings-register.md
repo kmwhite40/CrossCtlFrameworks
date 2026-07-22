@@ -1,0 +1,489 @@
+# Concord (ccf) — Consolidated Findings Register
+
+**Date:** 2026-07-21
+**Method:** Six parallel read-only review workstreams, each driven by a role-lens skill
+(`information-assurance-engineer`, `information-systems-security-manager`,
+`chief-information-security-officer`, `fedramp-authorization-expert`) plus a
+data-integrity and a UX lens. All findings emitted in one shared record format;
+consolidated and triaged here. This is the Phase-25 register for the assessment slice.
+**Scope:** Concord platform at HEAD of `feat/catalog-currency-ssp-odp-connectors`.
+**Total findings:** 73 (IA 11 · ISSM 13 · FedRAMP 13 · CISO 11 · UX 13 · DATA 12).
+
+## Consolidated production-readiness posture
+
+**NO-GO for production serving federal data, and REJECT for FedRAMP-package use, as
+currently configured.** Two independent hard blockers:
+
+- **Insecure-by-default (IA-01 / CISO-03 / IA-11):** the shipped default
+  (`auth_enabled=False`, wildcard CORS, `auth_session_secret="dev-insecure-change-me"`)
+  turns every request into an **unscoped global admin with RLS disabled**, and the one
+  safety check passes whenever `CCF_ENV` is unset (stays `"dev"`). Nothing fails closed.
+- **Wrong control catalog (FR-01):** the "FedRAMP" SSP pipeline is hardwired to the
+  **CMMC L2 / NIST SP 800-171 Rev. 2** 110-practice set while presenting itself as
+  "FedRAMP Appendix A" — a category error before any content-quality question.
+
+Conditional-go path exists once these plus the AI-provenance-visibility (CISO-02),
+audit-read exposure (IA-02), and finding→POA&M→ATO wiring (ISSM-01/02/03) items are
+resolved. The isolation *architecture* is well-built; the exposure is open defaults,
+coverage/proof lagging design, and lifecycle stages wired as islands.
+
+## Cross-cutting themes (where multiple lenses converged)
+
+1. **Secure defaults / fail-open** — IA-01, IA-11, CISO-03, CISO-04. Insecure defaults
+   pass the gate unless an env var is remembered; `/readyz` ignores the reliability suite.
+2. **The finding→POA&M→risk→ATO spine is broken at every automated junction** —
+   ISSM-01 (ATO status set-never), ISSM-02/03/04/13 (findings don't reach POA&Ms),
+   ISSM-05/06 (risks have no provenance/gate), CISO-01 (accepted risk drops from metrics).
+3. **AI-generated content has no user-visible provenance** — CISO-02, UX-01, FR-11,
+   IA-10. AI text enters authoritative fields/SSP with no badge and no review UI.
+4. **SSP content is CMMC-shaped and draft-grade, not FedRAMP** — FR-01..FR-13:
+   wrong catalog, evidence never gates completeness, statements restate the control,
+   origination copied from the M365 placemat onto AWS/Azure, no FIPS refs, OSCAL diverges.
+5. **Tenant isolation: strong design, thin proof + edge holes** — IA-03 (2/68 tables
+   tested), IA-04/DATA-01 (poam_milestones, organizations unpolicied), DATA-03/06
+   (framework_controls, audit_log org-less), IA-02 (audit read ungated/cross-tenant).
+6. **Referential integrity gaps in newer layers** — DATA-02/07/11 (integer "pointers"
+   with no FK in portal/packages/evidence), DATA-04 (hard-cascade deletes wipe the
+   authorization record), DATA-08/10 (missing unique constraints allow duplicates).
+7. **UX silent-failure + risk-signal blindness** — UX-04/13 (creates bounce with no
+   message), UX-06/07 (ATO/critical not color-coded), UX-03/08 (POA&M/evidence
+   dead-end in read-only/API-only surfaces).
+
+---
+
+## Findings by domain
+
+Format: **ID** · Sev/Conf · component — summary → recommendation. Disposition:
+`FIX-NOW` (this slice), `DEFER→N` (target roadmap slice: 3=AI foundation,
+4=SSP hardening, 5=cloud breadth, 6=prod-readiness), `DEFER→sec` (dedicated security slice).
+
+### IA — technical security (information-assurance-engineer)
+
+- **IA-01** · Critical/Confirmed · config.py:94, auth_deps.py:83 — default `auth_enabled=False` ⇒ every request an unscoped global admin, RLS off; nothing fails closed. → fail closed when `env!="dev"`. **DEFER→6** (blocker).
+- **IA-02** · High/Confirmed · routes/audit.py:34-86 — audit-read API has no `require_role` and queries `audit_log` globally (no org_id, no RLS); any tenant reads all tenants' trail. → role-gate + org-scope. **FIX-NOW (role-gate)** + DEFER→sec (org column/RLS).
+- **IA-03** · High/Confirmed · tests/test_rls.py — RLS proven for only 2 of ~68 policy-bound tables. → parametrized per-table isolation test. **DEFER→sec**.
+- **IA-04** · Medium/Confirmed · poam_milestones, organizations — tenant tables with no RLS policy. → add policies. **DEFER→sec** (migration; see DATA-01).
+- **IA-05** · Medium/Confirmed · connectors/*, collection.py — one global credential set; captures mis-attributed to each org. → per-org connector creds. **DEFER→3** (ties to org-scoped AI/creds).
+- **IA-06** · Medium/Confirmed · scheduler.py:38 — background jobs run tenant=None (RLS bypass); snapshots written org_id=None. → per-org loop with `set_session_tenant`. **DEFER→sec**.
+- **IA-07** · Medium/Confirmed · evidence/service.py:136 — stored SHA-256 never re-checked on read. → verify digest on read. **DEFER→4**.
+- **IA-08** · Medium/HighlyLikely · evidence/storage.py:80 — WORM inert on default LocalStorage; S3 lock lacks retain-until date. → enforce object-lock backend + retain-until. **DEFER→4**.
+- **IA-09** · Medium/Confirmed · models.py:296, portal/service.py:39 — API + portal tokens stored plaintext. → store hashed, show once. **DEFER→sec**.
+- **IA-10** · Low/Confirmed · ai_actions/service.py — `ai_require_human_approval` & `ai_store_prompts` flags are inert. → honor flags. **DEFER→3**.
+- **IA-11** · Low/Confirmed · config.py:95, main.py:114 — default session secret + wildcard CORS. → refuse default secret in prod; explicit CORS allow-list. **DEFER→6** (part of blocker).
+
+### ISSM — program/workflow integrity (information-systems-security-manager)
+
+- **ISSM-01** · Critical/Confirmed · routes/systems.py — no write path for `ato_status`; Authorize stage unreachable in-app. → authorize endpoint gated on approved assessment + AO + no open crit POA&M. **DEFER→6**.
+- **ISSM-02** · High/Confirmed · routes/assessments.py:190 — finding→POA&M is manual, no source/owner/due/link; fragile title-match idempotency. → auto-open linked POA&Ms on OTS finding. **DEFER→4**.
+- **ISSM-03** · High/Confirmed · governance/conmon.py, control_tests.py — ConMon/test failures create only Tasks, never POA&Ms/risks. → open idempotent POA&M on failure. **DEFER→4**.
+- **ISSM-04** · High/Confirmed · models_grc.py:153 — audit findings have no poam/risk/system/org FK; closure is free-text. → add linkage + promote-to-POA&M + evidence closure. **DEFER→4**.
+- **ISSM-05** · Medium/Confirmed · models.py:653 — risks have no FK to originating finding. → add origin link + accept-finding→risk. **DEFER→4**.
+- **ISSM-06** · High/Confirmed · routes/risks.py:233 — risk acceptance has no approval gate/owner/expiry/SoD. → block `accepted` without AO approval + owner + expiry. **DEFER→4**.
+- **ISSM-07** · Medium/Confirmed · governance/approvals.py:131 — approval decisions only reflect onto SSP, not poam/risk/assessment. → reflect on all entity types. **DEFER→4**.
+- **ISSM-08** · Medium/HighlyLikely · approvals.py — no lifecycle transition requires an approval; SoD collapses when auth off. → make approval a precondition on authorizing transitions. **DEFER→4**.
+- **ISSM-09** · Medium/Confirmed · routes/poams.py:320 — POA&M close has no validation/evidence gate. → require milestones/evidence+approval to close. **DEFER→4**.
+- **ISSM-10** · Medium/Confirmed · assessments.py:213 — auto POA&Ms carry no milestones. → seed default milestone; require ≥1 to export. **DEFER→4**.
+- **ISSM-11** · Medium/Confirmed · api/audit.py, scheduler.py — scheduler mutations bypass the audit hash-chain. → automated jobs call `record_event`. **DEFER→sec**.
+- **ISSM-12** · Medium/Confirmed · ssp/completeness.py — SSP can be approved/exported with controls missing responsible party (completeness is advisory). → gate approve/export on completeness. **DEFER→4**.
+- **ISSM-13** · Medium/Confirmed · models.py:505 — 3 disjoint finding vocabularies; the generic AssessmentResult path has no POA&M handoff. → unify enum + add handoff. **DEFER→4** (see DATA-05).
+
+### FedRAMP — SSP/package quality (fedramp-authorization-expert)
+
+- **FR-01** · Critical/Confirmed · ssp/generator.py, oscal.py — "FedRAMP" SSP is actually CMMC/800-171r2; wrong control set. → gate FedRAMP projects onto 800-53r5 baseline+profile, or remove FedRAMP/800-53 options. **DEFER→4/5** (major).
+- **FR-02** · Critical/Confirmed · ssp/completeness.py — readiness never checks evidence; all-`[DRAFT]` SSP scores 100% ready. → gate on evidence + reject DRAFT/unfilled ODP narratives. **DEFER→4**.
+- **FR-03** · High/Confirmed · ssp/statements.py — auto statements restate the control; answer ~3/12. → inject role/frequency/evidence/policy in all styles. **DEFER→4**.
+- **FR-04** · High/Confirmed · ssp/seed.py — origination derived from M365 placemat for every platform. → per-platform origination source. **DEFER→5**.
+- **FR-05** · High/Confirmed · ssp/platforms.py — provider-performed controls claimable as system-specific; PE inherited misattributed to org. → enforce origination vs derived responsibility. **DEFER→5**.
+- **FR-06** · High/Confirmed · ssp/platforms.py — Azure Gov statements generated with no connector to evidence them. → flag manual-evidence-required until connector exists. **DEFER→5**.
+- **FR-07** · High/Confirmed · ssp/platforms.py — "GCC High" hardcoded regardless of tenant tier. → carry tier from connector/profile. **DEFER→5**.
+- **FR-08** · High/Confirmed · ssp/platforms.py — SC crypto statements name no FIPS 140-2/3 module or key custody. → add FIPS refs + key location. **DEFER→4**.
+- **FR-09** · High/Confirmed · routes/oscal.py:202 — OSCAL SSP drops boundary/roles/categorization, omits system-implementation. → source from same metadata as docx. **DEFER→4**.
+- **FR-10** · Medium/Confirmed · routes/oscal.py — SSP export=800-171r2 but component-def=800-53r5 (contradictory baselines). → one baseline per system. **DEFER→4**.
+- **FR-11** · Medium/Confirmed · ssp/statements.py:88 — inherited statements auto-accepted, assert evidence with no CRM link. → require leveraged-authorization link; mark needs_review. **DEFER→4**.
+- **FR-12** · Medium/HighlyLikely · governance/automation.py:109 — non-M365 inheritance is domain-level guessing. → per-control CRM mapping. **DEFER→5**.
+- **FR-13** · Low/Confirmed · constants.py:101 — responsible role is a generic per-domain string. → populate from roles metadata. **DEFER→4**.
+
+### CISO — aggregation + production readiness (chief-information-security-officer)
+
+- **CISO-01** · High/Confirmed · analytics/posture.py — risk-accepted/completed POA&Ms vanish from all metrics/MTTR. → add residual/accepted bucket. **DEFER→6**.
+- **CISO-02** · High/HighlyLikely · ai_actions/service.py, templates — AI content indistinguishable from human-approved; no review UI. → AI-provenance badge + review queue UI. **DEFER→3**.
+- **CISO-03** · High/Confirmed · config.py, reliability/checks.py:228 — insecure defaults pass the gate unless `CCF_ENV` set. → fail closed regardless of env. **DEFER→6** (blocker; = IA-01/11).
+- **CISO-04** · Medium/Confirmed · routes/health.py:20 — `/readyz` runs only `SELECT 1`, ignores reliability suite. → aggregate blocking checks → 503 on FAIL. **DEFER→6**.
+- **CISO-05** · Medium/Confirmed · analytics/overview.py — risk heatmap vs risk-status use different populations; blocks ignore org scope (rely on RLS only). → reconcile populations; thread org_id. **DEFER→6**.
+- **CISO-06** · Medium/HighlyLikely · analytics/posture.py:143 — overdue keys only on `due_on`; null-due counted "on track". → fall back to scheduled_completion + "no due date" bucket. **DEFER→6**.
+- **CISO-07** · Medium/Confirmed · api/audit.py:35 — `_REDACT` misses `api_key`/`anthropic_api_key`/`aws_secret_access_key`. → add key/credential/private. **FIX-NOW**.
+- **CISO-08** · Medium/Confirmed · .github/workflows/ci.yml:69 — `pip-audit … || true` non-blocking; no prod release gate. → drop `|| true`; add env approval + branch protection. **DEFER→6**.
+- **CISO-09** · Low/Confirmed · analytics/posture.py:195 — `avg_sprs` masks a failing system. → show min/worst. **DEFER→6**.
+- **CISO-10** · Low/Confirmed · reporting/export.py — leadership export lacks risk posture + AI provenance. → add reconciled summary + provenance column. **DEFER→6**.
+- **CISO-11** · Low/Possible · analytics/overview.py:34 — findings-by-severity is POA&M-only; latent divergence. → catch-all bucket; sum==total. **DEFER→6**.
+
+### DATA — schema/data integrity
+
+- **DATA-01** · High/Confirmed · poam_milestones — no RLS policy (only tenant child table uncovered). → parent-scoped policy. **DEFER→sec** (= IA-04).
+- **DATA-02** · High/Confirmed · external_package_shares/evidence_shares — package_id/evidence_object_id have no FK. → add FK ON DELETE CASCADE. **DEFER→sec**.
+- **DATA-03** · High/Confirmed · framework_controls — no org_id, no RLS; global unique key; cross-tenant overwrite/leak on upload. → add org_id + scoped unique + RLS. **DEFER→sec**.
+- **DATA-04** · High/Confirmed · systems/organizations cascade — hard `ON DELETE CASCADE` wipes the entire authorization record; no soft-delete. → soft-delete + RESTRICT + archive gate. **DEFER→sec**.
+- **DATA-05** · Medium/Confirmed · finding/status/impl columns — fragmented vocabularies (Enum vs free String vs JSONB). → canonical shared enums. **DEFER→4** (= ISSM-13).
+- **DATA-06** · Medium/Confirmed · audit_log — no org_id, no RLS; single interleaved global chain. → add org_id + RLS. **DEFER→sec** (= IA-02 backend).
+- **DATA-07** · Medium/Confirmed · evidence/packages/portal `*_id` — plain integers, no FK (dangling-pointer risk). → convert to FKs. **DEFER→sec**.
+- **DATA-08** · Medium/Confirmed · vendors/policies/fedramp_dependencies/pack_mappings/people — missing unique constraints → duplicates. → add unique constraints. **DEFER→sec**.
+- **DATA-09** · Medium/HighlyLikely · evidence vs evidence_objects — two disconnected evidence stores, no FK bridge. → bridge models. **DEFER→4**.
+- **DATA-10** · Low/Confirmed · pack_mappings — no unique(pack_id,control_id,framework); duplicate mappings. → add constraint. **DEFER→sec**.
+- **DATA-11** · Low/Confirmed · external grant refs — Integer PK vs BigInteger grant_id width mismatch. → normalize + FK. **DEFER→sec**.
+- **DATA-12** · Low/Confirmed · poams control/risk/vendor_id — ON DELETE SET NULL silently orphans traceability. → RESTRICT control_id or emit event. **DEFER→sec**.
+
+### UX — navigation/usability
+
+- **UX-01** · High/Confirmed · _ssp_entry.html — generated narratives indistinguishable from human-approved; no provenance in UI or .docx. → per-entry review-state chip + export watermark. **DEFER→3/4**.
+- **UX-02** · High/Confirmed · ssp_detail.html — missing/incomplete SSP info hidden; .docx always enabled. → per-entry completeness chip + readiness bar + gated export. **DEFER→4**.
+- **UX-03** · High/Confirmed · poams.html, risks.html — read-only registers; no detail/edit/milestone/accept in UI. → POA&M detail with milestone CRUD + remediate/accept. **DEFER→4**.
+- **UX-04** · High/Confirmed · ui.py POST handlers — create/validation failures redirect silently; record just absent. → flash/error banner pattern. **DEFER→6**.
+- **UX-05** · High/Confirmed · system_detail.html vs _scoring_score.html — "Inherited" green on one page, blue on another; no customer-responsibility category. → consistent color+label. **DEFER→4** — *on verification the `cls` var in the system_detail KPI block is unused (dead), so the green/blue inconsistency does not actually render; the real work is adding a customer-responsibility category. Not a small fix.*
+- **UX-06** · Medium/HighlyLikely · systems.html:91, system_detail.html:28 — ATO status neutral chip; expired/none looks authorized. → map ato_status→ok/warn/err. **FIX-NOW**.
+- **UX-07** · Medium/HighlyLikely · governance.html:39 — critical severity renders orange (warn), never red. → chip--err for critical. **FIX-NOW**.
+- **UX-08** · Medium/HighlyLikely · evidence.html, system_detail.html:76 — evidence attach is API-only / "coming soon". → UI upload/version/detail. **DEFER→4**.
+- **UX-09** · Medium/Confirmed · scoring.html:121 — control link hard-coded to `/controls` list, not the control. → deep-link `/controls/{id}`. **DEFER→4** — *verified against live data: scoring `nist_id` is 800-171 format (`3.1.1`), `controls.identifier` is 800-53A (`AC-01`), zero matches across all 110; a naive deep-link would 404 every row. Needs a scoring→800-53 identifier mapping first.*
+- **UX-10** · Medium/HighlyLikely · governance.html:99 — mermaid loaded from CDN; silent failure in air-gapped/CSP deploys. → vendor locally + fallback. **DEFER→6**.
+- **UX-11** · Low/Confirmed · ssp.html/systems.html/dashboard.html — terminology drift (customer/org/tenant; findings vs POA&Ms). → standardize. **FIX-NOW (labels)**.
+- **UX-12** · Low/Confirmed · ssp.html:34 — SSP `draft` and `in_review` render identical orange chip. → distinct chip for in_review. **FIX-NOW**.
+- **UX-13** · Low/HighlyLikely · ui.py detail routes — bare `HTTPException(404)` outside app chrome. → templated 404/403 handler. **DEFER→6**.
+
+---
+
+## This-slice fix set (FIX-NOW)
+
+Small, safe, self-contained, verifiable defects landed in the assessment slice:
+
+| Finding | Fix | Verification | Status |
+|---|---|---|---|
+| CISO-07 | Add `key`/`credential`/`private` to `_REDACT` (api/audit.py) | `tests/test_audit_redaction.py` (3 tests, real ccf_test DB) | ✅ landed + tested |
+| UX-07 | Critical → `chip--err`, high → `chip--warn` (governance.html tasks + alerts) | Jinja parse OK | ✅ landed |
+| UX-06 | ATO status → `chip--ok`(authorized)/`chip--err`(expired) (systems.html, system_detail.html) | Jinja parse OK | ✅ landed |
+| UX-12 | SSP `in_review` → `chip--info` (ssp.html) | Jinja parse OK | ✅ landed |
+| UX-11 | Dashboard stat relabel "Open findings" → "Open POA&Ms" (matches `/poams` link) | Jinja parse OK | ✅ landed |
+| UX-05 | ~~inherited chip color~~ | — | ⤳ reclassified DEFER→4 (dead `cls` var; nothing renders) |
+| UX-09 | ~~deep-link control~~ | live-data check | ⤳ reclassified DEFER→4 (id schemes don't match; would 404) |
+
+**Verification note:** checking the actual code/data before editing reclassified UX-05
+and UX-09 out of the fix set — UX-09's naive deep-link would have 404'd all 110 rows,
+UX-05's target variable is dead. This is why the fixes are verified against real
+data/templates, not applied on the finding's face value.
+
+Everything else is structural (schema migrations, new endpoints, lifecycle wiring, the
+SSP catalog correction) and is deliberately deferred to its target slice — consistent
+with "do not immediately rewrite major sections." Each deferred item carries a concrete
+recommendation and acceptance criterion above.
+
+A pre-existing design-polish item was surfaced (not from these edits): dashboard.html
+L284/L292/L322 (border-accent-on-rounded, layout-property animations) — logged for a
+future design pass, out of scope here.
+
+---
+
+## Slice 4 resolutions (2026-07-21, subagent-driven, branch `feat/catalog-currency-ssp-odp-connectors`)
+
+Executed via 7 TDD tasks + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **FR-02** — completeness now gates on real evidence (SSPControlEntry → system →
+  ControlImplementation → Evidence join, wired in the completeness route) and rejects
+  DRAFT/ODP-placeholder narratives. Proven by a production-path integration test.
+- **FR-08** — SC-family (SC-8/13/28) statements now name FIPS 140-2/140-3 validated
+  modules + key custody, with a marked cert placeholder.
+- **FR-09 / FR-10** — OSCAL SSP export sources categorization/boundary/roles from the
+  same `metadata_json` as the docx, emits system-implementation, and both OSCAL
+  artifacts cite one consistent baseline.
+- **ISSM-01** — ATO authorize write path (`POST /api/systems/{id}/authorize`),
+  admin-gated, refuses (409) when an open critical/high POA&M exists, audit-covered.
+- **ISSM-02 / ISSM-10** — assessment findings auto-generate provenanced
+  (source='assessment', control, due date, stable `source_ref` back-reference),
+  milestone-bearing, idempotent POA&Ms (migration `0038_poam_source_ref`).
+- **ISSM-03** — ConMon overdue controls + failed control tests now open idempotent
+  POA&Ms (source='conmon'/'control_test') alongside the existing Tasks/Notifications.
+- **Slice 3b** — org-admin AI settings surface (routes + minimal UI) over the vault +
+  gateway: add/test/rotate/revoke, masked, admin-gated, org-scoped; token never returned.
+
+**Whole-branch review findings (all fixed, commit `a107a74`):** the evidence gate was
+initially inert in production (keyed on dict fields the entry builder never emitted) —
+now wired to real records + covered by an integration test; `[Selection` token match;
+OSCAL impact `base` token validity; `control_tests` dedupe `system_id` filter.
+
+**New this slice (register addendum):** FR-14 — FedRAMP 2026 (CR26) terminology
+currency (see `2026-07-21-fedramp-2026-terminology-review.md`): no MUST-CHANGE;
+label-only SHOULD-CHANGE items on `fedramp20x/` surfaces deferred (enforcement 2027-01-01).
+
+Verification: full suite 347→(post-fix)-green except 1 known-flaky async test that passes
+in isolation; ruff + mypy clean across `src`/`tests`.
+
+**Still open after Slice 4:** FR-01 + FR-03/04/05/06/07/11/12/13 (→ Slice 5, below),
+the ISSM approval-gating / risk-provenance items (ISSM-04..09, -11..13),
+CISO-01..06/08 (aggregation + prod-readiness → Slice 6), and the DATA schema/security
+items (→ dedicated security slice).
+
+---
+
+## Slice 5 resolutions (2026-07-21, subagent-driven, same branch)
+
+4 TDD tasks + a test-isolation fix + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **FR-01** — DECISION: relabel (not build 800-53). The generator now truthfully names
+  **CMMC L2 / NIST 800-171 Rev.2**; the "FedRAMP SSP Appendix A" cover claim and the
+  FedRAMP/800-53 framework picker options (verified unread no-ops) are removed. Building
+  a real 800-53r5 FedRAMP pipeline is a separate future program.
+- **FR-04/05/12** — control origination is now derived **per-platform** from a single
+  shared `PLATFORM_DOMAIN_RESPONSIBILITY` table, independent of M365 coverage; a
+  provider-performed control can never render system-specific; non-M365 controls lacking
+  per-control coverage carry a `MANUAL_RESPONSIBILITY_FLAG`.
+- **FR-06/07** — no-connector platforms (Azure/GCP) are flagged manual-evidence-required
+  and **excluded from readiness "covered"** (not just labeled), and their inherited
+  status is downgraded from "Implemented"; the environment label emits "GCC High" only
+  for a confirmed `m365_gcc_high` tier, never by default.
+- **FR-03/11/13** — `compose()` injects responsible role + frequency + evidence pointer
+  in **all** styles and this is now wired into the production `generate_statements` path
+  (named System Owner reaches the rendered narrative — proven by a production-path test);
+  inherited statements are `needs_review` and carry a customer-responsibility line unless
+  a **real** `crm_ref` (sourced from `Vendor.authorization`/`Policy`, never fabricated)
+  is linked; responsible role uses named roles when metadata provides them and a generic
+  fallback is honestly flagged (does not silently satisfy the completeness gate).
+
+**Whole-branch review findings (all fixed):** production `compose()` call omitted the new
+params so narratives falsely read "No Named Party on File" (commit `3bc91bb`); no-connector
+status consistency; `crm_ref` sourced from real records. **Test hygiene:** a new test
+leaked global `ScoringControl` rows → fixed (`bc75b62`); full suite now deterministic
+(393 passed + 1 known-flaky async test that passes in isolation).
+
+**Still open → later slices:** ISSM-04..09/11..13 (approval-gating, risk provenance,
+finding-vocabulary unification), CISO-01..06/08 (aggregation + prod-readiness → Slice 6),
+DATA-01..12 (schema/security → dedicated security slice), FR-14 (FedRAMP-2026 label-only),
+and the FedRAMP 800-53r5 pipeline (FR-01 future program). Manual SSP-editor PATCH of
+`control_origination` is not yet validated against derived responsibility (noted follow-up).
+
+---
+
+## Security slice resolutions (2026-07-21, subagent-driven, same branch)
+
+5 TDD tasks + a test-determinism fix + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **IA-03** — RLS regression test now covers **all ~108 policy-bound tables** structurally
+  (live `pg_policy` enumeration asserting ENABLE+FORCE) plus behavioral cross-tenant
+  isolation checks on 7 representative predicate shapes.
+- **IA-04 / DATA-01** — `tenant_isolation` RLS added to `poam_milestones` (parent-join) and
+  `organizations` (self), ENABLE+FORCE (migration `0039`).
+- **IA-02** — audit-read endpoints (`list_audit`, `verify_chain`) **and** the `/audit` HTML
+  page now `require_role("admin","assessor")`. (True per-tenant row scoping still needs
+  `audit_log.organization_id` — **DATA-06**, deferred, documented in code.)
+- **DATA-08 / DATA-10** — unique constraints on vendors/policies/fedramp_dependencies/
+  pack_mappings/people natural keys, with an in-migration dedupe (migration `0040`);
+  integrity validator `unique_keys` findings 5→0.
+- **IA-09** — bearer tokens (`User.api_token`, portal grant tokens) now **stored hashed**
+  (SHA-256, plaintext columns dropped, hash-in-place backfill so live tokens keep working;
+  migration `0041`). Auth hashes-then-compares. **Bonus:** `/api/auth/login` and the
+  grants-list endpoint were re-leaking plaintext tokens on every call — now dropped; the
+  admin issuance flow reveals the token once in the response body (not a redirect URL).
+
+**Whole-branch review findings (all fixed, commit `1a4e2c7`):** the `/audit` UI page
+initially bypassed the API's role gate (cross-tenant exposure via a second path); the grant
+token setter didn't guard empty; the admin redirect leaked the token in a URL query param.
+
+**New follow-ups noted:** **DATA-06** (audit_log needs an `organization_id` column + RLS for
+true per-tenant audit isolation), and **portal-link hardening** — the external portal access
+link is `…/portal?token=<plaintext>` by design (magic-link delivery); exchanging the
+link-token for a session cookie on first use would keep it out of portal access logs.
+
+**Still open after the security slice:** DATA-02/03/04/06/07/09/11/12, IA-05/06/07/08/10,
+ISSM-04..13, CISO-01..08 (→ Slice 6, below).
+
+---
+
+## Slice 6 resolutions (2026-07-21, subagent-driven — production readiness)
+
+4 TDD tasks + a crypto dep bump + a test-isolation fix + a whole-branch review + a fix
+wave. **RESOLVED:**
+
+- **CISO-04** — `/readyz` now runs the **blocking reliability checks** and returns 503
+  (listing failures) when any fails, incl. **migration drift** (DB behind head) and auth
+  posture; `/healthz` stays a cheap liveness probe. The cross-tenant integrity check was
+  demoted out of the fleet-gating subset (it alerts, doesn't 503 the whole fleet).
+- **CISO-01 / CISO-06** — residual (`risk_accepted`) POA&Ms and `completed`-without-
+  `closed_on` are now surfaced (residual + data-quality buckets); overdue falls back
+  `due_on → scheduled_completion → original_due_on` and null-due items land in a
+  "no due date" bucket excluded from on-track (`on_track + overdue + no_due_date ==
+  open_total`).
+- **CISO-05 / CISO-11** — the risk heatmap and risk-status breakdown now use one
+  population (both exclude `closed`, both org-scoped); dashboard block queries are
+  org-scoped in SQL (defense-in-depth beyond RLS); `findings_by_severity` sums to the
+  headline total with a catch-all bucket.
+- **CISO-08** — CI `pip-audit` is now **blocking** (no allowlist); the Slice-3a
+  `cryptography` pin was bumped to `>=46` to clear 4 real advisories (verified on 49.0.0).
+
+**Whole-branch review findings (all fixed, commit `f36d124`):** migration *drift* returned
+WARN not FAIL (readiness stayed 200 with pending migrations); the global cross-tenant
+integrity check was fleet-gating (one bad row → un-self-healable fleet outage). Both fixed.
+
+**Still open (tracked, not blocking this slice):** DATA-02/03/04/06/07/09/11/12,
+IA-05/06/07/08/10, ISSM-04..13, CISO-09/10 (minor decision-support polish), plus the
+dependency-hygiene follow-up (transitive advisories the now-blocking pip-audit may surface)
+and the portal magic-link token-in-URL hardening.
+
+**Production-readiness recommendation:** see
+`2026-07-21-production-readiness-recommendation.md`.
+
+---
+
+## Slice 7 resolutions (2026-07-21, subagent-driven — integrity & governance)
+
+5 TDD tasks + a whole-branch review + a fix wave. **RESOLVED** (clears 4 of the 8 go-live
+conditions):
+
+- **IA-07** (go-live cond. 3) — evidence `read_version` now recomputes SHA-256 and raises on
+  mismatch; integrity is enforced on the single read path (download + replay both go through it).
+- **IA-08** (cond. 3) — local backend no longer falsely claims WORM (logs
+  `evidence.worm_not_storage_enforced`); S3 object-lock requires a valid future retain-until;
+  config documents that true WORM needs `evidence_backend=s3` + object lock.
+- **DATA-02** (cond. 1) — external-portal share rows now have real FKs (ON DELETE CASCADE),
+  orphans deleted in the migration (`0042`); the highest-exposure surface can no longer
+  reference deleted/foreign artifacts.
+- **ISSM-08/09** (cond. 5) — POA&M closure requires completed milestones **or** dated
+  closure evidence that **post-dates** the weakness, plus (auth-on) an Approval by a different
+  principal (SoD); risk acceptance requires owner + expiry + (auth-on) AO approval; reuses the
+  Approval mechanism, gated on both the `/close` route and generic PATCH.
+- **IA-05** (cond. 2) — connector credentials stored **per-org, encrypted** (reusing the AI
+  cipher); capture refuses when an org has no bound credential (no silent global fallback);
+  snapshots attributed to the owning org; an admin-gated org-scoped API binds credentials and
+  `/verify`+`/autofill` resolve the caller's credential (masked, never returned).
+
+**Whole-branch review findings (all fixed):** per-org connector creds were unreachable via API
+(added the route + wired ssp routes, commit `184d29d`); the closure evidence gate accepted any
+pre-existing evidence (now recency-constrained + tested, `a29b54e`); scan-ingest auto-close
+documented as an accepted evidence-backed exception; `key_last4` now masks the real secret field.
+
+**Go-live conditions remaining (4 of 8):** DATA-06 (audit_log org column + RLS), CISO-02 (AI
+provenance visible in UI), DATA-04 (soft-delete / cascade safety), dependency hygiene. Plus
+tracked follow-ups: SSP connector routes fully wired to per-org creds, `risk_accepted` POA&M
+status parallel gate, portal magic-link token-in-URL hardening, the known-flaky audit-chain test.
+
+---
+
+## Slice 8 resolutions (2026-07-21, subagent-driven — the last 4 go-live conditions)
+
+4 TDD tasks + a whole-branch review + a fix wave. **RESOLVED — ALL 8 go-live conditions now clear:**
+
+- **DATA-06** (cond. 4) — `audit_log` has `organization_id` (scoping column, **excluded from the
+  hash payload** so the chain is unchanged) + an RLS policy (own-org + NULL-org system rows);
+  middleware writes org from the principal. Migration `0044`. Audit **listing** is now per-tenant;
+  the integrity **verify** runs unscoped/global (fixed in review) so it doesn't false-break.
+- **DATA-04** (cond. 7) — System/Organization delete is now **soft** (`deleted_at`); authorization
+  records (POA&Ms/assessments/evidence/control-implementations) are **preserved**; soft-deleted rows
+  hidden from list/get/scope; a second hard-delete path in the UI was also converted; the `?hard=true`
+  purge guard refuses when any dependent record (incl. control implementations/scoring) exists.
+  Migration `0045`.
+- **CISO-02** (cond. 6) — AI-drafted/unreviewed content now shows a per-entry **"AI-assisted / draft"
+  badge** in the SSP + POA&M UI, derived from real signals (SSP `DRAFT_PREFIX`; POA&M via
+  `AiApprovedMutation` provenance matched to current text, persisted so content-only provider output
+  is still badged); approved/human content shows no badge. **AI-authored content may now be enabled.**
+- **Dependency hygiene** (cond. 8) — pip-audit **21 → 0** project-owned advisories (pins bumped:
+  pydantic-settings, python-multipart, pytest 8→9, pytest-asyncio); CI gate stays green with no ignores.
+
+**Whole-branch review findings (all fixed, commit `349e510`):** a **Critical** — DATA-06's RLS made
+`/api/audit/verify` false-break for org-scoped admins (now runs unscoped/global, with a multi-org
+interleaved regression test); the hard-delete guard omitted control implementations (now counted);
+soft-deleted systems in secondary dropdowns; AI-badge false-negative for content-only providers.
+
+**NEW finding (root-caused during the fix wave):** the long-standing "known-flaky" audit-chain test is
+**not** async jitter — it's a **real, deterministic Starlette `BaseHTTPMiddleware`
+double-invocation-on-exception bug** (reproduces on unmodified baseline). Latent; affects audit-trail
+behavior under request exceptions. **Tracked reliability follow-up** (not a go-live condition, but fix
+before high-assurance multi-tenant federal operation). — **RESOLVED in Slice 9 (Task 1).**
+
+---
+
+## Slice 9 resolutions (2026-07-21, subagent-driven — remaining hardening)
+
+5 TDD tasks + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **Audit-middleware reliability bug** — the `BaseHTTPMiddleware` re-entry double-write is fixed with an
+  idempotency guard on `request.state`; the previously-"flaky" audit-chain test is now **deterministically
+  green (513 passed, 0 failures across repeated runs)**. The full suite has no remaining known failure.
+- **DATA-03** — `framework_controls` now has `organization_id` + RLS + a scoped unique key (migration
+  `0046`) and a partial unique index preserving global-row uniqueness (`0047`); the upload path scopes by
+  caller org — no cross-tenant overwrite/leak; globally-seeded rows preserved.
+- **IA-06** — the background scheduler now runs per-tenant work (collection/ConMon/control-tests) under
+  `set_session_tenant(org)` with correct org attribution, each org in its own **savepoint** so one org's
+  DB failure is contained (not cascade-lost) and logged; global steps stay unscoped.
+- **IA-10** — `ai_store_prompts=False` no longer persists the raw prompt payload; `ai_require_human_approval=True`
+  forces approval (never loosens a registry-gated action).
+- **ISSM-07** — approval decisions are now surfaced on POA&M/risk/assessment API payloads via a read-time
+  join (no schema change), without driving the closure/acceptance gates.
+
+**Whole-branch review findings (all fixed, commit `3387be9`):** the per-tenant scheduler loop lost the whole
+cycle on a single org's DB error (now savepoint-isolated + logged, reproduced-then-fixed with a test); the
+`NULLS DISTINCT` gap in the new framework_controls unique key (partial global index added).
+
+**Remaining tracked follow-ups (all acceptable-track, none blocking the scoped GO):** DATA-07/09/11/12
+(dangling-pointer FKs, evidence-store bridge), ISSM-04/05/13 (audit-finding linkage, risk provenance,
+finding-vocabulary unification), CISO-09/10 (decision-support polish), FR-03..13 residual SSP-statement
+quality, portal magic-link token-in-URL, SSP connector routes fully per-org, `risk_accepted`-POA&M parallel
+gate; plus the two future programs (FedRAMP 800-53r5 pipeline FR-01, FedRAMP-2026 labels FR-14).
+
+---
+
+## Slice 10 resolutions (2026-07-22, subagent-driven — provenance & integrity closure)
+
+4 TDD tasks + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **ISSM-04/05 (+ `risk_accepted`-POA&M gate)** — `risks` carry an origin ref (`source_ref`);
+  `audit_findings` gained `system_id`/`organization_id`/`poam_id`/`risk_id`; new
+  `POST /api/risks/from-finding/{id}` (accept-finding→Risk) and
+  `POST /api/audit/findings/{id}/promote-to-poam` (provenanced, idempotent, org-scoped) wire the
+  finding→risk/POA&M spine; a POA&M can no longer reach `risk_accepted` without owner+expiry(+approval)
+  (migration `0048`). Finding-close now requires closure evidence.
+- **DATA-07/11** — the three external-portal `grant_id` columns are now `Integer` + FK →
+  `external_access_grants.id` **ON DELETE SET NULL** (orphans nulled first, width normalized;
+  migration `0049`) — no dangling grant references, and revoking a grant nulls (not orphans) the record.
+- **DATA-09** — a nullable `evidence_objects.implementation_id` FK bridges the legacy control-linked
+  evidence to the versioned repository, so **control → evidence → confidence** is one traceable join
+  (migration `0050`); the create route rejects a cross-tenant `implementation_id` (fixed in review).
+- **CISO-09/10** — `org_summary` now exposes the **worst/min SPRS** system (not just the mean); the report
+  export carries a **risk/POA&M posture summary reconciled to the dashboard** (same `org_summary` numbers)
+  plus an **AI-sourced provenance column**, labeled organization-wide scope.
+
+**Whole-branch review findings (all fixed, commit `9e49adb`):** the evidence bridge accepted a
+cross-tenant `implementation_id` (now org-ownership-checked, 404, with a test); `add_finding` didn't
+org-scope the parent engagement (now guarded); the system-scoped report's org-wide posture block is now
+explicitly labeled. Full suite **539 passed, 0 failures**.
+
+**Truly remaining (lowest-value polish, none blocking):** ISSM-13/DATA-05 (finding-vocabulary
+unification — deferred as broad/risky for polish), FR-03..13 residual SSP-statement quality, portal
+magic-link token-in-URL hardening, SSP connector routes fully wired to per-org creds; plus the two
+future programs (FedRAMP 800-53r5 pipeline FR-01, FedRAMP-2026 labels FR-14).
+
+---
+
+## Slice 11 resolutions (2026-07-22, subagent-driven — final follow-ups)
+
+4 tasks (one a verified no-op) + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **SSP connector routes per-org** — verified **already done** in Slice 7 (`184d29d`): the ssp
+  `/connectors/verify` + `/autofill` routes resolve the caller's per-org credential, with
+  production-path tests. No change needed.
+- **Portal magic-link hardening** — the first `?token=` request now exchanges the link-token for a
+  short-lived **signed session cookie** (scoped to the grant, capped at its expiry), 303-redirects
+  stripping the token, and re-validates the grant against the DB on every request (revoked/expired
+  fails even with a valid cookie).
+- **ISSM-13/DATA-05** — a canonical `normalize_finding` vocabulary + a cross-source rollup
+  (`ccf.analytics.findings`) at the app layer (no DB enum change); existing per-source behavior
+  unchanged.
+- **FR-14** — FedRAMP-2026 (CR26) **display labels** on fedramp20x surfaces (`authorized`→"Certified",
+  `continuous_monitoring`→"Ongoing Certification"); stored enum values unchanged; the impact→
+  Certification-Class A/B/C/D mapping deliberately omitted (needs primary-source validation).
+
+**Whole-branch review — CRITICAL caught & fixed (commit `01f2d93`):** the new portal session cookie
+was minted with the **same HMAC secret + payload shape as the internal user-session cookie** (no
+audience claim), so an external portal user could replay it as `concord_session` and authenticate as
+an internal user with a colliding id — cross-boundary token confusion → account takeover. Fixed by
+**domain-separating the portal cookie secret** (HMAC-derived), with regression tests proving a portal
+cookie can no longer authenticate as an internal session (forced id collision; fails pre-fix, passes
+post-fix). Two TTL minors also fixed. Full suite **558 passed, 0 failures**.
+
+**Program complete. Remaining: only the two future programs** — a real FedRAMP **800-53r5** pipeline
+(FR-01, deliberate future scope) and the FR-14 Certification-Class mapping (blocked on primary-source
+FedRAMP documentation, pre-2027-01-01).

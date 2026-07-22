@@ -16,6 +16,7 @@ from .service import (
     list_grants,
     record_access,
     resolve_grant,
+    resolve_grant_by_id,
     revoke_grant,
 )
 
@@ -26,5 +27,6 @@ __all__ = [
     "list_grants",
     "record_access",
     "resolve_grant",
+    "resolve_grant_by_id",
     "revoke_grant",
 ]

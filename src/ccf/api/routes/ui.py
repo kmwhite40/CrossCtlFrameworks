@@ -16,10 +16,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
-from ...auth import sign_session, verify_password
+from ...auth import Principal, sign_session, verify_password
 from ...config import get_settings
+from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
@@ -66,7 +68,8 @@ from ...ssp.platforms import (
     services_for,
 )
 from ...ssp.seed import seed_project_entries
-from ..auth_deps import SESSION_COOKIE
+from ...ssp.statements import is_draft_narrative
+from ..auth_deps import SESSION_COOKIE, require_role
 from ..deps import get_session
 from .diff import diff_workbook
 from .scoring import compute_summary
@@ -74,6 +77,14 @@ from .scoring import compute_summary
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+# CR26 (FR-14): fedramp20x-only display-label rename ("authorized" ->
+# "Certified", "continuous_monitoring" -> "Ongoing Certification"). Registered
+# as a filter — not a context value — because it needs to apply at several
+# independent render sites inside fedramp20x.html (readiness status, profile
+# status, dependency status) without duplicating that mapping logic in Python
+# for each one. The underlying stored values are untouched; see
+# ccf.fedramp20x.cr26_display_label.
+templates.env.filters["cr26_label"] = cr26_display_label
 
 
 def _asset_version() -> str:
@@ -390,8 +401,10 @@ async def systems_page(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    orgs_stmt = select(Organization).order_by(Organization.name)
-    sys_stmt = select(System).order_by(System.name)
+    orgs_stmt = select(Organization).where(Organization.deleted_at.is_(None)).order_by(
+        Organization.name
+    )
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         orgs_stmt = orgs_stmt.where(Organization.id == org)
         sys_stmt = sys_stmt.where(System.organization_id == org)
@@ -456,9 +469,15 @@ async def delete_system_ui(
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     org = _principal_org(request)
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    sys = (
+        await session.execute(
+            select(System).where(System.id == system_id, System.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
     if sys is not None and (org is None or sys.organization_id == org):
-        await session.delete(sys)
+        # DATA-04: soft-delete only — a hard DELETE here would CASCADE away
+        # the system's POA&Ms/assessments/evidence/implementations/risks.
+        sys.deleted_at = datetime.now(UTC)
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
 
@@ -489,6 +508,7 @@ async def poams_page(
     if system_id is not None:
         stmt = stmt.where(POAM.system_id == system_id)
     poams = (await session.execute(stmt)).scalars().all()
+    ai_remediation_ids = await ai_written_poam_ids(session, list(poams))
 
     rows = []
     metrics = {"total": 0, "open": 0, "overdue": 0, "high": 0}
@@ -512,10 +532,11 @@ async def poams_page(
                 "milestone_total": len(ms),
                 "milestone_done": done,
                 "progress": round(100 * done / len(ms)) if ms else None,
+                "ai_remediation": p.id in ai_remediation_ids,
             }
         )
 
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
     systems = (await session.execute(sys_stmt)).scalars().all()
@@ -573,7 +594,11 @@ async def system_detail(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    sys = (
+        await session.execute(
+            select(System).where(System.id == system_id, System.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
     if sys is None or (org is not None and sys.organization_id != org):
         raise HTTPException(404, "system not found")
     impl_counts = (
@@ -619,7 +644,7 @@ async def risks_page(
 ) -> HTMLResponse:
     org = _principal_org(request)
     risk_stmt = select(Risk).order_by(Risk.created_at.desc())
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         org_systems = select(System.id).where(System.organization_id == org)
         risk_stmt = risk_stmt.where(Risk.system_id.in_(org_systems))
@@ -919,7 +944,7 @@ async def scoring_page(
     coverage: str | None = Query(None),
 ) -> HTMLResponse:
     org = _principal_org(request)
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     orgs_stmt = select(Organization).order_by(Organization.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
@@ -1046,7 +1071,7 @@ async def scoring_create_system(
 async def ssp_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
     org = _principal_org(request)
     proj_stmt = select(SSPProject).order_by(SSPProject.created_at.desc())
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     orgs_stmt = select(Organization).order_by(Organization.name)
     if org is not None:
         proj_stmt = proj_stmt.where(SSPProject.organization_id == org)
@@ -1197,6 +1222,7 @@ async def ssp_detail(
             "platforms": PLATFORMS,
             "odp_defs_for": odp_defs_for,
             "templates_for": templates_for,
+            "is_draft_entry": lambda e: is_draft_narrative(e.part_narratives),
         },
     )
 
@@ -1329,6 +1355,7 @@ async def ssp_save_entry(
             "odp_defs_for": odp_defs_for,
             "templates_for": templates_for,
             "just_saved": True,
+            "is_draft_entry": lambda e: is_draft_narrative(e.part_narratives),
         },
     )
 
@@ -1561,6 +1588,7 @@ async def audit_page(
     session: AsyncSession = Depends(get_session),
     entity_type: str | None = Query(None),
     action: str | None = Query(None),
+    _principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> HTMLResponse:
     stmt = select(AuditLog).order_by(AuditLog.id.desc()).limit(200)
     if entity_type:
@@ -1600,7 +1628,7 @@ async def assessments_page(
 ) -> HTMLResponse:
     org = _principal_org(request)
     a_stmt = select(Assessment).order_by(Assessment.id.desc())
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         a_stmt = a_stmt.join(System, System.id == Assessment.system_id).where(
             System.organization_id == org
@@ -1848,7 +1876,7 @@ async def fedramp20x_page(
     for k in ksis:
         by_category.setdefault(k.category_name or k.category, []).append(k)
 
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
     systems = (await session.execute(sys_stmt)).scalars().all()

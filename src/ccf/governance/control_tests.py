@@ -11,14 +11,14 @@ remediation task the manual run endpoint creates.
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
-from ..models import CaptureSnapshot, Task
+from ..models import POAM, CaptureSnapshot, Control, PoamMilestone, Task
 from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
 from . import bus
 
@@ -26,6 +26,7 @@ log = get_logger(__name__)
 
 # How stale a test result may be before the test is re-run, by frequency.
 _FREQ_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 91, "annual": 365}
+_OPEN_POAM = ("open", "in_progress")
 
 
 def _coerce(v: str) -> object:
@@ -195,6 +196,74 @@ async def _alert_on_failure(
                 dedupe_key=dedupe,
             )
         )
+    await _upsert_poam(session, test, detail)
+
+
+async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) -> bool:
+    """Open a POA&M for a failed control test (idempotent). True if new.
+
+    ``ControlTest.control_id`` is a free-text catalog/practice id (e.g. a CMMC
+    practice) rather than the FK'd int ``Control.id`` the POA&M column wants,
+    and often has no matching row in the org's control catalog at all — so
+    dedupe keys primarily off the test's own stable id (``source_ref``) rather
+    than (system, control, source) directly. That's equivalent grouping
+    whenever the control does resolve, and strictly safer when it doesn't: it
+    never collapses two different failing tests that both leave ``control_id``
+    null into one POA&M, while still refreshing (not duplicating) the same
+    test's POA&M across repeated failures. ``system_id`` is also included in
+    the lookup — defense-in-depth consistency with ``conmon._upsert_poam`` —
+    so a POA&M that happens to share this ``source_ref`` but belongs to a
+    different system is never matched/mutated.
+
+    ``POAM.system_id`` is NOT NULL but ``ControlTest.system_id`` isn't — an
+    org-wide test (not scoped to one system) has nothing to attach a POA&M to,
+    so it keeps the existing Task/Notification alert only.
+    """
+    if test.system_id is None:
+        return False
+    source_ref = f"control_test:{test.id}"
+    weakness = (
+        f"Automated control test '{test.name}' ({test.control_id}) failed: {detail}"
+    )
+    existing = (
+        await session.execute(
+            select(POAM).where(
+                POAM.system_id == test.system_id,
+                POAM.source == "control_test",
+                POAM.source_ref == source_ref,
+                POAM.status.in_(_OPEN_POAM),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.weakness = weakness
+        return False
+
+    control_id = (
+        await session.execute(select(Control.id).where(Control.identifier == test.control_id))
+    ).scalar_one_or_none()
+    today = datetime.now(UTC).date()
+    due = today + timedelta(days=30)
+    poam = POAM(
+        system_id=test.system_id,
+        control_id=control_id,
+        title=f"Control test failed: {test.name} ({test.control_id})",
+        weakness=weakness,
+        severity="high",
+        status="open",
+        source="control_test",
+        identified_on=today,
+        due_on=due,
+        original_due_on=due,
+        source_ref=source_ref,
+    )
+    poam.milestones.append(
+        PoamMilestone(
+            description=f"Remediate {test.control_id}", due_on=due, status="pending", sort_order=0
+        )
+    )
+    session.add(poam)
+    return True
 
 
 async def record_result(
@@ -234,12 +303,22 @@ async def record_result(
     return res
 
 
-async def run_due(session: AsyncSession, *, today: date | None = None) -> dict[str, Any]:
-    """Auto-run every due connector-backed test. Returns per-status counts."""
+async def run_due(
+    session: AsyncSession, *, today: date | None = None, org_id: int | None = None
+) -> dict[str, Any]:
+    """Auto-run every due connector-backed test. Returns per-status counts.
+
+    With ``org_id`` set (the scheduler's per-tenant loop), scoped to that one
+    organization's tests only — paired with ``set_session_tenant`` by the
+    caller so RLS backstops this filter. ``org_id=None`` runs across every
+    organization's tests (used by direct/manual invocations).
+    """
     today = today or datetime.now(UTC).date()
     stmt = select(ControlTest).where(
         ControlTest.active.is_(True), ControlTest.method == "connector"
     )
+    if org_id is not None:
+        stmt = stmt.where(ControlTest.organization_id == org_id)
     tests = (await session.execute(stmt)).scalars().all()
     counts = {"evaluated": 0, "pass": 0, "warn": 0, "fail": 0}
     for test in tests:

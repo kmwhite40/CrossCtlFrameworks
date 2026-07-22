@@ -10,6 +10,7 @@ status so downstream views reflect the authorization.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -56,6 +57,47 @@ def out(a: Approval) -> dict[str, Any]:
         "reviewed_at": a.reviewed_at,
         "decision_note": a.decision_note,
     }
+
+
+async def entity_state(session: AsyncSession, entity_type: str, entity_id: int | str) -> str:
+    """Read-time lookup of a governed entity's current approval state.
+
+    This is the visibility half of the workflow (ISSM-07): callers building an
+    entity's API payload use this to surface *that* it was approved/rejected/is
+    pending review, without owning or fabricating any terminal status transition
+    on the entity itself. Mirrors the default ``GET /api/approvals/{type}/{id}``
+    returns when no row exists yet: ``"draft"`` (never submitted).
+    """
+    row = (
+        await session.execute(
+            select(Approval).where(
+                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
+            )
+        )
+    ).scalar_one_or_none()
+    return row.state if row is not None else "draft"
+
+
+async def entity_states(
+    session: AsyncSession, entity_type: str, entity_ids: Iterable[int | str]
+) -> dict[str, str]:
+    """Batch form of :func:`entity_state` for list endpoints (avoids N+1 queries).
+
+    Returns a mapping keyed by the *string* entity id (matching
+    ``Approval.entity_id``), defaulting missing ids to ``"draft"``.
+    """
+    ids = [str(i) for i in entity_ids]
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Approval).where(
+                Approval.entity_type == entity_type, Approval.entity_id.in_(ids)
+            )
+        )
+    ).scalars().all()
+    found = {r.entity_id: r.state for r in rows}
+    return {i: found.get(i, "draft") for i in ids}
 
 
 async def submit(

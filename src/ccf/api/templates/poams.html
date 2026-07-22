@@ -42,12 +42,21 @@
   {% if rows %}
   <div class="table-wrap"><table class="data">
     <thead><tr>
-      <th>Weakness</th><th>Severity</th><th>Status</th><th>Source</th>
+      <th>Weakness</th><th>Remediation</th><th>Severity</th><th>Status</th><th>Source</th>
       <th>Milestones</th><th>Due</th><th>POC</th>
     </tr></thead>
     <tbody>
       {% for r in rows %}{% set p = r.obj %}<tr>
         <td><strong>{{ p.title }}</strong>{% if p.weakness %}<div class="dim clamp-3" style="font-size:12px">{{ p.weakness[:180] }}</div>{% endif %}</td>
+        <td style="min-width:150px">
+          {% if p.remediation_plan %}
+            <div class="dim clamp-3" style="font-size:12px">{{ p.remediation_plan[:180] }}</div>
+            {% if r.ai_remediation %}
+            <span class="chip chip--warn" style="margin-top:4px" title="Drafted by an AI action — a human has not reviewed or approved this remediation plan yet">
+              <i data-lucide="sparkles"></i> AI-assisted / draft — needs review</span>
+            {% endif %}
+          {% else %}<span class="dim" style="font-size:12px">—</span>{% endif %}
+        </td>
         <td><span class="chip {% if p.severity in ('critical','high') %}chip--err{% elif p.severity=='moderate' %}chip--warn{% else %}chip--ok{% endif %}">{{ p.severity }}</span></td>
         <td><span class="chip {% if p.status in ('open','in_progress') %}chip--warn{% elif p.status in ('completed','closed') %}chip--ok{% else %}chip{% endif %}">{{ p.status|replace('_',' ') }}</span></td>
         <td class="dim" style="font-size:12px">{{ p.source or '—' }}</td>

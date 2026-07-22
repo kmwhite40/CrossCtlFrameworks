@@ -10,6 +10,18 @@
 </div></section>
 {% else %}
 
+{% if issued_link %}
+<section class="card card--elevated" style="margin-bottom:16px;border-color:var(--accent, #4a7)">
+  <div class="card__body">
+    <strong>Grant issued</strong> — copy this share link now; for security it will not be shown again.
+    <div class="filters" style="margin-top:8px">
+      <input class="input mono" readonly value="{{ issued_link }}" style="flex:1" onclick="this.select()" aria-label="Share link" title="Share link">
+      <button class="btn btn--ghost btn--sm" type="button" data-copy="{{ issued_link }}" title="Copy share link"><i data-lucide="copy"></i> Copy</button>
+    </div>
+  </div>
+</section>
+{% endif %}
+
 <div class="cols-4" style="margin-bottom:16px">
   <div class="kpi"><div class="kpi__label">Grants</div><div class="kpi__value">{{ rows|length }}</div></div>
   <div class="kpi"><div class="kpi__label">Active</div><div class="kpi__value">{{ rows|selectattr('g.revoked','equalto',false)|list|length }}</div></div>
@@ -51,14 +63,13 @@
   <div class="card__header"><div class="card__title">Grants</div><span class="dim" style="font-size:13px">{{ rows|length }}</span></div>
   {% if rows %}
   <div class="table-wrap"><table class="data">
-    <thead><tr><th>Recipient</th><th>Kind</th><th>Expires</th><th>Status</th><th>Share link</th><th></th></tr></thead>
+    <thead><tr><th>Recipient</th><th>Kind</th><th>Expires</th><th>Status</th><th></th></tr></thead>
     <tbody>
       {% for r in rows %}<tr>
         <td><strong>{{ r.principal.name if r.principal else '—' }}</strong>{% if r.g.label %}<div class="dim" style="font-size:12px">{{ r.g.label }}</div>{% endif %}</td>
         <td class="dim">{{ r.g.kind }}</td>
         <td class="dim">{{ r.g.expires_at.date() if r.g.expires_at else 'never' }}</td>
         <td>{% if r.status=='revoked' %}<span class="chip chip--err">revoked</span>{% elif r.status=='expired' %}<span class="chip chip--warn">expired</span>{% else %}<span class="chip chip--ok">active</span>{% endif %}</td>
-        <td>{% if not r.g.revoked %}<button class="btn btn--ghost btn--sm" type="button" data-copy="{{ request.base_url }}portal?token={{ r.g.token }}" title="Copy share link"><i data-lucide="copy"></i> Copy</button>{% else %}<span class="dim">—</span>{% endif %}</td>
         <td>{% if not r.g.revoked %}<form method="post" action="/admin/portal/grants/{{ r.g.id }}/revoke"><input type="hidden" name="organization_id" value="{{ org_id }}"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="ban"></i> Revoke</button></form>{% endif %}</td>
       </tr>{% endfor %}
     </tbody>

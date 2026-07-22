@@ -61,6 +61,7 @@ def _complete_entry(**kw):
         control_origination=["Inherited"],
         odp_definitions=[],
         odp_values={},
+        evidence_ref="s3://evidence/default-config-export.pdf",
     )
     base.update(kw)
     return base

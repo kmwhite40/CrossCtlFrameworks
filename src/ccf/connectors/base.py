@@ -52,9 +52,19 @@ class ConfigConnector(abc.ABC):
     #: ODP key → description of the live source it is derived from.
     PARAMETER_MAP: ClassVar[dict[str, str]] = {}
 
+    def __init__(self, credential: dict[str, Any] | None = None) -> None:
+        """``credential`` is the caller org's own decrypted secret bundle.
+
+        Resolved by the caller (see :mod:`ccf.connectors.credentials`) — this
+        class never falls back to a global/env credential. ``None`` means the
+        calling organization has no bound credential for this connector, and
+        :meth:`is_configured` MUST return ``False``.
+        """
+        self.credential = credential
+
     @abc.abstractmethod
     def is_configured(self) -> bool:
-        """True when credentials/settings needed for a live capture are present."""
+        """True when this org's credential (see ``self.credential``) is usable."""
 
     @abc.abstractmethod
     async def capture(self) -> list[CapturedParameter]:

@@ -25,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from .auth import hash_token
 from .models import Base
 
 
@@ -57,11 +58,14 @@ class ExternalAccessGrant(Base):
         ForeignKey("ccf.external_principals.id", ondelete="SET NULL")
     )
     kind: Mapped[str] = mapped_column(String(16), default="customer")
-    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    # IA-09: only the one-way hash is persisted — see the ``token`` property
+    # below for the plaintext write/read-once path.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     label: Mapped[str | None] = mapped_column(String(255))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
-    scope: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # {package_ids, evidence_ids}
+    # {package_ids, evidence_ids}
+    scope: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     package_shares: Mapped[list[ExternalPackageShare]] = relationship(
@@ -70,6 +74,21 @@ class ExternalAccessGrant(Base):
     evidence_shares: Mapped[list[ExternalEvidenceShare]] = relationship(
         back_populates="grant", cascade="all, delete-orphan"
     )
+
+    @property
+    def token(self) -> str | None:
+        """Plaintext grant token — available only in-memory, only on the
+        instance that just set it (issuance). Never persisted: the DB holds
+        ``token_hash`` only, so a freshly loaded grant always reports
+        ``None`` here. Resolve grants via ``token_hash`` instead.
+        """
+        return getattr(self, "_token_plain", None)
+
+    @token.setter
+    def token(self, value: str) -> None:
+        self._token_plain = value
+        if value:
+            self.token_hash = hash_token(value)
 
 
 class ExternalPackageShare(Base):
@@ -81,7 +100,9 @@ class ExternalPackageShare(Base):
     grant_id: Mapped[int] = mapped_column(
         ForeignKey("ccf.external_access_grants.id", ondelete="CASCADE"), index=True
     )
-    package_id: Mapped[int] = mapped_column(Integer)
+    package_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.authorization_packages.id", ondelete="CASCADE")
+    )
 
     grant: Mapped[ExternalAccessGrant] = relationship(back_populates="package_shares")
 
@@ -95,7 +116,9 @@ class ExternalEvidenceShare(Base):
     grant_id: Mapped[int] = mapped_column(
         ForeignKey("ccf.external_access_grants.id", ondelete="CASCADE"), index=True
     )
-    evidence_object_id: Mapped[int] = mapped_column(Integer)
+    evidence_object_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.evidence_objects.id", ondelete="CASCADE")
+    )
 
     grant: Mapped[ExternalAccessGrant] = relationship(back_populates="evidence_shares")
 
@@ -109,7 +132,9 @@ class ExternalComment(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    grant_id: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
     target_type: Mapped[str] = mapped_column(String(24))  # evidence|finding|package
     target_id: Mapped[str] = mapped_column(String(64))
     author: Mapped[str | None] = mapped_column(String(255))
@@ -127,7 +152,9 @@ class ExternalQuestionnaireRequest(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    grant_id: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
     title: Mapped[str] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(16), default="open")  # open|responded
     response_body: Mapped[str | None] = mapped_column(Text)
@@ -144,7 +171,9 @@ class ExternalPortalAuditEvent(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    grant_id: Mapped[int | None] = mapped_column(BigInteger)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
     action: Mapped[str] = mapped_column(String(24))  # view|download|comment|respond|denied
     target_type: Mapped[str | None] = mapped_column(String(24))
     target_id: Mapped[str | None] = mapped_column(String(64))

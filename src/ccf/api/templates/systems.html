@@ -88,7 +88,7 @@
                     <tr>
                       <td><a href="/systems/{{ s.id }}">{{ s.name }}</a></td>
                       <td>{% if s.baseline %}<span class="chip chip--brand">{{ s.baseline | upper }}</span>{% else %}—{% endif %}</td>
-                      <td>{% if s.ato_status %}<span class="chip">{{ s.ato_status }}</span>{% else %}—{% endif %}</td>
+                      <td>{% if s.ato_status %}<span class="chip {% if s.ato_status=='authorized' %}chip--ok{% elif s.ato_status=='expired' %}chip--err{% endif %}">{{ s.ato_status }}</span>{% else %}—{% endif %}</td>
                       <td class="dim">{{ s.ato_expires_on or '—' }}</td>
                       <td class="dim">{{ s.description or '' }}</td>
                       <td style="text-align:right">

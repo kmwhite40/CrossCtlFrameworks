@@ -61,7 +61,9 @@ accent, soft shadows, no chrome-heavy glassmorphism.
   framework/control/evidence/rule packs), **Concord-on-Concord self-assurance**
   (Concord continuously assessing itself), and an **external collaboration portal**
   (scoped, expiring, token-authenticated, fully-audited access for
-  customers/assessors/vendors with no internal account).
+  customers/assessors/vendors with no internal account), and a **deterministic
+  assurance query layer** (reusable, parameterized, exportable questions over the
+  authorization data — no AI).
 
 ## FedRAMP 20x
 
@@ -360,6 +362,7 @@ ccf reliability-check                       # platform + 20x readiness checks
 | POST · GET | `/api/admin/self-assurance/init\|run\|status\|package` | Concord-on-Concord self-assurance |
 | POST · GET | `/api/admin/portal/grants` (+ `/{id}/revoke`) | Issue/list/revoke external portal grants |
 | GET · POST | `/api/portal/session` · `/api/portal/comments` | External portal (token-authenticated) |
+| GET · POST | `/api/queries` · `/api/queries/{key}/run\|export` | Deterministic assurance query templates (+ CSV) |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -448,9 +451,9 @@ external collaboration portal. Alembic-managed schema (36 migrations),
 Docker/Compose, CI, and a reliability self-check subsystem. The suite runs 200+
 tests against a real Postgres.
 
-Next: business-impact risk quantification, a deterministic assurance-query layer,
-SCD-2 history, a finer DB-role split, wiring the real AI provider behind the
-disabled-by-default flag, and published production runbooks / SLOs.
+Next: business-impact risk quantification, SCD-2 history, a finer DB-role split,
+wiring the real AI provider behind the disabled-by-default flag, and published
+production runbooks / SLOs.
 
 ---
 

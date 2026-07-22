@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+{% block title %}Assurance queries · Concord{% endblock %}
+{% block heading %}Assurance queries{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Deterministic, reusable questions over your authorization data — expired evidence, failing controls, expiring access, overdue POA&Ms. Pick a template, set parameters, export the answer.</p>{% endblock %}
+{% block content %}
+
+<div style="display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:20px;align-items:start">
+  <aside class="card"><div class="card__body">
+    <div class="card__title" style="margin-bottom:10px">Templates</div>
+    {% for t in templates %}
+      <a href="/queries?key={{ t.key }}{% if org_id is not none %}&organization_id={{ org_id }}{% endif %}"
+         style="display:block;padding:9px 10px;border-radius:8px;text-decoration:none;color:var(--text);{% if selected and selected.key==t.key %}background:var(--bg-inset){% endif %}">
+        <div style="font-weight:600;font-size:13px">{{ t.title }}</div>
+        <div class="dim" style="font-size:11.5px">{{ t.category }}</div>
+      </a>
+    {% endfor %}
+  </div></aside>
+
+  <main style="min-width:0">
+    {% if not selected %}
+      <section class="card"><div class="card__body dim" style="text-align:center;padding:48px">Select a query template to run.</div></section>
+    {% else %}
+      <section class="card card--elevated" style="margin-bottom:16px">
+        <div class="card__header"><div class="card__title">{{ selected.title }}</div></div>
+        <div class="card__body">
+          <p class="dim" style="margin-top:0">{{ selected.description }}</p>
+          <form method="get" action="/queries" class="filters">
+            <input type="hidden" name="key" value="{{ selected.key }}">
+            <input type="hidden" name="run" value="1">
+            {% if org_id is not none %}<input type="hidden" name="organization_id" value="{{ org_id }}">{% endif %}
+            {% for p in selected.params %}
+              <input class="input" type="{{ 'number' if p.type=='int' else 'text' }}" name="{{ p.name }}"
+                     value="{{ values.get(p.name,'') or (p.default if p.default is not none else '') }}"
+                     placeholder="{{ p.label }}" aria-label="{{ p.label }}">
+            {% endfor %}
+            <button class="btn btn--primary" type="submit"><i data-lucide="play"></i> Run</button>
+          </form>
+        </div>
+      </section>
+
+      {% if result %}
+      <section class="card">
+        <div class="card__header"><div class="card__title">Results</div><span class="dim" style="font-size:13px">{{ result.count }} row(s)</span></div>
+        {% if result.rows %}
+        <div style="padding:0 16px 12px"><button class="btn btn--ghost btn--sm" type="button" onclick="downloadCsv()"><i data-lucide="download"></i> Download CSV</button></div>
+        <div class="table-wrap"><table class="data" id="qresult">
+          <thead><tr>{% for c in result.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+          <tbody>
+            {% for row in result.rows %}<tr>{% for c in result.columns %}<td>{% if row.get(c) is not none %}{{ row.get(c) }}{% else %}<span class="dim">—</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}
+          </tbody>
+        </table></div>
+        {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No matching rows.</div>{% endif %}
+      </section>
+      {% endif %}
+    {% endif %}
+  </main>
+</div>
+
+<script>
+function downloadCsv() {
+  const t = document.getElementById('qresult');
+  if (!t) return;
+  const esc = (s) => /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  const lines = [...t.querySelectorAll('tr')].map(
+    (tr) => [...tr.children].map((c) => esc(c.textContent.trim())).join(',')
+  );
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '{{ selected.key if selected else "query" }}.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+if (window.lucide) lucide.createIcons();
+</script>
+{% endblock %}

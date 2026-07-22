@@ -25,11 +25,48 @@ PLATFORMS: dict[str, str] = {
 }
 
 # Government-cloud environment names used in customer-responsibility drafts.
+#
+# "m365" deliberately does NOT assert a specific Government tier here: Microsoft
+# 365 spans commercial, GCC, GCC High, and DoD tenants, and this module only
+# ever sees the SSP authoring platform code ("m365") — never the customer's
+# actual tenant. Asserting "GCC High" without confirming that's the real tenant
+# is a factual claim this code cannot make (FR-07); use ``environment_for``
+# below when the caller *does* have the confirmed intake ``cloud_platform``
+# code (see ccf.governance.automation.PLATFORM_TO_SSP), which is the only
+# place "GCC High" language may be rendered. Azure and AWS GovCloud each have
+# exactly one government offering in PLATFORMS/the intake questionnaire, so
+# their labels are safe to assert outright regardless of caller context.
 GOV_ENVIRONMENTS: dict[str, str] = {
-    "m365": "Microsoft 365 Government (GCC High)",
+    "m365": "Microsoft 365 (tenant tier not confirmed)",
     "azure": "Microsoft Azure Government",
     "aws_govcloud": "AWS GovCloud (US)",
 }
+
+# The one intake questionnaire cloud_platform code (see
+# ccf.governance.automation.QUESTIONNAIRE / PLATFORM_TO_SSP) that confirms the
+# customer's Microsoft 365 tenant is specifically GCC High. Any other value
+# (None, "none", "aws_govcloud", "azure_gov", or simply absent because the SSP
+# project was authored directly without a derived profile) leaves the tier
+# unconfirmed, so "GCC High" must not be rendered.
+M365_GCC_HIGH_CLOUD_CODE = "m365_gcc_high"
+
+# Platforms with a live capture connector that can actually pull config/evidence
+# from the tenant (see ccf.connectors: msgraph.py = m365, aws.py = aws_govcloud).
+# Azure — and anything else added to PLATFORMS without a connector — has none;
+# its service catalog below stays usable for drafting, but callers must gate
+# statements built from it out of "implemented/evidenced" claims (FR-06). See
+# ``has_capture_connector`` and ``MANUAL_EVIDENCE_NOTE``.
+CONNECTOR_PLATFORMS: frozenset[str] = frozenset({"m365", "aws_govcloud"})
+
+# Appended to every auto-composed statement for a platform with no capture
+# connector, so a reviewer — and ccf.governance.automation's coverage rollup —
+# can tell the claim was never technically verified and needs a human to
+# attach evidence before the control counts as covered.
+MANUAL_EVIDENCE_NOTE = (
+    "[MANUAL-EVIDENCE-REQUIRED — NO CONNECTOR: no automated capture connector "
+    "exists for this platform; a human must attach evidence before this control "
+    "is considered evidenced.]"
+)
 
 PLATFORM_CHOICES = tuple(PLATFORMS)
 
@@ -99,12 +136,73 @@ _SERVICES: dict[str, dict[str, str]] = {
 }
 
 
+# FIPS 140-2/140-3 validated-module + key-custody language appended to SC-family
+# (System and Communications Protection) statements only. Per FR-08, generic
+# "TLS/encryption" service names read as boilerplate to an assessor — the platform's
+# validated cryptographic module and key custody must be named. The specific
+# certificate number / KMS key ARN is never fabricated; it is left as an
+# organization-defined placeholder using the same bracket convention completeness.py
+# already treats as unresolved (see ssp/odp.py's "[ORGANIZATION-DEFINED: ...]").
+_FIPS_KEY_CUSTODY: dict[str, str] = {
+    "m365": (
+        "Cryptographic protection relies on FIPS 140-2 validated cryptographic modules "
+        "within Microsoft's FIPS 140 validated boundary (Microsoft Purview Information "
+        "Protection / Azure RMS encryption); key custody is [ORGANIZATION-DEFINED: FIPS "
+        "140-2 certificate number and key-custody owner (Microsoft-managed key vs. "
+        "customer key)]."
+    ),
+    "azure": (
+        "Cryptographic protection relies on Azure Key Vault backed by FIPS 140-2 "
+        "validated hardware security modules; key custody is [ORGANIZATION-DEFINED: "
+        "FIPS 140-2 certificate number and Key Vault/Managed HSM key-custody owner]."
+    ),
+    "aws_govcloud": (
+        "Cryptographic protection relies on AWS KMS FIPS 140-2 validated endpoints; "
+        "key custody is [ORGANIZATION-DEFINED: FIPS 140-2 certificate number and KMS "
+        "customer-managed-key custody owner]."
+    ),
+}
+
+
+def _fips_key_custody_note(platform: str, domain: str | None) -> str:
+    """Return the platform's FIPS-validated-module/key-custody sentence for
+    SC-family statements, or "" for every other control family."""
+    if (domain or "").upper() != "SC":
+        return ""
+    return _FIPS_KEY_CUSTODY.get(platform, "")
+
+
 def normalize_platform(platform: str | None) -> str:
     return platform if platform in PLATFORMS else DEFAULT_PLATFORM
 
 
 def platform_label(platform: str | None) -> str:
     return PLATFORMS.get(normalize_platform(platform), PLATFORMS[DEFAULT_PLATFORM])
+
+
+def has_capture_connector(platform: str | None) -> bool:
+    """True if a live capture connector exists to evidence this platform.
+
+    False for Azure (and anything else not wired to a connector) — the platform's
+    service catalog stays usable for drafting, but auto-composed statements built
+    from it must be gated out of "implemented/evidenced" claims (FR-06).
+    """
+    return normalize_platform(platform) in CONNECTOR_PLATFORMS
+
+
+def environment_for(platform: str | None, cloud_platform: str | None = None) -> str:
+    """Environment label for ``platform``, honoring the *confirmed* tenant tier.
+
+    ``cloud_platform`` is the raw intake questionnaire code (e.g. "m365_gcc_high",
+    "azure_gov", "aws_govcloud") when the caller has a SystemProfile to read it
+    from. "GCC High" is only ever rendered when that exact code is present;
+    otherwise the neutral ``GOV_ENVIRONMENTS`` default is used — "GCC High" is
+    never asserted without confirmation (FR-07).
+    """
+    plat = normalize_platform(platform)
+    if plat == "m365" and cloud_platform == M365_GCC_HIGH_CLOUD_CODE:
+        return "Microsoft 365 Government (GCC High)"
+    return GOV_ENVIRONMENTS.get(plat, platform_label(plat))
 
 
 def services_for(platform: str | None, domain: str | None) -> str:
@@ -127,6 +225,9 @@ def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, 
         body = f"The organization meets this objective using {services} on {label}."
     if plat == "m365" and rec.m365_implementation_statement:
         body += f" Microsoft 365 reference: {rec.m365_implementation_statement.strip()}"
+    note = _fips_key_custody_note(plat, rec.domain)
+    if note:
+        body += f" {note}"
     return body
 
 
@@ -141,9 +242,13 @@ def customer_responsibility_statement(platform: str | None, rec: ScoringControl)
     env = GOV_ENVIRONMENTS[plat]
     services = services_for(plat, rec.domain)
     obj = (rec.requirement or rec.title or "this requirement").strip().rstrip(".")
-    return (
+    text = (
         f"{constants.DRAFT_PREFIX}As a customer responsibility within {env}, the organization "
         f"configures and maintains {services} to satisfy {obj}. Organization-defined parameters "
         f"and configuration settings are established by the System Owner and evidenced in the "
         f"{env} tenant/account configuration."
     )
+    note = _fips_key_custody_note(plat, rec.domain)
+    if note:
+        text += f" {note}"
+    return text

@@ -58,7 +58,7 @@
 {% if readiness %}
 <section class="card" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">20x readiness</div>
-    <div class="card__subtitle">Status: <strong>{{ readiness.status }}</strong></div></div>
+    <div class="card__subtitle">Status: <strong title="Stored value: {{ readiness.status }}">{{ readiness.status | cr26_label }}</strong></div></div>
   <div class="card__body">
     <div class="stat-grid">
       <div class="stat"><div class="stat__value">{{ readiness.readiness_pct }}%</div><div class="stat__label">Overall</div></div>
@@ -97,7 +97,7 @@
         <label style="flex:1">Logging boundary<br><input name="logging_boundary" style="width:100%" value="{{ profile.logging_boundary or '' if profile else '' }}"></label>
       </div>
       <div><button class="btn btn--primary" type="submit"><i data-lucide="save"></i> Save profile</button>
-        {% if profile %}<span class="dim" style="margin-left:8px">Readiness status: <strong>{{ profile.readiness_status }}</strong></span>{% endif %}</div>
+        {% if profile %}<span class="dim" style="margin-left:8px">Readiness status: <strong title="Stored value: {{ profile.readiness_status }}">{{ profile.readiness_status | cr26_label }}</strong></span>{% endif %}</div>
     </form>
   </div>
 </section>
@@ -112,7 +112,7 @@
       {% for d in dependencies %}
         <tr>
           <td>{{ d.name }}</td><td class="dim">{{ d.provider or '' }}</td><td class="dim">{{ d.service_type or '' }}</td>
-          <td><span class="badge badge--{{ 'ok' if d.fedramp_status == 'authorized' else ('warn' if d.fedramp_status in ('in_process','unknown') else 'bad') }}">{{ d.fedramp_status }}</span></td>
+          <td><span class="badge badge--{{ 'ok' if d.fedramp_status == 'authorized' else ('warn' if d.fedramp_status in ('in_process','unknown') else 'bad') }}" title="Stored value: {{ d.fedramp_status }}">{{ d.fedramp_status | cr26_label }}</span></td>
           <td class="dim">{{ d.dependency_risk or '' }}</td>
         </tr>
       {% else %}

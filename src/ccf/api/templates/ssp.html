@@ -31,7 +31,7 @@
             <td><a href="/ssp/{{ p.id }}" style="font-weight:600">{{ p.customer_name }}</a></td>
             <td>{{ p.system_name or '—' }}</td>
             <td><span class="chip chip--ghost">v{{ p.version }}</span></td>
-            <td><span class="chip {{ 'chip--ok' if p.status=='final' else 'chip--warn' }}">{{ p.status }}</span></td>
+            <td><span class="chip {{ 'chip--ok' if p.status=='final' else ('chip--info' if p.status=='in_review' else 'chip--warn') }}">{{ p.status }}</span></td>
             <td class="dim">{{ p.created_at.strftime('%Y-%m-%d') }}</td>
             <td class="row" style="gap:6px">
               <a class="btn btn--ghost btn--sm" href="/ssp/{{ p.id }}" aria-label="Edit SSP for {{ p.customer_name }}"><i data-lucide="pencil"></i></a>

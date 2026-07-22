@@ -20,6 +20,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -198,3 +199,37 @@ class AiGuardrailViolation(Base):
     kind: Mapped[str] = mapped_column(String(48))
     detail: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AiProviderConfig(Base):
+    """Organization-scoped AI provider configuration + envelope-encrypted credential.
+
+    One row per (organization, provider). The credential is stored only as an
+    envelope-encrypted token (:mod:`ccf.ai.cipher`); ``key_last4`` is the sole
+    identifier ever surfaced to callers/UI. Tenant-isolated via RLS.
+    """
+
+    __tablename__ = "ai_provider_configs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "provider", name="uq_ai_provider_org"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(24), nullable=False)  # anthropic|openai
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    default_model: Mapped[str | None] = mapped_column(String(64))
+    allowed_models: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    encrypted_credential: Mapped[str | None] = mapped_column(Text)
+    key_last4: Mapped[str | None] = mapped_column(String(8))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    validated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

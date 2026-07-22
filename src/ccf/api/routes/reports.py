@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...analytics.posture import org_summary
 from ...auth import Principal
 from ...models import (
     Control,
@@ -25,9 +26,12 @@ from ...models import (
     Framework,
     FrameworkMapping,
     Organization,
+    SSPControlEntry,
+    SSPProject,
     System,
 )
 from ...reporting import report_to_docx, report_to_xlsx
+from ...ssp.statements import is_draft_narrative
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -161,6 +165,36 @@ async def build_report(
         for m in rows:
             mapping_map.setdefault(m.control_id, []).append(m)
 
+    # AI/last-editor provenance (CISO-10, reusing the CISO-02 signal): a
+    # control's implementation status can be backed by an SSP entry narrative
+    # that's still machine-drafted and not yet human-reviewed. Reuse
+    # ``is_draft_narrative`` — the same DRAFT_PREFIX-based signal that drives
+    # the AI badge elsewhere (ccf.ssp.statements) — rather than inventing a
+    # second, possibly-diverging provenance rule. Scoped to the chosen
+    # system's most recently updated SSP project; keyed on the entry's own
+    # ``control_id`` string (matches this catalog's ``identifier`` when the
+    # SSP was authored against it).
+    ai_sourced_map: dict[str, bool] = {}
+    if sys:
+        project = (
+            await session.execute(
+                select(SSPProject)
+                .where(SSPProject.system_id == sys.id)
+                .order_by(SSPProject.updated_at.desc())
+            )
+        ).scalars().first()
+        if project:
+            entries = (
+                (
+                    await session.execute(
+                        select(SSPControlEntry).where(SSPControlEntry.project_id == project.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            ai_sourced_map = {e.control_id: is_draft_narrative(e.part_narratives) for e in entries}
+
     lines: list[dict[str, Any]] = []
     for c in controls:
         impl = impl_map.get(c.id)
@@ -182,6 +216,9 @@ async def build_report(
                 "crosswalk_framework": fw.code if fw else None,
                 "crosswalk_values": "; ".join(f"{m.column_key}={m.value}" for m in mappings)
                 or None,
+                # True only when there IS an implementation status to attribute
+                # and its backing SSP narrative is still AI-drafted/unreviewed.
+                "ai_sourced": bool(impl) and ai_sourced_map.get(c.identifier, False),
             }
         )
 
@@ -195,26 +232,82 @@ async def build_report(
         "total_rows": len(lines),
     }
 
+    # CISO-10: POA&M/risk posture summary, reconciled to the dashboard — the
+    # *same* ``org_summary`` numbers for the same org scope, not a
+    # re-derivation, so the export can never silently drift from what
+    # leadership sees on screen.
+    today = datetime.now(UTC).date()
+    posture = await org_summary(session, today=today, org_id=organization_id_i)
+    risk_summary = {
+        # CISO-10 finding: this block is always the organization-wide posture
+        # (org_summary), even when the report itself is system-scoped via
+        # ``system_id`` — labeled explicitly so a reader can't mistake it for
+        # posture limited to the selected system.
+        "scope": "organization",
+        "systems_total": posture["systems_total"],
+        "systems_scored": posture["systems_scored"],
+        "avg_sprs_score": posture["avg_sprs_score"],
+        "min_sprs_score": posture["min_sprs_score"],
+        "worst_system": posture["worst_system"],
+        "open_poams": posture["open_poams"],
+        "overdue_poams": posture["overdue_poams"],
+        "accepted_poams": posture["accepted_poams"],
+        "risks_by_status": posture["risks_by_status"],
+    }
+
     if fmt == "json":
-        return {"summary": summary, "rows": lines}
+        return {"summary": summary, "risk_summary": risk_summary, "rows": lines}
 
     stem = (filename or f"concord-report-{(org.name if org else 'catalog')}").rsplit(".", 1)[0]
     stem = stem.replace(" ", "_")
 
     if fmt == "xlsx":
-        return _download(report_to_xlsx(summary, lines), f"{stem}.xlsx", _XLSX_MEDIA)
+        return _download(
+            report_to_xlsx(summary, lines, risk_summary), f"{stem}.xlsx", _XLSX_MEDIA
+        )
 
     if fmt == "docx":
-        return _download(report_to_docx(summary, lines), f"{stem}.docx", _DOCX_MEDIA)
+        return _download(
+            report_to_docx(summary, lines, risk_summary), f"{stem}.docx", _DOCX_MEDIA
+        )
 
-    # CSV (default streaming export)
+    # CSV (default streaming export) — a POA&M/risk posture preamble (mirrors
+    # the xlsx Summary sheet / docx heading) ahead of the blank-line-separated
+    # controls table, so the risk numbers travel with the file even though CSV
+    # has no separate-sheet concept.
     buf = io.StringIO()
-    writer = csv.DictWriter(
+    writer = csv.writer(buf)
+    writer.writerow(["Concord compliance report"])
+    for label, value in (
+        ("Generated", summary["generated_at"]),
+        ("Organization", summary["organization"] or "(catalog)"),
+        ("System", summary["system"] or "(any)"),
+        ("Baseline", summary["baseline"] or "(all)"),
+        ("Total rows", summary["total_rows"]),
+    ):
+        writer.writerow([label, value])
+    writer.writerow([])
+    writer.writerow(["POA&M / Risk Posture (reconciled to dashboard)"])
+    worst = risk_summary["worst_system"] or {}
+    for label, value in (
+        ("Scope", "Organization-wide (not limited to any selected system)"),
+        ("Systems scored", risk_summary["systems_scored"]),
+        ("Avg SPRS score", risk_summary["avg_sprs_score"]),
+        ("Min (worst) SPRS score", risk_summary["min_sprs_score"]),
+        ("Worst-scoring system", worst.get("name", "")),
+        ("Open POA&Ms", risk_summary["open_poams"]),
+        ("Overdue POA&Ms", risk_summary["overdue_poams"]),
+        ("Risk-accepted POA&Ms", risk_summary["accepted_poams"]),
+    ):
+        writer.writerow([label, value])
+    writer.writerow([])
+    writer.writerow(["Controls"])
+    dict_writer = csv.DictWriter(
         buf, fieldnames=list(lines[0].keys()) if lines else ["identifier", "family", "control_name"]
     )
-    writer.writeheader()
+    dict_writer.writeheader()
     for row in lines:
-        writer.writerow(row)
+        dict_writer.writerow(row)
     return _download(buf.getvalue().encode("utf-8"), f"{stem}.csv", "text/csv")
 
 

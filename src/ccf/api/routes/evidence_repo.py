@@ -20,6 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...evidence import confidence, service
+from ...models import ControlImplementation, System
 from ...models_evidence import EvidenceObject
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -34,6 +35,7 @@ class ObjectIn(BaseModel):
     description: str | None = None
     system_id: int | None = None
     control_id: str | None = None
+    implementation_id: int | None = None
     framework: str | None = None
     owner: str | None = None
     source_type: str = Field(
@@ -114,6 +116,23 @@ async def create_object(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
+    if principal.org_id is not None and body.implementation_id is not None:
+        # DATA-09 join trust: the FK a caller supplies here is later trusted to
+        # surface this evidence under the referenced control implementation, so
+        # a cross-tenant id must be rejected exactly as create_poam/add_finding
+        # reject a cross-tenant system/engagement reference.
+        ok = (
+            await session.execute(
+                select(ControlImplementation.id)
+                .join(System, ControlImplementation.system_id == System.id)
+                .where(
+                    ControlImplementation.id == body.implementation_id,
+                    System.organization_id == principal.org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "control implementation not found")
     obj = await service.create_object(session, org_id=principal.org_id, **body.model_dump())
     await session.commit()
     obj = await _require_object(session, obj.id, principal)

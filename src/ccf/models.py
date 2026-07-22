@@ -29,9 +29,12 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+from .auth import hash_token
 
 
 class Base(DeclarativeBase):
@@ -273,6 +276,10 @@ class Organization(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # DATA-04: soft-delete marker. Set instead of issuing a hard DELETE so the
+    # CASCADE to systems/users never fires; NULL means active. Callers must
+    # filter ``deleted_at IS NULL`` in list/get queries — see systems.py.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     systems: Mapped[list[System]] = relationship(back_populates="organization")
     users: Mapped[list[User]] = relationship(back_populates="organization")
@@ -293,10 +300,26 @@ class User(Base):
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     password_hash: Mapped[str | None] = mapped_column(String(255))
-    api_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    # IA-09: only the one-way hash is persisted — see the ``api_token`` property
+    # below for the plaintext write/read-once path.
+    api_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     organization: Mapped[Organization] = relationship(back_populates="users")
+
+    @property
+    def api_token(self) -> str | None:
+        """Plaintext bearer token — available only in-memory, only on the
+        instance that just set it (issuance/rotation). Never persisted: the
+        DB holds ``api_token_hash`` only, so a freshly loaded ``User`` always
+        reports ``None`` here. Authenticate via ``api_token_hash`` instead.
+        """
+        return getattr(self, "_api_token_plain", None)
+
+    @api_token.setter
+    def api_token(self, value: str | None) -> None:
+        self._api_token_plain = value
+        self.api_token_hash = hash_token(value) if value else None
 
 
 class System(Base):
@@ -325,6 +348,10 @@ class System(Base):
         default="none",
     )
     ato_expires_on: Mapped[date | None] = mapped_column(Date)
+    # DATA-04: soft-delete marker (see Organization.deleted_at). Set instead of
+    # a hard DELETE so the CASCADE to poams/assessments/evidence/implementations/
+    # risks never fires; NULL means active.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="systems")
     implementations: Mapped[list[ControlImplementation]] = relationship(
@@ -372,11 +399,22 @@ class SystemProfile(Base):
 
 class FrameworkControl(Base):
     """An uploadable control from any framework — lets new frameworks be added
-    without a code change or the NIST workbook. Keyed by (framework_code, identifier)."""
+    without a code change or the NIST workbook. Keyed by (organization_id,
+    framework_code, identifier).
+
+    ``organization_id`` is NULL for globally-seeded/shared reference rows
+    (visible to every tenant) and set to the uploading tenant's org for
+    controls uploaded via ``POST /api/framework-controls/{code}`` (DATA-03) —
+    RLS-enforced via the ``tenant_isolation`` policy added in migration 0046,
+    following the ``audit_log``/0044 NULL-visible-to-all predicate shape.
+    """
 
     __tablename__ = "framework_controls"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
     framework_code: Mapped[str] = mapped_column(String(64), index=True)
     identifier: Mapped[str] = mapped_column(String(128), index=True)
     title: Mapped[str | None] = mapped_column(String(512))
@@ -389,7 +427,21 @@ class FrameworkControl(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        UniqueConstraint("framework_code", "identifier", name="uq_framework_control"),
+        UniqueConstraint(
+            "organization_id", "framework_code", "identifier", name="uq_framework_control"
+        ),
+        # Postgres unique constraints default to NULLS DISTINCT, so the
+        # constraint above does not stop two global (organization_id IS
+        # NULL) rows from colliding on (framework_code, identifier). This
+        # partial index restores that global uniqueness (migration 0047)
+        # without constraining per-org uploaded rows.
+        Index(
+            "uq_framework_controls_global",
+            "framework_code",
+            "identifier",
+            unique=True,
+            postgresql_where=text("organization_id IS NULL"),
+        ),
     )
 
 
@@ -622,6 +674,10 @@ class POAM(Base):
     # (updates/reopens/auto-closes) instead of creating duplicate POA&Ms.
     scanner: Mapped[str | None] = mapped_column(String(32))  # nessus|tenable|qualys|inspector|csv
     finding_uid: Mapped[str | None] = mapped_column(String(64), index=True)
+    # Stable back-reference to the originating record for any source (e.g.
+    # "assessment:{assessment_control_result_id}"), so re-running generation
+    # from that origin is idempotent on this reference rather than a title match.
+    source_ref: Mapped[str | None] = mapped_column(String(128), index=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -659,6 +715,12 @@ class Risk(Base):
     description: Mapped[str | None] = mapped_column(Text)
     category: Mapped[str | None] = mapped_column(String(64))  # taxonomy: operational|technical|...
     source: Mapped[str | None] = mapped_column(String(32))
+    # ISSM-05: stable back-reference to the originating record (e.g.
+    # "audit_finding:{id}"), mirroring POAM.source_ref (0038) — so a Risk
+    # created from an accepted finding is traceable back to what generated it,
+    # and re-running that origin's promotion is idempotent on this reference
+    # rather than a title match.
+    source_ref: Mapped[str | None] = mapped_column(String(128), index=True)
     likelihood: Mapped[str | None] = mapped_column(
         Enum("low", "moderate", "high", name="risk_level", schema="ccf")
     )
@@ -946,6 +1008,12 @@ class AuditLog(Base):
     at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+    # SCOPING column only (DATA-06) — deliberately excluded from the row_hash/
+    # prev_hash chain payload (see ``ccf.api.audit.row_hash``) so it can be
+    # backfilled/corrected without invalidating the tamper-evident chain.
+    # NULL for system/global events (no resolvable tenant); RLS-enforced via the
+    # ``tenant_isolation`` policy added in migration 0044.
+    organization_id: Mapped[int | None] = mapped_column(Integer, index=True)
     actor: Mapped[str | None] = mapped_column(String(255))
     action: Mapped[str] = mapped_column(String(64))
     entity_type: Mapped[str] = mapped_column(String(64))
@@ -1116,6 +1184,8 @@ class Policy(Base):
         back_populates="policy", cascade="all, delete-orphan"
     )
 
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_policy_org_name"),)
+
 
 class PolicyVersion(Base):
     __tablename__ = "policy_versions"
@@ -1185,6 +1255,8 @@ class Vendor(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_vendor_org_name"),)
 
 
 class Approval(Base):
@@ -1482,6 +1554,10 @@ class FedRAMPDependency(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("system_id", "name", name="uq_fedramp_dep_system_name"),
     )
 
 

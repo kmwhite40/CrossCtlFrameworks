@@ -17,7 +17,7 @@ from slowapi.util import get_remote_address
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
-from ..config import get_settings
+from ..config import enforce_secure_config, get_settings
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
@@ -25,6 +25,7 @@ from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
     ai_actions,
     ai_agents,
+    ai_settings,
     approvals,
     artifacts,
     assessments,
@@ -34,6 +35,7 @@ from .routes import (
     automation,
     catalog,
     conmon,
+    connector_settings,
     controls,
     coverage,
     diagrams,
@@ -57,6 +59,7 @@ from .routes import (
     policies,
     portal,
     posture,
+    queries,
     questionnaires,
     reliability,
     reports,
@@ -96,6 +99,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Fail closed on insecure configuration outside dev (IA-01/IA-11).
+    for _warning in enforce_secure_config(settings):
+        log.warning("config.insecure_default", detail=_warning)
     app = FastAPI(
         title="Concord",
         version="0.2.0",
@@ -150,8 +156,13 @@ def create_app() -> FastAPI:
     app.include_router(portal.router)
     app.include_router(portal.public_router)
     app.include_router(portal.ui_router)
+    app.include_router(queries.router)
+    app.include_router(queries.ui_router)
     app.include_router(ai_actions.router)
     app.include_router(ai_agents.router)
+    app.include_router(ai_settings.router)
+    app.include_router(ai_settings.ui_router)
+    app.include_router(connector_settings.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)
