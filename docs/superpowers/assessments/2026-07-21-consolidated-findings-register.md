@@ -423,3 +423,35 @@ cycle on a single org's DB error (now savepoint-isolated + logged, reproduced-th
 finding-vocabulary unification), CISO-09/10 (decision-support polish), FR-03..13 residual SSP-statement
 quality, portal magic-link token-in-URL, SSP connector routes fully per-org, `risk_accepted`-POA&M parallel
 gate; plus the two future programs (FedRAMP 800-53r5 pipeline FR-01, FedRAMP-2026 labels FR-14).
+
+---
+
+## Slice 10 resolutions (2026-07-22, subagent-driven — provenance & integrity closure)
+
+4 TDD tasks + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **ISSM-04/05 (+ `risk_accepted`-POA&M gate)** — `risks` carry an origin ref (`source_ref`);
+  `audit_findings` gained `system_id`/`organization_id`/`poam_id`/`risk_id`; new
+  `POST /api/risks/from-finding/{id}` (accept-finding→Risk) and
+  `POST /api/audit/findings/{id}/promote-to-poam` (provenanced, idempotent, org-scoped) wire the
+  finding→risk/POA&M spine; a POA&M can no longer reach `risk_accepted` without owner+expiry(+approval)
+  (migration `0048`). Finding-close now requires closure evidence.
+- **DATA-07/11** — the three external-portal `grant_id` columns are now `Integer` + FK →
+  `external_access_grants.id` **ON DELETE SET NULL** (orphans nulled first, width normalized;
+  migration `0049`) — no dangling grant references, and revoking a grant nulls (not orphans) the record.
+- **DATA-09** — a nullable `evidence_objects.implementation_id` FK bridges the legacy control-linked
+  evidence to the versioned repository, so **control → evidence → confidence** is one traceable join
+  (migration `0050`); the create route rejects a cross-tenant `implementation_id` (fixed in review).
+- **CISO-09/10** — `org_summary` now exposes the **worst/min SPRS** system (not just the mean); the report
+  export carries a **risk/POA&M posture summary reconciled to the dashboard** (same `org_summary` numbers)
+  plus an **AI-sourced provenance column**, labeled organization-wide scope.
+
+**Whole-branch review findings (all fixed, commit `9e49adb`):** the evidence bridge accepted a
+cross-tenant `implementation_id` (now org-ownership-checked, 404, with a test); `add_finding` didn't
+org-scope the parent engagement (now guarded); the system-scoped report's org-wide posture block is now
+explicitly labeled. Full suite **539 passed, 0 failures**.
+
+**Truly remaining (lowest-value polish, none blocking):** ISSM-13/DATA-05 (finding-vocabulary
+unification — deferred as broad/risky for polish), FR-03..13 residual SSP-statement quality, portal
+magic-link token-in-URL hardening, SSP connector routes fully wired to per-org creds; plus the two
+future programs (FedRAMP 800-53r5 pipeline FR-01, FedRAMP-2026 labels FR-14).
