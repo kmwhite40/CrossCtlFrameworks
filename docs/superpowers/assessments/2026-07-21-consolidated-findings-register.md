@@ -455,3 +455,35 @@ explicitly labeled. Full suite **539 passed, 0 failures**.
 unification — deferred as broad/risky for polish), FR-03..13 residual SSP-statement quality, portal
 magic-link token-in-URL hardening, SSP connector routes fully wired to per-org creds; plus the two
 future programs (FedRAMP 800-53r5 pipeline FR-01, FedRAMP-2026 labels FR-14).
+
+---
+
+## Slice 11 resolutions (2026-07-22, subagent-driven — final follow-ups)
+
+4 tasks (one a verified no-op) + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **SSP connector routes per-org** — verified **already done** in Slice 7 (`184d29d`): the ssp
+  `/connectors/verify` + `/autofill` routes resolve the caller's per-org credential, with
+  production-path tests. No change needed.
+- **Portal magic-link hardening** — the first `?token=` request now exchanges the link-token for a
+  short-lived **signed session cookie** (scoped to the grant, capped at its expiry), 303-redirects
+  stripping the token, and re-validates the grant against the DB on every request (revoked/expired
+  fails even with a valid cookie).
+- **ISSM-13/DATA-05** — a canonical `normalize_finding` vocabulary + a cross-source rollup
+  (`ccf.analytics.findings`) at the app layer (no DB enum change); existing per-source behavior
+  unchanged.
+- **FR-14** — FedRAMP-2026 (CR26) **display labels** on fedramp20x surfaces (`authorized`→"Certified",
+  `continuous_monitoring`→"Ongoing Certification"); stored enum values unchanged; the impact→
+  Certification-Class A/B/C/D mapping deliberately omitted (needs primary-source validation).
+
+**Whole-branch review — CRITICAL caught & fixed (commit `01f2d93`):** the new portal session cookie
+was minted with the **same HMAC secret + payload shape as the internal user-session cookie** (no
+audience claim), so an external portal user could replay it as `concord_session` and authenticate as
+an internal user with a colliding id — cross-boundary token confusion → account takeover. Fixed by
+**domain-separating the portal cookie secret** (HMAC-derived), with regression tests proving a portal
+cookie can no longer authenticate as an internal session (forced id collision; fails pre-fix, passes
+post-fix). Two TTL minors also fixed. Full suite **558 passed, 0 failures**.
+
+**Program complete. Remaining: only the two future programs** — a real FedRAMP **800-53r5** pipeline
+(FR-01, deliberate future scope) and the FR-14 Certification-Class mapping (blocked on primary-source
+FedRAMP documentation, pre-2027-01-01).
