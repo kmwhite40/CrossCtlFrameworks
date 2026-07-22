@@ -392,4 +392,34 @@ soft-deleted systems in secondary dropdowns; AI-badge false-negative for content
 **not** async jitter — it's a **real, deterministic Starlette `BaseHTTPMiddleware`
 double-invocation-on-exception bug** (reproduces on unmodified baseline). Latent; affects audit-trail
 behavior under request exceptions. **Tracked reliability follow-up** (not a go-live condition, but fix
-before high-assurance multi-tenant federal operation).
+before high-assurance multi-tenant federal operation). — **RESOLVED in Slice 9 (Task 1).**
+
+---
+
+## Slice 9 resolutions (2026-07-21, subagent-driven — remaining hardening)
+
+5 TDD tasks + a whole-branch review + a fix wave. **RESOLVED:**
+
+- **Audit-middleware reliability bug** — the `BaseHTTPMiddleware` re-entry double-write is fixed with an
+  idempotency guard on `request.state`; the previously-"flaky" audit-chain test is now **deterministically
+  green (513 passed, 0 failures across repeated runs)**. The full suite has no remaining known failure.
+- **DATA-03** — `framework_controls` now has `organization_id` + RLS + a scoped unique key (migration
+  `0046`) and a partial unique index preserving global-row uniqueness (`0047`); the upload path scopes by
+  caller org — no cross-tenant overwrite/leak; globally-seeded rows preserved.
+- **IA-06** — the background scheduler now runs per-tenant work (collection/ConMon/control-tests) under
+  `set_session_tenant(org)` with correct org attribution, each org in its own **savepoint** so one org's
+  DB failure is contained (not cascade-lost) and logged; global steps stay unscoped.
+- **IA-10** — `ai_store_prompts=False` no longer persists the raw prompt payload; `ai_require_human_approval=True`
+  forces approval (never loosens a registry-gated action).
+- **ISSM-07** — approval decisions are now surfaced on POA&M/risk/assessment API payloads via a read-time
+  join (no schema change), without driving the closure/acceptance gates.
+
+**Whole-branch review findings (all fixed, commit `3387be9`):** the per-tenant scheduler loop lost the whole
+cycle on a single org's DB error (now savepoint-isolated + logged, reproduced-then-fixed with a test); the
+`NULLS DISTINCT` gap in the new framework_controls unique key (partial global index added).
+
+**Remaining tracked follow-ups (all acceptable-track, none blocking the scoped GO):** DATA-07/09/11/12
+(dangling-pointer FKs, evidence-store bridge), ISSM-04/05/13 (audit-finding linkage, risk provenance,
+finding-vocabulary unification), CISO-09/10 (decision-support polish), FR-03..13 residual SSP-statement
+quality, portal magic-link token-in-URL, SSP connector routes fully per-org, `risk_accepted`-POA&M parallel
+gate; plus the two future programs (FedRAMP 800-53r5 pipeline FR-01, FedRAMP-2026 labels FR-14).
