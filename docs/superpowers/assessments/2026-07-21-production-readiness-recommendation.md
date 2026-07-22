@@ -15,13 +15,21 @@ asserted. Remaining items are **conditions** — integrity, governance, and evid
 gaps that must be cleared or explicitly risk-accepted by the Authorizing Official before
 Concord serves real CUI across multiple tenants at scale. No unmitigated Critical stands.
 
-> **Status update (post-Slice-7, 2026-07-21):** conditions **1 (portal FK integrity /
-> DATA-02), 2 (per-org connector credentials / IA-05), 3 (evidence integrity + WORM /
-> IA-07/08), and 5 (approval-gating & SoD / ISSM-08/09) are now CLEARED** in code (see the
-> Slice 7 resolutions in the register). **Remaining conditions: 4 (audit_log per-tenant
-> column / DATA-06), 6 (AI provenance in UI / CISO-02), 7 (destructive-delete safety /
-> DATA-04), and 8 (dependency hygiene).** The recommendation stays **Conditional Go** until
-> those four are cleared or AO-accepted; the numbering below is the original list.
+> **Status update (post-Slice-8, 2026-07-21): ALL 8 CONDITIONS CLEARED.** Slice 7 cleared
+> 1/2/3/5 (portal FKs, per-org connector creds, evidence integrity+WORM, approval-gating &
+> SoD); Slice 8 cleared **4 (audit_log per-tenant isolation / DATA-06), 6 (AI provenance in
+> UI / CISO-02), 7 (destructive-delete safety / DATA-04), and 8 (dependency hygiene)**. See the
+> Slice 7 & 8 resolutions in the register.
+>
+> **Revised decision: GO** for the scoped use (internal compliance-ops + CMMC/800-171 SSP
+> authoring). AI-authored SSP content **may now be enabled** — provenance is visible in the UI.
+> **One reliability item to fix before high-assurance multi-tenant federal operation** (not a
+> blocker for the scoped use): the audit middleware's Starlette `BaseHTTPMiddleware`
+> double-invocation-on-exception bug (root-caused during Slice 8; affects audit behavior under
+> request exceptions). Remaining hardening items (DATA-03/07/09/11/12, IA-06/10, ISSM-04/05/07/13,
+> CISO-09/10, residual SSP-statement quality FR-03..13, portal magic-link token-in-URL) are
+> acceptable-and-track, not go-live blockers. Concord is still **not** FedRAMP-authorized — the
+> 800-53r5 pipeline (FR-01) remains a separate future program.
 
 ## Blockers resolved this program (evidence-backed)
 

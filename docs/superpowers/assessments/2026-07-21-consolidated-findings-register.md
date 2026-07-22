@@ -360,3 +360,36 @@ documented as an accepted evidence-backed exception; `key_last4` now masks the r
 provenance visible in UI), DATA-04 (soft-delete / cascade safety), dependency hygiene. Plus
 tracked follow-ups: SSP connector routes fully wired to per-org creds, `risk_accepted` POA&M
 status parallel gate, portal magic-link token-in-URL hardening, the known-flaky audit-chain test.
+
+---
+
+## Slice 8 resolutions (2026-07-21, subagent-driven — the last 4 go-live conditions)
+
+4 TDD tasks + a whole-branch review + a fix wave. **RESOLVED — ALL 8 go-live conditions now clear:**
+
+- **DATA-06** (cond. 4) — `audit_log` has `organization_id` (scoping column, **excluded from the
+  hash payload** so the chain is unchanged) + an RLS policy (own-org + NULL-org system rows);
+  middleware writes org from the principal. Migration `0044`. Audit **listing** is now per-tenant;
+  the integrity **verify** runs unscoped/global (fixed in review) so it doesn't false-break.
+- **DATA-04** (cond. 7) — System/Organization delete is now **soft** (`deleted_at`); authorization
+  records (POA&Ms/assessments/evidence/control-implementations) are **preserved**; soft-deleted rows
+  hidden from list/get/scope; a second hard-delete path in the UI was also converted; the `?hard=true`
+  purge guard refuses when any dependent record (incl. control implementations/scoring) exists.
+  Migration `0045`.
+- **CISO-02** (cond. 6) — AI-drafted/unreviewed content now shows a per-entry **"AI-assisted / draft"
+  badge** in the SSP + POA&M UI, derived from real signals (SSP `DRAFT_PREFIX`; POA&M via
+  `AiApprovedMutation` provenance matched to current text, persisted so content-only provider output
+  is still badged); approved/human content shows no badge. **AI-authored content may now be enabled.**
+- **Dependency hygiene** (cond. 8) — pip-audit **21 → 0** project-owned advisories (pins bumped:
+  pydantic-settings, python-multipart, pytest 8→9, pytest-asyncio); CI gate stays green with no ignores.
+
+**Whole-branch review findings (all fixed, commit `349e510`):** a **Critical** — DATA-06's RLS made
+`/api/audit/verify` false-break for org-scoped admins (now runs unscoped/global, with a multi-org
+interleaved regression test); the hard-delete guard omitted control implementations (now counted);
+soft-deleted systems in secondary dropdowns; AI-badge false-negative for content-only providers.
+
+**NEW finding (root-caused during the fix wave):** the long-standing "known-flaky" audit-chain test is
+**not** async jitter — it's a **real, deterministic Starlette `BaseHTTPMiddleware`
+double-invocation-on-exception bug** (reproduces on unmodified baseline). Latent; affects audit-trail
+behavior under request exceptions. **Tracked reliability follow-up** (not a go-live condition, but fix
+before high-assurance multi-tenant federal operation).
