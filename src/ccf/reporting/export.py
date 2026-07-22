@@ -33,6 +33,7 @@ _COLUMNS: tuple[tuple[str, str], ...] = (
     ("last_assessed_on", "Last Assessed"),
     ("crosswalk_framework", "Crosswalk"),
     ("crosswalk_values", "Crosswalk Values"),
+    ("ai_sourced", "AI-Sourced"),
 )
 
 _BRAND = "4F46E5"  # indigo, matches the app brand
@@ -59,17 +60,60 @@ def _summary_pairs(summary: Mapping[str, Any]) -> list[tuple[str, str]]:
     ]
 
 
-def report_to_xlsx(summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> bytes:
-    """Render the report as a two-sheet workbook (Summary + Controls)."""
+def _risk_summary_pairs(risk_summary: Mapping[str, Any] | None) -> list[tuple[str, str]]:
+    """POA&M/risk posture rows for the report, reconciled 1:1 to the dashboard's
+    ``ccf.analytics.posture.org_summary`` for the same scope (CISO-10) — same
+    numbers, not a re-derivation, so the export can never silently drift from
+    what leadership sees on screen."""
+    if not risk_summary:
+        return []
+    worst = risk_summary.get("worst_system") or {}
+    risks_by_status = risk_summary.get("risks_by_status") or {}
+    open_risks = sum(n for status, n in risks_by_status.items() if status != "closed")
+    return [
+        ("Systems scored", _cell(risk_summary.get("systems_scored"))),
+        ("Avg SPRS score", _cell(risk_summary.get("avg_sprs_score"))),
+        ("Min (worst) SPRS score", _cell(risk_summary.get("min_sprs_score"))),
+        ("Worst-scoring system", _cell(worst.get("name")) or "(none)"),
+        ("Open POA&Ms", _cell(risk_summary.get("open_poams"))),
+        ("Overdue POA&Ms", _cell(risk_summary.get("overdue_poams"))),
+        ("Risk-accepted POA&Ms", _cell(risk_summary.get("accepted_poams"))),
+        ("Open risks", _cell(open_risks)),
+    ]
+
+
+def report_to_xlsx(
+    summary: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    risk_summary: Mapping[str, Any] | None = None,
+) -> bytes:
+    """Render the report as a two-sheet workbook (Summary + Controls).
+
+    ``risk_summary`` (CISO-10) adds a POA&M/risk posture block beneath the
+    report metadata on the Summary sheet, reconciled to the dashboard.
+    """
     wb = Workbook()
 
     meta = wb.active
     meta.title = "Summary"
     meta["A1"] = "Concord compliance report"
     meta["A1"].font = Font(size=14, bold=True, color=_BRAND)
-    for i, (label, value) in enumerate(_summary_pairs(summary), start=3):
-        meta.cell(row=i, column=1, value=label).font = Font(bold=True)
-        meta.cell(row=i, column=2, value=value)
+    row_i = 3
+    for label, value in _summary_pairs(summary):
+        meta.cell(row=row_i, column=1, value=label).font = Font(bold=True)
+        meta.cell(row=row_i, column=2, value=value)
+        row_i += 1
+    risk_pairs = _risk_summary_pairs(risk_summary)
+    if risk_pairs:
+        row_i += 1
+        meta.cell(row=row_i, column=1, value="POA&M / Risk Posture").font = Font(
+            bold=True, color=_BRAND
+        )
+        row_i += 1
+        for label, value in risk_pairs:
+            meta.cell(row=row_i, column=1, value=label).font = Font(bold=True)
+            meta.cell(row=row_i, column=2, value=value)
+            row_i += 1
     meta.column_dimensions["A"].width = 22
     meta.column_dimensions["B"].width = 48
 
@@ -85,7 +129,7 @@ def report_to_xlsx(summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
         ws.append([_cell(row.get(key)) for key, _ in _COLUMNS])
 
     # Reasonable widths + a frozen, filterable header.
-    widths = (16, 9, 40, 7, 10, 7, 16, 16, 12, 14, 12, 32)
+    widths = (16, 9, 40, 7, 10, 7, 16, 16, 12, 14, 12, 32, 12)
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
     ws.freeze_panes = "A2"
@@ -101,8 +145,16 @@ def _shade(cell: Any, fill: str) -> None:
     cell._tc.get_or_add_tcPr().append(shd)
 
 
-def report_to_docx(summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]) -> bytes:
-    """Render the report as a titled Word document with a control table."""
+def report_to_docx(
+    summary: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    risk_summary: Mapping[str, Any] | None = None,
+) -> bytes:
+    """Render the report as a titled Word document with a control table.
+
+    ``risk_summary`` (CISO-10) adds a POA&M/risk posture section, reconciled
+    to the dashboard, before the control table.
+    """
     doc = Document()
 
     title = doc.add_heading(level=0)
@@ -113,6 +165,14 @@ def report_to_docx(summary: Mapping[str, Any], rows: Sequence[Mapping[str, Any]]
         p = doc.add_paragraph()
         p.add_run(f"{label}: ").bold = True
         p.add_run(value)
+
+    risk_pairs = _risk_summary_pairs(risk_summary)
+    if risk_pairs:
+        doc.add_heading("POA&M / Risk Posture", level=1)
+        for label, value in risk_pairs:
+            p = doc.add_paragraph()
+            p.add_run(f"{label}: ").bold = True
+            p.add_run(value)
 
     doc.add_heading("Controls", level=1)
     headers = [label for _, label in _COLUMNS]

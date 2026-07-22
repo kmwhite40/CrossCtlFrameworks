@@ -243,6 +243,24 @@ async def org_summary(
     scored = [c for c in cards if c["controls_assessed"] > 0]
     avg_sprs = round(sum(c["sprs_score"] for c in scored) / len(scored), 1) if scored else None
 
+    # CISO-09: the average masks a failing system — surface the weakest
+    # assessed system explicitly rather than making leadership infer it from
+    # the mean. ``min()`` over ``scored`` (not ``cards``) so an unassessed
+    # system (no controls scored yet) can't falsely look like the worst
+    # performer at score 0.
+    worst = min(scored, key=lambda c: c["sprs_score"]) if scored else None
+    min_sprs = worst["sprs_score"] if worst else None
+    worst_system = (
+        {
+            "system_id": worst["system_id"],
+            "name": worst["name"],
+            "sprs_score": worst["sprs_score"],
+            "sprs_percentage": worst["sprs_percentage"],
+        }
+        if worst
+        else None
+    )
+
     risk_stmt = select(Risk.status, func.count()).group_by(Risk.status)
     ato_stmt = select(System.ato_status, func.count()).group_by(System.ato_status)
     if org_id is not None:
@@ -256,6 +274,8 @@ async def org_summary(
         "systems_total": len(cards),
         "systems_scored": len(scored),
         "avg_sprs_score": avg_sprs,
+        "min_sprs_score": min_sprs,
+        "worst_system": worst_system,
         "sprs_max": 110,
         "open_poams": poams["open_total"],
         "overdue_poams": poams["overdue"],
