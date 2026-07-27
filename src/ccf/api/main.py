@@ -73,6 +73,7 @@ from .routes import (
     systems,
     tasks,
     ui,
+    ui_boundary,
     ui_grc,
     users,
     vendors,
@@ -206,6 +207,7 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
+    app.include_router(ui_boundary.router)
     app.include_router(ui.router)
     return app
 

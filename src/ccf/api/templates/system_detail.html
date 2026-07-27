@@ -76,4 +76,17 @@
     <div class="card__body dim">Attach evidence via <span class="mono">/api/evidence</span> or the implementation detail view (coming soon).</div>
   </div>
 </section>
+
+<section class="card" style="margin-top:16px">
+  <div class="card__header">
+    <div class="card__title">Boundary &amp; inventory</div>
+    <a class="btn btn--ghost btn--sm" href="/systems/{{ sys.id }}/boundary"><i data-lucide="arrow-right"></i> Open boundary</a>
+  </div>
+  <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+    <span class="chip chip--brand">{{ boundary_counts.components }} component(s)</span>
+    <span class="chip chip--brand">{{ boundary_counts.inventory }} inventory item(s)</span>
+    <span class="chip chip--brand">{{ boundary_counts.info_types }} information type(s)</span>
+    <span class="chip chip--brand">{{ boundary_counts.interconnections }} interconnection(s)</span>
+  </div>
+</section>
 {% endblock %}
