@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     auth_lockout_threshold: int = Field(default=5)
     auth_lockout_minutes: int = Field(default=15)
 
+    # IA-5: password minimum length. NIST 800-63B favors length over composition/
+    # rotation rules, so no complexity or rotation policy is enforced here.
+    auth_password_min_length: int = Field(default=12)
+
     # Enterprise SSO — OIDC authorization-code login + SCIM provisioning. All
     # optional and disabled by default: with OIDC off the app keeps its local
     # session login, so local/dev needs no IdP. JIT provisioning creates a local

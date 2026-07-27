@@ -14,7 +14,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import func, select
 
-from .auth import hash_password, new_api_token
+from .auth import hash_password, new_api_token, validate_password_policy
 from .config import get_settings
 from .db import session_scope
 from .etl import ingest_workbook
@@ -409,6 +409,12 @@ def user_create(
     ),
 ) -> None:
     """Create (or update) a user with a password + API token for authentication."""
+
+    try:
+        validate_password_policy(password, min_length=get_settings().auth_password_min_length)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     async def _run() -> None:
         async with session_scope() as session:
