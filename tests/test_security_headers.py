@@ -13,7 +13,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
-from ccf.api.security_headers import SecurityHeadersMiddleware
+from ccf.api.security_headers import _HEADERS, SecurityHeadersMiddleware
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -46,3 +46,11 @@ async def test_hsts_header_added_when_enabled() -> None:
         r = await c.get("/healthz")
     assert r.status_code == 200
     assert r.headers["strict-transport-security"] == "max-age=31536000; includeSubDomains"
+
+
+def test_csp_allows_unsafe_eval_for_alpine():
+    # Alpine.js compiles directives via the Function constructor; without
+    # 'unsafe-eval' a CSP-enforcing browser silently disables all reactivity.
+    csp = _HEADERS[b"content-security-policy"].decode()
+    assert "'unsafe-eval'" in csp
+    assert "script-src" in csp

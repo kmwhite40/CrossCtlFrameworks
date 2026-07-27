@@ -17,7 +17,13 @@ _HEADERS = {
     b"referrer-policy": b"no-referrer",
     b"content-security-policy": (
         b"default-src 'self'; img-src 'self' data:; "
-        b"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+        # 'unsafe-eval' is required by the vendored Alpine.js build, which compiles
+        # x-data/@click/etc. expressions via the Function constructor. Without it a
+        # CSP-enforcing browser silently disables all Alpine reactivity. 'unsafe-inline'
+        # covers the templates' inline <script>/<style>. Tightenable later by moving to
+        # the Alpine CSP build + nonce-based inline scripts.
+        b"style-src 'self' 'unsafe-inline'; "
+        b"script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
         b"connect-src 'self'; frame-ancestors 'none'"
     ),
 }

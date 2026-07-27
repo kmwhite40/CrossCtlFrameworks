@@ -19,6 +19,7 @@ from ccf.ingest import (
     normalize_severity,
     parse_scan,
 )
+from ccf.ingest.scanners import parse_nessus
 from ccf.models import POAM, Organization, ScanIngestion, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -252,3 +253,16 @@ async def test_ingest_rejects_missing_file_and_bad_system() -> None:
             files=_upload(NESSUS_XML, "s.nessus", "text/xml"),
         )
         assert r2.status_code == 404
+
+
+def test_parse_nessus_rejects_xxe():
+    # A hostile Nessus upload with an entity-expansion/XXE payload must be
+    # rejected as a clean ValueError (400), not crash (500) or expand (DoS).
+    payload = (
+        b'<?xml version="1.0"?>\n'
+        b'<!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;">]>\n'
+        b'<NessusClientData_v2><Report><ReportHost name="&lol2;"></ReportHost>'
+        b'</Report></NessusClientData_v2>'
+    )
+    with pytest.raises(ValueError):
+        parse_nessus(payload)
