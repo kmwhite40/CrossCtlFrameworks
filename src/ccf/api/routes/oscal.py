@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
+from ...boundary.summary import BoundarySummary, system_boundary_summary
 from ...models import (
     POAM,
     Control,
@@ -106,13 +107,35 @@ def _oscal_status(meta: dict[str, Any]) -> dict[str, Any]:
     return {"state": state}
 
 
-def _oscal_information_types(meta: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build the one information-type OSCAL expects, sourcing each impact
-    level's ``base`` from ``fips199``. ``base`` is an OSCAL token — it must
-    never hold a human-readable placeholder sentence (spaces/em-dash aren't
-    valid token characters). When a level's categorization is absent, the
-    impact object is omitted entirely (never fabricated) and the gap is
-    surfaced in ``remarks`` instead."""
+def _oscal_information_types(
+    meta: dict[str, Any], summary: BoundarySummary | None
+) -> list[dict[str, Any]]:
+    """Build OSCAL information-types from the real boundary inventory when one
+    exists; otherwise fall back to the single type synthesized from
+    ``fips199``. ``base`` is an OSCAL token — it must never hold a
+    human-readable placeholder sentence (spaces/em-dash aren't valid token
+    characters). When a level's categorization is absent, the impact object is
+    omitted entirely (never fabricated)."""
+    if summary and summary.info_types:
+        info_types: list[dict[str, Any]] = []
+        for it in summary.info_types:
+            node: dict[str, Any] = {
+                "uuid": it.oscal_uuid,
+                "title": it.title,
+                "description": it.description or it.title,
+            }
+            for key, value in (
+                ("confidentiality-impact", it.confidentiality_impact),
+                ("integrity-impact", it.integrity_impact),
+                ("availability-impact", it.availability_impact),
+            ):
+                if value:
+                    node[key] = {"base": value}
+            if it.adjustment_justification:
+                node["remarks"] = it.adjustment_justification
+            info_types.append(node)
+        return info_types
+
     fips = meta.get("fips199") or {}
     title = _meta_str(meta.get("system_type"), "system_type")
 
@@ -166,10 +189,16 @@ def _oscal_roles_and_parties(
 
 
 def _oscal_system_implementation(
-    proj: SSPProject, meta: dict[str, Any], responsible_parties: list[dict[str, Any]]
+    proj: SSPProject,
+    meta: dict[str, Any],
+    responsible_parties: list[dict[str, Any]],
+    summary: BoundarySummary | None,
 ) -> dict[str, Any]:
-    """Minimal but structurally-real system-implementation: the one system
-    component the SSP describes, plus one user per filled responsible role."""
+    """system-implementation built from the real boundary inventory (System
+    components + interconnections + inventory items) when one has been
+    enumerated for the project's system, plus one user per filled responsible
+    role. Falls back to the single synthesized placeholder component when the
+    boundary is empty — annotated with ``remarks`` so the gap is visible."""
     users = [
         {
             "uuid": str(uuid.uuid4()),
@@ -178,6 +207,51 @@ def _oscal_system_implementation(
         }
         for rp in responsible_parties
     ]
+
+    if summary and (summary.components or summary.interconnections):
+        comp_uuid_by_id: dict[int, str] = {}
+        components: list[dict[str, Any]] = []
+        for c in summary.components:
+            comp_uuid_by_id[c.id] = c.oscal_uuid
+            components.append(
+                {
+                    "uuid": c.oscal_uuid,
+                    "type": c.type,
+                    "title": c.title,
+                    "description": c.description or c.title,
+                    "status": {"state": c.status},
+                }
+            )
+        for icx in summary.interconnections:
+            components.append(
+                {
+                    "uuid": icx.oscal_uuid,
+                    "type": "interconnection",
+                    "title": icx.remote_system_name,
+                    "description": icx.data_description or icx.remote_system_name,
+                    "status": {"state": "operational"},
+                    "props": [
+                        {"name": "direction", "value": icx.direction},
+                        {"name": "agreement-type", "value": icx.agreement_type},
+                    ],
+                }
+            )
+        result: dict[str, Any] = {"users": users, "components": components}
+        if summary.inventory:
+            inventory_items: list[dict[str, Any]] = []
+            for item in summary.inventory:
+                inv: dict[str, Any] = {
+                    "uuid": item.oscal_uuid,
+                    "description": item.description or item.asset_id,
+                }
+                if item.component_id is not None and item.component_id in comp_uuid_by_id:
+                    inv["implemented-components"] = [
+                        {"component-uuid": comp_uuid_by_id[item.component_id]}
+                    ]
+                inventory_items.append(inv)
+            result["inventory-items"] = inventory_items
+        return result
+
     return {
         "users": users,
         "components": [
@@ -187,6 +261,10 @@ def _oscal_system_implementation(
                 "title": proj.system_name or proj.customer_name,
                 "description": _meta_str(meta.get("system_type"), "system_type"),
                 "status": _oscal_status(meta),
+                "remarks": (
+                    f"{_PLACEHOLDER} — system boundary not yet enumerated "
+                    "in the boundary inventory"
+                ),
             }
         ],
     }
@@ -329,6 +407,9 @@ async def ssp_export(
     meta: dict[str, Any] = proj.metadata_json or {}
     fips = meta.get("fips199") or {}
     roles, parties, responsible_parties = _oscal_roles_and_parties(meta)
+    summary = (
+        await system_boundary_summary(session, proj.system_id) if proj.system_id else None
+    )
 
     now = datetime.now(UTC).isoformat()
     metadata: dict[str, Any] = {
@@ -357,7 +438,9 @@ async def ssp_export(
                 "description": f"CMMC Level 2 enclave for {proj.customer_name} "
                 f"({proj.platform}).",
                 "security-sensitivity-level": _meta_str(fips.get("overall"), "fips199.overall"),
-                "system-information": {"information-types": _oscal_information_types(meta)},
+                "system-information": {
+                    "information-types": _oscal_information_types(meta, summary)
+                },
                 "status": _oscal_status(meta),
                 "authorization-boundary": {
                     "description": _meta_str(
@@ -366,7 +449,7 @@ async def ssp_export(
                 },
             },
             "system-implementation": _oscal_system_implementation(
-                proj, meta, responsible_parties
+                proj, meta, responsible_parties, summary
             ),
             "control-implementation": {
                 "description": f"{_OSCAL_BASELINE_NAME} control implementations.",
