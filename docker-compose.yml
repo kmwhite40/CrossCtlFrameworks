@@ -1,6 +1,7 @@
 name: ccf
 
 x-ccf-env: &ccf_env
+  CCF_ENV: dev
   CCF_DATABASE_URL: postgresql+asyncpg://ccf:ccf@db:5432/ccf
   CCF_DATABASE_URL_SYNC: postgresql+psycopg://ccf:ccf@db:5432/ccf
   CCF_LOG_LEVEL: INFO

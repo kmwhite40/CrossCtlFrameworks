@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session, verify_password
-from ...config import get_settings
+from ...config import get_settings, is_dev_env
 from ...models import User
 from ..auth_deps import SESSION_COOKIE, get_principal
 from ..deps import get_session
@@ -34,7 +34,7 @@ def _set_session_cookie(response: Response, user_id: int) -> None:
         max_age=settings.auth_session_ttl_hours * 3600,
         httponly=True,
         samesite="lax",
-        secure=settings.env == "prod",
+        secure=not is_dev_env(settings),
     )
 
 

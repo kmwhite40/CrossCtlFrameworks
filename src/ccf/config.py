@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    env: str = Field(default="dev", description="Deployment environment")
+    env: str = Field(default="production", description="Deployment environment")
     log_level: str = Field(default="INFO")
     log_json: bool = Field(default=False)
 
@@ -195,18 +195,22 @@ _DEV_ENVS = frozenset({"dev", "local", "test"})
 _DEFAULT_SESSION_SECRET = "dev-insecure-change-me"
 
 
+def is_dev_env(settings: Settings) -> bool:
+    return (settings.env or "").lower() in _DEV_ENVS
+
+
 def enforce_secure_config(settings: Settings) -> list[str]:
     """Fail closed on insecure configuration outside a dev environment (IA-01/IA-11).
 
     Raises ``RuntimeError`` — refusing startup — when ``env`` is not dev/local/test and
-    a hard-unsafe setting is active (auth disabled, or the default session secret,
-    which together let any request act as an unscoped global admin). Returns a list of
-    non-fatal warnings (e.g. wildcard CORS) for the caller to log. In dev environments
-    it is a no-op so local/reader use stays frictionless.
+    a hard-unsafe setting is active (auth disabled, the default session secret, or
+    wildcard CORS — together these let any request act as an unscoped global admin
+    from any origin). Returns a list of non-fatal warnings for the caller to log. In
+    dev environments it is a no-op so local/reader use stays frictionless.
     """
-    env = (settings.env or "").lower()
-    if env in _DEV_ENVS:
+    if is_dev_env(settings):
         return []
+    env = (settings.env or "").lower()
     problems: list[str] = []
     warnings: list[str] = []
     if not settings.auth_enabled:
@@ -214,7 +218,7 @@ def enforce_secure_config(settings: Settings) -> list[str]:
     if settings.auth_session_secret == _DEFAULT_SESSION_SECRET:
         problems.append("session secret is the insecure default (set CCF_AUTH_SESSION_SECRET)")
     if settings.api_cors_origins == ["*"]:
-        warnings.append("CORS is wildcard '*' — restrict CCF_API_CORS_ORIGINS in production")
+        problems.append("CORS is wildcard '*' (set CCF_API_CORS_ORIGINS to explicit origins)")
     if problems:
         raise RuntimeError(
             f"Refusing to start: insecure configuration for env={env!r}: "
