@@ -4,9 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Sign in · Concord</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  {#- The rest of the app uses the system font stack (see --font-body/--font-display
+      in app.css); this page never actually applies "Open Sans" via CSS, so the
+      external Google Fonts import was dead weight blocked by the SC-8/SI-10
+      Content-Security-Policy (style-src 'self') — dropped rather than loosening it. -#}
   <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
 </head>
 <body>

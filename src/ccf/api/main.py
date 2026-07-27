@@ -16,7 +16,7 @@ from slowapi.errors import RateLimitExceeded
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
-from ..config import enforce_secure_config, get_settings
+from ..config import enforce_secure_config, get_settings, is_dev_env
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
@@ -79,6 +79,7 @@ from .routes import (
     vendors,
     worksheets,
 )
+from .security_headers import SecurityHeadersMiddleware
 
 log = get_logger(__name__)
 
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(SecurityHeadersMiddleware, hsts=not is_dev_env(settings))
     app.middleware("http")(metrics_middleware)
     if settings.audit_enabled and not settings.readonly:
         app.middleware("http")(audit_middleware)
