@@ -33,6 +33,7 @@ from .routes import (
     audit,
     auth,
     automation,
+    boundary,
     catalog,
     conmon,
     connector_settings,
@@ -173,6 +174,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog.router)
     app.include_router(diff.router)
     app.include_router(systems.router)
+    app.include_router(boundary.router)
     app.include_router(scoring.router)
     app.include_router(ssp.router)
     app.include_router(assessments.router)
