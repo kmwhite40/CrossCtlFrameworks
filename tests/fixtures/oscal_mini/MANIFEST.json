@@ -1,0 +1,11 @@
+{
+  "oscal_version": "5.2.0",
+  "source_url": "hand-authored test fixture",
+  "retrieved_at": "2026-07-26",
+  "files": {
+    "NIST_SP-800-53_rev5_HIGH-baseline_profile.json": "7cdf970ed9d431421babf69603d2dca8e9abff25d36f498a043ab53e51203ef4",
+    "NIST_SP-800-53_rev5_LOW-baseline_profile.json": "194047bc2d496ff5b8da580fb225568ad680c29d9db71504f6e020b8003d35ee",
+    "NIST_SP-800-53_rev5_MODERATE-baseline_profile.json": "66890efd71fa6c02bef55cc7528b31ab56810a5006d26b3ed8be69a91dd81884",
+    "NIST_SP-800-53_rev5_catalog.json": "df92832b4ad419be4b98daa78a7323a1c666dbf7fca250a82ad8a6992a0a5abb"
+  }
+}

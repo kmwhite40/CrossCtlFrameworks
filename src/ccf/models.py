@@ -1586,3 +1586,25 @@ class FedRAMP20xReadinessSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class CatalogIntegrityReport(Base):
+    """Advisory catalog reconciliation run — controls/mappings vs. pinned OSCAL 800-53r5.
+
+    Global catalog data (not tenant-scoped): no RLS policy, consistent with other
+    non-tenant reference tables (e.g. ``catalog_sources``).
+    """
+
+    __tablename__ = "catalog_integrity_reports"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    oscal_version: Mapped[str | None] = mapped_column(String(32))
+    oscal_sha256: Mapped[str | None] = mapped_column(String(64))
+    controls_checked: Mapped[int] = mapped_column(Integer, default=0)
+    not_evaluated: Mapped[int] = mapped_column(Integer, default=0)
+    findings_total: Mapped[int] = mapped_column(Integer, default=0)
+    findings_by_severity: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    findings: Mapped[list[Any]] = mapped_column(JSONB, default=list)
+    crosswalk: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)

@@ -1250,6 +1250,47 @@ def assurance_impact(
         console.print(f"  {etype}: {len(items)}")
 
 
+catalog_app = typer.Typer(help="OSCAL catalog reconciliation (advisory).", no_args_is_help=True)
+app.add_typer(catalog_app, name="catalog")
+
+
+@catalog_app.command("reconcile")
+def catalog_reconcile(
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero if the run has any high-severity findings."
+    ),
+) -> None:
+    """Run OSCAL 800-53r5 catalog reconciliation and store the report."""
+    from .catalog.report import render_text, run_and_store  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            report = await run_and_store(session)
+            await session.commit()
+            return report
+
+    report = asyncio.run(_run())
+    console.print(render_text(report))
+    if strict and report.findings_by_severity.get("high", 0):
+        raise typer.Exit(code=1)
+
+
+@catalog_app.command("show")
+def catalog_show() -> None:
+    """Show the most recent OSCAL catalog reconciliation report."""
+    from .catalog.report import latest_report, render_text  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            return await latest_report(session)
+
+    report = asyncio.run(_run())
+    if report is None:
+        console.print("No catalog reconciliation report yet.")
+        return
+    console.print(render_text(report))
+
+
 oscal_app = typer.Typer(help="OSCAL — validate exports against official or structural schema")
 app.add_typer(oscal_app, name="oscal")
 

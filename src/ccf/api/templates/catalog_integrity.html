@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Catalog integrity · Concord{% endblock %}
+{% block heading %}OSCAL catalog integrity{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Advisory reconciliation of workbook-sourced controls and framework mappings against the pinned NIST OSCAL 800-53 Rev 5 catalog. Read-only — never mutates <code>controls</code>.</p>{% endblock %}
+{% block content %}
+
+{% if report is none %}
+<section class="card">
+  <div class="card__body dim" style="text-align:center;padding:40px">
+    No catalog reconciliation has run yet. Run <code>ccf catalog reconcile</code>.
+  </div>
+</section>
+{% else %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">OSCAL version</div><div class="kpi__value">{{ report.oscal_version or '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Controls checked</div><div class="kpi__value">{{ report.controls_checked }}</div></div>
+  <div class="kpi"><div class="kpi__label">Not evaluated</div><div class="kpi__value {% if report.not_evaluated %}kpi__value--danger{% endif %}">{{ report.not_evaluated }}</div></div>
+  <div class="kpi"><div class="kpi__label">Findings</div><div class="kpi__value {% if report.findings_total %}kpi__value--danger{% endif %}">{{ report.findings_total }}</div></div>
+</div>
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Findings by severity</div></div>
+  <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+    <span class="chip chip--err">high: {{ report.findings_by_severity.get('high', 0) }}</span>
+    <span class="chip chip--warn">medium: {{ report.findings_by_severity.get('medium', 0) }}</span>
+    <span class="chip chip--ok">low: {{ report.findings_by_severity.get('low', 0) }}</span>
+  </div>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Findings</div><span class="dim" style="font-size:13px">{{ report.findings|length }}</span></div>
+  {% if report.findings %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Severity</th><th>Check</th><th>Canonical ID</th><th>Raw ID</th><th>Field</th><th>Workbook value</th><th>OSCAL value</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for f in report.findings %}<tr>
+        <td><span class="chip {% if f.severity=='high' %}chip--err{% elif f.severity=='medium' %}chip--warn{% elif f.severity=='low' %}chip--ok{% else %}chip{% endif %}">{{ f.severity }}</span></td>
+        <td>{{ f.check }}</td>
+        <td class="mono">{{ f.canonical_id or '—' }}</td>
+        <td class="mono dim">{{ f.raw_id or '—' }}</td>
+        <td>{{ f.field or '—' }}</td>
+        <td class="dim">{{ f.workbook_value if f.workbook_value is not none else '—' }}</td>
+        <td class="dim">{{ f.oscal_value if f.oscal_value is not none else '—' }}</td>
+        <td>{{ f.detail or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No findings — the workbook is fully reconciled against the pinned OSCAL catalog.</div>{% endif %}
+</section>
+
+{% endif %}
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}
