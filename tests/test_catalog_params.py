@@ -54,3 +54,12 @@ def test_param_label_falls_back_to_prop_when_no_top_level_label():
     }
     param = _parse_param(fixture)
     assert param.label == "AC-02_ODP[01]"
+
+
+def test_multipart_statement_includes_nested_items():
+    # Real 800-53 controls carry statement text in nested labeled item parts;
+    # the loader must concatenate them, not return an empty statement.
+    cat = load_oscal_catalog()
+    stmt = cat.get("AC-2").statement
+    assert len(stmt) > 200
+    assert "a." in stmt and "Assign account managers" in stmt
