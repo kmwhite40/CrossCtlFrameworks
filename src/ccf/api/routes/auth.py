@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from ...config import get_settings, is_dev_env
 from ...models import User
 from ..auth_deps import SESSION_COOKIE, get_principal
 from ..deps import get_session
+from ..limiter import limiter
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -40,8 +41,12 @@ def _set_session_cookie(response: Response, user_id: int) -> None:
 
 
 @router.post("/login")
+@limiter.limit("10/minute")
 async def login(
-    body: LoginIn, response: Response, session: AsyncSession = Depends(get_session)
+    request: Request,
+    body: LoginIn,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     user = (
         await session.execute(

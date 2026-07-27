@@ -16,6 +16,7 @@ from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
+from ccf.api.limiter import limiter
 from ccf.api.main import create_app
 from ccf.auth import hash_password
 from ccf.config import get_settings
@@ -39,7 +40,15 @@ def _auth_enabled() -> None:
     os.environ["CCF_AUTH_ENABLED"] = "true"
     os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"
     get_settings.cache_clear()
+    # The shared login rate limiter (10/minute, keyed by client IP) is a
+    # process-wide singleton independent of the per-test app instance, and
+    # every test in this module posts to /api/auth/login from the same
+    # default client address. Without a reset per test, the cumulative call
+    # count across this module's tests (plus any earlier module in the same
+    # run) would trip a spurious 429 on an otherwise-valid login attempt.
+    limiter.reset()
     yield
+    limiter.reset()
     os.environ.pop("CCF_AUTH_ENABLED", None)
     os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
     get_settings.cache_clear()
