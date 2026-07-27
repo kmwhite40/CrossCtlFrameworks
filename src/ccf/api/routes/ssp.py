@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...boundary.summary import reconcile_categorization, system_boundary_summary
 from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
 from ...governance import automation
@@ -291,7 +292,33 @@ async def completeness(
         if linked:
             d["control_implementation"] = {"evidence": linked}
         rows.append(d)
-    return ssp_completeness.assess(proj.metadata_json or {}, rows)
+
+    boundary: dict[str, Any] | None = None
+    if proj.system_id is not None:
+        summary = await system_boundary_summary(session, proj.system_id)
+        system_row = await session.get(System, proj.system_id)
+        # No System row to compare against (e.g. it was deleted out from under
+        # the project, which SET NULLs system_id) -> nothing to reconcile, so
+        # don't hold the boundary check against the SSP.
+        reconciles = (
+            reconcile_categorization(system_row, summary.info_types) == []
+            if system_row is not None
+            else True
+        )
+        ic_total = len(summary.interconnections)
+        ic_with_agreement = sum(
+            1
+            for ic in summary.interconnections
+            if ic.agreement_type not in (None, "", "none") and (ic.agreement_ref or "").strip()
+        )
+        boundary = {
+            "components": len(summary.components),
+            "info_types": len(summary.info_types),
+            "categorization_reconciles": reconciles,
+            "interconnections_with_agreements": (ic_with_agreement, ic_total),
+        }
+
+    return ssp_completeness.assess(proj.metadata_json or {}, rows, boundary=boundary)
 
 
 class MetadataIn(BaseModel):
