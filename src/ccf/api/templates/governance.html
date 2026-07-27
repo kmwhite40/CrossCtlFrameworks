@@ -96,7 +96,10 @@
   </div>
 </section>
 
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+{#- Vendored Mermaid (matches system_boundary.html) — avoids an external CDN
+    fetch that the SC-8/SI-10 Content-Security-Policy (script-src 'self') now
+    blocks. -#}
+<script src="/static/vendor/mermaid.min.js"></script>
 <script>
   if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: 'neutral' });
   async function _draw(text) {

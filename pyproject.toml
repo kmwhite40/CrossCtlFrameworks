@@ -33,6 +33,7 @@ dependencies = [
     "aiosqlite>=0.20,<1",
     "jsonschema>=4.20,<5",
     "cryptography>=46,<50",
+    "defusedxml>=0.7,<1",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,8 @@ dev = [
     "ruff>=0.5,<1",
     "mypy>=1.10,<2",
     "types-python-slugify",
+    "types-defusedxml",
+    "bandit>=1.7,<2",
 ]
 reader = [
     "pyinstaller>=6.10,<7",

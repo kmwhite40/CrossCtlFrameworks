@@ -305,6 +305,11 @@ class User(Base):
     # below for the plaintext write/read-once path.
     api_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # AC-7: account lockout after repeated failed logins — see
+    # ``ccf.api.routes.auth.login`` and ``Settings.auth_lockout_threshold``/
+    # ``auth_lockout_minutes``.
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     organization: Mapped[Organization] = relationship(back_populates="users")
 

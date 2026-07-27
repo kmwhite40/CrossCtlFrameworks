@@ -36,6 +36,7 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: ruff check .
       - run: mypy src
+      - run: bandit -r src -ll -x tests
       - run: pytest -q --cov=ccf --cov-report=term-missing
 
   landing:

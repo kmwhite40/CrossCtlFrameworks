@@ -11,16 +11,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
-from ..config import enforce_secure_config, get_settings
+from ..config import enforce_secure_config, get_settings, is_dev_env
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
+from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
     ai_actions,
@@ -79,12 +79,11 @@ from .routes import (
     vendors,
     worksheets,
 )
+from .security_headers import SecurityHeadersMiddleware
 
 log = get_logger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
 
 @asynccontextmanager
@@ -124,6 +123,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(SecurityHeadersMiddleware, hsts=not is_dev_env(settings))
     app.middleware("http")(metrics_middleware)
     if settings.audit_enabled and not settings.readonly:
         app.middleware("http")(audit_middleware)
