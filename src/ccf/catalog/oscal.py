@@ -24,6 +24,14 @@ class OscalManifestError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class OscalParam:
+    id: str
+    label: str
+    guidance: str
+    choices: list[str]
+
+
+@dataclass(frozen=True)
 class OscalControl:
     canonical_id: str
     title: str
@@ -32,6 +40,7 @@ class OscalControl:
     withdrawn: bool
     incorporated_into: list[str]
     param_ids: list[str]
+    params: list[OscalParam]
 
 
 @dataclass
@@ -111,6 +120,18 @@ def _part_prose(control: dict[str, Any], name: str) -> str:
     return "\n".join(out)
 
 
+def _parse_param(p: dict[str, Any]) -> OscalParam:
+    label = p.get("label", "")
+    if not label:
+        for prop in p.get("props", []):
+            if prop.get("name") == "label":
+                label = prop.get("value", "")
+                break
+    guidance = "\n".join(g["prose"] for g in p.get("guidelines", []) if g.get("prose"))
+    choices = [c for c in (p.get("select", {}) or {}).get("choice", []) if isinstance(c, str)]
+    return OscalParam(id=p.get("id", ""), label=label, guidance=guidance, choices=choices)
+
+
 def _parse_control(c: dict[str, Any]) -> OscalControl:
     props = c.get("props", [])
     withdrawn = any(p.get("name") == "status" and p.get("value") == "withdrawn" for p in props)
@@ -127,6 +148,7 @@ def _parse_control(c: dict[str, Any]) -> OscalControl:
         withdrawn=withdrawn,
         incorporated_into=inc,
         param_ids=[p["id"] for p in c.get("params", []) if p.get("id")],
+        params=[_parse_param(p) for p in c.get("params", [])],
     )
 
 
