@@ -10,6 +10,7 @@ Operational layer — Organizations, Users, Systems, ControlImplementations,
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime
 from typing import Any, ClassVar
 
@@ -391,6 +392,156 @@ class SystemProfile(Base):
     )  # raw questionnaire answers
     derivation: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)  # control_id -> result
     derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+def _uuid() -> str:
+    return str(uuid.uuid4())
+
+
+class SystemComponent(Base):
+    """A system-owned building block (OSCAL ``component``): software, hardware,
+    service, policy, process, physical, network, or interconnection. Boundary
+    & inventory feature (Keystone #1).
+    """
+
+    __tablename__ = "system_components"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    type: Mapped[str] = mapped_column(String(32))
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="operational")
+    purpose: Mapped[str | None] = mapped_column(Text)
+    responsible_role: Mapped[str | None] = mapped_column(String(128))
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    oscal_uuid: Mapped[str] = mapped_column(String(36), default=_uuid, unique=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InventoryItem(Base):
+    """A discrete asset (OSCAL ``inventory-item``), optionally linked to the
+    ``SystemComponent`` it implements. Boundary & inventory feature
+    (Keystone #1).
+    """
+
+    __tablename__ = "inventory_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    component_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ccf.system_components.id", ondelete="SET NULL"), nullable=True
+    )
+    asset_id: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    asset_type: Mapped[str] = mapped_column(String(32))
+    vendor_name: Mapped[str | None] = mapped_column(String(255))
+    model: Mapped[str | None] = mapped_column(String(255))
+    version: Mapped[str | None] = mapped_column(String(128))
+    serial_number: Mapped[str | None] = mapped_column(String(255))
+    hostname: Mapped[str | None] = mapped_column(String(255))
+    ip_address: Mapped[str | None] = mapped_column(String(64))
+    virtual: Mapped[bool] = mapped_column(Boolean, default=False)
+    public: Mapped[bool] = mapped_column(Boolean, default=False)
+    baseline_config: Mapped[str | None] = mapped_column(Text)
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    oscal_uuid: Mapped[str] = mapped_column(String(36), default=_uuid, unique=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class InformationType(Base):
+    """A NIST SP 800-60 information type (OSCAL ``information-type``) with its
+    FIPS 199 impact ratings. Boundary & inventory feature (Keystone #1).
+    """
+
+    __tablename__ = "information_types"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text)
+    categorization_system: Mapped[str] = mapped_column(
+        String(255), default="https://doi.org/10.6028/NIST.SP.800-60v2r1"
+    )
+    nist_800_60_id: Mapped[str | None] = mapped_column(String(64))
+    confidentiality_impact: Mapped[str | None] = mapped_column(
+        Enum("low", "moderate", "high", name="fips199_level", schema="ccf", create_type=False)
+    )
+    integrity_impact: Mapped[str | None] = mapped_column(
+        Enum("low", "moderate", "high", name="fips199_level", schema="ccf", create_type=False)
+    )
+    availability_impact: Mapped[str | None] = mapped_column(
+        Enum("low", "moderate", "high", name="fips199_level", schema="ccf", create_type=False)
+    )
+    adjustment_justification: Mapped[str | None] = mapped_column(Text)
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    oscal_uuid: Mapped[str] = mapped_column(String(36), default=_uuid, unique=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class Interconnection(Base):
+    """An external system connection (OSCAL ``component`` type
+    ``interconnection``): ISA/MOU/MOA-governed data flow to/from another
+    system. Boundary & inventory feature (Keystone #1).
+    """
+
+    __tablename__ = "interconnections"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    system_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ccf.systems.id", ondelete="CASCADE"), index=True
+    )
+    remote_system_name: Mapped[str] = mapped_column(String(255))
+    remote_org: Mapped[str | None] = mapped_column(String(255))
+    direction: Mapped[str] = mapped_column(String(16))
+    connection_type: Mapped[str | None] = mapped_column(String(128))
+    data_description: Mapped[str | None] = mapped_column(Text)
+    agreement_type: Mapped[str] = mapped_column(String(16))
+    agreement_ref: Mapped[str | None] = mapped_column(String(255))
+    agreement_date: Mapped[date | None] = mapped_column(Date)
+    expires_on: Mapped[date | None] = mapped_column(Date)
+    authorization_status: Mapped[str | None] = mapped_column(String(64))
+    props: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    oscal_uuid: Mapped[str] = mapped_column(String(36), default=_uuid, unique=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

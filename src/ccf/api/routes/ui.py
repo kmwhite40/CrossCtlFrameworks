@@ -37,7 +37,10 @@ from ...models import (
     Evidence,
     Framework,
     FrameworkMapping,
+    InformationType,
     IngestionRun,
+    Interconnection,
+    InventoryItem,
     Notification,
     Organization,
     Policy,
@@ -49,6 +52,7 @@ from ...models import (
     SSPProject,
     StatementTemplate,
     System,
+    SystemComponent,
     SystemProfile,
     Task,
     User,
@@ -624,6 +628,38 @@ async def system_detail(
             .where(ControlImplementation.system_id == system_id)
         )
     ).scalar_one()
+    # Read-only boundary counts for the summary card (full CRUD lives on the
+    # dedicated /systems/{id}/boundary page — see ccf.api.routes.ui_boundary).
+    boundary_counts = {
+        "components": (
+            await session.execute(
+                select(func.count(SystemComponent.id)).where(
+                    SystemComponent.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+        "inventory": (
+            await session.execute(
+                select(func.count(InventoryItem.id)).where(
+                    InventoryItem.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+        "info_types": (
+            await session.execute(
+                select(func.count(InformationType.id)).where(
+                    InformationType.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+        "interconnections": (
+            await session.execute(
+                select(func.count(Interconnection.id)).where(
+                    Interconnection.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+    }
     return templates.TemplateResponse(
         request,
         "system_detail.html",
@@ -633,6 +669,7 @@ async def system_detail(
             "impl_counts": {s: n for s, n in impl_counts},
             "poams": poams,
             "evidence_count": evidence_count,
+            "boundary_counts": boundary_counts,
         },
     )
 

@@ -33,6 +33,7 @@ from .routes import (
     audit,
     auth,
     automation,
+    boundary,
     catalog,
     conmon,
     connector_settings,
@@ -72,6 +73,7 @@ from .routes import (
     systems,
     tasks,
     ui,
+    ui_boundary,
     ui_grc,
     users,
     vendors,
@@ -173,6 +175,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog.router)
     app.include_router(diff.router)
     app.include_router(systems.router)
+    app.include_router(boundary.router)
     app.include_router(scoring.router)
     app.include_router(ssp.router)
     app.include_router(assessments.router)
@@ -204,6 +207,7 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
+    app.include_router(ui_boundary.router)
     app.include_router(ui.router)
     return app
 
