@@ -40,7 +40,10 @@ async def _regclass(session: AsyncSession, qualified: str) -> bool:
 async def _count(session: AsyncSession, qualified: str) -> int | None:
     if not await _regclass(session, qualified):
         return None
-    return int((await session.execute(text(f"SELECT count(*) FROM {qualified}"))).scalar() or 0)
+    # `qualified` is always a fixed internal "schema.table" literal from this
+    # module's own check functions, never user input.
+    query = text(f"SELECT count(*) FROM {qualified}")  # nosec B608
+    return int((await session.execute(query)).scalar() or 0)
 
 
 # --- platform checks --------------------------------------------------------
@@ -74,9 +77,10 @@ async def _check_migrations(session: AsyncSession) -> Check:
         elif await _regclass(session, "public.alembic_version"):
             version_table = "public.alembic_version"
         if version_table is not None:
-            current = (
-                await session.execute(text(f"SELECT version_num FROM {version_table}"))
-            ).scalar()
+            # version_table is one of two fixed literals set above, never user
+            # input.
+            query = text(f"SELECT version_num FROM {version_table}")  # nosec B608
+            current = (await session.execute(query)).scalar()
         if current is None:
             return Check(
                 "alembic_migration_status",

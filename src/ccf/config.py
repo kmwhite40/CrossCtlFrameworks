@@ -32,7 +32,9 @@ class Settings(BaseSettings):
         description="Sync DSN used by Alembic migrations / CLI",
     )
 
-    api_host: str = Field(default="0.0.0.0")
+    # Container must bind all interfaces to be reachable; access is controlled
+    # at the network/ingress layer, not by bind address.
+    api_host: str = Field(default="0.0.0.0")  # nosec B104
     api_port: int = Field(default=8000)
     api_cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 

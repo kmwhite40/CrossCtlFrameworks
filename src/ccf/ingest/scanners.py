@@ -24,6 +24,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 
+from defusedxml.ElementTree import fromstring as _safe_fromstring
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -150,9 +151,14 @@ def parse_scan(
 
 
 def parse_nessus(data: bytes, *, scanner: str = "nessus") -> list[ScanFinding]:
-    """Parse a Nessus ``.nessus`` v2 XML export."""
+    """Parse a Nessus ``.nessus`` v2 XML export.
+
+    Uses ``defusedxml`` (not ``xml.etree.ElementTree`` directly) because this
+    parses untrusted, user-uploaded scan files: a hostile export could
+    otherwise carry an XXE / entity-expansion payload (CWE-20/CWE-611).
+    """
     try:
-        root = ET.fromstring(data)
+        root = _safe_fromstring(data)
     except ET.ParseError as e:
         raise ValueError(f"invalid Nessus XML: {e}") from e
     out: list[ScanFinding] = []
