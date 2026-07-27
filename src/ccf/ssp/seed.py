@@ -18,9 +18,29 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ScoringControl, SSPControlEntry, SSPProject
+from ..catalog.oscal import OscalCatalog, load_oscal_catalog
+from ..models import ScoringControl, SSPControlEntry, SSPProject, System
 from . import constants
+from .nist80053 import build_80053_entries
 from .platforms import customer_responsibility_statement, normalize_platform, sample_statement
+
+# Column names of SSPControlEntry that build_80053_entries populates — guards
+# against passing any extra keys the model doesn't have.
+_ENTRY_COLUMNS = {
+    "control_id",
+    "nist_id",
+    "domain",
+    "title",
+    "requirement",
+    "responsible_role",
+    "implementation_status",
+    "control_origination",
+    "part_narratives",
+    "odp_values",
+    "sort_order",
+}
+
+_FIPS_ORDER = {"low": 0, "moderate": 1, "high": 2}
 
 
 def _needs_customer_lead_in(rec: ScoringControl, platform: str) -> bool:
@@ -159,6 +179,75 @@ async def seed_project_entries(
 
     await session.commit()
     return touched
+
+
+def _fips_high_water(system: System) -> str | None:
+    """The FIPS-199 high-water mark across confidentiality/integrity/availability
+    (low < moderate < high), or ``None`` when all three are unset."""
+    levels = [
+        lvl
+        for lvl in (
+            system.fips199_confidentiality,
+            system.fips199_integrity,
+            system.fips199_availability,
+        )
+        if lvl
+    ]
+    if not levels:
+        return None
+    return max(levels, key=lambda lvl: _FIPS_ORDER.get(lvl.lower(), -1))
+
+
+async def seed_80053_project(
+    session: AsyncSession,
+    project: SSPProject,
+    *,
+    catalog: OscalCatalog | None = None,
+) -> int:
+    """Seed ``SSPControlEntry`` rows for a NIST 800-53r5 project from its
+    system's FIPS-199 baseline. Idempotent: only controls missing from the
+    project are inserted — existing (possibly human-edited) rows are never
+    touched. Returns the count of rows inserted."""
+    if project.system_id is None:
+        raise ValueError("project has no system_id — cannot resolve a baseline")
+    system = await session.get(System, project.system_id)
+    if system is None:
+        raise ValueError(f"system {project.system_id} not found")
+
+    level = system.baseline or _fips_high_water(system)
+    if level is None:
+        raise ValueError("system has no baseline or FIPS-199 categorization")
+    level = level.lower()
+
+    cat = catalog or load_oscal_catalog()
+    entries, _odp_defs = build_80053_entries(cat, level)
+
+    existing_ids = set(
+        (
+            await session.execute(
+                select(SSPControlEntry.control_id).where(
+                    SSPControlEntry.project_id == project.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    inserted = 0
+    for entry in entries:
+        if entry["control_id"] in existing_ids:
+            continue
+        session.add(
+            SSPControlEntry(
+                project_id=project.id,
+                **{k: v for k, v in entry.items() if k in _ENTRY_COLUMNS},
+            )
+        )
+        inserted += 1
+
+    await session.flush()
+    return inserted
 
 
 def entry_to_dict(entry: SSPControlEntry) -> dict[str, Any]:
