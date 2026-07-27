@@ -314,6 +314,19 @@ async def list_inventory(
     return [_out(r) for r in rows]
 
 
+async def _require_component_in_system(
+    session: AsyncSession, component_id: int | None, system_id: int
+) -> None:
+    """A linked inventory ``component_id`` must belong to THIS system. Without this
+    an admin could point an inventory item at another system's (or another org's,
+    since the FK check bypasses RLS) component. 422 on a bad reference."""
+    if component_id is None:
+        return
+    comp = await session.get(SystemComponent, component_id)
+    if comp is None or comp.system_id != system_id:
+        raise HTTPException(422, "component_id does not belong to this system")
+
+
 @router.post("/inventory", status_code=201)
 async def create_inventory(
     system_id: int,
@@ -322,8 +335,10 @@ async def create_inventory(
     principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> dict[str, Any]:
     sys = await require_system_in_scope(session, system_id, principal)
+    data = body.validated()
+    await _require_component_in_system(session, data.get("component_id"), system_id)
     row = await service.create_inventory_item(
-        session, system_id=system_id, org_id=sys.organization_id, data=body.validated()
+        session, system_id=system_id, org_id=sys.organization_id, data=data
     )
     await session.commit()
     return _out(row)
@@ -341,7 +356,10 @@ async def update_inventory(
     existing = await session.get(InventoryItem, item_id)
     if existing is None or existing.system_id != system_id:
         raise HTTPException(404, "inventory item not found")
-    row = await service.update_inventory_item(session, item_id=item_id, data=body.validated())
+    data = body.validated()
+    if "component_id" in data:
+        await _require_component_in_system(session, data.get("component_id"), system_id)
+    row = await service.update_inventory_item(session, item_id=item_id, data=data)
     if row is None:
         raise HTTPException(404, "inventory item not found")
     await session.commit()

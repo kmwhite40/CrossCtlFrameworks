@@ -297,3 +297,45 @@ async def test_cross_tenant_not_visible_or_mutable() -> None:
         )
         assert list_b.status_code == 200
         assert list_b.json() == []
+
+
+@pytest.mark.asyncio
+async def test_inventory_component_id_cross_system_422() -> None:
+    # An inventory item's component_id must belong to the SAME system; linking to
+    # another system's component is rejected (422) before it can be stored.
+    token, sys_id = await _mk_user_and_system(
+        "invcomp@boundary-api.test", "Boundary API InvComp Org", "admin", "InvComp Sys 1"
+    )
+    async with session_scope() as s:
+        org_id = (
+            await s.execute(select(System.organization_id).where(System.id == sys_id))
+        ).scalar_one()
+        other_sys = System(organization_id=org_id, name="InvComp Sys 2")
+        s.add(other_sys)
+        await s.flush()
+        other_sys_id = other_sys.id
+
+    async with _client() as c:
+        create = await c.post(
+            f"/api/systems/{sys_id}/boundary/components",
+            json={"type": "software", "title": "Comp in sys 1"},
+            headers=_auth(token),
+        )
+        assert create.status_code == 201
+        comp_id = create.json()["id"]
+
+        # Try to create an inventory item under system 2 linked to system 1's component.
+        bad = await c.post(
+            f"/api/systems/{other_sys_id}/boundary/inventory",
+            json={"asset_id": "A-1", "asset_type": "software", "component_id": comp_id},
+            headers=_auth(token),
+        )
+        assert bad.status_code == 422
+
+        # Same component under its OWN system is accepted.
+        ok = await c.post(
+            f"/api/systems/{sys_id}/boundary/inventory",
+            json={"asset_id": "A-2", "asset_type": "software", "component_id": comp_id},
+            headers=_auth(token),
+        )
+        assert ok.status_code == 201
