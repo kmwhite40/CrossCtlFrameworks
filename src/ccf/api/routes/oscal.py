@@ -7,11 +7,15 @@ implementation narratives. Not a full OSCAL profile — targets auditor intake.
 
 from __future__ import annotations
 
+import io
+import json
 import uuid
+import zipfile
 from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -816,3 +820,93 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
             "results": [result],
         }
     }
+
+
+@router.get("/package/{system_id}")
+async def package_export(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> StreamingResponse:
+    """Emit a downloadable authorization-package ZIP (SSP + SAR + POA&M +
+    component-definition + README manifest) for a system."""
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    # Scope to the caller's org (global/auth-off principals are unscoped).
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "system not found")
+
+    now_iso = datetime.now(UTC).isoformat()
+    data = await build_package_zip(session, sys, now_iso=now_iso)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={
+            "content-disposition": f'attachment; filename="authorization-package-{system_id}.zip"'
+        },
+    )
+
+
+async def build_package_zip(session: AsyncSession, sys: System, *, now_iso: str) -> bytes:
+    """Assemble the in-memory authorization-package ZIP for ``sys``: the most
+    recent SSP project's ``ssp.json`` and the most recent assessment's
+    ``sar.json`` when present, always ``poam.json`` and
+    ``component-definition.json``, plus a ``README.txt`` manifest noting which
+    artifacts are present/absent. Never calls ``datetime.now`` itself —
+    ``now_iso`` is passed in so the manifest timestamp matches the caller's."""
+    proj = (
+        await session.execute(
+            select(SSPProject)
+            .where(SSPProject.system_id == sys.id)
+            .order_by(SSPProject.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    assessment = (
+        await session.execute(
+            select(Assessment)
+            .where(Assessment.system_id == sys.id)
+            .order_by(Assessment.finished_on.desc().nullslast(), Assessment.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    manifest_lines = [
+        "Concord authorization package",
+        f"System: {sys.name}",
+        f"Generated: {now_iso}",
+        "",
+    ]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if proj is not None:
+            ssp_doc = await build_ssp_doc(session, proj)
+            zf.writestr("ssp.json", json.dumps(ssp_doc, indent=2))
+            manifest_lines.append("ssp.json: present")
+        else:
+            manifest_lines.append("ssp.json: ABSENT — no SSP project on record")
+
+        if assessment is not None:
+            sar_doc = await build_sar_doc(session, assessment)
+            zf.writestr("sar.json", json.dumps(sar_doc, indent=2))
+            manifest_lines.append("sar.json: present")
+        else:
+            manifest_lines.append("sar.json: ABSENT — no assessment on record")
+
+        poam_doc = await build_poam_doc(session, sys)
+        zf.writestr("poam.json", json.dumps(poam_doc, indent=2))
+        manifest_lines.append("poam.json: present")
+
+        component_doc = await build_component_definition_doc(session, sys)
+        zf.writestr("component-definition.json", json.dumps(component_doc, indent=2))
+        manifest_lines.append("component-definition.json: present")
+
+        manifest_lines.append("")
+        manifest_lines.append(
+            "This is a machine-readable OSCAL authorization package (SSP + SAR + "
+            "POA&M + component-definition)."
+        )
+        zf.writestr("README.txt", "\n".join(manifest_lines) + "\n")
+
+    return buf.getvalue()
