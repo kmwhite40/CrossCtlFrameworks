@@ -7,26 +7,33 @@ implementation narratives. Not a full OSCAL profile — targets auditor intake.
 
 from __future__ import annotations
 
+import io
+import json
 import uuid
-from datetime import UTC, datetime
+import zipfile
+from datetime import UTC, date, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...boundary.summary import BoundarySummary, system_boundary_summary
-from ...catalog.canonical import canonical_to_oscal_id
+from ...catalog.canonical import canonical_to_oscal_id, canonicalize
 from ...models import (
     POAM,
+    Assessment,
+    AssessmentResult,
     Control,
     ControlImplementation,
     SSPControlEntry,
     SSPProject,
     System,
 )
+from ...models_evidence import EvidenceObject
 from ...oscal import validate_document
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -54,6 +61,15 @@ _OSCAL_POAM_STATE = {
     "risk_accepted": "risk-accepted",
 }
 _OSCAL_SEVERITY = {"low": "low", "moderate": "moderate", "high": "high", "critical": "critical"}
+
+# AssessmentResult.finding -> OSCAL finding target.status.state. "not_applicable"
+# has no direct OSCAL state — it is encoded as "not-satisfied" plus an
+# "applicability" prop (see build_sar_doc) rather than dropped.
+_OSCAL_FINDING_STATE = {
+    "satisfied": "satisfied",
+    "other_than_satisfied": "not-satisfied",
+    "not_applicable": "not-satisfied",
+}
 
 # Both OSCAL exports must cite the same catalog the project is actually built
 # against — CMMC Level 2 / NIST SP 800-171 Rev. 2 — not NIST SP 800-53.
@@ -86,6 +102,15 @@ _OSCAL_STATUS_STATES = {
     "disposition": "disposition",
     "other": "other",
 }
+
+
+def _oscal_control_id(identifier: str | None) -> str:
+    """A control identifier in OSCAL form: canonicalized 800-53 ids go through
+    ``canonical_to_oscal_id`` (``AC-2(1)`` -> ``ac-2.1``); anything that doesn't
+    canonicalize (CMMC-style ids, free text) is just lowercased — never dropped."""
+    raw = identifier or ""
+    canon = canonicalize(raw)
+    return canonical_to_oscal_id(canon.value) if canon is not None else raw.lower()
 
 
 def _placeholder(what: str) -> str:
@@ -282,11 +307,15 @@ async def component_definition(
     if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
 
+    return await build_component_definition_doc(session, sys)
+
+
+async def build_component_definition_doc(session: AsyncSession, sys: System) -> dict[str, Any]:
     impls = (
         (
             await session.execute(
                 select(ControlImplementation)
-                .where(ControlImplementation.system_id == system_id)
+                .where(ControlImplementation.system_id == sys.id)
                 .options(selectinload(ControlImplementation.control))
             )
         )
@@ -358,11 +387,15 @@ async def ssp_export(
     # Scope to the caller's org (global/auth-off principals are unscoped).
     if proj is None or (principal.org_id is not None and proj.organization_id != principal.org_id):
         raise HTTPException(404, "SSP project not found")
+    return await build_ssp_doc(session, proj)
+
+
+async def build_ssp_doc(session: AsyncSession, proj: SSPProject) -> dict[str, Any]:
     entries = (
         (
             await session.execute(
                 select(SSPControlEntry)
-                .where(SSPControlEntry.project_id == project_id)
+                .where(SSPControlEntry.project_id == proj.id)
                 .order_by(SSPControlEntry.sort_order)
             )
         )
@@ -487,13 +520,19 @@ async def poam_export(
     if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
 
+    return await build_poam_doc(session, sys, open_only=not include_closed)
+
+
+async def build_poam_doc(
+    session: AsyncSession, sys: System, *, open_only: bool = True
+) -> dict[str, Any]:
     stmt = (
         select(POAM)
-        .where(POAM.system_id == system_id)
+        .where(POAM.system_id == sys.id)
         .options(selectinload(POAM.milestones))
         .order_by(POAM.id)
     )
-    if not include_closed:
+    if open_only:
         stmt = stmt.where(POAM.status.not_in(("closed", "completed")))
     poams = (await session.execute(stmt)).scalars().all()
 
@@ -559,3 +598,323 @@ def _poam_item(p: POAM, ctl_map: dict[int, str]) -> dict[str, Any]:
             for m in milestones
         )
     return item
+
+
+@router.get("/sar/system/{system_id}")
+async def sar_export_latest(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Emit the OSCAL Assessment-Results (SAR) for a system's most recent
+    assessment (by ``finished_on``, falling back to the newest id when several
+    are still open)."""
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "system not found")
+
+    assessment = (
+        await session.execute(
+            select(Assessment)
+            .where(Assessment.system_id == system_id)
+            .order_by(Assessment.finished_on.desc().nullslast(), Assessment.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if assessment is None:
+        raise HTTPException(404, "no assessment found for system")
+
+    return await build_sar_doc(session, assessment)
+
+
+@router.get("/sar/{assessment_id}")
+async def sar_export(
+    assessment_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Emit an OSCAL 1.1 Assessment-Results (SAR) document for one assessment."""
+    assessment = (
+        await session.execute(select(Assessment).where(Assessment.id == assessment_id))
+    ).scalar_one_or_none()
+    if assessment is None:
+        raise HTTPException(404, "assessment not found")
+
+    sys = (
+        await session.execute(select(System).where(System.id == assessment.system_id))
+    ).scalar_one_or_none()
+    # Scope to the caller's org via the assessment's system (global/auth-off
+    # principals are unscoped).
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "assessment not found")
+
+    return await build_sar_doc(session, assessment)
+
+
+async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[str, Any]:
+    """Build an OSCAL ``assessment-results`` document for ``assessment``:
+    control-level findings from its ``AssessmentResult`` rows, evidence-backed
+    observations, and open-POA&M risks. Mirrors ``build_ssp_doc``/
+    ``build_poam_doc`` — no OSCAL assessment-plan (SAP) is fabricated; the
+    ``import-ap`` is an honest placeholder."""
+    results = (
+        (
+            await session.execute(
+                select(AssessmentResult)
+                .where(AssessmentResult.assessment_id == assessment.id)
+                .options(
+                    selectinload(AssessmentResult.implementation).selectinload(
+                        ControlImplementation.control
+                    )
+                )
+                .order_by(AssessmentResult.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    now = datetime.now(UTC).isoformat()
+
+    # Distinct assessed controls, in first-seen order, for reviewed-controls.
+    oscal_cid_by_impl: dict[int, str] = {}
+    include_controls: list[dict[str, str]] = []
+    seen_cids: set[str] = set()
+    for r in results:
+        impl = r.implementation
+        control = impl.control if impl else None
+        oscal_cid = _oscal_control_id(control.identifier if control else None)
+        oscal_cid_by_impl[r.implementation_id] = oscal_cid
+        if oscal_cid not in seen_cids:
+            seen_cids.add(oscal_cid)
+            include_controls.append({"control-id": oscal_cid})
+
+    # Observations: one per EvidenceObject tied to an assessed implementation.
+    impl_ids = list(oscal_cid_by_impl)
+    evidence_rows = (
+        (
+            await session.execute(
+                select(EvidenceObject)
+                .where(EvidenceObject.implementation_id.in_(impl_ids))
+                .order_by(EvidenceObject.id)
+            )
+        )
+        .scalars()
+        .all()
+        if impl_ids
+        else []
+    )
+    observations: list[dict[str, Any]] = []
+    obs_uuids_by_impl: dict[int, list[str]] = {}
+    for e in evidence_rows:
+        obs_uuid = str(uuid.uuid4())
+        observations.append(
+            {
+                "uuid": obs_uuid,
+                "title": e.title,
+                "description": e.description or e.title,
+                "methods": ["EXAMINE"],
+                "collected": now,
+                "relevant-evidence": [{"href": f"#evidence-{e.id}", "description": e.title}],
+            }
+        )
+        if e.implementation_id is not None:
+            obs_uuids_by_impl.setdefault(e.implementation_id, []).append(obs_uuid)
+
+    # Findings: one per AssessmentResult.
+    findings: list[dict[str, Any]] = []
+    for r in results:
+        impl = r.implementation
+        control = impl.control if impl else None
+        oscal_cid = oscal_cid_by_impl[r.implementation_id]
+        control_title = (control.control_name if control else "") or ""
+        finding: dict[str, Any] = {
+            "uuid": str(uuid.uuid4()),
+            "title": f"{oscal_cid}: {control_title}",
+            "description": r.rationale or "",
+            "target": {
+                "type": "statement-id",
+                "target-id": f"{oscal_cid}_smt",
+                "status": {"state": _OSCAL_FINDING_STATE[r.finding]},
+            },
+        }
+        if r.finding == "not_applicable":
+            finding["props"] = [{"name": "applicability", "value": "not-applicable"}]
+        related = obs_uuids_by_impl.get(r.implementation_id, [])
+        if related:
+            finding["related-observations"] = [{"observation-uuid": u} for u in related]
+        findings.append(finding)
+
+    # Risks: open POA&Ms for the assessed system (same "open" filter as
+    # build_poam_doc's open_only path).
+    poams = (
+        (
+            await session.execute(
+                select(POAM)
+                .where(
+                    POAM.system_id == assessment.system_id,
+                    POAM.status.not_in(("closed", "completed")),
+                )
+                .order_by(POAM.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    risks = [
+        {
+            "uuid": str(uuid.uuid4()),
+            "title": p.title,
+            "description": p.weakness or p.title or "",
+            "status": "open",
+            "statement": p.title or "",
+        }
+        for p in poams
+    ]
+
+    result: dict[str, Any] = {
+        "uuid": str(uuid.uuid4()),
+        "title": assessment.name,
+        "description": assessment.summary or assessment.name,
+        "start": (assessment.started_on or date.today()).isoformat() + "T00:00:00Z",
+        "reviewed-controls": {"control-selections": [{"include-controls": include_controls}]},
+    }
+    if assessment.finished_on is not None:
+        result["end"] = assessment.finished_on.isoformat() + "T00:00:00Z"
+    if observations:
+        result["observations"] = observations
+    if findings:
+        result["findings"] = findings
+    if risks:
+        result["risks"] = risks
+
+    assessor_party_uuid = str(uuid.uuid4())
+    metadata: dict[str, Any] = {
+        "title": "Security Assessment Report",
+        "last-modified": now,
+        "version": "0.1.0",
+        "oscal-version": "1.1.2",
+        "roles": [{"id": "assessor", "title": "Assessor"}],
+        "parties": [
+            {
+                "uuid": assessor_party_uuid,
+                "type": "person",
+                "name": assessment.assessor or "Assessor",
+            }
+        ],
+        "responsible-parties": [{"role-id": "assessor", "party-uuids": [assessor_party_uuid]}],
+        "props": [{"name": "assessment-kind", "value": assessment.kind}],
+    }
+
+    return {
+        "assessment-results": {
+            "uuid": str(uuid.uuid4()),
+            "metadata": metadata,
+            "import-ap": {
+                "href": "#no-assessment-plan",
+                "remarks": (
+                    "No OSCAL assessment plan (SAP) is generated in this release; "
+                    "results are reported directly."
+                ),
+            },
+            "results": [result],
+        }
+    }
+
+
+@router.get("/package/{system_id}")
+async def package_export(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> StreamingResponse:
+    """Emit a downloadable authorization-package ZIP (SSP + SAR + POA&M +
+    component-definition + README manifest) for a system."""
+    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
+    # Scope to the caller's org (global/auth-off principals are unscoped).
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "system not found")
+
+    now_iso = datetime.now(UTC).isoformat()
+    data = await build_package_zip(session, sys, now_iso=now_iso)
+    return StreamingResponse(
+        io.BytesIO(data),
+        media_type="application/zip",
+        headers={
+            "content-disposition": f'attachment; filename="authorization-package-{system_id}.zip"'
+        },
+    )
+
+
+async def build_package_zip(session: AsyncSession, sys: System, *, now_iso: str) -> bytes:
+    """Assemble the in-memory authorization-package ZIP for ``sys``: the most
+    recent SSP project's ``ssp.json`` and the most recent assessment's
+    ``sar.json`` when present, always ``poam.json`` and
+    ``component-definition.json``, plus a ``README.txt`` manifest noting which
+    artifacts are present/absent. Never calls ``datetime.now`` itself —
+    ``now_iso`` is passed in so the manifest timestamp matches the caller's."""
+    proj = (
+        await session.execute(
+            select(SSPProject)
+            .where(SSPProject.system_id == sys.id)
+            .order_by(SSPProject.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    assessment = (
+        await session.execute(
+            select(Assessment)
+            .where(Assessment.system_id == sys.id)
+            .order_by(Assessment.finished_on.desc().nullslast(), Assessment.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    manifest_lines = [
+        "Concord authorization package",
+        f"System: {sys.name}",
+        f"Generated: {now_iso}",
+        "",
+    ]
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if proj is not None:
+            ssp_doc = await build_ssp_doc(session, proj)
+            zf.writestr("ssp.json", json.dumps(ssp_doc, indent=2))
+            manifest_lines.append("ssp.json: present")
+        else:
+            manifest_lines.append("ssp.json: ABSENT — no SSP project on record")
+
+        if assessment is not None:
+            sar_doc = await build_sar_doc(session, assessment)
+            zf.writestr("sar.json", json.dumps(sar_doc, indent=2))
+            manifest_lines.append("sar.json: present")
+        else:
+            manifest_lines.append("sar.json: ABSENT — no assessment on record")
+
+        # OSCAL requires poam-items minItems 1, so an empty POA&M array is an
+        # INVALID document. A clean system with no open POA&Ms is a normal, desirable
+        # state — represent it by omitting poam.json (and noting it), rather than
+        # bundling a non-conformant member into the authorization package.
+        poam_doc = await build_poam_doc(session, sys)
+        poam_items = poam_doc.get("plan-of-action-and-milestones", {}).get("poam-items", [])
+        if poam_items:
+            zf.writestr("poam.json", json.dumps(poam_doc, indent=2))
+            manifest_lines.append("poam.json: present")
+        else:
+            manifest_lines.append("poam.json: ABSENT — no open POA&M items for this system")
+
+        component_doc = await build_component_definition_doc(session, sys)
+        zf.writestr("component-definition.json", json.dumps(component_doc, indent=2))
+        manifest_lines.append("component-definition.json: present")
+
+        manifest_lines.append("")
+        manifest_lines.append(
+            "This is a machine-readable OSCAL authorization package (SSP + SAR + "
+            "POA&M + component-definition)."
+        )
+        zf.writestr("README.txt", "\n".join(manifest_lines) + "\n")
+
+    return buf.getvalue()
