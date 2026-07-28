@@ -280,6 +280,7 @@ async def test_ssp_export_reflects_project_metadata() -> None:
         assert len(impl["users"]) == 3
 
         report = validate_document(doc)
+        assert report.mode == "official", report.warnings
         assert report.ok, report.errors
 
 
@@ -324,6 +325,7 @@ async def test_ssp_export_placeholders_when_metadata_absent() -> None:
         assert "UNSPECIFIED" in users[0]["remarks"]
 
         report = validate_document(doc)
+        assert report.mode == "official", report.warnings
         assert report.ok, report.errors
 
 

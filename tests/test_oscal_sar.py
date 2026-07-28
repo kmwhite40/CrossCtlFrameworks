@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from ccf.api.main import create_app
+from ccf.api.routes.oscal import build_sar_doc
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
@@ -292,3 +293,26 @@ async def test_sar_out_of_org_is_404() -> None:
         os.environ.pop("CCF_AUTH_ENABLED", None)
         os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_sar_empty_results_validates_official() -> None:
+    # An assessment with ZERO AssessmentResults (e.g. just opened) must still
+    # produce a schema-valid SAR: reviewed-controls has no include-controls
+    # (which would violate minItems 1), so that key is omitted with a remark.
+    async with session_scope() as s:
+        org = Organization(name="SAR Empty Org")
+        s.add(org)
+        await s.flush()
+        sysrow = System(organization_id=org.id, name="SAR Empty System")
+        s.add(sysrow)
+        await s.flush()
+        assessment = Assessment(
+            system_id=sysrow.id, name="Kickoff", kind="internal", assessor="3PAO"
+        )
+        s.add(assessment)
+        await s.flush()
+        doc = await build_sar_doc(s, assessment)
+    report = validate_document(doc)
+    assert report.mode == "official", report.warnings
+    assert report.ok, report.errors
