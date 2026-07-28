@@ -282,11 +282,15 @@ async def component_definition(
     if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
 
+    return await build_component_definition_doc(session, sys)
+
+
+async def build_component_definition_doc(session: AsyncSession, sys: System) -> dict[str, Any]:
     impls = (
         (
             await session.execute(
                 select(ControlImplementation)
-                .where(ControlImplementation.system_id == system_id)
+                .where(ControlImplementation.system_id == sys.id)
                 .options(selectinload(ControlImplementation.control))
             )
         )
@@ -358,11 +362,15 @@ async def ssp_export(
     # Scope to the caller's org (global/auth-off principals are unscoped).
     if proj is None or (principal.org_id is not None and proj.organization_id != principal.org_id):
         raise HTTPException(404, "SSP project not found")
+    return await build_ssp_doc(session, proj)
+
+
+async def build_ssp_doc(session: AsyncSession, proj: SSPProject) -> dict[str, Any]:
     entries = (
         (
             await session.execute(
                 select(SSPControlEntry)
-                .where(SSPControlEntry.project_id == project_id)
+                .where(SSPControlEntry.project_id == proj.id)
                 .order_by(SSPControlEntry.sort_order)
             )
         )
@@ -487,13 +495,19 @@ async def poam_export(
     if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
         raise HTTPException(404, "system not found")
 
+    return await build_poam_doc(session, sys, open_only=not include_closed)
+
+
+async def build_poam_doc(
+    session: AsyncSession, sys: System, *, open_only: bool = True
+) -> dict[str, Any]:
     stmt = (
         select(POAM)
-        .where(POAM.system_id == system_id)
+        .where(POAM.system_id == sys.id)
         .options(selectinload(POAM.milestones))
         .order_by(POAM.id)
     )
-    if not include_closed:
+    if open_only:
         stmt = stmt.where(POAM.status.not_in(("closed", "completed")))
     poams = (await session.execute(stmt)).scalars().all()
 
