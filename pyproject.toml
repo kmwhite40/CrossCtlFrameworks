@@ -69,6 +69,7 @@ where = ["src"]
 "ccf.fedramp20x" = ["ksi_catalog.json", "oscal_ksi.schema.json"]
 "ccf.packs" = ["bundled/*/pack.json"]
 "ccf.catalog" = ["oscal_data/*.json"]
+"ccf.oscal" = ["schemas/*.json"]
 
 [tool.ruff]
 line-length = 100

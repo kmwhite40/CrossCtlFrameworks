@@ -1,0 +1,12 @@
+{
+  "oscal_version": "1.1.2",
+  "source_url": "https://github.com/usnistgov/OSCAL/releases/tag/v1.1.2",
+  "retrieved_at": "2026-07-28",
+  "files": {
+    "oscal_assessment-results_schema.json": "d033da70154cf6625ae46a746199e88e58f2928b1387dfac051d381b92f41b0d",
+    "oscal_complete_schema.json": "f0b24aef59190cb2649b404976f1677b546e6bb1982597d8bccb9e6b1244e18c",
+    "oscal_component_schema.json": "7b74710940ad39b6b63d4ddccbadf2c7d2e9bf11b07808d41d2aa27a4616e5ce",
+    "oscal_poam_schema.json": "906725163d767036c6189aec51252109b203214e121fc1acaff494b4d2dfbc04",
+    "oscal_ssp_schema.json": "08d3faeb12f0fab7705dec15fb648c72400c7ab6ac0056222d49d21507e02a69"
+  }
+}
