@@ -200,6 +200,7 @@ async def test_golden_e2e_sar_and_authorization_package() -> None:
     sar_doc = sar_resp.json()
 
     sar_report = validate_document(sar_doc)
+    assert sar_report.mode == "official", sar_report.warnings
     assert sar_report.ok, sar_report.errors
 
     sar_result = sar_doc["assessment-results"]["results"][0]
@@ -227,6 +228,7 @@ async def test_golden_e2e_sar_and_authorization_package() -> None:
     for name in ("ssp.json", "sar.json", "poam.json", "component-definition.json"):
         doc = json.loads(zf.read(name))
         report = validate_document(doc)
+        assert report.mode == "official", (name, report.warnings)
         assert report.ok, (name, report.errors)
         docs[name] = doc
 

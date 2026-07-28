@@ -57,26 +57,53 @@ def test_detect_kind() -> None:
     assert detect_kind({"nope": {}}) == "unknown"
 
 
-def test_valid_ssp_passes_structural() -> None:
-    r = validate_document(_ssp())
-    assert r.kind == "ssp"
-    assert r.mode == "structural"
-    assert r.ok is True
-    assert r.errors == []
-    assert r.warnings  # warns that official schema was not used
+def _force_structural(tmp_path, monkeypatch, *, require_official: bool = False) -> None:
+    """Point CCF_OSCAL_SCHEMA_DIR at an empty directory so no official schema
+    resolves for any kind, forcing the structural fallback path regardless of
+    the packaged-by-default schemas. Also pins CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA
+    explicitly (rather than inheriting the ambient environment — CI runs the
+    whole suite with the gate on) so this test is deterministic either way."""
+    monkeypatch.setenv("CCF_OSCAL_SCHEMA_DIR", str(tmp_path))
+    monkeypatch.setenv("CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA", "true" if require_official else "false")
+    get_settings.cache_clear()
 
 
-def test_invalid_ssp_reports_useful_errors() -> None:
-    doc = _ssp()
-    del doc["system-security-plan"]["uuid"]
-    doc["system-security-plan"]["metadata"].pop("oscal-version")
-    doc["system-security-plan"]["control-implementation"] = None
-    r = validate_document(doc)
-    assert r.ok is False
-    joined = " ".join(r.errors)
-    assert "uuid" in joined
-    assert "oscal-version" in joined
-    assert "control-implementation" in joined
+def test_valid_ssp_passes_structural(tmp_path, monkeypatch) -> None:
+    """``_ssp()`` is hand-built to satisfy Concord's structural checks only
+    (it is not official-schema-valid) — this test proves the structural
+    fallback path itself works, so it must explicitly force structural mode
+    rather than relying on no schema being configured (schemas now resolve
+    from the package by default)."""
+    _force_structural(tmp_path, monkeypatch)
+    try:
+        r = validate_document(_ssp())
+        assert r.kind == "ssp"
+        assert r.mode == "structural"
+        assert r.ok is True
+        assert r.errors == []
+        assert r.warnings  # warns that official schema was not used
+    finally:
+        get_settings.cache_clear()
+
+
+def test_invalid_ssp_reports_useful_errors(tmp_path, monkeypatch) -> None:
+    """Same structural-mode forcing as above — proves the structural checker's
+    error messages are useful, independent of official-schema availability."""
+    _force_structural(tmp_path, monkeypatch)
+    try:
+        doc = _ssp()
+        del doc["system-security-plan"]["uuid"]
+        doc["system-security-plan"]["metadata"].pop("oscal-version")
+        doc["system-security-plan"]["control-implementation"] = None
+        r = validate_document(doc)
+        assert r.mode == "structural"
+        assert r.ok is False
+        joined = " ".join(r.errors)
+        assert "uuid" in joined
+        assert "oscal-version" in joined
+        assert "control-implementation" in joined
+    finally:
+        get_settings.cache_clear()
 
 
 def test_unknown_document_kind() -> None:
@@ -121,12 +148,16 @@ def test_official_schema_used_when_present(tmp_path, monkeypatch) -> None:
         get_settings.cache_clear()
 
 
-def test_require_official_fails_closed_without_schema(monkeypatch) -> None:
-    monkeypatch.setenv("CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA", "true")
-    monkeypatch.delenv("CCF_OSCAL_SCHEMA_DIR", raising=False)
-    get_settings.cache_clear()
+def test_require_official_fails_closed_without_schema(tmp_path, monkeypatch) -> None:
+    """Schemas now resolve from the package by default, so "without schema"
+    must be simulated explicitly: point CCF_OSCAL_SCHEMA_DIR at an empty
+    directory (no official schema resolves for any kind) while requiring
+    official validation — the report must fail closed with an explicit
+    "unavailable" error, never a silent structural pass."""
+    _force_structural(tmp_path, monkeypatch, require_official=True)
     try:
         r = validate_document(_ssp())
+        assert r.mode == "structural"
         assert r.ok is False
         assert any("required but not available" in e for e in r.errors)
     finally:
@@ -138,13 +169,23 @@ def test_require_official_fails_closed_without_schema(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_validate_route() -> None:
+    """Post a real, official-valid SSP export (not the hand-built structural
+    ``_ssp()`` fixture) so the route is proven against the real NIST schema,
+    not the structural fallback."""
     async with AsyncClient(
         transport=ASGITransport(app=create_app()), base_url="http://t"
     ) as c:
-        r = await c.post("/api/oscal/validate", json=_ssp())
+        await c.post("/api/scoring/seed")
+        pid = (
+            await c.post("/api/ssp/projects", json={"customer_name": "ValidateRouteCo"})
+        ).json()["id"]
+        doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
+
+        r = await c.post("/api/oscal/validate", json=doc)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["kind"] == "ssp"
+        assert body["mode"] == "official"
         assert body["ok"] is True
 
         bad = await c.post(

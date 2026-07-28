@@ -169,6 +169,7 @@ async def test_ssp_export_uses_real_boundary_inventory() -> None:
     assert info_props["adjustment-justification"] == "Adjusted per org policy."
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
 
 
@@ -203,6 +204,7 @@ async def test_ssp_export_falls_back_to_placeholder_when_boundary_empty() -> Non
     assert "inventory-items" not in impl
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
 
 
@@ -221,4 +223,5 @@ async def test_ssp_export_without_system_id_still_placeholders() -> None:
     assert "not yet enumerated" in impl["components"][0]["remarks"]
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
