@@ -256,17 +256,24 @@ async def test_ssp_export_placeholders_when_metadata_absent() -> None:
         # An unset categorization must never fabricate an impact "base" token —
         # the confidentiality/integrity/availability-impact objects are omitted
         # entirely (never a placeholder sentence with spaces/em-dash, which is
-        # not a valid OSCAL token) and the gap is noted in remarks instead.
+        # not a valid OSCAL token) and the gap is noted in a props entry instead
+        # (the OSCAL "information-type" object has no "remarks" property).
         info_type = sysc["system-information"]["information-types"][0]
         for key in ("confidentiality-impact", "integrity-impact", "availability-impact"):
             assert key not in info_type
-        assert "UNSPECIFIED" in info_type.get("remarks", "")
+        info_type_props = {p["name"]: p["value"] for p in info_type.get("props", [])}
+        assert "UNSPECIFIED" in info_type_props.get("categorization-gap", "")
 
         # No roles filled in metadata -> no responsible-parties/parties claimed.
         meta = doc["system-security-plan"]["metadata"]
         assert not meta.get("parties")
         assert not meta.get("responsible-parties")
-        assert len(doc["system-security-plan"]["system-implementation"]["users"]) == 0
+        # OSCAL requires system-implementation.users to be non-empty — with no
+        # named responsible role, one honestly-flagged placeholder user is
+        # emitted instead of an empty (schema-invalid) array.
+        users = doc["system-security-plan"]["system-implementation"]["users"]
+        assert len(users) == 1
+        assert "UNSPECIFIED" in users[0]["remarks"]
 
         report = validate_document(doc)
         assert report.ok, report.errors

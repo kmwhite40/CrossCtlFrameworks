@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import uuid
 import zipfile
 from datetime import UTC, date, datetime
@@ -104,6 +105,30 @@ _OSCAL_STATUS_STATES = {
 }
 
 
+_TOKEN_DISALLOWED_RE = re.compile(r"[^A-Za-z0-9.\-_]")
+_TOKEN_VALID_START_RE = re.compile(r"^[A-Za-z_]")
+
+
+def _oscal_token(value: str | None) -> str:
+    """Coerce ``value`` into a valid OSCAL ``token`` (an NCName-like datatype:
+    the first character MUST be a letter or ``_``; the rest may be letters,
+    digits, ``.``, ``-``, or ``_``). CMMC identifiers like ``3.1.1`` fail this
+    (leading digit), as do free-text statement-part labels like ``Customer
+    Responsibility`` (spaces are not a valid token character). Sanitizes
+    rather than drops, and preserves case/content wherever already valid —
+    e.g. ``AC.L2-3.1.1`` passes through unchanged: whitespace becomes ``-``,
+    any other disallowed character is stripped, and ``_`` is prepended only
+    when the result would still start with something other than a
+    letter/underscore."""
+    text = re.sub(r"\s+", "-", (value or "").strip())
+    text = _TOKEN_DISALLOWED_RE.sub("", text)
+    if not text:
+        text = "unspecified"
+    if not _TOKEN_VALID_START_RE.match(text):
+        text = f"_{text}"
+    return text
+
+
 def _oscal_control_id(identifier: str | None) -> str:
     """A control identifier in OSCAL form: canonicalized 800-53 ids go through
     ``canonical_to_oscal_id`` (``AC-2(1)`` -> ``ac-2.1``); anything that doesn't
@@ -141,7 +166,10 @@ def _oscal_information_types(
     ``fips199``. ``base`` is an OSCAL token — it must never hold a
     human-readable placeholder sentence (spaces/em-dash aren't valid token
     characters). When a level's categorization is absent, the impact object is
-    omitted entirely (never fabricated)."""
+    omitted entirely (never fabricated). The OSCAL information-type object has
+    no ``remarks`` property (``additionalProperties: false``), so any free-text
+    annotation is carried as a ``props`` entry instead — the one extensible,
+    schema-legal place for it."""
     if summary and summary.info_types:
         info_types: list[dict[str, Any]] = []
         for it in summary.info_types:
@@ -158,7 +186,9 @@ def _oscal_information_types(
                 if value:
                     node[key] = {"base": value}
             if it.adjustment_justification:
-                node["remarks"] = it.adjustment_justification
+                node["props"] = [
+                    {"name": "adjustment-justification", "value": it.adjustment_justification}
+                ]
             info_types.append(node)
         return info_types
 
@@ -182,9 +212,12 @@ def _oscal_information_types(
         else:
             missing_levels.append(level)
     if missing_levels:
-        info_type["remarks"] = _placeholder(
-            ", ".join(f"fips199.{level}" for level in missing_levels)
-        )
+        info_type["props"] = [
+            {
+                "name": "categorization-gap",
+                "value": _placeholder(", ".join(f"fips199.{level}" for level in missing_levels)),
+            }
+        ]
     return [info_type]
 
 
@@ -233,6 +266,12 @@ def _oscal_system_implementation(
         }
         for rp in responsible_parties
     ]
+    if not users:
+        # OSCAL requires system-implementation.users to be non-empty. When no
+        # responsible-role name has been captured in the project's metadata
+        # (SSPProject.metadata_json["roles"]), emit one honestly-flagged
+        # placeholder user rather than fabricate a name/role.
+        users = [{"uuid": str(uuid.uuid4()), "remarks": _placeholder("responsible roles")}]
 
     if summary and (summary.components or summary.interconnections):
         comp_uuid_by_id: dict[int, str] = {}
@@ -410,34 +449,49 @@ async def build_ssp_doc(session: AsyncSession, proj: SSPProject) -> dict[str, An
         # On the 800-53 path the OSCAL id (lowercased/dotted) must drive BOTH the
         # control-id AND the statement-id prefix — a statement-id like "AC-2(1)_smt"
         # is an invalid OSCAL token (parens are illegal), so enhancements would emit
-        # non-conformant ids if we reused the canonical form here.
-        oscal_cid = canonical_to_oscal_id(e.control_id) if is_80053 else nist
+        # non-conformant ids if we reused the canonical form here. On the CMMC path
+        # ``nist`` is often the bare NIST SP 800-171 requirement number (e.g.
+        # "3.1.1"), which is not a valid OSCAL token on its own (tokens must start
+        # with a letter/underscore) — ``_oscal_token`` sanitizes it (preserving
+        # already-valid ids like "AC.L2-3.1.1" verbatim) so control-id and
+        # statement-id derive from the SAME sanitized id.
+        oscal_cid = canonical_to_oscal_id(e.control_id) if is_80053 else _oscal_token(nist)
         statements = [
             {
-                "statement-id": f"{oscal_cid}_smt.{part.get('label')}"
+                "statement-id": f"{oscal_cid}_smt.{_oscal_token(part.get('label'))}"
                 if part.get("label")
                 else f"{oscal_cid}_smt",
                 "uuid": str(uuid.uuid4()),
-                "description": part.get("text", ""),
+                # The OSCAL SSP "statement" object has no "description" property
+                # (additionalProperties: false) — the narrative text belongs in
+                # "remarks", the one free-text field a statement does allow.
+                "remarks": part.get("text") or _placeholder("statement narrative"),
             }
             for part in (e.part_narratives or [])
         ]
+        # A property's "value" is an OSCAL StringDatatype — non-empty, no
+        # leading/trailing whitespace — so an unset responsible-role/
+        # control-origination must omit the prop entirely rather than emit
+        # "" (implementation-status always has its "planned" fallback, so it
+        # is unconditionally present and this list is never empty).
+        props: list[dict[str, str]] = [
+            {
+                "name": "implementation-status",
+                "value": ", ".join(e.implementation_status or []) or "planned",
+            }
+        ]
+        if e.responsible_role:
+            props.append({"name": "responsible-role", "value": e.responsible_role})
+        origination = ", ".join(e.control_origination or [])
+        if origination:
+            props.append({"name": "control-origination", "value": origination})
         req: dict[str, Any] = {
             "uuid": str(uuid.uuid4()),
             "control-id": oscal_cid,
-            "props": [
-                {"name": "responsible-role", "value": e.responsible_role or ""},
-                {
-                    "name": "implementation-status",
-                    "value": ", ".join(e.implementation_status or []) or "planned",
-                },
-                {
-                    "name": "control-origination",
-                    "value": ", ".join(e.control_origination or []),
-                },
-            ],
-            "statements": statements,
+            "props": props,
         }
+        if statements:
+            req["statements"] = statements
         if is_80053:
             set_parameters = [
                 {"param-id": pid, "values": [str(v)]}
@@ -447,6 +501,21 @@ async def build_ssp_doc(session: AsyncSession, proj: SSPProject) -> dict[str, An
             if set_parameters:
                 req["set-parameters"] = set_parameters
         implemented_reqs.append(req)
+
+    if not implemented_reqs:
+        # OSCAL requires control-implementation.implemented-requirements to be
+        # non-empty. A project with no SSPControlEntry rows yet (e.g. before
+        # seeding) has genuinely nothing to report — emit one honestly-flagged
+        # placeholder requirement rather than fabricate control coverage.
+        implemented_reqs = [
+            {
+                "uuid": str(uuid.uuid4()),
+                "control-id": "_unspecified",
+                "remarks": _placeholder(
+                    "control-implementation — no SSP control entries on record"
+                ),
+            }
+        ]
 
     # Source categorization, boundary, and roles from the same
     # project.metadata_json the docx SSP (ssp/generator.py) renders, so the two

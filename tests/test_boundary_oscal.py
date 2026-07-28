@@ -162,7 +162,11 @@ async def test_ssp_export_uses_real_boundary_inventory() -> None:
     assert info_node["confidentiality-impact"]["base"] == "moderate"
     assert info_node["integrity-impact"]["base"] == "moderate"
     assert info_node["availability-impact"]["base"] == "low"
-    assert info_node["remarks"] == "Adjusted per org policy."
+    # The OSCAL "information-type" object has no "remarks" property
+    # (additionalProperties: false) — the adjustment justification is carried
+    # as a props entry instead, the one schema-legal extensible field.
+    info_props = {p["name"]: p["value"] for p in info_node["props"]}
+    assert info_props["adjustment-justification"] == "Adjusted per org policy."
 
     report = validate_document(doc)
     assert report.ok, report.errors
