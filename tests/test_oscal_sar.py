@@ -195,6 +195,9 @@ async def test_sar_export_has_expected_shape_and_validates() -> None:
     assert risks[0]["title"] == "Audit log gaps"
 
     report = validate_document(doc)
+    # Conformance is machine-proven against the vendored official NIST OSCAL
+    # assessment-results schema (not Concord's structural fallback).
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
 
 
