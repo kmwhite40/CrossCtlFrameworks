@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...boundary.summary import BoundarySummary, system_boundary_summary
+from ...catalog.canonical import canonical_to_oscal_id
 from ...models import (
     POAM,
     Control,
@@ -370,36 +371,49 @@ async def ssp_export(
     )
 
     implemented_reqs: list[dict[str, Any]] = []
+    is_80053 = proj.framework == "nist-800-53r5"
     for e in entries:
         nist = (e.nist_id or e.control_id).strip()
+        # On the 800-53 path the OSCAL id (lowercased/dotted) must drive BOTH the
+        # control-id AND the statement-id prefix — a statement-id like "AC-2(1)_smt"
+        # is an invalid OSCAL token (parens are illegal), so enhancements would emit
+        # non-conformant ids if we reused the canonical form here.
+        oscal_cid = canonical_to_oscal_id(e.control_id) if is_80053 else nist
         statements = [
             {
-                "statement-id": f"{nist}_smt.{part.get('label')}"
+                "statement-id": f"{oscal_cid}_smt.{part.get('label')}"
                 if part.get("label")
-                else f"{nist}_smt",
+                else f"{oscal_cid}_smt",
                 "uuid": str(uuid.uuid4()),
                 "description": part.get("text", ""),
             }
             for part in (e.part_narratives or [])
         ]
-        implemented_reqs.append(
-            {
-                "uuid": str(uuid.uuid4()),
-                "control-id": nist,
-                "props": [
-                    {"name": "responsible-role", "value": e.responsible_role or ""},
-                    {
-                        "name": "implementation-status",
-                        "value": ", ".join(e.implementation_status or []) or "planned",
-                    },
-                    {
-                        "name": "control-origination",
-                        "value": ", ".join(e.control_origination or []),
-                    },
-                ],
-                "statements": statements,
-            }
-        )
+        req: dict[str, Any] = {
+            "uuid": str(uuid.uuid4()),
+            "control-id": oscal_cid,
+            "props": [
+                {"name": "responsible-role", "value": e.responsible_role or ""},
+                {
+                    "name": "implementation-status",
+                    "value": ", ".join(e.implementation_status or []) or "planned",
+                },
+                {
+                    "name": "control-origination",
+                    "value": ", ".join(e.control_origination or []),
+                },
+            ],
+            "statements": statements,
+        }
+        if is_80053:
+            set_parameters = [
+                {"param-id": pid, "values": [str(v)]}
+                for pid, v in (e.odp_values or {}).items()
+                if v not in (None, "")
+            ]
+            if set_parameters:
+                req["set-parameters"] = set_parameters
+        implemented_reqs.append(req)
 
     # Source categorization, boundary, and roles from the same
     # project.metadata_json the docx SSP (ssp/generator.py) renders, so the two
