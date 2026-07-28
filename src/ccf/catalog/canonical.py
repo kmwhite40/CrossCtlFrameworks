@@ -41,3 +41,12 @@ def canonicalize(raw: str | None) -> CanonicalId | None:
     enh = tuple(int(x) for x in _ENH.findall(m.group("enh") or ""))
     value = f"{fam}-{num}" + "".join(f"({e})" for e in enh)
     return CanonicalId(value=value, family=fam, number=num, enhancements=enh)
+
+
+def canonical_to_oscal_id(canonical: str) -> str:
+    """Inverse of :func:`ccf.catalog.oscal.oscal_id_to_canonical`.
+
+    ``"AC-2" -> "ac-2"``, ``"AC-2(1)" -> "ac-2.1"``, ``"AC-2(1)(2)" ->
+    "ac-2.1.2"``. A plain id with no enhancement is just lowercased.
+    """
+    return re.sub(r"\((\d+)\)", r".\1", canonical).lower()
