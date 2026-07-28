@@ -30,12 +30,19 @@ def _ssp(uuid: str = "11111111-1111-1111-1111-111111111111") -> dict:
 
 
 def _poam() -> dict:
+    # uuid/poam-item uuid must be valid OSCAL UUIDDatatype (RFC 4122 v4/v5 —
+    # version nibble 4/5, variant nibble 8/9/A/B), and metadata requires
+    # "version" in addition to "title"/"last-modified"/"oscal-version" — a
+    # bare incrementing placeholder like "22222222-2222-2222-..." or a missing
+    # "version" key fails the official schema now that it's checked by default.
     return {
         "plan-of-action-and-milestones": {
-            "uuid": "22222222-2222-2222-2222-222222222222",
+            "uuid": "22222222-2222-4222-8222-222222222222",
             "metadata": {"title": "P", "last-modified": "2026-07-02T00:00:00Z",
-                         "oscal-version": "1.1.2"},
-            "poam-items": [{"uuid": "i1", "title": "t", "description": "d"}],
+                         "version": "1.0", "oscal-version": "1.1.2"},
+            "poam-items": [
+                {"uuid": "11111111-1111-4111-8111-111111111111", "title": "t", "description": "d"}
+            ],
         }
     }
 
@@ -50,26 +57,53 @@ def test_detect_kind() -> None:
     assert detect_kind({"nope": {}}) == "unknown"
 
 
-def test_valid_ssp_passes_structural() -> None:
-    r = validate_document(_ssp())
-    assert r.kind == "ssp"
-    assert r.mode == "structural"
-    assert r.ok is True
-    assert r.errors == []
-    assert r.warnings  # warns that official schema was not used
+def _force_structural(tmp_path, monkeypatch, *, require_official: bool = False) -> None:
+    """Point CCF_OSCAL_SCHEMA_DIR at an empty directory so no official schema
+    resolves for any kind, forcing the structural fallback path regardless of
+    the packaged-by-default schemas. Also pins CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA
+    explicitly (rather than inheriting the ambient environment — CI runs the
+    whole suite with the gate on) so this test is deterministic either way."""
+    monkeypatch.setenv("CCF_OSCAL_SCHEMA_DIR", str(tmp_path))
+    monkeypatch.setenv("CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA", "true" if require_official else "false")
+    get_settings.cache_clear()
 
 
-def test_invalid_ssp_reports_useful_errors() -> None:
-    doc = _ssp()
-    del doc["system-security-plan"]["uuid"]
-    doc["system-security-plan"]["metadata"].pop("oscal-version")
-    doc["system-security-plan"]["control-implementation"] = None
-    r = validate_document(doc)
-    assert r.ok is False
-    joined = " ".join(r.errors)
-    assert "uuid" in joined
-    assert "oscal-version" in joined
-    assert "control-implementation" in joined
+def test_valid_ssp_passes_structural(tmp_path, monkeypatch) -> None:
+    """``_ssp()`` is hand-built to satisfy Concord's structural checks only
+    (it is not official-schema-valid) — this test proves the structural
+    fallback path itself works, so it must explicitly force structural mode
+    rather than relying on no schema being configured (schemas now resolve
+    from the package by default)."""
+    _force_structural(tmp_path, monkeypatch)
+    try:
+        r = validate_document(_ssp())
+        assert r.kind == "ssp"
+        assert r.mode == "structural"
+        assert r.ok is True
+        assert r.errors == []
+        assert r.warnings  # warns that official schema was not used
+    finally:
+        get_settings.cache_clear()
+
+
+def test_invalid_ssp_reports_useful_errors(tmp_path, monkeypatch) -> None:
+    """Same structural-mode forcing as above — proves the structural checker's
+    error messages are useful, independent of official-schema availability."""
+    _force_structural(tmp_path, monkeypatch)
+    try:
+        doc = _ssp()
+        del doc["system-security-plan"]["uuid"]
+        doc["system-security-plan"]["metadata"].pop("oscal-version")
+        doc["system-security-plan"]["control-implementation"] = None
+        r = validate_document(doc)
+        assert r.mode == "structural"
+        assert r.ok is False
+        joined = " ".join(r.errors)
+        assert "uuid" in joined
+        assert "oscal-version" in joined
+        assert "control-implementation" in joined
+    finally:
+        get_settings.cache_clear()
 
 
 def test_unknown_document_kind() -> None:
@@ -114,12 +148,16 @@ def test_official_schema_used_when_present(tmp_path, monkeypatch) -> None:
         get_settings.cache_clear()
 
 
-def test_require_official_fails_closed_without_schema(monkeypatch) -> None:
-    monkeypatch.setenv("CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA", "true")
-    monkeypatch.delenv("CCF_OSCAL_SCHEMA_DIR", raising=False)
-    get_settings.cache_clear()
+def test_require_official_fails_closed_without_schema(tmp_path, monkeypatch) -> None:
+    """Schemas now resolve from the package by default, so "without schema"
+    must be simulated explicitly: point CCF_OSCAL_SCHEMA_DIR at an empty
+    directory (no official schema resolves for any kind) while requiring
+    official validation — the report must fail closed with an explicit
+    "unavailable" error, never a silent structural pass."""
+    _force_structural(tmp_path, monkeypatch, require_official=True)
     try:
         r = validate_document(_ssp())
+        assert r.mode == "structural"
         assert r.ok is False
         assert any("required but not available" in e for e in r.errors)
     finally:
@@ -131,13 +169,23 @@ def test_require_official_fails_closed_without_schema(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_validate_route() -> None:
+    """Post a real, official-valid SSP export (not the hand-built structural
+    ``_ssp()`` fixture) so the route is proven against the real NIST schema,
+    not the structural fallback."""
     async with AsyncClient(
         transport=ASGITransport(app=create_app()), base_url="http://t"
     ) as c:
-        r = await c.post("/api/oscal/validate", json=_ssp())
+        await c.post("/api/scoring/seed")
+        pid = (
+            await c.post("/api/ssp/projects", json={"customer_name": "ValidateRouteCo"})
+        ).json()["id"]
+        doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
+
+        r = await c.post("/api/oscal/validate", json=doc)
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["kind"] == "ssp"
+        assert body["mode"] == "official"
         assert body["ok"] is True
 
         bad = await c.post(
@@ -232,6 +280,7 @@ async def test_ssp_export_reflects_project_metadata() -> None:
         assert len(impl["users"]) == 3
 
         report = validate_document(doc)
+        assert report.mode == "official", report.warnings
         assert report.ok, report.errors
 
 
@@ -256,19 +305,27 @@ async def test_ssp_export_placeholders_when_metadata_absent() -> None:
         # An unset categorization must never fabricate an impact "base" token —
         # the confidentiality/integrity/availability-impact objects are omitted
         # entirely (never a placeholder sentence with spaces/em-dash, which is
-        # not a valid OSCAL token) and the gap is noted in remarks instead.
+        # not a valid OSCAL token) and the gap is noted in a props entry instead
+        # (the OSCAL "information-type" object has no "remarks" property).
         info_type = sysc["system-information"]["information-types"][0]
         for key in ("confidentiality-impact", "integrity-impact", "availability-impact"):
             assert key not in info_type
-        assert "UNSPECIFIED" in info_type.get("remarks", "")
+        info_type_props = {p["name"]: p["value"] for p in info_type.get("props", [])}
+        assert "UNSPECIFIED" in info_type_props.get("categorization-gap", "")
 
         # No roles filled in metadata -> no responsible-parties/parties claimed.
         meta = doc["system-security-plan"]["metadata"]
         assert not meta.get("parties")
         assert not meta.get("responsible-parties")
-        assert len(doc["system-security-plan"]["system-implementation"]["users"]) == 0
+        # OSCAL requires system-implementation.users to be non-empty — with no
+        # named responsible role, one honestly-flagged placeholder user is
+        # emitted instead of an empty (schema-invalid) array.
+        users = doc["system-security-plan"]["system-implementation"]["users"]
+        assert len(users) == 1
+        assert "UNSPECIFIED" in users[0]["remarks"]
 
         report = validate_document(doc)
+        assert report.mode == "official", report.warnings
         assert report.ok, report.errors
 
 

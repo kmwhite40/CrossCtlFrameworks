@@ -28,6 +28,7 @@ jobs:
     env:
       CCF_DATABASE_URL: postgresql+asyncpg://ccf:ccf@localhost:5432/ccf_test
       CCF_DATABASE_URL_SYNC: postgresql+psycopg://ccf:ccf@localhost:5432/ccf_test
+      CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA: "1"
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6

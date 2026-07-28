@@ -2,9 +2,15 @@
 
 Resolution order per document:
 
-1. If ``CCF_OSCAL_SCHEMA_DIR`` holds the matching upstream NIST OSCAL JSON Schema
+1. If the matching upstream NIST OSCAL JSON Schema is available — either the
+   in-package vendored copy under ``ccf/oscal/schemas/`` (the default) or a
+   directory pointed to by ``CCF_OSCAL_SCHEMA_DIR`` (overrides the default) —
    *and* ``jsonschema`` is importable → validate against the **official** schema
-   (``mode="official"``).
+   (``mode="official"``). The vendored schemas declare JSON Schema draft-07 and
+   use ``#anchor``-style ``$ref``s, so the adapter resolves the validator class
+   via ``jsonschema.validators.validator_for`` instead of hardcoding a dialect,
+   and translates OSCAL's ECMA Unicode-property regex patterns (``\\p{L}`` etc.)
+   into Python-``re``-compatible equivalents before compiling.
 2. Otherwise → validate with Concord's built-in **structural** checks
    (``mode="structural"``) and attach a warning that official conformance was not
    checked. When ``CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA`` is set, the missing schema
@@ -76,12 +82,17 @@ def detect_kind(doc: dict[str, Any]) -> str:
 
 
 def official_schema_path(kind: str) -> Path | None:
-    """Path to the official OSCAL schema for ``kind`` under ``CCF_OSCAL_SCHEMA_DIR``."""
+    """Path to the official OSCAL schema for ``kind``.
+
+    Resolves ``CCF_OSCAL_SCHEMA_DIR`` when set; otherwise falls back to the
+    in-package vendored schemas under ``ccf/oscal/schemas/`` so official
+    validation works by default with no environment configuration.
+    """
     kind = _ALIASES.get(kind, kind)
-    schema_dir = get_settings().oscal_schema_dir
-    if schema_dir is None or kind not in KINDS:
+    if kind not in KINDS:
         return None
-    directory = Path(schema_dir)
+    schema_dir = get_settings().oscal_schema_dir
+    directory = Path(schema_dir) if schema_dir is not None else Path(__file__).with_name("schemas")
     for name in KINDS[kind][1]:
         candidate = directory / name
         if candidate.is_file():
@@ -140,16 +151,61 @@ def validate_document(doc: Any, kind: str = "auto") -> ValidationReport:
     return ValidationReport(resolved, "structural", ok=not errors, errors=errors, warnings=warnings)
 
 
+def _translate_ecma_pattern(pattern: str) -> str:
+    """Translate ECMA Unicode-property regex classes into Python-``re`` equivalents.
+
+    OSCAL's official schemas use ECMA 262 Unicode property escapes (``\\p{L}``,
+    ``\\p{N}``, ...) in ``pattern`` constraints. Python's ``re`` module does not
+    support ``\\p{...}`` at all (``bad escape \\p``), so any schema pattern using
+    them crashes validation once a token/uuid-like field is populated. This maps
+    the classes OSCAL actually uses to ASCII-equivalent character classes — a
+    deliberate approximation (not a full Unicode-property engine), sufficient for
+    OSCAL's token/uuid/date patterns. Two-letter classes are replaced before the
+    single-letter ``\\p{L}``/``\\p{N}`` so they aren't partially matched first.
+    Pure and idempotent: re-running on already-translated text is a no-op.
+    """
+    pattern = pattern.replace(r"\p{Lu}", "[A-Z]")
+    pattern = pattern.replace(r"\p{Ll}", "[a-z]")
+    pattern = pattern.replace(r"\p{L}", r"[^\W\d_]")
+    pattern = pattern.replace(r"\p{Nd}", "[0-9]")
+    pattern = pattern.replace(r"\p{N}", "[0-9]")
+    return pattern
+
+
+def _walk_translate_patterns(node: Any) -> None:
+    """Recursively translate every ``"pattern"`` string in a JSON schema, in place."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "pattern" and isinstance(value, str):
+                node[key] = _translate_ecma_pattern(value)
+            else:
+                _walk_translate_patterns(value)
+    elif isinstance(node, list):
+        for item in node:
+            _walk_translate_patterns(item)
+
+
+_ADAPTED_CACHE: dict[str, Any] = {}
+
+
+def _load_adapted_schema(schema_path: Path) -> Any:
+    """Load ``schema_path``, translate its ECMA patterns once, and cache the result."""
+    key = str(schema_path)
+    if key not in _ADAPTED_CACHE:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        _walk_translate_patterns(schema)
+        _ADAPTED_CACHE[key] = schema
+    return _ADAPTED_CACHE[key]
+
+
 def _validate_against_schema(doc: dict[str, Any], schema_path: Path) -> list[str]:
     try:
-        import jsonschema  # noqa: PLC0415
+        import jsonschema  # noqa: F401,PLC0415
+        from jsonschema.validators import validator_for  # noqa: PLC0415
 
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        validator = jsonschema.Draft202012Validator(schema)
-        return [
-            f"{'/'.join(str(p) for p in e.absolute_path) or 'root'}: {e.message}"
-            for e in sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
-        ]
+        schema = _load_adapted_schema(schema_path)
+        validator = validator_for(schema)(schema)
+        return sorted(e.message for e in validator.iter_errors(doc))[:50]
     except Exception as e:  # unreadable/invalid schema — surface, don't crash
         return [f"could not validate against official schema {schema_path.name}: {e}"]
 

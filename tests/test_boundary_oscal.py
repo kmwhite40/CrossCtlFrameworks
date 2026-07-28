@@ -162,9 +162,14 @@ async def test_ssp_export_uses_real_boundary_inventory() -> None:
     assert info_node["confidentiality-impact"]["base"] == "moderate"
     assert info_node["integrity-impact"]["base"] == "moderate"
     assert info_node["availability-impact"]["base"] == "low"
-    assert info_node["remarks"] == "Adjusted per org policy."
+    # The OSCAL "information-type" object has no "remarks" property
+    # (additionalProperties: false) — the adjustment justification is carried
+    # as a props entry instead, the one schema-legal extensible field.
+    info_props = {p["name"]: p["value"] for p in info_node["props"]}
+    assert info_props["adjustment-justification"] == "Adjusted per org policy."
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
 
 
@@ -199,6 +204,7 @@ async def test_ssp_export_falls_back_to_placeholder_when_boundary_empty() -> Non
     assert "inventory-items" not in impl
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
 
 
@@ -217,4 +223,5 @@ async def test_ssp_export_without_system_id_still_placeholders() -> None:
     assert "not yet enumerated" in impl["components"][0]["remarks"]
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors

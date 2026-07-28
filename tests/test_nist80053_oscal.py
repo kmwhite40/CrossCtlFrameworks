@@ -110,6 +110,7 @@ async def test_ssp_export_800_53_uses_canonical_control_id_and_set_parameters() 
     assert "set-parameters" not in sc7  # no filled ODPs -> key omitted entirely
 
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors
 
 
@@ -191,4 +192,5 @@ async def test_ssp_export_enhancement_statement_ids_are_token_valid() -> None:
         assert "(" not in sid and ")" not in sid, sid
         assert sid.startswith("ac-2.1_smt")
     report = validate_document(doc)
+    assert report.mode == "official", report.warnings
     assert report.ok, report.errors

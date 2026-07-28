@@ -180,7 +180,11 @@ async def test_oscal_ssp_export_shape() -> None:
         assert ssp["system-characteristics"]["security-sensitivity-level"] == "moderate"
         reqs = ssp["control-implementation"]["implemented-requirements"]
         assert len(reqs) == 110
-        assert reqs[0]["control-id"] == "3.1.1"
+        # OSCAL control-id/statement-id are the `token` datatype (must start
+        # with a letter/underscore) — the bare NIST SP 800-171 requirement
+        # number "3.1.1" starts with a digit, so it is sanitized to "_3.1.1"
+        # rather than emitted verbatim (which would be schema-invalid).
+        assert reqs[0]["control-id"] == "_3.1.1"
         assert reqs[0]["statements"]
         assert (await c.get("/api/oscal/ssp/999999")).status_code == 404
 
