@@ -362,18 +362,39 @@ async def build_component_definition_doc(session: AsyncSession, sys: System) -> 
         .all()
     )
 
-    implemented_reqs = [
-        {
-            "uuid": str(uuid.uuid4()),
-            "control-id": (i.control.identifier if i.control else "").lower().replace(" ", ""),
-            "description": i.narrative or "",
-            "props": [
-                {"name": "implementation-status", "value": i.status},
-                {"name": "responsibility", "value": i.responsibility or ""},
-            ],
-        }
-        for i in impls
-    ]
+    implemented_reqs: list[dict[str, Any]] = []
+    for i in impls:
+        # control-id is an OSCAL token — a raw catalog identifier like
+        # "AC-2(1)" is not one (parens are illegal); _oscal_control_id already
+        # canonicalizes 800-53 ids to their dotted OSCAL form ("ac-2.1") and
+        # lowercases anything else (e.g. CMMC ids), and _oscal_token is a
+        # defense-in-depth sanitizer for whatever slips through (a control
+        # with no catalog row, free text, a leading digit).
+        control_id = _oscal_token(
+            _oscal_control_id(i.control.identifier if i.control else None)
+        )
+        # A property's "value" is an OSCAL StringDatatype — non-empty, no
+        # leading/trailing whitespace — so an unset "responsibility" must
+        # omit the prop entirely rather than emit "" (implementation-status
+        # is a non-nullable column with a default, so it is always present).
+        props: list[dict[str, str]] = [
+            {"name": "implementation-status", "value": i.status},
+        ]
+        if i.responsibility:
+            props.append({"name": "responsibility", "value": i.responsibility})
+        implemented_reqs.append(
+            {
+                "uuid": str(uuid.uuid4()),
+                "control-id": control_id,
+                # _placeholder() bakes in "...not set in SSP project metadata",
+                # which is misleading here — this doc is built from
+                # ControlImplementation rows, not an SSP project — so a
+                # bespoke marker is used instead (same _PLACEHOLDER prefix).
+                "description": i.narrative
+                or f"{_PLACEHOLDER} — no implementation narrative on record",
+                "props": props,
+            }
+        )
 
     now = datetime.now(UTC).isoformat()
     return _component_definition_doc(sys, implemented_reqs, now)
@@ -382,6 +403,19 @@ async def build_component_definition_doc(session: AsyncSession, sys: System) -> 
 def _component_definition_doc(
     sys: System, implemented_reqs: list[dict[str, Any]], now: str
 ) -> dict[str, Any]:
+    if not implemented_reqs:
+        # OSCAL requires control-implementation.implemented-requirements to be
+        # non-empty. A system with no ControlImplementation rows yet has
+        # genuinely nothing to report — emit one honestly-flagged placeholder
+        # requirement rather than fabricate control coverage (mirrors the
+        # SSP's empty-implemented-requirements fallback).
+        implemented_reqs = [
+            {
+                "uuid": str(uuid.uuid4()),
+                "control-id": "_unspecified",
+                "description": f"{_PLACEHOLDER} — no ControlImplementation rows on record",
+            }
+        ]
     return {
         "component-definition": {
             "uuid": str(uuid.uuid4()),
@@ -628,6 +662,18 @@ async def build_poam_doc(
                 "oscal-version": "1.1.2",
                 "published": now,
             },
+            # POA&M does not currently cross-reference a specific SSP export
+            # (there is no live request context here to build a resolvable
+            # URL, and a system may have zero or several SSP projects) — an
+            # honest placeholder href, same pattern as build_sar_doc's
+            # "import-ap".
+            "import-ssp": {
+                "href": "#no-ssp",
+                "remarks": (
+                    "No specific system-security-plan export is referenced by this "
+                    "POA&M; see system-id for the system it covers."
+                ),
+            },
             "system-id": {
                 "identifier-type": "https://ietf.org/rfc/rfc4122",
                 "id": str(sys.id),
@@ -841,12 +887,21 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
         for p in poams
     ]
 
+    # "include-controls" has minItems 1 when present — an assessment with no
+    # AssessmentResult rows yet has genuinely nothing to list, so the key is
+    # omitted (an honest placeholder remark stands in for it) rather than
+    # emitting an OSCAL-illegal empty array.
+    control_selection: dict[str, Any] = (
+        {"include-controls": include_controls}
+        if include_controls
+        else {"remarks": f"{_PLACEHOLDER} — no AssessmentResult rows on record"}
+    )
     result: dict[str, Any] = {
         "uuid": str(uuid.uuid4()),
         "title": assessment.name,
         "description": assessment.summary or assessment.name,
         "start": (assessment.started_on or date.today()).isoformat() + "T00:00:00Z",
-        "reviewed-controls": {"control-selections": [{"include-controls": include_controls}]},
+        "reviewed-controls": {"control-selections": [control_selection]},
     }
     if assessment.finished_on is not None:
         result["end"] = assessment.finished_on.isoformat() + "T00:00:00Z"

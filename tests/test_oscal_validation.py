@@ -30,12 +30,19 @@ def _ssp(uuid: str = "11111111-1111-1111-1111-111111111111") -> dict:
 
 
 def _poam() -> dict:
+    # uuid/poam-item uuid must be valid OSCAL UUIDDatatype (RFC 4122 v4/v5 —
+    # version nibble 4/5, variant nibble 8/9/A/B), and metadata requires
+    # "version" in addition to "title"/"last-modified"/"oscal-version" — a
+    # bare incrementing placeholder like "22222222-2222-2222-..." or a missing
+    # "version" key fails the official schema now that it's checked by default.
     return {
         "plan-of-action-and-milestones": {
-            "uuid": "22222222-2222-2222-2222-222222222222",
+            "uuid": "22222222-2222-4222-8222-222222222222",
             "metadata": {"title": "P", "last-modified": "2026-07-02T00:00:00Z",
-                         "oscal-version": "1.1.2"},
-            "poam-items": [{"uuid": "i1", "title": "t", "description": "d"}],
+                         "version": "1.0", "oscal-version": "1.1.2"},
+            "poam-items": [
+                {"uuid": "11111111-1111-4111-8111-111111111111", "title": "t", "description": "d"}
+            ],
         }
     }
 
