@@ -220,14 +220,18 @@ def assess(
         missing_sections = [*missing_sections, *boundary_gaps]
 
     total_odps, unset_odps = _odp_totals(entries)
-    if total_odps > 0:
+    # Only fold ODPs into the score when some are UNSET (an actual gap). When every
+    # ODP is filled (unset == 0), leave the score untouched — this keeps existing
+    # CMMC projects (which carry only filled odp_values) byte-identical rather than
+    # nudging their score upward, while still penalizing a scaffolded 800-53 SSP
+    # whose ODPs haven't been filled in.
+    if unset_odps > 0:
         odp_pct = (total_odps - unset_odps) / total_odps
         section_pct = (section_pct + odp_pct) / 2.0
-        if unset_odps > 0:
-            missing_sections = [
-                *missing_sections,
-                f"{unset_odps} of {total_odps} organization-defined parameters (ODPs) unset",
-            ]
+        missing_sections = [
+            *missing_sections,
+            f"{unset_odps} of {total_odps} organization-defined parameters (ODPs) unset",
+        ]
 
     score = round(100 * (0.8 * control_pct + 0.2 * section_pct), 1)
     # "Ready" means genuinely done: every control complete (the 80/20 blend must

@@ -148,3 +148,47 @@ async def test_ssp_export_cmmc_keeps_verbatim_control_id_no_set_parameters() -> 
     req = next(iter(reqs))
     assert req["control-id"] == "AC.L2-3.1.1"
     assert "set-parameters" not in req
+
+
+@pytest.mark.asyncio
+async def test_ssp_export_enhancement_statement_ids_are_token_valid() -> None:
+    # OSCAL statement-ids are `token` datatype (no parentheses). For an enhancement
+    # control (AC-2(1)) both the control-id AND the statement-id must be the OSCAL
+    # dotted form (ac-2.1) — not the canonical "AC-2(1)" which would emit an invalid
+    # statement-id like "AC-2(1)_smt.a".
+    org_id, sys_id = await _make_org_system("Nist80053EnhOrg")
+    async with session_scope() as s:
+        proj = SSPProject(
+            organization_id=org_id,
+            system_id=sys_id,
+            customer_name="EnhCo",
+            system_name="EnhSys",
+            framework="nist-800-53r5",
+        )
+        s.add(proj)
+        await s.flush()
+        pid = proj.id
+        s.add(
+            SSPControlEntry(
+                project_id=pid,
+                control_id="AC-2(1)",
+                domain="AC",
+                title="Automated System Account Management",
+                odp_values={},
+                part_narratives=[{"label": "a", "text": "Automation manages accounts."}],
+                sort_order=1,
+            )
+        )
+        await s.flush()
+
+    async with _client() as c:
+        doc = (await c.get(f"/api/oscal/ssp/{pid}")).json()
+
+    reqs = doc["system-security-plan"]["control-implementation"]["implemented-requirements"]
+    enh = next(r for r in reqs if r["control-id"] == "ac-2.1")
+    for stmt in enh["statements"]:
+        sid = stmt["statement-id"]
+        assert "(" not in sid and ")" not in sid, sid
+        assert sid.startswith("ac-2.1_smt")
+    report = validate_document(doc)
+    assert report.ok, report.errors
