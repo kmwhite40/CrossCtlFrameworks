@@ -117,24 +117,24 @@ async def test_package_export_sparse_system_omits_ssp_and_sar() -> None:
 
     zf = zipfile.ZipFile(io.BytesIO(resp.content))
     names = set(zf.namelist())
-    assert "poam.json" in names
     assert "component-definition.json" in names
     assert "README.txt" in names
     assert "ssp.json" not in names
     assert "sar.json" not in names
+    # A clean system with zero open POA&Ms MUST NOT bundle a poam.json: an empty
+    # poam-items array is OSCAL-invalid (minItems 1). It's omitted + noted instead,
+    # so the package never presents a non-conformant member as valid.
+    assert "poam.json" not in names
 
-    # component-definition.json validates even with zero controls; poam.json
-    # with zero poam-items fails OSCAL's "at least one item" constraint (see
-    # tests/test_oscal_validation.py) — that's an existing, expected property
-    # of an empty POA&M, not something this test asserts against.
+    # Every bundled member must validate.
     doc = json.loads(zf.read("component-definition.json"))
     report = validate_document(doc)
     assert report.ok, report.errors
-    assert json.loads(zf.read("poam.json"))["plan-of-action-and-milestones"]["poam-items"] == []
 
     readme = zf.read("README.txt").decode()
     assert "ssp.json: ABSENT" in readme
     assert "sar.json: ABSENT" in readme
+    assert "poam.json: ABSENT" in readme
 
 
 @pytest.mark.asyncio

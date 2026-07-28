@@ -894,9 +894,17 @@ async def build_package_zip(session: AsyncSession, sys: System, *, now_iso: str)
         else:
             manifest_lines.append("sar.json: ABSENT — no assessment on record")
 
+        # OSCAL requires poam-items minItems 1, so an empty POA&M array is an
+        # INVALID document. A clean system with no open POA&Ms is a normal, desirable
+        # state — represent it by omitting poam.json (and noting it), rather than
+        # bundling a non-conformant member into the authorization package.
         poam_doc = await build_poam_doc(session, sys)
-        zf.writestr("poam.json", json.dumps(poam_doc, indent=2))
-        manifest_lines.append("poam.json: present")
+        poam_items = poam_doc.get("plan-of-action-and-milestones", {}).get("poam-items", [])
+        if poam_items:
+            zf.writestr("poam.json", json.dumps(poam_doc, indent=2))
+            manifest_lines.append("poam.json: present")
+        else:
+            manifest_lines.append("poam.json: ABSENT — no open POA&M items for this system")
 
         component_doc = await build_component_definition_doc(session, sys)
         zf.writestr("component-definition.json", json.dumps(component_doc, indent=2))
