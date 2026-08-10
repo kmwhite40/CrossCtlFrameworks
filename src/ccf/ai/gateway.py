@@ -23,6 +23,8 @@ from .cipher import build_cipher, mask
 from .providers import build_provider
 from .providers.base import (
     AIProvider,
+    EmbedRequest,
+    EmbedResponse,
     GenerateTextRequest,
     StructuredGenerationRequest,
 )
@@ -228,3 +230,46 @@ async def generate_structured(
         output_tokens=resp.output_tokens,
     )
     return resp.data
+
+
+async def embed(
+    session: AsyncSession,
+    org_id: int,
+    *,
+    texts: list[str],
+    purpose: str,
+    provider: str | None = None,
+    model: str | None = None,
+    actor: str | None = None,
+) -> EmbedResponse:
+    """Embed a batch of texts using the org's embedding provider.
+
+    Resolves independently of the generation provider: an org generating with
+    Anthropic still embeds elsewhere, because Anthropic has no embeddings API.
+    """
+    if not texts:
+        raise GatewayError("embed requires at least one text")
+    settings = get_settings()
+    rp = await resolve(
+        session,
+        org_id,
+        provider=provider or settings.prep_embed_provider,
+        model=model or settings.prep_embed_model,
+    )
+    if not rp.provider.supports_embeddings:
+        raise GatewayError(
+            f"provider '{rp.config.provider}' does not support embedding; "
+            "set CCF_PREP_EMBED_PROVIDER to one that does"
+        )
+    resp = await rp.provider.embed(EmbedRequest(texts=texts, model=rp.model))
+    log.info(
+        "ai.gateway.embed",
+        org_id=org_id,
+        provider=rp.config.provider,
+        model=rp.model,
+        purpose=purpose,
+        actor=actor,
+        batch_size=len(texts),
+        input_tokens=resp.input_tokens,
+    )
+    return resp

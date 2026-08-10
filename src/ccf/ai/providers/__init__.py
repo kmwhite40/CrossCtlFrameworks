@@ -5,6 +5,8 @@ from __future__ import annotations
 from .base import (
     AIProvider,
     CredentialValidationResult,
+    EmbedRequest,
+    EmbedResponse,
     GenerateTextRequest,
     GenerateTextResponse,
     ModelDescriptor,
@@ -16,6 +18,8 @@ from .base import (
 __all__ = [
     "AIProvider",
     "CredentialValidationResult",
+    "EmbedRequest",
+    "EmbedResponse",
     "GenerateTextRequest",
     "GenerateTextResponse",
     "ModelDescriptor",

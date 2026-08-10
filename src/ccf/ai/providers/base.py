@@ -59,6 +59,19 @@ class StructuredGenerationResponse:
 
 
 @dataclass(slots=True)
+class EmbedRequest:
+    texts: list[str]
+    model: str
+
+
+@dataclass(slots=True)
+class EmbedResponse:
+    vectors: list[list[float]]
+    model: str
+    input_tokens: int = 0
+
+
+@dataclass(slots=True)
 class ModelDescriptor:
     id: str
     label: str = ""
@@ -68,6 +81,11 @@ class AIProvider(ABC):
     """A vendor adapter constructed with an already-decrypted API key."""
 
     name: str = "base"
+
+    #: Whether this vendor exposes an embeddings endpoint. Anthropic does not —
+    #: it directs users to third-party embedding providers — so embedding is a
+    #: capability, not a requirement, and callers must check before dispatching.
+    supports_embeddings: bool = False
 
     @abstractmethod
     async def validate_credential(self) -> CredentialValidationResult: ...
@@ -82,3 +100,7 @@ class AIProvider(ABC):
 
     @abstractmethod
     async def list_supported_models(self) -> list[ModelDescriptor]: ...
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Embed texts. Overridden only by providers that support it."""
+        raise ProviderError(f"provider '{self.name}' does not support embedding")
