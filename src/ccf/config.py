@@ -177,6 +177,23 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- Evidence preparation pipeline (parse → screen → expand → classify → embed)
+    prep_enabled: bool = Field(default=False)
+    # Screening is deliberately inclusive: false positives are cheap (resolved by
+    # downstream classification), false negatives are unrecoverable.
+    prep_screen_threshold: float = Field(default=0.15)
+    # Lines either side of a trigger line when no block/table/section bound applies.
+    prep_expand_window: int = Field(default=4)
+    # Embeddings resolve independently of the generation provider: Anthropic has no
+    # embeddings endpoint, so an org generating with Anthropic still embeds elsewhere.
+    prep_embed_provider: str = Field(default="openai")
+    prep_embed_model: str = Field(default="text-embedding-3-small")
+    # Validation only — pgvector column width is fixed at 1024 in the schema. A
+    # mismatch fails the embed stage loudly rather than writing truncated vectors.
+    prep_embed_dimensions: int = Field(default=1024)
+    prep_worker_batch_size: int = Field(default=10)
+    prep_job_stale_after_minutes: int = Field(default=60)
+
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
     packs_dir: Path | None = Field(default=None)
