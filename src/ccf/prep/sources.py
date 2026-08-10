@@ -28,6 +28,19 @@ class SourceMissing(LookupError):  # noqa: N818 -- name fixed by the interface c
     """The referenced source row or its content no longer exists."""
 
 
+class SourceOwnershipMismatch(SourceMissing):
+    """The referenced source exists but is not owned by the requesting organization.
+
+    Subclasses :class:`SourceMissing` deliberately, rather than being a sibling
+    exception: a caller — including the API route mapping this to a response
+    code — must treat "this id belongs to another tenant" exactly like "this id
+    does not exist". Giving cross-tenant mismatches a different code/message
+    than a genuinely missing id would itself leak information (whether a given
+    primary key exists at all, just not for you), which is precisely the
+    tenant-boundary property this exception exists to protect.
+    """
+
+
 @dataclass(slots=True)
 class ResolvedSource:
     """Bytes plus the tenancy context a run needs to write org-scoped rows."""
@@ -134,6 +147,48 @@ async def _system_id_for_policy_version(session: AsyncSession, source_id: int) -
     # Policy versions have no owning system — PrepUnit.system_id denormalises
     # system evidence only, per _resolve_policy_version above.
     return None
+
+
+async def resolve_source_organization_id(
+    session: AsyncSession, source_kind: str, source_id: int
+) -> int:
+    """Look up the true owning organization for one prep source, without fetching bytes.
+
+    This is the ownership gate a caller cannot talk their way around: it never
+    trusts anything the caller claims about who owns ``source_id`` — it re-derives
+    the answer from the source's own row every time, via the same metadata-only
+    join :func:`resolve_source_system_id` uses (no storage fetch). Callers (see
+    ``jobs.enqueue``) compare this against the organization the request declared
+    *before* opening a run, so a source can never be prepared — and therefore
+    never read, classified, or made retrievable — under an organization that
+    does not actually own it. Raises :class:`SourceMissing` if the source does
+    not exist, exactly like a mismatch would be raised as
+    :class:`SourceOwnershipMismatch` by the caller — both must be
+    indistinguishable to whoever is on the other end of the request.
+    """
+    if source_kind not in PREP_SOURCE_KINDS:
+        raise SourceMissing(f"unknown source kind '{source_kind}'")
+    if source_kind == "evidence_version":
+        row = (
+            await session.execute(
+                select(EvidenceObject.organization_id)
+                .join(EvidenceVersion, EvidenceVersion.evidence_object_id == EvidenceObject.id)
+                .where(EvidenceVersion.id == source_id)
+            )
+        ).first()
+        if row is None or row[0] is None:
+            raise SourceMissing(f"evidence_version {source_id} not found")
+        return int(row[0])
+    row = (
+        await session.execute(
+            select(Policy.organization_id)
+            .join(PolicyVersion, PolicyVersion.policy_id == Policy.id)
+            .where(PolicyVersion.id == source_id)
+        )
+    ).first()
+    if row is None or row[0] is None:
+        raise SourceMissing(f"policy_version {source_id} not found")
+    return int(row[0])
 
 
 async def resolve_source_system_id(

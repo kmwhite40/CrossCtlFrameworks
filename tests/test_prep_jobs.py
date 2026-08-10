@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -13,7 +14,7 @@ from sqlalchemy import delete, select
 from ccf.ai import gateway
 from ccf.ai.providers.base import EmbedResponse
 from ccf.db import session_scope
-from ccf.models import Organization
+from ccf.models import Organization, Policy, PolicyVersion
 from ccf.models_prep import PrepJob, PrepRun
 from ccf.prep import jobs
 
@@ -59,11 +60,46 @@ async def _org(name: str) -> int:
         return int(org.id)
 
 
+_policy_name_seq = itertools.count(1)
+
+
+async def _uri_only_policy_version(org_id: int) -> int:
+    """A real, same-org PolicyVersion with no inline body.
+
+    ``jobs.enqueue`` now refuses to queue a run whose declared organization
+    does not actually own ``source_id`` (a metadata-only ownership check —
+    see ``ccf.prep.sources.resolve_source_organization_id``), so a run can no
+    longer be opened against a ``source_id`` that was never real — every test
+    below that used to enqueue against a bare ``source_id=1``/``2``/``n`` now
+    needs a real, same-org source to get past that check. Tests that further
+    want the *"resolves to orphaned"* terminal path (rather than mocking
+    ``pipeline.advance`` away) get that for free from this specific shape: a
+    URI-only ``PolicyVersion`` (no ``body``) passes the ownership check (the
+    org matches) but ``resolve_source`` still raises ``SourceMissing`` at the
+    parse stage ("uri-only sources are not preparable"), landing the run on
+    ``orphaned`` the same way a genuinely nonexistent source used to.
+    """
+    async with session_scope() as s:
+        # (organization_id, name) is unique on Policy, and several tests below
+        # enqueue more than one source for the same org — so each call needs
+        # its own name.
+        policy = Policy(
+            organization_id=org_id, name=f"Uri Only Policy {next(_policy_name_seq)}"
+        )
+        s.add(policy)
+        await s.flush()
+        version = PolicyVersion(policy_id=policy.id, version="1.0")
+        s.add(version)
+        await s.flush()
+        return int(version.id)
+
+
 async def test_enqueue_creates_a_run_and_a_pending_job() -> None:
     org_id = await _org("jobs-enqueue")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
         )
         assert job.status == "pending"
         assert job.next_stage == "parse"
@@ -74,8 +110,11 @@ async def test_enqueue_creates_a_run_and_a_pending_job() -> None:
 async def test_claim_marks_jobs_and_records_the_worker() -> None:
     org_id = await _org("jobs-claim")
     async with session_scope() as s:
-        for n in range(3):
-            await jobs.enqueue(s, organization_id=org_id, source_kind="policy_version", source_id=n)
+        for _ in range(3):
+            source_id = await _uri_only_policy_version(org_id)
+            await jobs.enqueue(
+                s, organization_id=org_id, source_kind="policy_version", source_id=source_id
+            )
     async with session_scope() as s:
         claimed = await jobs.claim(s, worker="worker-a", limit=2)
         assert len(claimed) == 2
@@ -85,8 +124,11 @@ async def test_claim_marks_jobs_and_records_the_worker() -> None:
 
 async def test_a_claimed_job_is_not_claimed_twice() -> None:
     org_id = await _org("jobs-exclusive")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
-        await jobs.enqueue(s, organization_id=org_id, source_kind="policy_version", source_id=1)
+        await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
+        )
     async with session_scope() as s:
         assert len(await jobs.claim(s, worker="worker-a", limit=5)) == 1
     async with session_scope() as s:
@@ -96,9 +138,10 @@ async def test_a_claimed_job_is_not_claimed_twice() -> None:
 async def test_reap_returns_stale_claimed_jobs_to_pending() -> None:
     """A crashed container must not strand work forever."""
     org_id = await _org("jobs-reap")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
         )
         job.status = "claimed"
         job.claimed_by = "dead-worker"
@@ -115,9 +158,10 @@ async def test_reap_returns_stale_claimed_jobs_to_pending() -> None:
 
 async def test_reap_leaves_a_freshly_claimed_job_alone() -> None:
     org_id = await _org("jobs-reap-fresh")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
         )
         job.status = "claimed"
         job.claimed_at = datetime.now(UTC)
@@ -137,9 +181,10 @@ async def test_reap_dead_letters_a_job_that_exhausted_its_retries() -> None:
     parsing and model calls on every cycle with no operator visibility.
     """
     org_id = await _org("jobs-reap-exhausted")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
         )
         job.status = "claimed"
         job.claimed_by = "dead-worker"
@@ -167,10 +212,14 @@ async def test_run_once_drives_a_job_to_done(monkeypatch: pytest.MonkeyPatch) ->
         return EmbedResponse(vectors=[[0.01] * 1024 for _ in texts], model="m")
 
     monkeypatch.setattr(gateway, "embed", _embed)
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
-        # A policy_version source that does not exist resolves to orphaned, which
-        # is a terminal state — the job must still close rather than spin.
-        await jobs.enqueue(s, organization_id=org_id, source_kind="policy_version", source_id=1)
+        # A uri-only policy_version source (real, owned by org_id, but with no
+        # inline body) resolves to orphaned, which is a terminal state — the
+        # job must still close rather than spin.
+        await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
+        )
     async with session_scope() as s:
         stats = await jobs.run_once(s, worker="w1", limit=5)
         assert stats["claimed"] == 1
@@ -189,8 +238,11 @@ async def test_a_failing_job_records_its_error_and_increments_attempts(
         raise RuntimeError("stage exploded")
 
     monkeypatch.setattr(jobs.pipeline, "advance", _boom)
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
-        await jobs.enqueue(s, organization_id=org_id, source_kind="policy_version", source_id=1)
+        await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
+        )
     async with session_scope() as s:
         await jobs.run_once(s, worker="w1", limit=5)
     async with session_scope() as s:
@@ -209,9 +261,10 @@ async def test_claim_is_committed_before_stage_work_begins(
     roll the claim back too, and reap_stale would never see the job as stale.
     """
     org_id = await _org("jobs-durable-claim")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
         )
         job_id = int(job.id)
 
@@ -248,12 +301,14 @@ async def test_a_crash_mid_batch_does_not_roll_back_earlier_committed_jobs(
     ``run_once`` uncaught the way a real process kill would.
     """
     org_id = await _org("jobs-crash-mid-batch")
+    source_id_ok = await _uri_only_policy_version(org_id)
+    source_id_crash = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job_ok = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id_ok
         )
         job_crash = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=2
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id_crash
         )
         ok_run_id, crash_run_id = int(job_ok.run_id), int(job_crash.run_id)
         ok_id, crash_id = int(job_ok.id), int(job_crash.id)
@@ -297,9 +352,10 @@ async def test_a_job_abandoned_mid_processing_stays_claimed_for_reap_to_dead_let
     back by the crash and reap_stale would never see this job as stale at all.
     """
     org_id = await _org("jobs-abandoned")
+    source_id = await _uri_only_policy_version(org_id)
     async with session_scope() as s:
         job = await jobs.enqueue(
-            s, organization_id=org_id, source_kind="policy_version", source_id=1
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
         )
         job_id = int(job.id)
 

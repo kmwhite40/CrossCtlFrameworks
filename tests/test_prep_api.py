@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from ccf.api.main import create_app
 from ccf.db import session_scope
 from ccf.evidence.confidence import prep_signal
-from ccf.models import Organization
+from ccf.models import Organization, Policy, PolicyVersion
 from ccf.models_prep import PrepJob, PrepRun
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -62,6 +62,23 @@ async def _org(name: str) -> int:
         return int(org.id)
 
 
+async def _uri_only_policy_version(org_id: int) -> int:
+    """A real, same-org PolicyVersion with no inline body -- see the identical
+    helper (and its full rationale) in ``test_prep_jobs.py``: ``jobs.enqueue``
+    now refuses a ``source_id`` that does not resolve to a real source owned by
+    the requested organization, so these tests need a real source, not the
+    literal ``source_id=1`` the brief originally used.
+    """
+    async with session_scope() as s:
+        policy = Policy(organization_id=org_id, name="Uri Only Policy")
+        s.add(policy)
+        await s.flush()
+        version = PolicyVersion(policy_id=policy.id, version="1.0")
+        s.add(version)
+        await s.flush()
+        return int(version.id)
+
+
 def test_prep_signal_rewards_stronger_evidence_monotonically() -> None:
     assert prep_signal("strong") > prep_signal("moderate") > prep_signal("weak")
 
@@ -74,10 +91,15 @@ def test_prep_signal_is_neutral_when_unclassified() -> None:
 
 async def test_post_runs_enqueues_and_returns_identifiers() -> None:
     org_id = await _org("prep-api-post")
+    source_id = await _uri_only_policy_version(org_id)
     async with _client() as client:
         response = await client.post(
             "/api/prep/runs",
-            json={"organization_id": org_id, "source_kind": "policy_version", "source_id": 1},
+            json={
+                "organization_id": org_id,
+                "source_kind": "policy_version",
+                "source_id": source_id,
+            },
         )
     assert response.status_code == 201
     body = response.json()
@@ -103,11 +125,16 @@ async def test_post_runs_rejects_an_unknown_source_kind() -> None:
 
 async def test_get_run_reports_every_stage_status() -> None:
     org_id = await _org("prep-api-get")
+    source_id = await _uri_only_policy_version(org_id)
     async with _client() as client:
         created = (
             await client.post(
                 "/api/prep/runs",
-                json={"organization_id": org_id, "source_kind": "policy_version", "source_id": 1},
+                json={
+                    "organization_id": org_id,
+                    "source_kind": "policy_version",
+                    "source_id": source_id,
+                },
             )
         ).json()
         response = await client.get(f"/api/prep/runs/{created['run_id']}")

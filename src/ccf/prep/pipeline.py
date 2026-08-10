@@ -128,6 +128,18 @@ async def run_stage_parse(session: AsyncSession, run: PrepRun) -> int:
         log.info("prep.source_missing", run_id=run.id, reason=str(exc))
         return 0
 
+    # Reconcile to the source's *true* organization the moment it is actually
+    # known, rather than trusting whatever organization_id the run was opened
+    # with. jobs.enqueue() already refuses a mismatch before a run is even
+    # created, so in the normal path this is a no-op -- but every downstream
+    # stage (screen/expand/classify/embed) tags its own output with
+    # run.organization_id, and relying on the enqueue-time check alone to keep
+    # that correct forever is fragile: a future caller of create_run that
+    # skips enqueue() (direct pipeline use, a new entry point, a bug) would
+    # silently reopen the split this line closes structurally. Parse is the
+    # one stage that actually resolves the source, so it is the one place
+    # that can make this authoritative rather than assumed.
+    run.organization_id = source.organization_id
     run.media_type = source.media_type
     try:
         parsed = dispatch(source.data, source.filename, source.media_type)

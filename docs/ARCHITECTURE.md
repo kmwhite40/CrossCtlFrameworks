@@ -132,7 +132,15 @@ Built on the reference catalog + operational tables:
   `claimed` past `prep_job_stale_after_minutes` is reaped back to `pending`,
   and one that keeps crashing is dead-lettered once it hits
   `prep_job_max_attempts`. Each stage persists before the next, so a failed
-  run resumes at the failed stage.
+  run resumes at the failed stage. `POST /api/prep/runs` and
+  `GET /api/prep/retrieve` derive their organization from the authenticated
+  principal, not from anything the caller supplies — a scoped principal's own
+  organization always overrides an `organization_id` in the request; only an
+  unscoped/admin principal's request uses the supplied value, mirroring
+  `users.py::create_user`'s existing convention for a NOT-NULL
+  `organization_id`. With `CCF_AUTH_ENABLED=false` (the default), every
+  principal is unscoped, so the supplied `organization_id` is trusted
+  outright — true of the whole app in that mode, not specific to prep.
 
 ## Schemas
 

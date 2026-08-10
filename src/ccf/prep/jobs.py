@@ -51,6 +51,7 @@ from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PrepJob
 from . import pipeline
+from .sources import SourceMissing, SourceOwnershipMismatch, resolve_source_organization_id
 
 log = get_logger(__name__)
 
@@ -61,7 +62,31 @@ _TERMINAL = ("complete", "unsupported", "orphaned")
 async def enqueue(
     session: AsyncSession, *, organization_id: int, source_kind: str, source_id: int
 ) -> PrepJob:
-    """Open a run and queue it for the worker."""
+    """Open a run and queue it for the worker.
+
+    Refuses to enqueue when ``organization_id`` does not actually own
+    ``(source_kind, source_id)`` — checked via a metadata-only lookup (no
+    storage fetch) *before* any row is written. Without this, a caller could
+    name a real ``source_id`` belonging to a different organization and have
+    the worker (which runs unscoped, bypassing RLS) fetch and prepare that
+    organization's real evidence bytes under the caller's own
+    ``organization_id`` — laundering a cross-tenant read into rows the caller
+    can legitimately retrieve afterward. A ``source_id`` that does not resolve
+    at all is refused identically (:class:`SourceOwnershipMismatch` subclasses
+    :class:`SourceMissing`), so a caller cannot use this endpoint to probe
+    which ids exist for another organization.
+    """
+    try:
+        true_org = await resolve_source_organization_id(session, source_kind, source_id)
+    except SourceMissing as exc:
+        # resolve_source_organization_id only ever raises the plain SourceMissing
+        # (never the ownership-mismatch subclass) -- re-raise as the mismatch
+        # type so every "refused" path out of this function is one exception.
+        raise SourceOwnershipMismatch(str(exc)) from exc
+    if true_org != organization_id:
+        raise SourceOwnershipMismatch(
+            f"organization {organization_id} does not own {source_kind} {source_id}"
+        )
     run = await pipeline.create_run(
         session, organization_id=organization_id, source_kind=source_kind, source_id=source_id
     )
