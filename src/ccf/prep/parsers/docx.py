@@ -15,7 +15,6 @@ and mapping each element back to its wrapper.
 from __future__ import annotations
 
 import io
-import logging
 from typing import Any
 
 from docx import Document
@@ -23,9 +22,10 @@ from docx.document import Document as DocxDocument
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from ...logging import get_logger
 from .base import ParsedBlock, ParsedCell, ParsedDocument, ParsedPage
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 PARSER_NAME = "docx"
 MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -95,7 +95,7 @@ def parse_docx(data: bytes, filename: str, media_type: str = MEDIA_TYPE) -> Pars
     try:
         document = Document(io.BytesIO(data))
     except Exception as exc:  # any malformed file must not kill the run
-        log.warning("prep.parse.docx_failed", extra={"filename": filename, "error": str(exc)})
+        log.warning("prep.parse.docx_failed", filename=filename, error=str(exc))
         return ParsedDocument(
             filename=filename, media_type=media_type, parser_name=PARSER_NAME,
             error=f"could not open document: {exc}",

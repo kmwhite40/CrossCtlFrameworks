@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 
 import openpyxl
 
@@ -73,3 +74,34 @@ def test_numeric_cells_are_stringified() -> None:
 def test_dispatch_routes_xlsx() -> None:
     doc = dispatch(_xlsx_bytes(), "inventory.xlsx", None)
     assert doc.parser_name == "xlsx"
+
+
+def test_corrupt_workbook_returns_an_error_document_rather_than_raising() -> None:
+    doc = parse_xlsx(b"not a real xlsx", "bad.xlsx")
+    assert doc.success is False
+    assert doc.error is not None
+
+
+def test_corrupt_workbook_failure_path_survives_an_enabled_logger() -> None:
+    """Regression for the reserved-LogRecord-attribute defect.
+
+    tests/conftest.py runs Alembic migrations, and migrations/env.py calls
+    logging.config.fileConfig(..., disable_existing_loggers=True), which disables
+    this module's stdlib logger for the whole pytest session. A logger.warning()
+    call on a *disabled* logger short-circuits before building a LogRecord, so a
+    bug in the log call itself (e.g. passing `extra={"filename": ...}`, which
+    collides with LogRecord's own reserved `filename` attribute and raises
+    KeyError from stdlib logging) would never fire and this suite would pass
+    while the same call raises outside pytest. Force the logger enabled so this
+    test genuinely exercises the log call instead of being masked by that side
+    effect.
+    """
+    logger = logging.getLogger("ccf.prep.parsers.xlsx")
+    original = logger.disabled
+    logger.disabled = False
+    try:
+        doc = parse_xlsx(b"not a real xlsx", "bad.xlsx")
+    finally:
+        logger.disabled = original
+    assert doc.success is False
+    assert doc.error is not None

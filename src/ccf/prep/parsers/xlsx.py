@@ -14,13 +14,13 @@ find.
 from __future__ import annotations
 
 import io
-import logging
 
 import openpyxl
 
+from ...logging import get_logger
 from .base import ParsedBlock, ParsedCell, ParsedDocument, ParsedPage
 
-log = logging.getLogger(__name__)
+log = get_logger(__name__)
 
 PARSER_NAME = "xlsx"
 MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -39,7 +39,7 @@ def parse_xlsx(data: bytes, filename: str, media_type: str = MEDIA_TYPE) -> Pars
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     except Exception as exc:  # a malformed workbook must not kill the run
-        log.warning("prep.parse.xlsx_failed", extra={"filename": filename, "error": str(exc)})
+        log.warning("prep.parse.xlsx_failed", filename=filename, error=str(exc))
         return ParsedDocument(
             filename=filename, media_type=media_type, parser_name=PARSER_NAME,
             error=f"could not open workbook: {exc}",
