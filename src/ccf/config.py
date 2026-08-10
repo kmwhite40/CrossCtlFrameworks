@@ -202,6 +202,15 @@ class Settings(BaseSettings):
     prep_embed_dimensions: int = Field(default=1024)
     prep_worker_batch_size: int = Field(default=10)
     prep_job_stale_after_minutes: int = Field(default=60)
+    # A job that fails gracefully (advance() raises, or a stage completes to
+    # run.status="failed") stops after one attempt already -- claim() only
+    # selects "pending" jobs, so a "failed" one is never reclaimed. The gap is a
+    # job whose worker crashes mid-stage every time: reap_stale requeues it to
+    # "pending" forever, burning a full stage's worth of parsing/model calls on
+    # every cycle. reap_stale dead-letters (leaves status="failed" with
+    # last_error set, instead of requeuing) a stale job at or past this many
+    # claim attempts, so a poisoned job stops cycling and becomes visible.
+    prep_job_max_attempts: int = Field(default=5)
 
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.

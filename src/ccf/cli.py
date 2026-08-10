@@ -36,6 +36,7 @@ from .models import (
     User,
     Worksheet,
 )
+from .prep import jobs as prep_jobs
 from .scoring.engine import score_system
 from .scoring.seed import seed_scoring_controls
 from .ssp.generator import generate_ssp_docx
@@ -307,6 +308,33 @@ def scheduler_run() -> None:
         result = await scheduler.run_cycle()
         console.print("[green]Automation cycle complete[/green]")
         console.print_json(json.dumps(result, default=str))
+
+    asyncio.run(_run())
+
+
+@app.command(name="prep-worker")
+def prep_worker(
+    once: bool = typer.Option(True, "--once/--loop", help="Run one cycle, or loop forever."),
+    limit: int | None = typer.Option(None, help="Jobs to claim per cycle."),
+    worker: str = typer.Option("prep-worker", help="Worker name recorded on claimed jobs."),
+) -> None:
+    """Drain queued evidence-preparation jobs."""
+
+    async def _run() -> None:
+        settings = get_settings()
+        batch = limit if limit is not None else settings.prep_worker_batch_size
+        async with session_scope() as session:
+            reaped = await prep_jobs.reap_stale(
+                session, older_than_minutes=settings.prep_job_stale_after_minutes
+            )
+        if reaped:
+            console.print(f"[yellow]Reaped {reaped} stale job(s)[/yellow]")
+        while True:
+            async with session_scope() as session:
+                stats = await prep_jobs.run_once(session, worker=worker, limit=batch)
+            console.print_json(json.dumps(stats))
+            if once or stats["claimed"] == 0:
+                break
 
     asyncio.run(_run())
 
