@@ -11,6 +11,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .base import ParsedDocument
+from .docx import MEDIA_TYPE as DOCX_MEDIA_TYPE
+from .docx import parse_docx
 from .text import parse_text
 
 
@@ -47,4 +49,6 @@ def dispatch(data: bytes, filename: str, media_type: str | None = None) -> Parse
     resolved = resolve_media_type(filename, media_type)
     if resolved.startswith("text/"):
         return parse_text(data, filename, resolved)
+    if resolved == DOCX_MEDIA_TYPE:
+        return parse_docx(data, filename, resolved)
     raise UnsupportedMediaType(f"no parser for '{resolved}'")
