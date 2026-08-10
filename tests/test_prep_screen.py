@@ -307,23 +307,170 @@ _SHADOW_FRAGMENTS = [
     ("ZSF-CP09-04", "backups of system-level information are conducted nightly and stored offsite"),
 ]
 
+#: Named enhancement rows for IA-02 and CP-09 — modeled on how real
+#: enhancements read: they restate the base control's own vocabulary with an
+#: extra qualifier, in the *name* field (weight 'A', the same weight as the
+#: base control's own name), which is exactly why an enhancement can outscore
+#: its base control rather than merely diluting the field. Unlike the unnamed
+#: fragments above, these are what Finding 2 (enhancement crowding) is
+#: actually about: five enhancements filling all five candidate slots and
+#: pushing the bare base identifier out entirely. Each
+#: ``(identifier, name_suffix, objective)`` restates "multifactor
+#: authentication ... network access" (IA-02) or "nightly backups ...
+#: system-level information" (CP-09) — the exact phrases the two test
+#: sentences below use — so pre-collapse they compete directly with, and beat,
+#: the base row.
+#: ``(identifier, name_suffix, description, assessment_objective, discussion)``.
+#: Each restates its base control's own core phrase — "multifactor
+#: authentication ... network access" (IA-02), "nightly backups ...
+#: system-level information" (CP-09) — repeatedly, across all four weighted
+#: fields, matching how a real enhancement's text actually concentrates
+#: around the same subject the base control already covers plus one
+#: qualifier. Measured (see task-9-report.md) to score higher than the base
+#: row on the exact sentences the tests below use — that margin, not just the
+#: shared vocabulary, is what makes the crowding-out reproducible.
+_ENHANCEMENTS = [
+    (
+        "IA-02(01)",
+        "Multifactor Authentication to Privileged Accounts",
+        "Implement multifactor authentication for network access to privileged accounts. "
+        "Administrators and other privileged users must use multifactor authentication "
+        "for network access.",
+        "multifactor authentication is implemented for network access to privileged "
+        "accounts; administrators use multifactor authentication for network access",
+        "Network access to privileged accounts requires multifactor authentication; "
+        "administrators must use multifactor authentication before network access is "
+        "granted.",
+    ),
+    (
+        "IA-02(02)",
+        "Multifactor Authentication to Non-privileged Accounts",
+        "Implement multifactor authentication for network access to non-privileged "
+        "accounts. All users, including administrators, must use multifactor "
+        "authentication for network access.",
+        "multifactor authentication is implemented for network access to non-privileged "
+        "accounts; administrators use multifactor authentication for network access",
+        "Network access to non-privileged accounts requires multifactor authentication; "
+        "administrators must use multifactor authentication before network access is "
+        "granted.",
+    ),
+    (
+        "IA-02(06)",
+        "Access to Accounts - Separate Device",
+        "Implement multifactor authentication for network access using a device separate "
+        "from the system gaining access. Administrators must use multifactor "
+        "authentication for network access.",
+        "multifactor authentication for network access is implemented using a separate "
+        "device; administrators use multifactor authentication for network access",
+        "Administrators must use multifactor authentication for network access via a "
+        "device separate from the system.",
+    ),
+    (
+        "IA-02(08)",
+        "Access to Accounts - Replay Resistant",
+        "Implement replay-resistant multifactor authentication mechanisms for network "
+        "access. Administrators must use multifactor authentication for network access.",
+        "replay-resistant multifactor authentication is implemented for network access; "
+        "administrators use multifactor authentication for network access",
+        "Administrators must use replay-resistant multifactor authentication for network "
+        "access.",
+    ),
+    (
+        "IA-02(12)",
+        "Acceptance of PIV Credentials",
+        "Accept and verify PIV credentials for multifactor authentication of network "
+        "access. Administrators must use multifactor authentication for network access.",
+        "multifactor authentication using PIV credentials is accepted for network access; "
+        "administrators use multifactor authentication for network access",
+        "Administrators must use multifactor authentication with PIV credentials for "
+        "network access.",
+    ),
+    (
+        "CP-09(01)",
+        "Testing for Reliability and Integrity",
+        "Test nightly backups of system-level information periodically for reliability "
+        "and integrity. The organization conducts nightly backups of system-level "
+        "information.",
+        "nightly backups of system-level information are tested for reliability and "
+        "integrity; the organization conducts nightly backups of system-level "
+        "information",
+        "Nightly backups of system-level information are conducted and tested for "
+        "reliability.",
+    ),
+    (
+        "CP-09(02)",
+        "Test Restoration Using Sampling",
+        "Test restoration of nightly backups of system-level information using a "
+        "sample. The organization conducts nightly backups of system-level information.",
+        "nightly backups of system-level information are conducted and restoration is "
+        "tested; the organization conducts nightly backups of system-level information",
+        "Nightly backups of system-level information are conducted and sample "
+        "restorations are tested.",
+    ),
+    (
+        "CP-09(05)",
+        "Transfer to Alternate Storage Site",
+        "Transfer nightly backups of system-level information to an alternate storage "
+        "site. The organization conducts nightly backups of system-level information.",
+        "nightly backups of system-level information are transferred to an alternate "
+        "storage site; the organization conducts nightly backups of system-level "
+        "information",
+        "Nightly backups of system-level information are conducted and transferred "
+        "offsite.",
+    ),
+    (
+        "CP-09(06)",
+        "Redundant Secondary System",
+        "Conduct nightly backups of system-level information to a redundant secondary "
+        "system. The organization conducts nightly backups of system-level information.",
+        "nightly backups of system-level information are conducted to a redundant "
+        "secondary system; the organization conducts nightly backups of system-level "
+        "information",
+        "Nightly backups of system-level information are conducted to a secondary "
+        "system.",
+    ),
+    (
+        "CP-09(08)",
+        "Cryptographic Protection",
+        "Protect nightly backups of system-level information using cryptographic "
+        "mechanisms. The organization conducts nightly backups of system-level "
+        "information.",
+        "nightly backups of system-level information are cryptographically protected; "
+        "the organization conducts nightly backups of system-level information",
+        "Nightly backups of system-level information are conducted and cryptographically "
+        "protected.",
+    ),
+]
+
 
 async def _seed_realistic_scale_catalog() -> None:
     """Seed ~320 synthetic-but-plausible *named* controls, ~1,280 synthetic
     *unnamed* AO/ODP-style fragment rows (roughly the real catalog's ~4:1
-    ratio of fragment rows to named base/enhancement controls), plus two real,
-    richly-worded named targets (IA-02, CP-09) — all weighted exactly as the
-    real ETL weights ``search_vector`` after every workbook ingest.
+    ratio of fragment rows to named base/enhancement controls), ten *named
+    enhancement* rows (five each for IA-02 and CP-09), plus the two real,
+    richly-worded named base targets (IA-02, CP-09) — all weighted exactly as
+    the real ETL weights ``search_vector`` after every workbook ingest.
 
-    The unnamed fragment rows matter: a prior version of this fixture seeded
-    only named rows, so the ``control_name IS NOT NULL`` filter in
-    ``score_line`` had nothing to remove and the two tests below passed
-    identically against the pre-fix query. Reproducing the fragment-row shape
-    of the real catalog is what makes this fixture actually exercise the
-    fix instead of merely resembling the real catalog's row count.
+    The unnamed fragment rows matter for the ``control_name`` filter: a prior
+    version of this fixture seeded only named rows, so the filter had nothing
+    to remove and the selectivity test passed identically against the pre-fix
+    query.
+
+    The named enhancement rows matter for the base-control collapse
+    separately: Finding 2's bug was never fragment dilution, it was a
+    control's *own* enhancements — richly-worded, real named rows that
+    restate the base control's vocabulary with a qualifier — filling every
+    candidate slot and pushing the base identifier itself out (measured on
+    the real catalog: AC-06 fell to rank 27, crowded out entirely by its own
+    AC-06(01)/(02)/.../(10)). Unnamed fragments cannot reproduce that
+    specific failure because they don't outscore a richly-worded base row;
+    only richly-worded enhancement rows can, because that is what
+    Finding 2 actually was.
     """
     async with session_scope() as s:
         await s.execute(delete(Control).where(Control.identifier.like("ZS%")))
+        await s.execute(delete(Control).where(Control.identifier.like("IA-02(%")))
+        await s.execute(delete(Control).where(Control.identifier.like("CP-09(%")))
         await s.execute(delete(Control).where(Control.identifier.in_(["IA-02", "CP-09"])))
 
         rows: list[Control] = []
@@ -404,6 +551,22 @@ async def _seed_realistic_scale_catalog() -> None:
                 ),
             )
         )
+        for ident, name_suffix, description, objective, discussion in _ENHANCEMENTS:
+            base = ident.split("(")[0]
+            base_name = (
+                "Identification and Authentication (Organizational Users)"
+                if base == "IA-02"
+                else "System Backup"
+            )
+            rows.append(
+                Control(
+                    identifier=ident,
+                    control_name=f"{base_name} | {name_suffix}",
+                    description=description,
+                    assessment_objective=objective,
+                    discussion=discussion,
+                )
+            )
         s.add_all(rows)
         await s.flush()
         await s.execute(text(_SEARCH_VECTOR_SQL))
@@ -422,17 +585,32 @@ async def realistic_scale_catalog() -> AsyncIterator[None]:
     finally:
         async with session_scope() as s:
             await s.execute(delete(Control).where(Control.identifier.like("ZS%")))
+            await s.execute(delete(Control).where(Control.identifier.like("IA-02(%")))
+            await s.execute(delete(Control).where(Control.identifier.like("CP-09(%")))
             await s.execute(delete(Control).where(Control.identifier.in_(["IA-02", "CP-09"])))
 
 
 async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale(
     realistic_scale_catalog: None,
 ) -> None:
-    """Ranking precision: against ~320 plausible competing *named* controls
-    (plus ~1,280 unnamed AO/ODP-style fragments competing for the same
-    lexemes), the obviously-correct control is still reachable within the
-    candidate window Task 12's classifier is handed (``_MAX_CANDIDATES`` =
-    5)."""
+    """Ranking precision *and* the base-control collapse, together — the two
+    properties Finding 2 actually requires:
+
+    1. The base control (IA-02, CP-09) is reachable within the candidate
+       window Task 12's classifier is handed (``_MAX_CANDIDATES`` = 5).
+    2. No two candidates in that window come from the same base family.
+
+    Five named enhancement rows per target (``IA-02(01)``, ``IA-02(02)``,
+    ...; ``CP-09(01)``, ``CP-09(02)``, ...) restate each base control's own
+    vocabulary in an 'A'-weighted ``control_name``, so pre-collapse they
+    outscore the bare base identifier and fill the entire candidate window
+    among themselves — reproducing the exact shape of Finding 2's bug
+    (measured on the real catalog: AC-06 crowded to rank 27 by its own ten
+    enhancements). Property 2 is impossible to satisfy without the collapse:
+    with five same-family enhancements outscoring their own base row, a
+    pre-collapse top-5 is, by construction, either all one family or missing
+    the base control entirely.
+    """
     async with session_scope() as s:
         mfa = await score_line(
             s, content="All administrators must use multifactor authentication for network access."
@@ -440,12 +618,16 @@ async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale(
         backups = await score_line(
             s, content="The organization conducts nightly backups of system-level information."
         )
-    assert "IA-02" in [identifier for identifier, _ in mfa], (
-        f"IA-02 not reachable in top-5 candidates: {mfa}"
-    )
-    assert "CP-09" in [identifier for identifier, _ in backups], (
-        f"CP-09 not reachable in top-5 candidates: {backups}"
-    )
+    for label, ranked, expected_base in [("mfa", mfa, "IA-02"), ("backups", backups, "CP-09")]:
+        candidates = [identifier for identifier, _ in ranked]
+        assert expected_base in candidates, (
+            f"{expected_base} not reachable in top-5 candidates ({label}): {ranked}"
+        )
+        families = [c.split("(")[0] for c in candidates]
+        assert len(families) == len(set(families)), (
+            f"two or more candidates share a base family ({label}), the base-control "
+            f"collapse did not run: {ranked}"
+        )
 
 
 async def test_irrelevant_line_stays_below_threshold_at_realistic_scale(
