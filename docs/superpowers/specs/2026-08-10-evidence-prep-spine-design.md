@@ -1,0 +1,291 @@
+# Evidence Preparation & Retrieval Spine — Design
+
+**Date:** 2026-08-10
+**Status:** Approved (design), pending implementation plan
+**Slice:** 1 of the ATO Bot capability delta
+
+## Context
+
+[ATO Bot](https://github.com/DrDeathLabs/ato-bot) is a source-available platform for
+NIST SP 800-53 control assessment. A review of its architecture against Concord
+found that most of its surface — policy-governed AI, SSP composition, OSCAL export,
+POA&M flow, continuous monitoring, RBAC and audit — already exists in Concord, in
+several cases more maturely. Concord's typed AI action registry
+(`src/ccf/ai_actions/registry.py`), with per-action approval gates, citation
+requirements and constrained mutations, is stronger than ATO Bot's equivalent.
+
+What Concord genuinely lacks is the layer underneath all of it: a way to turn an
+uploaded PDF or Word policy into control-tagged, retrievable, traceable passages.
+Concord can store an evidence file and hash it, but it cannot read it. Every
+downstream ATO Bot capability — objective-level assessment, closure guidance,
+dissent, calibration — depends on that layer existing first.
+
+This spec covers that layer only.
+
+### Licensing constraint
+
+ATO Bot is licensed under **Business Source License 1.1**. Its Additional Use
+Grant expressly forbids including the work "as a material feature of another
+commercial cybersecurity, GRC, compliance, assessment, authorization, risk
+management, or security operations product." Concord is proprietary and
+commercially marketed, so **no ATO Bot source may be copied into Concord**
+without a separate commercial license from DrDeathLabs.
+
+ATO Bot has been used here only as a reference for problem decomposition — which
+stages a pipeline needs and why — which is not a protectable expression. Every
+line of the implementation described below is original work built on Concord's
+own interfaces. If a code-level lift was ever intended, that decision needs to go
+to legal before implementation starts.
+
+## Goals
+
+1. Parse evidence and policy documents into line-level records that preserve
+   source structure — page, heading path, table, row, column, cell.
+2. Identify which passages are plausibly relevant to which 800-53A controls,
+   cheaply enough to run over whole document libraries.
+3. Expand relevant lines into semantically complete evidence units.
+4. Classify units by artifact type and evidence strength, with provenance.
+5. Make units retrievable by control, with citations back to page and cell.
+
+## Non-goals
+
+Explicitly out of scope for this slice, each planned as its own later spec:
+objective-level assessment, closure question generation, remediation artifact
+generation and validation, AI dissent, calibration harness, synthetic evidence,
+project-context assistant. This spec builds only the substrate they share.
+
+## Approach
+
+**Graft onto Concord's existing spines.** The pipeline is a new module, but every
+seam plugs into machinery Concord already has. Roughly a third of ATO Bot's
+pipeline surface therefore does not need writing at all.
+
+Two approaches were rejected. Porting the pipeline as a self-contained subsystem
+with its own control corpus, LLM client and quality scorer would fork Concord
+into two AI paths and two evidence-quality scores, and is also the version most
+exposed to the BUSL problem. A retrieval-only slice that indexes existing
+`PolicyVersion.body` text would ship in about a week but cannot read a PDF, which
+is the format most real evidence arrives in.
+
+## The five non-duplication decisions
+
+These are the substance of "integrate, do not duplicate."
+
+**1. Screening reads Concord's control catalog, not a keyword corpus.**
+ATO Bot hand-maintains a keyword dictionary spanning twenty control families
+(`app/services/ingestion/corpus.py`) and has since layered an LLM screener on top
+of it. Concord's ETL already ingests the full 800-53A Rev 5 catalog into
+`ccf.controls`, with a GIN-indexed `search_vector` plus `description`,
+`discussion` and `assessment_objective` per control. Screening becomes a
+`ts_rank` join against data Concord already owns. This is cheaper than an LLM
+screen, needs no dictionary maintenance, and stays current automatically when the
+workbook is re-ingested.
+
+**2. Classification is a registered AI action.**
+A new `ActionDef("classify_evidence_unit", …)` in `src/ccf/ai_actions/registry.py`
+with `citation_required=True` and `allowed_mutation=None`. Every classification
+lands in `ai_action_runs` with citations, guardrail evaluation and review state
+already wired, and inherits the `ai_require_human_approval` setting.
+
+**3. Embeddings go through `ccf.ai.gateway`.**
+A new `embed()` method on the `AIProvider` ABC in `src/ccf/ai/providers/base.py`,
+implemented for the existing providers plus the `stub` provider used in tests.
+This reuses the encrypted per-org credential store rather than adding
+Voyage or Ollama clients.
+
+**4. No new document table.**
+A polymorphic `(source_kind, source_id)` pair points at either `EvidenceVersion`
+or `PolicyVersion`. Bytes resolve through `ccf.evidence.storage.get_backend()`
+for evidence and through `uri` or inline `body` for policy.
+
+**5. Evidence strength feeds the existing scorer.**
+`prep_classifications.evidence_strength` becomes an input to
+`src/ccf/evidence/confidence.py`, not a second competing quality score.
+
+## Architecture
+
+New module `src/ccf/prep/`, new models file `src/ccf/models_prep.py`, tables in
+the `ccf` schema. No existing module is refactored; five are extended.
+
+```
+EvidenceVersion ─┐
+                 ├─→ prep_runs ──→ parse → screen → expand → classify → embed
+PolicyVersion  ──┘   (source_kind,   │       │        │         │         │
+                      source_id)     ▼       ▼        ▼         ▼         ▼
+                                prep_lines prep_   prep_    prep_      prep_
+                                          screens  units  classifications embeddings
+                                                              │
+                                                    ai_action_runs (existing)
+```
+
+Module layout:
+
+```
+src/ccf/prep/
+  __init__.py
+  parsers/
+    base.py         ParsedCell / ParsedBlock / ParsedPage / ParsedDocument
+    dispatcher.py   media_type → parser
+    pdf.py  docx.py  xlsx.py  pptx.py  text.py
+  pipeline.py       stage orchestration + resumption
+  screen.py         catalog-driven lexical screen
+  expand.py         context expansion
+  classify.py       LLM classification via ai_actions
+  embed.py          embedding via ai.gateway
+  retriever.py      hybrid lexical + vector retrieval
+  jobs.py           DB-backed job queue
+```
+
+### Stages
+
+Each stage persists its full output before the next begins, and records its own
+status on `prep_runs`. A failure sets `error_stage` and `error` and stops; a
+resumed run restarts at the failed stage rather than re-parsing.
+
+**parse** — dispatch by media type to a parser returning a `ParsedDocument`
+(pages → blocks → cells, carrying `heading_path`, `table_id`, `row_index`,
+`col_index`, `cell_label`). Flattened into `prep_lines`.
+
+**screen** — for each line, rank against `ccf.controls.search_vector` using
+`ts_rank`, with `pg_trgm` similarity as a tiebreak for identifier-like tokens.
+Produces a `relevance_score`, a `candidate_controls` array and an
+`above_threshold` flag. Threshold is configurable per run and snapshotted into
+`config_snapshot`. Deliberately inclusive: false positives are cheap here and
+resolved downstream, false negatives are unrecoverable.
+
+**expand** — for each above-threshold line, build a semantically complete unit,
+preferring in order: the same logical block; the same table row plus inherited
+column headers; the same section; a fixed window of `prep_expand_window` lines
+either side within the same page; the trigger line alone. Records
+`source_line_ids` for traceback.
+
+**classify** — batched calls over units, through `ai_actions.run_action`, using
+`gateway.generate_structured` with a JSON schema. Returns control identifiers,
+`artifact_type` (policy / procedure / technical implementation / testing evidence
+/ management approval), `evidence_strength`, and `model_confidence`.
+
+**embed** — units to `Vector(1024)` via the gateway, batched, with `model_name`
+recorded so a model change is detectable rather than silent.
+
+pgvector columns require a fixed dimension, so 1024 is fixed in the schema rather
+than configurable. `prep_embed_dimensions` is a **validation** setting, not a
+column width: on resolve, the embed stage asserts the provider's model emits
+vectors of that width and fails the stage with a clear error on mismatch, rather
+than writing truncated or rejected vectors. Moving to a different width is a
+migration, deliberately.
+
+### Worker
+
+`ccf.prep_jobs` is a claim-based queue (`SELECT … FOR UPDATE SKIP LOCKED`) drained
+by a new `ccf prep-worker` Typer command, deployed as a docker-compose profile
+mirroring the existing `poller` and `scheduler` services. Stale jobs left in
+`running` past a configurable age are reaped back to `pending` on worker start,
+so a crashed container does not strand work. No Redis, no Celery, no new runtime
+service type.
+
+## Data model
+
+All tables in schema `ccf`, all org-scoped for multi-tenancy, following existing
+SQLAlchemy 2.0 `Mapped` conventions.
+
+| Table | Key columns |
+|---|---|
+| `prep_runs` | `source_kind` (`evidence_version`\|`policy_version`), `source_id`, `organization_id`, `status`, `stage_parse`/`stage_screen`/`stage_expand`/`stage_classify`/`stage_embed`, `config_snapshot` JSONB, counters, `error_stage`, `error` |
+| `prep_lines` | `run_id`, `line_number`, `page_number`, `section_path`, `block_id`, `block_type`, `table_id`, `row_index`, `col_index`, `cell_label`, `content` |
+| `prep_screens` | `line_id`, `run_id`, `relevance_score`, `candidate_controls` JSONB, `above_threshold`, `method` |
+| `prep_units` | `run_id`, `trigger_line_id`, `source_line_ids` JSONB, `content`, `page_numbers` JSONB, `section_path`, `table_coordinates` JSONB, `token_count`, `search_vector` TSVECTOR |
+| `prep_classifications` | `unit_id`, `control_identifiers` JSONB, `artifact_type`, `evidence_strength`, `model_confidence`, `ai_action_run_id` FK |
+| `prep_embeddings` | `unit_id`, `model_name`, `embedding` `Vector(1024)` |
+| `prep_jobs` | `run_id`, `status`, `attempts`, `claimed_at`, `claimed_by`, `next_stage` |
+
+`control_identifiers` holds `ccf.controls.identifier` values rather than integer
+FKs, matching how `EvidenceObject.control_id` already tags controls, and keeping
+classifications durable across catalog re-ingest.
+
+Status vocabularies, fixed here so they are not reinvented per table.
+`prep_runs.status`: `pending` · `running` · `complete` · `failed` · `unsupported`
+· `orphaned`. Each `stage_*` column: `pending` · `running` · `complete` ·
+`failed` · `skipped`. `prep_jobs.status`: `pending` · `claimed` · `done` ·
+`failed`. All are `String(32)` with an application-level check rather than a
+Postgres enum, matching the convention `AssessmentControlResult.finding` already
+follows — enum changes need a migration, and these vocabularies will grow as
+later slices land.
+
+Traceability chain: `prep_units.source_line_ids → prep_lines → page_number +
+section_path + table cell`. Every retrieved passage cites a page and, where the
+source was tabular, a specific cell.
+
+## Retrieval
+
+```python
+async def retrieve(
+    session, *, org_id: int, control_identifier: str,
+    system_id: int | None = None, k: int = 8,
+) -> list[RetrievedUnit]
+```
+
+Fuses pgvector cosine distance against `prep_embeddings.embedding` with `ts_rank`
+over `prep_units.search_vector`, combined by reciprocal-rank fusion, filtered by
+org, system and source kind. Hybrid rather than pure vector because control
+identifiers, product names and hostnames are exact-match tokens that embeddings
+handle poorly, while paraphrased policy language is exactly what lexical search
+misses. Default `k` follows the existing `ai_max_context_docs` setting.
+
+## Error handling
+
+Parser failure on a single document fails that run only, recording `error_stage`
+and `error`; the queue continues. Unsupported media types (images, Visio) are
+recorded with status `unsupported` rather than failing — they are a known gap, not
+an error. Provider failures during classify or embed are retried with backoff and,
+on exhaustion, leave the run resumable at that stage with prior stages intact.
+A run whose source `EvidenceVersion` has been deleted is closed as `orphaned`.
+Stale `running` jobs are reaped on worker start.
+
+## Scope boundaries
+
+**In:** PDF (PyMuPDF), DOCX, XLSX, PPTX, plain text.
+
+**Deferred, with rationale:** OCR for images requires `pytesseract` and a system
+Tesseract binary, which would change the container base image; Visio (`vsdx`) is
+rare enough not to earn its place in the first slice. Both are recorded as
+`unsupported` so the gap is visible in the data rather than silent.
+
+## Infrastructure changes
+
+- `docker-compose.yml`: `postgres:16-alpine` → `pgvector/pgvector:pg16`
+- `.github/workflows/ci.yml` line 17: `postgres:16` → `pgvector/pgvector:pg16`
+- New migration: `CREATE EXTENSION IF NOT EXISTS vector`, alongside the existing
+  `pg_trgm` and `pgcrypto` in `migrations/versions/0001_baseline.py`
+- New dependencies: `pymupdf`, `python-pptx`, `pgvector`
+- New settings (prefix `CCF_`): `prep_enabled`, `prep_screen_threshold`,
+  `prep_expand_window`, `prep_embed_model`, `prep_embed_dimensions`,
+  `prep_worker_batch_size`, `prep_job_stale_after_minutes`
+
+The pgvector image is a drop-in for stock PG16 — same major version, same data
+directory layout — so the swap needs no data migration.
+
+## Testing
+
+Against real Postgres, following the existing `tests/conftest.py` pattern.
+
+- **Parsers:** one fixture document per format, asserting structure preservation —
+  a known table cell resolves to the correct `row_index`/`col_index`/`cell_label`,
+  and a known heading resolves to the correct `section_path`.
+- **Resumption:** force a stage-3 failure, resume, assert stages 1–2 are not
+  re-executed and their rows are unchanged.
+- **Screening:** a fixture policy line about multi-factor authentication surfaces
+  `IA-2` from the seeded catalog above threshold; an unrelated line does not.
+- **Expansion:** a line inside a table expands to include inherited column
+  headers; a line inside a paragraph expands to the block, not the page.
+- **Classification and embedding:** run against a stub provider registered in the
+  gateway. No network access in CI.
+- **Retrieval:** on a fixture set, hybrid fusion ranks the correct unit above what
+  either lexical or vector alone achieves.
+- **Traceability:** every unit returned by `retrieve` resolves back to a page
+  number and, for tabular sources, a cell.
+
+## Open follow-ups
+
+None blocking. Later slices in the program, in dependency order: objective-level
+assessment engine; closure and remediation loop; generated-artifact validation;
+AI dissent path; calibration harness with synthetic evidence.
