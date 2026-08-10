@@ -101,3 +101,58 @@ async def resolve_source(
     if source_kind == "evidence_version":
         return await _resolve_evidence_version(session, source_id)
     return await _resolve_policy_version(session, source_id)
+
+
+async def _system_id_for_evidence_version(session: AsyncSession, source_id: int) -> int | None:
+    row = (
+        await session.execute(
+            select(EvidenceObject.system_id, EvidenceObject.organization_id)
+            .join(EvidenceVersion, EvidenceVersion.evidence_object_id == EvidenceObject.id)
+            .where(EvidenceVersion.id == source_id)
+        )
+    ).first()
+    if row is None:
+        raise SourceMissing(f"evidence_version {source_id} not found")
+    system_id, organization_id = row
+    if organization_id is None:
+        raise SourceMissing(f"evidence_version {source_id} has no organization")
+    return int(system_id) if system_id is not None else None
+
+
+async def _system_id_for_policy_version(session: AsyncSession, source_id: int) -> int | None:
+    row = (
+        await session.execute(
+            select(Policy.organization_id)
+            .join(PolicyVersion, PolicyVersion.policy_id == Policy.id)
+            .where(PolicyVersion.id == source_id)
+        )
+    ).first()
+    if row is None:
+        raise SourceMissing(f"policy_version {source_id} not found")
+    if row[0] is None:
+        raise SourceMissing(f"policy_version {source_id} has no organization")
+    # Policy versions have no owning system — PrepUnit.system_id denormalises
+    # system evidence only, per _resolve_policy_version above.
+    return None
+
+
+async def resolve_source_system_id(
+    session: AsyncSession, source_kind: str, source_id: int
+) -> int | None:
+    """Look up the owning system id for one prep source without fetching its bytes.
+
+    ``resolve_source`` reads the full document body from the storage backend
+    (``get_backend().get(...)``), which for an ``evidence_version`` can be a
+    large PDF pulled from S3 or disk. Task 10's expand stage only needs the
+    integer ``system_id`` to denormalise onto each ``PrepUnit`` it writes — a
+    value already available off the same join ``resolve_source`` performs —
+    so re-fetching the whole document on every expand run, after parse already
+    read it, wastes a storage round trip for one integer. This performs the
+    identical joins and the identical ``SourceMissing`` semantics without ever
+    calling ``get_backend()``.
+    """
+    if source_kind not in PREP_SOURCE_KINDS:
+        raise SourceMissing(f"unknown source kind '{source_kind}'")
+    if source_kind == "evidence_version":
+        return await _system_id_for_evidence_version(session, source_id)
+    return await _system_id_for_policy_version(session, source_id)

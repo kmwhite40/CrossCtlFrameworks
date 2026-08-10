@@ -82,6 +82,32 @@ def test_window_does_not_cross_a_page_boundary() -> None:
     assert result.page_numbers == [1]
 
 
+def test_window_on_headerless_lines_is_bounded_by_window_size_only() -> None:
+    """``parsers/text.py`` — and therefore every ``PolicyVersion`` — never sets
+    ``page_number`` beyond ``1`` or ``section_path`` at all, so the window's
+    page/section guard is vacuously true for every sibling on a headerless
+    source and the window ends up bounded solely by ``window``. Two unrelated
+    policy chunks can fold into one unit as a result. That is documented,
+    accepted behaviour (see the module docstring), not a bug — this test pins
+    it down as an asserted property so a future change to the guard has to
+    change this test too, instead of silently altering the guarantee.
+    """
+    siblings = [
+        _line(line_number=1, content="Chunk one, sentence one."),
+        _line(line_number=2, content="Chunk one, sentence two."),
+        _line(line_number=3, content="Chunk one, sentence three."),
+        _line(line_number=4, content="Chunk two, sentence one."),
+        _line(line_number=5, content="Chunk two, sentence two."),
+    ]
+    result = expand_line(siblings[2], siblings, window=2)
+    assert result.strategy == "window"
+    assert sorted(result.source_line_ids) == [1, 2, 3, 4, 5]
+    # No page_number or section_path was set on any line, so nothing separates
+    # these two unrelated chunks — the window folds both together.
+    assert "Chunk one" in result.content
+    assert "Chunk two" in result.content
+
+
 def test_isolated_line_falls_back_to_itself() -> None:
     only = _line(line_number=1, content="Standalone statement.", block_type="paragraph")
     result = expand_line(only, [only], window=4)

@@ -9,9 +9,22 @@ stands on its own, preferring the tightest bound that still carries meaning:
 2. a bounded window of neighbouring lines within the same page and section
 3. the trigger line alone
 
-Windows never cross a page or section boundary. Splicing text from two sections
-into one unit would produce a citation that points at a passage no reader can
-find, which is worse than a narrower unit.
+Windows never cross a page or section boundary *where the parser populated
+those fields*. Splicing text from two sections into one unit would produce a
+citation that points at a passage no reader can find, which is worse than a
+narrower unit — but that guarantee is only as strong as the source structure
+the parser recovered. ``parsers/text.py`` (and therefore every ``PolicyVersion``,
+one of the pipeline's two source kinds) emits every line on ``page_number=1``
+with ``section_path=None``, so for those runs the page/section comparison is
+trivially true for every sibling and the window is bounded solely by
+``prep_expand_window``. This is a known, accepted property, not a bug: context
+expansion exists precisely to fold neighbouring lines together, a small window
+keeps the span short even when it drifts across an unmarked topic change, and
+``source_line_ids`` still traces every folded line back to its origin line, so
+nothing here is lost — only mis-labelled as more page/section-aware than the
+source actually lets it be. See
+``test_window_on_headerless_lines_is_bounded_by_window_size_only`` in
+``tests/test_prep_expand.py`` for the asserted behaviour.
 """
 
 from __future__ import annotations
@@ -100,6 +113,12 @@ def expand_line(trigger: PrepLine, siblings: list[PrepLine], *, window: int) -> 
     except StopIteration:  # pragma: no cover — trigger is always among its siblings
         return _build(trigger, [trigger], "line", trigger.content)
 
+    # Excludes any neighbour on a different page or section from the trigger —
+    # but only when the parser populated those fields. For a headerless source
+    # (plain text, hence every PolicyVersion) every line carries page_number=1
+    # and section_path=None, so this comparison is trivially true for every
+    # sibling and the window ends up bounded solely by `window`. See the
+    # module docstring for why that is an accepted tradeoff rather than a bug.
     neighbours = ordered[max(0, position - window) : position + window + 1]
     members = [
         line
@@ -165,12 +184,18 @@ async def run_stage_expand(session: AsyncSession, run: PrepRun) -> int:
 
 
 async def _system_id_for(session: AsyncSession, run: PrepRun) -> int | None:
-    """Denormalise the owning system onto units so retrieval filters without a join."""
+    """Denormalise the owning system onto units so retrieval filters without a join.
+
+    Uses the metadata-only ``resolve_source_system_id`` rather than
+    ``resolve_source`` — the latter fetches the full document body from the
+    storage backend, which parse already read once; expand only needs the
+    integer system id off the same join.
+    """
     if run.source_kind != "evidence_version":
         return None
-    from .sources import SourceMissing, resolve_source  # noqa: PLC0415 — avoids a cycle
+    from .sources import SourceMissing, resolve_source_system_id  # noqa: PLC0415 — avoids a cycle
 
     try:
-        return (await resolve_source(session, run.source_kind, run.source_id)).system_id
+        return await resolve_source_system_id(session, run.source_kind, run.source_id)
     except SourceMissing:
         return None
