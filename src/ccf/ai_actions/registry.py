@@ -85,6 +85,9 @@ _DEFS: list[ActionDef] = [
     ActionDef("draft_ai_agent_risk_review", "Draft AI agent risk review",
               "Draft a risk review for an AI agent.",
               ("ai_agent",), True, False, None),
+    ActionDef("classify_evidence_unit", "Classify an evidence unit",
+              "Classify a prepared evidence passage by control, artifact type, and strength.",
+              ("evidence_object", "system"), False, True, None),
 ]
 
 ACTIONS: dict[str, ActionDef] = {d.key: d for d in _DEFS}
