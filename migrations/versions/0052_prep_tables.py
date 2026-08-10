@@ -56,8 +56,12 @@ def upgrade() -> None:
         sa.Column("units_embedded", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error_stage", sa.String(32)),
         sa.Column("error", sa.Text()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         schema=_SCHEMA,
     )
     op.create_index(
@@ -119,7 +123,9 @@ def upgrade() -> None:
         ),
         sa.Column("above_threshold", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("method", sa.String(32), nullable=False, server_default="catalog_fts"),
-        sa.Column("screened_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "screened_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         schema=_SCHEMA,
     )
     for col in ("line_id", "run_id", "organization_id", "above_threshold"):
@@ -156,7 +162,9 @@ def upgrade() -> None:
             sa.ForeignKey(f"{_SCHEMA}.systems.id", ondelete="SET NULL"),
         ),
         sa.Column("source_kind", sa.String(32)),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         schema=_SCHEMA,
     )
     for col in ("run_id", "organization_id", "trigger_line_id", "system_id", "source_kind"):
@@ -217,7 +225,12 @@ def upgrade() -> None:
             "ai_action_run_id", sa.BigInteger(),
             sa.ForeignKey(f"{_SCHEMA}.ai_action_runs.id", ondelete="SET NULL"),
         ),
-        sa.Column("classified_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "classified_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.func.now(),
+        ),
         schema=_SCHEMA,
     )
     for col in ("unit_id", "run_id", "organization_id", "ai_action_run_id"):
@@ -241,7 +254,9 @@ def upgrade() -> None:
         ),
         sa.Column("model_name", sa.String(128), nullable=False),
         sa.Column("embedding", Vector(1024)),
-        sa.Column("embedded_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "embedded_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         schema=_SCHEMA,
     )
     op.create_index(
@@ -278,8 +293,12 @@ def upgrade() -> None:
         sa.Column("claimed_at", sa.DateTime(timezone=True)),
         sa.Column("claimed_by", sa.String(128)),
         sa.Column("last_error", sa.Text()),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
+        ),
         schema=_SCHEMA,
     )
     op.create_index("ix_prep_jobs_claimable", "prep_jobs", ["status", "created_at"], schema=_SCHEMA)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from ccf.db import session_scope
 from ccf.models import Organization
@@ -26,6 +26,39 @@ async def _org(name: str) -> int:
         s.add(org)
         await s.flush()
         return int(org.id)
+
+
+async def test_server_default_timestamps_are_not_null_in_live_schema() -> None:
+    """The ORM declares these ``Mapped[datetime]`` (non-Optional); the migration
+    must match with an explicit ``nullable=False``, not just a server default.
+    Checked against ``information_schema`` — not the ORM — since the ORM would
+    pass this assertion regardless of what the migration actually created."""
+    expected = {
+        ("prep_runs", "created_at"),
+        ("prep_runs", "updated_at"),
+        ("prep_screens", "screened_at"),
+        ("prep_units", "created_at"),
+        ("prep_classifications", "classified_at"),
+        ("prep_embeddings", "embedded_at"),
+        ("prep_jobs", "created_at"),
+        ("prep_jobs", "updated_at"),
+    }
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                text(
+                    """
+                    SELECT table_name, column_name, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_schema = 'ccf' AND table_name LIKE 'prep_%'
+                    """
+                )
+            )
+        ).all()
+    nullability = {(r.table_name, r.column_name): r.is_nullable for r in rows}
+    assert expected <= nullability.keys(), "expected column(s) missing from live schema"
+    for key in expected:
+        assert nullability[key] == "NO", f"{key} is nullable in the live schema"
 
 
 async def test_run_defaults_every_stage_to_pending() -> None:
