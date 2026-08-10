@@ -208,3 +208,82 @@ async def test_partial_classification_failure_leaves_no_rows_and_zeroed_counter(
         assert len(rows) == 0
         assert run.units_classified == 0
         assert run.status == "failed"
+
+
+async def test_model_output_outside_candidates_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The model must never widen its own scope beyond what screening surfaced,
+    even when it returns a syntactically valid identifier that just wasn't
+    offered as a candidate."""
+    org_id = await _org("prep-classify-scope-nonempty")
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "control_identifiers": ["AC-2", "AU-6"],  # AU-6 was never a candidate
+            "artifact_type": "procedure",
+            "evidence_strength": "moderate",
+            "explanation": "x",
+            "confidence": 0.6,
+        }
+
+    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        run.stage_parse = run.stage_screen = run.stage_expand = "complete"
+        line = PrepLine(run_id=run.id, organization_id=org_id, line_number=1, content="Text.")
+        s.add(line)
+        await s.flush()
+        s.add(PrepScreen(line_id=line.id, run_id=run.id, organization_id=org_id,
+                         relevance_score=0.5, candidate_controls=["AC-2"], above_threshold=True))
+        s.add(PrepUnit(run_id=run.id, organization_id=org_id, trigger_line_id=line.id,
+                       source_line_ids=[line.id], content="Text.", token_count=2))
+        await s.flush()
+
+        await run_stage_classify(s, run)
+
+        row = (
+            await s.execute(select(PrepClassification).where(PrepClassification.run_id == run.id))
+        ).scalar_one()
+        assert row.control_identifiers == ["AC-2"]
+
+
+async def test_model_output_with_no_surfaced_candidates_is_dropped_entirely(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty candidate set must not be treated as 'unbounded' — a model that
+    invents a control identifier when screening surfaced none must have it
+    dropped, not persisted."""
+    org_id = await _org("prep-classify-scope-empty")
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "control_identifiers": ["MADE-UP-CONTROL"],
+            "artifact_type": "other",
+            "evidence_strength": "weak",
+            "explanation": "x",
+            "confidence": 0.3,
+        }
+
+    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        run.stage_parse = run.stage_screen = run.stage_expand = "complete"
+        # No PrepScreen row for this line at all, so _candidates_for returns [].
+        line = PrepLine(run_id=run.id, organization_id=org_id, line_number=1, content="Text.")
+        s.add(line)
+        await s.flush()
+        s.add(PrepUnit(run_id=run.id, organization_id=org_id, trigger_line_id=line.id,
+                       source_line_ids=[line.id], content="Text.", token_count=2))
+        await s.flush()
+
+        await run_stage_classify(s, run)
+
+        row = (
+            await s.execute(select(PrepClassification).where(PrepClassification.run_id == run.id))
+        ).scalar_one()
+        assert row.control_identifiers == []

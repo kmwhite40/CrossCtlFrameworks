@@ -140,9 +140,11 @@ async def run_stage_classify(session: AsyncSession, run: PrepRun) -> int:
             return 0
 
         # Trust the schema for shape, but never let the model widen its own scope
-        # beyond the controls screening actually surfaced.
+        # beyond the controls screening actually surfaced. When screening surfaced
+        # no candidates at all, `allowed` is empty and every returned identifier is
+        # dropped — an empty candidate set must never be treated as "unbounded".
         allowed = set(candidates)
-        chosen = [c for c in data.get("control_identifiers", []) if not allowed or c in allowed]
+        chosen = [c for c in data.get("control_identifiers", []) if c in allowed]
 
         session.add(
             PrepClassification(
