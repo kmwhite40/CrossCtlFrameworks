@@ -35,6 +35,15 @@ _MAX_CANDIDATES = 5
 _MIN_CONTENT_CHARS = 12
 
 
+#: ``ts_rank_cd``'s normalization bitmask: 32 rescales the raw (unbounded)
+#: cover-density score into ``rank/(rank+1)`` — i.e. 0..1. It is a strictly
+#: monotonic transform, so it changes no ranking decision; it exists purely so
+#: ``prep_screen_threshold`` is a comparable, bounded number instead of an
+#: unbounded raw score whose useful range depends on catalog size and term
+#: weighting. See ``score_line``'s docstring for how the value was derived.
+_RANK_NORMALIZATION = 32
+
+
 async def score_line(
     session: AsyncSession, *, content: str, limit: int = _MAX_CANDIDATES
 ) -> list[tuple[str, float]]:
@@ -53,6 +62,28 @@ async def score_line(
     density weights matching terms that cluster together, which separates a
     genuine topical match from a coincidental single-word overlap far better
     than ``ts_rank``'s scale does for documents this short.
+
+    Two refinements were added after measuring this query against the real,
+    fully-ingested catalog (~5,400 rows: ~1,200 base/enhancement controls, the
+    rest fine-grained per-assessment-objective and per-ODP fragments) rather
+    than a handful of hand-picked fixture rows:
+
+    * **Candidates are restricted to rows with a populated ``control_name``.**
+      The catalog's granular per-AO/per-ODP rows (e.g. ``IA-02(06)_ODP[03]``)
+      share a control's identifier prefix but carry no addressable name of
+      their own and mostly generic procedural language ("Determine if:
+      ..."). Left in, thousands of them compete on roughly the same terms as
+      every other line in the catalog and drown out the base/enhancement rows
+      that Task 12's classifier can actually act on and cite. Excluding them
+      is a precision fix, not a recall one — it does not remove any control a
+      classifier could be handed downstream.
+    * **The score is normalized (bitmask 32).** Raw ``ts_rank_cd`` is
+      unbounded and scales with how much matching text a document has, not
+      with topical relevance, so a fixed threshold meaningful against a
+      three-row test fixture is meaningless at catalog scale. Normalizing
+      into 0..1 doesn't fix precision by itself (the transform is order
+      preserving) but makes the configured threshold interpretable and stable
+      as the catalog grows or shrinks between ingests.
     """
     if len(content.strip()) < _MIN_CONTENT_CHARS:
         return []
@@ -60,11 +91,13 @@ async def score_line(
         func.tsvector_to_array(func.to_tsvector("english", content)), " | "
     )
     query = func.to_tsquery("english", lexemes)
-    rank = func.ts_rank_cd(Control.search_vector, query)
+    rank = func.ts_rank_cd(Control.search_vector, query, _RANK_NORMALIZATION)
     rows = (
         await session.execute(
             select(Control.identifier, rank.label("rank"))
             .where(Control.search_vector.op("@@")(query))
+            .where(Control.control_name.isnot(None))
+            .where(Control.control_name != "")
             .order_by(rank.desc())
             .limit(limit)
         )

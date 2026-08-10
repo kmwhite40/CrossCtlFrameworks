@@ -30,7 +30,9 @@ async def test_vector_column_round_trips() -> None:
 def test_prep_settings_defaults() -> None:
     s = get_settings()
     assert s.prep_enabled is False
-    assert s.prep_screen_threshold == 0.15
+    # Derived against the real 800-53A catalog, not a placeholder — see
+    # ccf.config's prep_screen_threshold docstring and task-9-report.md.
+    assert s.prep_screen_threshold == 0.72
     assert s.prep_expand_window == 4
     assert s.prep_embed_dimensions == 1024
     assert s.prep_worker_batch_size == 10

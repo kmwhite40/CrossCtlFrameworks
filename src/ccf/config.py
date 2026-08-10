@@ -180,8 +180,17 @@ class Settings(BaseSettings):
     # ---- Evidence preparation pipeline (parse → screen → expand → classify → embed)
     prep_enabled: bool = Field(default=False)
     # Screening is deliberately inclusive: false positives are cheap (resolved by
-    # downstream classification), false negatives are unrecoverable.
-    prep_screen_threshold: float = Field(default=0.15)
+    # downstream classification), false negatives are unrecoverable. This value is
+    # compared against ts_rank_cd(..., normalization=32) -- bounded to 0..1 -- from
+    # ccf.prep.screen.score_line, not a raw/unnormalized rank. 0.72 was derived by
+    # measuring real policy sentences against the fully-ingested 800-53A catalog
+    # (~1,200 base/enhancement controls): it sits strictly between the highest
+    # score any exercised administrative/boilerplate line reached (0.71) and the
+    # lowest score a genuine control-relevant sentence reached (0.74), so it
+    # separates the two on the one corpus that matters without needing to be
+    # re-tuned as the catalog is re-ingested. See test_prep_screen.py's
+    # realistic-scale test and task-9-report.md for the measurements.
+    prep_screen_threshold: float = Field(default=0.72)
     # Lines either side of a trigger line when no block/table/section bound applies.
     prep_expand_window: int = Field(default=4)
     # Embeddings resolve independently of the generation provider: Anthropic has no
