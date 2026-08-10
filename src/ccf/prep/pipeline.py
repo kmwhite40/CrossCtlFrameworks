@@ -27,6 +27,7 @@ from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PREP_STAGES, PrepLine, PrepRun
 from .parsers import UnsupportedMediaType, dispatch
+from .screen import run_stage_screen
 from .sources import SourceMissing, resolve_source
 
 log = get_logger(__name__)
@@ -194,7 +195,10 @@ async def load_run(session: AsyncSession, run_id: int) -> PrepRun | None:
 
 #: Stage implementations are registered here as later tasks add them, keeping
 #: :func:`advance` free of a growing if/elif ladder.
-_STAGE_RUNNERS: dict[str, StageRunner] = {"parse": run_stage_parse}
+_STAGE_RUNNERS: dict[str, StageRunner] = {
+    "parse": run_stage_parse,
+    "screen": run_stage_screen,
+}
 
 
 async def advance(session: AsyncSession, run: PrepRun) -> PrepRun:
