@@ -39,8 +39,14 @@ def parse_pptx(data: bytes, filename: str, media_type: str = MEDIA_TYPE) -> Pars
         title = (title_shape.text or "").strip() if title_shape is not None else ""
         heading_path = [title] if title else []
 
+        # python-pptx does not cache wrapper identity: slide.shapes.title returns a
+        # fresh object each call, distinct by `is` from the object yielded while
+        # iterating slide.shapes, even though both wrap the same XML element. Exclude
+        # by shape_id (stable per-element) rather than object identity, or the title
+        # shape survives the "remaining shapes" filter and gets emitted twice.
+        title_id = title_shape.shape_id if title_shape is not None else None
         ordered = (
-            [title_shape, *[s for s in slide.shapes if s is not title_shape]]
+            [title_shape, *[s for s in slide.shapes if s.shape_id != title_id]]
             if title_shape is not None
             else list(slide.shapes)
         )

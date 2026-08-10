@@ -38,6 +38,25 @@ def test_slide_title_becomes_the_section_path() -> None:
     assert line.section_path == "Access Control Architecture"
 
 
+def test_title_is_not_emitted_twice() -> None:
+    """Regression: slide.shapes.title is a fresh wrapper object each call, distinct
+
+    by identity from the object yielded while iterating slide.shapes even though
+    both wrap the same XML element. Filtering "the remaining shapes" by object
+    identity (`is not title_shape`) therefore never excludes the real title, so it
+    lands in the shape order twice — once explicitly first, once again from the
+    iteration — and every titled slide emits a duplicate title line. This asserts
+    the exact ordered content list for slide 1, length included, so a
+    reintroduced duplicate fails instead of being masked by a substring check.
+    """
+    doc = parse_pptx(_pptx_bytes(), "brief.pptx")
+    slide_one = [x.content for x in doc.iter_lines() if x.page_number == 1]
+    assert slide_one == [
+        "Access Control Architecture",
+        "All administrative access requires MFA.",
+    ]
+
+
 def test_section_title_is_recorded_on_the_page() -> None:
     doc = parse_pptx(_pptx_bytes(), "brief.pptx")
     assert [p.section_title for p in doc.pages] == [
