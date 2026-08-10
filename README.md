@@ -257,6 +257,12 @@ Then open:
 > Host ports: the API is published on **8088** (→ container 8000) and Postgres
 > on **5433** (→ 5432). Change the `ports:` lines in `docker-compose.yml` if
 > either is taken.
+>
+> Postgres runs as `pgvector/pgvector:pg16` (a drop-in replacement for stock
+> PG16 that adds the `vector` extension), not the plain `postgres` image —
+> the evidence preparation pipeline's embeddings require pgvector, so a
+> self-managed Postgres for local/prod use must have the `vector` extension
+> installed.
 
 The database persists in the `ccf_pgdata` Docker volume across restarts. Stop
 with `docker compose down` (keeps data) or `docker compose down -v` (full reset).
@@ -363,6 +369,7 @@ ccf reliability-check                       # platform + 20x readiness checks
 | POST · GET | `/api/admin/portal/grants` (+ `/{id}/revoke`) | Issue/list/revoke external portal grants |
 | GET · POST | `/api/portal/session` · `/api/portal/comments` | External portal (token-authenticated) |
 | GET · POST | `/api/queries` · `/api/queries/{key}/run\|export` | Deterministic assurance query templates (+ CSV) |
+| POST · GET | `/api/prep/runs` · `/api/prep/runs/{id}` · `/api/prep/retrieve` | Evidence preparation pipeline: queue a run, check stage status, hybrid retrieval |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -376,7 +383,7 @@ make sbom            # CycloneDX SBOM
 make scan            # Trivy HIGH/CRITICAL scan
 ```
 
-CI runs lint + mypy + pytest against a Postgres 16 service container, plus a
+CI runs lint + mypy + pytest against a `pgvector/pgvector:pg16` service container, plus a
 supply-chain job producing an SBOM + `pip-audit` + Trivy scan, plus a Docker
 build smoke test.
 
@@ -403,6 +410,23 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   default**; when enabled it stays citation-first and human-approved. Local/dev
   runs with a deterministic stub and no cloud credentials. The
   `ai_disabled_safe_default` reliability check confirms the safe default.
+- `CCF_PREP_ENABLED` — turn on the evidence preparation pipeline (`/api/prep`,
+  `ccf prep-worker`); **disabled by default**.
+  `CCF_PREP_SCREEN_THRESHOLD` (default **0.72**) is the `ts_rank_cd` cutoff a
+  parsed line must clear to be considered control-relevant — derived
+  empirically against the fully-ingested 5,430-row 800-53A catalog, with only
+  ~0.03 of margin between the highest-scoring boilerplate line and the
+  lowest-scoring genuine match, so re-derive it if the catalog is
+  re-ingested. `CCF_PREP_EXPAND_WINDOW` (default 4) bounds context expansion
+  around a triggered line. `CCF_PREP_EMBED_PROVIDER` /
+  `CCF_PREP_EMBED_MODEL` / `CCF_PREP_EMBED_DIMENSIONS` (default `openai` /
+  `text-embedding-3-small` / 1024) configure the embedding backend
+  independently of `CCF_AI_PROVIDER`, since Anthropic has no embeddings
+  endpoint. `CCF_PREP_WORKER_BATCH_SIZE` (default 10) and
+  `CCF_PREP_JOB_STALE_AFTER_MINUTES` (default 60) tune the `prep-worker`
+  queue; a job stuck `claimed` past the stale window is reaped back to
+  `pending`, and one still failing at `CCF_PREP_JOB_MAX_ATTEMPTS` (default 5)
+  claims is dead-lettered instead of being requeued forever.
 
 ## Security posture
 

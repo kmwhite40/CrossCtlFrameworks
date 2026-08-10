@@ -173,6 +173,32 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   remediation Task per flagged gap. Scoring is a pure function in
   `ccf.governance.tprm`. Migration 0026; all tenant-isolated.
 
+### Added — evidence preparation pipeline
+- **Evidence preparation** (`ccf.prep`, migrations, `/api/prep`,
+  `ccf prep-worker`) — a five-stage pipeline (parse → screen → expand →
+  classify → embed) that turns uploaded evidence and policy versions
+  (PDF/DOCX/XLSX/PPTX/text) into control-cited, retrievable passages: parse
+  preserves page/heading/table-cell structure; screen ranks lines against
+  `ccf.controls` via `ts_rank` and collapses candidates to base control
+  identifiers so enhancements can't crowd out their base control; expand
+  builds semantically complete units; classify tags each unit with control
+  identifiers, artifact type, and evidence strength as a governed AI action;
+  embed writes pgvector vectors. Retrieval (`GET /api/prep/retrieve`) fuses
+  lexical `ts_rank`, pgvector cosine similarity, and a classifier-tagged
+  boost by reciprocal-rank fusion. Runs are queued in `ccf.prep_jobs` and
+  drained by the `prep-worker` compose profile, which commits each job
+  independently so one job's crash can't discard another's completed work;
+  a job that keeps crashing is dead-lettered after `CCF_PREP_JOB_MAX_ATTEMPTS`
+  reclaims instead of cycling forever. `POST /api/prep/runs` queues a run and
+  `GET /api/prep/runs/{id}` reports per-stage status. A prepared
+  classification's evidence strength now also feeds the existing evidence
+  confidence scorer via `prep_signal()`/`score_evidence(prep_strength=...)`,
+  rather than competing with it as a second score.
+
+### Changed — evidence preparation
+- Postgres image is now `pgvector/pgvector:pg16` (drop-in for stock PG16),
+  required for the prep pipeline's vector embeddings.
+
 ### Changed — UI & navigation
 - **Consolidated the primary navigation** from 11 top-level items into 5
   lifecycle buckets — **Dashboard · Compliance · Authorization · Operations ·

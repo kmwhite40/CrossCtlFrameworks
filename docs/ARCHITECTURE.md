@@ -31,7 +31,8 @@
                     │    ccf_raw    staging      │
                     │    ccf_audit  provenance + │
                     │               quarantine   │
-                    │  ext: pg_trgm, pgcrypto    │
+                    │  ext: pg_trgm, pgcrypto,   │
+                    │       pgvector             │
                     └────────────────────────────┘
 ```
 
@@ -110,6 +111,28 @@ Built on the reference catalog + operational tables:
   org / system / baseline / family / crosswalk, exported as **xlsx, docx, csv,
   or json** (`ccf.reporting`).
 - **OSCAL export** (`/api/oscal/*`): OSCAL 1.1 component-definition + SSP JSON.
+- **Evidence preparation** (`/api/prep`, `ccf prep-worker`): uploaded evidence
+  and policy versions are parsed into structure-preserving lines (page, heading
+  path, table cell), screened for relevance against `ccf.controls` via
+  `ts_rank` (threshold 0.72, empirically derived against the fully-ingested
+  5,430-row 800-53A catalog — the margin between the highest-scoring
+  boilerplate line and the lowest-scoring genuine match was only ~0.03, so a
+  future catalog re-ingest may require re-deriving it), expanded into
+  semantically complete units, classified by a governed AI action, and
+  embedded into pgvector. Screening collapses candidates to base control
+  identifiers (`AC-6(2)` → `AC-6`) so one control's enhancements cannot
+  occupy every candidate slot; a consequence is that classification always
+  cites a base control, never an enhancement. Retrieval fuses three rankers
+  by reciprocal-rank fusion: lexical `ts_rank`, pgvector cosine similarity,
+  and a classifier-tagged boost (`1/(k+1)`) for units the classifier already
+  linked to the queried control. Runs are queued in `ccf.prep_jobs` and
+  drained by the `prep-worker` compose profile, which commits each job
+  independently (not the whole claimed batch), so one job's crash cannot roll
+  back another job's already-completed work in the same cycle; a job stuck
+  `claimed` past `prep_job_stale_after_minutes` is reaped back to `pending`,
+  and one that keeps crashing is dead-lettered once it hits
+  `prep_job_max_attempts`. Each stage persists before the next, so a failed
+  run resumes at the failed stage.
 
 ## Schemas
 
@@ -141,5 +164,7 @@ See `docs/DATA_MODEL.md` for the full ERD.
 - OIDC / IdP federation (local auth + RBAC are live; see `docs/THREAT_MODEL.md`).
 - Postgres role split (`ccf_migrator` / `ccf_etl` / `ccf_app` / `ccf_ro`).
 - RLS for multi-tenant (app-level org scoping is live today).
-- Evidence expiry reminders + webhooks (needs a worker).
+- Evidence expiry reminders + webhooks (evidence *preparation* now has a
+  worker — `prep-worker`, see "Evidence preparation" above; expiry reminders
+  and webhooks are the remaining gap).
 - OSCAL *import* (export is live at `/api/oscal/component-definition/{id}`).

@@ -62,6 +62,18 @@ def band_for(score: float) -> str:
     return "low"
 
 
+#: Contribution of a prepared classification to an evidence object's confidence.
+#: Preparation tells us how well a document's own text supports a control, which
+#: is independent of provenance — so it adjusts the score rather than replacing
+#: any existing signal, and absence is neutral, never a penalty.
+_PREP_WEIGHTS = {"strong": 8.0, "moderate": 4.0, "weak": -2.0}
+
+
+def prep_signal(strength: str | None) -> float:
+    """Score contribution from a prepared classification's evidence strength."""
+    return _PREP_WEIGHTS.get(strength or "", 0.0)
+
+
 def score_evidence(
     *,
     source_type: str,
@@ -72,6 +84,7 @@ def score_evidence(
     framework: str | None,
     has_digest: bool,
     used_in_package: bool = False,
+    prep_strength: str | None = None,
     today: date | None = None,
 ) -> dict[str, Any]:
     """Pure confidence scorer → ``{score, band, source_type, reproducible, factors}``."""
@@ -99,7 +112,12 @@ def score_evidence(
         "assessor_approval": 1.0 if status == "approved" else 0.6,
     }
     total_w = sum(_WEIGHTS.values())
-    score = round(100 * sum(_WEIGHTS[k] * v for k, v in values.items()) / total_w, 1)
+    raw_score = 100 * sum(_WEIGHTS[k] * v for k, v in values.items()) / total_w
+    # The weighted average above is already bounded to [0, 100] by construction
+    # (each value is in [0, 1]); prep_signal is an external adjustment that can
+    # push past either edge, so it's clamped back into the same bound rather
+    # than left to float outside band_for's assumed range.
+    score = round(max(0.0, min(100.0, raw_score + prep_signal(prep_strength))), 1)
     factors = {
         k: {"value": round(v, 2), "weight": _WEIGHTS[k],
             "contribution": round(_WEIGHTS[k] * v, 2)}
