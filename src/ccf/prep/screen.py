@@ -36,12 +36,22 @@ _MIN_CONTENT_CHARS = 12
 
 
 #: ``ts_rank_cd``'s normalization bitmask: 32 rescales the raw (unbounded)
-#: cover-density score into ``rank/(rank+1)`` — i.e. 0..1. It is a strictly
-#: monotonic transform, so it changes no ranking decision; it exists purely so
-#: ``prep_screen_threshold`` is a comparable, bounded number instead of an
-#: unbounded raw score whose useful range depends on catalog size and term
-#: weighting. See ``score_line``'s docstring for how the value was derived.
+#: cover-density score into ``rank/(rank+1)`` — i.e. 0..1. This is a strictly
+#: monotonic transform: it cannot change any ranking or top-N decision. Its
+#: only purpose is making ``prep_screen_threshold`` a comparable, bounded
+#: number instead of an unbounded raw score whose useful range depends on
+#: catalog size and term weighting. (The actual precision fix here is the
+#: ``control_name`` filter and the base-control collapse below — see
+#: ``score_line``'s docstring.)
 _RANK_NORMALIZATION = 32
+
+#: Strips an enhancement suffix from a control identifier: ``AC-06(02)`` ->
+#: ``AC-06``. Matches every identifier in ``ccf.controls`` that has a
+#: populated ``control_name`` except a handful (~13 of 1,206) belonging to a
+#: differently-shaped cross-mapped framework (e.g. ``GR-1.a``); those have no
+#: parenthesized suffix to strip, so the regex is a no-op on them and they
+#: collapse to themselves, same as a base control would.
+_BASE_CONTROL_PATTERN = r"\(.*$"
 
 
 async def score_line(
@@ -68,22 +78,35 @@ async def score_line(
     rest fine-grained per-assessment-objective and per-ODP fragments) rather
     than a handful of hand-picked fixture rows:
 
-    * **Candidates are restricted to rows with a populated ``control_name``.**
-      The catalog's granular per-AO/per-ODP rows (e.g. ``IA-02(06)_ODP[03]``)
-      share a control's identifier prefix but carry no addressable name of
-      their own and mostly generic procedural language ("Determine if:
-      ..."). Left in, thousands of them compete on roughly the same terms as
-      every other line in the catalog and drown out the base/enhancement rows
-      that Task 12's classifier can actually act on and cite. Excluding them
-      is a precision fix, not a recall one — it does not remove any control a
-      classifier could be handed downstream.
+    * **Candidates are restricted to rows with a populated ``control_name``,
+      which is where essentially all of the precision gain over the first cut
+      of this query came from.** The catalog's granular per-AO/per-ODP rows
+      (e.g. ``IA-02(06)_ODP[03]``) share a control's identifier prefix but
+      carry no addressable name of their own and mostly generic procedural
+      language ("Determine if: ..."). Left in, ~4,224 of them compete on
+      roughly the same terms as every other line in the catalog and drown out
+      the ~1,200 base/enhancement rows that Task 12's classifier can actually
+      act on and cite. Excluding them is a precision fix, not a recall one —
+      it does not remove any control a classifier could be handed downstream.
+      (Normalizing the score, below, does *not* contribute to this — it is a
+      monotonic rescaling and reorders nothing.)
+    * **Candidates are collapsed to one row per base control before
+      truncating to ``limit``.** Even after the ``control_name`` filter, a
+      control with many enhancements (e.g. AC-06's ten) can occupy every slot
+      in the candidate window with its own enhancements, pushing the base
+      control itself out — measured directly: AC-06 ranked 27th and IR-06
+      ranked 9th for unambiguous sentences before this fix, both outside
+      ``_MAX_CANDIDATES``. Grouping by the identifier with any parenthesized
+      enhancement suffix stripped, and keeping each group's best score, means
+      one family can supply at most one of the five slots, so a
+      well-represented family doesn't crowd out a different, equally-relevant
+      one — or itself.
     * **The score is normalized (bitmask 32).** Raw ``ts_rank_cd`` is
       unbounded and scales with how much matching text a document has, not
       with topical relevance, so a fixed threshold meaningful against a
-      three-row test fixture is meaningless at catalog scale. Normalizing
-      into 0..1 doesn't fix precision by itself (the transform is order
-      preserving) but makes the configured threshold interpretable and stable
-      as the catalog grows or shrinks between ingests.
+      three-row test fixture is meaningless at catalog scale. This is purely
+      a rescaling for a stable, comparable ``prep_screen_threshold`` — it
+      changes no ranking decision on its own.
     """
     if len(content.strip()) < _MIN_CONTENT_CHARS:
         return []
@@ -92,17 +115,23 @@ async def score_line(
     )
     query = func.to_tsquery("english", lexemes)
     rank = func.ts_rank_cd(Control.search_vector, query, _RANK_NORMALIZATION)
+    base_control = func.regexp_replace(Control.identifier, _BASE_CONTROL_PATTERN, "")
+    per_row = (
+        select(base_control.label("base"), rank.label("rank"))
+        .where(Control.search_vector.op("@@")(query))
+        .where(Control.control_name.isnot(None))
+        .where(Control.control_name != "")
+    ).subquery()
+    best_per_base = func.max(per_row.c.rank).label("rank")
     rows = (
         await session.execute(
-            select(Control.identifier, rank.label("rank"))
-            .where(Control.search_vector.op("@@")(query))
-            .where(Control.control_name.isnot(None))
-            .where(Control.control_name != "")
-            .order_by(rank.desc())
+            select(per_row.c.base, best_per_base)
+            .group_by(per_row.c.base)
+            .order_by(best_per_base.desc())
             .limit(limit)
         )
     ).all()
-    return [(str(identifier), float(value)) for identifier, value in rows]
+    return [(str(base), float(value)) for base, value in rows]
 
 
 async def run_stage_screen(session: AsyncSession, run: PrepRun) -> int:

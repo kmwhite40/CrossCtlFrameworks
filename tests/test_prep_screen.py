@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 import pytest
 from sqlalchemy import delete, select, text
 
@@ -245,13 +247,83 @@ _SYNTHETIC_TOPICS = [
 ]
 
 
+#: Boilerplate phrasing that stands in for the real catalog's per-AO/per-ODP
+#: fragment rows ("Determine if: ..."), which carry no ``control_name`` of
+#: their own. Deliberately generic/procedural, like the real ones.
+_FRAGMENT_PHRASES = [
+    "Determine if: the {topic} is documented and reviewed by authorized personnel.",
+    "Determine if: the organization defines the frequency for {topic}.",
+    "Determine if: {topic} records are retained for the period defined by the organization.",
+    "Determine if: personnel responsible for {topic} are identified and trained.",
+]
+
+#: Two fragment rows with no thematic connection to any named control, whose
+#: vocabulary is chosen to overlap with the irrelevant test line below
+#: ("quarterly newsletter ... distributed ... email ... staff"). This is not
+#: implausible: unnamed AO/ODP fragments in the real catalog cover a very wide
+#: range of procedural minutiae, and it only takes one incidental match in an
+#: unfiltered candidate pool of thousands to push an irrelevant line's score
+#: above a low, unbounded threshold — which is exactly the failure mode this
+#: fixture needs to reproduce (see the module-level comment above).
+_POISON_FRAGMENTS = [
+    (
+        "ZSF-POISON-01",
+        "Determine if: a quarterly newsletter summarizing organizational "
+        "activity is distributed to staff via email.",
+    ),
+    (
+        "ZSF-POISON-02",
+        "Determine if: distribution lists used to email staff newsletters "
+        "and quarterly bulletins are reviewed and kept current.",
+    ),
+]
+
+#: Unnamed "shadow" fragments for IA-02 and CP-09 specifically — modeled on
+#: how the real catalog's per-AO rows for a control read (near-paraphrases of
+#: the base control's own assessment objective, e.g. real ``IA-02[01]`` reads
+#: "multi-factor authentication is implemented for access to privileged
+#: accounts"). Unfiltered, these compete directly with IA-02/CP-09 on the
+#: same lexemes rather than being pure noise (measured: they don't outscore
+#: the two named, richly-worded rows here — that took the real catalog's
+#: scale and diversity, not eight synthetic rows — but they are still exactly
+#: the shape of row the ``control_name`` filter exists to remove, and they
+#: exercise the filter having *something* topically relevant to filter out
+#: rather than only unrelated poison).
+_SHADOW_FRAGMENTS = [
+    (
+        "ZSF-IA02-01",
+        "multifactor authentication is implemented for network access to privileged accounts",
+    ),
+    ("ZSF-IA02-02", "administrators use multifactor authentication for network access"),
+    ("ZSF-IA02-03", "all network access requires multifactor authentication for administrators"),
+    (
+        "ZSF-IA02-04",
+        "multifactor authentication for network access is enforced for privileged "
+        "and non-privileged accounts",
+    ),
+    ("ZSF-CP09-01", "nightly backups of system-level information are written to offsite storage"),
+    ("ZSF-CP09-02", "the organization conducts backups of system-level information nightly"),
+    ("ZSF-CP09-03", "system-level information backups are conducted and stored offsite nightly"),
+    ("ZSF-CP09-04", "backups of system-level information are conducted nightly and stored offsite"),
+]
+
+
 async def _seed_realistic_scale_catalog() -> None:
-    """Seed ~320 synthetic-but-plausible controls plus two real, richly-worded
-    targets (IA-02, CP-09), weighted exactly as the real ETL weights
-    ``search_vector`` after every workbook ingest.
+    """Seed ~320 synthetic-but-plausible *named* controls, ~1,280 synthetic
+    *unnamed* AO/ODP-style fragment rows (roughly the real catalog's ~4:1
+    ratio of fragment rows to named base/enhancement controls), plus two real,
+    richly-worded named targets (IA-02, CP-09) — all weighted exactly as the
+    real ETL weights ``search_vector`` after every workbook ingest.
+
+    The unnamed fragment rows matter: a prior version of this fixture seeded
+    only named rows, so the ``control_name IS NOT NULL`` filter in
+    ``score_line`` had nothing to remove and the two tests below passed
+    identically against the pre-fix query. Reproducing the fragment-row shape
+    of the real catalog is what makes this fixture actually exercise the
+    fix instead of merely resembling the real catalog's row count.
     """
     async with session_scope() as s:
-        await s.execute(delete(Control).where(Control.identifier.like("ZS-%")))
+        await s.execute(delete(Control).where(Control.identifier.like("ZS%")))
         await s.execute(delete(Control).where(Control.identifier.in_(["IA-02", "CP-09"])))
 
         rows: list[Control] = []
@@ -274,6 +346,20 @@ async def _seed_realistic_scale_catalog() -> None:
                         ),
                     )
                 )
+                # ~4 unnamed AO/ODP-style fragments per named row, matching the
+                # real catalog's rough 4:1 fragment-to-named-control ratio.
+                for j, phrase in enumerate(_FRAGMENT_PHRASES, start=1):
+                    rows.append(
+                        Control(
+                            identifier=f"ZSF-{family}-{i:02d}-{j:02d}",
+                            control_name=None,
+                            assessment_objective=phrase.format(topic=topic),
+                        )
+                    )
+        for ident, phrase in _POISON_FRAGMENTS:
+            rows.append(Control(identifier=ident, control_name=None, assessment_objective=phrase))
+        for ident, phrase in _SHADOW_FRAGMENTS:
+            rows.append(Control(identifier=ident, control_name=None, assessment_objective=phrase))
         rows.append(
             Control(
                 identifier="IA-02",
@@ -323,11 +409,30 @@ async def _seed_realistic_scale_catalog() -> None:
         await s.execute(text(_SEARCH_VECTOR_SQL))
 
 
-async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale() -> None:
-    """Ranking precision: against ~320 plausible competing controls, the
-    obviously-correct control is still reachable within the candidate window
-    Task 12's classifier is handed (``_MAX_CANDIDATES`` = 5)."""
+@pytest.fixture
+async def realistic_scale_catalog() -> AsyncIterator[None]:
+    """Seed the ~1,600-row synthetic catalog and always remove it afterward —
+    this fixture is the only thing in this module that writes more than a
+    couple of rows, and nothing else in the shared ``ccf_test`` schema should
+    have to account for a stray 'ZS%'-prefixed control left behind by a
+    failed assertion or an interrupted run."""
     await _seed_realistic_scale_catalog()
+    try:
+        yield
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Control).where(Control.identifier.like("ZS%")))
+            await s.execute(delete(Control).where(Control.identifier.in_(["IA-02", "CP-09"])))
+
+
+async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale(
+    realistic_scale_catalog: None,
+) -> None:
+    """Ranking precision: against ~320 plausible competing *named* controls
+    (plus ~1,280 unnamed AO/ODP-style fragments competing for the same
+    lexemes), the obviously-correct control is still reachable within the
+    candidate window Task 12's classifier is handed (``_MAX_CANDIDATES`` =
+    5)."""
     async with session_scope() as s:
         mfa = await score_line(
             s, content="All administrators must use multifactor authentication for network access."
@@ -343,12 +448,18 @@ async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale() -
     )
 
 
-async def test_irrelevant_line_stays_below_threshold_at_realistic_scale() -> None:
+async def test_irrelevant_line_stays_below_threshold_at_realistic_scale(
+    realistic_scale_catalog: None,
+) -> None:
     """Selectivity: a clearly irrelevant, boilerplate line must not clear the
-    default (settings-derived) threshold even with ~320 competing controls
-    sharing generic compliance vocabulary ("organization", "review",
-    "documented", "annually") that could otherwise create incidental overlap."""
-    await _seed_realistic_scale_catalog()
+    default (settings-derived) threshold. Two of the ~1,280 unnamed fragment
+    rows share heavy incidental vocabulary with this exact line ("quarterly",
+    "newsletter", "distributed", "email", "staff") and would, on their own,
+    have cleared the *old* unfiltered/unnormalized default (0.15) easily —
+    that is the specific failure this test pins down: filtering to named
+    controls removes them from consideration entirely, so the remaining ~320
+    named rows (none of which mention any of that vocabulary) leave this line
+    with nothing to match."""
     threshold = get_settings().prep_screen_threshold
     async with session_scope() as s:
         ranked = await score_line(
