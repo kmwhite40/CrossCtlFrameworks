@@ -15,6 +15,8 @@ from .docx import MEDIA_TYPE as DOCX_MEDIA_TYPE
 from .docx import parse_docx
 from .pdf import MEDIA_TYPE as PDF_MEDIA_TYPE
 from .pdf import parse_pdf
+from .pptx import MEDIA_TYPE as PPTX_MEDIA_TYPE
+from .pptx import parse_pptx
 from .text import parse_text
 from .xlsx import MEDIA_TYPE as XLSX_MEDIA_TYPE
 from .xlsx import parse_xlsx
@@ -59,4 +61,6 @@ def dispatch(data: bytes, filename: str, media_type: str | None = None) -> Parse
         return parse_xlsx(data, filename, resolved)
     if resolved == PDF_MEDIA_TYPE:
         return parse_pdf(data, filename, resolved)
+    if resolved == PPTX_MEDIA_TYPE:
+        return parse_pptx(data, filename, resolved)
     raise UnsupportedMediaType(f"no parser for '{resolved}'")
