@@ -278,17 +278,15 @@ _POISON_FRAGMENTS = [
     ),
 ]
 
-#: Unnamed "shadow" fragments for IA-02 and CP-09 specifically — modeled on
-#: how the real catalog's per-AO rows for a control read (near-paraphrases of
-#: the base control's own assessment objective, e.g. real ``IA-02[01]`` reads
-#: "multi-factor authentication is implemented for access to privileged
-#: accounts"). Unfiltered, these compete directly with IA-02/CP-09 on the
-#: same lexemes rather than being pure noise (measured: they don't outscore
-#: the two named, richly-worded rows here — that took the real catalog's
-#: scale and diversity, not eight synthetic rows — but they are still exactly
-#: the shape of row the ``control_name`` filter exists to remove, and they
-#: exercise the filter having *something* topically relevant to filter out
-#: rather than only unrelated poison).
+#: Unnamed "shadow" fragments for IA-02 and CP-09 specifically — paraphrases
+#: of the base control's own assessment objective, close enough in vocabulary
+#: to compete directly with IA-02/CP-09 on the same lexemes rather than being
+#: pure noise (measured: they don't outscore the two named, richly-worded
+#: rows here — that took the real catalog's scale and diversity, not eight
+#: synthetic rows — but they are still exactly the shape of row the
+#: ``control_name`` filter exists to remove, and they exercise the filter
+#: having *something* topically relevant to filter out rather than only
+#: unrelated poison).
 _SHADOW_FRAGMENTS = [
     (
         "ZSF-IA02-01",
@@ -307,28 +305,32 @@ _SHADOW_FRAGMENTS = [
     ("ZSF-CP09-04", "backups of system-level information are conducted nightly and stored offsite"),
 ]
 
-#: Named enhancement rows for IA-02 and CP-09 — modeled on how real
-#: enhancements read: they restate the base control's own vocabulary with an
-#: extra qualifier, in the *name* field (weight 'A', the same weight as the
-#: base control's own name), which is exactly why an enhancement can outscore
-#: its base control rather than merely diluting the field. Unlike the unnamed
-#: fragments above, these are what Finding 2 (enhancement crowding) is
-#: actually about: five enhancements filling all five candidate slots and
-#: pushing the bare base identifier out entirely. Each
-#: ``(identifier, name_suffix, objective)`` restates "multifactor
-#: authentication ... network access" (IA-02) or "nightly backups ...
-#: system-level information" (CP-09) — the exact phrases the two test
-#: sentences below use — so pre-collapse they compete directly with, and beat,
-#: the base row.
+#: Named enhancement rows for IA-02 and CP-09.
 #: ``(identifier, name_suffix, description, assessment_objective, discussion)``.
-#: Each restates its base control's own core phrase — "multifactor
-#: authentication ... network access" (IA-02), "nightly backups ...
-#: system-level information" (CP-09) — repeatedly, across all four weighted
-#: fields, matching how a real enhancement's text actually concentrates
-#: around the same subject the base control already covers plus one
-#: qualifier. Measured (see task-9-report.md) to score higher than the base
-#: row on the exact sentences the tests below use — that margin, not just the
-#: shared vocabulary, is what makes the crowding-out reproducible.
+#:
+#: IMPORTANT — what this fixture is and is not evidence of. These rows are
+#: deliberately amplified: the target sentence's own phrase ("multifactor
+#: authentication ... network access" / "nightly backups ... system-level
+#: information") is repeated two or three times per row, including in
+#: ``discussion`` — a field real catalog rows use for mechanism and parameter
+#: explanation, not phrase restatement. That amplification is intentional and
+#: necessary to reproduce, in a ten-row synthetic fixture, the *shape* of
+#: Finding 2's enhancement-crowding bug (base control outscored by its own
+#: enhancements, pushed out of the candidate window).
+#:
+#: It is NOT a claim that IA-02/CP-09 exhibit this crowding with genuine
+#: catalog text. Checked directly: the real ``IA-02(01)``/``(02)``/``(06)``/
+#: ``(08)``/``(12)`` and ``CP-09(01)``/``(02)``/``(05)``/``(06)``/``(08)``
+#: rows, scored with the production ``setweight`` formula against these same
+#: two sentences, all score *below* their base row (IA-02 base 5.5 vs.
+#: enhancements 4.1/4.1/3.1/2.9/1.5; CP-09 base 9.0 vs. enhancements
+#: 4.9/4.1/3.5/3.4/3.1) — no crowding occurs in these two families with real
+#: text. The organically-occurring instances of this bug, verified separately
+#: against the full real catalog, are AC-06 (fell to rank 27 behind its own
+#: ten enhancements) and IR-06 (fell to rank 9) — see task-9-report.md.
+#: IA-02/CP-09 were kept as the fixture's targets purely because they were
+#: already the two richly-worded base rows this module builds elsewhere; the
+#: crowding they exhibit here is manufactured, not observed.
 _ENHANCEMENTS = [
     (
         "IA-02(01)",
@@ -458,14 +460,16 @@ async def _seed_realistic_scale_catalog() -> None:
 
     The named enhancement rows matter for the base-control collapse
     separately: Finding 2's bug was never fragment dilution, it was a
-    control's *own* enhancements — richly-worded, real named rows that
-    restate the base control's vocabulary with a qualifier — filling every
-    candidate slot and pushing the base identifier itself out (measured on
-    the real catalog: AC-06 fell to rank 27, crowded out entirely by its own
-    AC-06(01)/(02)/.../(10)). Unnamed fragments cannot reproduce that
-    specific failure because they don't outscore a richly-worded base row;
-    only richly-worded enhancement rows can, because that is what
-    Finding 2 actually was.
+    control's *own* named enhancements — filling every candidate slot and
+    pushing the base identifier itself out — measured on the real catalog:
+    AC-06 fell to rank 27, crowded out entirely by its own
+    AC-06(01)/(02)/.../(10); IR-06 fell to rank 9. Unnamed fragments cannot
+    reproduce that specific failure because they don't outscore a
+    richly-worded base row; only enhancement-shaped rows can. The
+    IA-02/CP-09 enhancement rows below reproduce that *shape* with
+    deliberately amplified synthetic text — see the correction in the
+    ``_ENHANCEMENTS`` comment for exactly what that does and does not claim
+    about how real IA-02/CP-09 enhancements score.
     """
     async with session_scope() as s:
         await s.execute(delete(Control).where(Control.identifier.like("ZS%")))
@@ -604,12 +608,16 @@ async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale(
     ...; ``CP-09(01)``, ``CP-09(02)``, ...) restate each base control's own
     vocabulary in an 'A'-weighted ``control_name``, so pre-collapse they
     outscore the bare base identifier and fill the entire candidate window
-    among themselves — reproducing the exact shape of Finding 2's bug
-    (measured on the real catalog: AC-06 crowded to rank 27 by its own ten
-    enhancements). Property 2 is impossible to satisfy without the collapse:
-    with five same-family enhancements outscoring their own base row, a
-    pre-collapse top-5 is, by construction, either all one family or missing
-    the base control entirely.
+    among themselves — reproducing the *shape* of Finding 2's bug (a control
+    crowded out by its own enhancements). This is a manufactured fixture, not
+    a claim that IA-02/CP-09 crowd out with real catalog text — they don't
+    (checked directly; see the ``_ENHANCEMENTS`` comment). The organically
+    occurring instances, measured on the real catalog, are AC-06 (crowded to
+    rank 27 by its own ten enhancements) and IR-06 (rank 9). Property 2 is
+    impossible to satisfy without the collapse regardless: with five
+    same-family enhancements outscoring their own base row, a pre-collapse
+    top-5 is, by construction, either all one family or missing the base
+    control entirely.
     """
     async with session_scope() as s:
         mfa = await score_line(
