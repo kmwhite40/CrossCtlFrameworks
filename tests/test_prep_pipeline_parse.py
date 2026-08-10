@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 
+import fitz
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from ccf.config import get_settings
 from ccf.db import session_scope
@@ -14,6 +15,7 @@ from ccf.models import Organization, Policy, PolicyVersion, System
 from ccf.models_evidence import EvidenceObject, EvidenceVersion
 from ccf.models_prep import PrepLine, PrepRun
 from ccf.prep import pipeline
+from ccf.prep.parsers import ParsedBlock, ParsedDocument, ParsedPage
 from ccf.prep.sources import SourceMissing, resolve_source
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -169,3 +171,145 @@ async def test_config_snapshot_records_the_thresholds_in_force() -> None:
         )
         assert run.config_snapshot["screen_threshold"] == get_settings().prep_screen_threshold
         assert run.config_snapshot["expand_window"] == get_settings().prep_expand_window
+
+
+async def test_nul_byte_in_text_source_is_stripped_not_crashed() -> None:
+    """A NUL byte is valid UTF-8 but illegal in a Postgres ``text`` column.
+
+    Without sanitization this reaches ``PrepLine.content`` and the flush raises
+    an unhandled ``CharacterNotInRepertoireError`` instead of completing the
+    stage — see task-8-report.md Finding 1.
+    """
+    org_id = await _org("prep-nul-text")
+    version_id, _ = await _evidence_version(org_id, b"One.\nHas a NUL: \x00 in it.\n", "p.txt")
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="evidence_version", source_id=version_id
+        )
+        count = await pipeline.run_stage_parse(s, run)
+        assert count == 2
+        assert run.status != "failed"
+        assert run.stage_parse == "complete"
+        lines = (
+            await s.execute(select(PrepLine).where(PrepLine.run_id == run.id))
+        ).scalars().all()
+        assert all("\x00" not in x.content for x in lines)
+        assert any(x.content == "Has a NUL:  in it." for x in lines)
+
+
+async def test_nul_byte_in_pdf_source_is_stripped_not_crashed() -> None:
+    """The same NUL-byte hazard via a binary parser, not just the text parser.
+
+    DOCX/PPTX cannot carry a literal NUL through to their parser at all: both are
+    XML-based and lxml refuses to parse (or even build, via python-docx/pptx) a
+    document containing one — confirmed empirically
+    (``lxml.etree.XMLSyntaxError: Invalid character: Char 0x0 out of allowed
+    range``). PDF text objects have no such well-formedness constraint, so PDF
+    (via PyMuPDF) is the binary format that actually exercises this path.
+    """
+    org_id = await _org("prep-nul-pdf")
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Has a NUL: \x00 marker.")
+    payload: bytes = doc.tobytes()
+    doc.close()
+    version_id, _ = await _evidence_version(org_id, payload, "policy.pdf")
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="evidence_version", source_id=version_id
+        )
+        count = await pipeline.run_stage_parse(s, run)
+        assert count == 1
+        assert run.status != "failed"
+        assert run.stage_parse == "complete"
+        assert run.parser_name == "pdf"
+        lines = (
+            await s.execute(select(PrepLine).where(PrepLine.run_id == run.id))
+        ).scalars().all()
+        assert all("\x00" not in x.content for x in lines)
+        assert any("Has a NUL:" in x.content and "marker" in x.content for x in lines)
+
+
+async def test_persistence_failure_marks_the_run_failed_not_raised() -> None:
+    """A persistence error during the write must not escape as an exception.
+
+    Forces a real Postgres failure independent of the NUL-byte case above (an
+    out-of-range ``page_number`` — ``prep_lines.page_number`` is a 32-bit
+    ``Integer``) by monkeypatching ``dispatch`` to return a document with a bad
+    value, then asserts the run lands in ``failed``/``error_stage="parse"`` and
+    that the session is still usable afterward (the query below would raise
+    ``PendingRollbackError`` if the failed flush had poisoned it).
+    """
+    org_id = await _org("prep-persist-fail")
+    version_id, _ = await _evidence_version(org_id, b"One.\n", "p.txt")
+
+    bad_doc = ParsedDocument(
+        filename="p.txt",
+        media_type="text/plain",
+        parser_name="text",
+        pages=[
+            ParsedPage(
+                page_number=99_999_999_999,  # exceeds Postgres INTEGER range
+                blocks=[ParsedBlock(block_id="p1", block_type="paragraph", text="x")],
+            )
+        ],
+    )
+
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="evidence_version", source_id=version_id
+        )
+        original_dispatch = pipeline.dispatch
+        pipeline.dispatch = lambda *_a, **_kw: bad_doc  # type: ignore[assignment]
+        try:
+            count = await pipeline.run_stage_parse(s, run)
+        finally:
+            pipeline.dispatch = original_dispatch  # type: ignore[assignment]
+        assert count == 0
+        assert run.status == "failed"
+        assert run.stage_parse == "failed"
+        assert run.error_stage == "parse"
+        assert run.error
+        assert run.lines_parsed == 0
+        # The session must still be usable — a poisoned session would raise
+        # PendingRollbackError here instead of returning an empty result.
+        lines = (
+            await s.execute(select(PrepLine).where(PrepLine.run_id == run.id))
+        ).scalars().all()
+        assert lines == []
+
+
+async def test_rerun_after_source_deleted_clears_prior_lines_and_resets_counts() -> None:
+    """Idempotency must hold when a rerun's outcome *changes*, not just repeats.
+
+    Parse successfully once (N rows persisted), delete the source out from under
+    the run, then re-run: the run must end up ``orphaned`` with its own
+    ``PrepLine`` rows gone and ``lines_parsed`` reset to 0 — not left claiming N
+    lines that no longer exist for it.
+    """
+    org_id = await _org("prep-rerun-orphan")
+    version_id, _ = await _evidence_version(org_id, b"One.\nTwo.\n", "p.txt")
+
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="evidence_version", source_id=version_id
+        )
+        run_id = int(run.id)
+        count = await pipeline.run_stage_parse(s, run)
+        assert count == 2
+        assert run.lines_parsed == 2
+
+    async with session_scope() as s:
+        await s.execute(delete(EvidenceVersion).where(EvidenceVersion.id == version_id))
+
+    async with session_scope() as s:
+        run = await pipeline.load_run(s, run_id)
+        assert run is not None
+        await pipeline.run_stage_parse(s, run)
+        assert run.status == "orphaned"
+        assert run.stage_parse == "skipped"
+        assert run.lines_parsed == 0
+        lines = (
+            await s.execute(select(PrepLine).where(PrepLine.run_id == run.id))
+        ).scalars().all()
+        assert lines == []
