@@ -124,7 +124,18 @@ async def test_a_run_with_no_units_completes_without_calling_the_provider() -> N
 
 
 async def test_advance_drives_a_run_to_complete(monkeypatch: pytest.MonkeyPatch) -> None:
-    """End-to-end: with every stage registered, advance reaches status=complete."""
+    """`advance()` resolves `next_stage()`, dispatches to the embed runner (the
+    only stage this run has left, since `_run_with_units` pre-marks parse,
+    screen, expand, and classify complete), and flips `status` to `complete`
+    once it finishes. This proves stage dispatch and completion work with all
+    five stages registered — it does NOT prove the four-stage handoff chain
+    (that expand's units are consumable by classify, that classify's output
+    shape is what embed expects, that screen's candidates reach classify
+    intact), because the earlier stages never actually run here. See
+    `tests/test_prep_pipeline_e2e.py::test_advance_drives_a_full_run_through_all_five_stages`
+    for a run that starts every stage at `pending` and drives a real source
+    document through all five.
+    """
     org_id = await _org("prep-advance")
     run_id = await _run_with_units(org_id, 1)
     monkeypatch.setattr(gateway, "embed", _fake_embed())
