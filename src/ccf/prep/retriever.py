@@ -14,6 +14,7 @@ answer is worth more than an error to a caller assembling evidence for a control
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,9 +22,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai import gateway
+from ..ai.providers.base import ProviderError
 from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PrepClassification, PrepEmbedding, PrepUnit
+from .screen import _BASE_CONTROL_PATTERN
 
 log = get_logger(__name__)
 
@@ -102,8 +105,11 @@ async def _vector_ids(
         response = await gateway.embed(
             session, org_id, texts=[query_text], purpose="prep.retrieve"
         )
-    except Exception as exc:  # degrade to lexical, never fail the caller
-        log.info("prep.retrieve_vector_unavailable", org_id=org_id, error=str(exc))
+    except (gateway.GatewayError, ProviderError) as exc:
+        # Only a genuine provider-availability fault degrades to lexical-only;
+        # anything else (e.g. a bug indexing a malformed response) must raise,
+        # not be silently misreported as "provider unavailable".
+        log.warning("prep.retrieve_vector_unavailable", org_id=org_id, error=str(exc))
         return []
     vector = response.vectors[0]
     distance = PrepEmbedding.embedding.cosine_distance(vector)
@@ -136,32 +142,39 @@ async def retrieve(
         system_id=system_id, source_kind=source_kind,
     )
 
-    # Units the classifier tagged with this control rank first regardless of
-    # text similarity: an explicit classification is a stronger signal than any
-    # similarity score, and this is what makes retrieval control-aware rather
-    # than merely semantic. Note: the screen stage collapses candidates to base
-    # control identifiers (e.g. "AC-6(2)" -> "AC-6"), so this boost only fires
-    # for base identifiers — an enhancement-level ``control_identifier`` passed
-    # here will never match.
+    # Units the classifier tagged with this control are a third retrieval
+    # signal alongside lexical and vector: an explicit classification is
+    # meaningful evidence that a similarity score alone would not capture.
+    # The screen stage collapses candidates to base control identifiers (e.g.
+    # "AC-6(2)" -> "AC-6"), so ``PrepClassification.control_identifiers`` only
+    # ever holds base identifiers; strip any enhancement suffix from the
+    # caller's identifier before the containment check so an enhancement-level
+    # query still benefits from base-control-tagged evidence. The original,
+    # unstripped identifier is still used as lexical/vector query text above,
+    # since "AC-6(2)" is a meaningful exact-match token there.
+    base_control_identifier = re.sub(_BASE_CONTROL_PATTERN, "", control_identifier)
     tagged_stmt = (
         select(PrepUnit.id)
         .join(PrepClassification, PrepClassification.unit_id == PrepUnit.id)
-        .where(PrepClassification.control_identifiers.op("@>")([control_identifier]))
+        .where(PrepClassification.control_identifiers.op("@>")([base_control_identifier]))
     )
     tagged_stmt = _base_filters(
         tagged_stmt, org_id=org_id, system_id=system_id, source_kind=source_kind
     )
-    tagged = [int(r[0]) for r in (await session.execute(tagged_stmt)).all()]
+    tagged = {int(r[0]) for r in (await session.execute(tagged_stmt)).all()}
 
-    fused = fuse(lexical=lexical, vector=vector)
-    tagged_set = set(tagged)
-    # Boost, not filter: an untagged unit can still be the best evidence when
-    # classification was conservative.
-    ordered = sorted(
-        fused,
-        key=lambda pair: (pair[0] in tagged_set, pair[1]),
-        reverse=True,
-    )[:top_n]
+    # A tagged unit contributes to its score the same way a rank-1 hit from
+    # either other backend would. This composes with RRF rather than
+    # overriding it — a tagged unit is boosted, but a genuinely superior
+    # untagged match (e.g. ranked first by both other backends) can still
+    # outrank a tagged unit that neither backend favored, which a strict
+    # tagged-first sort tier would not allow.
+    fused = dict(fuse(lexical=lexical, vector=vector))
+    tagged_boost = 1.0 / (_RRF_K + 1)
+    for unit_id in tagged:
+        fused[unit_id] = fused.get(unit_id, 0.0) + tagged_boost
+
+    ordered = sorted(fused.items(), key=lambda pair: pair[1], reverse=True)[:top_n]
     if not ordered:
         return []
 
@@ -169,13 +182,18 @@ async def retrieve(
     vector_positions = {unit_id: i + 1 for i, unit_id in enumerate(vector)}
 
     unit_ids = [unit_id for unit_id, _ in ordered]
-    rows = (
-        await session.execute(
-            select(PrepUnit, PrepClassification)
-            .outerjoin(PrepClassification, PrepClassification.unit_id == PrepUnit.id)
-            .where(PrepUnit.id.in_(unit_ids))
-        )
-    ).all()
+    hydrate_stmt = (
+        select(PrepUnit, PrepClassification)
+        .outerjoin(PrepClassification, PrepClassification.unit_id == PrepUnit.id)
+        .where(PrepUnit.id.in_(unit_ids))
+    )
+    # Defense in depth: unit_ids above only ever comes from the three scoped
+    # candidate paths, but the point where evidence is actually handed to a
+    # caller should not depend on that staying true forever.
+    hydrate_stmt = _base_filters(
+        hydrate_stmt, org_id=org_id, system_id=system_id, source_kind=source_kind
+    )
+    rows = (await session.execute(hydrate_stmt)).all()
     by_id = {int(unit.id): (unit, classification) for unit, classification in rows}
 
     results: list[RetrievedUnit] = []
