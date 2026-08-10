@@ -23,14 +23,21 @@ OOM-inducing document, a pathological input that hangs a parser) is reaped back
 to ``pending`` by :func:`reap_stale`, reclaimed, crashes its next worker too,
 and repeats forever — burning a full stage's worth of parsing/model calls on
 every cycle with no operator visibility. ``attempts`` is incremented in
-:func:`claim`, not after the stage work — the session driving
-:func:`pipeline.advance` may never commit if the worker is killed mid-stage, so
-counting later would silently under-count exactly the jobs this cap exists for.
+:func:`claim`, not after the stage work — but incrementing it is only durable
+if it is *committed* before stage work begins. :func:`run_once` therefore
+commits the claim (and its ``attempts`` bump) immediately, then commits after
+each job it drives, rather than leaving the whole batch as one transaction that
+a mid-batch crash would silently discard in its entirety — including the
+already-finished output of jobs processed earlier in the same cycle.
 :func:`reap_stale` dead-letters (leaves ``status="failed"`` with ``last_error``
 explaining why, instead of requeuing) any stale job at or past
 ``Settings.prep_job_max_attempts``, so a poisoned job stops burning cycles and
 is visible the same way any other failed job is — through ``status``,
-``last_error``, and ``attempts`` on ``PrepJob``.
+``last_error``, and ``attempts`` on ``PrepJob``. That cap can only ever engage
+because the claim durably records ``status="claimed"`` before stage work starts
+— otherwise a crash would roll the job back to ``pending`` immediately, and it
+would never sit ``claimed`` long enough for :func:`reap_stale`'s timeout to see
+it at all.
 """
 
 from __future__ import annotations
@@ -155,39 +162,68 @@ async def reap_stale(
     return requeued_count + dead_letter_count
 
 
+async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
+    """Advance one already-claimed job's run and update the job to match.
+
+    Does not commit — the caller (:func:`run_once`) commits immediately after
+    this returns, so this job's outcome (or the fact that it is still
+    ``claimed`` if this raises) is durable before the next job in the batch
+    starts. Returns ``"done"`` or ``"failed"`` for the caller's counters; a job
+    left ``pending`` for the next cycle counts as neither.
+    """
+    run = await pipeline.load_run(session, job.run_id)
+    if run is None:
+        job.status = "failed"
+        job.last_error = f"run {job.run_id} no longer exists"
+        return "failed"
+    try:
+        await pipeline.advance(session, run)
+    except Exception as exc:  # a worker must survive any one job
+        job.status = "failed"
+        job.last_error = str(exc)
+        log.warning("prep.job_failed", job_id=job.id, run_id=run.id, error=str(exc))
+        return "failed"
+
+    if run.status in _TERMINAL:
+        job.status = "done"
+        return "done"
+    if run.status == "failed":
+        job.status = "failed"
+        job.last_error = run.error
+        return "failed"
+    # Progress made but stages remain — return it for the next cycle.
+    job.status = "pending"
+    job.next_stage = pipeline.next_stage(run) or "parse"
+    job.claimed_by = None
+    job.claimed_at = None
+    return "pending"
+
+
 async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[str, int]:
-    """Claim and drive a batch of jobs. Returns counts for observability."""
+    """Claim and drive a batch of jobs, each committed independently.
+
+    Every job in the batch shares this one ``session``/connection, but not one
+    transaction: the claim is committed before any stage work runs, and each
+    job's outcome is committed before the next job starts. A worker killed
+    partway through the batch therefore loses at most the one job it was
+    mid-stage on — not the whole batch, and not the durable ``claimed`` record
+    (with its ``attempts`` bump) that lets :func:`reap_stale` find that job
+    again later. A single shared ``session`` — rather than a fresh one per job —
+    keeps the public signature exactly as documented in the interface and
+    matches how :func:`claim` and :func:`reap_stale` are already tested and
+    called; durability here comes from committing this session's transaction
+    boundary explicitly at each point, not from any particular Session object.
+    """
     claimed = await claim(session, worker=worker, limit=limit)
+    await session.commit()
+
     finished = 0
     failed = 0
     for job in claimed:
-        run = await pipeline.load_run(session, job.run_id)
-        if run is None:
-            job.status = "failed"
-            job.last_error = f"run {job.run_id} no longer exists"
-            failed += 1
-            continue
-        try:
-            await pipeline.advance(session, run)
-        except Exception as exc:  # a worker must survive any one job
-            job.status = "failed"
-            job.last_error = str(exc)
-            failed += 1
-            log.warning("prep.job_failed", job_id=job.id, run_id=run.id, error=str(exc))
-            continue
-
-        if run.status in _TERMINAL:
-            job.status = "done"
+        outcome = await _drive_one(session, job)
+        await session.commit()
+        if outcome == "done":
             finished += 1
-        elif run.status == "failed":
-            job.status = "failed"
-            job.last_error = run.error
+        elif outcome == "failed":
             failed += 1
-        else:
-            # Progress made but stages remain — return it for the next cycle.
-            job.status = "pending"
-            job.next_stage = pipeline.next_stage(run) or "parse"
-            job.claimed_by = None
-            job.claimed_at = None
-    await session.flush()
     return {"claimed": len(claimed), "finished": finished, "failed": failed}

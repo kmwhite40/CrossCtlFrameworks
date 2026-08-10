@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -197,3 +198,136 @@ async def test_a_failing_job_records_its_error_and_increments_attempts(
         assert job.status == "failed"
         assert job.attempts == 1
         assert "stage exploded" in (job.last_error or "")
+
+
+async def test_claim_is_committed_before_stage_work_begins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The claim (and its ``attempts`` bump) must be durable before any stage
+    work runs — not merely flushed into ``run_once``'s own uncommitted
+    transaction — otherwise a worker crash during the stage work would silently
+    roll the claim back too, and reap_stale would never see the job as stale.
+    """
+    org_id = await _org("jobs-durable-claim")
+    async with session_scope() as s:
+        job = await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        job_id = int(job.id)
+
+    seen: dict[str, Any] = {}
+
+    async def _check_from_another_session(session: Any, run: Any) -> Any:
+        # A separate session/connection — not the one run_once is using — must
+        # already see the claim, proving it doesn't depend on run_once's own
+        # eventual commit.
+        async with session_scope() as s2:
+            row = (await s2.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
+            seen["status"] = row.status
+            seen["attempts"] = row.attempts
+        raise RuntimeError("stop before real stage work runs")
+
+    monkeypatch.setattr(jobs.pipeline, "advance", _check_from_another_session)
+    async with session_scope() as s:
+        await jobs.run_once(s, worker="w1", limit=5)
+
+    assert seen["status"] == "claimed"
+    assert seen["attempts"] == 1
+
+
+async def test_a_crash_mid_batch_does_not_roll_back_earlier_committed_jobs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One job's crash must not discard already-committed work from earlier jobs
+    processed in the same run_once cycle — each job commits independently, so a
+    worker killed on job 2 of a batch does not also undo job 1.
+
+    Simulates a real crash — not a caught exception — with
+    ``asyncio.CancelledError``, a ``BaseException`` that ``_drive_one``'s
+    ``except Exception`` deliberately does not catch, so it propagates out of
+    ``run_once`` uncaught the way a real process kill would.
+    """
+    org_id = await _org("jobs-crash-mid-batch")
+    async with session_scope() as s:
+        job_ok = await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        job_crash = await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=2
+        )
+        ok_run_id, crash_run_id = int(job_ok.run_id), int(job_crash.run_id)
+        ok_id, crash_id = int(job_ok.id), int(job_crash.id)
+
+    real_advance = jobs.pipeline.advance
+
+    async def _advance(session: Any, run: Any) -> Any:
+        if int(run.id) == ok_run_id:
+            return await real_advance(session, run)  # genuinely completes (orphaned)
+        assert int(run.id) == crash_run_id
+        raise asyncio.CancelledError("simulated worker kill")
+
+    monkeypatch.setattr(jobs.pipeline, "advance", _advance)
+    # pytest.raises must wrap the whole session_scope() block, not sit inside
+    # it — session_scope's own try/except only commits on a clean `yield`
+    # return. If the exception were caught *inside* the block instead, control
+    # would return to session_scope normally and it would commit regardless of
+    # which code is under test, defeating the crash simulation entirely.
+    with pytest.raises(asyncio.CancelledError):
+        async with session_scope() as s:
+            await jobs.run_once(s, worker="w1", limit=5)
+
+    async with session_scope() as s:
+        ok = (await s.execute(select(PrepJob).where(PrepJob.id == ok_id))).scalar_one()
+        crashed = (await s.execute(select(PrepJob).where(PrepJob.id == crash_id))).scalar_one()
+    # job_ok's outcome survived the later crash — committed independently.
+    assert ok.status == "done"
+    # job_crash was abandoned mid-processing: still durably claimed, not rolled
+    # back to pending and not silently lost.
+    assert crashed.status == "claimed"
+
+
+async def test_a_job_abandoned_mid_processing_stays_claimed_for_reap_to_dead_letter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: a job whose worker crashes mid-advance() stays durably
+    ``claimed`` (not silently reverted to pending by a transaction rollback) so
+    reap_stale's timeout branch can actually find it later — and, once it is at
+    the retry cap, dead-letters it instead of handing it back for another
+    doomed cycle. Without per-job commits, the claim itself would be rolled
+    back by the crash and reap_stale would never see this job as stale at all.
+    """
+    org_id = await _org("jobs-abandoned")
+    async with session_scope() as s:
+        job = await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        job_id = int(job.id)
+
+    async def _crash(session: Any, run: Any) -> Any:
+        raise asyncio.CancelledError("simulated worker kill")
+
+    monkeypatch.setattr(jobs.pipeline, "advance", _crash)
+    # See the comment in test_a_crash_mid_batch_does_not_roll_back_earlier_committed_jobs
+    # — pytest.raises must wrap the whole session_scope() block.
+    with pytest.raises(asyncio.CancelledError):
+        async with session_scope() as s:
+            await jobs.run_once(s, worker="w1", limit=5)
+
+    async with session_scope() as s:
+        row = (await s.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
+        assert row.status == "claimed"
+        assert row.attempts == 1
+
+    # Age it past the staleness window, at the cap: reap_stale must dead-letter
+    # it rather than hand it back for yet another doomed cycle.
+    async with session_scope() as s:
+        row = (await s.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
+        row.claimed_at = datetime.now(UTC) - timedelta(hours=3)
+        row.attempts = 5
+        await s.flush()
+
+    async with session_scope() as s:
+        assert await jobs.reap_stale(s, older_than_minutes=60, max_attempts=5) == 1
+        row = (await s.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
+        assert row.status == "failed"
+        assert "exceeded max attempts" in (row.last_error or "")
