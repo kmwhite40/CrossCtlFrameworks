@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PREP_STAGES, PrepLine, PrepRun
+from .expand import run_stage_expand
 from .parsers import UnsupportedMediaType, dispatch
 from .screen import run_stage_screen
 from .sources import SourceMissing, resolve_source
@@ -198,6 +199,7 @@ async def load_run(session: AsyncSession, run_id: int) -> PrepRun | None:
 _STAGE_RUNNERS: dict[str, StageRunner] = {
     "parse": run_stage_parse,
     "screen": run_stage_screen,
+    "expand": run_stage_expand,
 }
 
 
