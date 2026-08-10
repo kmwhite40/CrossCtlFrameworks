@@ -27,6 +27,7 @@ from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PREP_STAGES, PrepLine, PrepRun
 from .classify import run_stage_classify
+from .embed import run_stage_embed
 from .expand import run_stage_expand
 from .parsers import UnsupportedMediaType, dispatch
 from .screen import run_stage_screen
@@ -202,6 +203,7 @@ _STAGE_RUNNERS: dict[str, StageRunner] = {
     "screen": run_stage_screen,
     "expand": run_stage_expand,
     "classify": run_stage_classify,
+    "embed": run_stage_embed,
 }
 
 
