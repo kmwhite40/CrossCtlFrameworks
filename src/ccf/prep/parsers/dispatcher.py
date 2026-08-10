@@ -14,6 +14,8 @@ from .base import ParsedDocument
 from .docx import MEDIA_TYPE as DOCX_MEDIA_TYPE
 from .docx import parse_docx
 from .text import parse_text
+from .xlsx import MEDIA_TYPE as XLSX_MEDIA_TYPE
+from .xlsx import parse_xlsx
 
 
 class UnsupportedMediaType(RuntimeError):  # noqa: N818 -- name fixed by parser contract
@@ -51,4 +53,6 @@ def dispatch(data: bytes, filename: str, media_type: str | None = None) -> Parse
         return parse_text(data, filename, resolved)
     if resolved == DOCX_MEDIA_TYPE:
         return parse_docx(data, filename, resolved)
+    if resolved == XLSX_MEDIA_TYPE:
+        return parse_xlsx(data, filename, resolved)
     raise UnsupportedMediaType(f"no parser for '{resolved}'")
