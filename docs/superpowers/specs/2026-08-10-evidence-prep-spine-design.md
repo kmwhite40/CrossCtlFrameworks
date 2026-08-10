@@ -88,10 +88,23 @@ lands in `ai_action_runs` with citations, guardrail evaluation and review state
 already wired, and inherits the `ai_require_human_approval` setting.
 
 **3. Embeddings go through `ccf.ai.gateway`.**
-A new `embed()` method on the `AIProvider` ABC in `src/ccf/ai/providers/base.py`,
-implemented for the existing providers plus the `stub` provider used in tests.
-This reuses the encrypted per-org credential store rather than adding
-Voyage or Ollama clients.
+A new `embed()` method on `AIProvider` in `src/ccf/ai/providers/base.py`, reusing
+the encrypted per-org credential store rather than adding Voyage or Ollama
+clients.
+
+Two constraints discovered while reading the provider layer shape this.
+**Anthropic has no embeddings endpoint** — it directs users to third-party
+embedding providers — so `embed()` cannot be a required abstract method that all
+adapters implement meaningfully. It is therefore a concrete method on the base
+class that raises `ProviderError` by default, alongside a
+`supports_embeddings: bool = False` class attribute; `OpenAIProvider` overrides
+both. A new `prep_embed_provider` setting lets an org running Anthropic for
+generation point embeddings at OpenAI, resolved independently of the generation
+provider. Second, **there is no `stub` provider class** despite
+`Settings.ai_provider` defaulting to `"stub"` — `build_provider` knows only
+`anthropic` and `openai` and raises otherwise. Tests therefore inject a fake
+adapter by monkeypatching, following the pattern already used in
+`tests/test_ai_gateway.py`, rather than relying on a stub that does not exist.
 
 **4. No new document table.**
 A polymorphic `(source_kind, source_id)` pair points at either `EvidenceVersion`
@@ -258,8 +271,9 @@ rare enough not to earn its place in the first slice. Both are recorded as
   `pg_trgm` and `pgcrypto` in `migrations/versions/0001_baseline.py`
 - New dependencies: `pymupdf`, `python-pptx`, `pgvector`
 - New settings (prefix `CCF_`): `prep_enabled`, `prep_screen_threshold`,
-  `prep_expand_window`, `prep_embed_model`, `prep_embed_dimensions`,
-  `prep_worker_batch_size`, `prep_job_stale_after_minutes`
+  `prep_expand_window`, `prep_embed_provider`, `prep_embed_model`,
+  `prep_embed_dimensions`, `prep_worker_batch_size`,
+  `prep_job_stale_after_minutes`
 
 The pgvector image is a drop-in for stock PG16 — same major version, same data
 directory layout — so the swap needs no data migration.
@@ -277,8 +291,9 @@ Against real Postgres, following the existing `tests/conftest.py` pattern.
   `IA-2` from the seeded catalog above threshold; an unrelated line does not.
 - **Expansion:** a line inside a table expands to include inherited column
   headers; a line inside a paragraph expands to the block, not the page.
-- **Classification and embedding:** run against a stub provider registered in the
-  gateway. No network access in CI.
+- **Classification and embedding:** run against a fake adapter injected by
+  monkeypatching `build_provider`, per `tests/test_ai_gateway.py`. No network
+  access in CI.
 - **Retrieval:** on a fixture set, hybrid fusion ranks the correct unit above what
   either lexical or vector alone achieves.
 - **Traceability:** every unit returned by `retrieve` resolves back to a page
