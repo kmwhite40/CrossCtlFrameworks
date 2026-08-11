@@ -6,6 +6,75 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — calibration harness (reject path + agreement metrics)
+- **An assessor can now reject a proposed finding**, completing the
+  acceptance gate's other outcome. `POST
+  /api/assessment-engine/proposals/{id}/reject` (body `{corrected_finding,
+  note}`) calls `reject_control_proposal`, which sets `state="rejected"` and
+  records `corrected_finding`, `rejected_by`, `rejected_at`, `rejection_note`
+  (four new nullable columns on `assessment_control_proposals`, migration
+  `0057`). It mirrors acceptance's `AiActionRun` stamping — `reviewer`,
+  `disposition="rejected"`, `decided_at` — on every run linked to the
+  control's objectives, so the audit trail records disagreement as
+  faithfully as agreement; `mutation_applied` stays `False`, because nothing
+  authoritative was written. **It never writes `AssessmentControlResult`**:
+  a rejected proposal produces no finding, and writing the engine's wrong
+  answer into the SAR with a human's name attached is exactly what this
+  guards against. Rejection refuses (`RejectionRefused`, surfacing as 409)
+  an already-`accepted` or already-`rejected` proposal (both terminal), a
+  `corrected_finding` outside `satisfied` / `other_than_satisfied` /
+  `not_applicable` — **`insufficient_evidence` is deliberately excluded**,
+  since it is a proposal-only state and an assessor correcting a verdict
+  asserts what is true, not declining to say — and a blank `note`, which is
+  required.
+- **Calibration measures agreement between proposed and assessor-decided
+  findings** (`ccf.assessment.engine.calibration`), as a query over rows
+  that already exist — no new pipeline. `compute_metrics` reports `decided`,
+  `agreed`, `agreement_rate`, and, deliberately never averaged into that one
+  figure, **the two error directions separately**: `missed_findings`
+  (proposed `satisfied`, corrected to `other_than_satisfied` — a control
+  passes that should not, the number to watch in an authorization package)
+  and `false_alarms` (the reverse — wasted remediation effort). Any other
+  corrected pair counts as `other_disagreements`. `by_family` splits the
+  same metrics by control-family prefix, folded through
+  `ccf.prep.screen.normalize_control_identifier` so `AC-02` and `AC-2` land
+  in one bucket. `GET /api/assessment-engine/calibration` returns these for
+  the caller's own organization (derived from `Depends(get_principal)`,
+  never a query argument; 400 for an unscoped principal, since there is no
+  single organization to report on), reporting `agreement_rate` as `null`
+  — "no decisions recorded yet" — rather than `0.0` when `decided` is zero,
+  since those are different statements. **Nothing is retrofitted**:
+  proposals decided before this reject path existed carry no recorded
+  disagreement, so the first snapshot's `decided` count starts at zero — a
+  low early count is expected, not a sign anything is wrong.
+- **`calibration_snapshots`** (migration `0057`) stores a point-in-time
+  measurement plus a `config_fingerprint` — a SHA-256 over
+  `prep_screen_threshold`, the rollup policy version
+  (`ROLLUP_POLICY_VERSION`), and the evaluation model name. Two snapshots
+  are comparable only if all three are unchanged; `compare_snapshots`
+  reports differing fingerprints as **not comparable**, not as drift — not
+  hypothetical, since `prep_screen_threshold` (default 0.72) was derived
+  once with a measured margin of only ~0.03 and will be re-derived, and that
+  re-derivation must read as an explained configuration change rather than
+  an unexplained accuracy shift. `ccf calibration-snapshot
+  <organization_id> [--model]` computes and stores one snapshot, gated on
+  `CCF_ASSESSMENT_ENGINE_ENABLED` like the other engine commands.
+- **Deliberately out of scope this slice**: no synthetic evidence
+  generation, no automatic threshold tuning (the harness measures; a human
+  decides), no CI gate failing a build on a metric change (that needs the
+  baseline this slice exists to produce first), and no calibration over
+  objective-level verdicts (only control-level findings — objective
+  verdicts have no individual accept/reject today, so no ground truth to
+  compare against). The standing debt list this slice does not close:
+  `prep_screen_threshold`'s narrow margin; screening's base-control
+  collapse (a citation can never name a specific enhancement); re-preparing
+  the same evidence source through a new prep run does not collapse against
+  an earlier run's retrievable units, so passages can duplicate across
+  runs; a scanned PDF page with no extractable text is skipped with only a
+  log line, no persisted marker; and `AssessmentJob` enqueue
+  de-duplication is a best-effort SELECT-then-INSERT check, not a database
+  constraint — a partial unique index would close the remaining race.
+
 ### Added — AI provenance and audit trail for pipeline AI calls
 - **Every AI-generated classification and objective verdict now records an
   audit trail.** `ccf.prep.classify` and `ccf.assessment.engine.evaluate` each

@@ -370,7 +370,8 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET · POST | `/api/portal/session` · `/api/portal/comments` | External portal (token-authenticated) |
 | GET · POST | `/api/queries` · `/api/queries/{key}/run\|export` | Deterministic assurance query templates (+ CSV) |
 | POST · GET | `/api/prep/runs` · `/api/prep/runs/{id}` · `/api/prep/retrieve` | Evidence preparation pipeline: queue a run, check stage status, hybrid retrieval |
-| POST · GET | `/api/assessment-engine/proposals` (+ `/{id}`, `/{id}/accept`) | Objective-level assessment: queue evaluation, inspect a proposal, accept it into `AssessmentControlResult` |
+| POST · GET | `/api/assessment-engine/proposals` (+ `/{id}`, `/{id}/accept`, `/{id}/reject`) | Objective-level assessment: queue evaluation, inspect a proposal, accept it into `AssessmentControlResult`, or reject it with an assessor's correction |
+| GET | `/api/assessment-engine/calibration` | Agreement between proposed and assessor-decided findings for the caller's org (`missed_findings` / `false_alarms` reported separately) |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -470,7 +471,30 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   additionally stamps the accepting assessor (`reviewer`, `disposition`,
   `decided_at`) onto every AI run linked to it, so `ai_action_runs` joined to
   `ai_action_citations` answers which model, which evidence, and who accepted
-  it, for both pipelines, in one query.
+  it, for both pipelines, in one query. `POST
+  /api/assessment-engine/proposals/{id}/reject` is acceptance's other
+  outcome: an assessor records that a proposed finding was wrong, with the
+  finding they believe correct (`corrected_finding`, never
+  `insufficient_evidence` — that is proposal-only, and a correction asserts
+  what is true) and a required `note`. Rejection stamps the same
+  `AiActionRun`s with `disposition="rejected"` but never writes
+  `AssessmentControlResult` — the engine's wrong answer must not reach the
+  SAR with a human's name attached. `GET /api/assessment-engine/calibration`
+  and `ccf calibration-snapshot <organization_id>` compute agreement between
+  proposed and assessor-decided findings, reporting `missed_findings` (a
+  control passes that should not) and `false_alarms` (wasted remediation
+  effort) **separately** — they are never averaged into one accuracy figure
+  — alongside `agreement_rate` and a per-family breakdown. A
+  `calibration_snapshots` row records each measurement with a
+  `config_fingerprint` (a hash over `prep_screen_threshold`, the rollup
+  policy version, and the model name); two snapshots with different
+  fingerprints compare as **not comparable**, not drift, which matters
+  because `prep_screen_threshold`'s narrow margin (above) means it will be
+  re-derived. Nothing here is retrofitted: proposals decided before this
+  reject path existed carry no recorded disagreement, so an early snapshot's
+  `decided` count starting near zero is expected. The harness measures; it
+  does not tune the threshold, gate CI on a metric change, or generate
+  synthetic evidence — all deliberately out of scope for this slice.
 
 ## Security posture
 

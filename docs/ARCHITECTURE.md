@@ -246,6 +246,94 @@ Built on the reference catalog + operational tables:
   accepted finding actually lands in — do carry the `tenant_isolation` RLS
   policy. See `models_assessment_engine.py` for the same RLS and AI-action
   notes next to the table definitions.
+- **Calibration harness** (`/api/assessment-engine/proposals/{id}/reject`,
+  `/api/assessment-engine/calibration`, `ccf calibration-snapshot`,
+  `ccf.assessment.engine.{service,calibration}`): completes the acceptance
+  gate's other outcome and measures how often the engine's proposed findings
+  match assessors' decisions. `POST .../reject` (body `{corrected_finding,
+  note}`) is `accept`'s sibling: `reject_control_proposal` sets
+  `state="rejected"`, records `corrected_finding`, `rejected_by`,
+  `rejected_at`, `rejection_note` (migration `0057`), and mirrors acceptance's
+  `AiActionRun` stamping (`reviewer`, `disposition="rejected"`, `decided_at`)
+  on every run linked to the control's objectives — except `mutation_applied`
+  stays `False`, because nothing authoritative was written. **It never writes
+  `AssessmentControlResult`**: a rejected proposal produces no finding, and
+  writing the engine's wrong answer into the SAR with an assessor's name
+  attached is exactly what this path exists to prevent. `RejectionRefused`
+  (409, not 500) blocks rejecting an already-`accepted` or already-`rejected`
+  proposal (both terminal), a `corrected_finding` outside
+  `CORRECTED_FINDINGS` — **`insufficient_evidence` is deliberately excluded**,
+  because it is a proposal-only state describing what the engine could not
+  tell, and an assessor correcting a verdict is asserting what is true, not
+  declining to say — and a blank `note`, which is required: a rejection
+  without a reason tells calibration the engine was wrong but not how, and
+  "how" is what makes the metric actionable.
+
+  `ccf.assessment.engine.calibration.compute_metrics` is a query over rows
+  that already exist — accepted proposals are agreement, rejected ones with a
+  `corrected_finding` are disagreement — with no new pipeline. It reports
+  `decided`, `agreed`, `agreement_rate`, and, critically, **two error
+  directions that are never averaged into one figure**: `missed_findings`
+  (proposed `satisfied`, corrected to `other_than_satisfied` — a control
+  passes that should not, a missed finding in an authorization package, the
+  number to watch) and `false_alarms` (the reverse — wasted remediation
+  effort, annoying but not dangerous). Collapsing the two into a single
+  accuracy number would hide exactly the number worth watching;
+  `agreement_rate` is reported alongside them, never instead of them. Any
+  other corrected pair (e.g. a correction to `not_applicable`) counts as
+  `other_disagreements`. `by_family` groups the same split by control-family
+  prefix (`control_family`, folded through
+  `ccf.prep.screen.normalize_control_identifier` first so `AC-02` and `AC-2`
+  land in one bucket) so a model reliable on one family and unreliable on
+  another is visible as that, not averaged away. Zero decided proposals
+  yields `decided=0, agreement_rate=0.0` from the function, but
+  `GET /api/assessment-engine/calibration` reports the field as `null`
+  ("no decisions recorded yet"), not `0.0` ("always wrong") — those are
+  different statements. **Nothing is retrofitted**: proposals decided before
+  this reject path existed carry no recorded disagreement at all, so the
+  first snapshot's `decided` count starts at zero and a low early count is
+  expected, not a sign anything is wrong.
+
+  `CalibrationSnapshot` (migration `0057`) stores one measurement plus a
+  `config_fingerprint` — a SHA-256 over `prep_screen_threshold`, the rollup
+  policy identity (`ROLLUP_POLICY_VERSION`), and the evaluation model name.
+  Two snapshots are comparable only if all three are unchanged;
+  `compare_snapshots` reports differing fingerprints as `{"comparable":
+  False, "reason": "configuration changed between snapshots", ...}` rather
+  than computing a delta — a distinct outcome, not a misleading number. This
+  is not hypothetical: `prep_screen_threshold` (default 0.72) was derived
+  once against one catalog snapshot with a measured margin of only ~0.03 (see
+  "Evidence preparation" above), so it will be re-derived, and that
+  re-derivation must read as an explained configuration change, not
+  unexplained drift. `ccf calibration-snapshot <organization_id> [--model]`
+  computes and stores one snapshot, gated on `CCF_ASSESSMENT_ENGINE_ENABLED`
+  like the other engine commands. Both `POST .../reject` and
+  `GET .../calibration` derive their organization from `Depends(get_principal)`
+  — never a body or query argument — matching `evidence_repo.py`'s
+  convention; a foreign tenant's proposal 404s (never 403), and an unscoped
+  principal (`CCF_AUTH_ENABLED=false`, which has no single organization to
+  report on) gets a 400 from `/calibration` rather than a guess.
+
+  Deliberately out of scope: no synthetic evidence generation, no automatic
+  threshold tuning (the harness measures; a human decides), no CI gate
+  failing a build on a metric change (that needs the baseline this slice
+  exists to produce first), and no calibration over objective-level
+  verdicts — only control-level findings, since objective verdicts are not
+  individually accepted or rejected today and so have no ground truth to
+  compare against. The standing debt list this slice does not close:
+  `prep_screen_threshold`'s narrow margin (this slice gives the means to
+  evaluate a change to it, not the change itself); screening's base-control
+  collapse, meaning a citation can never name a specific enhancement, only
+  its base control; re-preparing the same evidence source through a new prep
+  run does not collapse against the prior run's retrievable units (each
+  run's own stages clean up after themselves, but nothing scopes retrieval
+  to the latest run for one source), so passages can duplicate across runs;
+  a scanned PDF page with no extractable text is skipped with only a log
+  line (`prep.parse.pdf_page_not_extractable`), no persisted marker; and
+  `AssessmentJob` enqueue de-duplication (`enqueue_control`) is a
+  SELECT-then-INSERT check, not a database constraint — a partial unique
+  index over `(control_proposal_id) WHERE status IN ('pending', 'claimed')`
+  would close the race a concurrent double-enqueue can still hit today.
 
 ## Schemas
 

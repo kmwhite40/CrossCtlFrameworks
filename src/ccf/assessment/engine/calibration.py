@@ -9,6 +9,16 @@ The two error directions are reported separately and never averaged, because
 their costs differ sharply. A control passing that should not is a missed finding
 in an authorization package. The reverse is wasted remediation effort. Collapsing
 them into one accuracy figure hides the number actually worth watching.
+
+Nothing here is retrofitted: a proposal decided before the reject path existed
+carries no recorded disagreement, so the first snapshot taken against existing
+data starts with a small ``decided`` count. That is expected, not a bug.
+
+A snapshot's ``config_fingerprint`` is what makes a later comparison meaningful.
+Two measurements are comparable only if what was being measured -- the screen
+threshold, the rollup policy, the evaluation model -- did not change underneath
+them; a changed fingerprint reports as "not comparable", never as drift. See
+:func:`config_fingerprint` and :func:`compare_snapshots`.
 """
 
 from __future__ import annotations
