@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 
 from ccf.ai import gateway
+from ccf.assessment.engine import evaluate as evaluate_module
 from ccf.assessment.engine.evaluate import (
     EVALUATION_SCHEMA,
     build_prompt,
@@ -404,3 +405,72 @@ async def test_no_evidence_still_records_a_run_marked_uncited(
 
     assert citations == []
     assert output.uncited is True
+
+
+async def test_a_provenance_contract_violation_leaves_the_verdict_intact_on_the_model_call_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_ai_run is documented never to raise, but this call site does not
+    lean on that promise holding forever. Forces the raise directly (not a
+    real constraint violation, which record_ai_run's own savepoint already
+    handles) to prove this call site's own guard: a contract violation must
+    degrade to a missing audit row, never a lost verdict -- the verdict can
+    become a Security Assessment Report finding.
+    """
+    org_id = await _org("ae-eval-provenance-raises")
+
+    async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
+        return [_unit(7, "Administrators authenticate with MFA.")]
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return _resolved({
+            "verdict": "satisfied",
+            "cited_unit_ids": [7],
+            "gaps": [],
+            "contradictions": [],
+            "rationale": "ok",
+            "confidence": 0.9,
+        })
+
+    async def _raise(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("simulated record_ai_run contract violation")
+
+    monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
+    monkeypatch.setattr(evaluate_module, "record_ai_run", _raise)
+    async with session_scope() as s:
+        result = await evaluate_objective(
+            s, org_id=org_id, control_identifier="IA-2",
+            objective=_objective(), system_id=None,
+        )
+    assert result.verdict == "satisfied"
+    assert result.cited_unit_ids == [7]
+    assert result.ai_action_run_id is None
+
+
+async def test_a_provenance_contract_violation_leaves_insufficient_evidence_intact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same guard, no-evidence path: a record_ai_run raise must not cost the
+    objective its insufficient_evidence verdict either -- there is no model
+    call to fall back on here, so losing the verdict would mean losing the
+    only signal that the objective was even attempted.
+    """
+    org_id = await _org("ae-eval-provenance-raises-no-evidence")
+
+    async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
+        return []
+
+    async def _raise(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("simulated record_ai_run contract violation")
+
+    monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(evaluate_module, "record_ai_run", _raise)
+    # No gateway patch: a model call would raise, proving this path never calls one.
+    async with session_scope() as s:
+        result = await evaluate_objective(
+            s, org_id=org_id, control_identifier="IA-2",
+            objective=_objective(), system_id=None,
+        )
+    assert result.verdict == "insufficient_evidence"
+    assert result.ai_action_run_id is None

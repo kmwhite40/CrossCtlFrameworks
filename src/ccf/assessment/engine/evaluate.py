@@ -169,18 +169,38 @@ async def evaluate_objective(
         # (and, if ai_store_prompts is on, the text itself) still answers what
         # this run was for. Zero citations makes AiActionOutput.uncited True,
         # same as any other run that couldn't ground its output in evidence.
-        ai_run = await record_ai_run(
-            session,
-            action_key=ACTION_KEY,
-            entity_type="assessment_objective",
-            entity_id=objective.label,
-            organization_id=org_id,
-            provider="none",
-            model=None,
-            prompt=f"No evidence retrieved for objective {objective.label}: {objective.text}",
-            output={"verdict": "insufficient_evidence", "rationale": rationale, "gaps": gaps},
-            citations=[],
-        )
+        try:
+            # record_ai_run is documented to never raise -- it wraps its own
+            # writes in a begin_nested() savepoint and returns None on
+            # failure -- but this call site does not lean on that promise
+            # holding forever. A provenance failure, however it happens, must
+            # cost this objective its ai_action_run_id, never its verdict.
+            ai_run = await record_ai_run(
+                session,
+                action_key=ACTION_KEY,
+                entity_type="assessment_objective",
+                entity_id=objective.label,
+                organization_id=org_id,
+                provider="none",
+                model=None,
+                prompt=(
+                    f"No evidence retrieved for objective {objective.label}: {objective.text}"
+                ),
+                output={
+                    "verdict": "insufficient_evidence",
+                    "rationale": rationale,
+                    "gaps": gaps,
+                },
+                citations=[],
+            )
+        except Exception as exc:
+            log.warning(
+                "assessment.evaluate_provenance_failed",
+                control_identifier=control_identifier,
+                label=objective.label,
+                error=str(exc),
+            )
+            ai_run = None
         return ObjectiveEvaluation(
             verdict="insufficient_evidence",
             rationale=rationale,
@@ -237,18 +257,34 @@ async def evaluate_objective(
         )
         for unit_id in cited
     ]
-    ai_run = await record_ai_run(
-        session,
-        action_key=ACTION_KEY,
-        entity_type="assessment_objective",
-        entity_id=objective.label,
-        organization_id=org_id,
-        provider=result.provider,
-        model=result.model,
-        prompt=prompt,
-        output=data,
-        citations=citations,
-    )
+    try:
+        # record_ai_run is documented to never raise -- it wraps its own
+        # writes in a begin_nested() savepoint and returns None on failure --
+        # but this call site does not lean on that promise holding forever. A
+        # provenance failure, however it happens, must cost this objective its
+        # ai_action_run_id, never its verdict: the verdict can become a
+        # Security Assessment Report finding, and losing it to a provenance
+        # bug would be far worse than a missing audit row.
+        ai_run = await record_ai_run(
+            session,
+            action_key=ACTION_KEY,
+            entity_type="assessment_objective",
+            entity_id=objective.label,
+            organization_id=org_id,
+            provider=result.provider,
+            model=result.model,
+            prompt=prompt,
+            output=data,
+            citations=citations,
+        )
+    except Exception as exc:
+        log.warning(
+            "assessment.evaluate_provenance_failed",
+            control_identifier=control_identifier,
+            label=objective.label,
+            error=str(exc),
+        )
+        ai_run = None
 
     return ObjectiveEvaluation(
         verdict=str(data["verdict"]),
