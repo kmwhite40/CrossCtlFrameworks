@@ -13,14 +13,18 @@ them into one accuracy figure hides the number actually worth watching.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...models_assessment_engine import AssessmentControlProposal
+from ...config import get_settings
+from ...models_assessment_engine import AssessmentControlProposal, CalibrationSnapshot
 from ...prep.screen import normalize_control_identifier
+from .rollup import ROLLUP_POLICY_VERSION
 
 
 def control_family(control_identifier: str) -> str:
@@ -143,3 +147,96 @@ async def compute_metrics(
     if metrics.decided:
         metrics.agreement_rate = metrics.agreed / metrics.decided
     return metrics
+
+
+def config_fingerprint(*, model: str | None = None) -> str:
+    """A SHA-256 digest over what a calibration measurement depends on.
+
+    A metric is comparable to an earlier one only if what was being measured
+    did not change underneath it. Three things determine that here:
+    ``prep_screen_threshold`` (the screening cutoff decides which passages ever
+    reach evaluation), the rollup policy identity (the rule that turns objective
+    verdicts into a proposed finding), and the evaluation model name (a different
+    model is a different measuring instrument). Anything read but not folded into
+    this digest is invisible to a comparison -- it can change and the comparison
+    will keep reporting drift instead of "not comparable".
+
+    The three inputs are serialised through a fixed set of dict keys and hashed
+    with ``sort_keys=True`` so the digest never depends on dict iteration order --
+    the same configuration must always produce the same digest, or every
+    comparison degrades to "not comparable" even when nothing changed.
+
+    ``model`` defaults to ``get_settings().ai_model``, mirroring how
+    ``ccf.ai.gateway.resolve`` falls back to it when a caller does not pin a
+    model explicitly.
+    """
+    settings = get_settings()
+    payload = {
+        "prep_screen_threshold": settings.prep_screen_threshold,
+        "rollup_policy_version": ROLLUP_POLICY_VERSION,
+        "model": model if model is not None else settings.ai_model,
+    }
+    canonical = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def take_snapshot(
+    session: AsyncSession, *, organization_id: int, model: str | None = None
+) -> CalibrationSnapshot:
+    """Compute and store one calibration measurement for one organization.
+
+    ``organization_id`` carries the same requirement as ``compute_metrics``'s:
+    it must come from the caller's principal, never from a caller-supplied
+    argument at the API layer, so one organization's snapshot can never be
+    populated from another's decided proposals.
+    """
+    metrics = await compute_metrics(session, organization_id=organization_id)
+    snapshot = CalibrationSnapshot(
+        organization_id=organization_id,
+        config_fingerprint=config_fingerprint(model=model),
+        metrics=metrics.as_dict(),
+    )
+    session.add(snapshot)
+    await session.flush()
+    return snapshot
+
+
+async def compare_snapshots(session: AsyncSession, a_id: int, b_id: int) -> dict[str, Any]:
+    """Compare two stored snapshots, refusing to compute a delta across configurations.
+
+    Returns ``{"comparable": False, ...}`` -- a distinct outcome, not a number --
+    when the two snapshots' fingerprints differ, because a metric moving is not
+    meaningful when what was being measured changed underneath it. This is not
+    hypothetical: ``prep_screen_threshold`` was derived once against a single
+    catalog snapshot with a measured margin of about 0.03, so it will be
+    re-derived, and that re-derivation must read as an explained configuration
+    change rather than an unexplained accuracy shift.
+    """
+    a = await session.get(CalibrationSnapshot, a_id)
+    b = await session.get(CalibrationSnapshot, b_id)
+    if a is None or b is None:
+        missing = [i for i, s in ((a_id, a), (b_id, b)) if s is None]
+        raise ValueError(f"unknown calibration snapshot id(s): {missing}")
+
+    if a.config_fingerprint != b.config_fingerprint:
+        return {
+            "comparable": False,
+            "reason": "configuration changed between snapshots",
+            "a_fingerprint": a.config_fingerprint,
+            "b_fingerprint": b.config_fingerprint,
+        }
+
+    numeric_keys = ("decided", "agreed", "agreement_rate", "missed_findings", "false_alarms")
+    deltas = {
+        key: b.metrics[key] - a.metrics[key]
+        for key in numeric_keys
+        if key in a.metrics and key in b.metrics
+    }
+
+    return {
+        "comparable": True,
+        "config_fingerprint": a.config_fingerprint,
+        "a": a.metrics,
+        "b": b.metrics,
+        "deltas": deltas,
+    }

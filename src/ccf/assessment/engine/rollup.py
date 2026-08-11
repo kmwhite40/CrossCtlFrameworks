@@ -34,6 +34,15 @@ from dataclasses import dataclass
 
 from ...models_assessment_engine import OBJECTIVE_VERDICTS
 
+#: Identifies the policy this module encodes (unanimity, ``insufficient_evidence``
+#: on any ``failed`` objective -- see the module docstring). Bump this whenever the
+#: policy itself changes, e.g. a move away from unanimity. It is one of the three
+#: inputs to ``ccf.assessment.engine.calibration.config_fingerprint``: a calibration
+#: measurement is only comparable to an earlier one if the policy that turned
+#: verdicts into proposals did not change underneath it, and a version bump is how
+#: that change becomes visible instead of surfacing as unexplained drift.
+ROLLUP_POLICY_VERSION = "v1"
+
 
 @dataclass(slots=True)
 class Rollup:
