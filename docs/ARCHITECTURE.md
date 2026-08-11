@@ -320,7 +320,62 @@ Built on the reference catalog + operational tables:
   exists to produce first), and no calibration over objective-level
   verdicts — only control-level findings, since objective verdicts are not
   individually accepted or rejected today and so have no ground truth to
-  compare against. The standing debt list this slice does not close:
+  compare against.
+
+- **Closure & remediation loop** (`ccf.assessment.engine.service`, `.jobs`,
+  `/api/poams`, `/api/assessment-engine/proposals?source_poam_id={id}`):
+  closes the loop the calibration harness measures but does not act on.
+  `accept_control_proposal` now creates a POA&M for an accepted
+  `other_than_satisfied` finding (`satisfied`, `not_applicable`, and the
+  unreachable-via-acceptance `insufficient_evidence` create none), keyed on
+  `source_ref = f"assessment_control_result:{result.id}"` — found and left
+  alone on a repeat acceptance, never overwritten, so a human's edit to the
+  POA&M survives a re-acceptance. The write runs inside `begin_nested()` and
+  logs a warning rather than raising on failure: `AsyncSession.rollback()`
+  is not savepoint-scoped and would otherwise discard the caller's own
+  already-good acceptance, the same trap slice 3 hit with `record_ai_run`.
+  Closing an assessment-sourced POA&M (`PATCH /api/poams/{id}` or
+  `POST /api/poams/{id}/close`, on any transition into `closed` from a
+  non-closed status) enqueues a re-evaluation of the control it remediated;
+  a scan-sourced or profile-gap POA&M's `source_ref` never matches the
+  convention above and enqueues nothing. The re-evaluation is a second,
+  distinct `AssessmentControlProposal` carrying `source_poam_id` (migration
+  `0058`) — not a reuse of the accepted first-pass row — which required
+  replacing the flat `uq_control_proposal_assessment_control` constraint
+  with two partial unique indexes: `uq_control_proposal_first_pass` scopes
+  first-pass idempotency to `source_poam_id IS NULL` rows, and
+  `uq_control_proposal_source_poam` caps re-evaluation at one proposal per
+  POA&M — a database invariant, not just an application-level check, so
+  "closing a POA&M twice enqueues one re-evaluation" cannot be lost to a
+  race. The existing worker (`ccf assessment-worker` /
+  `ccf.assessment.engine.jobs.run_once`) drives a re-evaluation job
+  unmodified — it already writes no `AssessmentControlResult`. **The engine
+  never retires its own finding**: a passing re-evaluation surfaces as a new
+  proposal for a human to accept, exactly like a first pass; the original
+  `AssessmentControlResult` from the earlier acceptance is untouched
+  regardless of the re-evaluation's outcome, and auto-closing on a passing
+  re-test would let the model that raised a finding also decide it is
+  resolved, routing around the ISSM-08/09 closure gate below. This is
+  deliberately asymmetric with `ccf.ingest.scanners.reconcile_findings`
+  (`src/ccf/ingest/scanners.py:397`), which *does* auto-close a POA&M absent
+  from the latest scan: a vulnerability missing from a scan is direct
+  evidence the weakness is gone, while a model re-reading prose evidence is
+  an opinion about a control, and the two warrant different levels of
+  trust. `GET /api/assessment-engine/proposals?source_poam_id={id}` lists
+  the re-evaluation(s) for one POA&M, deriving its organization from the
+  named POA&M's own `system_id -> organization_id` rather than trusting a
+  query argument directly — a foreign tenant's POA&M id 404s, never 403.
+  Not retrofitted: findings accepted before this slice get no POA&M created
+  retroactively, and the closure gate (ISSM-08/09: all milestones complete,
+  or dated closure evidence, plus a separation-of-duties `Approval` when
+  auth is enabled — `poams.py::_require_closure_gate`) is unchanged — this
+  slice observes the transition to `closed`, it does not widen the path to
+  it. No email: no SMTP/SES/SendGrid transport exists anywhere in
+  `src/ccf`; delivery stays in-app `Notification` rows plus outbound
+  webhooks. No overdue escalation or reminders for either a POA&M or a
+  re-evaluation proposal sitting unaddressed.
+
+  The standing debt list this slice does not close:
   `prep_screen_threshold`'s narrow margin (this slice gives the means to
   evaluate a change to it, not the change itself); screening's base-control
   collapse, meaning a citation can never name a specific enhancement, only
@@ -329,11 +384,25 @@ Built on the reference catalog + operational tables:
   run's own stages clean up after themselves, but nothing scopes retrieval
   to the latest run for one source), so passages can duplicate across runs;
   a scanned PDF page with no extractable text is skipped with only a log
-  line (`prep.parse.pdf_page_not_extractable`), no persisted marker; and
+  line (`prep.parse.pdf_page_not_extractable`), no persisted marker;
   `AssessmentJob` enqueue de-duplication (`enqueue_control`) is a
   SELECT-then-INSERT check, not a database constraint — a partial unique
   index over `(control_proposal_id) WHERE status IN ('pending', 'claimed')`
-  would close the race a concurrent double-enqueue can still hit today.
+  would close the race a concurrent double-enqueue can still hit today; the
+  two competing legacy POA&M-from-findings paths
+  (`src/ccf/api/routes/assessments.py:205`'s `POST
+  /{assessment_id}/poams-from-findings` and the inline duplicate in
+  `src/ccf/api/routes/ui.py`'s `POST /assessments/{assessment_id}/poams`)
+  remain unreconciled — this slice's bridge adds a third, distinct
+  `source_ref` convention (`assessment_control_result:{id}`) rather than
+  touching either, `assessments.py:205` already keys its own idempotency on
+  `source_ref = f"assessment:{id}"`, and `ui.py`'s still dedupes on POAM
+  title alone, which collides across two systems assessing the same
+  control; and migration `0058` (like `0057` before it) re-issues its
+  `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ccf TO
+  ccf_app` as a bare statement, without the `IF EXISTS (SELECT 1 FROM
+  pg_roles WHERE rolname = 'ccf_app')` guard migration `0054` establishes as
+  the repo standard for exactly this GRANT.
 
 ## Schemas
 

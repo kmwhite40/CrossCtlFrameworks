@@ -459,9 +459,15 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   `prep-worker`, and one still failing at
   `CCF_ASSESSMENT_JOB_MAX_ATTEMPTS` (default 5) claims is dead-lettered.
   Proposals are inert: nothing an evaluation writes reaches the SAR generator
-  or an auto-created POA&M until an assessor accepts it, and a proposal that
-  settled on `insufficient_evidence` cannot be accepted at all — the engine
-  could not tell, which is not the same as the control failing. Both prep
+  until an assessor accepts it, and a proposal that settled on
+  `insufficient_evidence` cannot be accepted at all — the engine could not
+  tell, which is not the same as the control failing. Accepting an
+  `other_than_satisfied` finding auto-creates a POA&M (idempotent on a
+  stable back-reference, never overwriting one a human has since edited),
+  and closing that POA&M enqueues a re-evaluation of the control — a passing
+  re-evaluation still surfaces as a proposal a human must accept, never an
+  auto-close; see `docs/ARCHITECTURE.md`'s "Closure & remediation loop" for
+  the full loop and its deliberate asymmetry with scan auto-closure. Both prep
   classification and objective evaluation record their own AI provenance
   (`ccf.ai_actions.provenance.record_ai_run`) on every call — an
   `ai_action_runs` row with `status="recorded"`, citations, and a link back

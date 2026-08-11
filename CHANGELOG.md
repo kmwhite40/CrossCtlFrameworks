@@ -6,6 +6,37 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — closure & remediation loop
+- **An accepted other-than-satisfied finding now creates a POA&M**, closing
+  the dead end where `accept_control_proposal`'s own docstring promised an
+  auto-created POA&M that no caller ever actually triggered. Idempotent on
+  `source_ref = f"assessment_control_result:{result.id}"` — a repeat
+  acceptance finds and leaves alone any existing POA&M rather than
+  duplicating or overwriting it. The write is isolated in a `begin_nested()`
+  savepoint and logs a warning rather than raising on failure, so a derived
+  POA&M write can never cost an assessor their already-accepted finding.
+- **Closing an assessment-sourced POA&M enqueues a re-evaluation** of the
+  control it remediated (`assessment_control_proposals.source_poam_id`,
+  migration `0058`, plus a constraint swap — `uq_control_proposal_first_pass`
+  and `uq_control_proposal_source_poam` replace the old flat unique
+  constraint — that lets the re-evaluation proposal coexist with the
+  first-pass row it re-evaluates). A scan-sourced or profile-gap POA&M
+  enqueues nothing; closing the same POA&M twice enqueues exactly one job.
+  Reuses the existing `assessment-worker` queue and `AssessmentJob`
+  unchanged. `GET /api/assessment-engine/proposals?source_poam_id={id}`
+  lists the result, deriving its organization from the named POA&M rather
+  than trusting the query argument — a foreign tenant's POA&M id 404s,
+  never 403.
+- **The engine never retires its own finding**: a passing re-evaluation
+  produces a new proposal for a human to accept, exactly like a first-pass
+  evaluation — never an auto-close. Deliberately asymmetric with the
+  scanner's own auto-close-on-absence behavior (`ccf.ingest.scanners`),
+  documented as such: a vulnerability missing from a scan is direct
+  evidence the weakness is gone, while a model re-reading prose evidence is
+  an opinion about a control.
+- Not retrofitted: findings accepted before this slice get no POA&M created
+  retroactively. The closure gate (ISSM-08/09) is unchanged.
+
 ### Added — calibration harness (reject path + agreement metrics)
 - **An assessor can now reject a proposed finding**, completing the
   acceptance gate's other outcome. `POST
