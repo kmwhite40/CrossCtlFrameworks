@@ -11,10 +11,10 @@ expects, that ``screen``'s ``candidate_controls`` reach ``classify`` intact.
 This module seeds nothing but a real catalog control and a real evidence
 document, calls ``pipeline.advance`` with every stage at its default ``pending``,
 and only monkeypatches the two genuine external boundaries — the AI gateway's
-``generate_structured`` and ``embed`` calls. Everything in between (parse,
-screen, expand, the classify stage's own candidate-filtering, the embed stage's
-dimension gate) runs unmodified, so this is the only place a broken handoff
-between two stages would actually surface.
+``generate_structured_resolved`` and ``embed`` calls. Everything in between
+(parse, screen, expand, the classify stage's own candidate-filtering, the embed
+stage's dimension gate) runs unmodified, so this is the only place a broken
+handoff between two stages would actually surface.
 """
 
 from __future__ import annotations
@@ -167,7 +167,7 @@ async def _fake_generate_structured(
     purpose: str,
     system: str | None = None,
     **kw: Any,
-) -> dict[str, Any]:
+) -> gateway.StructuredResult:
     """Echo back exactly the candidates ``classify.build_prompt`` offered.
 
     Deliberately does *not* hardcode "IA-2": it parses the same "Candidate
@@ -181,12 +181,16 @@ async def _fake_generate_structured(
     candidates = (
         [] if offered == "(none surfaced by screening)" else [c.strip() for c in offered.split(",")]
     )
-    return {
-        "control_identifiers": candidates,
-        "artifact_type": "policy",
-        "evidence_strength": "strong",
-        "confidence": 0.9,
-    }
+    return gateway.StructuredResult(
+        data={
+            "control_identifiers": candidates,
+            "artifact_type": "policy",
+            "evidence_strength": "strong",
+            "confidence": 0.9,
+        },
+        model="fake-e2e-model",
+        provider="fake-provider",
+    )
 
 
 async def test_advance_drives_a_full_run_through_all_five_stages(
@@ -199,7 +203,7 @@ async def test_advance_drives_a_full_run_through_all_five_stages(
     )
     version_id = await _evidence_version(org_id, payload, "access-control.txt")
 
-    monkeypatch.setattr(gateway, "generate_structured", _fake_generate_structured)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_generate_structured)
     monkeypatch.setattr(gateway, "embed", _fake_embed())
 
     async with session_scope() as s:

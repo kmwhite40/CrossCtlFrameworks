@@ -201,7 +201,7 @@ async def generate_text(
 
 @dataclass(slots=True)
 class StructuredResult:
-    """Structured-generation output plus the model that actually produced it.
+    """Structured-generation output plus the provider and model that produced it.
 
     ``generate_structured`` below discards this -- it exists for
     ``ccf.prep.classify``, its one caller when this was added, which only
@@ -210,10 +210,21 @@ class StructuredResult:
     FedRAMP citation eventually traces back to) needs the model too, so it
     calls :func:`generate_structured_resolved` instead of adding a second,
     incompatible return shape to the existing function.
+
+    ``provider`` follows the exact same reasoning: ``ccf.ai_actions.provenance
+    .record_ai_run`` requires both provider and model to record which vendor
+    produced a call, and ``resolve()`` already computes the provider onto
+    ``ResolvedProvider.config.provider`` -- the same value :func:`embed`
+    already logs -- so it costs nothing to hand back here instead of making
+    every provenance-recording caller resolve it a second time itself. It
+    defaults to ``""`` only so the handful of tests that construct this
+    dataclass directly (to stub ``generate_structured_resolved``) without
+    caring about provenance don't need to supply it.
     """
 
     data: dict[str, Any]
     model: str
+    provider: str = ""
 
 
 async def generate_structured_resolved(
@@ -252,7 +263,7 @@ async def generate_structured_resolved(
         input_tokens=resp.input_tokens,
         output_tokens=resp.output_tokens,
     )
-    return StructuredResult(data=resp.data, model=rp.model)
+    return StructuredResult(data=resp.data, model=rp.model, provider=rp.config.provider)
 
 
 async def generate_structured(

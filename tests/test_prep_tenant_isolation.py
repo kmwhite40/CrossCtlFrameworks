@@ -170,19 +170,23 @@ def _fake_generate_structured_echoing_candidates(*args: Any, **kwargs: Any) -> A
     async def _generate(
         session: Any, org_id: int, *, prompt: str, schema: dict[str, Any],
         purpose: str, system: str | None = None, **kw: Any,
-    ) -> dict[str, Any]:
+    ) -> gateway.StructuredResult:
         first_line = prompt.splitlines()[0]
         offered = first_line.removeprefix("Candidate controls:").strip()
         candidates = (
             [] if offered == "(none surfaced by screening)"
             else [c.strip() for c in offered.split(",")]
         )
-        return {
-            "control_identifiers": candidates,
-            "artifact_type": "policy",
-            "evidence_strength": "strong",
-            "confidence": 0.9,
-        }
+        return gateway.StructuredResult(
+            data={
+                "control_identifiers": candidates,
+                "artifact_type": "policy",
+                "evidence_strength": "strong",
+                "confidence": 0.9,
+            },
+            model="fake-tenant-model",
+            provider="fake-provider",
+        )
 
     return _generate
 
@@ -472,7 +476,7 @@ async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_cr
 
     monkeypatch.setattr(gateway, "embed", _fake_embed([0.01] * 1024))
     monkeypatch.setattr(
-        gateway, "generate_structured", _fake_generate_structured_echoing_candidates()
+        gateway, "generate_structured_resolved", _fake_generate_structured_echoing_candidates()
     )
 
     async with session_scope() as s:
@@ -525,7 +529,7 @@ async def test_resuming_a_run_after_parse_still_reconciles_organization_id(
 
     monkeypatch.setattr(gateway, "embed", _fake_embed([0.01] * 1024))
     monkeypatch.setattr(
-        gateway, "generate_structured", _fake_generate_structured_echoing_candidates()
+        gateway, "generate_structured_resolved", _fake_generate_structured_echoing_candidates()
     )
 
     async with session_scope() as s:

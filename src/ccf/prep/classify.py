@@ -24,6 +24,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai import gateway
+from ..ai_actions.provenance import CitationRef, record_ai_run
 from ..logging import get_logger
 from ..models_prep import PrepClassification, PrepRun, PrepScreen, PrepUnit
 
@@ -107,11 +108,12 @@ async def run_stage_classify(session: AsyncSession, run: PrepRun) -> int:
     classified = 0
     for unit in units:
         candidates = await _candidates_for(session, unit)
+        prompt = build_prompt(unit.content, candidates)
         try:
-            data = await gateway.generate_structured(
+            result = await gateway.generate_structured_resolved(
                 session,
                 run.organization_id,
-                prompt=build_prompt(unit.content, candidates),
+                prompt=prompt,
                 schema=CLASSIFICATION_SCHEMA,
                 purpose=ACTION_KEY,
                 system=_SYSTEM_PROMPT,
@@ -139,6 +141,8 @@ async def run_stage_classify(session: AsyncSession, run: PrepRun) -> int:
             log.warning("prep.classify_failed", run_id=run.id, error=str(exc))
             return 0
 
+        data = result.data
+
         # Trust the schema for shape, but never let the model widen its own scope
         # beyond the controls screening actually surfaced. When screening surfaced
         # no candidates at all, `allowed` is empty and every returned identifier is
@@ -146,18 +150,64 @@ async def run_stage_classify(session: AsyncSession, run: PrepRun) -> int:
         allowed = set(candidates)
         chosen = [c for c in data.get("control_identifiers", []) if c in allowed]
 
-        session.add(
-            PrepClassification(
-                unit_id=unit.id,
-                run_id=run.id,
-                organization_id=run.organization_id,
-                control_identifiers=chosen,
-                artifact_type=data.get("artifact_type"),
-                evidence_strength=data.get("evidence_strength"),
-                explanation=data.get("explanation"),
-                model_confidence=float(data.get("confidence", 0.0)),
-            )
+        classification = PrepClassification(
+            unit_id=unit.id,
+            run_id=run.id,
+            organization_id=run.organization_id,
+            control_identifiers=chosen,
+            artifact_type=data.get("artifact_type"),
+            evidence_strength=data.get("evidence_strength"),
+            explanation=data.get("explanation"),
+            model_confidence=float(data.get("confidence", 0.0)),
         )
+        session.add(classification)
+        # Flush the classification now, before calling record_ai_run. The
+        # session factory runs with autoflush disabled, so this INSERT is
+        # still pending; record_ai_run flushes inside its own begin_nested()
+        # savepoint, and an unflushed add is not tagged to any particular
+        # savepoint -- it would simply go out with whichever flush reaches it
+        # first. Flushing here first keeps this classification's INSERT in
+        # the outer (per-run) transaction, so a provenance failure's
+        # savepoint rollback -- scoped to record_ai_run's own writes -- has
+        # no way to take it down too.
+        await session.flush()
+
+        try:
+            # record_ai_run is documented to never raise -- it wraps its own
+            # writes in a begin_nested() savepoint and returns None on
+            # failure -- but this call site does not lean on that promise
+            # holding forever. A provenance failure, however it happens, must
+            # cost this unit its ai_action_run_id, never its classification.
+            ai_run = await record_ai_run(
+                session,
+                action_key=ACTION_KEY,
+                entity_type="prep_unit",
+                entity_id=str(unit.id),
+                organization_id=run.organization_id,
+                provider=result.provider,
+                model=result.model,
+                prompt=prompt,
+                output=data,
+                citations=[CitationRef(source_type="prep_unit", source_id=str(unit.id))],
+            )
+        except Exception as exc:
+            log.warning(
+                "prep.classify_provenance_failed",
+                run_id=run.id,
+                unit_id=unit.id,
+                error=str(exc),
+            )
+            ai_run = None
+
+        classification.ai_action_run_id = ai_run.id if ai_run is not None else None
+        # Flush this UPDATE immediately, for the same reason the insert above
+        # was flushed early: the *next* unit's record_ai_run call opens its
+        # own begin_nested() and flushes inside it, and with autoflush
+        # disabled that flush would pull in any still-pending change here —
+        # including this one. Left unflushed, a provenance failure on the
+        # *next* unit would roll back this unit's already-decided
+        # ai_action_run_id right along with it.
+        await session.flush()
         classified += 1
 
     run.units_classified = classified
