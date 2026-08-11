@@ -116,6 +116,35 @@ async def test_padded_and_unpadded_identifiers_both_resolve() -> None:
     assert [o.text for o in by_unpadded] == [o.text for o in by_padded]
 
 
+async def test_labels_are_identical_regardless_of_caller_spelling() -> None:
+    """Task 5's orchestration passes the canonical (unpadded) form; a legacy or
+
+    manual caller might still spell the padded form. Both must derive the same
+    labels -- the ordinal suffix must not depend on how the caller spelled the
+    query.
+    """
+    async with session_scope() as s:
+        padded = await objectives_for(s, "ZQ-01")
+        unpadded = await objectives_for(s, "ZQ-1")
+    assert [o.label for o in padded] == [o.label for o in unpadded]
+
+
+async def test_no_control_yields_a_mixed_label_set() -> None:
+    """Every derived (ordinal) label must share the prefix of the
+
+    ap_acronym-supplied label in the same group -- otherwise a catalog-supplied
+    label like ``ZQ-01a`` sits next to a derived ``ZQ-1b``, a silent mismatch
+    that only shows up later as objective rows disagreeing with the catalog's
+    own labelling convention.
+    """
+    async with session_scope() as s:
+        objectives = await objectives_for(s, "ZQ-1")
+    catalog_supplied = [o for o in objectives if o.label == "ZQ-01a"]
+    assert catalog_supplied, "fixture must include the ap_acronym-supplied row"
+    prefix = catalog_supplied[0].label[:-1]
+    assert all(o.label.startswith(prefix) for o in objectives)
+
+
 async def test_a_control_with_no_sub_clauses_yields_none() -> None:
     async with session_scope() as s:
         assert await objectives_for(s, "ZQ-99-does-not-exist") == []

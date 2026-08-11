@@ -44,19 +44,30 @@ def objective_sha256(text: str) -> str:
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 
-def _ordinal_label(control_identifier: str, index: int) -> str:
+def _ordinal_label(sequence_control: str, index: int) -> str:
     """Derive ``AC-02a``-style labels when ``ap_acronym`` is absent.
 
     ``ap_acronym`` is populated on the first sub-clause row and sparse thereafter
     in the real workbook, so most objectives need a derived label. Past 26 the
     suffix doubles (``aa``, ``ab``) rather than wrapping, so labels stay unique.
+
+    ``sequence_control`` must be the matched row's own stored value, not the
+    caller's query spelling and not the ``normalize_control_identifier``-folded
+    form. It is identical for every row in a group regardless of how the caller
+    spelled the query (``AC-02`` vs ``AC-2``), and it is the same source
+    ``ap_acronym`` is drawn from -- so a derived label and a catalog-supplied
+    ``ap_acronym`` in the same group always agree on their prefix. Building the
+    suffix from the caller's argument instead produced mixed sets silently: the
+    same control queried as ``AC-2`` (the canonical form
+    ``AssessmentControlProposal.control_identifier`` documents) would derive
+    ``AC-2b`` next to a catalog-supplied ``AC-02a``.
     """
     letters = string.ascii_lowercase
     if index < len(letters):
         suffix = letters[index]
     else:
         suffix = letters[index // len(letters) - 1] + letters[index % len(letters)]
-    return f"{control_identifier}{suffix}"
+    return f"{sequence_control}{suffix}"
 
 
 async def objectives_for(session: AsyncSession, control_identifier: str) -> list[Objective]:
@@ -93,7 +104,7 @@ async def objectives_for(session: AsyncSession, control_identifier: str) -> list
         text = (row.assessment_objective or "").strip()
         if not text:
             continue
-        label = row.ap_acronym or _ordinal_label(control_identifier, index)
+        label = row.ap_acronym or _ordinal_label(row.sequence_control or canonical, index)
         objectives.append(
             Objective(
                 label=label,
