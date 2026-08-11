@@ -96,15 +96,43 @@ async def objectives_for(session: AsyncSession, control_identifier: str) -> list
     if len(matching) > limit:
         raise ObjectiveExtractionError(
             f"control {control_identifier} yielded {len(matching)} objectives, "
-            f"above the {limit} guard -- extraction almost certainly grouped wrongly"
+            f"above the {limit}-objective guard configured via "
+            "assessment_engine_max_objectives_per_control. This is not necessarily a "
+            "grouping bug -- the real catalog's largest control has 98 sub-clause "
+            "objectives on its own -- but it is far enough outside the observed range "
+            "to confirm before evaluating. Raise the setting if this control is "
+            "legitimately this large."
         )
 
     objectives: list[Objective] = []
+    seen_labels: set[str] = set()
     for index, row in enumerate(matching):
         text = (row.assessment_objective or "").strip()
         if not text:
             continue
         label = row.ap_acronym or _ordinal_label(row.sequence_control or canonical, index)
+        if label in seen_labels:
+            # ap_acronym is sparse and inconsistently unique -- confirmed live
+            # on AC-1, which carries two sub-clause rows both stamped
+            # "AC-01a". Silently keeping the duplicate would violate
+            # uq_objective_proposal_label the moment both rows are persisted
+            # as AssessmentObjectiveProposal for the same control proposal,
+            # which previously aborted the whole control (see
+            # ccf.assessment.engine.service's per-objective savepoint --
+            # protects against a raise, not against two rows racing for the
+            # same unique key in the first place). Fall back to this row's
+            # own ordinal derivation, which is unique by construction (it
+            # encodes `index`), rather than the catalog-supplied label the
+            # earlier row already claimed.
+            label = _ordinal_label(row.sequence_control or canonical, index)
+        if label in seen_labels:
+            # Exceptionally rare: the ordinal fallback itself coincides with
+            # a label already used (e.g. a catalog ap_acronym of "AC-01c"
+            # sitting at the same position an ordinal derivation would also
+            # produce "AC-01c" for). Not observed in the real catalog, but
+            # labels must stay unique regardless.
+            label = f"{label}-dup{index}"
+        seen_labels.add(label)
         objectives.append(
             Objective(
                 label=label,

@@ -70,7 +70,19 @@ def _base_filters(
 ) -> Any:
     stmt = stmt.where(PrepUnit.organization_id == org_id)
     if system_id is not None:
-        stmt = stmt.where(PrepUnit.system_id == system_id)
+        # A unit with system_id IS NULL is org-level evidence (a policy that
+        # covers every system in the org, not one authorization boundary) --
+        # it must stay reachable alongside the named system's own evidence,
+        # or an org-level document could never be cited for any system-scoped
+        # query at all. This is an OR, not a replacement for the system
+        # filter: a *different* system's evidence (system_id set to some
+        # other system) is still excluded, which is the whole point of
+        # passing system_id in the first place -- see
+        # ccf.assessment.engine.service.evaluate_control_proposal, which
+        # passes the assessment's real system_id here (rather than the
+        # hardcoded None a prior version passed) so retrieval cannot pull
+        # another authorization boundary's evidence into this one's findings.
+        stmt = stmt.where(or_(PrepUnit.system_id == system_id, PrepUnit.system_id.is_(None)))
     if source_kind is not None:
         stmt = stmt.where(PrepUnit.source_kind == source_kind)
     return stmt

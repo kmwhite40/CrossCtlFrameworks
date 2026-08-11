@@ -199,7 +199,24 @@ async def generate_text(
     return resp.text
 
 
-async def generate_structured(
+@dataclass(slots=True)
+class StructuredResult:
+    """Structured-generation output plus the model that actually produced it.
+
+    ``generate_structured`` below discards this -- it exists for
+    ``ccf.prep.classify``, its one caller when this was added, which only
+    ever needed the data. A caller whose output carries provenance weight
+    (e.g. ``ccf.assessment.engine.evaluate``, which persists a verdict a
+    FedRAMP citation eventually traces back to) needs the model too, so it
+    calls :func:`generate_structured_resolved` instead of adding a second,
+    incompatible return shape to the existing function.
+    """
+
+    data: dict[str, Any]
+    model: str
+
+
+async def generate_structured_resolved(
     session: AsyncSession,
     org_id: int,
     *,
@@ -211,8 +228,14 @@ async def generate_structured(
     system: str | None = None,
     max_tokens: int = 1024,
     actor: str | None = None,
-) -> dict[str, Any]:
-    """Resolve the org's provider and generate schema-validated structured output."""
+) -> StructuredResult:
+    """Resolve the org's provider, generate structured output, and report both.
+
+    The same call ``generate_structured`` makes, plus the resolved model name
+    on the return value -- ``resolve()`` already computes it (the org's
+    default, an explicit override, or the global fallback), it was simply
+    never handed back to the caller before this.
+    """
     rp = await resolve(session, org_id, provider=provider, model=model)
     resp = await rp.provider.generate_structured_output(
         StructuredGenerationRequest(
@@ -229,7 +252,43 @@ async def generate_structured(
         input_tokens=resp.input_tokens,
         output_tokens=resp.output_tokens,
     )
-    return resp.data
+    return StructuredResult(data=resp.data, model=rp.model)
+
+
+async def generate_structured(
+    session: AsyncSession,
+    org_id: int,
+    *,
+    prompt: str,
+    schema: dict[str, Any],
+    purpose: str,
+    provider: str | None = None,
+    model: str | None = None,
+    system: str | None = None,
+    max_tokens: int = 1024,
+    actor: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the org's provider and generate schema-validated structured output.
+
+    Thin wrapper over :func:`generate_structured_resolved` that discards the
+    resolved model name, kept at this exact signature/return type for
+    existing callers (``ccf.prep.classify``). A caller that needs the model
+    name too should call ``generate_structured_resolved`` directly rather
+    than have this function grow a second return shape.
+    """
+    result = await generate_structured_resolved(
+        session,
+        org_id,
+        prompt=prompt,
+        schema=schema,
+        purpose=purpose,
+        provider=provider,
+        model=model,
+        system=system,
+        max_tokens=max_tokens,
+        actor=actor,
+    )
+    return result.data
 
 
 async def embed(

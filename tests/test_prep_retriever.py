@@ -147,6 +147,78 @@ async def test_system_filter_excludes_other_systems(
     assert missed == []
 
 
+async def test_system_scoped_retrieval_still_reaches_org_level_null_system_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I4: a system_id-scoped query must still surface evidence with
+    system_id IS NULL -- org-level documentation (e.g. a company-wide policy)
+    that covers every system in the org, not one authorization boundary --
+    or an org-level document could never be cited for any system-scoped
+    query at all. A *different* system's evidence must still be excluded;
+    the assessment engine passes the assessment's own real system_id here
+    specifically so system B's evidence cannot be cited in system A's
+    findings (see ccf.assessment.engine.service).
+    """
+    async with session_scope() as s:
+        org = Organization(name="retr-null-system-org")
+        s.add(org)
+        await s.flush()
+        system_a = System(organization_id=org.id, name="Sys A")
+        system_b = System(organization_id=org.id, name="Sys B")
+        s.add_all([system_a, system_b])
+        await s.flush()
+        run = await pipeline.create_run(
+            s, organization_id=org.id, source_kind="evidence_version", source_id=1
+        )
+
+        org_line = PrepLine(run_id=run.id, organization_id=org.id, line_number=1,
+                            page_number=1, section_path="Access Control",
+                            content="Org-wide MFA policy applies to every system.")
+        a_line = PrepLine(run_id=run.id, organization_id=org.id, line_number=2,
+                          page_number=1, section_path="Access Control",
+                          content="System A specific MFA configuration.")
+        b_line = PrepLine(run_id=run.id, organization_id=org.id, line_number=3,
+                          page_number=1, section_path="Access Control",
+                          content="System B specific MFA configuration.")
+        s.add_all([org_line, a_line, b_line])
+        await s.flush()
+
+        org_unit = PrepUnit(run_id=run.id, organization_id=org.id, trigger_line_id=org_line.id,
+                            source_line_ids=[org_line.id], content=org_line.content,
+                            page_numbers=[1], section_path="Access Control", token_count=8,
+                            system_id=None, source_kind="evidence_version")
+        a_unit = PrepUnit(run_id=run.id, organization_id=org.id, trigger_line_id=a_line.id,
+                          source_line_ids=[a_line.id], content=a_line.content,
+                          page_numbers=[1], section_path="Access Control", token_count=8,
+                          system_id=system_a.id, source_kind="evidence_version")
+        b_unit = PrepUnit(run_id=run.id, organization_id=org.id, trigger_line_id=b_line.id,
+                          source_line_ids=[b_line.id], content=b_line.content,
+                          page_numbers=[1], section_path="Access Control", token_count=8,
+                          system_id=system_b.id, source_kind="evidence_version")
+        s.add_all([org_unit, a_unit, b_unit])
+        await s.flush()
+        org_id, system_a_id = int(org.id), int(system_a.id)
+        org_unit_id, a_unit_id, b_unit_id = int(org_unit.id), int(a_unit.id), int(b_unit.id)
+
+    async def _boom(*args: Any, **kwargs: Any) -> Any:
+        raise gateway.GatewayError("no embedding provider in this test -- lexical-only")
+
+    monkeypatch.setattr(gateway, "embed", _boom)
+    async with session_scope() as s:
+        # A single term common to all three lines' content -- websearch_to_tsquery
+        # ANDs multiple terms, so all three rows must match the lexical query on
+        # their own merits; what distinguishes them here is purely the system
+        # filter under test, not which terms happen to appear in which line.
+        results = await retrieve(
+            s, org_id=org_id, control_identifier="IA-2", query_text="MFA",
+            system_id=system_a_id, limit=10,
+        )
+    found_ids = {r.unit_id for r in results}
+    assert org_unit_id in found_ids, "org-level (system_id IS NULL) evidence must be reachable"
+    assert a_unit_id in found_ids, "system A's own evidence must be reachable"
+    assert b_unit_id not in found_ids, "system B's evidence must stay excluded"
+
+
 async def test_retrieval_falls_back_to_lexical_when_embedding_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

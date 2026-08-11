@@ -42,6 +42,15 @@ async def _org(name: str) -> int:
         return int(org.id)
 
 
+def _resolved(data: dict[str, Any], model: str = "fake-eval-model") -> gateway.StructuredResult:
+    """Wrap a fake structured-generation payload the way the real gateway's
+    generate_structured_resolved does -- see I2: evaluate_objective calls that
+    function specifically (not the plain generate_structured) so it gets the
+    resolved model name back, not just the data.
+    """
+    return gateway.StructuredResult(data=data, model=model)
+
+
 def test_schema_constrains_the_verdict_vocabulary() -> None:
     assert EVALUATION_SCHEMA["properties"]["verdict"]["enum"] == [
         "satisfied", "not_satisfied", "not_applicable", "insufficient_evidence",
@@ -70,18 +79,18 @@ async def test_a_citation_outside_the_retrieved_set_is_dropped(
     async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
         return [_unit(7, "Administrators authenticate with MFA.")]
 
-    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return _resolved({
             "verdict": "satisfied",
             "cited_unit_ids": [7, 999],
             "gaps": [],
             "contradictions": [],
             "rationale": "Section 2 requires MFA.",
             "confidence": 0.9,
-        }
+        })
 
     monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
-    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
     async with session_scope() as s:
         result = await evaluate_objective(
             s, org_id=org_id, control_identifier="IA-2",
@@ -124,12 +133,12 @@ async def test_objective_text_is_passed_to_retrieval_as_the_query(
         seen.update(kwargs)
         return [_unit(7, "Admins use MFA.")]
 
-    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"verdict": "satisfied", "cited_unit_ids": [7], "gaps": [],
-                "contradictions": [], "rationale": "ok", "confidence": 0.8}
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return _resolved({"verdict": "satisfied", "cited_unit_ids": [7], "gaps": [],
+                           "contradictions": [], "rationale": "ok", "confidence": 0.8})
 
     monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
-    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
     async with session_scope() as s:
         await evaluate_objective(
             s, org_id=org_id, control_identifier="IA-2",
@@ -150,18 +159,18 @@ async def test_a_malformed_citation_id_is_dropped_not_raised(
     async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
         return [_unit(7, "Administrators authenticate with MFA.")]
 
-    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return _resolved({
             "verdict": "satisfied",
             "cited_unit_ids": [7, "not-an-id"],
             "gaps": [],
             "contradictions": [],
             "rationale": "Section 2 requires MFA.",
             "confidence": 0.9,
-        }
+        })
 
     monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
-    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
     async with session_scope() as s:
         result = await evaluate_objective(
             s, org_id=org_id, control_identifier="IA-2",
@@ -180,21 +189,59 @@ async def test_duplicate_citations_collapse_to_one_in_order(
     async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
         return [_unit(7, "x"), _unit(9, "y")]
 
-    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return _resolved({
             "verdict": "satisfied",
             "cited_unit_ids": [9, 7, 9, 7, 7],
             "gaps": [],
             "contradictions": [],
             "rationale": "ok",
             "confidence": 0.9,
-        }
+        })
 
     monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
-    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
     async with session_scope() as s:
         result = await evaluate_objective(
             s, org_id=org_id, control_identifier="IA-2",
             objective=_objective(), system_id=None,
         )
     assert result.cited_unit_ids == [9, 7]
+
+
+async def test_the_resolved_model_name_is_recorded_on_the_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I2: gateway.generate_structured previously discarded the resolved model
+    name, so no ObjectiveEvaluation -- and downstream, no persisted
+    AssessmentObjectiveProposal -- ever carried any record of which model
+    produced a verdict. evaluate_objective must call
+    generate_structured_resolved and thread ``.model`` through to
+    ObjectiveEvaluation.model_name.
+    """
+    org_id = await _org("ae-eval-model-name")
+
+    async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
+        return [_unit(7, "Administrators authenticate with MFA.")]
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return _resolved(
+            {
+                "verdict": "satisfied",
+                "cited_unit_ids": [7],
+                "gaps": [],
+                "contradictions": [],
+                "rationale": "ok",
+                "confidence": 0.9,
+            },
+            model="claude-real-model-under-test",
+        )
+
+    monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
+    async with session_scope() as s:
+        result = await evaluate_objective(
+            s, org_id=org_id, control_identifier="IA-2",
+            objective=_objective(), system_id=None,
+        )
+    assert result.model_name == "claude-real-model-under-test"

@@ -41,7 +41,11 @@ from ...assessment.engine import jobs as engine_jobs
 from ...assessment.engine.service import AcceptanceRefused, ProposalError, accept_control_proposal
 from ...auth import Principal
 from ...models import Assessment, AssessmentControlResult, System
-from ...models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
+from ...models_assessment_engine import (
+    AssessmentControlProposal,
+    AssessmentJob,
+    AssessmentObjectiveProposal,
+)
 from ...models_prep import PrepUnit
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -139,6 +143,25 @@ async def _citations(
     ]
 
 
+async def _latest_job(session: AsyncSession, control_proposal_id: int) -> AssessmentJob | None:
+    """The most recently queued job for this proposal, if any.
+
+    ``enqueue_control`` (see ``ccf.assessment.engine.jobs``) now reuses an
+    outstanding ``pending``/``claimed`` job rather than always inserting one,
+    but a proposal can still have accumulated more than one job over its
+    lifetime (a first run that failed, then a later re-enqueue) -- the most
+    recent one is what an operator checking "why is this stuck" wants.
+    """
+    return (
+        await session.execute(
+            select(AssessmentJob)
+            .where(AssessmentJob.control_proposal_id == control_proposal_id)
+            .order_by(AssessmentJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
 async def _proposal_detail(
     session: AsyncSession, proposal: AssessmentControlProposal
 ) -> dict[str, Any]:
@@ -167,11 +190,20 @@ async def _proposal_detail(
         }
         for o in objectives
     ]
+    # Surfaces what happened to a proposal a worker failed to evaluate: before
+    # this, a failed evaluation left the proposal looking merely "draft" (see
+    # ccf.assessment.engine.jobs._drive_one) with nothing in the API response
+    # to explain why -- an operator had no way to tell "queued, not started
+    # yet" from "started and crashed" without querying the database directly.
+    job = await _latest_job(session, proposal.id)
     return {
         "id": proposal.id,
         "assessment_id": proposal.assessment_id,
         "control_identifier": proposal.control_identifier,
         "state": proposal.state,
+        "error": proposal.error,
+        "job_status": job.status if job is not None else None,
+        "job_last_error": job.last_error if job is not None else None,
         "proposed_finding": proposal.proposed_finding,
         "rollup_rationale": proposal.rollup_rationale,
         "objectives_total": proposal.objectives_total,

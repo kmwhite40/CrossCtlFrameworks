@@ -25,8 +25,9 @@ inferred -- see ``docs/ARCHITECTURE.md``'s "Objective-level assessment engine"
 section for the same note alongside the rest of the engine's description.
 
 **No governed-AI-action audit trail.** Objective evaluation
-(``ccf.assessment.engine.evaluate``) calls ``ccf.ai.gateway.generate_structured``
-directly, the same as slice 1's prep classification -- neither routes through
+(``ccf.assessment.engine.evaluate``) calls ``ccf.ai.gateway.generate_structured_resolved``
+directly (``ccf.prep.classify`` calls the plain ``generate_structured`` instead --
+see that gateway function's docstring for why the two differ), neither routes through
 ``ccf.ai_actions.run_action``, so neither produces an ``ai_action_runs`` row, a
 citation record in that subsystem, or a guardrail evaluation. An ``ActionDef``
 is registered for prep classification in ``ccf.ai_actions.registry``, but

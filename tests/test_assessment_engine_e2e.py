@@ -253,26 +253,27 @@ def _fake_embed(dim: int = 1024) -> Any:
     return _embed
 
 
-async def _fake_generate_structured(
-    session: Any,
-    org_id: int,
-    *,
-    prompt: str,
-    schema: dict[str, Any],
-    purpose: str,
-    system: str | None = None,
-    **kw: Any,
-) -> dict[str, Any]:
-    """Stub both AI-gateway generation boundaries this chain crosses.
+#: The model name the fake gateway reports resolving -- asserted below (I2)
+#: to prove the persisted AssessmentObjectiveProposal.model_name column is
+#: populated from a real resolved model, not left NULL.
+_FAKE_MODEL_NAME = "e2e-fake-model-v1"
 
-    Dispatches on ``purpose`` because two entirely different callers share
-    this one monkeypatch target: the prep pipeline's classify stage
-    (``purpose == CLASSIFY_PURPOSE``) and the assessment engine's own
-    objective evaluation (``purpose == EVALUATE_PURPOSE``). Both echo back
-    exactly what the real prompt offered rather than asserting on any value of
-    their own authority, so a broken handoff in either direction (screen's
-    candidates not reaching classify, or retrieval's passages not reaching
-    evaluation) shows up as an empty response here, not a hand-picked one.
+
+def _compute_fake_response(prompt: str, purpose: str) -> dict[str, Any]:
+    """Shared logic behind both gateway monkeypatch targets below.
+
+    Dispatches on ``purpose`` because two entirely different callers are
+    stubbed through it: the prep pipeline's classify stage
+    (``purpose == CLASSIFY_PURPOSE``, via the plain ``generate_structured``)
+    and the assessment engine's own objective evaluation
+    (``purpose == EVALUATE_PURPOSE``, via ``generate_structured_resolved`` --
+    see I2: evaluate_objective now needs the resolved model name back, not
+    just the data, so it calls a different gateway function than classify
+    does). Both echo back exactly what the real prompt offered rather than
+    asserting on any value of their own authority, so a broken handoff in
+    either direction (screen's candidates not reaching classify, or
+    retrieval's passages not reaching evaluation) shows up as an empty
+    response here, not a hand-picked one.
     """
     if purpose == CLASSIFY_PURPOSE:
         first_line = prompt.splitlines()[0]
@@ -306,6 +307,41 @@ async def _fake_generate_structured(
     raise AssertionError(f"unexpected generate_structured purpose: {purpose!r}")
 
 
+async def _fake_generate_structured(
+    session: Any,
+    org_id: int,
+    *,
+    prompt: str,
+    schema: dict[str, Any],
+    purpose: str,
+    system: str | None = None,
+    **kw: Any,
+) -> dict[str, Any]:
+    """Stubs ``gateway.generate_structured`` -- the prep pipeline's classify
+    stage boundary. See ``_compute_fake_response`` for the shared logic.
+    """
+    return _compute_fake_response(prompt, purpose)
+
+
+async def _fake_generate_structured_resolved(
+    session: Any,
+    org_id: int,
+    *,
+    prompt: str,
+    schema: dict[str, Any],
+    purpose: str,
+    system: str | None = None,
+    **kw: Any,
+) -> gateway.StructuredResult:
+    """Stubs ``gateway.generate_structured_resolved`` -- the assessment
+    engine's own objective-evaluation boundary (see I2). Only ever called
+    with ``purpose == EVALUATE_PURPOSE`` in this module, but delegates to the
+    same shared logic rather than duplicating it.
+    """
+    data = _compute_fake_response(prompt, purpose)
+    return gateway.StructuredResult(data=data, model=_FAKE_MODEL_NAME)
+
+
 def _docx_text(data: bytes) -> str:
     doc = Document(io.BytesIO(data))
     chunks = [p.text for p in doc.paragraphs]
@@ -328,6 +364,7 @@ async def test_a_real_assessment_produces_accepted_findings_with_citations(
     version_id = await _evidence_version(org_id, payload, "access-control.txt")
 
     monkeypatch.setattr(gateway, "generate_structured", _fake_generate_structured)
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_generate_structured_resolved)
     monkeypatch.setattr(gateway, "embed", _fake_embed())
 
     # --- Stage 1: the real slice-1 preparation pipeline, start to finish. ---
@@ -412,6 +449,8 @@ async def test_a_real_assessment_produces_accepted_findings_with_citations(
     )
     assert [o.sort_order for o in objectives] == [0, 1]
     assert [o.verdict for o in objectives] == ["satisfied", "satisfied"]
+    # I2: model provenance must be persisted, not left NULL.
+    assert [o.model_name for o in objectives] == [_FAKE_MODEL_NAME, _FAKE_MODEL_NAME]
 
     cited_ids: set[int] = set()
     for o in objectives:

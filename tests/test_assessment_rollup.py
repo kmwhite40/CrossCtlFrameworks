@@ -55,3 +55,45 @@ def test_an_unknown_verdict_raises_rather_than_being_ignored() -> None:
     """Silently dropping an unrecognised verdict could turn a failure into a pass."""
     with pytest.raises(ValueError, match="unknown objective verdict"):
         roll_up(["satisfied", "probably_fine"])
+
+
+# --- `failed` -- unevaluated objectives (CRITICAL 1) --------------------------
+
+
+def test_any_failed_objective_forces_insufficient_evidence_even_if_rest_are_satisfied() -> None:
+    """The bug this closes: a control where every *evaluated* objective looked
+    satisfied but most objectives never evaluated at all must never roll up
+    satisfied -- 1 real verdict out of 25 objectives is not "satisfied",
+    regardless of what that one verdict was.
+    """
+    result = roll_up(["satisfied"], failed=24)
+    assert result.finding == "insufficient_evidence"
+
+
+def test_a_failed_objective_forces_insufficient_evidence_over_a_demonstrated_failure() -> None:
+    """Even when the evaluated objectives already show a failure, a control
+    with any unevaluated objective is not proposed at all -- the engine does
+    not know what the missing objective would have shown, so it cannot
+    responsibly land on other_than_satisfied either.
+    """
+    result = roll_up(["not_satisfied"], failed=1)
+    assert result.finding == "insufficient_evidence"
+
+
+def test_no_failures_is_unaffected_by_the_new_parameter() -> None:
+    """failed=0 (the default) must reproduce the pre-existing policy exactly."""
+    assert roll_up(["satisfied", "satisfied"], failed=0).finding == "satisfied"
+    assert roll_up(["satisfied", "satisfied"]).finding == "satisfied"
+
+
+def test_rationale_states_coverage_explicitly_when_objectives_failed() -> None:
+    """The rationale must be readable by an assessor without cross-referencing
+    objectives_total/objectives_evaluated columns by hand.
+    """
+    rationale = roll_up(["satisfied"], failed=24).rationale
+    assert "1 of 25 objectives evaluated, 24 failed" in rationale
+
+
+def test_negative_failed_count_raises() -> None:
+    with pytest.raises(ValueError, match="failed must be >= 0"):
+        roll_up(["satisfied"], failed=-1)

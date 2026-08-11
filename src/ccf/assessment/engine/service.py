@@ -140,7 +140,14 @@ async def evaluate_control_proposal(
     objectives = await objectives_for(session, proposal.control_identifier)
     proposal.objectives_total = len(objectives)
 
+    system_id = (
+        await session.execute(
+            select(Assessment.system_id).where(Assessment.id == proposal.assessment_id)
+        )
+    ).scalar_one_or_none()
+
     verdicts: list[str] = []
+    failed_count = 0
     for objective in objectives:
         try:
             async with session.begin_nested():
@@ -149,7 +156,7 @@ async def evaluate_control_proposal(
                     org_id=proposal.organization_id,
                     control_identifier=proposal.control_identifier,
                     objective=objective,
-                    system_id=None,
+                    system_id=system_id,
                 )
                 session.add(
                     AssessmentObjectiveProposal(
@@ -186,25 +193,49 @@ async def evaluate_control_proposal(
                 label=objective.label,
                 error=str(exc),
             )
-            session.add(
-                AssessmentObjectiveProposal(
-                    organization_id=proposal.organization_id,
-                    control_proposal_id=proposal.id,
+            failed_count += 1
+            try:
+                # The recovery insert gets its own savepoint too: it can fail
+                # for the same reasons the primary insert can (most notably a
+                # colliding `label` -- confirmed live on AC-1, which carries
+                # two sub-clause rows under the same ap_acronym, "AC-01a"; see
+                # objectives_for's own de-duplication, which closes that
+                # specific case, but this savepoint is what stops *any*
+                # failure here -- that one included, and whatever else might
+                # violate a constraint on this row -- from propagating out of
+                # evaluate_control_proposal and aborting the whole control.
+                # Without it, the previous `session.add` + `flush()` ran
+                # outside any savepoint, so a colliding recovery insert raised
+                # straight out of this function, directly contradicting the
+                # module docstring's promise that one pathological objective
+                # cannot fail the whole control.
+                async with session.begin_nested():
+                    session.add(
+                        AssessmentObjectiveProposal(
+                            organization_id=proposal.organization_id,
+                            control_proposal_id=proposal.id,
+                            label=objective.label,
+                            objective_text=objective.text,
+                            objective_text_sha256=objective.text_sha256,
+                            sort_order=objective.sort_order,
+                            state="failed",
+                            verdict=None,
+                            error=str(exc),
+                        )
+                    )
+                    await session.flush()
+            except Exception as recovery_exc:
+                log.error(
+                    "assessment.objective_recovery_failed",
+                    control_identifier=proposal.control_identifier,
                     label=objective.label,
-                    objective_text=objective.text,
-                    objective_text_sha256=objective.text_sha256,
-                    sort_order=objective.sort_order,
-                    state="failed",
-                    verdict=None,
-                    error=str(exc),
+                    error=str(recovery_exc),
                 )
-            )
-            await session.flush()
             continue
         verdicts.append(evaluation.verdict)
 
     proposal.objectives_evaluated = len(verdicts)
-    rollup = roll_up(verdicts)
+    rollup = roll_up(verdicts, failed=failed_count)
     proposal.proposed_finding = rollup.finding
     proposal.rollup_rationale = rollup.rationale
     proposal.state = "complete"
@@ -283,6 +314,15 @@ async def accept_control_proposal(
     ).scalar_one_or_none()
     if proposal is None:
         raise ProposalError(f"control proposal {proposal_id} not found")
+
+    # Recompute staleness here rather than trusting whatever state the
+    # proposal already carries: check_staleness was previously only ever
+    # called by tests, never by production code, so a catalog re-ingest that
+    # reworded an objective under an already-``complete`` proposal was never
+    # actually detected before acceptance -- the guard below existed but was
+    # unreachable in practice. This call is what makes it reachable; the
+    # state check immediately after is unchanged and still does the refusing.
+    await check_staleness(session, proposal)
 
     if proposal.state == "stale":
         raise AcceptanceRefused(

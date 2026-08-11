@@ -10,6 +10,7 @@ from ccf.assessment.engine.objectives import (
     objective_sha256,
     objectives_for,
 )
+from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Control
 
@@ -145,16 +146,58 @@ async def test_no_control_yields_a_mixed_label_set() -> None:
     assert all(o.label.startswith(prefix) for o in objectives)
 
 
+async def test_a_repeated_ap_acronym_within_a_group_does_not_produce_duplicate_labels() -> None:
+    """CRITICAL 3: confirmed live on AC-1, which carries two sub-clause rows
+    both stamped ap_acronym "AC-01a". Two catalog rows sharing a label would
+    violate uq_objective_proposal_label the moment both are persisted as
+    AssessmentObjectiveProposal rows for the same control proposal -- this
+    must never reach that point at all.
+    """
+    async with session_scope() as s:
+        await s.execute(delete(Control).where(Control.sequence_control == "ZQ-11"))
+        s.add(Control(identifier="ZQ-11", sequence_control="ZQ-11",
+                      control_name="Dup Acronym", assessment_objective="Determine if:",
+                      source_row=1))
+        s.add(Control(identifier="ZQ-11-ao1", sequence_control="ZQ-11", ap_acronym="ZQ-11a",
+                      assessment_objective="the first colliding objective is met;",
+                      source_row=2))
+        s.add(Control(identifier="ZQ-11-ao2", sequence_control="ZQ-11", ap_acronym="ZQ-11a",
+                      assessment_objective="the second colliding objective is met;",
+                      source_row=3))
+        await s.flush()
+        objectives = await objectives_for(s, "ZQ-11")
+        await s.execute(delete(Control).where(Control.sequence_control == "ZQ-11"))
+
+    assert len(objectives) == 2
+    labels = [o.label for o in objectives]
+    assert len(labels) == len(set(labels)), f"duplicate labels survived: {labels}"
+    # The first occurrence keeps the catalog-supplied label; the duplicate
+    # falls back to its own ordinal derivation rather than being dropped or
+    # silently overwriting the first.
+    assert objectives[0].label == "ZQ-11a"
+    assert objectives[1].label != "ZQ-11a"
+    assert objectives[1].text == "the second colliding objective is met;"
+
+
 async def test_a_control_with_no_sub_clauses_yields_none() -> None:
     async with session_scope() as s:
         assert await objectives_for(s, "ZQ-99-does-not-exist") == []
 
 
 async def test_absurd_objective_count_raises_rather_than_fanning_out() -> None:
-    """A grouping bug must fail loudly, not spawn hundreds of model calls."""
+    """A grouping bug must fail loudly, not spawn hundreds of model calls.
+
+    Seeds strictly more rows than the configured guard, whatever that guard
+    currently is, rather than a hardcoded row count -- the guard was raised
+    from 60 to 150 (see test_assessment_engine_models.py) precisely because
+    real controls exceed small fixed counts, so this test must not pin one
+    either.
+    """
+    limit = get_settings().assessment_engine_max_objectives_per_control
+    row_count = limit + 5
     async with session_scope() as s:
         await s.execute(delete(Control).where(Control.sequence_control == "ZQ-08"))
-        for n in range(70):
+        for n in range(row_count):
             s.add(
                 Control(
                     identifier=f"ZQ-08-ao{n}",
@@ -167,4 +210,4 @@ async def test_absurd_objective_count_raises_rather_than_fanning_out() -> None:
         with pytest.raises(ObjectiveExtractionError) as exc:
             await objectives_for(s, "ZQ-08")
         await s.execute(delete(Control).where(Control.sequence_control == "ZQ-08"))
-    assert "70" in str(exc.value)
+    assert str(row_count) in str(exc.value)

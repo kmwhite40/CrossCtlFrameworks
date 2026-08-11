@@ -9,7 +9,7 @@ from sqlalchemy import delete, select
 
 from ccf.assessment.engine import service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
-from ccf.assessment.engine.objectives import objectives_for
+from ccf.assessment.engine.objectives import Objective, objective_sha256, objectives_for
 from ccf.assessment.engine.service import (
     check_staleness,
     evaluate_control_proposal,
@@ -17,7 +17,7 @@ from ccf.assessment.engine.service import (
 )
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Assessment, Control, Organization, System
+from ccf.models import Assessment, AssessmentControlResult, Control, Organization, System
 from ccf.models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -207,7 +207,14 @@ async def test_evaluate_rolls_up_and_stores_the_config_snapshot(
 async def test_one_failing_objective_does_not_fail_the_control(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A per-objective savepoint: objective 2 raises, 1 and 3 still persist."""
+    """A per-objective savepoint: objective 2 raises, 1 and 3 still persist --
+    but with one objective unevaluated, the control's finding must be
+    insufficient_evidence, never satisfied (CRITICAL 1). Previously this test
+    asserted the bug: satisfied with 1 of 3 objectives failed. A rationale
+    reading "1 satisfied -- every applicable objective met" while 1/3 of the
+    control was never evaluated is exactly the false coverage claim a
+    Security Assessment Report cannot carry.
+    """
 
     async def _fake(session: Any, *, objective: Any, **kwargs: Any) -> ObjectiveEvaluation:
         if objective.label == "ZQ-90b":
@@ -224,7 +231,9 @@ async def test_one_failing_objective_does_not_fail_the_control(
         proposal_id = int(proposal.id)
         state = proposal.state
         proposed_finding = proposal.proposed_finding
+        objectives_total = proposal.objectives_total
         objectives_evaluated = proposal.objectives_evaluated
+        rollup_rationale = proposal.rollup_rationale
 
     async with session_scope() as s:
         rows = (
@@ -237,13 +246,98 @@ async def test_one_failing_objective_does_not_fail_the_control(
 
     by_label = {r.label: r for r in rows}
     assert state == "complete"
+    assert objectives_total == 3
     assert objectives_evaluated == 2
-    assert proposed_finding == "satisfied"
+    assert proposed_finding == "insufficient_evidence"
+    # The rationale must state coverage explicitly -- an assessor reading it
+    # alone must be able to tell this was a partial evaluation, not merely
+    # infer it from separate objectives_total/objectives_evaluated columns.
+    assert "2 of 3 objectives evaluated, 1 failed" in rollup_rationale
     assert by_label["ZQ-90b"].state == "failed"
     assert by_label["ZQ-90b"].error is not None
     assert by_label["ZQ-90b"].verdict is None
     assert by_label["ZQ-90a"].state == "complete"
     assert by_label["ZQ-90c"].state == "complete"
+
+
+async def test_a_control_with_any_failed_objective_can_never_be_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end proof for CRITICAL 1: partial evaluation cannot reach
+    acceptance. This does not merely re-check the rollup policy in isolation
+    (test_assessment_rollup.py already does) -- it drives the real
+    evaluate_control_proposal -> accept_control_proposal path the way a
+    caller actually would, so a future change that reintroduces the bug at
+    any point in that path (not just in roll_up itself) fails here too.
+    """
+
+    async def _fake(session: Any, *, objective: Any, **kwargs: Any) -> ObjectiveEvaluation:
+        if objective.label == "ZQ-90c":
+            raise RuntimeError("provider fault on objective 3")
+        return ObjectiveEvaluation(verdict="satisfied", rationale="ok", confidence=0.5)
+
+    monkeypatch.setattr(service, "evaluate_objective", _fake)
+    _, assessment_id = await _assessment("svc-eval-partial-fail-accept")
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        proposal = await evaluate_control_proposal(s, proposal)
+        proposal_id = int(proposal.id)
+        assert proposal.proposed_finding == "insufficient_evidence"
+
+    async with session_scope() as s:
+        with pytest.raises(service.AcceptanceRefused):
+            await service.accept_control_proposal(s, proposal_id, accepted_by="assessor@test")
+
+    async with session_scope() as s:
+        leaked = (
+            await s.execute(
+                select(AssessmentControlResult).where(
+                    AssessmentControlResult.assessment_id == assessment_id
+                )
+            )
+        ).scalar_one_or_none()
+        assert leaked is None, (
+            "a partially-evaluated control must never reach AssessmentControlResult"
+        )
+
+
+async def test_evaluate_passes_the_assessments_real_system_id_to_evaluate_objective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I4: retrieval must be scoped to the assessment's own system, not
+    hardcoded None -- an org with two authorization boundaries must not have
+    system B's evidence cited in system A's findings.
+    """
+    seen: dict[str, Any] = {}
+
+    async def _fake(session: Any, **kwargs: Any) -> ObjectiveEvaluation:
+        seen["system_id"] = kwargs.get("system_id")
+        return ObjectiveEvaluation(verdict="satisfied", rationale="ok", confidence=0.5)
+
+    monkeypatch.setattr(service, "evaluate_objective", _fake)
+    async with session_scope() as s:
+        org = Organization(name="svc-system-id-passthrough")
+        s.add(org)
+        await s.flush()
+        system = System(organization_id=org.id, name="svc-system-id-passthrough-system")
+        s.add(system)
+        await s.flush()
+        assessment = Assessment(
+            system_id=system.id, name="svc-system-id-passthrough-assessment", kind="self"
+        )
+        s.add(assessment)
+        await s.flush()
+        assessment_id, system_id = int(assessment.id), int(system.id)
+
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        await evaluate_control_proposal(s, proposal)
+
+    assert seen["system_id"] == system_id
 
 
 async def test_evaluate_is_idempotent_on_rerun(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -399,3 +493,72 @@ async def test_an_objective_removed_from_the_catalog_marks_the_proposal_stale(
 
     assert is_stale is True
     assert state == "stale"
+
+
+async def test_a_failing_recovery_insert_does_not_abort_the_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CRITICAL 3, second half: the failure-recovery insert (the
+    AssessmentObjectiveProposal row written when evaluate_objective itself
+    raises) must be savepointed too. objectives_for now de-duplicates labels
+    upstream (see test_assessment_objectives.py), so this test forces the
+    collision directly -- two Objective values sharing a label, bypassing
+    objectives_for entirely -- to reach exactly the point this savepoint
+    guards, rather than relying on the upstream fix alone. Before this fix,
+    the recovery insert ran outside any savepoint, so a colliding recovery
+    insert (uq_objective_proposal_label) propagated straight out of
+    evaluate_control_proposal and aborted the whole control -- directly
+    contradicting the module's own documented guarantee.
+    """
+    colliding_label = "ZQ-90-collide"
+
+    async def _fake_objectives_for(session: Any, control_identifier: str) -> list[Any]:
+        text_a = "first colliding objective;"
+        text_b = "second colliding objective;"
+        return [
+            Objective(
+                label=colliding_label,
+                text=text_a,
+                text_sha256=objective_sha256(text_a),
+                sort_order=0,
+            ),
+            Objective(
+                label=colliding_label,
+                text=text_b,
+                text_sha256=objective_sha256(text_b),
+                sort_order=1,
+            ),
+        ]
+
+    async def _always_raise(session: Any, **kwargs: Any) -> ObjectiveEvaluation:
+        raise RuntimeError("provider fault -- forces the recovery path for both objectives")
+
+    monkeypatch.setattr(service, "objectives_for", _fake_objectives_for)
+    monkeypatch.setattr(service, "evaluate_objective", _always_raise)
+    _, assessment_id = await _assessment("svc-recovery-collision")
+
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        # Must not raise -- proves the second objective's colliding recovery
+        # insert does not abort the control.
+        proposal = await evaluate_control_proposal(s, proposal)
+        proposal_id = int(proposal.id)
+        state = proposal.state
+
+    assert state == "complete"
+
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(AssessmentObjectiveProposal).where(
+                    AssessmentObjectiveProposal.control_proposal_id == proposal_id
+                )
+            )
+        ).scalars().all()
+    # Only one of the two colliding rows can actually persist -- the point is
+    # that the control still completes, not that both survive.
+    assert len(rows) == 1
+    assert rows[0].label == colliding_label
+    assert rows[0].state == "failed"

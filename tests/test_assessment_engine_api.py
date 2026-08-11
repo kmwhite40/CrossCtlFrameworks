@@ -26,6 +26,7 @@ from sqlalchemy import delete, select
 
 from ccf.api.main import create_app
 from ccf.api.routes import assessment_engine
+from ccf.assessment.engine import jobs as engine_jobs
 from ccf.assessment.engine import service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
 from ccf.assessment.engine.service import evaluate_control_proposal, open_control_proposal
@@ -264,6 +265,57 @@ async def test_get_returns_objectives_with_citations_and_page_numbers(
     assert objective["citations"] == [
         {"unit_id": unit_id, "page_numbers": [3, 4], "section_path": "Access Control"}
     ]
+
+
+async def test_get_surfaces_job_status_and_last_error_on_a_failed_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I3: before this fix, a crashed evaluation left the proposal looking
+    merely "draft" with nothing in the API response to explain why -- an
+    operator had no way to tell "queued, not started" from "started and
+    crashed" without querying the database directly, and no endpoint exposed
+    the job_id POST already returns. Drives the real job directly (not
+    jobs.run_once, which claims every pending job system-wide and would risk
+    dragging in unrelated jobs other tests in this module leave pending) so
+    this test's failure is isolated to its own job.
+    """
+    token, org_id = await _mk_user("fail-get-a@ae-api.test", "AE API Fail Get Org")
+    assessment_id = await _assessment_for(org_id, "fail-get")
+
+    async with _client() as client:
+        response = await client.post(
+            "/api/assessment-engine/proposals",
+            json={"assessment_id": assessment_id, "control_identifier": _SEQ},
+            headers=_auth(token),
+        )
+    body = response.json()
+    proposal_id, job_id = body["proposal_id"], body["job_id"]
+
+    async def _boom(session: Any, proposal: Any) -> Any:
+        raise RuntimeError("simulated evaluation crash")
+
+    monkeypatch.setattr(engine_jobs, "evaluate_control_proposal", _boom)
+    async with session_scope() as s:
+        job = (
+            await s.execute(select(AssessmentJob).where(AssessmentJob.id == job_id))
+        ).scalar_one()
+        outcome = await engine_jobs._drive_one(s, job)
+        await s.commit()
+    assert outcome == "failed"
+
+    async with _client() as client:
+        detail = await client.get(
+            f"/api/assessment-engine/proposals/{proposal_id}", headers=_auth(token)
+        )
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["state"] == "failed"
+    assert detail_body["error"] and "simulated evaluation crash" in detail_body["error"]
+    assert detail_body["job_status"] == "failed"
+    assert (
+        detail_body["job_last_error"]
+        and "simulated evaluation crash" in detail_body["job_last_error"]
+    )
 
 
 async def test_citations_do_not_resolve_a_foreign_organizations_prep_unit(

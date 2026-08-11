@@ -126,7 +126,11 @@ async def evaluate_objective(
             gaps=["No evidence retrieved -- nothing in the prepared corpus matched."],
         )
 
-    data = await gateway.generate_structured(
+    # generate_structured_resolved, not the plain generate_structured: this is
+    # the one call site in the app whose output is persisted with provenance
+    # weight (an AssessmentObjectiveProposal a FedRAMP citation traces back
+    # to), so it needs the resolved model name back, not just the data.
+    result = await gateway.generate_structured_resolved(
         session,
         org_id,
         prompt=build_prompt(objective.text, units),
@@ -134,6 +138,7 @@ async def evaluate_objective(
         purpose=PURPOSE,
         system=_SYSTEM_PROMPT,
     )
+    data = result.data
 
     # A model may only cite passages it was actually shown. A malformed id is
     # dropped like any out-of-set id rather than crashing the evaluation --
@@ -162,4 +167,5 @@ async def evaluate_objective(
         retrieved_unit_ids=retrieved_ids,
         gaps=[str(g) for g in data.get("gaps", [])],
         contradictions=[str(c) for c in data.get("contradictions", [])],
+        model_name=result.model,
     )

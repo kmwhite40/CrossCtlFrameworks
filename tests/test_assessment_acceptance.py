@@ -246,6 +246,49 @@ async def test_a_stale_proposal_cannot_be_accepted(monkeypatch: pytest.MonkeyPat
             await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
 
 
+async def test_accept_refuses_a_reworded_objective_without_a_manual_staleness_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I1: check_staleness was previously only ever called by tests, never by
+    accept_control_proposal itself -- production code had no path that ever
+    marked a proposal stale, so the staleness guard right below in this same
+    function was unreachable in practice, and objective_text_sha256 bought
+    nothing. Unlike test_a_stale_proposal_cannot_be_accepted above, this test
+    deliberately does NOT call check_staleness before accepting -- proving
+    accept_control_proposal now detects the reword on its own.
+    """
+    proposal_id = await _evaluated_proposal("acc-auto-stale", monkeypatch)
+
+    async with session_scope() as s:
+        control = (
+            await s.execute(select(Control).where(Control.identifier == f"{_SEQ}-ao1"))
+        ).scalar_one()
+        control.assessment_objective = "a completely reworded objective statement;"
+
+    async with session_scope() as s:
+        with pytest.raises(AcceptanceRefused, match="catalog objective text changed"):
+            await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
+
+    async with session_scope() as s:
+        proposal = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.id == proposal_id
+                )
+            )
+        ).scalar_one()
+        assert proposal.state == "stale"
+
+        results = (
+            await s.execute(
+                select(AssessmentControlResult).where(
+                    AssessmentControlResult.assessment_id == proposal.assessment_id
+                )
+            )
+        ).scalars().all()
+        assert results == [], "a stale proposal must not project into AssessmentControlResult"
+
+
 async def test_accepting_an_already_accepted_proposal_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

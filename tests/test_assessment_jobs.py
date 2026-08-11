@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 
 from ccf.assessment.engine import jobs, service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
@@ -138,6 +138,97 @@ async def test_enqueue_opens_a_proposal_and_a_pending_job() -> None:
         assert proposal.control_identifier == _SEQ
 
 
+async def test_enqueue_reuses_an_outstanding_pending_job_rather_than_queuing_another(
+) -> None:
+    """I6: the proposal is idempotent; the job was not. Three POSTs for a
+    large control (e.g. AC-4, ~98 objectives) previously queued three full
+    evaluations -- ~294 model calls -- and let two workers claim two of them
+    concurrently for the one proposal, colliding on the objective-label
+    unique constraint. A second enqueue while the first job is still pending
+    must return that same job, not create a new one.
+    """
+    _, assessment_id = await _assessment("aejobs-dedup-pending")
+    async with session_scope() as s:
+        first = await jobs.enqueue_control(
+            s, assessment_id=assessment_id, control_identifier=_SEQ
+        )
+        second = await jobs.enqueue_control(
+            s, assessment_id=assessment_id, control_identifier=_SEQ
+        )
+    assert first.id == second.id
+
+    async with session_scope() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(AssessmentJob).where(
+                        AssessmentJob.control_proposal_id == first.control_proposal_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+
+
+async def test_enqueue_reuses_a_claimed_job_too() -> None:
+    """A job already claimed by a worker (mid-evaluation) is still going to
+    run -- must not be duplicated either, only a job in a terminal state
+    (done/failed) should trigger a fresh one.
+    """
+    _, assessment_id = await _assessment("aejobs-dedup-claimed")
+    async with session_scope() as s:
+        first = await jobs.enqueue_control(
+            s, assessment_id=assessment_id, control_identifier=_SEQ
+        )
+        first_id = int(first.id)
+        await s.execute(
+            update(AssessmentJob).where(AssessmentJob.id == first_id).values(status="claimed")
+        )
+
+    async with session_scope() as s:
+        second = await jobs.enqueue_control(
+            s, assessment_id=assessment_id, control_identifier=_SEQ
+        )
+    assert int(second.id) == first_id
+
+
+async def test_enqueue_after_a_job_reaches_a_terminal_state_creates_a_fresh_one() -> None:
+    """A caller re-enqueuing after done/failed wants a fresh evaluation, not
+    the stale result of the last one -- must NOT be deduplicated.
+    """
+    _, assessment_id = await _assessment("aejobs-dedup-terminal")
+    async with session_scope() as s:
+        first = await jobs.enqueue_control(
+            s, assessment_id=assessment_id, control_identifier=_SEQ
+        )
+        first_id = int(first.id)
+        await s.execute(
+            update(AssessmentJob).where(AssessmentJob.id == first_id).values(status="done")
+        )
+
+    async with session_scope() as s:
+        second = await jobs.enqueue_control(
+            s, assessment_id=assessment_id, control_identifier=_SEQ
+        )
+    assert int(second.id) != first_id
+
+    async with session_scope() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(AssessmentJob).where(
+                        AssessmentJob.control_proposal_id == first.control_proposal_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 2
+
+
 async def test_run_once_drives_a_job_to_done(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate_always())
     _, assessment_id = await _assessment("aejobs-cycle")
@@ -201,6 +292,47 @@ async def test_a_failing_job_records_a_durable_last_error(
     assert job.status == "failed"
     assert job.last_error, "last_error must survive, not be lost to the aborted transaction"
     assert "this_table_does_not_exist_at_all" in job.last_error
+
+
+async def test_a_failing_job_also_records_the_failure_on_its_control_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """I3: evaluate_control_proposal sets proposal.state = "draft" as its
+    first act, but that assignment lives only in the transaction _drive_one
+    rolls back on failure -- so before this fix, a crashed evaluation left
+    the proposal looking merely "draft" in the DB, indistinguishable from
+    "queued but never started", with AssessmentControlProposal.error never
+    written at all. An operator had no way to learn why a proposal was stuck.
+    """
+    _, assessment_id = await _assessment("aejobs-proposal-error")
+    async with session_scope() as s:
+        job = await jobs.enqueue_control(s, assessment_id=assessment_id, control_identifier=_SEQ)
+        job_id = int(job.id)
+        control_proposal_id = int(job.control_proposal_id)
+
+    async def _boom(session: Any, proposal: Any) -> Any:
+        await session.execute(text("SELECT * FROM ccf.this_table_does_not_exist_either"))
+
+    monkeypatch.setattr(jobs, "evaluate_control_proposal", _boom)
+    async with session_scope() as s:
+        stats = await jobs.run_once(s, worker="w1", limit=5)
+        assert stats["failed"] == 1
+
+    async with session_scope() as s:
+        job = (
+            await s.execute(select(AssessmentJob).where(AssessmentJob.id == job_id))
+        ).scalar_one()
+        proposal = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.id == control_proposal_id
+                )
+            )
+        ).scalar_one()
+    assert job.status == "failed"
+    assert proposal.state == "failed"
+    assert proposal.error, "AssessmentControlProposal.error must be written on failure"
+    assert "this_table_does_not_exist_either" in proposal.error
 
 
 async def test_one_job_failing_does_not_strand_the_rest_of_the_batch(

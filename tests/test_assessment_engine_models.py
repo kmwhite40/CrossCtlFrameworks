@@ -170,5 +170,18 @@ def test_engine_settings_defaults() -> None:
     s = get_settings()
     assert s.assessment_engine_enabled is False
     assert s.assessment_engine_batch_size == 5
-    assert s.assessment_engine_max_objectives_per_control == 60
+    assert s.assessment_engine_max_objectives_per_control == 150
     assert s.assessment_engine_retrieval_limit == 8
+
+
+def test_default_max_objectives_exceeds_the_real_catalogs_largest_control() -> None:
+    """AC-4 is the real catalog's largest control at 98 sub-clause objectives --
+    measured by replaying etl/pipeline.py's ingest semantics against
+    data/NIST Cross Mappings Rev. 1.1.xlsx on 2026-08-10 (300 control groups,
+    p50 10, p90 27, max 98). The old default of 60 sat below that, silently
+    making AC-4 -- and six other real controls, including AC-2, the design
+    spec's own worked example -- impossible to evaluate. The guard must stay
+    comfortably above the observed ceiling, not just above some assumed one.
+    """
+    measured_real_catalog_max = 98
+    assert get_settings().assessment_engine_max_objectives_per_control > measured_real_catalog_max

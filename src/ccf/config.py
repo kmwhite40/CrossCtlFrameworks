@@ -234,10 +234,17 @@ class Settings(BaseSettings):
     # Off by default: like the prep pipeline, this spends money on model calls.
     assessment_engine_enabled: bool = Field(default=False)
     assessment_engine_batch_size: int = Field(default=5)
-    # A guard against a pathological catalog row set: no real 800-53A control has
-    # anywhere near this many objectives, so exceeding it means the extraction
-    # grouped wrongly and should fail loudly rather than fan out model calls.
-    assessment_engine_max_objectives_per_control: int = Field(default=60)
+    # A guard against a pathological catalog row set -- NOT a claim about how
+    # many objectives a real control can have. Measured against the real
+    # workbook (data/NIST Cross Mappings Rev. 1.1.xlsx, replaying
+    # etl/pipeline.py's ingest semantics, 2026-08-10): 300 control groups,
+    # p50 10 objectives, p90 27, max 98 (AC-4; SI-4 88, AC-16 85, SA-8 83,
+    # SC-7 79, AC-2 77, AC-3 65 round out the top seven -- AC-2 is also the
+    # design spec's own worked example). 60 sat below that observed max and
+    # silently made those controls, including the spec's own example,
+    # impossible to evaluate. 150 stays comfortably above the observed
+    # ceiling while still catching a genuine extraction/grouping bug.
+    assessment_engine_max_objectives_per_control: int = Field(default=150)
     # Passed to ccf.prep.retriever.retrieve as `limit` for each objective.
     assessment_engine_retrieval_limit: int = Field(default=8)
     # Added early (Task 8, not the Task 10 that was originally scoped to add

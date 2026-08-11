@@ -50,6 +50,11 @@ log = get_logger(__name__)
 _MAX_LAST_ERROR_CHARS = 4_000
 
 
+#: Job states :func:`enqueue_control` treats as "already going to run" -- see
+#: that function's docstring.
+_OUTSTANDING_JOB_STATUSES = ("pending", "claimed")
+
+
 async def enqueue_control(
     session: AsyncSession, *, assessment_id: int, control_identifier: str
 ) -> AssessmentJob:
@@ -60,10 +65,44 @@ async def enqueue_control(
     control_identifier)`` -- rather than re-deriving the organization here, so
     there is exactly one place that trusts an assessment's own system for
     that, not two that could drift.
+
+    The proposal is idempotent; a job queued to evaluate it is not -- nothing
+    stopped a repeated call (three POSTs to the API's create-proposal
+    endpoint for the same control, most plausibly a client retrying a slow
+    request) from queuing three full evaluations of the same control, each
+    spending one model call per objective, and from letting two workers claim
+    two of those jobs concurrently for the one proposal, colliding on
+    ``uq_objective_proposal_label`` when both try to write the same labels.
+    So: if a ``pending`` or ``claimed`` job already exists for this proposal,
+    that job is still going to run (or is running) and is returned instead of
+    queuing a second one. A job in a terminal state (``done`` or ``failed``)
+    does not count -- a caller re-enqueuing after either of those wants a
+    fresh evaluation, not the stale result of the last one.
     """
     proposal = await open_control_proposal(
         session, assessment_id=assessment_id, control_identifier=control_identifier
     )
+    existing = (
+        await session.execute(
+            select(AssessmentJob)
+            .where(
+                AssessmentJob.control_proposal_id == proposal.id,
+                AssessmentJob.status.in_(_OUTSTANDING_JOB_STATUSES),
+            )
+            .order_by(AssessmentJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        log.info(
+            "assessment.job_enqueue_reused",
+            job_id=existing.id,
+            control_proposal_id=proposal.id,
+            control_identifier=proposal.control_identifier,
+            status=existing.status,
+        )
+        return existing
+
     job = AssessmentJob(
         organization_id=proposal.organization_id,
         control_proposal_id=proposal.id,
@@ -127,6 +166,21 @@ async def _drive_one(session: AsyncSession, job: AssessmentJob) -> str:
             update(AssessmentJob)
             .where(AssessmentJob.id == job_id)
             .values(status="failed", last_error=last_error)
+        )
+        # evaluate_control_proposal sets proposal.state = "draft" as its very
+        # first act, but that assignment lives only in this now-rolled-back
+        # transaction -- session.rollback() above discards it along with
+        # everything else this attempt did, so without this the DB row is
+        # left at whatever state it already had (most commonly still
+        # "draft", indistinguishable from "queued but never started") with no
+        # record of what went wrong at all. A direct UPDATE, not an ORM
+        # mutation, for the same expired-object reason the job update above
+        # already is -- see this function's comment on job_id/
+        # control_proposal_id being captured as plain ints up front.
+        await session.execute(
+            update(AssessmentControlProposal)
+            .where(AssessmentControlProposal.id == control_proposal_id)
+            .values(state="failed", error=last_error)
         )
         log.warning(
             "assessment.job_failed",
