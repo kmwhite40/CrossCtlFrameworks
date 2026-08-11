@@ -59,8 +59,22 @@ def _run_out(run: AiActionRun, *, detail: bool = False) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_actions(_principal: Principal = Depends(get_principal)) -> list[dict[str, Any]]:
-    return [_action_out(k) for k in ACTIONS]
+async def list_actions(
+    status: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """The action registry by default; ``?status=`` lists ``ai_action_runs``
+    instead -- the audit surface a pipeline run (``status="recorded"``, see
+    ``ccf.ai_actions.provenance.PIPELINE_RUN_STATUS``) or a review-queue run
+    is filed under. Scoped exactly like every other endpoint in this module.
+    """
+    if status is None:
+        return [_action_out(k) for k in ACTIONS]
+    stmt = select(AiActionRun).where(AiActionRun.status == status).order_by(AiActionRun.id.desc())
+    if principal.org_id is not None:
+        stmt = stmt.where(AiActionRun.organization_id == principal.org_id)
+    return [_run_out(r) for r in (await session.execute(stmt)).scalars().all()]
 
 
 @router.get("/review-queue")
