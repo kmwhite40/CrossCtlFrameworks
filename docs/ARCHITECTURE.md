@@ -159,6 +159,61 @@ Built on the reference catalog + operational tables:
   relies on (`claim()` is intentionally unscoped, since one worker drains
   every organization's jobs). See `models_prep.py` for the same note next to
   the table definitions.
+- **Objective-level assessment engine** (`/api/assessment-engine`,
+  `ccf assessment-worker`, `ccf.assessment.engine`): evaluates individual NIST
+  SP 800-53A assessment objectives — not whole controls — against evidence the
+  prep pipeline already retrieved, then rolls the objective verdicts into a
+  *proposed* control finding. The objectives are not a separate dataset: they
+  are the sub-clause rows in `ccf.controls` (`control_name IS NULL`,
+  `assessment_objective` populated) that prep's screen stage deliberately
+  excludes because they aren't controls anyone can cite — which is exactly
+  what makes them objectives. **Nothing is materialised**: a proposal
+  (`AssessmentObjectiveProposal`) stores only the objective's label and a
+  SHA-256 of its text, so a catalog re-ingest that rewords an objective makes
+  a stored verdict detectable as `stale` rather than silently wrong. The
+  rollup (`ccf.assessment.engine.rollup`) is a pure function of objective
+  verdicts, applying 800-53A's unanimity rule — a control is satisfied only
+  when every objective is — as application code; a model cannot reach it.
+  `insufficient_evidence` is a proposal-only outcome, both at the objective
+  level (no retrieved evidence, or the model could not settle the question)
+  and as a rollup result: it means the engine could not tell, which is not the
+  same as the control failing, so the acceptance path refuses to write it as a
+  finding — conflating the two would manufacture a POA&M out of missing
+  evidence. **Proposals are inert.** Nothing here reaches
+  `AssessmentControlResult` — and therefore nothing reaches the SAR generator
+  or an auto-created POA&M, both of which read only `AssessmentControlResult`
+  — until an assessor calls
+  `POST /api/assessment-engine/proposals/{id}/accept`, which also refuses a
+  `stale` proposal or one that never reached `complete`. Evaluation is queued
+  (`ccf.assessment_jobs`, drained by the `assessment-worker` compose profile)
+  because evaluating one control means calling a model once per objective,
+  too slow for a request cycle; retrieval and acceptance are synchronous.
+  `CCF_ASSESSMENT_ENGINE_ENABLED` is **off by default** — like the prep
+  pipeline, the worker spends money on model calls — and gates both
+  `app.include_router(assessment_engine.router)` (disabled means a plain 404,
+  the routes absent from `/openapi.json`, not a 200 that merely confirms they
+  exist) and `ccf assessment-worker` (exits immediately without draining
+  anything). **Neither this evaluation nor slice 1's prep classification
+  routes through `ccf.ai_actions.run_action`**: both call
+  `ccf.ai.gateway.generate_structured` directly, so neither produces an
+  `ai_action_runs` row, a citation record in that subsystem, or a guardrail
+  evaluation, and `PrepClassification.ai_action_run_id` is always `NULL`. An
+  `ActionDef` for prep classification *is* registered in
+  `ccf.ai_actions.registry` — registration is not dispatch, since nothing
+  calls `run_action` with it — and there is no `ActionDef` at all yet for
+  objective evaluation. For a product whose output becomes FedRAMP citations,
+  wiring both through the typed AI-action layer is the standing follow-up.
+  The three `assessment_control_proposals` / `assessment_objective_proposals`
+  / `assessment_jobs` tables deliberately carry no row-level-security
+  policies, the same exemption as the `prep_*` tables and for the same
+  reason: every route and service function filters by `organization_id` in
+  application code instead (derived from `Assessment -> System ->
+  Organization`, never from a caller-supplied id), and the job claim is
+  intentionally unscoped, since one worker drains every organization's queue.
+  `systems`, `assessments`, and `assessment_control_results` — the tables the
+  accepted finding actually lands in — do carry the `tenant_isolation` RLS
+  policy. See `models_assessment_engine.py` for the same RLS and AI-action
+  notes next to the table definitions.
 
 ## Schemas
 

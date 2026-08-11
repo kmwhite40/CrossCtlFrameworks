@@ -370,6 +370,7 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET · POST | `/api/portal/session` · `/api/portal/comments` | External portal (token-authenticated) |
 | GET · POST | `/api/queries` · `/api/queries/{key}/run\|export` | Deterministic assurance query templates (+ CSV) |
 | POST · GET | `/api/prep/runs` · `/api/prep/runs/{id}` · `/api/prep/retrieve` | Evidence preparation pipeline: queue a run, check stage status, hybrid retrieval |
+| POST · GET | `/api/assessment-engine/proposals` (+ `/{id}`, `/{id}/accept`) | Objective-level assessment: queue evaluation, inspect a proposal, accept it into `AssessmentControlResult` |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -434,6 +435,32 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   queue; a job stuck `claimed` past the stale window is reaped back to
   `pending`, and one still failing at `CCF_PREP_JOB_MAX_ATTEMPTS` (default 5)
   claims is dead-lettered instead of being requeued forever.
+- `CCF_ASSESSMENT_ENGINE_ENABLED` — turn on the objective-level assessment
+  engine (`/api/assessment-engine`, `ccf assessment-worker`); **disabled by
+  default**, same reasoning as `CCF_PREP_ENABLED`: the worker spends money on
+  a model call per assessment objective. When unset, the
+  `/api/assessment-engine/*` routes are not registered at all (a plain 404,
+  absent from `/openapi.json`) and `ccf assessment-worker` exits immediately
+  without draining anything. Its tenant scoping is derived the same way prep's
+  is, from the authenticated principal (`CCF_AUTH_ENABLED`) by resolving the
+  named assessment's own `System -> Organization`; with auth off — the
+  default, and true of the whole app, not specific to this engine — every
+  principal is unscoped, so the assessment/proposal id a request names is
+  trusted outright. Do not run with auth disabled against data from more than
+  one real tenant. The `assessment_control_proposals` /
+  `assessment_objective_proposals` / `assessment_jobs` tables carry no
+  row-level-security policies, the same exemption as the `prep_*` tables —
+  isolation is application-layer, not database-enforced, for this engine.
+  `CCF_ASSESSMENT_ENGINE_RETRIEVAL_LIMIT` (default 8) bounds how many prepared
+  passages are retrieved per objective; `CCF_ASSESSMENT_ENGINE_BATCH_SIZE`
+  (default 5) and `CCF_ASSESSMENT_JOB_STALE_AFTER_MINUTES` (default 60) tune
+  the `assessment-worker` queue the same way the `CCF_PREP_*` equivalents tune
+  `prep-worker`, and one still failing at
+  `CCF_ASSESSMENT_JOB_MAX_ATTEMPTS` (default 5) claims is dead-lettered.
+  Proposals are inert: nothing an evaluation writes reaches the SAR generator
+  or an auto-created POA&M until an assessor accepts it, and a proposal that
+  settled on `insufficient_evidence` cannot be accepted at all — the engine
+  could not tell, which is not the same as the control failing.
 
 ## Security posture
 

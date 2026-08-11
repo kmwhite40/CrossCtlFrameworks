@@ -6,6 +6,59 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — objective-level assessment engine
+- **Objective-level assessment engine** (`ccf.assessment.engine`, migration
+  0055, `/api/assessment-engine`, `ccf assessment-worker`) — evaluates
+  individual NIST SP 800-53A assessment objectives, not whole controls,
+  against evidence the prep pipeline retrieved, then rolls the verdicts into a
+  *proposed* control finding. The objectives are not a separate dataset: they
+  are the sub-clause rows in `ccf.controls` (`control_name IS NULL`) that
+  prep's screen stage already excludes, and **nothing is materialised** — a
+  proposal stores only the objective's label and a SHA-256 of its text, so a
+  catalog re-ingest that rewords an objective makes a stored verdict
+  detectable as `stale` rather than silently wrong. The rollup
+  (`ccf.assessment.engine.rollup`) applies 800-53A's unanimity rule as a pure
+  function of objective verdicts — a model cannot reach it.
+  `insufficient_evidence` is a proposal-only outcome at both the objective and
+  control level: it means the engine could not tell, which is not the same as
+  the control failing, so `POST /api/assessment-engine/proposals/{id}/accept`
+  refuses to accept it (and refuses a `stale` or incomplete proposal too).
+  **Proposals are inert** — nothing here reaches `AssessmentControlResult`,
+  and therefore nothing reaches the SAR generator or an auto-created POA&M,
+  until that acceptance call. Evaluation is queued (`ccf.assessment_jobs`,
+  drained by the `assessment-worker` compose profile) since evaluating one
+  control means a model call per objective; `CCF_ASSESSMENT_ENGINE_ENABLED` is
+  **off by default** — the worker spends money on model calls — and gates
+  both the router (a disabled deployment gets a plain 404, not a 200 that
+  merely confirms the routes exist) and `ccf assessment-worker` (exits
+  immediately). **Neither this evaluation nor slice 1's prep classification
+  routes through `ccf.ai_actions.run_action`**: both call
+  `ccf.ai.gateway.generate_structured` directly, so neither produces an
+  `ai_action_runs` row, a citation record, or a guardrail evaluation, and
+  `PrepClassification.ai_action_run_id` is always `NULL`. Prep classification
+  *does* have a registered `ActionDef` (`classify_evidence_unit` in
+  `ccf.ai_actions.registry`) — registration is not dispatch, since nothing
+  calls `run_action` with it — and objective evaluation has no `ActionDef` at
+  all yet. For a product whose output becomes FedRAMP citations, wiring both
+  through the typed AI-action layer is the standing follow-up. The three new
+  proposal/job tables carry no row-level-security policies, the same
+  exemption as the `prep_*` tables; `systems`, `assessments`, and
+  `assessment_control_results` — where an accepted finding actually lands —
+  do carry the `tenant_isolation` RLS policy.
+
+### Changed — evidence preparation queue
+- `ccf.prep.jobs`'s `claim()`/`reap_stale()` now delegate to the shared
+  `ccf.queue.claim_jobs`/`reap_stale_jobs` primitive (extracted for, and now
+  shared with, the assessment engine's own job queue) instead of
+  reimplementing the `SELECT FOR UPDATE SKIP LOCKED` claim and
+  requeue/dead-letter logic locally, so the two queues cannot drift.
+  `tests/test_prep_jobs.py` is unchanged and passes unmodified. One
+  observable side effect: the shared helper renamed the prep queue's
+  structured-log events from `prep.jobs_claimed` / `prep.jobs_reaped` /
+  `prep.jobs_dead_lettered` to `queue.jobs_claimed` / `queue.jobs_reaped` /
+  `queue.jobs_dead_lettered` — anyone with external log-based alerting on the
+  old event names needs to repoint it.
+
 ### Added — continuous authorization
 - **Assurance query layer** (`ccf/queries/`) — a registry of deterministic,
   parameterized query templates over the authorization data (no AI): expired

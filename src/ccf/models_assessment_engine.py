@@ -11,6 +11,29 @@ The objectives themselves are not stored. They already exist as sub-clause rows 
 ``ccf.controls`` (``control_name IS NULL``); an objective proposal records the
 objective's label and a SHA-256 of its text, so a catalog re-ingest that changes
 wording makes a stale proposal detectable rather than silently wrong.
+
+**These three tables carry no row-level-security policies**, matching the seven
+``prep_*`` tables (see ``models_prep.py``'s identical note) rather than the
+110 of Concord's 131 ``ccf`` tables that do. Isolation is application-layer
+instead: every route and service function filters by ``organization_id``
+explicitly (derived from ``Assessment -> System -> Organization``, never from a
+caller-supplied id -- see ``ccf.assessment.engine.service``), and
+``ccf.assessment.engine.jobs``'s job claim is intentionally unscoped by
+organization, since one worker drains every organization's queued jobs by
+design. This is an explicit, deliberate exemption, not an oversight to be
+inferred -- see ``docs/ARCHITECTURE.md``'s "Objective-level assessment engine"
+section for the same note alongside the rest of the engine's description.
+
+**No governed-AI-action audit trail.** Objective evaluation
+(``ccf.assessment.engine.evaluate``) calls ``ccf.ai.gateway.generate_structured``
+directly, the same as slice 1's prep classification -- neither routes through
+``ccf.ai_actions.run_action``, so neither produces an ``ai_action_runs`` row, a
+citation record in that subsystem, or a guardrail evaluation. An ``ActionDef``
+is registered for prep classification in ``ccf.ai_actions.registry``, but
+registration is not dispatch: nothing calls ``run_action`` with it, and there is
+no equivalent ``ActionDef`` for objective evaluation at all. For a product whose
+output becomes FedRAMP citations, wiring both through the typed AI-action layer
+is the standing follow-up.
 """
 
 from __future__ import annotations
