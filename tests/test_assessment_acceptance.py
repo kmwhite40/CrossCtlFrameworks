@@ -239,8 +239,31 @@ async def test_a_stale_proposal_cannot_be_accepted(monkeypatch: pytest.MonkeyPat
         is_stale = await check_staleness(s, proposal)
         assert is_stale is True
 
-        with pytest.raises(AcceptanceRefused):
+        # Match on wording unique to the stale-specific branch, not merely the
+        # "not complete" superset -- "stale" != "complete" would also refuse,
+        # so an exact-exception-type check alone cannot tell them apart.
+        with pytest.raises(AcceptanceRefused, match="catalog objective text changed"):
             await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
+
+
+async def test_accepting_an_already_accepted_proposal_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second immediate accept, with no re-evaluation in between, must still
+    be refused. The proposal's ``proposed_finding`` is still set from the
+    first evaluation and is not ``insufficient_evidence``, and its state is
+    ``"stale"``'s sibling ``"accepted"`` rather than ``"complete"`` -- so only
+    the ``state != "complete"`` branch catches this; every other guard passes
+    it through. Task 11 wires this path to a POST endpoint a client can call
+    twice, so a repeated request must not silently re-accept.
+    """
+    proposal_id = await _evaluated_proposal("acc-double-immediate", monkeypatch)
+    async with session_scope() as s:
+        await accept_control_proposal(s, proposal_id, accepted_by="first@example.com")
+
+    async with session_scope() as s:
+        with pytest.raises(AcceptanceRefused, match="not complete"):
+            await accept_control_proposal(s, proposal_id, accepted_by="second@example.com")
 
 
 async def test_accepting_twice_does_not_duplicate_the_result_row(
