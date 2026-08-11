@@ -11,7 +11,7 @@ from ccf.ai import gateway
 from ccf.ai_actions.registry import get_action
 from ccf.db import session_scope
 from ccf.models import Organization
-from ccf.models_ai_actions import AiActionRun
+from ccf.models_ai_actions import AiActionCitation, AiActionRun
 from ccf.models_prep import PrepClassification, PrepLine, PrepScreen, PrepUnit
 from ccf.prep import pipeline
 from ccf.prep.classify import (
@@ -363,7 +363,66 @@ async def test_classification_records_an_ai_action_run(
         assert ai_run.entity_type == "prep_unit"
         assert ai_run.entity_id == str(unit_id)
         assert ai_run.status == "recorded"
+        assert ai_run.provider == "fake-provider"
         assert ai_run.summary["model"] == "fake-model-v1"
+
+
+async def test_classification_records_a_citation_for_the_unit_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A classification's evidence is the passage itself: record_ai_run must be
+    given exactly one CitationRef pointing back at this unit, and that must
+    land as a real AiActionCitation row, not just an in-memory argument."""
+    org_id = await _org("prep-classify-citation")
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> gateway.StructuredResult:
+        return gateway.StructuredResult(
+            data={
+                "control_identifiers": ["AC-2"],
+                "artifact_type": "procedure",
+                "evidence_strength": "moderate",
+                "explanation": "Describes a recurring account review.",
+                "confidence": 0.72,
+            },
+            model="fake-model-v1",
+            provider="fake-provider",
+        )
+
+    monkeypatch.setattr(gateway, "generate_structured_resolved", _fake_structured)
+
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        run.stage_parse = run.stage_screen = run.stage_expand = "complete"
+        line = PrepLine(run_id=run.id, organization_id=org_id, line_number=1, content="Text.")
+        s.add(line)
+        await s.flush()
+        s.add(PrepScreen(line_id=line.id, run_id=run.id, organization_id=org_id,
+                         relevance_score=0.5, candidate_controls=["AC-2"], above_threshold=True))
+        unit = PrepUnit(run_id=run.id, organization_id=org_id, trigger_line_id=line.id,
+                        source_line_ids=[line.id], content="Text.", token_count=2)
+        s.add(unit)
+        await s.flush()
+        unit_id = unit.id
+
+        await run_stage_classify(s, run)
+
+        classification = (
+            await s.execute(select(PrepClassification).where(PrepClassification.run_id == run.id))
+        ).scalar_one()
+        assert classification.ai_action_run_id is not None
+
+        citations = (
+            await s.execute(
+                select(AiActionCitation).where(
+                    AiActionCitation.run_id == classification.ai_action_run_id
+                )
+            )
+        ).scalars().all()
+        assert len(citations) == 1
+        assert citations[0].source_type == "prep_unit"
+        assert citations[0].source_id == str(unit_id)
 
 
 async def test_a_provenance_failure_does_not_fail_the_classification(
