@@ -334,7 +334,9 @@ async def test_an_insufficient_evidence_proposal_cannot_be_accepted(
 
 
 async def test_a_stale_proposal_cannot_be_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    proposal_id = await _evaluated_proposal("acc-stale", monkeypatch)
+    proposal_id = await _evaluated_proposal_with_runs("acc-stale", monkeypatch)
+    run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(run_ids) == 3
 
     async with session_scope() as s:
         control = (
@@ -359,6 +361,13 @@ async def test_a_stale_proposal_cannot_be_accepted(monkeypatch: pytest.MonkeyPat
         with pytest.raises(AcceptanceRefused, match="catalog objective text changed"):
             await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
 
+    # A refusal that stamped would record a human decision that never happened.
+    for run in await _runs(run_ids):
+        assert run.reviewer is None
+        assert run.disposition is None
+        assert run.decided_at is None
+        assert run.mutation_applied is False
+
 
 async def test_accept_refuses_a_reworded_objective_without_a_manual_staleness_check(
     monkeypatch: pytest.MonkeyPatch,
@@ -371,7 +380,9 @@ async def test_accept_refuses_a_reworded_objective_without_a_manual_staleness_ch
     deliberately does NOT call check_staleness before accepting -- proving
     accept_control_proposal now detects the reword on its own.
     """
-    proposal_id = await _evaluated_proposal("acc-auto-stale", monkeypatch)
+    proposal_id = await _evaluated_proposal_with_runs("acc-auto-stale", monkeypatch)
+    run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(run_ids) == 3
 
     async with session_scope() as s:
         control = (
@@ -402,6 +413,16 @@ async def test_accept_refuses_a_reworded_objective_without_a_manual_staleness_ch
         ).scalars().all()
         assert results == [], "a stale proposal must not project into AssessmentControlResult"
 
+    # This path detects staleness on its own, inside accept_control_proposal --
+    # a different code path than the manual check_staleness call in
+    # test_a_stale_proposal_cannot_be_accepted above -- so it needs its own
+    # confirmation that the refusal stamped nothing.
+    for run in await _runs(run_ids):
+        assert run.reviewer is None
+        assert run.disposition is None
+        assert run.decided_at is None
+        assert run.mutation_applied is False
+
 
 async def test_accepting_an_already_accepted_proposal_is_refused(
     monkeypatch: pytest.MonkeyPatch,
@@ -413,14 +434,37 @@ async def test_accepting_an_already_accepted_proposal_is_refused(
     the ``state != "complete"`` branch catches this; every other guard passes
     it through. Task 11 wires this path to a POST endpoint a client can call
     twice, so a repeated request must not silently re-accept.
+
+    Also confirms the refused second call does not re-stamp the linked runs
+    with the second accepter's identity: the first, legitimate accept does
+    stamp them (as first@example.com), and the refused second call must
+    leave that stamp exactly as it was -- overwriting it would record a
+    human decision (second@example.com's) that never actually happened.
     """
-    proposal_id = await _evaluated_proposal("acc-double-immediate", monkeypatch)
+    proposal_id = await _evaluated_proposal_with_runs("acc-double-immediate", monkeypatch)
+    run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(run_ids) == 3
+
     async with session_scope() as s:
         await accept_control_proposal(s, proposal_id, accepted_by="first@example.com")
+
+    stamped_after_first = {run.id: run for run in await _runs(run_ids)}
+    for run in stamped_after_first.values():
+        assert run.reviewer == "first@example.com"
+        assert run.disposition == "accepted"
+        assert run.decided_at is not None
+        assert run.mutation_applied is True
 
     async with session_scope() as s:
         with pytest.raises(AcceptanceRefused, match="not complete"):
             await accept_control_proposal(s, proposal_id, accepted_by="second@example.com")
+
+    for run in await _runs(run_ids):
+        original = stamped_after_first[run.id]
+        assert run.reviewer == "first@example.com"
+        assert run.disposition == "accepted"
+        assert run.decided_at == original.decided_at
+        assert run.mutation_applied is True
 
 
 async def test_accepting_twice_does_not_duplicate_the_result_row(
@@ -620,6 +664,33 @@ async def test_accepting_one_proposal_does_not_stamp_a_different_proposals_runs(
         assert run.reviewer == "assessor@example.com"
         assert run.disposition == "accepted"
         assert run.mutation_applied is True
+
+    for run in await _runs(run_ids_b):
+        assert run.reviewer is None
+        assert run.disposition is None
+        assert run.decided_at is None
+        assert run.mutation_applied is False
+
+
+async def test_accepting_one_organizations_proposal_does_not_stamp_anothers_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cross-tenant stamping would record one organization's assessor as having
+    taken responsibility for another organization's finding -- an
+    audit-integrity failure, not a cosmetic one. Two organizations, each with
+    its own assessment, proposal, and linked run (``_assessment`` creates a
+    fresh ``Organization`` per call, so these are unrelated tenants, not just
+    unrelated proposals); accepting org A's proposal must leave org B's run
+    completely unstamped.
+    """
+    proposal_a_id = await _evaluated_proposal_with_runs("acc-run-org-a", monkeypatch)
+    proposal_b_id = await _evaluated_proposal_with_runs("acc-run-org-b", monkeypatch)
+
+    run_ids_b = await _run_ids_for_proposal(proposal_b_id)
+    assert len(run_ids_b) == 3
+
+    async with session_scope() as s:
+        await accept_control_proposal(s, proposal_a_id, accepted_by="assessor@example.com")
 
     for run in await _runs(run_ids_b):
         assert run.reviewer is None
