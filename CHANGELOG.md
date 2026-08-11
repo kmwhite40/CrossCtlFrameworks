@@ -6,6 +6,55 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — AI provenance and audit trail for pipeline AI calls
+- **Every AI-generated classification and objective verdict now records an
+  audit trail.** `ccf.prep.classify` and `ccf.assessment.engine.evaluate` each
+  call `ccf.ai_actions.provenance.record_ai_run` after every model call: an
+  `ai_action_runs` row (provider, model, prompt version, input/output SHA-256
+  hashes) carrying `status="recorded"` — distinguishing it from an
+  approval-gated `run_action` run — one `ai_action_citations` row per cited
+  passage, and a link back from the pipeline table
+  (`PrepClassification.ai_action_run_id`, already present but unused since
+  migration 0052; `AssessmentObjectiveProposal.ai_action_run_id`, added by
+  migration 0056). Both pipelines deliberately do **not** route through
+  `ccf.ai_actions.run_action`: that function takes an entity and builds its
+  own prompt, whereas these pipelines' prompts are already bounded — one
+  passage, or one objective plus only the passages retrieval returned for it
+  — and their citations are validated against those exact candidates, which
+  is the safety property that per-call approval would not add; approval
+  gating is also unusable at up to 98 objectives for a single control.
+  `ActionDef`s for both `classify_evidence_unit` and
+  `evaluate_assessment_objective` are registered in `ccf.ai_actions.registry`
+  for discoverability, even though nothing dispatches through them.
+  **Recording never fails the work it documents**: `record_ai_run` writes
+  inside its own savepoint and returns `None` on failure, leaving the
+  pipeline row's `ai_action_run_id` `NULL` rather than losing the
+  classification or verdict. The no-evidence evaluation path — retrieval
+  found nothing, so no model was called — still records a run, with the
+  sentinel `provider="none"`, `model=None`, and zero citations
+  (`AiActionOutput.uncited=True`); `provider` is a NOT NULL column, so a
+  naive `COUNT(*) WHERE provider IS NOT NULL` would wrongly count these
+  no-model runs as if a model had run. When `CCF_AI_STORE_PROMPTS` is false,
+  the prompt body is withheld and only its SHA-256 is retained.
+  `POST /api/assessment-engine/proposals/{id}/accept` stamps `reviewer`,
+  `disposition="accepted"`, `decided_at`, and `mutation_applied=True` onto
+  every `AiActionRun` linked to the accepted control's objectives (a `NULL`
+  `ai_action_run_id` — a recording failure — is skipped, not an error), so one
+  query over `ai_action_runs` joined to `ai_action_citations` answers which
+  model produced a verdict, from what evidence, and who accepted it —
+  exercised end-to-end by `tests/test_ai_provenance_audit.py`.
+  `GET /api/ai-actions?status=recorded` lists pipeline-recorded runs,
+  principal-scoped like every other endpoint in that router. **Historical
+  rows are not retrofitted**: evidence classified and objectives evaluated
+  before this change keep a `NULL` `ai_action_run_id` permanently. Deferred,
+  deliberately: guardrail evaluation (belongs to `run_action`'s model and
+  needs its own per-call policy this slice does not define), per-call
+  approval gating of pipeline calls (acceptance is the human gate here, and
+  it guards the authoritative write), and provenance for the screen/embed
+  stages (screening is deterministic full-text ranking with no model call;
+  embeddings produce vectors, not assertions — neither makes a claim an
+  auditor would challenge).
+
 ### Added — objective-level assessment engine
 - **Objective-level assessment engine** (`ccf.assessment.engine`, migration
   0055, `/api/assessment-engine`, `ccf assessment-worker`) — evaluates
@@ -31,17 +80,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   **off by default** — the worker spends money on model calls — and gates
   both the router (a disabled deployment gets a plain 404, not a 200 that
   merely confirms the routes exist) and `ccf assessment-worker` (exits
-  immediately). **Neither this evaluation nor slice 1's prep classification
-  routes through `ccf.ai_actions.run_action`**: both call
-  `ccf.ai.gateway.generate_structured` directly, so neither produces an
-  `ai_action_runs` row, a citation record, or a guardrail evaluation, and
-  `PrepClassification.ai_action_run_id` is always `NULL`. Prep classification
-  *does* have a registered `ActionDef` (`classify_evidence_unit` in
-  `ccf.ai_actions.registry`) — registration is not dispatch, since nothing
-  calls `run_action` with it — and objective evaluation has no `ActionDef` at
-  all yet. For a product whose output becomes FedRAMP citations, wiring both
-  through the typed AI-action layer is the standing follow-up. The three new
-  proposal/job tables carry no row-level-security policies, the same
+  immediately). Every evaluation records its own AI provenance via
+  `ccf.ai_actions.provenance.record_ai_run` rather than routing through
+  `ccf.ai_actions.run_action` — see "AI provenance and audit trail for
+  pipeline AI calls" below for the full design and what it now answers. The
+  three new proposal/job tables carry no row-level-security policies, the same
   exemption as the `prep_*` tables; `systems`, `assessments`, and
   `assessment_control_results` — where an accepted finding actually lands —
   do carry the `tenant_isolation` RLS policy.
@@ -238,11 +281,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   the real ingested catalog is not consistently formatted; expand builds
   semantically complete units; classify tags each unit with control
   identifiers, artifact type, and evidence strength by calling the AI gateway
-  directly. **Classification is not yet wired through the typed AI-action
-  layer** (`ccf.ai_actions.run_action`) — it produces no `ai_action_runs` row,
-  citation record, guardrail evaluation, or human-approval gate, and
-  `PrepClassification.ai_action_run_id`/`.model_name` are always `NULL`; that
-  integration is tracked as follow-up work. Embed writes pgvector vectors.
+  directly, recording its own AI provenance (`ccf.ai_actions.provenance.record_ai_run`)
+  rather than routing through `ccf.ai_actions.run_action` — see "AI provenance
+  and audit trail for pipeline AI calls" below. Embed writes pgvector vectors.
   Retrieval (`GET /api/prep/retrieve`) fuses lexical `ts_rank`, pgvector
   cosine similarity, and a classifier-tagged boost by reciprocal-rank fusion,
   with a deterministic tiebreak so repeated identical queries return

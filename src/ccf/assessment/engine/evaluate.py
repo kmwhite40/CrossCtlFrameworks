@@ -16,6 +16,25 @@ actually relied on (``cited_unit_ids``), not everything retrieval offered. An
 accepted verdict here can become a Security Assessment Report finding and
 auto-create a POA&M, so this is the record that answers "which model decided
 this, and from what evidence."
+
+Recording writes an ``ai_action_runs`` row (provider, model, prompt version,
+input/output SHA-256 hashes) with ``status="recorded"``, distinguishing it
+from an approval-gated ``run_action`` run, plus a link back on
+``AssessmentObjectiveProposal.ai_action_run_id``. This deliberately does not
+route through ``ccf.ai_actions.run_action`` -- that function takes an entity
+and builds its own prompt, where this module's bounded prompt and
+candidate-validated citations are the safety property, and per-call approval
+is unusable at up to 98 objectives for a single control. Recording never
+fails the evaluation it documents: ``record_ai_run`` writes inside its own
+savepoint and returns ``None`` on failure, leaving ``ai_action_run_id`` a
+``NULL`` this function still returns rather than losing the verdict. Proposals
+evaluated before this recording existed keep that ``NULL`` permanently --
+historical rows are not retrofitted. When ``ai_store_prompts`` is off, only
+the prompt's hash is kept, not its text -- true above even for the
+no-evidence path's synthetic "prompt", which was never sent to a model.
+Acceptance (``ccf.assessment.engine.service.accept_control_proposal``) later
+stamps ``reviewer``, ``disposition``, and ``decided_at`` onto every run linked
+to an accepted control's objectives; this module only ever writes the run.
 """
 
 from __future__ import annotations

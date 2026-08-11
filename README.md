@@ -362,7 +362,7 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET | `/api/assurance/systems/{id}/graph` (+ `/impact`) | Assurance graph + change-impact analysis |
 | GET · POST | `/api/evidence-repo` (+ versions, review, download) | Versioned, content-addressed evidence with WORM lock |
 | GET · POST | `/api/packages` (+ `/{id}/diff`, `/{id}/replay`) | Authorization packages: provenance, diff, replay |
-| GET · POST | `/api/ai-actions` (+ `/{id}/approve`) | Typed, citation-first, human-approved AI actions |
+| GET · POST | `/api/ai-actions` (+ `/{id}/approve`, `?status=recorded` for prep/assessment-engine provenance) | Typed, citation-first, human-approved AI actions |
 | GET · POST | `/api/ai-agents` (+ `/{id}/kill-switch`) | AI-agent inventory, risk scoring, kill-switch |
 | GET · POST | `/api/packs` (+ `/{key}/install\|coverage\|test`) | Compliance-pack runtime |
 | POST · GET | `/api/admin/self-assurance/init\|run\|status\|package` | Concord-on-Concord self-assurance |
@@ -460,7 +460,17 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   Proposals are inert: nothing an evaluation writes reaches the SAR generator
   or an auto-created POA&M until an assessor accepts it, and a proposal that
   settled on `insufficient_evidence` cannot be accepted at all — the engine
-  could not tell, which is not the same as the control failing.
+  could not tell, which is not the same as the control failing. Both prep
+  classification and objective evaluation record their own AI provenance
+  (`ccf.ai_actions.provenance.record_ai_run`) on every call — an
+  `ai_action_runs` row with `status="recorded"`, citations, and a link back
+  from `PrepClassification`/`AssessmentObjectiveProposal` — independently of
+  `CCF_AI_ENABLED`'s approval-gated action layer above, and by design does not
+  route through it (see `docs/ARCHITECTURE.md` for why). Accepting a proposal
+  additionally stamps the accepting assessor (`reviewer`, `disposition`,
+  `decided_at`) onto every AI run linked to it, so `ai_action_runs` joined to
+  `ai_action_citations` answers which model, which evidence, and who accepted
+  it, for both pipelines, in one query.
 
 ## Security posture
 

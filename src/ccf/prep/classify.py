@@ -14,6 +14,21 @@ collapses candidates to base control identifiers before ranking, so
 ``AC-6(2)``) — only base ones (``AC-6``). Because the classifier's own scope is
 bounded by that same candidate set, it can never cite an enhancement either;
 that is a deliberate, recorded tradeoff of the screening design, not a bug here.
+
+Every call is recorded with ``ccf.ai_actions.provenance.record_ai_run``: an
+``ai_action_runs`` row (provider, model, prompt version, input/output SHA-256
+hashes) with ``status="recorded"`` distinguishing it from an approval-gated
+``run_action`` run, one ``ai_action_citations`` row for the unit itself, and a
+link back on ``PrepClassification.ai_action_run_id``. This deliberately does
+not route through ``ccf.ai_actions.run_action`` — that function takes an
+entity and builds its own prompt, where this module's per-passage-bounded
+prompt and candidate-validated output are themselves the safety property.
+Recording never fails the classification it documents: ``record_ai_run``
+writes inside its own savepoint and returns ``None`` on failure, leaving
+``ai_action_run_id`` ``NULL`` rather than losing the classification. Evidence
+classified before this recording existed keeps that ``NULL`` permanently —
+historical rows are not retrofitted. When ``ai_store_prompts`` is off, only
+the prompt's hash is kept, not its text.
 """
 
 from __future__ import annotations

@@ -119,13 +119,28 @@ Built on the reference catalog + operational tables:
   boilerplate line and the lowest-scoring genuine match was only ~0.03, so a
   future catalog re-ingest may require re-deriving it), expanded into
   semantically complete units, classified, and embedded into pgvector.
-  **Classification is not currently a governed AI action**: `run_stage_classify`
-  calls `ccf.ai.gateway.generate_structured` directly, not
-  `ccf.ai_actions.run_action` — no `ai_action_runs` row is created, so there is
-  no citation record, no guardrail evaluation, and no human-approval gate for a
-  classification, and `PrepClassification.ai_action_run_id` / `.model_name` are
-  always `NULL`. Wiring classification through the typed AI-action layer (as
-  originally specified) is tracked as follow-up work, not yet built. Screening
+  `run_stage_classify` calls `ccf.ai.gateway.generate_structured_resolved` (the
+  resolved-model variant, not the plain `generate_structured`, since the
+  provenance record below needs the model name back) and records every call
+  with `ccf.ai_actions.provenance.record_ai_run`: an `ai_action_runs` row
+  (provider, model, prompt version, input/output SHA-256 hashes) carrying
+  `status="recorded"` — distinguishing it from an approval-gated `run_action`
+  run — one `ai_action_citations` row for the unit, and a link back on
+  `PrepClassification.ai_action_run_id`. Classification deliberately does not
+  route through `ccf.ai_actions.run_action`: that function takes an entity and
+  builds its own prompt, whereas classification's prompt is already bounded to
+  one passage plus only the candidate controls screening surfaced, and that
+  boundedness — not per-call approval — is the safety property. An `ActionDef`
+  for `classify_evidence_unit` *is* registered in `ccf.ai_actions.registry` for
+  discoverability, even though nothing dispatches through it. Recording never
+  fails the classification it documents: `record_ai_run` writes inside its own
+  savepoint and returns `None` on failure, leaving `ai_action_run_id` `NULL`
+  rather than losing the classification. Evidence classified before this
+  recording existed keeps a `NULL` `ai_action_run_id` permanently — historical
+  rows are not retrofitted. When `CCF_AI_STORE_PROMPTS` is false, only the
+  prompt's SHA-256 is retained, not its text. `GET /api/ai-actions?status=recorded`
+  lists these runs, principal-scoped like every other endpoint in that router.
+  Screening
   collapses candidates to base control identifiers (`AC-6(2)` → `AC-6`, and,
   since the real catalog is not consistently formatted, also folds zero-padded
   spellings like `AC-06` to the same canonical `AC-6`) so one control's
@@ -193,16 +208,33 @@ Built on the reference catalog + operational tables:
   `app.include_router(assessment_engine.router)` (disabled means a plain 404,
   the routes absent from `/openapi.json`, not a 200 that merely confirms they
   exist) and `ccf assessment-worker` (exits immediately without draining
-  anything). **Neither this evaluation nor slice 1's prep classification
-  routes through `ccf.ai_actions.run_action`**: both call
-  `ccf.ai.gateway.generate_structured` directly, so neither produces an
-  `ai_action_runs` row, a citation record in that subsystem, or a guardrail
-  evaluation, and `PrepClassification.ai_action_run_id` is always `NULL`. An
-  `ActionDef` for prep classification *is* registered in
-  `ccf.ai_actions.registry` — registration is not dispatch, since nothing
-  calls `run_action` with it — and there is no `ActionDef` at all yet for
-  objective evaluation. For a product whose output becomes FedRAMP citations,
-  wiring both through the typed AI-action layer is the standing follow-up.
+  anything). Like prep classification above, `ccf.assessment.engine.evaluate`
+  calls `ccf.ai.gateway.generate_structured_resolved` and records every
+  evaluation with `ccf.ai_actions.provenance.record_ai_run` — an
+  `ai_action_runs` row, one `ai_action_citations` row per passage the model
+  actually cited (`cited_unit_ids`, not everything retrieval offered), and a
+  link back on `AssessmentObjectiveProposal.ai_action_run_id` (migration
+  0056) — and, for the same reason as classification, deliberately does not
+  route through `ccf.ai_actions.run_action`: the prompt is already bounded to
+  one objective plus only the passages retrieval returned for it, and its
+  citations are validated against that exact set, which is the safety
+  property; per-call approval is also unusable at up to 98 objectives for a
+  single control. An `ActionDef` for `evaluate_assessment_objective` *is*
+  registered in `ccf.ai_actions.registry`, same as classification's. Retrieval
+  finding nothing for an objective is not an error and skips the model call
+  entirely, but still records a run, with the sentinel `provider="none"`,
+  `model=None`, and zero citations (`AiActionOutput.uncited=True`);
+  `provider` is a NOT NULL column, so a query that counts runs by
+  `provider IS NOT NULL` would wrongly count these no-model runs as if a
+  model had run. `POST /api/assessment-engine/proposals/{id}/accept` stamps
+  `reviewer`, `disposition="accepted"`, `decided_at`, and
+  `mutation_applied=True` onto every `AiActionRun` linked to the accepted
+  control's objectives (a `NULL` `ai_action_run_id` — a recording failure —
+  is skipped, not an error), so one query over `ai_action_runs` joined to
+  `ai_action_citations` answers which model produced a verdict, from what
+  evidence, and who accepted it (`tests/test_ai_provenance_audit.py`).
+  Historical proposals predate this column and keep a `NULL`
+  `ai_action_run_id` permanently — historical rows are not retrofitted.
   The three `assessment_control_proposals` / `assessment_objective_proposals`
   / `assessment_jobs` tables deliberately carry no row-level-security
   policies, the same exemption as the `prep_*` tables and for the same
