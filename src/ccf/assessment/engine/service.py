@@ -21,12 +21,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import get_settings
 from ...logging import get_logger
 from ...models import Assessment, AssessmentControlResult, System
+from ...models_ai_actions import AiActionRun
 from ...models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
 from ...prep.screen import normalize_control_identifier
 from .evaluate import evaluate_objective
@@ -391,9 +392,34 @@ async def accept_control_proposal(
     result.reviewed = True
     result.reviewer = accepted_by
 
+    now = datetime.now(UTC)
     proposal.state = "accepted"
     proposal.accepted_by = accepted_by
-    proposal.accepted_at = datetime.now(UTC)
+    proposal.accepted_at = now
+
+    # Stamp every AiActionRun linked to this control's objectives: before
+    # acceptance nothing authoritative has been written from a run's output,
+    # so mutation_applied=True is truthful only from this point on -- Task 1
+    # recorded it False for exactly that reason. `objectives` was already
+    # loaded above (and is unaffected by the flush right before it, which
+    # exists for the `result` select's benefit, not this one), so its
+    # ai_action_run_id values are read straight off the ORM rows rather than
+    # re-queried. A NULL id -- a provenance-recording failure on that one
+    # objective -- is skipped, not an error: the audit gap must not block the
+    # assessment itself. One bulk UPDATE covers every linked run regardless of
+    # objective count, rather than one round trip per row.
+    run_ids = {o.ai_action_run_id for o in objectives if o.ai_action_run_id is not None}
+    if run_ids:
+        await session.execute(
+            update(AiActionRun)
+            .where(AiActionRun.id.in_(run_ids))
+            .values(
+                reviewer=accepted_by,
+                disposition="accepted",
+                decided_at=now,
+                mutation_applied=True,
+            )
+        )
 
     await session.flush()
     log.info(

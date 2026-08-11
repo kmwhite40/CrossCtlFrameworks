@@ -11,6 +11,7 @@ import pytest
 from docx import Document
 from sqlalchemy import delete, select
 
+from ccf.ai_actions.provenance import record_ai_run
 from ccf.assessment.engine import service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
 from ccf.assessment.engine.service import (
@@ -24,7 +25,8 @@ from ccf.assessment.sar import generate_sar_docx
 from ccf.assessment.seed import result_to_dict, summarize_results
 from ccf.db import session_scope
 from ccf.models import Assessment, AssessmentControlResult, Control, Organization, System
-from ccf.models_assessment_engine import AssessmentControlProposal
+from ccf.models_ai_actions import AiActionRun
+from ccf.models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -116,6 +118,118 @@ async def _evaluated_proposal(
         )
         proposal = await evaluate_control_proposal(s, proposal)
         return int(proposal.id)
+
+
+_SEQ2 = "ZQ-91"
+
+
+@pytest.fixture
+async def _second_catalog_rows():
+    """A second addressable control, for tests that need two proposals in the
+    same assessment. Separate from ``_catalog_rows`` (autouse, ZQ-90 only) so
+    every other test in this module keeps its single-control shape.
+    """
+    async with session_scope() as s:
+        await s.execute(delete(Control).where(Control.sequence_control == _SEQ2))
+        s.add(
+            Control(
+                identifier=_SEQ2,
+                sequence_control=_SEQ2,
+                control_name="Test Policy And Procedures Two",
+                assessment_objective="Determine if:",
+                source_row=1,
+            )
+        )
+        s.add(
+            Control(
+                identifier=f"{_SEQ2}-ao1",
+                sequence_control=_SEQ2,
+                ap_acronym="ZQ-91a",
+                assessment_objective="a second control's objective is defined;",
+                source_row=2,
+            )
+        )
+    yield
+    async with session_scope() as s:
+        await s.execute(delete(Control).where(Control.sequence_control == _SEQ2))
+
+
+def _fake_evaluate_with_provenance(
+    verdict: str = "satisfied", *, null_run_label: str | None = None
+):
+    """Like ``_fake_evaluate_always``, but calls ``record_ai_run`` for real --
+    the same way ``evaluate_objective`` itself does -- so acceptance-stamping
+    tests exercise the actual ``AiActionRun`` FK rather than a fabricated
+    integer. ``null_run_label`` simulates a provenance-recording failure on
+    one objective (its ``ai_action_run_id`` stays NULL, exactly what
+    ``evaluate_objective`` returns when ``record_ai_run`` itself fails),
+    leaving every other objective with a real linked run.
+    """
+
+    async def _fake(
+        session: Any, *, objective: Any, org_id: int, **kwargs: Any
+    ) -> ObjectiveEvaluation:
+        if objective.label == null_run_label:
+            return ObjectiveEvaluation(verdict=verdict, rationale="ok", confidence=0.5)
+        ai_run = await record_ai_run(
+            session,
+            action_key="evaluate_assessment_objective",
+            entity_type="assessment_objective",
+            entity_id=objective.label,
+            organization_id=org_id,
+            provider="anthropic",
+            model="fake-model",
+            prompt=f"evaluate {objective.label}",
+            output={"verdict": verdict},
+            citations=[],
+        )
+        assert ai_run is not None
+        return ObjectiveEvaluation(
+            verdict=verdict, rationale="ok", confidence=0.5, ai_action_run_id=ai_run.id
+        )
+
+    return _fake
+
+
+async def _evaluated_proposal_with_runs(
+    name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str = "satisfied",
+    *,
+    control_identifier: str = "ZQ-90",
+    null_run_label: str | None = None,
+) -> int:
+    """Like ``_evaluated_proposal``, but every objective's evaluation records a
+    real ``AiActionRun`` (unless ``null_run_label`` names one to skip).
+    """
+    fake = _fake_evaluate_with_provenance(verdict, null_run_label=null_run_label)
+    monkeypatch.setattr(service, "evaluate_objective", fake)
+    _, assessment_id = await _assessment(name)
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier=control_identifier
+        )
+        proposal = await evaluate_control_proposal(s, proposal)
+        return int(proposal.id)
+
+
+async def _run_ids_for_proposal(proposal_id: int) -> list[int]:
+    """The non-NULL ``ai_action_run_id`` values linked to one proposal's objectives."""
+    async with session_scope() as s:
+        ids = (
+            await s.execute(
+                select(AssessmentObjectiveProposal.ai_action_run_id).where(
+                    AssessmentObjectiveProposal.control_proposal_id == proposal_id
+                )
+            )
+        ).scalars().all()
+    return [i for i in ids if i is not None]
+
+
+async def _runs(run_ids: list[int]) -> list[AiActionRun]:
+    async with session_scope() as s:
+        result = await s.execute(select(AiActionRun).where(AiActionRun.id.in_(run_ids)))
+        return list(result.scalars())
 
 
 def _docx_text(data: bytes) -> str:
@@ -376,3 +490,139 @@ async def test_the_generated_sar_renders_the_projected_objectives(
 
     assert "ZQ-90a" in text
     assert "personnel to whom the policy is disseminated are defined;" in text
+
+
+async def test_before_acceptance_no_linked_run_is_stamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """reviewer, disposition, decided_at all NULL; mutation_applied False."""
+    proposal_id = await _evaluated_proposal_with_runs("acc-run-unstamped-before", monkeypatch)
+    run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(run_ids) == 3, "every objective in the ZQ-90 fixture should have recorded a run"
+
+    for run in await _runs(run_ids):
+        assert run.reviewer is None
+        assert run.disposition is None
+        assert run.decided_at is None
+        assert run.mutation_applied is False
+
+
+async def test_acceptance_stamps_every_linked_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each run gets reviewer == accepted_by, disposition 'accepted',
+    a decided_at, and mutation_applied True.
+    """
+    proposal_id = await _evaluated_proposal_with_runs("acc-run-stamp-all", monkeypatch)
+    run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(run_ids) == 3
+
+    async with session_scope() as s:
+        await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
+
+    runs = await _runs(run_ids)
+    assert len(runs) == 3
+    for run in runs:
+        assert run.reviewer == "assessor@example.com"
+        assert run.disposition == "accepted"
+        assert run.decided_at is not None
+        assert run.mutation_applied is True
+
+
+async def test_a_proposal_with_a_null_run_id_still_accepts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provenance failure must not block acceptance."""
+    proposal_id = await _evaluated_proposal_with_runs(
+        "acc-run-null-id", monkeypatch, null_run_label="ZQ-90b"
+    )
+    all_run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(all_run_ids) == 2, "ZQ-90b's provenance failure leaves only two linked runs"
+
+    async with session_scope() as s:
+        result = await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
+    assert result.finding == "satisfied"
+
+    async with session_scope() as s:
+        proposal = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.id == proposal_id
+                )
+            )
+        ).scalar_one()
+        assert proposal.state == "accepted"
+
+        by_label = {
+            o.label: o
+            for o in (
+                await s.execute(
+                    select(AssessmentObjectiveProposal).where(
+                        AssessmentObjectiveProposal.control_proposal_id == proposal_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        }
+    assert by_label["ZQ-90b"].ai_action_run_id is None
+
+    for run in await _runs(all_run_ids):
+        assert run.reviewer == "assessor@example.com"
+        assert run.disposition == "accepted"
+        assert run.decided_at is not None
+        assert run.mutation_applied is True
+
+
+async def test_a_refused_acceptance_stamps_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An insufficient_evidence proposal is refused and leaves runs unstamped."""
+    proposal_id = await _evaluated_proposal_with_runs(
+        "acc-run-refused", monkeypatch, verdict="insufficient_evidence"
+    )
+    run_ids = await _run_ids_for_proposal(proposal_id)
+    assert len(run_ids) == 3
+
+    async with session_scope() as s:
+        with pytest.raises(AcceptanceRefused):
+            await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
+
+    for run in await _runs(run_ids):
+        assert run.reviewer is None
+        assert run.disposition is None
+        assert run.decided_at is None
+        assert run.mutation_applied is False
+
+
+async def test_accepting_one_proposal_does_not_stamp_a_different_proposals_runs(
+    monkeypatch: pytest.MonkeyPatch, _second_catalog_rows: None
+) -> None:
+    """Two control proposals in the same assessment, each with a linked run --
+    accepting one must not touch the other's.
+    """
+    monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate_with_provenance())
+    _, assessment_id = await _assessment("acc-run-cross-proposal")
+    async with session_scope() as s:
+        proposal_a = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        proposal_a = await evaluate_control_proposal(s, proposal_a)
+        proposal_a_id = int(proposal_a.id)
+
+        proposal_b = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-91"
+        )
+        proposal_b = await evaluate_control_proposal(s, proposal_b)
+        proposal_b_id = int(proposal_b.id)
+
+    run_ids_a = await _run_ids_for_proposal(proposal_a_id)
+    run_ids_b = await _run_ids_for_proposal(proposal_b_id)
+    assert len(run_ids_a) == 3
+    assert len(run_ids_b) == 1
+
+    async with session_scope() as s:
+        await accept_control_proposal(s, proposal_a_id, accepted_by="assessor@example.com")
+
+    for run in await _runs(run_ids_a):
+        assert run.reviewer == "assessor@example.com"
+        assert run.disposition == "accepted"
+        assert run.mutation_applied is True
+
+    for run in await _runs(run_ids_b):
+        assert run.reviewer is None
+        assert run.disposition is None
+        assert run.decided_at is None
+        assert run.mutation_applied is False
