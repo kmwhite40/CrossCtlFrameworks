@@ -169,7 +169,29 @@ without reconstructing the chain by hand.
 
 ## Data model
 
-No new tables. One column: `assessment_control_proposals.source_poam_id`
+No new tables. One column plus a constraint swap the column forces.
+
+**The constraint swap.** `uq_control_proposal_assessment_control` is unique on
+`(assessment_id, control_identifier)` (`models_assessment_engine.py:138`,
+migration `0055:69`; confirmed present in the live schema). A re-evaluation is a
+second proposal for a control that already has one, so that constraint would
+reject it outright. It is replaced by two partial unique indexes:
+
+- `uq_control_proposal_first_pass`, scoped `WHERE source_poam_id IS NULL` —
+  preserving the original guarantee for first-pass proposals exactly.
+- `uq_control_proposal_source_poam`, on `source_poam_id` — capping one
+  re-evaluation per POA&M.
+
+The second index is not merely permissive; it is where this slice's idempotency
+actually lives. "Closing a POA&M twice enqueues one re-evaluation" becomes a
+database invariant rather than an application-level check that a race could slip
+past — which is the shape the standing debt list has wanted for job dedup.
+
+`open_control_proposal`'s own lookup must also filter `source_poam_id IS NULL`,
+or it raises `MultipleResultsFound` once a re-evaluation row coexists with a
+first-pass one.
+
+The column: `assessment_control_proposals.source_poam_id`
 (nullable `BigInteger`, FK to `ccf.poams.id`, `ON DELETE SET NULL`, indexed),
 NULL for first-pass proposals. Migration `0058`.
 
