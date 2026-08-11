@@ -37,9 +37,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import get_settings
 from ...logging import get_logger
+from ...models import Assessment, AssessmentControlResult, System
 from ...models_assessment_engine import AssessmentControlProposal, AssessmentJob
 from ...queue import claim_jobs, reap_stale_jobs
-from .service import evaluate_control_proposal, open_control_proposal
+from .service import evaluate_control_proposal, open_control_proposal, open_reevaluation_proposal
 
 log = get_logger(__name__)
 
@@ -115,6 +116,95 @@ async def enqueue_control(
         job_id=job.id,
         control_proposal_id=proposal.id,
         control_identifier=proposal.control_identifier,
+    )
+    return job
+
+
+async def enqueue_reevaluation(
+    session: AsyncSession, *, poam_id: int, source_ref: str, organization_id: int
+) -> AssessmentJob | None:
+    """Enqueue a re-evaluation of the control an assessment-sourced POA&M remediated.
+
+    A no-op -- enqueues nothing, returns ``None`` -- for any ``source_ref``
+    that does not match the ``assessment_control_result:{id}`` convention
+    Task 2's bridge writes: a scan-sourced or profile-gap POA&M has no
+    objective-level proposal to re-derive, and enqueueing one would run the
+    engine against a control nobody assessed through it.
+
+    ``organization_id`` is the POA&M's own organization -- resolved by the
+    caller from its ``system_id``, never trusted from anywhere else -- and
+    is reconciled here against the organization the named result's
+    assessment actually belongs to *before* anything is written. A mismatch
+    means the POA&M's source_ref, however that happened, names a finding in
+    another tenant; nothing is enqueued and no proposal row is created for
+    it, matching the fail-closed-before-any-write shape
+    ``open_reevaluation_proposal`` itself cannot enforce on its own (it only
+    ever sees the organization derived from the result, not the caller's).
+
+    Idempotent via :func:`open_reevaluation_proposal`'s own
+    ``source_poam_id`` key, plus reuse of any outstanding (``pending`` /
+    ``claimed``) job already queued against that one proposal -- closing the
+    same POA&M twice enqueues exactly one job.
+    """
+    if not source_ref.startswith("assessment_control_result:"):
+        return None
+    try:
+        result_id = int(source_ref.split(":", 1)[1])
+    except ValueError:
+        return None
+
+    result = (
+        await session.execute(
+            select(AssessmentControlResult).where(AssessmentControlResult.id == result_id)
+        )
+    ).scalar_one_or_none()
+    if result is None:
+        return None
+
+    result_org_id = (
+        await session.execute(
+            select(System.organization_id)
+            .join(Assessment, Assessment.system_id == System.id)
+            .where(Assessment.id == result.assessment_id)
+        )
+    ).scalar_one_or_none()
+    if result_org_id is None or int(result_org_id) != organization_id:
+        log.warning(
+            "assessment.reevaluation_org_mismatch",
+            poam_id=poam_id,
+            result_id=result_id,
+            poam_organization_id=organization_id,
+        )
+        return None
+
+    proposal = await open_reevaluation_proposal(session, result=result, source_poam_id=poam_id)
+
+    existing = (
+        await session.execute(
+            select(AssessmentJob)
+            .where(
+                AssessmentJob.control_proposal_id == proposal.id,
+                AssessmentJob.status.in_(_OUTSTANDING_JOB_STATUSES),
+            )
+            .order_by(AssessmentJob.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    job = AssessmentJob(
+        organization_id=proposal.organization_id,
+        control_proposal_id=proposal.id,
+        status="pending",
+    )
+    session.add(job)
+    await session.flush()
+    log.info(
+        "assessment.reevaluation_job_enqueued",
+        job_id=job.id,
+        control_proposal_id=proposal.id,
+        source_poam_id=poam_id,
     )
     return job
 

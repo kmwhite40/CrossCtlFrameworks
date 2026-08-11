@@ -134,6 +134,60 @@ async def open_control_proposal(
     return proposal
 
 
+async def open_reevaluation_proposal(
+    session: AsyncSession, *, result: AssessmentControlResult, source_poam_id: int
+) -> AssessmentControlProposal:
+    """Open (or return the existing) re-evaluation proposal for a remediated control.
+
+    Idempotent on ``source_poam_id`` (``uq_control_proposal_source_poam``,
+    migration 0058) -- closing the same POA&M twice returns the same
+    proposal rather than violating that index with a second insert.
+    Deliberately does not call :func:`open_control_proposal`: that
+    function's own idempotency (``uq_control_proposal_first_pass``) is now
+    scoped to ``source_poam_id IS NULL`` rows only, precisely so a fresh row
+    here for the same ``(assessment_id, control_identifier)`` does not
+    collide with the already-accepted first-pass proposal still sitting on
+    that pair.
+    """
+    existing = (
+        await session.execute(
+            select(AssessmentControlProposal).where(
+                AssessmentControlProposal.source_poam_id == source_poam_id
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    row = (
+        await session.execute(
+            select(System.organization_id, System.id)
+            .join(Assessment, Assessment.system_id == System.id)
+            .where(Assessment.id == result.assessment_id)
+        )
+    ).first()
+    if row is None:
+        raise ProposalError(f"assessment {result.assessment_id} not found")
+    organization_id = int(row[0])
+
+    canonical = normalize_control_identifier(result.control_id)
+    proposal = AssessmentControlProposal(
+        organization_id=organization_id,
+        assessment_id=result.assessment_id,
+        control_identifier=canonical,
+        source_poam_id=source_poam_id,
+    )
+    session.add(proposal)
+    await session.flush()
+    log.info(
+        "assessment.reevaluation_proposal_opened",
+        assessment_id=result.assessment_id,
+        control_identifier=canonical,
+        source_poam_id=source_poam_id,
+    )
+    return proposal
+
+
 async def evaluate_control_proposal(
     session: AsyncSession, proposal: AssessmentControlProposal
 ) -> AssessmentControlProposal:

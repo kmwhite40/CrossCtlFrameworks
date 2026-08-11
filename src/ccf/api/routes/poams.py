@@ -14,15 +14,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...assessment.engine import jobs as engine_jobs
 from ...auth import Principal
 from ...config import get_settings
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
+from ...logging import get_logger
 from ...models import POAM, Approval, ControlImplementation, Evidence, PoamMilestone, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/poams", tags=["poams"])
+log = get_logger(__name__)
 
 SEVERITIES = r"^(low|moderate|high|critical)$"
 STATUSES = r"^(open|in_progress|completed|risk_accepted|closed)$"
@@ -257,6 +260,45 @@ async def _require_risk_accepted_gate(
         )
 
 
+async def _maybe_enqueue_reevaluation(session: AsyncSession, obj: POAM) -> None:
+    """Best-effort: enqueue a re-evaluation of the control this POA&M remediated.
+
+    Only assessment-sourced POA&Ms qualify -- see
+    ``ccf.assessment.engine.jobs.enqueue_reevaluation`` for the ``source_ref``
+    convention this relies on; a scan-sourced or profile-gap POA&M's
+    ``source_ref`` never matches it, so this is silently a no-op for those.
+    Called only after the closure itself is already committed, so a failure
+    here must never surface as a failure of the closure -- the ISSM-08/09
+    gate above already did the only thing that must be allowed to block a
+    close.
+
+    The enqueue runs inside its own savepoint
+    (``async with session.begin_nested()``): ``AsyncSession.rollback()`` is
+    NOT savepoint-scoped -- it unwinds the *whole* transaction, which here
+    would mean nothing (the closure is already committed by the time this
+    runs), but a bare, un-nested write that raised partway through would
+    leave the session's transaction poisoned for every query the route still
+    has to make afterward (re-fetching ``obj`` for the response). The
+    savepoint confines any failure to just this enqueue attempt.
+    """
+    if not obj.source_ref:
+        return
+    org_id = (
+        await session.execute(select(System.organization_id).where(System.id == obj.system_id))
+    ).scalar_one_or_none()
+    if org_id is None:
+        return
+    try:
+        async with session.begin_nested():
+            job = await engine_jobs.enqueue_reevaluation(
+                session, poam_id=obj.id, source_ref=obj.source_ref, organization_id=int(org_id)
+            )
+        if job is not None:
+            await session.commit()
+    except Exception as exc:  # the closure itself is already committed
+        log.warning("poam.reevaluation_enqueue_failed", poam_id=obj.id, error=str(exc))
+
+
 @router.get("")
 async def list_poams(
     session: AsyncSession = Depends(get_session),
@@ -412,6 +454,7 @@ async def update_poam(
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
     data = body.model_dump(exclude_none=True)
+    was_closed = obj.status == "closed"
     if data.get("status") == "closed":
         await _require_closure_gate(session, obj)
     elif data.get("status") == "risk_accepted":
@@ -433,6 +476,8 @@ async def update_poam(
         actor=principal.email,
     )
     await session.commit()
+    if data.get("status") == "closed" and not was_closed:
+        await _maybe_enqueue_reevaluation(session, obj)
     obj = await _require_poam(session, pid, principal)
     state = await entity_state(session, "poam", obj.id)
     return _out(obj, datetime.now(UTC).date(), state)
@@ -445,6 +490,7 @@ async def close_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
+    was_closed = obj.status == "closed"
     await _require_closure_gate(session, obj)
     obj.status = "closed"
     obj.closed_on = date.today()
@@ -458,6 +504,8 @@ async def close_poam(
         actor=principal.email,
     )
     await session.commit()
+    if not was_closed:
+        await _maybe_enqueue_reevaluation(session, obj)
     obj = await _require_poam(session, pid, principal)
     state = await entity_state(session, "poam", obj.id)
     return _out(obj, datetime.now(UTC).date(), state)
