@@ -28,7 +28,11 @@ from ...config import get_settings
 from ...logging import get_logger
 from ...models import Assessment, AssessmentControlResult, System
 from ...models_ai_actions import AiActionRun
-from ...models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
+from ...models_assessment_engine import (
+    CORRECTED_FINDINGS,
+    AssessmentControlProposal,
+    AssessmentObjectiveProposal,
+)
 from ...prep.screen import normalize_control_identifier
 from .evaluate import evaluate_objective
 from .objectives import objectives_for
@@ -51,6 +55,21 @@ class AcceptanceRefused(ProposalError):  # noqa: N818 -- interface name fixed by
     (``insufficient_evidence`` -- the engine could not tell, which is not the
     same thing as the control failing, and writing it as a finding would
     manufacture a POA&M out of missing evidence).
+    """
+
+
+class RejectionRefused(ProposalError):  # noqa: N818 -- sibling of AcceptanceRefused, same reasoning
+    """A proposal exists but is not fit to be rejected as an assessor correction.
+
+    Four conditions refuse rejection, all enforced here rather than in the
+    schema: the proposal is already ``accepted`` (a human already signed off on
+    it -- a rejection cannot retroactively undo that), the proposal is already
+    ``rejected`` (no re-rejecting a terminal state), ``corrected_finding`` is
+    ``insufficient_evidence`` (that is a proposal-only state meaning the engine
+    could not tell; an assessor correcting a verdict is asserting what is
+    *true*, not declining to say), or ``note`` is blank (a rejection without a
+    reason tells calibration the engine was wrong but not how, and "how" is
+    what makes the metric actionable).
     """
 
 
@@ -429,3 +448,101 @@ async def accept_control_proposal(
         accepted_by=accepted_by,
     )
     return result
+
+
+async def reject_control_proposal(
+    session: AsyncSession,
+    proposal_id: int,
+    *,
+    rejected_by: str,
+    corrected_finding: str,
+    note: str,
+) -> AssessmentControlProposal:
+    """The human gate's other outcome: record that an assessor disagrees.
+
+    Unlike acceptance, this never writes an ``AssessmentControlResult`` --
+    the engine's wrong answer must not reach the SAR or an auto-created POA&M
+    with a human's name attached. It only stamps the proposal itself with the
+    assessor's corrected finding and reason, and mirrors acceptance's
+    ``AiActionRun`` stamping so the audit trail records disagreement as
+    faithfully as it records agreement -- except ``mutation_applied`` stays
+    ``False``, because nothing authoritative was written.
+
+    Refuses -- raising :class:`RejectionRefused` and writing nothing -- when
+    the proposal is already ``accepted`` or already ``rejected`` (terminal
+    states, neither re-enterable), when ``corrected_finding`` is
+    ``insufficient_evidence`` (proposal-only; an assessor asserts what is
+    true), or when ``note`` is blank. All four checks are application code;
+    nothing in the schema stops a bad write on its own.
+    """
+    proposal = (
+        await session.execute(
+            select(AssessmentControlProposal).where(AssessmentControlProposal.id == proposal_id)
+        )
+    ).scalar_one_or_none()
+    if proposal is None:
+        raise ProposalError(f"control proposal {proposal_id} not found")
+
+    if proposal.state == "accepted":
+        raise RejectionRefused(
+            f"control proposal {proposal_id} is already accepted and cannot be rejected"
+        )
+    if proposal.state == "rejected":
+        raise RejectionRefused(f"control proposal {proposal_id} is already rejected")
+
+    if corrected_finding not in CORRECTED_FINDINGS:
+        raise RejectionRefused(
+            f"corrected_finding {corrected_finding!r} is not a valid correction -- "
+            f"must be one of {CORRECTED_FINDINGS}; insufficient_evidence is proposal-only "
+            "and cannot be asserted as a correction"
+        )
+    if not note or not note.strip():
+        raise RejectionRefused(
+            f"control proposal {proposal_id} cannot be rejected without a note explaining why"
+        )
+
+    objectives = (
+        (
+            await session.execute(
+                select(AssessmentObjectiveProposal).where(
+                    AssessmentObjectiveProposal.control_proposal_id == proposal.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    now = datetime.now(UTC)
+    proposal.state = "rejected"
+    proposal.corrected_finding = corrected_finding
+    proposal.rejected_by = rejected_by
+    proposal.rejected_at = now
+    proposal.rejection_note = note
+
+    # Mirrors accept_control_proposal's run-stamping exactly, except
+    # mutation_applied is omitted from the values() below -- it stays at its
+    # existing value (False, per Task 1) because nothing authoritative was
+    # written here. See that function's own comment for why a NULL run id is
+    # skipped, not an error, and why one bulk UPDATE covers every linked run.
+    run_ids = {o.ai_action_run_id for o in objectives if o.ai_action_run_id is not None}
+    if run_ids:
+        await session.execute(
+            update(AiActionRun)
+            .where(AiActionRun.id.in_(run_ids))
+            .values(
+                reviewer=rejected_by,
+                disposition="rejected",
+                decided_at=now,
+            )
+        )
+
+    await session.flush()
+    log.info(
+        "assessment.control_proposal_rejected",
+        assessment_id=proposal.assessment_id,
+        control_identifier=proposal.control_identifier,
+        rejected_by=rejected_by,
+        corrected_finding=corrected_finding,
+    )
+    return proposal
