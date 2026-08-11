@@ -20,18 +20,24 @@ import os
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from ccf.api.main import create_app
+from ccf.api.routes import assessment_engine
 from ccf.assessment.engine import service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
 from ccf.assessment.engine.service import evaluate_control_proposal, open_control_proposal
-from ccf.auth import hash_password, new_api_token
+from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Assessment, AssessmentControlResult, Control, Organization, System, User
-from ccf.models_assessment_engine import AssessmentControlProposal, AssessmentJob
+from ccf.models_assessment_engine import (
+    AssessmentControlProposal,
+    AssessmentJob,
+    AssessmentObjectiveProposal,
+)
 from ccf.models_prep import PrepLine, PrepUnit
 from ccf.prep import pipeline
 
@@ -260,6 +266,43 @@ async def test_get_returns_objectives_with_citations_and_page_numbers(
     ]
 
 
+async def test_citations_do_not_resolve_a_foreign_organizations_prep_unit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``prep_units`` carries no RLS (see migration 0055), so a foreign unit id
+    planted in ``cited_unit_ids`` -- e.g. by a bug two modules away in
+    ``evaluate.py``, not reachable through this route today -- must still not
+    resolve. Plants org B's real unit id directly into org A's objective
+    proposal row and asserts GET's citation-resolution join, which is scoped
+    by ``organization_id`` explicitly, drops it rather than leaking org B's
+    ``section_path``/page numbers into org A's response.
+    """
+    token_a, org_a = await _mk_user("citation-a@ae-tenant.test", "AE Tenant Citation A")
+    _, org_b = await _mk_user("citation-b@ae-tenant.test", "AE Tenant Citation B")
+    assessment_a = await _assessment_for(org_a, "citation-attacker")
+    victim_unit_id = await _seed_prep_unit(org_b, [9, 10])
+    proposal_id = await _evaluated_proposal(assessment_a, monkeypatch)
+
+    async with session_scope() as s:
+        objective = (
+            await s.execute(
+                select(AssessmentObjectiveProposal).where(
+                    AssessmentObjectiveProposal.control_proposal_id == proposal_id
+                )
+            )
+        ).scalar_one()
+        objective.cited_unit_ids = [victim_unit_id]
+        await s.flush()
+
+    async with _client() as client:
+        response = await client.get(
+            f"/api/assessment-engine/proposals/{proposal_id}", headers=_auth(token_a)
+        )
+    assert response.status_code == 200
+    citations = response.json()["objectives"][0]["citations"]
+    assert citations == [], "a foreign organization's prep_unit must not resolve as a citation"
+
+
 async def test_accept_projects_into_the_result_store(monkeypatch: pytest.MonkeyPatch) -> None:
     token, org_id = await _mk_user("accept-a@ae-api.test", "AE API Accept Org")
     assessment_id = await _assessment_for(org_id, "accept")
@@ -343,6 +386,67 @@ async def test_unauthenticated_access_is_refused() -> None:
     assert response.status_code == 401
 
 
+# --- Input validation: bounded ids and a non-empty control_identifier --------
+# Out-of-range ids used to overflow the asyncpg bind (Assessment.id is a
+# Postgres INTEGER, the {proposal_id} path param is BIGINT) and reach the
+# database as an unhandled 500. control_identifier used to accept "" outright
+# and open a real proposal/job for control "". All four are now a 422 at the
+# edge, before any query runs.
+
+
+async def test_post_rejects_an_out_of_range_assessment_id() -> None:
+    token, _org_id = await _mk_user("oor-assessment-a@ae-api.test", "AE API OOR Assessment")
+    async with _client() as client:
+        response = await client.post(
+            "/api/assessment-engine/proposals",
+            json={"assessment_id": 2**31, "control_identifier": _SEQ},
+            headers=_auth(token),
+        )
+    assert response.status_code == 422
+
+
+async def test_get_rejects_an_out_of_range_proposal_id() -> None:
+    token, _org_id = await _mk_user("oor-proposal-a@ae-api.test", "AE API OOR Proposal")
+    async with _client() as client:
+        response = await client.get(
+            f"/api/assessment-engine/proposals/{2**63}", headers=_auth(token)
+        )
+    assert response.status_code == 422
+
+
+async def test_post_rejects_an_empty_control_identifier() -> None:
+    token, org_id = await _mk_user("empty-control-a@ae-api.test", "AE API Empty Control")
+    assessment_id = await _assessment_for(org_id, "empty-control")
+    async with _client() as client:
+        response = await client.post(
+            "/api/assessment-engine/proposals",
+            json={"assessment_id": assessment_id, "control_identifier": ""},
+            headers=_auth(token),
+        )
+    assert response.status_code == 422
+    async with session_scope() as s:
+        leaked = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.assessment_id == assessment_id
+                )
+            )
+        ).scalars().all()
+        assert leaked == [], "no proposal should have been opened for an empty control"
+
+
+async def test_post_rejects_an_overlong_control_identifier() -> None:
+    token, org_id = await _mk_user("long-control-a@ae-api.test", "AE API Long Control")
+    assessment_id = await _assessment_for(org_id, "long-control")
+    async with _client() as client:
+        response = await client.post(
+            "/api/assessment-engine/proposals",
+            json={"assessment_id": assessment_id, "control_identifier": "X" * 65},
+            headers=_auth(token),
+        )
+    assert response.status_code == 422
+
+
 # --- Attacks: cross-tenant read/accept/enqueue must all 404 ------------------
 
 
@@ -407,9 +511,22 @@ async def test_an_org_a_principal_cannot_accept_an_org_b_proposal(
         assert leaked is None
 
 
-async def test_an_org_a_principal_cannot_enqueue_against_an_org_b_assessment() -> None:
+async def test_an_org_a_principal_cannot_enqueue_against_an_org_b_assessment_end_to_end() -> None:
     """The laundering shape from slice 1: a foreign assessment_id must 404,
     and no proposal row may be created at all -- not just the right status.
+
+    Named "end_to_end" deliberately: this is the real HTTP path, and it is
+    refused twice over -- ``create_proposal``'s own ``org_id != principal.org_id``
+    check, *and*, independently, Postgres RLS on ``ccf.systems``/``ccf.assessments``
+    (see migration ``0022_rls_coverage_and_fk_indexes``), which already scopes
+    the underlying ``System JOIN Assessment`` select to the caller's tenant
+    context before the app code ever compares anything. Deleting the app-layer
+    check alone does not fail this test -- verified by hand: RLS alone still
+    404s the request. That is real, load-bearing defense-in-depth, not a
+    reason to skip the app-layer check; it is exactly why this test cannot,
+    on its own, prove the app-layer check matters. See
+    ``test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_of_rls``
+    below for the test that isolates that check specifically.
     """
     token_a, org_a = await _mk_user("launder-a@ae-tenant.test", "AE Tenant Launder A")
     _token_b, org_b = await _mk_user("launder-b@ae-tenant.test", "AE Tenant Launder B")
@@ -441,3 +558,47 @@ async def test_an_org_a_principal_cannot_enqueue_against_an_org_b_assessment() -
             )
         ).scalars().all()
         assert leaked_as_a == []
+
+
+async def test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_of_rls() -> None:
+    """Isolates ``create_proposal``'s own ``org_id != principal.org_id`` check
+    from Postgres RLS, which the end-to-end test above cannot do (RLS on
+    ``ccf.systems``/``ccf.assessments`` already 404s a foreign assessment_id
+    on its own -- see that test's docstring).
+
+    Calls the route function directly -- not through the ASGI/HTTP stack --
+    with a ``session_scope()`` session. That session runs under the
+    bootstrap role (see ``ccf.db.session_scope`` / ``set_session_tenant``:
+    ``RESET ROLE`` + no tenant GUC, which every RLS policy here treats as
+    bypass), so the ``System JOIN Assessment`` select inside
+    ``_assessment_organization_id`` returns org B's real row regardless of
+    which principal is asking. Whether the request is then refused depends
+    entirely on ``create_proposal``'s own comparison -- which is exactly what
+    this test pins. Deleting that comparison (as the coordinator's mutation
+    check did) makes this test fail with a 201 while the end-to-end test
+    above keeps passing, which is the point of having both.
+    """
+    _token_a, org_a = await _mk_user("appcheck-a@ae-tenant.test", "AE Tenant AppCheck A")
+    _token_b, org_b = await _mk_user("appcheck-b@ae-tenant.test", "AE Tenant AppCheck B")
+    assessment_b = await _assessment_for(org_b, "appcheck-victim")
+    principal_a = Principal(
+        user_id=None, email="attacker@ae-tenant.test", org_id=org_a, role="viewer"
+    )
+
+    async with session_scope() as s:  # bootstrap role -- RLS bypassed, cannot help here
+        body = assessment_engine.ProposalCreate(
+            assessment_id=assessment_b, control_identifier=_SEQ
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await assessment_engine.create_proposal(body, s, principal_a)
+    assert exc_info.value.status_code == 404
+
+    async with session_scope() as s:
+        leaked = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.assessment_id == assessment_b
+                )
+            )
+        ).scalars().all()
+        assert leaked == [], "no proposal should have been opened against the victim's assessment"

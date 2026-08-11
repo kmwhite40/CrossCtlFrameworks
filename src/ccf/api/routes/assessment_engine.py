@@ -32,8 +32,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Path
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,10 +48,21 @@ from ..deps import get_session
 
 router = APIRouter(prefix="/api/assessment-engine", tags=["assessment-engine"])
 
+#: Assessment.id is a Postgres INTEGER; a value past this overflows the asyncpg
+#: bind and raises DataError -> an unhandled 500 rather than a 422, on input
+#: that never needed to reach the database at all.
+_MAX_INT32 = 2**31 - 1
+#: AssessmentControlProposal.id (the {proposal_id} path param) is BIGINT; same
+#: reasoning, same fix, one order of magnitude higher.
+_MAX_INT64 = 2**63 - 1
+
 
 class ProposalCreate(BaseModel):
-    assessment_id: int
-    control_identifier: str
+    assessment_id: int = Field(ge=1, le=_MAX_INT32)
+    #: Matches the assessment_control_proposals.control_identifier column
+    #: (String(64)); empty is rejected here rather than silently opening a
+    #: proposal for control "".
+    control_identifier: str = Field(min_length=1, max_length=64)
 
 
 async def _assessment_organization_id(session: AsyncSession, assessment_id: int) -> int | None:
@@ -89,17 +100,33 @@ async def _require_proposal(
     return proposal
 
 
-async def _citations(session: AsyncSession, cited_unit_ids: list[Any]) -> list[dict[str, Any]]:
+async def _citations(
+    session: AsyncSession, cited_unit_ids: list[Any], organization_id: int
+) -> list[dict[str, Any]]:
     """Resolve cited prep_unit ids to their page numbers/section for review.
 
     Preserves citation order and silently drops an id that no longer resolves
     (e.g. its prep run was later cleaned up) rather than failing the whole
     response over one stale reference.
+
+    Scoped to ``organization_id`` explicitly -- ``prep_units`` carries no RLS
+    policy (see migration 0055), so this cannot rely on the database to keep a
+    foreign unit id out. In practice ``evaluate.py`` only ever cites ids from
+    its own org-scoped retrieval, but that invariant lives two modules away;
+    this join re-derives the tenant boundary itself rather than trusting it,
+    exactly as ``_require_proposal`` and the create-proposal check above do
+    for their own tables.
     """
     if not cited_unit_ids:
         return []
     ids = [int(u) for u in cited_unit_ids]
-    rows = (await session.execute(select(PrepUnit).where(PrepUnit.id.in_(ids)))).scalars().all()
+    rows = (
+        await session.execute(
+            select(PrepUnit).where(
+                PrepUnit.id.in_(ids), PrepUnit.organization_id == organization_id
+            )
+        )
+    ).scalars().all()
     by_id = {u.id: u for u in rows}
     return [
         {
@@ -136,7 +163,7 @@ async def _proposal_detail(
             "model_confidence": o.model_confidence,
             "gaps": o.gaps,
             "contradictions": o.contradictions,
-            "citations": await _citations(session, o.cited_unit_ids),
+            "citations": await _citations(session, o.cited_unit_ids, proposal.organization_id),
         }
         for o in objectives
     ]
@@ -182,7 +209,7 @@ async def create_proposal(
 
 @router.get("/proposals/{proposal_id}")
 async def get_proposal(
-    proposal_id: int,
+    proposal_id: int = Path(ge=1, le=_MAX_INT64),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
@@ -206,7 +233,7 @@ def _result_out(result: AssessmentControlResult) -> dict[str, Any]:
 
 @router.post("/proposals/{proposal_id}/accept")
 async def accept_proposal(
-    proposal_id: int,
+    proposal_id: int = Path(ge=1, le=_MAX_INT64),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
