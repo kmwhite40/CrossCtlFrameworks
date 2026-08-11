@@ -104,12 +104,17 @@ async def evaluate_control_proposal(
     }
 
     # The session factory runs with autoflush disabled (src/ccf/db.py). A DELETE
-    # issued before pending adds (this proposal's own state change, or anything
-    # a caller added earlier in the session) are flushed matches nothing -- and
-    # a later flush then persists the very rows this delete meant to remove.
-    # Flush first so the delete actually finds prior objective rows. This is the
-    # same bug, with the same fix, as src/ccf/prep/classify.py's idempotency
-    # delete -- it shipped twice in slice 1.
+    # issued while an AssessmentObjectiveProposal for this control is still
+    # pending (added but not yet flushed -- e.g. by a caller sharing this
+    # session before calling in) matches nothing, because the bulk DELETE is a
+    # Core statement that never sees unflushed ORM state. A later flush --
+    # including one of this function's own per-objective flushes below --
+    # would then persist that row right past the delete meant to remove it.
+    # Flush first so the delete actually finds and removes it. This is the same
+    # bug, with the same fix, as src/ccf/prep/classify.py's idempotency delete
+    # -- it shipped twice in slice 1. See
+    # test_flush_before_delete_removes_a_pending_unflushed_objective_row for a
+    # reproduction: it fails if this flush is removed.
     await session.flush()
     await session.execute(
         delete(AssessmentObjectiveProposal).where(
@@ -202,10 +207,12 @@ async def evaluate_control_proposal(
 async def check_staleness(session: AsyncSession, proposal: AssessmentControlProposal) -> bool:
     """Recompute each stored objective's hash against the live catalog.
 
-    A catalog re-ingest can reword an objective under an already-evaluated
-    proposal. That makes the stored verdict potentially wrong, not the
-    evaluation code -- so this only detects and flags it as ``stale``; it does
-    not re-evaluate.
+    A catalog re-ingest can change what a proposal was evaluated against in two
+    ways: rewording an objective's text under an unchanged label, or removing
+    or renaming a label outright (so a stored row has no live counterpart at
+    all). Both make the stored verdict potentially wrong, not the evaluation
+    code -- so this only detects and flags either as ``stale``; it does not
+    re-evaluate.
     """
     live = await objectives_for(session, proposal.control_identifier)
     live_hashes = {o.label: o.text_sha256 for o in live}
@@ -218,8 +225,13 @@ async def check_staleness(session: AsyncSession, proposal: AssessmentControlProp
         )
     ).scalars().all()
 
+    # A stored label absent from the live catalog is structural drift in its own
+    # right -- a bare rename with unchanged text, or an objective deleted from
+    # the catalog outright -- and must count as stale independent of the hash
+    # comparison. Requiring `row.label in live_hashes` before comparing hashes
+    # would silently pass both cases through as not-stale.
     stale = any(
-        row.label in live_hashes and live_hashes[row.label] != row.objective_text_sha256
+        row.label not in live_hashes or live_hashes[row.label] != row.objective_text_sha256
         for row in stored
     )
     if stale:

@@ -175,6 +175,10 @@ async def test_evaluate_writes_one_objective_proposal_per_catalog_objective(
     assert [r.label for r in rows] == ["ZQ-90a", "ZQ-90b", "ZQ-90c"]
     assert objectives_total == 3
     assert objectives_evaluated == 3
+    # ObjectiveEvaluation.confidence must round-trip onto model_confidence --
+    # the deliberate rename in the brief. Read back from the database, not
+    # from the in-memory ORM object, so a dropped mapping line is caught.
+    assert [r.model_confidence for r in rows] == [0.5, 0.5, 0.5]
 
 
 async def test_evaluate_rolls_up_and_stores_the_config_snapshot(
@@ -265,6 +269,51 @@ async def test_evaluate_is_idempotent_on_rerun(monkeypatch: pytest.MonkeyPatch) 
     assert len(rows) == 3
 
 
+async def test_flush_before_delete_removes_a_pending_unflushed_objective_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row added to the session but not yet flushed before evaluation starts
+    must not survive the idempotency delete -- proves the flush-before-delete
+    ordering is load bearing, not defensive dressing with nothing behind it.
+
+    Without the flush, the bulk DELETE (a Core statement) runs while this row
+    is still only pending ORM state and never sees it; the row then survives
+    into the DB via a later flush inside the per-objective loop, right next to
+    the fresh rows this evaluation writes. Removing the leading
+    ``await session.flush()`` in evaluate_control_proposal makes this fail.
+    """
+    monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate_always())
+    _, assessment_id = await _assessment("svc-eval-flush-guard")
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        s.add(
+            AssessmentObjectiveProposal(
+                organization_id=proposal.organization_id,
+                control_proposal_id=proposal.id,
+                label="ZQ-90-stray",
+                objective_text="a row pending on the session before evaluation runs",
+                objective_text_sha256="c" * 64,
+                sort_order=99,
+            )
+        )
+        proposal = await evaluate_control_proposal(s, proposal)
+        proposal_id = int(proposal.id)
+
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(AssessmentObjectiveProposal).where(
+                    AssessmentObjectiveProposal.control_proposal_id == proposal_id
+                )
+            )
+        ).scalars().all()
+    labels = {r.label for r in rows}
+    assert "ZQ-90-stray" not in labels
+    assert len(rows) == 3
+
+
 async def test_a_reworded_objective_marks_the_proposal_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -309,5 +358,44 @@ async def test_a_reworded_objective_marks_the_proposal_stale(
         state = proposal.state
 
     assert live_hash != stored_hash
+    assert is_stale is True
+    assert state == "stale"
+
+
+async def test_an_objective_removed_from_the_catalog_marks_the_proposal_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored label with no live counterpart at all -- an objective removed
+    (or renamed) in the catalog -- must be flagged stale in its own right,
+    independent of any hash comparison. check_staleness must not silently pass
+    a stored row through just because it has nothing left to compare against.
+    """
+    monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate_always())
+    _, assessment_id = await _assessment("svc-eval-stale-removed")
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        proposal = await evaluate_control_proposal(s, proposal)
+        proposal_id = int(proposal.id)
+
+    async with session_scope() as s:
+        await s.execute(delete(Control).where(Control.identifier == f"{_SEQ}-ao1"))
+
+    async with session_scope() as s:
+        live = await objectives_for(s, "ZQ-90")
+    assert "ZQ-90a" not in {o.label for o in live}
+
+    async with session_scope() as s:
+        proposal = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.id == proposal_id
+                )
+            )
+        ).scalar_one()
+        is_stale = await check_staleness(s, proposal)
+        state = proposal.state
+
     assert is_stale is True
     assert state == "stale"
