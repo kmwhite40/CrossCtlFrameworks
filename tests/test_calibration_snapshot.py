@@ -147,7 +147,7 @@ async def test_two_snapshots_under_one_configuration_are_comparable() -> None:
         second_id = int(second.id)
 
     async with session_scope() as s:
-        result = await compare_snapshots(s, first_id, second_id)
+        result = await compare_snapshots(s, first_id, second_id, organization_id=org_id)
 
     assert result["comparable"] is True
     assert result["deltas"]["decided"] == 1
@@ -175,7 +175,7 @@ async def test_snapshots_under_different_configurations_are_not_comparable(
             second_id = int(second.id)
 
         async with session_scope() as s:
-            result = await compare_snapshots(s, first_id, second_id)
+            result = await compare_snapshots(s, first_id, second_id, organization_id=org_id)
     finally:
         get_settings.cache_clear()
 
@@ -206,3 +206,30 @@ async def test_snapshots_are_scoped_to_one_organization() -> None:
         assert row.organization_id == org_a
         assert row.metrics["decided"] == 1, "org B's two decisions must not leak into org A"
         assert row.metrics["missed_findings"] == 0, "org B's rejections must not leak into org A"
+
+
+async def test_a_snapshot_from_another_organization_is_unknown_not_refused() -> None:
+    """Cross-tenant comparison must not confirm the id exists.
+
+    compare_snapshots has no route yet. The scoping is asserted here so that
+    whoever adds one cannot introduce the leak by omission -- three endpoints
+    in an earlier slice of this project leaked exactly that way.
+    """
+    org_a, aid_a = await _assessment("snap-iso-a")
+    org_b, aid_b = await _assessment("snap-iso-b")
+    await _decided(org_a, aid_a, "AC-2", "satisfied", accepted=True)
+    await _decided(
+        org_b, aid_b, "SC-7", "satisfied", accepted=False, corrected="other_than_satisfied"
+    )
+    async with session_scope() as s:
+        mine = await take_snapshot(s, organization_id=org_a, model="claude-sonnet-5")
+        theirs = await take_snapshot(s, organization_id=org_b, model="claude-sonnet-5")
+        await s.flush()
+        mine_id, theirs_id = int(mine.id), int(theirs.id)
+
+    async with session_scope() as s:
+        with pytest.raises(ValueError) as excinfo:
+            await compare_snapshots(s, mine_id, theirs_id, organization_id=org_a)
+
+    assert str(theirs_id) in str(excinfo.value), "org B's snapshot must read as unknown"
+    assert "unknown" in str(excinfo.value)

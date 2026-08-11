@@ -26,13 +26,15 @@ import os
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from typer.testing import CliRunner
 
 from ccf import cli
 from ccf.api.main import create_app
-from ccf.auth import hash_password, new_api_token
+from ccf.api.routes.assessment_engine import get_calibration
+from ccf.auth import SYSTEM_PRINCIPAL, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Assessment, Organization, System, User
@@ -424,3 +426,27 @@ def test_the_cli_exits_cleanly_when_the_engine_is_disabled(
 
     assert result.exit_code == 0
     assert "disabled" in result.stdout.lower()
+
+
+async def test_calibration_refuses_an_unscoped_principal_with_400() -> None:
+    """An unscoped principal has no organization to report on.
+
+    Falling through would compute metrics for ``organization_id=None``, which
+    matches no rows -- so this is not a leak, but it would report an empty
+    result as if it were a real measurement of somebody's engine.
+
+    Asserted against the handler directly rather than over HTTP: auth
+    middleware rejects an unauthenticated request with 401 before the
+    dependency resolves, so there is no bearer token that reaches this branch.
+    The branch is still reachable in production via SYSTEM_PRINCIPAL when auth
+    is disabled. The final review found it had no test at all -- all ten tests
+    in this file passed with the guard removed.
+    """
+    assert SYSTEM_PRINCIPAL.org_id is None, "the unscoped shape this branch guards"
+
+    async with session_scope() as s:
+        with pytest.raises(HTTPException) as excinfo:
+            await get_calibration(session=s, principal=SYSTEM_PRINCIPAL)
+
+    assert excinfo.value.status_code == 400
+    assert "organization" in str(excinfo.value.detail).lower()

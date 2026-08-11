@@ -211,7 +211,9 @@ async def take_snapshot(
     return snapshot
 
 
-async def compare_snapshots(session: AsyncSession, a_id: int, b_id: int) -> dict[str, Any]:
+async def compare_snapshots(
+    session: AsyncSession, a_id: int, b_id: int, *, organization_id: int
+) -> dict[str, Any]:
     """Compare two stored snapshots, refusing to compute a delta across configurations.
 
     Returns ``{"comparable": False, ...}`` -- a distinct outcome, not a number --
@@ -221,9 +223,21 @@ async def compare_snapshots(session: AsyncSession, a_id: int, b_id: int) -> dict
     catalog snapshot with a measured margin of about 0.03, so it will be
     re-derived, and that re-derivation must read as an explained configuration
     change rather than an unexplained accuracy shift.
+
+    ``organization_id`` is required and must come from the caller's principal.
+    A snapshot belonging to another organization is reported as unknown rather
+    than refused, so a caller cannot learn that the id exists -- the same
+    404-not-403 reasoning the reject endpoint follows. This function has no
+    route today; the scoping is here so that whoever adds one cannot introduce
+    the leak by omission, which is how three endpoints leaked in an earlier
+    slice of this project.
     """
     a = await session.get(CalibrationSnapshot, a_id)
     b = await session.get(CalibrationSnapshot, b_id)
+    if a is not None and a.organization_id != organization_id:
+        a = None
+    if b is not None and b.organization_id != organization_id:
+        b = None
     if a is None or b is None:
         missing = [i for i, s in ((a_id, a), (b_id, b)) if s is None]
         raise ValueError(f"unknown calibration snapshot id(s): {missing}")
