@@ -99,7 +99,18 @@ services:
     depends_on:
       db:       { condition: service_healthy }
       migrator: { condition: service_completed_successfully }
-    environment: *ccf_env
+    # CCF_PREP_ENABLED overrides x-ccf-env's silence on it (prep_enabled
+    # defaults to false -- the pipeline is opt-in). Without this, `ccf
+    # prep-worker --loop` printed "disabled" and exited immediately every
+    # cycle, and `restart: unless-stopped` below restart-looped the container
+    # forever. Opting into the "prep" profile at all (this service only
+    # starts via `docker compose --profile prep up`) is already the
+    # operator's explicit signal they want the pipeline running, so this
+    # override is scoped to this service rather than raised in x-ccf-env,
+    # which would silently flip the default for every other service too.
+    environment:
+      <<: *ccf_env
+      CCF_PREP_ENABLED: "true"
     entrypoint: ["sh", "-c"]
     command: ["ccf prep-worker --loop"]
     restart: "unless-stopped"

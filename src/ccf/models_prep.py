@@ -10,6 +10,18 @@ The traceability chain is ``PrepUnit.source_line_ids -> PrepLine -> page_number 
 section_path + table cell``: every retrieved passage cites a page and, for
 tabular sources, a specific cell. Kept in a dedicated module so the layer is easy
 to review, matching ``models_evidence`` and ``models_ai_actions``.
+
+**These seven tables deliberately carry no row-level-security policies** —
+unlike 110 of Concord's 131 ``ccf`` tables, which do. Isolation is
+application-layer instead: every prep query filters by ``organization_id``
+explicitly (``ccf.prep.retriever._base_filters`` and the equivalent per-stage
+filters in ``screen.py``/``expand.py``/``classify.py``/``embed.py``), and
+:func:`ccf.prep.jobs.claim` is intentionally unscoped by organization, since
+one worker process drains every organization's queued jobs by design. This
+exemption from Concord's usual RLS-by-default posture is explicit and
+deliberate, not an oversight to be inferred — see ``docs/ARCHITECTURE.md``'s
+"Evidence preparation" section for the same note alongside the rest of the
+pipeline's description.
 """
 
 from __future__ import annotations

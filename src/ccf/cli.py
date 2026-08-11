@@ -314,7 +314,11 @@ def scheduler_run() -> None:
 
 @app.command(name="prep-worker")
 def prep_worker(
-    once: bool = typer.Option(True, "--once/--loop", help="Run one cycle, or loop forever."),
+    once: bool = typer.Option(
+        True,
+        "--once/--loop",
+        help="Run one cycle, or loop forever (sleeping between empty cycles).",
+    ),
     limit: int | None = typer.Option(None, help="Jobs to claim per cycle."),
     worker: str = typer.Option("prep-worker", help="Worker name recorded on claimed jobs."),
 ) -> None:
@@ -343,8 +347,16 @@ def prep_worker(
             async with session_scope() as session:
                 stats = await prep_jobs.run_once(session, worker=worker, limit=batch)
             console.print_json(json.dumps(stats))
-            if once or stats["claimed"] == 0:
+            if once:
                 break
+            if stats["claimed"] == 0:
+                # Nothing to do this cycle -- sleep rather than either
+                # hammering the jobs table in a tight loop or (the actual
+                # prior bug) exiting outright: `--loop` returned after the
+                # first empty cycle, which is not "loop forever", and under
+                # docker-compose's `restart: unless-stopped` restart-looped
+                # the container forever the moment the queue went idle.
+                await asyncio.sleep(settings.prep_worker_poll_interval_seconds)
 
     asyncio.run(_run())
 

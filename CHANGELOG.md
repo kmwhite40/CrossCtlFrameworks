@@ -179,21 +179,34 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   classify → embed) that turns uploaded evidence and policy versions
   (PDF/DOCX/XLSX/PPTX/text) into control-cited, retrievable passages: parse
   preserves page/heading/table-cell structure; screen ranks lines against
-  `ccf.controls` via `ts_rank` and collapses candidates to base control
-  identifiers so enhancements can't crowd out their base control; expand
-  builds semantically complete units; classify tags each unit with control
-  identifiers, artifact type, and evidence strength as a governed AI action;
-  embed writes pgvector vectors. Retrieval (`GET /api/prep/retrieve`) fuses
-  lexical `ts_rank`, pgvector cosine similarity, and a classifier-tagged
-  boost by reciprocal-rank fusion. Runs are queued in `ccf.prep_jobs` and
-  drained by the `prep-worker` compose profile, which commits each job
-  independently so one job's crash can't discard another's completed work;
-  a job that keeps crashing is dead-lettered after `CCF_PREP_JOB_MAX_ATTEMPTS`
-  reclaims instead of cycling forever. `POST /api/prep/runs` queues a run and
-  `GET /api/prep/runs/{id}` reports per-stage status. A prepared
-  classification's evidence strength now also feeds the existing evidence
-  confidence scorer via `prep_signal()`/`score_evidence(prep_strength=...)`,
-  rather than competing with it as a second score.
+  `ccf.controls` via `ts_rank`, collapses candidates to base control
+  identifiers so enhancements can't crowd out their base control, and folds
+  zero-padded/unpadded spellings (`AC-06`/`AC-6`) to one canonical form since
+  the real ingested catalog is not consistently formatted; expand builds
+  semantically complete units; classify tags each unit with control
+  identifiers, artifact type, and evidence strength by calling the AI gateway
+  directly. **Classification is not yet wired through the typed AI-action
+  layer** (`ccf.ai_actions.run_action`) — it produces no `ai_action_runs` row,
+  citation record, guardrail evaluation, or human-approval gate, and
+  `PrepClassification.ai_action_run_id`/`.model_name` are always `NULL`; that
+  integration is tracked as follow-up work. Embed writes pgvector vectors.
+  Retrieval (`GET /api/prep/retrieve`) fuses lexical `ts_rank`, pgvector
+  cosine similarity, and a classifier-tagged boost by reciprocal-rank fusion,
+  with a deterministic tiebreak so repeated identical queries return
+  identically ordered evidence. Runs are queued in `ccf.prep_jobs` and drained
+  by the `prep-worker` compose profile, which commits each job independently
+  and rolls back before recording a failed job's error, so one job's crash —
+  including a raw DBAPI error — can't discard another's completed work or
+  strand the rest of a claimed batch; a job that keeps crashing is
+  dead-lettered after `CCF_PREP_JOB_MAX_ATTEMPTS` reclaims instead of cycling
+  forever. `POST /api/prep/runs` queues a run and `GET /api/prep/runs/{id}`
+  reports per-stage status. **A prepared classification's evidence strength
+  does *not* currently feed the existing evidence confidence scorer**: the
+  adapter (`prep_signal()`/`score_evidence(prep_strength=...)` in
+  `ccf.evidence.confidence`) exists and is unit-tested, but no production
+  caller passes `prep_strength` — `score_object()` (the only caller in the
+  scoring path) never does — so it's dead code today; wiring it up is tracked
+  as follow-up work, not yet done.
 
 ### Changed — evidence preparation
 - Postgres image is now `pgvector/pgvector:pg16` (drop-in for stock PG16),

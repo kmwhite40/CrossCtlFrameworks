@@ -118,29 +118,47 @@ Built on the reference catalog + operational tables:
   5,430-row 800-53A catalog — the margin between the highest-scoring
   boilerplate line and the lowest-scoring genuine match was only ~0.03, so a
   future catalog re-ingest may require re-deriving it), expanded into
-  semantically complete units, classified by a governed AI action, and
-  embedded into pgvector. Screening collapses candidates to base control
-  identifiers (`AC-6(2)` → `AC-6`) so one control's enhancements cannot
-  occupy every candidate slot; a consequence is that classification always
-  cites a base control, never an enhancement. Retrieval fuses three rankers
-  by reciprocal-rank fusion: lexical `ts_rank`, pgvector cosine similarity,
-  and a classifier-tagged boost (`1/(k+1)`) for units the classifier already
-  linked to the queried control. Runs are queued in `ccf.prep_jobs` and
-  drained by the `prep-worker` compose profile, which commits each job
-  independently (not the whole claimed batch), so one job's crash cannot roll
-  back another job's already-completed work in the same cycle; a job stuck
-  `claimed` past `prep_job_stale_after_minutes` is reaped back to `pending`,
-  and one that keeps crashing is dead-lettered once it hits
-  `prep_job_max_attempts`. Each stage persists before the next, so a failed
-  run resumes at the failed stage. `POST /api/prep/runs` and
-  `GET /api/prep/retrieve` derive their organization from the authenticated
-  principal, not from anything the caller supplies — a scoped principal's own
-  organization always overrides an `organization_id` in the request; only an
-  unscoped/admin principal's request uses the supplied value, mirroring
-  `users.py::create_user`'s existing convention for a NOT-NULL
+  semantically complete units, classified, and embedded into pgvector.
+  **Classification is not currently a governed AI action**: `run_stage_classify`
+  calls `ccf.ai.gateway.generate_structured` directly, not
+  `ccf.ai_actions.run_action` — no `ai_action_runs` row is created, so there is
+  no citation record, no guardrail evaluation, and no human-approval gate for a
+  classification, and `PrepClassification.ai_action_run_id` / `.model_name` are
+  always `NULL`. Wiring classification through the typed AI-action layer (as
+  originally specified) is tracked as follow-up work, not yet built. Screening
+  collapses candidates to base control identifiers (`AC-6(2)` → `AC-6`, and,
+  since the real catalog is not consistently formatted, also folds zero-padded
+  spellings like `AC-06` to the same canonical `AC-6`) so one control's
+  enhancements cannot occupy every candidate slot; a consequence is that
+  classification always cites a base control, never an enhancement. Retrieval
+  fuses three rankers by reciprocal-rank fusion: lexical `ts_rank`, pgvector
+  cosine similarity, and a classifier-tagged boost (`1/(k+1)`) for units the
+  classifier already linked to the queried control, with a deterministic
+  score-then-`unit_id` tiebreak so repeated identical queries return
+  identically ordered results. Runs are queued in `ccf.prep_jobs` and drained
+  by the `prep-worker` compose profile, which commits each job independently
+  (not the whole claimed batch) and rolls back before recording a failed job's
+  error, so one job's crash — including a raw DBAPI error, not only a plain
+  Python exception — cannot roll back another job's already-completed work or
+  strand the rest of a claimed batch in the same cycle; a job stuck `claimed`
+  past `prep_job_stale_after_minutes` is reaped back to `pending`, and one that
+  keeps crashing is dead-lettered once it hits `prep_job_max_attempts`. Each
+  stage persists before the next, so a failed run resumes at the failed stage.
+  `POST /api/prep/runs` and `GET /api/prep/retrieve` derive their organization
+  from the authenticated principal, not from anything the caller supplies — a
+  scoped principal's own organization always overrides an `organization_id` in
+  the request; only an unscoped/admin principal's request uses the supplied
+  value, mirroring `users.py::create_user`'s existing convention for a NOT-NULL
   `organization_id`. With `CCF_AUTH_ENABLED=false` (the default), every
   principal is unscoped, so the supplied `organization_id` is trusted
-  outright — true of the whole app in that mode, not specific to prep.
+  outright — true of the whole app in that mode, not specific to prep. The
+  seven `prep_*` tables deliberately carry no row-level-security policies
+  (unlike 110 of Concord's 131 `ccf` tables) — every prep query filters by
+  `organization_id` in application code instead (`ccf.prep.retriever._base_filters`
+  and equivalent per-stage filters), the same pattern the worker already
+  relies on (`claim()` is intentionally unscoped, since one worker drains
+  every organization's jobs). See `models_prep.py` for the same note next to
+  the table definitions.
 
 ## Schemas
 

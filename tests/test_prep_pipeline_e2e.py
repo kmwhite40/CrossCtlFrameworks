@@ -68,15 +68,26 @@ def _local_evidence_dir(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
 
 @pytest.fixture
 async def seeded_control() -> Any:
-    """Seed one richly-worded catalog control (IA-2), the same fixture text
+    """Seed one richly-worded catalog control, the same fixture text
     ``test_prep_screen.py`` uses, and remove it afterward so nothing leaks into
     the shared ``ccf_test`` schema.
+
+    Seeded under the catalog's zero-padded spelling (``IA-02``), not
+    Concord's own canonical unpadded tag (``IA-2``) -- deliberately, per
+    Finding C1: the real ingested catalog is not consistently formatted, and
+    this is the one place in the suite that drives a control identifier all
+    the way from ``ccf.controls.identifier`` through screen, classify, and
+    into ``PrepClassification.control_identifiers`` without any test fixture
+    normalizing it along the way. If normalization regressed, this is where
+    it would show up -- ``test_advance_drives_a_full_run_through_all_five_stages``
+    asserts the *canonical* ``"IA-2"`` (not ``"IA-02"``) ends up on the
+    persisted classification.
     """
     async with session_scope() as s:
-        await s.execute(delete(Control).where(Control.identifier == "IA-2"))
+        await s.execute(delete(Control).where(Control.identifier == "IA-02"))
         s.add(
             Control(
-                identifier="IA-2",
+                identifier="IA-02",
                 control_name="Identification and Authentication (Organizational Users)",
                 description=(
                     "Uniquely identify and authenticate organizational users and associate "
@@ -103,7 +114,7 @@ async def seeded_control() -> Any:
         yield
     finally:
         async with session_scope() as s:
-            await s.execute(delete(Control).where(Control.identifier == "IA-2"))
+            await s.execute(delete(Control).where(Control.identifier == "IA-02"))
 
 
 async def _org(name: str) -> int:

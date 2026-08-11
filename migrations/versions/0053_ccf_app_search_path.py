@@ -43,7 +43,15 @@ session. Verified empirically end-to-end: with this in place,
   rather than the actual database owner, this statement fails, and the
   underlying vulnerability (a hard 500 for every scoped tenant on retrieval)
   reappears with no application-level workaround short of an operator running
-  it manually as an owner/superuser role.
+  it manually as an owner/superuser role. **Because of that, this migration
+  catches exactly that failure (a savepoint isolates it -- see ``upgrade()``)
+  and logs it loudly with the manual step to run, rather than raising.**
+  Before that, a permission failure here raised straight out of
+  ``alembic upgrade head`` and aborted the *entire* migration chain at 0052 —
+  not just this fix — blocking every migration after it, prep-related or not,
+  on any platform where the migrating role isn't the database owner. That is
+  a strictly worse outcome than the vulnerability this migration exists to
+  close: a stuck deploy instead of one degraded feature.
 * A database-level default only takes effect for **new** connections opened
   after it is set — not connections already open in a pool at the moment this
   migration runs. A long-lived pool (this app's ``asyncpg`` pool via
@@ -54,6 +62,17 @@ session. Verified empirically end-to-end: with this in place,
   restarting it, or recreating the pool) can therefore still 500 on
   already-open connections until they cycle out naturally or the process is
   restarted.
+* ``downgrade()``'s ``ALTER DATABASE ... RESET search_path`` unconditionally
+  clears the database-level default back to Postgres's own built-in default
+  (effectively ``"$user", public``) — it does **not** restore whatever an
+  operator may have set as the database's default *before* this migration
+  ever ran. A downgrade on a database that had a deliberate, pre-existing
+  ``search_path`` default therefore silently loses it. Documented here rather
+  than fixed, since capturing "the prior value" would require reading it back
+  before ``upgrade()`` overwrites it and persisting that somewhere durable
+  across the downgrade -- out of scope for what this migration is actually
+  for. An operator relying on a non-default database-level ``search_path``
+  should record it before running this migration.
 
 Revision ID: 0053_ccf_app_search_path
 Revises: 0052_prep_tables
@@ -62,12 +81,58 @@ Create Date: 2026-08-10
 
 from __future__ import annotations
 
+import logging
+
 from alembic import op
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import DBAPIError
 
 revision = "0053_ccf_app_search_path"
 down_revision = "0052_prep_tables"
 branch_labels = None
 depends_on = None
+
+#: Matches the logger name alembic's own "Running upgrade X -> Y" messages
+#: use, so this shows up through the same handler with no extra configuration.
+log = logging.getLogger("alembic.runtime.migration")
+
+_MANUAL_STEP = (
+    "ALTER DATABASE <dbname> SET search_path = ccf, public;  "
+    "-- run as the database owner or a superuser, then restart the API "
+    "process (or recycle its connection pool) so already-open connections "
+    "pick up the new default."
+)
+
+
+def _alter_database_search_path(sql: str, *, action: str) -> None:
+    """Run one ``ALTER DATABASE ... search_path`` statement, tolerating a
+    permission failure rather than aborting the whole migration chain.
+
+    A savepoint isolates the statement: if ``ALTER DATABASE`` fails (most
+    commonly ``InsufficientPrivilege`` on managed Postgres, where the
+    migrating role does not own the database), only this statement rolls
+    back -- the migration's own transaction stays usable, so Alembic's
+    closing commit still succeeds and every migration after this one can
+    still run. Without the savepoint, the failed statement would leave the
+    transaction aborted and Alembic's commit would raise a second, more
+    confusing error on top of the original one.
+    """
+    bind = op.get_bind()
+    try:
+        with bind.begin_nested():
+            bind.execute(sa_text(sql))
+    except DBAPIError as exc:
+        log.warning(
+            "0053_ccf_app_search_path: could not %s the database-level "
+            "search_path default -- likely missing ownership on managed "
+            "Postgres (RDS, Cloud SQL, etc). Every scoped (SET ROLE ccf_app) "
+            "prep retrieval request will 500 with 'operator does not exist: "
+            "ccf.vector <=> ccf.vector' until this is corrected manually. "
+            "MANUAL STEP REQUIRED: %s Original error: %s",
+            action,
+            _MANUAL_STEP,
+            exc,
+        )
 
 
 def upgrade() -> None:
@@ -75,17 +140,19 @@ def upgrade() -> None:
     # against every environment (dev/test/CI) regardless of the database's
     # actual name. ALTER DATABASE takes an identifier, not an expression, so
     # the name is built and executed dynamically inside a DO block.
-    op.execute(
+    _alter_database_search_path(
         "DO $$ BEGIN "
         "EXECUTE format('ALTER DATABASE %I SET search_path = ccf, public', "
         "current_database()); "
-        "END $$"
+        "END $$",
+        action="set",
     )
 
 
 def downgrade() -> None:
-    op.execute(
+    _alter_database_search_path(
         "DO $$ BEGIN "
         "EXECUTE format('ALTER DATABASE %I RESET search_path', current_database()); "
-        "END $$"
+        "END $$",
+        action="reset",
     )

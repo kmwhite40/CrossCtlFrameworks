@@ -201,6 +201,13 @@ class Settings(BaseSettings):
     # mismatch fails the embed stage loudly rather than writing truncated vectors.
     prep_embed_dimensions: int = Field(default=1024)
     prep_worker_batch_size: int = Field(default=10)
+    # `ccf prep-worker --loop`'s sleep between cycles that claimed nothing.
+    # Without a sleep, an empty queue makes --loop spin the claim query in a
+    # tight loop (previously it didn't even do that -- it exited after the
+    # first empty cycle, see the CLI's own docstring correction). Short enough
+    # that a freshly enqueued job is picked up promptly; long enough that an
+    # idle worker isn't hammering the jobs table.
+    prep_worker_poll_interval_seconds: float = Field(default=5.0)
     prep_job_stale_after_minutes: int = Field(default=60)
     # A job that fails gracefully (advance() raises, or a stage completes to
     # run.status="failed") stops after one attempt already -- claim() only

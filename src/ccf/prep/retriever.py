@@ -14,11 +14,10 @@ answer is worth more than an error to a caller assembling evidence for a control
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai import gateway
@@ -26,7 +25,7 @@ from ..ai.providers.base import ProviderError
 from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PrepClassification, PrepEmbedding, PrepUnit
-from .screen import _BASE_CONTROL_PATTERN
+from .screen import control_identifier_spellings
 
 log = get_logger(__name__)
 
@@ -119,6 +118,63 @@ async def _vector_ids(
     return [int(r[0]) for r in rows]
 
 
+async def _tagged_ids(
+    session: AsyncSession,
+    *,
+    org_id: int,
+    control_identifier: str,
+    system_id: int | None,
+    source_kind: str | None,
+) -> list[int]:
+    """Units the classifier explicitly tagged with this control, best-effort
+    deduplicated and ordered.
+
+    The screen stage collapses candidates to base control identifiers (e.g.
+    "AC-6(2)" -> "AC-6"), so ``PrepClassification.control_identifiers`` only
+    ever holds base identifiers. The real ingested catalog is not
+    consistently formatted -- "AC-02", "CP-9" and CMMC-style identifiers all
+    coexist, confirmed live -- and ``score_line`` only normalizes what it
+    writes *going forward*; it does not rewrite rows a prior run already
+    persisted, nor any future write path that bypasses it. A read that only
+    normalized the caller's identifier and compared it against whatever
+    spelling happens to be stored would still silently miss a differently-
+    spelled but equivalent stored value. So this checks containment against
+    every spelling :func:`screen.control_identifier_spellings` considers
+    equivalent (unpadded, two-digit zero-padded, and the identifier's own
+    suffix-stripped form), ORed together -- both directions (``AC-2`` finds
+    ``AC-02``-tagged evidence and vice versa) hold regardless of which
+    spelling is actually on disk.
+
+    Bounded and deterministically ordered: unbounded and unordered before this
+    fix, so a tagged set larger than what actually influences the final
+    ranking was a sequential scan on every call, and -- once bounded -- an
+    ORDER BY is required too, or which rows survive the LIMIT would depend on
+    Postgres's unspecified row order and could vary call to call. ``DISTINCT``
+    guards against a unit matching more than one spelling (or a future schema
+    change allowing more than one classification per unit per run) from
+    double-counting ``tagged_boost`` below.
+    """
+    spellings = control_identifier_spellings(control_identifier)
+    stmt = (
+        select(PrepUnit.id)
+        .distinct()
+        .join(PrepClassification, PrepClassification.unit_id == PrepUnit.id)
+        .where(
+            or_(
+                *(
+                    PrepClassification.control_identifiers.op("@>")([spelling])
+                    for spelling in spellings
+                )
+            )
+        )
+    )
+    stmt = _base_filters(stmt, org_id=org_id, system_id=system_id, source_kind=source_kind)
+    rows = (
+        await session.execute(stmt.order_by(PrepUnit.id).limit(_CANDIDATE_DEPTH))
+    ).all()
+    return [int(r[0]) for r in rows]
+
+
 async def retrieve(
     session: AsyncSession,
     *,
@@ -145,23 +201,13 @@ async def retrieve(
     # Units the classifier tagged with this control are a third retrieval
     # signal alongside lexical and vector: an explicit classification is
     # meaningful evidence that a similarity score alone would not capture.
-    # The screen stage collapses candidates to base control identifiers (e.g.
-    # "AC-6(2)" -> "AC-6"), so ``PrepClassification.control_identifiers`` only
-    # ever holds base identifiers; strip any enhancement suffix from the
-    # caller's identifier before the containment check so an enhancement-level
-    # query still benefits from base-control-tagged evidence. The original,
-    # unstripped identifier is still used as lexical/vector query text above,
-    # since "AC-6(2)" is a meaningful exact-match token there.
-    base_control_identifier = re.sub(_BASE_CONTROL_PATTERN, "", control_identifier)
-    tagged_stmt = (
-        select(PrepUnit.id)
-        .join(PrepClassification, PrepClassification.unit_id == PrepUnit.id)
-        .where(PrepClassification.control_identifiers.op("@>")([base_control_identifier]))
+    # The original, unstripped identifier is still used as lexical/vector
+    # query text above, since "AC-6(2)" is a meaningful exact-match token
+    # there -- only the tagged-boost lookup normalizes it (see _tagged_ids).
+    tagged_ids = await _tagged_ids(
+        session, org_id=org_id, control_identifier=control_identifier,
+        system_id=system_id, source_kind=source_kind,
     )
-    tagged_stmt = _base_filters(
-        tagged_stmt, org_id=org_id, system_id=system_id, source_kind=source_kind
-    )
-    tagged = {int(r[0]) for r in (await session.execute(tagged_stmt)).all()}
 
     # A tagged unit contributes to its score the same way a rank-1 hit from
     # either other backend would. This composes with RRF rather than
@@ -171,10 +217,19 @@ async def retrieve(
     # tagged-first sort tier would not allow.
     fused = dict(fuse(lexical=lexical, vector=vector))
     tagged_boost = 1.0 / (_RRF_K + 1)
-    for unit_id in tagged:
+    for unit_id in tagged_ids:
         fused[unit_id] = fused.get(unit_id, 0.0) + tagged_boost
 
-    ordered = sorted(fused.items(), key=lambda pair: pair[1], reverse=True)[:top_n]
+    # Tiebreak by unit_id (ascending) is deliberate, not incidental: two units
+    # can land on the identical fused score (most commonly two tagged-only
+    # units that neither the lexical nor vector backend ranked at all, so they
+    # share exactly ``tagged_boost``), and without a secondary key here the
+    # order among them would depend on ``fused``'s dict-insertion order --
+    # itself downstream of the tagged-set query above, which has no ordering
+    # guarantee of its own without an explicit ORDER BY. A citation-bearing
+    # compliance product cannot have "the same query returns different
+    # evidence on two consecutive calls" as an observable behavior.
+    ordered = sorted(fused.items(), key=lambda pair: (-pair[1], pair[0]))[:top_n]
     if not ordered:
         return []
 

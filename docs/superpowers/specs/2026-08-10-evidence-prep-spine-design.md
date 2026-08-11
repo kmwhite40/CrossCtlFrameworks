@@ -81,11 +81,18 @@ of it. Concord's ETL already ingests the full 800-53A Rev 5 catalog into
 screen, needs no dictionary maintenance, and stays current automatically when the
 workbook is re-ingested.
 
-**2. Classification is a registered AI action.**
-A new `ActionDef("classify_evidence_unit", …)` in `src/ccf/ai_actions/registry.py`
-with `citation_required=True` and `allowed_mutation=None`. Every classification
-lands in `ai_action_runs` with citations, guardrail evaluation and review state
-already wired, and inherits the `ai_require_human_approval` setting.
+**2. Classification is a registered AI action. [NOT BUILT — corrected 2026-08-10]**
+This was the design intent, but the shipped implementation does not do this:
+`run_stage_classify` (`src/ccf/prep/classify.py`) calls
+`ccf.ai.gateway.generate_structured` directly. There is no
+`ActionDef("classify_evidence_unit", …)` in `src/ccf/ai_actions/registry.py`,
+`ccf.ai_actions.run_action` is never invoked from `ccf.prep`, no
+`ai_action_runs` row is ever created for a classification, and consequently
+there is no citation record, no guardrail evaluation, no review state, and no
+`ai_require_human_approval` gate for it. `PrepClassification.ai_action_run_id`
+and `.model_name` are always `NULL` as a result. Wiring classification through
+the typed AI-action layer as originally specified here is tracked as explicit
+follow-up work (see "Open follow-ups" below), not yet done.
 
 **3. Embeddings go through `ccf.ai.gateway`.**
 A new `embed()` method on `AIProvider` in `src/ccf/ai/providers/base.py`, reusing
@@ -111,9 +118,17 @@ A polymorphic `(source_kind, source_id)` pair points at either `EvidenceVersion`
 or `PolicyVersion`. Bytes resolve through `ccf.evidence.storage.get_backend()`
 for evidence and through `uri` or inline `body` for policy.
 
-**5. Evidence strength feeds the existing scorer.**
-`prep_classifications.evidence_strength` becomes an input to
-`src/ccf/evidence/confidence.py`, not a second competing quality score.
+**5. Evidence strength feeds the existing scorer. [NOT BUILT — corrected 2026-08-10]**
+This was the design intent, but the shipped implementation does not do this
+either: `src/ccf/evidence/confidence.py` gained `prep_signal()` and
+`score_evidence(..., prep_strength=...)`, matching the design and covered by
+unit tests, but `score_object()` — the only production caller of
+`score_evidence()` in the scoring path — never passes `prep_strength`, so the
+adapter is dead code with no live caller. `prep_classifications.evidence_strength`
+does not currently reach the confidence scorer at all. Wiring
+`score_object()` (or its caller) to look up and pass the relevant
+`PrepClassification.evidence_strength` is tracked as explicit follow-up work
+(see "Open follow-ups" below), not yet done.
 
 ## Architecture
 
@@ -301,6 +316,24 @@ Against real Postgres, following the existing `tests/conftest.py` pattern.
 
 ## Open follow-ups
 
-None blocking. Later slices in the program, in dependency order: objective-level
-assessment engine; closure and remediation loop; generated-artifact validation;
-AI dissent path; calibration harness with synthetic evidence.
+Two items from the final whole-branch review (2026-08-10), both accuracy
+corrections against documentation that claimed more than was built — see the
+corrected decisions #2 and #5 above:
+
+- **Wire classification through `ccf.ai_actions.run_action`**, as decision #2
+  originally specified, so a classification gets a citation record, guardrail
+  evaluation, review state, and the `ai_require_human_approval` gate like
+  every other governed AI action. Not started.
+- **Wire `prep_classifications.evidence_strength` into the evidence confidence
+  scorer**, as decision #5 originally specified — `prep_signal()` and
+  `score_evidence(prep_strength=...)` exist and are tested, but no production
+  caller passes `prep_strength`. Not started.
+
+Neither blocks production use of the pipeline itself (parse → screen → expand
+→ classify → embed → retrieve all function without them); they are gaps
+between this design's stated intent and what shipped, not gaps in the pipeline's
+own operation.
+
+Later slices in the program, in dependency order: objective-level assessment
+engine; closure and remediation loop; generated-artifact validation; AI
+dissent path; calibration harness with synthetic evidence.

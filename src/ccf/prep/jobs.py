@@ -187,6 +187,15 @@ async def reap_stale(
     return requeued_count + dead_letter_count
 
 
+#: ``last_error`` is unbounded (``Text``), but a raw DBAPI error's ``str()``
+#: can embed the entire failing statement and its parameters -- for the
+#: oversized-line failure mode this fixes (see the ``except`` branch below),
+#: that literally includes the pathological line's own content, easily
+#: hundreds of KB. Capped so one bad job can't bloat the jobs table with its
+#: own poison input.
+_MAX_LAST_ERROR_CHARS = 4_000
+
+
 async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
     """Advance one already-claimed job's run and update the job to match.
 
@@ -196,6 +205,16 @@ async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
     starts. Returns ``"done"`` or ``"failed"`` for the caller's counters; a job
     left ``pending`` for the next cycle counts as neither.
     """
+    # Captured before any DB work below, for use only in the except branch:
+    # once session.rollback() runs there, every ORM object already in this
+    # session (job included) is expired, and touching an expired attribute
+    # triggers an implicit refresh that requires an async-safe context --
+    # attempting it from plain attribute access (e.g. ``job.id``) raises
+    # ``MissingGreenlet``. Plain ints captured up front sidestep that
+    # entirely.
+    job_id = int(job.id)
+    job_run_id = int(job.run_id)
+
     run = await pipeline.load_run(session, job.run_id)
     if run is None:
         job.status = "failed"
@@ -204,9 +223,33 @@ async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
     try:
         await pipeline.advance(session, run)
     except Exception as exc:  # a worker must survive any one job
-        job.status = "failed"
-        job.last_error = str(exc)
-        log.warning("prep.job_failed", job_id=job.id, run_id=run.id, error=str(exc))
+        # advance() can raise after leaving the session's underlying DB
+        # transaction aborted -- not every exception here is a plain Python
+        # error the ORM can shrug off. A raw DBAPI error (e.g. a stage's own
+        # savepoint didn't catch it, or a future stage lacks one) leaves
+        # Postgres refusing any further statement on this transaction until
+        # it is rolled back. Setting job.status/last_error via ORM attribute
+        # mutation looks fine here but was previously durable only if the
+        # caller's next commit() succeeded -- and it didn't: committing an
+        # already-aborted transaction raises InFailedSQLTransactionError,
+        # which propagated out of run_once uncaught, losing this job's
+        # last_error (it stayed "claimed" with last_error=NULL) and aborting
+        # the rest of the claimed batch along with it, stranding every other
+        # job in the same cycle regardless of which organization it belonged
+        # to. Rolling back first makes the transaction usable again; a direct
+        # UPDATE (rather than continuing to mutate `job`/`run` as ORM
+        # objects) is used to record the failure because rollback() expires
+        # every object already in the session, so their in-memory attributes
+        # can no longer be trusted to still reflect anything set on them
+        # before the rollback.
+        await session.rollback()
+        last_error = str(exc)[:_MAX_LAST_ERROR_CHARS]
+        await session.execute(
+            update(PrepJob)
+            .where(PrepJob.id == job_id)
+            .values(status="failed", last_error=last_error)
+        )
+        log.warning("prep.job_failed", job_id=job_id, run_id=job_run_id, error=last_error)
         return "failed"
 
     # pipeline.advance() reconciles run.organization_id to the source's true
@@ -249,10 +292,23 @@ async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[st
     """
     claimed = await claim(session, worker=worker, limit=limit)
     await session.commit()
+    # Captured as plain ids, not held as ORM objects across the loop below:
+    # a mid-batch DBAPI error's session.rollback() (see _drive_one's except
+    # branch) expires every object already in this session -- every job
+    # claimed this cycle, not just the one that failed. Re-fetching by id
+    # each iteration via session.get() (a cheap identity-map hit when nothing
+    # expired it, a proper async-safe reload when something did) is what lets
+    # job 3..N still get driven after job 2 explodes, instead of the next
+    # iteration's own attribute access raising MissingGreenlet on a stale
+    # object.
+    job_ids = [int(j.id) for j in claimed]
 
     finished = 0
     failed = 0
-    for job in claimed:
+    for job_id in job_ids:
+        job = await session.get(PrepJob, job_id)
+        if job is None:  # pragma: no cover - not deletable via any current API
+            continue
         outcome = await _drive_one(session, job)
         await session.commit()
         if outcome == "done":

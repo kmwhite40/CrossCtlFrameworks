@@ -12,6 +12,7 @@ from ccf.db import session_scope
 from ccf.models import Organization, System
 from ccf.models_prep import PrepClassification, PrepEmbedding, PrepLine, PrepUnit
 from ccf.prep import pipeline
+from ccf.prep import retriever as retriever_module
 from ccf.prep.retriever import fuse, retrieve
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -296,3 +297,158 @@ async def test_retrieve_normalizes_an_enhancement_identifier_for_the_tagged_boos
         )
     assert results
     assert results[0].unit_id == target_id
+
+
+# --- padded/unpadded control identifier reconciliation (Finding C1) --------
+#
+# The real ingested catalog is not consistently formatted: zero-padded
+# ("AC-02"), unpadded ("CP-9"), and CMMC-style ("AC.L2-3.1.1") forms all
+# coexist (confirmed live). Screening emits whatever the catalog row happens
+# to be spelled, verbatim; before the fix, ``retrieve(control="AC-2")``
+# returned zero results for a unit the classifier tagged "AC-02" -- the
+# tagged-boost signal was dead for exactly the catalog's most common naming
+# style. These two tests exercise both directions through the real
+# ``retrieve()`` entrypoint, not just the normalization helper in isolation.
+
+
+async def test_retrieve_finds_a_zero_padded_tagged_unit_from_an_unpadded_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query_text = "delta echo foxtrot access control policy"
+    query_vector = [0.9] * 1024
+    unrelated_vector = [1.0 if i % 2 == 0 else -1.0 for i in range(1024)]
+    async with session_scope() as s:
+        org = Organization(name="retr-padded-catalog")
+        s.add(org)
+        await s.flush()
+        run = await pipeline.create_run(
+            s, organization_id=org.id, source_kind="evidence_version", source_id=1
+        )
+        org_id = int(org.id)
+        # "match": strong lexical + weaker vector match, untagged.
+        await _add_unit(
+            s, run=run, org_id=org_id, line_number=1, content=query_text,
+            embedding=unrelated_vector, control_identifiers=None,
+        )
+        # "target": tagged with the catalog's own zero-padded spelling
+        # ("AC-02"), no lexical overlap, identical vector to the query --
+        # reachable only via the tagged boost.
+        target_id = await _add_unit(
+            s, run=run, org_id=org_id, line_number=2,
+            content="boundary enforcement device configuration review",
+            embedding=query_vector, control_identifiers=["AC-02"],
+        )
+    monkeypatch.setattr(gateway, "embed", _fake_embed(query_vector))
+    async with session_scope() as s:
+        results = await retrieve(
+            s, org_id=org_id, control_identifier="AC-2",
+            query_text=query_text, limit=1,
+        )
+    assert results
+    assert results[0].unit_id == target_id
+
+
+async def test_retrieve_finds_an_unpadded_tagged_unit_from_a_zero_padded_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reverse direction: Concord's own canonical unpadded tag stored on
+    the unit, queried with the catalog's zero-padded spelling."""
+    query_text = "golf hotel india access control policy"
+    query_vector = [0.9] * 1024
+    unrelated_vector = [1.0 if i % 2 == 0 else -1.0 for i in range(1024)]
+    async with session_scope() as s:
+        org = Organization(name="retr-unpadded-tag")
+        s.add(org)
+        await s.flush()
+        run = await pipeline.create_run(
+            s, organization_id=org.id, source_kind="evidence_version", source_id=1
+        )
+        org_id = int(org.id)
+        await _add_unit(
+            s, run=run, org_id=org_id, line_number=1, content=query_text,
+            embedding=unrelated_vector, control_identifiers=None,
+        )
+        target_id = await _add_unit(
+            s, run=run, org_id=org_id, line_number=2,
+            content="boundary enforcement device configuration review",
+            embedding=query_vector, control_identifiers=["AC-2"],
+        )
+    monkeypatch.setattr(gateway, "embed", _fake_embed(query_vector))
+    async with session_scope() as s:
+        results = await retrieve(
+            s, org_id=org_id, control_identifier="AC-02",
+            query_text=query_text, limit=1,
+        )
+    assert results
+    assert results[0].unit_id == target_id
+
+
+# --- deterministic ranking (Finding I7) -------------------------------------
+
+
+async def test_retrieve_ranking_is_deterministic_regardless_of_tagged_id_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two units tied on fused score (both tagged-only -- unreachable by
+    lexical or vector, so both carry exactly ``tagged_boost`` and nothing
+    else) must sort identically regardless of what order the tagged-unit
+    query happens to return them in. Before the fix, the final sort was a
+    stable sort over dict-insertion order, which followed whatever order the
+    unbounded, unordered ``@>`` scan produced -- Postgres gives no guarantee
+    that stays the same call to call.
+
+    ``_lexical_ids``/``_vector_ids`` are stubbed to empty so the two units'
+    scores come *only* from ``tagged_boost`` (real Postgres tie-order on
+    those two backends is a separate, unrelated nondeterminism this test
+    doesn't need and would otherwise contaminate the comparison). ``_tagged_ids``
+    is stubbed to return the same two ids in opposite order on each call,
+    standing in for Postgres's unspecified row order without depending on
+    actually forcing two different physical scan orders.
+    """
+    async with session_scope() as s:
+        org = Organization(name="retr-determinism")
+        s.add(org)
+        await s.flush()
+        run = await pipeline.create_run(
+            s, organization_id=org.id, source_kind="evidence_version", source_id=1
+        )
+        org_id = int(org.id)
+        id_a = await _add_unit(
+            s, run=run, org_id=org_id, line_number=1,
+            content="unit alpha", embedding=[0.1] * 1024, control_identifiers=["IA-2"],
+        )
+        id_b = await _add_unit(
+            s, run=run, org_id=org_id, line_number=2,
+            content="unit bravo", embedding=[0.1] * 1024, control_identifiers=["IA-2"],
+        )
+
+    async def _empty(*args: Any, **kwargs: Any) -> list[int]:
+        return []
+
+    monkeypatch.setattr(retriever_module, "_lexical_ids", _empty)
+    monkeypatch.setattr(retriever_module, "_vector_ids", _empty)
+
+    orders = iter([[id_a, id_b], [id_b, id_a]])
+
+    async def _fake_tagged_ids(*args: Any, **kwargs: Any) -> list[int]:
+        return next(orders)
+
+    monkeypatch.setattr(retriever_module, "_tagged_ids", _fake_tagged_ids)
+
+    async with session_scope() as s:
+        first = [
+            r.unit_id
+            for r in await retrieve(
+                s, org_id=org_id, control_identifier="IA-2",
+                query_text="completely unrelated query text zzz", limit=5,
+            )
+        ]
+    async with session_scope() as s:
+        second = [
+            r.unit_id
+            for r in await retrieve(
+                s, org_id=org_id, control_identifier="IA-2",
+                query_text="completely unrelated query text zzz", limit=5,
+            )
+        ]
+    assert first == second == sorted([id_a, id_b])

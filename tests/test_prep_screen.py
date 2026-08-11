@@ -12,9 +12,41 @@ from ccf.db import session_scope
 from ccf.models import Control, Organization
 from ccf.models_prep import PrepLine, PrepScreen
 from ccf.prep import pipeline
-from ccf.prep.screen import run_stage_screen, score_line
+from ccf.prep.screen import normalize_control_identifier, run_stage_screen, score_line
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+
+# --- control identifier normalization (Finding C1) -------------------------
+#
+# The real ingested catalog is not consistently formatted -- confirmed live
+# against the test DB: "AC-01, AC-02, AC-99, AC.L2-3.1.1, AC.L2-3.1.2, CP-9"
+# all coexist. These are plain unit tests (no DB needed) pinning down the
+# normalization rule itself, ahead of the integration-level proof in
+# test_prep_retriever.py that it actually reconnects a padded catalog
+# identifier with an unpadded query.
+
+
+def test_normalize_control_identifier_folds_zero_padding() -> None:
+    assert normalize_control_identifier("AC-02") == "AC-2"
+    assert normalize_control_identifier("AC-2") == "AC-2"
+
+
+def test_normalize_control_identifier_leaves_already_unpadded_forms_alone() -> None:
+    assert normalize_control_identifier("CP-9") == "CP-9"
+
+
+def test_normalize_control_identifier_still_strips_an_enhancement_suffix() -> None:
+    assert normalize_control_identifier("AC-6(2)") == "AC-6"
+    assert normalize_control_identifier("AC-06(02)") == "AC-6"
+
+
+def test_normalize_control_identifier_leaves_cmmc_style_identifiers_untouched() -> None:
+    """CMMC-style identifiers have a dot before the hyphen and dotted segments
+    after it -- they must round-trip unchanged, not be mistaken for a padded
+    NIST-style family-number identifier."""
+    assert normalize_control_identifier("AC.L2-3.1.1") == "AC.L2-3.1.1"
+    assert normalize_control_identifier("AC.L2-3.1.2") == "AC.L2-3.1.2"
 
 
 #: The same weighting the real ETL applies after every workbook ingest
@@ -173,6 +205,52 @@ async def test_screen_stage_flags_relevant_lines_above_threshold() -> None:
         assert [x.PrepScreen.above_threshold for x in screens] == [True, False]
         assert "IA-2" in screens[0].PrepScreen.candidate_controls
         assert screens[0].PrepScreen.method == "catalog_fts"
+
+
+async def test_screen_stage_skips_a_pathologically_oversized_line_without_failing_the_run() -> None:
+    """``score_line`` ORs every lexeme of a line into one ``to_tsquery``. A
+    line dense enough with distinct lexemes reliably reproduces Postgres's
+    real ``StatementTooComplexError`` ("stack depth limit exceeded") --
+    confirmed directly against this test DB at ~30,000 distinct lexemes, well
+    within reach of a minified JSON export, a newline-free CSV, or a base64
+    blob, none of which anything upstream caps the length of. Before the fix,
+    that error aborted the whole transaction: the whole stage failed, and
+    every ``PrepScreen`` row already added earlier in this loop (for a
+    multi-page document, screened line by line) would be lost with it. The
+    fix isolates each line's own query in a savepoint, so this line gets zero
+    candidates and the run keeps going.
+    """
+    org_id = await _seed_controls()
+    pathological_content = " ".join(f"word{i}" for i in range(30_000))
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=org_id, source_kind="policy_version", source_id=1
+        )
+        run.stage_parse = "complete"
+        s.add(PrepLine(run_id=run.id, organization_id=org_id, line_number=1,
+                       content=pathological_content))
+        s.add(PrepLine(run_id=run.id, organization_id=org_id, line_number=2,
+                       content="Administrators must use multifactor authentication."))
+        await s.flush()
+
+        above = await run_stage_screen(s, run)
+
+        assert run.stage_screen == "complete", "one bad line must not fail the whole stage"
+        assert above == 1, "the second, well-formed line must still be screened normally"
+
+        screens = (
+            await s.execute(
+                select(PrepScreen, PrepLine)
+                .join(PrepLine, PrepLine.id == PrepScreen.line_id)
+                .where(PrepScreen.run_id == run.id)
+                .order_by(PrepLine.line_number)
+            )
+        ).all()
+    assert len(screens) == 2, "the pathological line must be recorded, not silently dropped"
+    pathological, normal = screens[0].PrepScreen, screens[1].PrepScreen
+    assert pathological.candidate_controls == []
+    assert pathological.above_threshold is False
+    assert normal.above_threshold is True
 
 
 async def test_screen_stage_is_idempotent_on_rerun() -> None:
@@ -626,7 +704,10 @@ async def test_score_line_ranks_the_right_control_in_top5_at_realistic_scale(
         backups = await score_line(
             s, content="The organization conducts nightly backups of system-level information."
         )
-    for label, ranked, expected_base in [("mfa", mfa, "IA-02"), ("backups", backups, "CP-09")]:
+    # Catalog rows are seeded padded ("IA-02", "CP-09" -- see module docstring
+    # for why); score_line's return is normalized (Finding C1), so the
+    # expected candidate is the canonical unpadded form.
+    for label, ranked, expected_base in [("mfa", mfa, "IA-2"), ("backups", backups, "CP-9")]:
         candidates = [identifier for identifier, _ in ranked]
         assert expected_base in candidates, (
             f"{expected_base} not reachable in top-5 candidates ({label}): {ranked}"

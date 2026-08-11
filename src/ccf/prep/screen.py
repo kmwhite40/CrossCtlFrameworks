@@ -17,7 +17,10 @@ retroactively reinterpret a run already in flight.
 
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
@@ -52,6 +55,80 @@ _RANK_NORMALIZATION = 32
 #: parenthesized suffix to strip, so the regex is a no-op on them and they
 #: collapse to themselves, same as a base control would.
 _BASE_CONTROL_PATTERN = r"\(.*$"
+
+#: The NIST-style "family-number" shape once any enhancement suffix has been
+#: stripped: letters, a hyphen, digits only (``AC-2``, ``AC-02``, ``CP-9``).
+#: CMMC-style identifiers (``AC.L2-3.1.1``) have a dot before the hyphen and
+#: dotted segments after it, so this never matches them -- they fall through
+#: :func:`normalize_control_identifier` unchanged.
+_PADDED_FAMILY_PATTERN = re.compile(r"^([A-Za-z]+)-0*(\d+)$")
+
+
+def normalize_control_identifier(identifier: str) -> str:
+    """Fold a control identifier to Concord's canonical, unpadded tag form.
+
+    The real ingested catalog is not consistently formatted: zero-padded
+    (``AC-02``), unpadded (``CP-9``), and CMMC-style (``AC.L2-3.1.1``) forms
+    all coexist in ``ccf.controls.identifier`` (confirmed live against the
+    test catalog). ``EvidenceObject.control_id`` documents Concord's own
+    canonical tag as unpadded (``models_evidence.py``: "tag (e.g. AC-2)"), so
+    that is the form this folds to.
+
+    Without this, a value stored verbatim from the catalog (e.g. ``AC-02``,
+    written by :func:`score_line` below into ``PrepScreen.candidate_controls``
+    and carried through unchanged into
+    ``PrepClassification.control_identifiers``) is unreachable by a caller
+    spelling the same control ``AC-2`` -- silently: ``@>`` containment and
+    ``==`` are exact-string operations, so a mismatch produces zero results,
+    not an error.
+
+    Strips any parenthesized enhancement suffix first (the same scope as
+    :data:`_BASE_CONTROL_PATTERN`), then, only for the plain
+    ``LETTERS-DIGITS`` shape, strips leading zeros from the numeric segment.
+    CMMC-style identifiers never match that shape and pass through unchanged
+    apart from the suffix strip -- there is no padding convention to
+    reconcile for them, and folding their dotted segments would risk
+    collapsing two genuinely different requirements into one identifier.
+
+    ``retriever.py`` imports this function directly (the same object, not a
+    re-implementation) so the two modules' idea of "the same control" cannot
+    drift apart the way ``_BASE_CONTROL_PATTERN``-only stripping already
+    proved it could for padding.
+    """
+    base = re.sub(_BASE_CONTROL_PATTERN, "", identifier).strip()
+    match = _PADDED_FAMILY_PATTERN.match(base)
+    if match is None:
+        return base
+    family, number = match.groups()
+    return f"{family}-{number}"
+
+
+def control_identifier_spellings(identifier: str) -> list[str]:
+    """Every spelling of ``identifier`` that ``PrepClassification.control_identifiers``
+    could actually contain, for an exact-match lookup (Postgres's jsonb ``@>``)
+    against data that may not have been written through
+    :func:`normalize_control_identifier`.
+
+    :func:`score_line` normalizes everything it writes going forward, but that
+    is a write-side guarantee, not a read-side one: rows written before this
+    normalization existed, or by any future write path that bypasses it,
+    still hold whatever spelling the catalog used verbatim (``AC-02``, not
+    ``AC-2``). A read that only checks the canonical spelling would still
+    silently miss those rows -- normalizing one side of an exact-match
+    comparison is not sufficient when the other side isn't guaranteed
+    normalized too. So this returns every spelling worth checking:
+    the canonical (unpadded) form, and the two-digit zero-padded form (the
+    padding width observed in the real catalog -- ``AC-01``, ``AC-02``,
+    ``AC-99``). For a CMMC-style or otherwise non-family-number identifier,
+    where there is no padding convention to reconcile, this returns exactly
+    the one (suffix-stripped) form.
+    """
+    base = re.sub(_BASE_CONTROL_PATTERN, "", identifier).strip()
+    match = _PADDED_FAMILY_PATTERN.match(base)
+    if match is None:
+        return [base]
+    family, number = match.groups()
+    return sorted({base, f"{family}-{number}", f"{family}-{number.zfill(2)}"})
 
 
 async def score_line(
@@ -131,7 +208,28 @@ async def score_line(
             .limit(limit)
         )
     ).all()
-    return [(str(base), float(value)) for base, value in rows]
+    # The SQL grouping above already collapsed enhancement suffixes; folding
+    # padding here too means every value this function ever returns -- and
+    # therefore everything downstream that copies it verbatim
+    # (``PrepScreen.candidate_controls``, then ``PrepClassification.
+    # control_identifiers``) -- is in Concord's one canonical form, regardless
+    # of how the source catalog row happened to be spelled.
+    #
+    # Folding padding *after* the SQL-level grouping means two distinct
+    # catalog spellings of the same control (e.g. a padded "AC-02" row and an
+    # unpadded "AC-2" row -- the base-control-collapse grouping above has no
+    # way to know those are the same control, since it only strips enhancement
+    # suffixes) can normalize to the same identifier here. Deduplicating and
+    # keeping the stronger match, rather than returning the same control
+    # twice, is what the base-control collapse already promises for
+    # enhancement suffixes -- this extends that same guarantee to padding.
+    normalized: dict[str, float] = {}
+    for base, value in rows:
+        identifier = normalize_control_identifier(str(base))
+        score = float(value)
+        if identifier not in normalized or score > normalized[identifier]:
+            normalized[identifier] = score
+    return sorted(normalized.items(), key=lambda pair: pair[1], reverse=True)[:limit]
 
 
 async def run_stage_screen(session: AsyncSession, run: PrepRun) -> int:
@@ -153,8 +251,33 @@ async def run_stage_screen(session: AsyncSession, run: PrepRun) -> int:
     )
 
     above = 0
+    skipped = 0
     for line in lines:
-        ranked = await score_line(session, content=line.content)
+        try:
+            # A savepoint isolates this line's query: OR-ing every lexeme of
+            # one oversized or pathologically dense line into a single
+            # to_tsquery can blow past Postgres's own limits --
+            # StatementTooComplexError (stack depth, reproduced live around
+            # 30,000 distinct lexemes) or "string is too long for tsvector"
+            # (around 1MB) -- and nothing upstream caps PrepLine.content
+            # length. Without the savepoint, that error aborts the whole
+            # transaction: every PrepScreen row already added earlier in this
+            # loop would be lost, the run would die instead of finishing, and
+            # (via jobs.run_once) the failure would strand the rest of a
+            # claimed batch too. The same pattern pipeline.run_stage_parse
+            # already uses for exactly this reason.
+            async with session.begin_nested():
+                ranked = await score_line(session, content=line.content)
+        except SQLAlchemyError as exc:
+            skipped += 1
+            ranked = []
+            log.warning(
+                "prep.screen_line_skipped",
+                run_id=run.id,
+                line_id=line.id,
+                line_number=line.line_number,
+                error=str(exc),
+            )
         score = ranked[0][1] if ranked else 0.0
         is_above = bool(ranked) and score >= threshold
         above += int(is_above)
@@ -179,5 +302,6 @@ async def run_stage_screen(session: AsyncSession, run: PrepRun) -> int:
         lines=len(lines),
         above_threshold=above,
         threshold=threshold,
+        skipped=skipped,
     )
     return above

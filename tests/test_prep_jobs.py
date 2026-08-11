@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from ccf.ai import gateway
 from ccf.ai.providers.base import EmbedResponse
@@ -387,3 +387,86 @@ async def test_a_job_abandoned_mid_processing_stays_claimed_for_reap_to_dead_let
         row = (await s.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
         assert row.status == "failed"
         assert "exceeded max attempts" in (row.last_error or "")
+
+
+# --- durable failure recording for a genuine DBAPI error (Finding C2) ------
+#
+# A stage that raises a plain Python exception (RuntimeError, above) leaves
+# the session's DB transaction perfectly usable, so job.status/last_error's
+# ORM mutation survives run_once's next commit() fine. A stage that raises
+# after an *uncaught DBAPI error* (a bad statement, a Postgres-side limit
+# blown -- see screen.py's oversized-line fix) is a different case entirely:
+# Postgres refuses every further statement on that transaction until it's
+# rolled back, so the same ORM-mutation-then-commit sequence instead raises
+# InFailedSQLTransactionError out of run_once itself, losing last_error (the
+# job stays "claimed" with last_error=NULL) and aborting the rest of the
+# claimed batch along with it. These two tests reproduce that with a real
+# DBAPI error (an unqualified reference to a nonexistent table), not a mock.
+
+
+async def test_a_dbapi_error_leaves_the_job_failed_with_a_durable_last_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = await _org("jobs-dbapi-error")
+
+    async def _boom(session: Any, run: Any) -> Any:
+        await session.execute(text("SELECT * FROM ccf.this_table_does_not_exist_at_all"))
+
+    monkeypatch.setattr(jobs.pipeline, "advance", _boom)
+    source_id = await _uri_only_policy_version(org_id)
+    async with session_scope() as s:
+        await jobs.enqueue(
+            s, organization_id=org_id, source_kind="policy_version", source_id=source_id
+        )
+    async with session_scope() as s:
+        stats = await jobs.run_once(s, worker="w1", limit=5)
+        assert stats["failed"] == 1
+
+    async with session_scope() as s:
+        job = (await s.execute(select(PrepJob))).scalars().one()
+        assert job.status == "failed"
+        assert job.last_error, "last_error must survive, not be lost to the aborted transaction"
+        assert "this_table_does_not_exist_at_all" in job.last_error
+
+
+async def test_a_dbapi_error_in_one_job_does_not_strand_the_rest_of_the_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org_id = await _org("jobs-dbapi-batch")
+    source_ids = [await _uri_only_policy_version(org_id) for _ in range(3)]
+    job_ids: list[int] = []
+    run_ids: list[int] = []
+    async with session_scope() as s:
+        for source_id in source_ids:
+            job = await jobs.enqueue(
+                s, organization_id=org_id, source_kind="policy_version", source_id=source_id
+            )
+            job_ids.append(int(job.id))
+            run_ids.append(int(job.run_id))
+
+    real_advance = jobs.pipeline.advance
+    exploding_run_id = run_ids[1]
+
+    async def _advance(session: Any, run: Any) -> Any:
+        if int(run.id) == exploding_run_id:
+            await session.execute(text("SELECT * FROM ccf.this_table_does_not_exist_at_all"))
+        return await real_advance(session, run)
+
+    monkeypatch.setattr(jobs.pipeline, "advance", _advance)
+    async with session_scope() as s:
+        stats = await jobs.run_once(s, worker="w1", limit=5)
+        assert stats["claimed"] == 3
+        assert stats["failed"] == 1
+        # The other two resolve to "orphaned" (a uri-only source, same as
+        # test_run_once_drives_a_job_to_done) -- a terminal state, so "done".
+        assert stats["finished"] == 2
+
+    async with session_scope() as s:
+        rows = (
+            (await s.execute(select(PrepJob).where(PrepJob.id.in_(job_ids)))).scalars().all()
+        )
+    by_id = {int(j.id): j for j in rows}
+    assert by_id[job_ids[0]].status == "done"
+    assert by_id[job_ids[1]].status == "failed"
+    assert by_id[job_ids[1]].last_error
+    assert by_id[job_ids[2]].status == "done"
