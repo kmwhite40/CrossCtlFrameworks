@@ -19,14 +19,15 @@ Two things make this orchestration, not just a loop:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import get_settings
+from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...logging import get_logger
-from ...models import Assessment, AssessmentControlResult, System
+from ...models import POAM, Assessment, AssessmentControlResult, System
 from ...models_ai_actions import AiActionRun
 from ...models_assessment_engine import (
     CORRECTED_FINDINGS,
@@ -326,6 +327,80 @@ async def check_staleness(session: AsyncSession, proposal: AssessmentControlProp
     return stale
 
 
+async def _ensure_poam_for_other_than_satisfied(
+    session: AsyncSession,
+    *,
+    proposal: AssessmentControlProposal,
+    result: AssessmentControlResult,
+) -> None:
+    """Create a POA&M for an accepted other_than_satisfied finding, idempotently.
+
+    Only ``other_than_satisfied`` creates one. ``satisfied``, ``not_applicable``
+    and (unreachable here -- acceptance already refuses it) ``insufficient_evidence``
+    do not: manufacturing tracked remediation work out of the engine's own
+    uncertainty would be worse than not creating anything.
+
+    Idempotent on ``source_ref = f"assessment_control_result:{result.id}"``,
+    not on title -- ``ui.py``'s inline duplicate dedupes on title alone and
+    would collide across two systems assessing the same control. An existing
+    POA&M with that source_ref is found and left alone: re-accepting a
+    proposal (the result row upserts) must not silently overwrite a POA&M a
+    human has since edited, assigned, or partially remediated.
+
+    Runs in its own savepoint and never raises: acceptance writes the
+    authoritative AssessmentControlResult, and losing the derived POA&M is
+    recoverable while discarding a human's accepted finding because a
+    derived row would not insert is not. AsyncSession.rollback() is NOT
+    savepoint-scoped -- it would unwind this whole accept_control_proposal
+    call, which is exactly the trap slice 3 hit with record_ai_run. This
+    uses begin_nested() instead, which rolls back only this savepoint on
+    failure and leaves the surrounding acceptance intact.
+    """
+    if result.finding != "other_than_satisfied":
+        return
+    source_ref = f"assessment_control_result:{result.id}"
+    try:
+        async with session.begin_nested():
+            existing = (
+                await session.execute(select(POAM.id).where(POAM.source_ref == source_ref))
+            ).scalar_one_or_none()
+            if existing is not None:
+                return
+            system_id = (
+                await session.execute(
+                    select(Assessment.system_id).where(Assessment.id == proposal.assessment_id)
+                )
+            ).scalar_one()
+            severity = "moderate"
+            today = datetime.now(UTC).date()
+            due_on = today + timedelta(days=SEVERITY_SLA_DAYS.get(severity, 90))
+            session.add(
+                POAM(
+                    system_id=system_id,
+                    title=f"{proposal.control_identifier} — other than satisfied",
+                    weakness=(
+                        proposal.rollup_rationale
+                        or f"{proposal.control_identifier} assessed other than satisfied."
+                    ),
+                    severity=severity,
+                    status="open",
+                    identified_on=today,
+                    due_on=due_on,
+                    original_due_on=due_on,
+                    source="assessment",
+                    source_ref=source_ref,
+                )
+            )
+            await session.flush()
+    except Exception as exc:  # a derived-row failure must not cost the acceptance
+        log.warning(
+            "assessment.poam_bridge_failed",
+            proposal_id=proposal.id,
+            result_id=result.id,
+            error=str(exc),
+        )
+
+
 async def accept_control_proposal(
     session: AsyncSession, proposal_id: int, *, accepted_by: str
 ) -> AssessmentControlResult:
@@ -451,6 +526,7 @@ async def accept_control_proposal(
         )
 
     await session.flush()
+    await _ensure_poam_for_other_than_satisfied(session, proposal=proposal, result=result)
     log.info(
         "assessment.control_proposal_accepted",
         assessment_id=proposal.assessment_id,
