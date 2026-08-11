@@ -18,13 +18,14 @@ reviewer half.
 Recording must never fail the work it documents: every failure returns ``None``
 and is logged, leaving the caller to store a NULL run id and carry on.
 
-:func:`ai_written_poam_ids` is separate, read-only logic (CISO-02) that lives in
-this module because it derives from the same ``ai_action_*`` tables: it is
-display/surfacing only, never mutates data, and never fabricates a signal. The
-one durable, non-fabricated record that a field was set by an AI action is the
-``ai_approved_mutations`` row ``ai_actions.service.approve_run`` writes when it
-applies an approved run's declared mutation (see ``_apply_mutation`` in
-``ai_actions/service.py``).
+:func:`ai_written_poam_ids` is unrelated, pre-existing, read-only logic (CISO-02)
+that already lived at this module path before pipeline recording was added
+here; it is display/surfacing only, never mutates data, and never fabricates a
+signal. It reads ``ai_approved_mutations`` -- the row
+``ai_actions.service.approve_run`` writes when it applies an approved run's
+declared mutation (see ``_apply_mutation`` in ``ai_actions/service.py``) --
+which :func:`record_ai_run` never writes; the two functions do not share a
+table beyond both hanging off ``ai_action_runs.id``.
 """
 
 from __future__ import annotations
@@ -96,63 +97,68 @@ async def record_ai_run(
     output_hash = _sha256(_canonical(output))
 
     try:
-        run = AiActionRun(
-            organization_id=organization_id,
-            action_key=action_key,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            status=PIPELINE_RUN_STATUS,
-            provider=provider,
-            prompt_version=PROMPT_VERSION,
-            input_hash=input_hash,
-            output_hash=output_hash,
-            actor=actor,
-            mutation_applied=False,
-            summary={"model": model, "citation_count": len(citations)},
-        )
-        session.add(run)
-        await session.flush()
-
-        # IA-10: the hash proves what ran even when the prompt itself is not retained.
-        payload: dict[str, Any] = {"prompt_sha256": input_hash, "model": model}
-        if settings.ai_store_prompts:
-            payload["prompt"] = prompt
-        session.add(
-            AiActionInput(
-                run_id=run.id,
+        # A savepoint isolates the write: if it fails (an FK violation, a value
+        # that slips past validation, any other constraint violation), only
+        # these inserts roll back -- the outer transaction, and whatever the
+        # caller already flushed before calling this, stay usable. A plain
+        # ``session.rollback()`` in the except clause below would instead
+        # unwind to the outermost transaction regardless of nesting, discarding
+        # the caller's own work (see ``ccf.prep.pipeline``'s parse stage and
+        # ``ccf.assessment.engine.service``'s per-objective loop for the same
+        # pattern, and the same warning against a bare rollback).
+        async with session.begin_nested():
+            run = AiActionRun(
+                organization_id=organization_id,
+                action_key=action_key,
                 entity_type=entity_type,
                 entity_id=entity_id,
-                payload=payload,
-                hash=input_hash,
+                status=PIPELINE_RUN_STATUS,
+                provider=provider,
+                prompt_version=PROMPT_VERSION,
+                input_hash=input_hash,
+                output_hash=output_hash,
+                actor=actor,
+                mutation_applied=False,
+                summary={"model": model, "citation_count": len(citations)},
             )
-        )
-        session.add(
-            AiActionOutput(
-                run_id=run.id,
-                content=_canonical(output),
-                uncited=not citations,
-                payload=output,
-                hash=output_hash,
-            )
-        )
-        for citation in citations:
+            session.add(run)
+            await session.flush()
+
+            # IA-10: the hash proves what ran even when the prompt itself is not retained.
+            payload: dict[str, Any] = {"prompt_sha256": input_hash, "model": model}
+            if settings.ai_store_prompts:
+                payload["prompt"] = prompt
             session.add(
-                AiActionCitation(
+                AiActionInput(
                     run_id=run.id,
-                    source_type=citation.source_type,
-                    source_id=citation.source_id,
-                    label=citation.label,
-                    note=citation.note,
+                    entity_type=entity_type,
+                    entity_id=entity_id,
+                    payload=payload,
+                    hash=input_hash,
                 )
             )
-        await session.flush()
+            session.add(
+                AiActionOutput(
+                    run_id=run.id,
+                    content=_canonical(output),
+                    uncited=not citations,
+                    payload=output,
+                    hash=output_hash,
+                )
+            )
+            for citation in citations:
+                session.add(
+                    AiActionCitation(
+                        run_id=run.id,
+                        source_type=citation.source_type,
+                        source_id=citation.source_id,
+                        label=citation.label,
+                        note=citation.note,
+                    )
+                )
+            await session.flush()
         return run
     except Exception as exc:
-        # A failed flush leaves the session's transaction unusable for anything
-        # further -- including the caller's own eventual commit -- until it is
-        # rolled back. Recording must not raise, but it also must not leave the
-        # session broken behind it, or "the stage carries on" would be a lie.
-        await session.rollback()
         log.warning(
             "ai.provenance_record_failed",
             action_key=action_key,

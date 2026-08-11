@@ -208,6 +208,97 @@ async def test_a_recording_failure_returns_none_rather_than_raising() -> None:
     assert run is None
 
 
+async def test_a_recording_failure_does_not_discard_the_callers_own_work() -> None:
+    """A savepoint isolates record_ai_run's own writes. A bare session.rollback()
+    is not savepoint-scoped -- it unwinds to the outermost transaction -- so it
+    would discard whatever the caller already flushed in this same session
+    before ever calling record_ai_run, even though record_ai_run itself never
+    raises. Fails against a bare ``await session.rollback()`` implementation:
+    the caller's organization row is gone after commit.
+    """
+    async with session_scope() as s:
+        org = Organization(name="prov-savepoint-bare")
+        s.add(org)
+        await s.flush()
+        org_id = org.id
+        run = await record_ai_run(
+            s,
+            action_key="classify_evidence_unit",
+            entity_type="prep_unit",
+            entity_id="1",
+            organization_id=987654321,  # no such organization -> FK violation
+            provider="openai",
+            model="gpt-test",
+            prompt="x",
+            output={},
+            citations=[],
+        )
+        assert run is None
+    async with session_scope() as s:
+        found = (
+            await s.execute(select(Organization).where(Organization.id == org_id))
+        ).scalar_one_or_none()
+    assert found is not None
+
+
+async def test_a_recording_failure_inside_a_callers_savepoint_survives_it() -> None:
+    """Matches the assessment engine's per-objective shape (evaluate_objective
+    runs inside session.begin_nested()): record_ai_run is itself called from
+    inside a caller savepoint that has already flushed real work on this call.
+    A bare rollback unwinds past the caller's own savepoint too, destroying
+    work the caller had every reason to believe was safe. Fails against a bare
+    ``await session.rollback()`` implementation: the inner row -- and the
+    caller's own savepoint -- do not survive.
+    """
+    async with session_scope() as s:
+        org = Organization(name="prov-savepoint-nested")
+        s.add(org)
+        await s.flush()
+        org_id = org.id
+        async with s.begin_nested():
+            inner = Organization(name="prov-savepoint-nested-inner")
+            s.add(inner)
+            await s.flush()
+            inner_id = inner.id
+            run = await record_ai_run(
+                s,
+                action_key="classify_evidence_unit",
+                entity_type="prep_unit",
+                entity_id="1",
+                organization_id=987654321,  # no such organization -> FK violation
+                provider="openai",
+                model="gpt-test",
+                prompt="x",
+                output={},
+                citations=[],
+            )
+            assert run is None
+    async with session_scope() as s:
+        found_outer = (
+            await s.execute(select(Organization).where(Organization.id == org_id))
+        ).scalar_one_or_none()
+        found_inner = (
+            await s.execute(select(Organization).where(Organization.id == inner_id))
+        ).scalar_one_or_none()
+    assert found_outer is not None
+    assert found_inner is not None
+
+
+async def test_uncited_output_reflects_whether_citations_were_given() -> None:
+    org_id = await _org("prov-uncited")
+    uncited_run = await _record(org_id, citations=[])
+    cited_run = await _record(org_id)  # default kwargs include one citation
+    async with session_scope() as s:
+        uncited_out = (
+            await s.execute(select(AiActionOutput).where(AiActionOutput.run_id == uncited_run))
+        ).scalar_one()
+        cited_out = (
+            await s.execute(select(AiActionOutput).where(AiActionOutput.run_id == cited_run))
+        ).scalar_one()
+    assert uncited_out.uncited is True
+    assert cited_out.uncited is False
+
+
 async def test_the_objective_proposal_carries_an_ai_action_run_fk() -> None:
     """The column Task 3 populates must exist and be nullable."""
     column = AssessmentObjectiveProposal.__table__.c.ai_action_run_id
