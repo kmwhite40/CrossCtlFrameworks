@@ -28,6 +28,7 @@ from .routes import (
     ai_settings,
     approvals,
     artifacts,
+    assessment_engine,
     assessments,
     assurance,
     audit,
@@ -188,6 +189,11 @@ def create_app() -> FastAPI:
         # not found, absent from /openapi.json and /docs) instead of a 200
         # that merely confirms the endpoints exist.
         app.include_router(prep.router)
+    if settings.assessment_engine_enabled:
+        # Same reasoning as prep.router above: register nothing at all when
+        # disabled (plain 404, absent from /openapi.json), not a 200 that
+        # merely confirms the endpoints exist.
+        app.include_router(assessment_engine.router)
     app.include_router(poams.router)
     app.include_router(risks.router)
     app.include_router(scans.router)
