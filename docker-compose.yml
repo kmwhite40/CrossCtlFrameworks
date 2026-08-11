@@ -115,5 +115,34 @@ services:
     command: ["ccf prep-worker --loop"]
     restart: "unless-stopped"
 
+  # Objective-level assessment engine worker. Evaluating one control means a
+  # model call per objective -- too slow for a request cycle -- so it's
+  # queued in Postgres and drained here, the same shape as prep-worker above.
+  # `docker compose --profile assessment up -d assessment-worker`.
+  assessment-worker:
+    build: .
+    container_name: ccf-assessment-worker
+    profiles: ["assessment"]
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    # CCF_ASSESSMENT_ENGINE_ENABLED overrides x-ccf-env's silence on it
+    # (assessment_engine_enabled defaults to false -- the engine is opt-in).
+    # Without this, `ccf assessment-worker --loop` printed "disabled" and
+    # exited immediately every cycle, and `restart: unless-stopped` below
+    # restart-looped the container forever -- exactly the prior slice's
+    # compose omission. Opting into the "assessment" profile at all (this
+    # service only starts via `docker compose --profile assessment up`) is
+    # already the operator's explicit signal they want the engine running, so
+    # this override is scoped to this service rather than raised in
+    # x-ccf-env, which would silently flip the default for every other
+    # service too (including the API).
+    environment:
+      <<: *ccf_env
+      CCF_ASSESSMENT_ENGINE_ENABLED: "true"
+    entrypoint: ["sh", "-c"]
+    command: ["ccf assessment-worker --loop"]
+    restart: "unless-stopped"
+
 volumes:
   ccf_pgdata:

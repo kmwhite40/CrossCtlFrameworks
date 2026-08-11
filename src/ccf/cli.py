@@ -16,6 +16,7 @@ from rich.console import Console
 from rich.table import Table
 from sqlalchemy import func, select
 
+from .assessment.engine import jobs as assessment_jobs
 from .auth import hash_password, new_api_token
 from .config import Settings, get_settings
 from .db import session_scope
@@ -396,6 +397,78 @@ def prep_worker(
 
     batch = limit if limit is not None else settings.prep_worker_batch_size
     asyncio.run(_drain_loop(once=once, worker=worker, batch=batch, settings=settings))
+
+
+async def _assessment_drain_loop(
+    *,
+    once: bool,
+    worker: str,
+    batch: int,
+    settings: Settings,
+    now: Callable[[], float] = time.monotonic,
+) -> None:
+    """Claim-and-evaluate cycles until ``once``, or forever in ``--loop`` mode.
+
+    Mirrors ``_drain_loop`` above exactly, including its reap-cadence and
+    empty-cycle-sleep properties -- see that function's docstring for the
+    full reasoning (both properties were fixed after the same class of
+    incident: a worker that reaped stale jobs only once at process start
+    silently disabled the retry-cap/dead-letter machinery for the rest of a
+    long-running ``--loop`` process, and a worker that didn't sleep between
+    empty cycles either spun the claim query hot or exited outright, which
+    under ``restart: unless-stopped`` restart-looped the container forever).
+    Reaping stale ``claimed`` assessment jobs runs on its own cadence
+    (``assessment_worker_reap_interval_seconds``), gated inside this loop
+    rather than once before it.
+    """
+    reap_interval = settings.assessment_worker_reap_interval_seconds
+    last_reap = float("-inf")  # forces a reap on the very first cycle
+    while True:
+        current = now()
+        if current - last_reap >= reap_interval:
+            async with session_scope() as session:
+                reaped = await assessment_jobs.reap(session)
+            total_reaped = reaped["requeued"] + reaped["dead_lettered"]
+            if total_reaped:
+                console.print(f"[yellow]Reaped {total_reaped} stale assessment job(s)[/yellow]")
+            last_reap = current
+        async with session_scope() as session:
+            stats = await assessment_jobs.run_once(session, worker=worker, limit=batch)
+        console.print_json(json.dumps(stats))
+        if once:
+            break
+        if stats["claimed"] == 0:
+            # See _drain_loop's identical comment: without this sleep, `--loop`
+            # either hammers the jobs table in a tight loop or exits outright
+            # on the first empty cycle.
+            await asyncio.sleep(settings.assessment_worker_poll_interval_seconds)
+
+
+@app.command(name="assessment-worker")
+def assessment_worker(
+    once: bool = typer.Option(
+        True,
+        "--once/--loop",
+        help="Run one cycle, or loop forever (sleeping between empty cycles).",
+    ),
+    limit: int | None = typer.Option(None, help="Jobs to claim per cycle."),
+    worker: str = typer.Option("assessment-worker", help="Worker name recorded on claimed jobs."),
+) -> None:
+    """Drain queued objective-level control assessment jobs."""
+    settings = get_settings()
+    if not settings.assessment_engine_enabled:
+        # Same reasoning as `ccf prep-worker`'s identical gate above: exit
+        # cleanly rather than silently spending real money on model calls for
+        # a feature an operator never opted into.
+        console.print(
+            "[yellow]Assessment engine is disabled "
+            "(CCF_ASSESSMENT_ENGINE_ENABLED=false) — nothing to do. "
+            "Set CCF_ASSESSMENT_ENGINE_ENABLED=true to enable it.[/yellow]"
+        )
+        return
+
+    batch = limit if limit is not None else settings.assessment_engine_batch_size
+    asyncio.run(_assessment_drain_loop(once=once, worker=worker, batch=batch, settings=settings))
 
 
 @app.command(name="data-quality")

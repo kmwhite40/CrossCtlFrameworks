@@ -247,6 +247,14 @@ class Settings(BaseSettings):
     # the assessment_jobs queue.
     assessment_job_stale_after_minutes: int = Field(default=60)
     assessment_job_max_attempts: int = Field(default=5)
+    # `ccf assessment-worker`'s own batch/cadence settings -- named and
+    # documented identically to their prep_worker_* counterparts above (see
+    # those comments for the full reasoning): poll_interval_seconds is the
+    # `--loop` sleep between cycles that claimed nothing, and
+    # reap_interval_seconds is how often a long-running `--loop` worker
+    # re-checks for stale jobs rather than only once at process start.
+    assessment_worker_poll_interval_seconds: float = Field(default=30.0)
+    assessment_worker_reap_interval_seconds: float = Field(default=300.0)
 
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
