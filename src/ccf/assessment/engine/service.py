@@ -19,12 +19,14 @@ Two things make this orchestration, not just a loop:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import get_settings
 from ...logging import get_logger
-from ...models import Assessment, System
+from ...models import Assessment, AssessmentControlResult, System
 from ...models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
 from ...prep.screen import normalize_control_identifier
 from .evaluate import evaluate_objective
@@ -36,6 +38,19 @@ log = get_logger(__name__)
 
 class ProposalError(RuntimeError):
     """A control proposal could not be opened or evaluated."""
+
+
+class AcceptanceRefused(ProposalError):  # noqa: N818 -- interface name fixed by the task brief
+    """A proposal exists but is not fit to be accepted as a control finding.
+
+    Three conditions refuse acceptance, all enforced here rather than in the
+    schema: the proposal is not ``complete`` (a draft or a failed run), the
+    proposal is ``stale`` (the catalog objective text moved under the stored
+    verdict), or the rollup could not settle on a real finding at all
+    (``insufficient_evidence`` -- the engine could not tell, which is not the
+    same thing as the control failing, and writing it as a finding would
+    manufacture a POA&M out of missing evidence).
+    """
 
 
 async def open_control_proposal(
@@ -242,3 +257,103 @@ async def check_staleness(session: AsyncSession, proposal: AssessmentControlProp
             control_identifier=proposal.control_identifier,
         )
     return stale
+
+
+async def accept_control_proposal(
+    session: AsyncSession, proposal_id: int, *, accepted_by: str
+) -> AssessmentControlResult:
+    """The human gate: project an accepted proposal into ``AssessmentControlResult``.
+
+    This is the only path by which engine output reaches the existing SAR
+    generator or an auto-created POA&M -- both read ``AssessmentControlResult``,
+    not the proposal tables. Upserts on ``(assessment_id, control_id)`` (the
+    ``uq_assess_ctrl`` constraint on that table), so accepting a re-evaluated
+    proposal a second time updates the one existing row rather than violating
+    the constraint with a duplicate.
+
+    Refuses -- raising :class:`AcceptanceRefused` and writing nothing -- when
+    the proposal is stale, is not ``complete``, or settled on
+    ``insufficient_evidence``. All three checks are application code; nothing
+    in the schema stops a bad write on its own.
+    """
+    proposal = (
+        await session.execute(
+            select(AssessmentControlProposal).where(AssessmentControlProposal.id == proposal_id)
+        )
+    ).scalar_one_or_none()
+    if proposal is None:
+        raise ProposalError(f"control proposal {proposal_id} not found")
+
+    if proposal.state == "stale":
+        raise AcceptanceRefused(
+            f"control proposal {proposal_id} is stale -- the catalog objective text "
+            "changed since evaluation; re-evaluate before accepting"
+        )
+    if proposal.state != "complete":
+        raise AcceptanceRefused(
+            f"control proposal {proposal_id} is {proposal.state!r}, not complete"
+        )
+    proposed_finding = proposal.proposed_finding
+    if proposed_finding is None:
+        raise AcceptanceRefused(f"control proposal {proposal_id} has no proposed finding")
+    if proposed_finding == "insufficient_evidence":
+        raise AcceptanceRefused(
+            f"control proposal {proposal_id} settled on insufficient_evidence -- "
+            "the engine could not tell, which is not an acceptable finding"
+        )
+
+    objectives = (
+        (
+            await session.execute(
+                select(AssessmentObjectiveProposal)
+                .where(AssessmentObjectiveProposal.control_proposal_id == proposal.id)
+                .order_by(AssessmentObjectiveProposal.sort_order)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    # autoflush is disabled on this session factory (src/ccf/db.py). A newly
+    # added result row would not be visible to the select below without an
+    # explicit flush first -- but there is nothing pending here to flush past;
+    # this call exists so the select below sees any proposal/objective writes
+    # already made on this session before this function ran.
+    await session.flush()
+    result = (
+        await session.execute(
+            select(AssessmentControlResult).where(
+                AssessmentControlResult.assessment_id == proposal.assessment_id,
+                AssessmentControlResult.control_id == proposal.control_identifier,
+            )
+        )
+    ).scalar_one_or_none()
+    if result is None:
+        result = AssessmentControlResult(
+            assessment_id=proposal.assessment_id,
+            control_id=proposal.control_identifier,
+        )
+        session.add(result)
+
+    result.objective_findings = [
+        {"label": o.label, "text": o.objective_text, "finding": o.verdict or "not_assessed"}
+        for o in objectives
+    ]
+    result.finding = proposed_finding
+    result.nist_id = proposal.control_identifier
+    result.assessor_note = proposal.rollup_rationale
+    result.reviewed = True
+    result.reviewer = accepted_by
+
+    proposal.state = "accepted"
+    proposal.accepted_by = accepted_by
+    proposal.accepted_at = datetime.now(UTC)
+
+    await session.flush()
+    log.info(
+        "assessment.control_proposal_accepted",
+        assessment_id=proposal.assessment_id,
+        control_identifier=proposal.control_identifier,
+        accepted_by=accepted_by,
+    )
+    return result
