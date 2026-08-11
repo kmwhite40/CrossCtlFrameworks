@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from sqlalchemy import delete, select
 
+from ccf.ai_actions.provenance import record_ai_run
 from ccf.assessment.engine import service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
 from ccf.assessment.engine.objectives import Objective, objective_sha256, objectives_for
@@ -18,6 +19,7 @@ from ccf.assessment.engine.service import (
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Assessment, AssessmentControlResult, Control, Organization, System
+from ccf.models_ai_actions import AiActionRun
 from ccf.models_assessment_engine import AssessmentControlProposal, AssessmentObjectiveProposal
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -562,3 +564,149 @@ async def test_a_failing_recovery_insert_does_not_abort_the_control(
     assert len(rows) == 1
     assert rows[0].label == colliding_label
     assert rows[0].state == "failed"
+
+
+async def test_the_objective_proposal_links_to_its_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stored ai_action_run_id must point at the real AiActionRun
+    record_ai_run wrote for this objective -- not merely be non-null. The fake
+    evaluate_objective calls record_ai_run itself (as the real one does) so
+    this exercises the actual FK, not a fabricated integer.
+    """
+
+    async def _fake(
+        session: Any, *, objective: Any, org_id: int, **kwargs: Any
+    ) -> ObjectiveEvaluation:
+        ai_run = await record_ai_run(
+            session,
+            action_key="evaluate_assessment_objective",
+            entity_type="assessment_objective",
+            entity_id=objective.label,
+            organization_id=org_id,
+            provider="anthropic",
+            model="fake-model",
+            prompt=f"evaluate {objective.label}",
+            output={"verdict": "satisfied"},
+            citations=[],
+        )
+        assert ai_run is not None
+        return ObjectiveEvaluation(
+            verdict="satisfied", rationale="ok", confidence=0.5, ai_action_run_id=ai_run.id
+        )
+
+    monkeypatch.setattr(service, "evaluate_objective", _fake)
+    _, assessment_id = await _assessment("svc-provenance-link")
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        proposal = await evaluate_control_proposal(s, proposal)
+        proposal_id = int(proposal.id)
+
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(AssessmentObjectiveProposal).where(
+                    AssessmentObjectiveProposal.control_proposal_id == proposal_id,
+                    AssessmentObjectiveProposal.label == "ZQ-90a",
+                )
+            )
+        ).scalar_one()
+        assert row.ai_action_run_id is not None
+
+        ai_run = (
+            await s.execute(select(AiActionRun).where(AiActionRun.id == row.ai_action_run_id))
+        ).scalar_one()
+
+    assert ai_run.action_key == "evaluate_assessment_objective"
+    assert ai_run.entity_type == "assessment_objective"
+    assert ai_run.entity_id == "ZQ-90a"
+
+
+async def test_a_provenance_failure_leaves_the_verdict_intact_with_a_null_run_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_ai_run's failure must cost only its own objective its
+    ai_action_run_id -- the verdict itself, and every objective evaluated
+    before (and after) the failure in the same run, must survive untouched.
+    ``ai_action_runs.provider`` is VARCHAR(24); ZQ-90b's fake hands it an
+    overlong provider on purpose so record_ai_run's own INSERT fails inside
+    its own ``begin_nested()`` savepoint, exercising the real failure path
+    rather than simulating it by monkeypatching record_ai_run itself. That is
+    exactly the failure this test is built to catch: a regression that
+    swapped record_ai_run's savepoint for a bare ``session.rollback()`` would
+    unwind to the outermost transaction and take ZQ-90a's already-flushed
+    objective proposal down with it, not just ZQ-90b's.
+    """
+
+    async def _fake(
+        session: Any, *, objective: Any, org_id: int, **kwargs: Any
+    ) -> ObjectiveEvaluation:
+        provider = "way-too-long-a-provider-name" if objective.label == "ZQ-90b" else "anthropic"
+        ai_run = await record_ai_run(
+            session,
+            action_key="evaluate_assessment_objective",
+            entity_type="assessment_objective",
+            entity_id=objective.label,
+            organization_id=org_id,
+            provider=provider,
+            model="fake-model",
+            prompt=f"evaluate {objective.label}",
+            output={"verdict": "satisfied"},
+            citations=[],
+        )
+        return ObjectiveEvaluation(
+            verdict="satisfied",
+            rationale="ok",
+            confidence=0.5,
+            ai_action_run_id=ai_run.id if ai_run is not None else None,
+        )
+
+    monkeypatch.setattr(service, "evaluate_objective", _fake)
+    _, assessment_id = await _assessment("svc-provenance-failure")
+    async with session_scope() as s:
+        proposal = await open_control_proposal(
+            s, assessment_id=assessment_id, control_identifier="ZQ-90"
+        )
+        proposal = await evaluate_control_proposal(s, proposal)
+        proposal_id = int(proposal.id)
+        state = proposal.state
+        objectives_evaluated = proposal.objectives_evaluated
+
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(AssessmentObjectiveProposal)
+                .where(AssessmentObjectiveProposal.control_proposal_id == proposal_id)
+                .order_by(AssessmentObjectiveProposal.sort_order)
+            )
+        ).scalars().all()
+
+    by_label = {r.label: r for r in rows}
+    assert state == "complete"
+    # A provenance failure is not an objective failure: all three still count
+    # as evaluated, and every verdict is "satisfied" -- unaffected by whether
+    # its own provenance write succeeded.
+    assert objectives_evaluated == 3
+    assert [r.verdict for r in rows] == ["satisfied", "satisfied", "satisfied"]
+    assert by_label["ZQ-90b"].ai_action_run_id is None
+
+    # The objective evaluated *before* the failure -- ZQ-90a -- must keep its
+    # own real ai_action_run_id: not merely non-null, but pointing at a row
+    # that actually exists and belongs to it.
+    async with session_scope() as s:
+        ai_run_a = (
+            await s.execute(
+                select(AiActionRun).where(AiActionRun.id == by_label["ZQ-90a"].ai_action_run_id)
+            )
+        ).scalar_one()
+    assert ai_run_a.entity_id == "ZQ-90a"
+
+    # And the objective evaluated *after* the failure -- ZQ-90c -- must be
+    # unaffected too: the failing savepoint only ever wraps ZQ-90b's own writes.
+    async with session_scope() as s:
+        ai_run_c = (
+            await s.execute(
+                select(AiActionRun).where(AiActionRun.id == by_label["ZQ-90c"].ai_action_run_id)
+            )
+        ).scalar_one()
+    assert ai_run_c.entity_id == "ZQ-90c"

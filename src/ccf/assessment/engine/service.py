@@ -178,6 +178,12 @@ async def evaluate_control_proposal(
                         # model's output, model_confidence is a column. Map
                         # explicitly rather than renaming either side.
                         model_confidence=evaluation.confidence,
+                        # Set inside this same per-objective savepoint:
+                        # evaluate_objective already recorded (or, on a
+                        # provenance failure, tried and got None back for) the
+                        # AI run before returning here, so this is a plain
+                        # field assignment, not a second provenance attempt.
+                        ai_action_run_id=evaluation.ai_action_run_id,
                     )
                 )
                 await session.flush()

@@ -88,6 +88,12 @@ _DEFS: list[ActionDef] = [
     ActionDef("classify_evidence_unit", "Classify an evidence unit",
               "Classify a prepared evidence passage by control, artifact type, and strength.",
               ("evidence_object", "system"), False, True, None),
+    ActionDef("evaluate_assessment_objective", "Evaluate an assessment objective",
+              "Judge one NIST SP 800-53A assessment objective against retrieved evidence "
+              "passages. Recorded, not dispatched: ccf.assessment.engine.evaluate calls the "
+              "model itself and calls record_ai_run directly, so this entry describes the "
+              "action for the registry -- nothing routes its execution through run_action.",
+              ("assessment_objective",), False, True, None),
 ]
 
 ACTIONS: dict[str, ActionDef] = {d.key: d for d in _DEFS}

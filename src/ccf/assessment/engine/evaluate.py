@@ -9,6 +9,13 @@ it becomes a finding at all is decided by an assessor.
 Retrieval finding nothing is not an error. It yields ``insufficient_evidence``
 with an explicit gap, which is the honest answer and the one an assessor needs --
 and it skips the model call entirely, since there would be nothing to reason over.
+
+Every evaluation -- including the no-model-call path above -- is recorded with
+``ccf.ai_actions.provenance.record_ai_run``, citing only the units the model
+actually relied on (``cited_unit_ids``), not everything retrieval offered. An
+accepted verdict here can become a Security Assessment Report finding and
+auto-create a POA&M, so this is the record that answers "which model decided
+this, and from what evidence."
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...ai import gateway
+from ...ai_actions.provenance import CitationRef, record_ai_run
 from ...config import get_settings
 from ...logging import get_logger
 from ...prep import retriever
@@ -28,6 +36,7 @@ from .objectives import Objective
 log = get_logger(__name__)
 
 PURPOSE = "assessment.evaluate_objective"
+ACTION_KEY = "evaluate_assessment_objective"
 
 EVALUATION_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -73,6 +82,7 @@ class ObjectiveEvaluation:
     gaps: list[str] = field(default_factory=list)
     contradictions: list[str] = field(default_factory=list)
     model_name: str | None = None
+    ai_action_run_id: int | None = None
 
 
 def build_prompt(objective_text: str, units: list[RetrievedUnit]) -> str:
@@ -90,6 +100,15 @@ def build_prompt(objective_text: str, units: list[RetrievedUnit]) -> str:
         "the objective from being fully demonstrated, and any passage that "
         "contradicts another. This is analysis for an assessor, not a finding."
     )
+
+
+def _citation_label(unit: RetrievedUnit) -> str:
+    """Page numbers plus section path, so a citation reads without a join --
+    e.g. ``"p. 3, 4 — Access Control > Account Management"``.
+    """
+    pages = ", ".join(str(p) for p in unit.page_numbers)
+    page_part = f"p. {pages}" if pages else "p. n/a"
+    return f"{page_part} — {unit.section_path}" if unit.section_path else page_part
 
 
 async def evaluate_objective(
@@ -118,22 +137,49 @@ async def evaluate_objective(
             control_identifier=control_identifier,
             label=objective.label,
         )
+        rationale = "No prepared evidence was retrieved for this objective."
+        gaps = ["No evidence retrieved -- nothing in the prepared corpus matched."]
+        # insufficient_evidence-with-no-model-call is still an auditable
+        # outcome -- an assessor asking "why is this objective unresolved?"
+        # deserves an answer even though no model ran. There is no provider or
+        # model to report: record_ai_run's ``provider`` column is NOT NULL, so
+        # "none" stands in for "no model call was made" rather than inventing a
+        # provider that never ran; ``model=None`` says the same for the
+        # nullable model column. The "prompt" passed here was never sent
+        # anywhere -- it documents what retrieval was attempted, so the hash
+        # (and, if ai_store_prompts is on, the text itself) still answers what
+        # this run was for. Zero citations makes AiActionOutput.uncited True,
+        # same as any other run that couldn't ground its output in evidence.
+        ai_run = await record_ai_run(
+            session,
+            action_key=ACTION_KEY,
+            entity_type="assessment_objective",
+            entity_id=objective.label,
+            organization_id=org_id,
+            provider="none",
+            model=None,
+            prompt=f"No evidence retrieved for objective {objective.label}: {objective.text}",
+            output={"verdict": "insufficient_evidence", "rationale": rationale, "gaps": gaps},
+            citations=[],
+        )
         return ObjectiveEvaluation(
             verdict="insufficient_evidence",
-            rationale="No prepared evidence was retrieved for this objective.",
+            rationale=rationale,
             confidence=0.0,
             retrieved_unit_ids=[],
-            gaps=["No evidence retrieved -- nothing in the prepared corpus matched."],
+            gaps=gaps,
+            ai_action_run_id=ai_run.id if ai_run is not None else None,
         )
 
     # generate_structured_resolved, not the plain generate_structured: this is
     # the one call site in the app whose output is persisted with provenance
     # weight (an AssessmentObjectiveProposal a FedRAMP citation traces back
     # to), so it needs the resolved model name back, not just the data.
+    prompt = build_prompt(objective.text, units)
     result = await gateway.generate_structured_resolved(
         session,
         org_id,
-        prompt=build_prompt(objective.text, units),
+        prompt=prompt,
         schema=EVALUATION_SCHEMA,
         purpose=PURPOSE,
         system=_SYSTEM_PROMPT,
@@ -159,6 +205,32 @@ async def evaluate_objective(
             cited.append(unit_id)
             seen_citations.add(unit_id)
 
+    # One CitationRef per *cited* unit, not one per retrieved unit -- the
+    # model may have been shown N passages and relied on only M of them, and
+    # the audit record should reflect what it actually used, not everything
+    # it was offered.
+    units_by_id = {u.unit_id: u for u in units}
+    citations = [
+        CitationRef(
+            source_type="prep_unit",
+            source_id=str(unit_id),
+            label=_citation_label(units_by_id[unit_id]),
+        )
+        for unit_id in cited
+    ]
+    ai_run = await record_ai_run(
+        session,
+        action_key=ACTION_KEY,
+        entity_type="assessment_objective",
+        entity_id=objective.label,
+        organization_id=org_id,
+        provider=result.provider,
+        model=result.model,
+        prompt=prompt,
+        output=data,
+        citations=citations,
+    )
+
     return ObjectiveEvaluation(
         verdict=str(data["verdict"]),
         rationale=str(data.get("rationale", "")),
@@ -168,4 +240,5 @@ async def evaluate_objective(
         gaps=[str(g) for g in data.get("gaps", [])],
         contradictions=[str(c) for c in data.get("contradictions", [])],
         model_name=result.model,
+        ai_action_run_id=ai_run.id if ai_run is not None else None,
     )
