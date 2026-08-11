@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select, text
 
 from ccf.api.main import create_app
+from ccf.api.routes import poams as poams_routes
 from ccf.assessment.engine import jobs as engine_jobs
 from ccf.assessment.engine import service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
@@ -170,7 +171,25 @@ async def test_reopening_and_reclosing_the_same_poam_enqueues_only_one_job(
     assert len(jobs) == 1, "reclosing the same POA&M must not enqueue a second job"
 
 
-async def test_closing_a_scan_sourced_poam_enqueues_none() -> None:
+async def test_closing_a_scan_sourced_poam_enqueues_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scan-sourced POA&M must be skipped *cleanly*, not crash and get swallowed.
+
+    _maybe_enqueue_reevaluation catches every exception so a derived-row
+    failure can never fail a close. That makes "skipped correctly" and
+    "raised and was swallowed" produce identical observable state -- asserting
+    only that no proposal exists passes either way. Deleting the source_ref
+    guard entirely left this test green, because the resulting AttributeError
+    went straight into that handler.
+
+    So the warning log is asserted too: a clean skip logs nothing.
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        poams_routes.log, "warning", lambda event, **kw: warnings.append(event)
+    )
+
     async with session_scope() as s:
         org = Organization(name="close-trigger-scan")
         s.add(org)
@@ -201,6 +220,65 @@ async def test_closing_a_scan_sourced_poam_enqueues_none() -> None:
     assert r.status_code == 200
 
     assert await _proposal_for_poam(poam_id) is None
+    assert warnings == [], (
+        "a scan-sourced POA&M must be skipped by the source_ref guard, "
+        f"not raise into the best-effort handler; got {warnings}"
+    )
+
+
+async def test_a_control_test_sourced_poam_enqueues_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The case the source_ref guard actually exists for.
+
+    The scan test above cannot exercise it: a scan-sourced POA&M has a NULL
+    source_ref, so _maybe_enqueue_reevaluation returns before it ever calls
+    enqueue_reevaluation. Other creation sites do set one --
+    "control_test:{id}" (control_tests.py:202), "conmon:impl:{id}"
+    (conmon.py:242), "audit_finding:{id}" (grc.py:590). Without the startswith
+    guard, "control_test:N" parses to result_id N and looks up whichever
+    AssessmentControlResult holds that id -- an unrelated control's row.
+
+    The id used here is a real AssessmentControlResult id, so a missing guard
+    finds something rather than harmlessly finding nothing. Deleting the guard
+    leaves every other test in this file green; this one fails.
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        poams_routes.log, "warning", lambda event, **kw: warnings.append(event)
+    )
+    _org_id, _assessment_id, bridged_poam_id = await _bridged_poam(
+        "close-trigger-ctest", monkeypatch
+    )
+
+    async with session_scope() as s:
+        bridged = await s.get(POAM, bridged_poam_id)
+        assert bridged is not None and bridged.source_ref is not None
+        real_result_id = bridged.source_ref.split(":", 1)[1]
+        system_id = int(bridged.system_id)
+        decoy = POAM(
+            system_id=system_id,
+            title="control test failed",
+            status="open",
+            severity="moderate",
+            source="control_test",
+            source_ref=f"control_test:{real_result_id}",
+        )
+        s.add(decoy)
+        await s.flush()
+        decoy_id = int(decoy.id)
+        s.add(
+            PoamMilestone(
+                poam_id=decoy_id, description="fixed", status="completed", sort_order=0
+            )
+        )
+
+    async with _client() as c:
+        r = await c.post(f"/api/poams/{decoy_id}/close")
+    assert r.status_code == 200
+
+    assert await _proposal_for_poam(decoy_id) is None
+    assert warnings == [], f"must be skipped by the guard, not raised into the handler: {warnings}"
 
 
 async def test_the_closure_gate_still_refuses_an_unremediated_poam(
