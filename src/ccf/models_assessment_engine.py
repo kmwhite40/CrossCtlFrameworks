@@ -35,6 +35,19 @@ registration is not dispatch: nothing calls ``run_action`` with it, and there is
 no equivalent ``ActionDef`` for objective evaluation at all. For a product whose
 output becomes FedRAMP citations, wiring both through the typed AI-action layer
 is the standing follow-up.
+
+**Two proposals per control, distinguished by ``source_poam_id``.** The
+original ``uq_control_proposal_assessment_control`` constraint was a flat
+unique index on ``(assessment_id, control_identifier)`` (migration 0055). A
+closure-triggered re-evaluation (migration 0058) needs a *second*,
+distinct ``AssessmentControlProposal`` row for that same pair, alongside the
+already-accepted first-pass row -- so the flat constraint was replaced by two
+partial unique indexes: ``uq_control_proposal_first_pass`` scopes first-pass
+idempotency to ``source_poam_id IS NULL`` rows only, and
+``uq_control_proposal_source_poam`` caps re-evaluation at one proposal per
+POA&M. ``open_control_proposal`` filters ``source_poam_id IS NULL``
+explicitly for the same reason: once a re-evaluation row exists alongside a
+first-pass row for the same control, an unfiltered lookup would see two rows.
 """
 
 from __future__ import annotations
@@ -53,6 +66,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -126,6 +140,16 @@ class AssessmentControlProposal(Base):
     #: engine was wrong but not how, and "how" is what makes the metric useful.
     rejection_note: Mapped[str | None] = mapped_column(Text)
 
+    #: Set only on a closure-triggered re-evaluation: the POA&M whose closure
+    #: raised this proposal. NULL for every first-pass proposal. Nullable
+    #: (not just "usually null"): every existing proposal has no source
+    #: POA&M, and a re-evaluation proposal must stay usable if the POA&M is
+    #: later deleted (ON DELETE SET NULL, not CASCADE -- the proposal is a
+    #: record of what happened, not a detail owned by the POA&M).
+    source_poam_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.poams.id", ondelete="SET NULL"), index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -134,8 +158,29 @@ class AssessmentControlProposal(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
-            "assessment_id", "control_identifier", name="uq_control_proposal_assessment_control"
+        # First-pass idempotency (open_control_proposal's own reuse-or-create
+        # logic) is scoped to source_poam_id IS NULL rows only -- see the
+        # module docstring's note on why a flat (assessment_id,
+        # control_identifier) constraint had to give way to this. A
+        # closure-triggered re-evaluation for the same control is a second,
+        # distinct row and must not collide with the accepted first-pass row
+        # still sitting on that same pair.
+        Index(
+            "uq_control_proposal_first_pass",
+            "assessment_id",
+            "control_identifier",
+            unique=True,
+            postgresql_where=text("source_poam_id IS NULL"),
+        ),
+        # Caps re-evaluation at one proposal per POA&M -- belt-and-braces
+        # alongside service.open_reevaluation_proposal's own
+        # check-then-insert, which is what actually protects against a race
+        # between two concurrent closures of the same POA&M.
+        Index(
+            "uq_control_proposal_source_poam",
+            "source_poam_id",
+            unique=True,
+            postgresql_where=text("source_poam_id IS NOT NULL"),
         ),
         Index("ix_control_proposal_state", "organization_id", "state"),
     )

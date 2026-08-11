@@ -76,12 +76,21 @@ class RejectionRefused(ProposalError):  # noqa: N818 -- sibling of AcceptanceRef
 async def open_control_proposal(
     session: AsyncSession, *, assessment_id: int, control_identifier: str
 ) -> AssessmentControlProposal:
-    """Open (or return the existing) proposal for one control in an assessment.
+    """Open (or return the existing) first-pass proposal for one control in an
+    assessment.
 
-    Idempotent on ``(assessment_id, control_identifier)`` -- the unique
-    constraint that backs it. Deliberately takes no ``organization_id``: the
-    org is derived from the assessment's own system, never from a caller
-    argument, so a caller cannot name someone else's organization.
+    Idempotent on ``(assessment_id, control_identifier)`` for first-pass
+    proposals -- the ``uq_control_proposal_first_pass`` partial unique index
+    that backs it (``source_poam_id IS NULL``). Deliberately takes no
+    ``organization_id``: the org is derived from the assessment's own
+    system, never from a caller argument, so a caller cannot name someone
+    else's organization.
+
+    Filters ``source_poam_id IS NULL`` explicitly: a closure-triggered
+    re-evaluation proposal for this same ``(assessment_id,
+    control_identifier)`` pair may already coexist with the first-pass row,
+    and an unfiltered lookup would find both and raise
+    ``MultipleResultsFound`` from ``scalar_one_or_none``.
     """
     row = (
         await session.execute(
@@ -101,6 +110,7 @@ async def open_control_proposal(
             select(AssessmentControlProposal).where(
                 AssessmentControlProposal.assessment_id == assessment_id,
                 AssessmentControlProposal.control_identifier == canonical,
+                AssessmentControlProposal.source_poam_id.is_(None),
             )
         )
     ).scalar_one_or_none()
