@@ -120,3 +120,47 @@ async def test_the_reaper_runs_inside_the_loop_not_once_at_startup(
         "reap must run again once the reap interval has elapsed, not only "
         f"once at the very first cycle -- got {reap_calls} reap call(s)"
     )
+
+
+async def test_loop_sleeps_between_empty_cycles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty cycle in ``--loop`` mode must actually sleep for
+    ``assessment_worker_poll_interval_seconds`` -- not spin the claim query
+    hot and not silently skip the sleep and exit (the reap-cadence test above
+    patches ``asyncio.sleep`` to a no-op too, but only for its own unrelated
+    purpose and without asserting on it, so it would not catch the sleep
+    itself being deleted). This test captures the argument the loop actually
+    passes to the patched ``asyncio.sleep``.
+    """
+    sleep_calls: list[float] = []
+    run_once_calls = 0
+
+    async def _reap(session: Any) -> dict[str, int]:
+        return {"requeued": 0, "dead_lettered": 0}
+
+    async def _run_once(session: Any, *, worker: str, limit: int) -> dict[str, int]:
+        nonlocal run_once_calls
+        run_once_calls += 1
+        if run_once_calls >= 2:
+            raise _StopTestError
+        return {"claimed": 0, "finished": 0, "failed": 0}
+
+    async def _capture_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr(cli.assessment_jobs, "reap", _reap)
+    monkeypatch.setattr(cli.assessment_jobs, "run_once", _run_once)
+    monkeypatch.setattr(cli.asyncio, "sleep", _capture_sleep)
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "assessment_worker_poll_interval_seconds", 42.0)
+
+    with pytest.raises(_StopTestError):
+        await cli._assessment_drain_loop(
+            once=False, worker="test-worker", batch=5, settings=settings
+        )
+
+    assert sleep_calls == [42.0], (
+        "an empty cycle in --loop mode must sleep for exactly "
+        "assessment_worker_poll_interval_seconds, not spin hot or skip the sleep -- "
+        f"got sleep calls {sleep_calls}"
+    )
