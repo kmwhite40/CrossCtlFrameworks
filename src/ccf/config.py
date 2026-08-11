@@ -240,6 +240,13 @@ class Settings(BaseSettings):
     assessment_engine_max_objectives_per_control: int = Field(default=60)
     # Passed to ccf.prep.retriever.retrieve as `limit` for each objective.
     assessment_engine_retrieval_limit: int = Field(default=8)
+    # Added early (Task 8, not the Task 10 that was originally scoped to add
+    # these) because ccf.assessment.engine.jobs.reap needs both to call
+    # ccf.queue.reap_stale_jobs -- same style and reasoning as
+    # prep_job_stale_after_minutes/prep_job_max_attempts above, mirrored for
+    # the assessment_jobs queue.
+    assessment_job_stale_after_minutes: int = Field(default=60)
+    assessment_job_max_attempts: int = Field(default=5)
 
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
