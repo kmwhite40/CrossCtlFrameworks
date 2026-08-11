@@ -230,6 +230,17 @@ class Settings(BaseSettings):
     # claim attempts, so a poisoned job stops cycling and becomes visible.
     prep_job_max_attempts: int = Field(default=5)
 
+    # ---- Objective-level assessment engine (slice 2)
+    # Off by default: like the prep pipeline, this spends money on model calls.
+    assessment_engine_enabled: bool = Field(default=False)
+    assessment_engine_batch_size: int = Field(default=5)
+    # A guard against a pathological catalog row set: no real 800-53A control has
+    # anywhere near this many objectives, so exceeding it means the extraction
+    # grouped wrongly and should fail loudly rather than fan out model calls.
+    assessment_engine_max_objectives_per_control: int = Field(default=60)
+    # Passed to ccf.prep.retriever.retrieve as `limit` for each objective.
+    assessment_engine_retrieval_limit: int = Field(default=8)
+
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
     packs_dir: Path | None = Field(default=None)
