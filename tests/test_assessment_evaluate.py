@@ -138,3 +138,63 @@ async def test_objective_text_is_passed_to_retrieval_as_the_query(
         )
     assert seen["query_text"] == "multifactor authentication is implemented;"
     assert seen["control_identifier"] == "IA-2"
+
+
+async def test_a_malformed_citation_id_is_dropped_not_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A citation id the model produced that isn't coercible to int should be
+    dropped like any other invalid citation, not crash the evaluation."""
+    org_id = await _org("ae-eval-malformed")
+
+    async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
+        return [_unit(7, "Administrators authenticate with MFA.")]
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "verdict": "satisfied",
+            "cited_unit_ids": [7, "not-an-id"],
+            "gaps": [],
+            "contradictions": [],
+            "rationale": "Section 2 requires MFA.",
+            "confidence": 0.9,
+        }
+
+    monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    async with session_scope() as s:
+        result = await evaluate_objective(
+            s, org_id=org_id, control_identifier="IA-2",
+            objective=_objective(), system_id=None,
+        )
+    assert result.cited_unit_ids == [7]
+
+
+async def test_duplicate_citations_collapse_to_one_in_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Citing the same passage repeatedly must not inflate the weight of
+    evidence in the persisted citation list."""
+    org_id = await _org("ae-eval-dupe")
+
+    async def _fake_retrieve(*args: Any, **kwargs: Any) -> list[RetrievedUnit]:
+        return [_unit(7, "x"), _unit(9, "y")]
+
+    async def _fake_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "verdict": "satisfied",
+            "cited_unit_ids": [9, 7, 9, 7, 7],
+            "gaps": [],
+            "contradictions": [],
+            "rationale": "ok",
+            "confidence": 0.9,
+        }
+
+    monkeypatch.setattr(retriever, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(gateway, "generate_structured", _fake_structured)
+    async with session_scope() as s:
+        result = await evaluate_objective(
+            s, org_id=org_id, control_identifier="IA-2",
+            objective=_objective(), system_id=None,
+        )
+    assert result.cited_unit_ids == [9, 7]

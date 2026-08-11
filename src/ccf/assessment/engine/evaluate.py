@@ -135,9 +135,24 @@ async def evaluate_objective(
         system=_SYSTEM_PROMPT,
     )
 
-    # A model may only cite passages it was actually shown.
+    # A model may only cite passages it was actually shown. A malformed id is
+    # dropped like any out-of-set id rather than crashing the evaluation --
+    # this module owns that guarantee and does not rely on schema validation
+    # happening to enforce it two layers away in a provider adapter. Repeats
+    # collapse to one entry, first-seen order, so the persisted citation list
+    # doesn't misrepresent the weight of evidence.
     offered = set(retrieved_ids)
-    cited = [int(c) for c in data.get("cited_unit_ids", []) if int(c) in offered]
+    cited: list[int] = []
+    seen_citations: set[int] = set()
+    for raw in data.get("cited_unit_ids", []):
+        try:
+            unit_id = int(raw)
+        except (TypeError, ValueError):
+            log.warning("assessment.malformed_citation_id", value=repr(raw))
+            continue
+        if unit_id in offered and unit_id not in seen_citations:
+            cited.append(unit_id)
+            seen_citations.add(unit_id)
 
     return ObjectiveEvaluation(
         verdict=str(data["verdict"]),
