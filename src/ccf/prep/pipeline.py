@@ -31,7 +31,7 @@ from .embed import run_stage_embed
 from .expand import run_stage_expand
 from .parsers import UnsupportedMediaType, dispatch
 from .screen import run_stage_screen
-from .sources import SourceMissing, resolve_source
+from .sources import SourceMissing, resolve_source, resolve_source_organization_id
 
 log = get_logger(__name__)
 
@@ -128,18 +128,6 @@ async def run_stage_parse(session: AsyncSession, run: PrepRun) -> int:
         log.info("prep.source_missing", run_id=run.id, reason=str(exc))
         return 0
 
-    # Reconcile to the source's *true* organization the moment it is actually
-    # known, rather than trusting whatever organization_id the run was opened
-    # with. jobs.enqueue() already refuses a mismatch before a run is even
-    # created, so in the normal path this is a no-op -- but every downstream
-    # stage (screen/expand/classify/embed) tags its own output with
-    # run.organization_id, and relying on the enqueue-time check alone to keep
-    # that correct forever is fragile: a future caller of create_run that
-    # skips enqueue() (direct pipeline use, a new entry point, a bug) would
-    # silently reopen the split this line closes structurally. Parse is the
-    # one stage that actually resolves the source, so it is the one place
-    # that can make this authoritative rather than assumed.
-    run.organization_id = source.organization_id
     run.media_type = source.media_type
     try:
         parsed = dispatch(source.data, source.filename, source.media_type)
@@ -219,6 +207,42 @@ _STAGE_RUNNERS: dict[str, StageRunner] = {
 }
 
 
+async def _reconcile_organization(session: AsyncSession, run: PrepRun) -> bool:
+    """Re-derive ``run.organization_id`` from the source's true owner.
+
+    Runs before *every* stage — not only on first parse — so the guarantee
+    that every ``prep_*`` row for a run shares one organization actually holds
+    regardless of entry point, including resuming a run whose ``parse`` stage
+    already completed. A version of this that lived only inside
+    ``run_stage_parse`` looked closed but wasn't: reopen a run at ``screen``
+    (parse already ``complete``, so it never re-runs and never re-resolves)
+    after ``organization_id`` was mutated by whatever means, and the split
+    reappears exactly as before this fix — ``PrepLine`` under the org parse
+    originally resolved, everything from ``screen`` onward under the new,
+    wrong one. Metadata-only (:func:`sources.resolve_source_organization_id`,
+    no storage fetch), so this costs nothing extra on the common,
+    already-consistent path.
+
+    Returns ``False`` (having already closed the run as ``orphaned``) if the
+    source no longer resolves at all — the same terminal outcome
+    ``run_stage_parse`` gives a source that disappears before first parse,
+    now applied uniformly to a source that disappears between two resumes of
+    an already-parsed run too.
+    """
+    try:
+        true_org = await resolve_source_organization_id(session, run.source_kind, run.source_id)
+    except SourceMissing as exc:
+        run.status = "orphaned"
+        if run.stage_parse != "complete":
+            run.stage_parse = "skipped"
+        run.error = str(exc)
+        await session.flush()
+        log.info("prep.source_missing_on_resume", run_id=run.id, reason=str(exc))
+        return False
+    run.organization_id = true_org
+    return True
+
+
 async def advance(session: AsyncSession, run: PrepRun) -> PrepRun:
     """Run every stage not yet complete, in order, stopping on failure."""
     while (stage := next_stage(run)) is not None:
@@ -228,6 +252,8 @@ async def advance(session: AsyncSession, run: PrepRun) -> PrepRun:
             # marking it complete on work that never ran.
             log.info("prep.stage_not_implemented", run_id=run.id, stage=stage)
             break
+        if not await _reconcile_organization(session, run):
+            return run
         await runner(session, run)
         if run.status in ("failed", "unsupported", "orphaned"):
             return run

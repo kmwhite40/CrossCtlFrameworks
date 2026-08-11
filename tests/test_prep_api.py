@@ -2,19 +2,34 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from ccf.api.main import create_app
+from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.evidence.confidence import prep_signal
 from ccf.models import Organization, Policy, PolicyVersion
 from ccf.models_prep import PrepJob, PrepRun
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+
+@pytest.fixture(autouse=True)
+def _prep_enabled() -> Iterator[None]:
+    """``/api/prep/*`` is only registered when ``CCF_PREP_ENABLED`` is set —
+    it's off by default, matching every other billable-AI-call feature in
+    this app. Set here rather than flipping the default.
+    """
+    os.environ["CCF_PREP_ENABLED"] = "true"
+    get_settings.cache_clear()
+    yield
+    os.environ.pop("CCF_PREP_ENABLED", None)
+    get_settings.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -209,6 +209,14 @@ async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
         log.warning("prep.job_failed", job_id=job.id, run_id=run.id, error=str(exc))
         return "failed"
 
+    # pipeline.advance() reconciles run.organization_id to the source's true
+    # org before every stage (see pipeline._reconcile_organization) -- sync
+    # the job row to match. Nothing reads PrepJob.organization_id for
+    # authorization (claim() has no org filter, by design), but leaving it
+    # stale after a reparent would mean "every prep_* row for a run shares
+    # one organization" is no longer literally true of this table too.
+    job.organization_id = run.organization_id
+
     if run.status in _TERMINAL:
         job.status = "done"
         return "done"

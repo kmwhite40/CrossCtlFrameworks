@@ -319,9 +319,19 @@ def prep_worker(
     worker: str = typer.Option("prep-worker", help="Worker name recorded on claimed jobs."),
 ) -> None:
     """Drain queued evidence-preparation jobs."""
+    settings = get_settings()
+    if not settings.prep_enabled:
+        # Exit cleanly rather than draining a queue nothing can enqueue into
+        # (the API router is unregistered too when disabled) -- and rather
+        # than silently spending real money on model calls for a feature an
+        # operator never opted into.
+        console.print(
+            "[yellow]Evidence preparation is disabled (CCF_PREP_ENABLED=false) — "
+            "nothing to do. Set CCF_PREP_ENABLED=true to enable the pipeline.[/yellow]"
+        )
+        return
 
     async def _run() -> None:
-        settings = get_settings()
         batch = limit if limit is not None else settings.prep_worker_batch_size
         async with session_scope() as session:
             reaped = await prep_jobs.reap_stale(

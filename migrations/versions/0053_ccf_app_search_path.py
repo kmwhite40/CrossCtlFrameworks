@@ -34,6 +34,27 @@ touches ``search_path`` — survives every subsequent ``SET ROLE`` in that same
 session. Verified empirically end-to-end: with this in place,
 ``SET ROLE ccf_app; select vector <=> vector`` resolves correctly.
 
+**Two operational caveats this fix does not remove:**
+
+* ``ALTER DATABASE ... SET`` requires ownership of the database (or
+  superuser). The migration role in this app's own Docker/CI setup owns the
+  database it migrates, so this passes here — but on managed Postgres (RDS,
+  Cloud SQL, etc.) where the migration role is a privileged application role
+  rather than the actual database owner, this statement fails, and the
+  underlying vulnerability (a hard 500 for every scoped tenant on retrieval)
+  reappears with no application-level workaround short of an operator running
+  it manually as an owner/superuser role.
+* A database-level default only takes effect for **new** connections opened
+  after it is set — not connections already open in a pool at the moment this
+  migration runs. A long-lived pool (this app's ``asyncpg`` pool via
+  ``create_async_engine``, or any external pooler such as PgBouncer in front
+  of it) keeps using each existing connection's stale ``search_path`` until
+  that connection is recycled/closed and reopened. A deploy that runs
+  migrations and then keeps the same running API process (rather than
+  restarting it, or recreating the pool) can therefore still 500 on
+  already-open connections until they cycle out naturally or the process is
+  restarted.
+
 Revision ID: 0053_ccf_app_search_path
 Revises: 0052_prep_tables
 Create Date: 2026-08-10

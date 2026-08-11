@@ -47,7 +47,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 
 from ccf.ai import gateway
 from ccf.ai.providers.base import EmbedResponse
@@ -56,7 +56,7 @@ from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.evidence import storage
-from ccf.models import Organization, System, User
+from ccf.models import Control, Organization, System, User
 from ccf.models_evidence import EvidenceObject, EvidenceVersion
 from ccf.models_prep import (
     PrepClassification,
@@ -69,6 +69,19 @@ from ccf.models_prep import (
 from ccf.prep import pipeline
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+#: Identical to test_prep_pipeline_e2e.py's fixture text/SQL -- copied rather
+#: than imported so this module seeds and cleans up its own catalog rows
+#: independently of that module's fixtures (the shared ccf_test schema is
+#: reset only once per pytest session, not per test/module).
+_SEARCH_VECTOR_SQL = (
+    "UPDATE ccf.controls SET search_vector = "
+    "setweight(to_tsvector('english', coalesce(identifier,'')), 'A') || "
+    "setweight(to_tsvector('english', coalesce(control_name,'')), 'A') || "
+    "setweight(to_tsvector('english', coalesce(assessment_objective,'')), 'B') || "
+    "setweight(to_tsvector('english', coalesce(description,'')), 'C') || "
+    "setweight(to_tsvector('english', coalesce(discussion,'')), 'D')"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -83,12 +96,95 @@ def _auth_enabled() -> Any:
 
 
 @pytest.fixture(autouse=True)
+def _prep_enabled() -> Any:
+    """``/api/prep/*`` is only registered when ``CCF_PREP_ENABLED`` is set —
+    off by default, matching every other billable-AI-call feature in this
+    app. Set here rather than flipping the default.
+    """
+    os.environ["CCF_PREP_ENABLED"] = "true"
+    get_settings.cache_clear()
+    yield
+    os.environ.pop("CCF_PREP_ENABLED", None)
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _local_evidence_dir(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setenv("CCF_EVIDENCE_BACKEND", "local")
     monkeypatch.setenv("CCF_EVIDENCE_LOCAL_DIR", str(tmp_path / "evidence"))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
+
+
+@pytest.fixture
+async def seeded_control() -> Any:
+    """Seed one richly-worded catalog control (IA-2) so a real evidence
+    document actually clears ``prep_screen_threshold`` (0.72) and the
+    pipeline produces PrepUnit/PrepClassification/PrepEmbedding rows, not
+    just PrepLine/PrepScreen. Without this, screen never surfaces anything
+    above threshold, expand builds zero units, and every table past
+    PrepScreen stays empty regardless of what the test asserts — exactly the
+    gap that made the original version of the consistency test below vacuous
+    for the three tables the finding was actually about.
+    """
+    async with session_scope() as s:
+        await s.execute(delete(Control).where(Control.identifier == "IA-2"))
+        s.add(
+            Control(
+                identifier="IA-2",
+                control_name="Identification and Authentication (Organizational Users)",
+                description=(
+                    "Uniquely identify and authenticate organizational users and associate "
+                    "that unique identification with processes acting on behalf of those "
+                    "users. Multifactor authentication is required for network access to "
+                    "privileged and non-privileged accounts."
+                ),
+                assessment_objective=(
+                    "multifactor authentication is implemented for network access to "
+                    "privileged accounts; multifactor authentication is implemented for "
+                    "network access to non-privileged accounts"
+                ),
+                discussion=(
+                    "Organizational users include employees or individuals considered to "
+                    "have equivalent status. Authentication of user identities is "
+                    "accomplished through passwords, tokens, or multifactor authentication "
+                    "mechanisms such as personal identity verification cards."
+                ),
+            )
+        )
+        await s.flush()
+        await s.execute(text(_SEARCH_VECTOR_SQL))
+    try:
+        yield
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Control).where(Control.identifier == "IA-2"))
+
+
+def _fake_generate_structured_echoing_candidates(*args: Any, **kwargs: Any) -> Any:
+    """Classify fake that echoes back exactly the candidates classify.build_prompt
+    offered -- copied from test_prep_pipeline_e2e.py's identical helper.
+    """
+
+    async def _generate(
+        session: Any, org_id: int, *, prompt: str, schema: dict[str, Any],
+        purpose: str, system: str | None = None, **kw: Any,
+    ) -> dict[str, Any]:
+        first_line = prompt.splitlines()[0]
+        offered = first_line.removeprefix("Candidate controls:").strip()
+        candidates = (
+            [] if offered == "(none surfaced by screening)"
+            else [c.strip() for c in offered.split(",")]
+        )
+        return {
+            "control_identifiers": candidates,
+            "artifact_type": "policy",
+            "evidence_strength": "strong",
+            "confidence": 0.9,
+        }
+
+    return _generate
 
 
 def _client() -> AsyncClient:
@@ -299,10 +395,50 @@ async def test_enqueue_refuses_a_cross_tenant_evidence_version_source_id(
 # --- Consistency: every prep_* row for a run shares one organization_id ----
 
 
-async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_create_run_claim(
-    monkeypatch: pytest.MonkeyPatch,
+async def _load_all_stage_rows(run_id: int) -> dict[str, list[Any]]:
+    async with session_scope() as s:
+        return {
+            "lines": (
+                await s.execute(select(PrepLine).where(PrepLine.run_id == run_id))
+            ).scalars().all(),
+            "screens": (
+                await s.execute(select(PrepScreen).where(PrepScreen.run_id == run_id))
+            ).scalars().all(),
+            "units": (
+                await s.execute(select(PrepUnit).where(PrepUnit.run_id == run_id))
+            ).scalars().all(),
+            "classifications": (
+                await s.execute(
+                    select(PrepClassification).where(PrepClassification.run_id == run_id)
+                )
+            ).scalars().all(),
+            "embeddings": (
+                await s.execute(select(PrepEmbedding).where(PrepEmbedding.run_id == run_id))
+            ).scalars().all(),
+        }
+
+
+def _assert_every_table_populated_and_consistent(
+    rows_by_table: dict[str, list[Any]], expected_org: int
 ) -> None:
-    """Defense-in-depth guard for pipeline.run_stage_parse's org reconciliation.
+    """Assert each table actually produced a row -- not a combined truthiness
+    guard, which is satisfiable by PrepLine/PrepScreen alone and would let
+    PrepUnit/PrepClassification/PrepEmbedding silently stay empty and
+    unchecked -- and that every row in every table carries expected_org.
+    """
+    for table, rows in rows_by_table.items():
+        assert rows, f"{table} produced no rows -- the pipeline never reached this stage"
+        for row in rows:
+            assert row.organization_id == expected_org, (
+                f"{type(row).__name__} {row.id} carries organization_id="
+                f"{row.organization_id}, not {expected_org} -- the tagging split is back"
+            )
+
+
+async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_create_run_claim(
+    seeded_control: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defense-in-depth guard for pipeline's per-stage organization reconciliation.
 
     jobs.enqueue() already refuses a mismatched claim before a run is even
     opened (see test_enqueue_refuses_a_cross_tenant_evidence_version_source_id
@@ -311,12 +447,18 @@ async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_cr
     module already does for its own internal setup (test_prep_screen.py,
     test_prep_classify.py, etc. all call create_run directly, never
     jobs.enqueue) -- to prove the *second*, independent safeguard: even if a
-    run is somehow opened with the wrong organization_id, parsing corrects it
-    to the source's true org, and every stage after it inherits that
-    corrected value. Without pipeline.py's reconciliation, this is exactly
-    the split the review found live: PrepLine.organization_id == victim_org
-    while PrepUnit/PrepClassification/PrepEmbedding.organization_id ==
+    run is somehow opened with the wrong organization_id, advance() corrects
+    it before the first stage runs, and every stage inherits the corrected
+    value. Without pipeline.py's reconciliation, this is exactly the split
+    the review found live: PrepLine.organization_id == victim_org while
+    PrepUnit/PrepClassification/PrepEmbedding.organization_id ==
     attacker_org, all under the same run.
+
+    Needs seeded_control: without a real catalog control to clear
+    prep_screen_threshold (0.72), screen surfaces nothing, expand builds no
+    units, and PrepUnit/PrepClassification/PrepEmbedding all stay empty --
+    which previously let this test pass while asserting nothing about the
+    three tables the original finding was actually about.
     """
     _, victim_org = await _mk_user("consist-victim@prep-tenant.test", "Prep Tenant Consist Victim")
     _, attacker_org = await _mk_user(
@@ -329,16 +471,9 @@ async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_cr
     )
 
     monkeypatch.setattr(gateway, "embed", _fake_embed([0.01] * 1024))
-
-    async def _fake_generate_structured(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {
-            "control_identifiers": [],
-            "artifact_type": "policy",
-            "evidence_strength": "weak",
-            "confidence": 0.5,
-        }
-
-    monkeypatch.setattr(gateway, "generate_structured", _fake_generate_structured)
+    monkeypatch.setattr(
+        gateway, "generate_structured", _fake_generate_structured_echoing_candidates()
+    )
 
     async with session_scope() as s:
         # Deliberately mismatched: claims attacker_org for a source that
@@ -350,9 +485,9 @@ async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_cr
         )
         run_id = int(run.id)
         await pipeline.advance(s, run)
-        assert run.status in ("complete", "failed", "unsupported", "orphaned"), run.error
-        # The reconciliation happens the moment parse resolves the real
-        # source -- so the run itself is already corrected.
+        assert run.status == "complete", run.error
+        # The reconciliation happens before the first stage even runs -- so
+        # the run itself is already corrected by the time advance() returns.
         assert run.organization_id == victim_org
 
     async with session_scope() as s:
@@ -360,23 +495,70 @@ async def test_prep_run_rows_share_one_organization_id_even_with_a_mismatched_cr
         assert reloaded is not None
         assert reloaded.organization_id == victim_org
 
-        lines = (await s.execute(select(PrepLine).where(PrepLine.run_id == run_id))).scalars().all()
-        screens = (
-            await s.execute(select(PrepScreen).where(PrepScreen.run_id == run_id))
-        ).scalars().all()
-        units = (await s.execute(select(PrepUnit).where(PrepUnit.run_id == run_id))).scalars().all()
-        classifications = (
-            await s.execute(select(PrepClassification).where(PrepClassification.run_id == run_id))
-        ).scalars().all()
-        embeddings = (
-            await s.execute(select(PrepEmbedding).where(PrepEmbedding.run_id == run_id))
-        ).scalars().all()
+    rows_by_table = await _load_all_stage_rows(run_id)
+    _assert_every_table_populated_and_consistent(rows_by_table, victim_org)
 
-    assert lines, "parse should have produced at least one line"
-    all_rows = (*lines, *screens, *units, *classifications, *embeddings)
-    assert all_rows, "the run should have produced output past parse"
-    for row in all_rows:
-        assert row.organization_id == victim_org, (
-            f"{type(row).__name__} {row.id} carries organization_id={row.organization_id}, "
-            f"not the source's true org ({victim_org}) -- the tagging split is back"
+
+async def test_resuming_a_run_after_parse_still_reconciles_organization_id(
+    seeded_control: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the resume path specifically: reconciliation must not only fire on
+    a run's first parse.
+
+    Reproduces the review's exact repro: parse a victim-owned source (which,
+    before this fix, was the *only* place organization_id ever got
+    reconciled), then mutate run.organization_id to the attacker's org --
+    simulating a reparent race, or simply a bug -- and resume via advance().
+    Parse is already "complete" so it never re-runs and never re-resolves the
+    source; the fix must catch this at every subsequent stage regardless, via
+    pipeline.advance()'s per-stage reconciliation, not just on first parse.
+    """
+    _, victim_org = await _mk_user("resume-victim@prep-tenant.test", "Prep Tenant Resume Victim")
+    _, attacker_org = await _mk_user(
+        "resume-attacker@prep-tenant.test", "Prep Tenant Resume Attacker"
+    )
+    version_id = await _evidence_version(
+        victim_org,
+        b"Administrators must use multifactor authentication for network access.\n",
+        "victim.txt",
+    )
+
+    monkeypatch.setattr(gateway, "embed", _fake_embed([0.01] * 1024))
+    monkeypatch.setattr(
+        gateway, "generate_structured", _fake_generate_structured_echoing_candidates()
+    )
+
+    async with session_scope() as s:
+        run = await pipeline.create_run(
+            s, organization_id=victim_org, source_kind="evidence_version", source_id=version_id,
         )
+        run_id = int(run.id)
+        count = await pipeline.run_stage_parse(s, run)
+        assert count > 0
+        assert run.stage_parse == "complete"
+        assert run.organization_id == victim_org
+
+    # Simulate a reparent race / bug between resumes: parse already ran and
+    # will never run again for this run, so nothing re-resolves the source
+    # unless advance() itself reconciles before every stage.
+    async with session_scope() as s:
+        run = await pipeline.load_run(s, run_id)
+        assert run is not None
+        run.organization_id = attacker_org
+        await s.flush()
+
+    async with session_scope() as s:
+        run = await pipeline.load_run(s, run_id)
+        assert run is not None
+        assert run.stage_parse == "complete", (
+            "parse must not re-run for this to pin the resume path"
+        )
+        await pipeline.advance(s, run)
+        assert run.status == "complete", run.error
+        assert run.organization_id == victim_org, (
+            "advance() must reconcile organization_id before every stage, "
+            "not only on a run's first parse"
+        )
+
+    rows_by_table = await _load_all_stage_rows(run_id)
+    _assert_every_table_populated_and_consistent(rows_by_table, victim_org)

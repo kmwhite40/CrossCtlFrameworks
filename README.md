@@ -411,7 +411,14 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   runs with a deterministic stub and no cloud credentials. The
   `ai_disabled_safe_default` reliability check confirms the safe default.
 - `CCF_PREP_ENABLED` — turn on the evidence preparation pipeline (`/api/prep`,
-  `ccf prep-worker`); **disabled by default**.
+  `ccf prep-worker`); **disabled by default**. When unset, the `/api/prep/*`
+  routes are not registered at all (a plain 404, not just a locked door) and
+  `ccf prep-worker` exits immediately without draining anything — there is no
+  way to spend a model-call dollar on this feature without opting in first.
+  Its own tenant scoping is derived from the authenticated principal
+  (`CCF_AUTH_ENABLED`); with auth off — the default, and true of the whole
+  app, not specific to prep — every caller is unscoped and the
+  `organization_id` a request supplies is trusted outright.
   `CCF_PREP_SCREEN_THRESHOLD` (default **0.72**) is the `ts_rank_cd` cutoff a
   parsed line must clear to be considered control-relevant — derived
   empirically against the fully-ingested 5,430-row 800-53A catalog, with only
