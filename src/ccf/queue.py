@@ -29,7 +29,10 @@ back to ``pending`` for the next cycle; ``attempts >= cap`` is left
 ``status="failed"`` with an operator-legible ``last_error`` instead. Without
 this split a job whose worker dies on it every time (OOM, a pathological
 input) is reclaimed forever, burning a full cycle's work indefinitely with no
-operator visibility that anything is wrong.
+operator visibility that anything is wrong. The exact wording
+(:data:`DEAD_LETTER_REASON`) matches ``ccf.prep.jobs.reap_stale`` verbatim —
+this extraction exists precisely so two queues never show an operator
+different text for the same condition.
 
 **``last_error`` is truncated.** Bounded so a queue that composes a longer or
 dynamic reason string in the future can't bloat the row the way an
@@ -40,23 +43,37 @@ unbounded provider/DBAPI error string can (see ``ccf.prep.jobs``'s own
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Mapped
 
 from .logging import get_logger
 
 log = get_logger(__name__)
 
 #: Fixed, operator-legible reason recorded on ``last_error`` when a stale job
-#: is dead-lettered rather than requeued. Exposed as a public constant so
-#: callers/tests can assert on it without hardcoding the wording twice.
-DEAD_LETTER_REASON = "exceeded max attempts via repeated stale reclaim"
+#: is dead-lettered rather than requeued. Verbatim from ``ccf.prep.jobs``'s
+#: own ``reap_stale`` -- kept identical (not merely similar) so a future
+#: reader can't tell, from the message alone, which queue produced it.
+DEAD_LETTER_REASON = "exceeded max attempts ({cap}) via repeated stale reclaim"
 
 #: See the "``last_error`` is truncated" note in the module docstring.
 _MAX_LAST_ERROR_CHARS = 4_000
+
+
+def _truncate_last_error(text: str) -> str:
+    """Cap a ``last_error`` value at :data:`_MAX_LAST_ERROR_CHARS`.
+
+    A standalone function (rather than an inline slice at the one call site)
+    so the boundary itself -- not just today's short, fixed dead-letter
+    message -- is directly testable without needing a DB round trip or an
+    input large enough to smuggle past column/type limits elsewhere in the
+    query (e.g. ``max_attempts`` is bound into a SQL comparison against an
+    ``Integer`` column, so it can't itself be used to manufacture an
+    oversized string for a black-box test).
+    """
+    return text[:_MAX_LAST_ERROR_CHARS]
 
 
 class JobLike(Protocol):
@@ -67,22 +84,41 @@ class JobLike(Protocol):
     ``PrepJob`` and the coming ``AssessmentJob`` do not otherwise share a base
     class, and forcing one into existence just to satisfy this helper would
     reach further into schema than a queue-semantics extraction needs to.
-    Declaring the columns as ``Mapped[...]`` (matching how the real models
-    declare them) rather than as plain ``int``/``str`` is what lets mypy treat
-    class-level access like ``model.status`` inside this module as a
-    SQLAlchemy ``InstrumentedAttribute`` usable in ``.where()``/``.values()``,
-    while instance access like ``job.status`` on a claimed row still resolves
-    to the plain ``str``.
+
+    Columns are declared with their plain, unwrapped instance types (``int``,
+    ``str``, ...), matching what ``some_job.status`` actually is on a real ORM
+    instance -- not ``Mapped[str]``. That distinction matters here: when a
+    concrete model like ``PrepJob`` is checked against this bound (e.g. at a
+    call site ``claim_jobs(session, PrepJob, ...)``), mypy checks protocol
+    conformance the same way it would for an ordinary instance attribute, and
+    a real declarative attribute's *instance*-side type is always the
+    unwrapped column type -- ``Mapped[T]`` only shows up when the attribute is
+    accessed on the *class* itself, via ``Mapped``'s own overloaded
+    descriptor. A Protocol typed with ``Mapped[str]`` therefore matches no
+    real SQLAlchemy model at all (every candidate's instance-side ``status``
+    is ``str``, never ``Mapped[str]``) -- confirmed by adding a call site
+    inside ``src/`` and running ``mypy src`` against it; see the Task 7
+    review fix for the exact error this produced.
+
+    The corollary is that this Protocol, once correctly bound, can no longer
+    describe the *class*-level query-building shape (``model.status`` as an
+    ``InstrumentedAttribute`` usable in ``.where()``) -- mypy's descriptor
+    overload resolution for ``Mapped[T]`` only fires for a concretely known
+    declarative class, not for a generic Protocol-bound type parameter. Both
+    functions below therefore alias ``model`` to a locally, explicitly
+    ``Any``-typed name before building any SQLAlchemy expressions, and
+    ``cast`` the result back to the real ``list[J]`` before returning --
+    documented at each use, not left as a silent gap in the public signature.
     """
 
-    id: Mapped[int]
-    organization_id: Mapped[int]
-    status: Mapped[str]
-    attempts: Mapped[int]
-    claimed_at: Mapped[datetime | None]
-    claimed_by: Mapped[str | None]
-    last_error: Mapped[str | None]
-    created_at: Mapped[datetime]
+    id: int
+    organization_id: int
+    status: str
+    attempts: int
+    claimed_at: datetime | None
+    claimed_by: str | None
+    last_error: str | None
+    created_at: datetime
 
 
 async def claim_jobs[J: JobLike](
@@ -94,12 +130,18 @@ async def claim_jobs[J: JobLike](
     ``FOR UPDATE SKIP LOCKED``, why the follow-up ``UPDATE`` is one atomic
     statement, and why ``attempts`` is bumped inside it rather than after.
     """
+    # See JobLike's docstring: `m` recovers real SQLAlchemy query-building
+    # typing (InstrumentedAttribute, ColumnElement, ...) that a Protocol-bound
+    # `J` cannot express for class-level access. `model`/`J` stay the real,
+    # checked types at the function boundary -- only the statements below,
+    # which need class-level column access, use `m`.
+    m: Any = model
     candidates = (
         (
             await session.execute(
-                select(model.id)
-                .where(model.status == "pending")
-                .order_by(model.created_at)
+                select(m.id)
+                .where(m.status == "pending")
+                .order_by(m.created_at)
                 .limit(limit)
                 .with_for_update(skip_locked=True)
             )
@@ -110,21 +152,19 @@ async def claim_jobs[J: JobLike](
     if not candidates:
         return []
     await session.execute(
-        update(model)
-        .where(model.id.in_(candidates))
+        update(m)
+        .where(m.id.in_(candidates))
         .values(
             status="claimed",
             claimed_by=worker,
             claimed_at=datetime.now(UTC),
-            attempts=model.attempts + 1,
+            attempts=m.attempts + 1,
         )
     )
     await session.flush()
-    claimed = (
-        (await session.execute(select(model).where(model.id.in_(candidates)))).scalars().all()
-    )
+    claimed = (await session.execute(select(m).where(m.id.in_(candidates)))).scalars().all()
     log.info("queue.jobs_claimed", worker=worker, count=len(claimed))
-    return list(claimed)
+    return cast(list[J], list(claimed))
 
 
 async def reap_stale_jobs[J: JobLike](
@@ -141,24 +181,26 @@ async def reap_stale_jobs[J: JobLike](
     ``attempts < max_attempts`` vs ``attempts >= max_attempts``, and why
     ``last_error`` is truncated. Returns ``{"requeued": n, "dead_lettered": n}``.
     """
+    # See claim_jobs' comment / JobLike's docstring for why `m` is `Any`.
+    m: Any = model
     threshold = datetime.now(UTC) - timedelta(minutes=max(1, older_than_minutes))
 
     requeued = await session.execute(
-        update(model)
+        update(m)
         .where(
-            model.status == "claimed",
-            model.claimed_at <= threshold,
-            model.attempts < max_attempts,
+            m.status == "claimed",
+            m.claimed_at <= threshold,
+            m.attempts < max_attempts,
         )
         .values(status="pending", claimed_by=None, claimed_at=None)
     )
-    reason = f"{DEAD_LETTER_REASON} (cap={max_attempts})"[:_MAX_LAST_ERROR_CHARS]
+    reason = _truncate_last_error(DEAD_LETTER_REASON.format(cap=max_attempts))
     dead_lettered = await session.execute(
-        update(model)
+        update(m)
         .where(
-            model.status == "claimed",
-            model.claimed_at <= threshold,
-            model.attempts >= max_attempts,
+            m.status == "claimed",
+            m.claimed_at <= threshold,
+            m.attempts >= max_attempts,
         )
         .values(
             status="failed",

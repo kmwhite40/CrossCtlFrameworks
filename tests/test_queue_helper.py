@@ -18,7 +18,13 @@ from sqlalchemy import delete, select
 from ccf.db import get_session_factory, session_scope, set_session_tenant
 from ccf.models import Organization
 from ccf.models_prep import PrepJob, PrepRun
-from ccf.queue import DEAD_LETTER_REASON, claim_jobs, reap_stale_jobs
+from ccf.queue import (
+    _MAX_LAST_ERROR_CHARS,
+    DEAD_LETTER_REASON,
+    _truncate_last_error,
+    claim_jobs,
+    reap_stale_jobs,
+)
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -164,6 +170,12 @@ async def test_reap_leaves_a_freshly_claimed_job_alone() -> None:
 
 
 async def test_reap_dead_letters_at_the_attempt_cap_with_a_legible_error() -> None:
+    """The dead-letter ``last_error`` wording must match
+    ``ccf.prep.jobs.reap_stale``'s verbatim -- this extraction exists so two
+    queues never show an operator different text for the same condition, so
+    the assertion below is an exact match, not a substring check that would
+    happily pass if the wording drifted.
+    """
     org_id = await _org("queue-helper-dead-letter")
     job_id = await _make_job(
         org_id,
@@ -178,14 +190,30 @@ async def test_reap_dead_letters_at_the_attempt_cap_with_a_legible_error() -> No
         row = (await s.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
         assert row.status == "failed"
         assert row.claimed_by is None
-        assert row.last_error is not None
-        assert DEAD_LETTER_REASON in row.last_error
-        assert "5" in row.last_error  # the cap itself is legible, not just "failed"
+        # Matches ccf.prep.jobs.reap_stale's f"exceeded max attempts ({cap}) via
+        # repeated stale reclaim" byte-for-byte.
+        assert row.last_error == "exceeded max attempts (5) via repeated stale reclaim"
+        assert row.last_error == DEAD_LETTER_REASON.format(cap=5)
 
     # A second cycle must not touch it again -- it is terminal, not requeued.
     async with session_scope() as s:
         result = await reap_stale_jobs(s, PrepJob, older_than_minutes=60, max_attempts=5)
         assert result == {"requeued": 0, "dead_lettered": 0}
+
+
+def test_last_error_is_truncated_past_the_length_cap() -> None:
+    """``last_error`` must never grow unboundedly (see the module docstring's
+    "last_error is truncated" note). Today's only caller passes a short, fixed
+    message, so this exercises the truncation boundary directly rather than
+    via a DB round trip -- there is no way to make ``reap_stale_jobs``'s own
+    composed message exceed the cap without an unrealistically large
+    ``max_attempts`` that would itself overflow the ``attempts`` column's
+    ``Integer`` type in the SQL comparison.
+    """
+    oversized = "x" * (_MAX_LAST_ERROR_CHARS + 500)
+    truncated = _truncate_last_error(oversized)
+    assert len(truncated) == _MAX_LAST_ERROR_CHARS
+    assert truncated == oversized[:_MAX_LAST_ERROR_CHARS]
 
 
 async def test_two_concurrent_claimers_never_take_the_same_job() -> None:
