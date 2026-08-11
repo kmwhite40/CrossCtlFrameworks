@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,7 +54,7 @@ from ...assessment.engine.service import (
     reject_control_proposal,
 )
 from ...auth import Principal
-from ...models import Assessment, AssessmentControlResult, System
+from ...models import POAM, Assessment, AssessmentControlResult, System
 from ...models_assessment_engine import (
     AssessmentControlProposal,
     AssessmentJob,
@@ -262,6 +262,47 @@ async def get_proposal(
     """The proposal with its objectives, verdicts and citations."""
     proposal = await _require_proposal(session, proposal_id, principal)
     return await _proposal_detail(session, proposal)
+
+
+@router.get("/proposals")
+async def list_reevaluation_proposals(
+    *,
+    source_poam_id: int = Query(ge=1, le=_MAX_INT32),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """The re-evaluation proposal(s) triggered by one closed POA&M's closure.
+
+    ``source_poam_id`` names a POA&M, not a proposal -- so it is validated
+    against ``POAM.system_id -> System.organization_id`` the same way
+    ``_require_proposal`` validates a proposal id: a POA&M belonging to
+    another tenant 404s here too, not 403, so the response cannot be used to
+    confirm that id exists at all.
+    """
+    poam_org_id = (
+        await session.execute(
+            select(System.organization_id)
+            .join(POAM, POAM.system_id == System.id)
+            .where(POAM.id == source_poam_id)
+        )
+    ).scalar_one_or_none()
+    if poam_org_id is None or (
+        principal.org_id is not None and int(poam_org_id) != principal.org_id
+    ):
+        raise HTTPException(404, "poam not found")
+
+    rows = (
+        (
+            await session.execute(
+                select(AssessmentControlProposal)
+                .where(AssessmentControlProposal.source_poam_id == source_poam_id)
+                .order_by(AssessmentControlProposal.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [await _proposal_detail(session, p) for p in rows]
 
 
 def _result_out(result: AssessmentControlResult) -> dict[str, Any]:
