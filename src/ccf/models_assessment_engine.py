@@ -80,6 +80,12 @@ CONTROL_PROPOSAL_FINDINGS = (
 #: after evaluation; ``failed`` means the model call could not be completed.
 PROPOSAL_STATES = ("draft", "complete", "accepted", "rejected", "failed", "stale")
 
+#: What an assessor may correct a proposed finding to. Deliberately excludes
+#: ``insufficient_evidence``: that is a proposal-only state meaning the engine
+#: could not tell, and an assessor overriding a verdict is asserting what is
+#: true, not declining to say.
+CORRECTED_FINDINGS = ("satisfied", "other_than_satisfied", "not_applicable")
+
 ASSESSMENT_JOB_STATES = ("pending", "claimed", "done", "failed")
 
 
@@ -111,6 +117,14 @@ class AssessmentControlProposal(Base):
     accepted_by: Mapped[str | None] = mapped_column(String(255))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+
+    #: Set only on rejection: the finding the assessor believes is correct.
+    corrected_finding: Mapped[str | None] = mapped_column(String(32))
+    rejected_by: Mapped[str | None] = mapped_column(String(255))
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Required on rejection. A rejection without a reason tells calibration the
+    #: engine was wrong but not how, and "how" is what makes the metric useful.
+    rejection_note: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -202,3 +216,26 @@ class AssessmentJob(Base):
     )
 
     __table_args__ = (Index("ix_assessment_jobs_claimable", "status", "created_at"),)
+
+
+class CalibrationSnapshot(Base):
+    """A point-in-time calibration measurement, tied to the configuration that produced it.
+
+    The fingerprint is what makes drift meaningful. A metric is comparable to an
+    earlier one only if what was measured did not change underneath, so two
+    snapshots with different fingerprints are reported as *not comparable* rather
+    than as drift -- which matters because ``prep_screen_threshold`` has a narrow
+    empirical margin and will be re-derived.
+    """
+
+    __tablename__ = "calibration_snapshots"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    config_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
