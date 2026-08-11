@@ -57,6 +57,9 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+# Registers ccf.ai_action_runs — the AssessmentObjectiveProposal.ai_action_run_id
+# FK target — before mapper configuration, matching models_prep.py's identical FK.
+from . import models_ai_actions  # noqa: F401
 from .models import Base
 
 #: A model's verdict on one objective.
@@ -156,6 +159,12 @@ class AssessmentObjectiveProposal(Base):
     rationale: Mapped[str | None] = mapped_column(Text)
     model_name: Mapped[str | None] = mapped_column(String(128))
     model_confidence: Mapped[float | None] = mapped_column(Float)
+    #: Provenance for the model call that produced this verdict. Nullable:
+    #: historical rows predate provenance recording, and a recording failure
+    #: must leave a usable NULL rather than block the verdict.
+    ai_action_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.ai_action_runs.id", ondelete="SET NULL"), index=True
+    )
     error: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
