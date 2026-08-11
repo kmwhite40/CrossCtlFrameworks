@@ -42,14 +42,13 @@ it at all.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
-from sqlalchemy import select, update
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..logging import get_logger
 from ..models_prep import PrepJob
+from ..queue import claim_jobs, reap_stale_jobs
 from . import pipeline
 from .sources import SourceMissing, SourceOwnershipMismatch, resolve_source_organization_id
 
@@ -106,38 +105,12 @@ async def claim(session: AsyncSession, *, worker: str, limit: int) -> list[PrepJ
     the session driving :func:`pipeline.advance` may never commit if the worker
     is killed mid-stage, and undercounting attempts for exactly those jobs would
     defeat the retry cap in :func:`reap_stale`.
+
+    Delegates to :func:`ccf.queue.claim_jobs`, the shared claiming primitive
+    both job queues use, so this queue's semantics can never silently drift
+    from the other's — see ``ccf.queue``'s module docstring.
     """
-    candidates = (
-        (
-            await session.execute(
-                select(PrepJob.id)
-                .where(PrepJob.status == "pending")
-                .order_by(PrepJob.created_at)
-                .limit(limit)
-                .with_for_update(skip_locked=True)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if not candidates:
-        return []
-    await session.execute(
-        update(PrepJob)
-        .where(PrepJob.id.in_(candidates))
-        .values(
-            status="claimed",
-            claimed_by=worker,
-            claimed_at=datetime.now(UTC),
-            attempts=PrepJob.attempts + 1,
-        )
-    )
-    await session.flush()
-    claimed = (
-        (await session.execute(select(PrepJob).where(PrepJob.id.in_(candidates)))).scalars().all()
-    )
-    log.info("prep.jobs_claimed", worker=worker, count=len(claimed))
-    return list(claimed)
+    return await claim_jobs(session, PrepJob, worker=worker, limit=limit)
 
 
 async def reap_stale(
@@ -151,40 +124,19 @@ async def reap_stale(
     with ``last_error`` explaining why, so a poisoned job stops cycling through
     claim/crash/reap and becomes visible instead. Returns the total number of
     jobs acted on (requeued + dead-lettered).
+
+    Delegates to :func:`ccf.queue.reap_stale_jobs`, the shared reap/dead-letter
+    primitive both job queues use. That helper takes ``max_attempts`` as a
+    required keyword and returns ``{"requeued": n, "dead_lettered": n}`` — this
+    wrapper is what keeps ``prep.jobs.reap_stale``'s own public contract (an
+    optional ``max_attempts`` that falls back to ``Settings.prep_job_max_attempts``,
+    and a single summed ``int``) unchanged for every existing caller and test.
     """
     cap = max_attempts if max_attempts is not None else get_settings().prep_job_max_attempts
-    threshold = datetime.now(UTC) - timedelta(minutes=max(1, older_than_minutes))
-
-    requeued = await session.execute(
-        update(PrepJob)
-        .where(
-            PrepJob.status == "claimed",
-            PrepJob.claimed_at <= threshold,
-            PrepJob.attempts < cap,
-        )
-        .values(status="pending", claimed_by=None, claimed_at=None)
+    result = await reap_stale_jobs(
+        session, PrepJob, older_than_minutes=older_than_minutes, max_attempts=cap
     )
-    dead_lettered = await session.execute(
-        update(PrepJob)
-        .where(
-            PrepJob.status == "claimed",
-            PrepJob.claimed_at <= threshold,
-            PrepJob.attempts >= cap,
-        )
-        .values(
-            status="failed",
-            claimed_by=None,
-            claimed_at=None,
-            last_error=f"exceeded max attempts ({cap}) via repeated stale reclaim",
-        )
-    )
-    requeued_count = int(getattr(requeued, "rowcount", 0) or 0)
-    dead_letter_count = int(getattr(dead_lettered, "rowcount", 0) or 0)
-    if requeued_count:
-        log.info("prep.jobs_reaped", count=requeued_count, older_than_minutes=older_than_minutes)
-    if dead_letter_count:
-        log.warning("prep.jobs_dead_lettered", count=dead_letter_count, max_attempts=cap)
-    return requeued_count + dead_letter_count
+    return result["requeued"] + result["dead_lettered"]
 
 
 #: ``last_error`` is unbounded (``Text``), but a raw DBAPI error's ``str()``
