@@ -17,6 +17,7 @@ from rich.table import Table
 from sqlalchemy import func, select
 
 from .assessment.engine import jobs as assessment_jobs
+from .assessment.engine.calibration import take_snapshot
 from .auth import hash_password, new_api_token
 from .config import Settings, get_settings
 from .db import session_scope
@@ -469,6 +470,41 @@ def assessment_worker(
 
     batch = limit if limit is not None else settings.assessment_engine_batch_size
     asyncio.run(_assessment_drain_loop(once=once, worker=worker, batch=batch, settings=settings))
+
+
+@app.command(name="calibration-snapshot")
+def calibration_snapshot(
+    organization_id: int = typer.Argument(..., help="Organization id to snapshot calibration for."),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Model name to fingerprint against (defaults to the configured ai_model).",
+    ),
+) -> None:
+    """Compute and store one calibration snapshot for an organization."""
+    settings = get_settings()
+    if not settings.assessment_engine_enabled:
+        # Same gate as `ccf assessment-worker` above: exit cleanly rather than
+        # silently computing calibration for a feature an operator never
+        # opted into.
+        console.print(
+            "[yellow]Assessment engine is disabled "
+            "(CCF_ASSESSMENT_ENGINE_ENABLED=false) — nothing to do. "
+            "Set CCF_ASSESSMENT_ENGINE_ENABLED=true to enable it.[/yellow]"
+        )
+        return
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            snapshot = await take_snapshot(session, organization_id=organization_id, model=model)
+        decided = snapshot.metrics["decided"]
+        rate = f"{snapshot.metrics['agreement_rate']:.1%}" if decided else "n/a (no decisions yet)"
+        console.print(
+            f"[green]Calibration snapshot {snapshot.id}[/green] for org {organization_id}: "
+            f"{decided} decided, agreement {rate}"
+        )
+
+    asyncio.run(_run())
 
 
 @app.command(name="data-quality")

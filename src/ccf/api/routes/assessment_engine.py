@@ -26,6 +26,13 @@ and every organization check below is skipped entirely; the assessment/proposal
 named in the request is trusted outright, the same as it is for every other
 endpoint in that mode. Do not run with auth disabled against data from more
 than one real tenant.
+
+``reject`` is acceptance's other outcome and resolves org identically, through
+``_require_proposal``. ``GET /calibration`` carries no id at all to resolve
+against -- it derives its organization solely from ``principal.org_id``, never
+from a query argument, which is the one case in this module with nothing else
+to check it against; an unscoped principal (``CCF_AUTH_ENABLED=false``) has no
+single organization's metrics to report and gets a 400, not a guess.
 """
 
 from __future__ import annotations
@@ -38,7 +45,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...assessment.engine import jobs as engine_jobs
-from ...assessment.engine.service import AcceptanceRefused, ProposalError, accept_control_proposal
+from ...assessment.engine.calibration import compute_metrics
+from ...assessment.engine.service import (
+    AcceptanceRefused,
+    ProposalError,
+    RejectionRefused,
+    accept_control_proposal,
+    reject_control_proposal,
+)
 from ...auth import Principal
 from ...models import Assessment, AssessmentControlResult, System
 from ...models_assessment_engine import (
@@ -288,3 +302,88 @@ async def accept_proposal(
         raise HTTPException(404, str(exc)) from exc
     await session.commit()
     return _result_out(result)
+
+
+class ProposalReject(BaseModel):
+    #: Not a Literal/enum here on purpose: an invalid value (including
+    #: "insufficient_evidence", which is proposal-only and never a valid
+    #: correction) must reach reject_control_proposal's own check and come
+    #: back as a 409 explaining why, not a generic 422 from the schema layer.
+    corrected_finding: str = Field(min_length=1, max_length=32)
+    #: Blank is rejected here at the edge, matching control_identifier above;
+    #: a whitespace-only note still reaches reject_control_proposal's own
+    #: ``note.strip()`` check and comes back as a 409.
+    note: str = Field(min_length=1)
+
+
+@router.post("/proposals/{proposal_id}/reject")
+async def reject_proposal(
+    *,
+    proposal_id: int = Path(ge=1, le=_MAX_INT64),
+    body: ProposalReject,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Record an assessor's correction to a proposed finding.
+
+    Mirrors ``accept_proposal`` exactly: ``reject_control_proposal`` refuses
+    (``RejectionRefused``) a proposal that is already ``accepted`` or already
+    ``rejected`` -- both terminal, neither re-enterable -- a ``corrected_finding``
+    that is not a valid correction (``insufficient_evidence`` included), or a
+    blank note. All three surface here as 409, not a 500: the request is
+    understood and rejected, not a server fault. Never writes an
+    ``AssessmentControlResult`` -- see ``reject_control_proposal``'s own
+    docstring for why.
+    """
+    proposal = await _require_proposal(session, proposal_id, principal)
+    try:
+        rejected = await reject_control_proposal(
+            session,
+            proposal.id,
+            rejected_by=principal.email,
+            corrected_finding=body.corrected_finding,
+            note=body.note,
+        )
+    except RejectionRefused as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ProposalError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    await session.commit()
+    return {
+        "id": rejected.id,
+        "state": rejected.state,
+        "corrected_finding": rejected.corrected_finding,
+        "rejected_by": rejected.rejected_by,
+        "rejection_note": rejected.rejection_note,
+    }
+
+
+@router.get("/calibration")
+async def get_calibration(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Live calibration metrics for the caller's own organization.
+
+    Deliberately takes no ``organization_id`` anywhere -- not in a query
+    argument, not in a body -- the organization comes only from
+    ``Depends(get_principal)``. This is the shape that leaked cross-tenant
+    on three endpoints in the prior slice; this endpoint has no id of its own
+    to check a supplied value against, so it never accepts one at all rather
+    than trusting it the way ``prep.py``'s create endpoint does.
+    """
+    if principal.org_id is None:
+        # No single organization to report on for an unscoped principal, and
+        # nothing here to derive one from (unlike _require_proposal, which
+        # falls back to trusting the request when auth is disabled) -- there
+        # is no id in this request to trust in the first place.
+        raise HTTPException(400, "calibration requires an organization-scoped principal")
+    metrics = await compute_metrics(session, organization_id=principal.org_id)
+    out = metrics.as_dict()
+    # decided == 0 must read as "no decisions recorded yet", not as 0% --
+    # collapsing an empty denominator into 0.0 would misrepresent an engine
+    # that has made zero calls as one that is always wrong. Mirrors
+    # ccf.analytics.posture.org_summary's identical
+    # `avg_sprs = ... if scored else None` convention for the same reason.
+    out["agreement_rate"] = out["agreement_rate"] if metrics.decided else None
+    return out
