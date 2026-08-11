@@ -81,18 +81,23 @@ of it. Concord's ETL already ingests the full 800-53A Rev 5 catalog into
 screen, needs no dictionary maintenance, and stays current automatically when the
 workbook is re-ingested.
 
-**2. Classification is a registered AI action. [NOT BUILT — corrected 2026-08-10]**
-This was the design intent, but the shipped implementation does not do this:
-`run_stage_classify` (`src/ccf/prep/classify.py`) calls
-`ccf.ai.gateway.generate_structured` directly. There is no
-`ActionDef("classify_evidence_unit", …)` in `src/ccf/ai_actions/registry.py`,
-`ccf.ai_actions.run_action` is never invoked from `ccf.prep`, no
-`ai_action_runs` row is ever created for a classification, and consequently
-there is no citation record, no guardrail evaluation, no review state, and no
-`ai_require_human_approval` gate for it. `PrepClassification.ai_action_run_id`
-and `.model_name` are always `NULL` as a result. Wiring classification through
-the typed AI-action layer as originally specified here is tracked as explicit
-follow-up work (see "Open follow-ups" below), not yet done.
+**2. Classification is a registered AI action. [PARTIALLY BUILT — corrected 2026-08-10]**
+The `ActionDef("classify_evidence_unit", …)` described below **does** exist —
+`src/ccf/ai_actions/registry.py:88` — and `classify.py`'s own
+`ACTION_KEY = "classify_evidence_unit"` matches it. But registering the
+action was only half of this decision, and the other half was never wired
+up: `run_stage_classify` (`src/ccf/prep/classify.py`) calls
+`ccf.ai.gateway.generate_structured` directly and never calls
+`ccf.ai_actions.run_action`, so `ACTION_KEY` is used only as a `purpose=`
+string passed to the gateway — the registered `ActionDef` itself is never
+looked up or invoked for a classification. No `ai_action_runs` row is ever
+created, and consequently there is no citation record, no guardrail
+evaluation, no review state, and no `ai_require_human_approval` gate for a
+classification. `PrepClassification.ai_action_run_id` and `.model_name` are
+always `NULL` as a result. Wiring `run_stage_classify` through
+`ai_actions.run_action` (the way the rest of this decision already
+describes) is tracked as explicit follow-up work (see "Open follow-ups"
+below), not yet done.
 
 **3. Embeddings go through `ccf.ai.gateway`.**
 A new `embed()` method on `AIProvider` in `src/ccf/ai/providers/base.py`, reusing
@@ -144,6 +149,11 @@ PolicyVersion  ──┘   (source_kind,   │       │        │         │ 
                                           screens  units  classifications embeddings
                                                               │
                                                     ai_action_runs (existing)
+                                                    [NOT WIRED -- corrected 2026-08-10:
+                                                     the ActionDef is registered but
+                                                     run_stage_classify never calls
+                                                     ai_actions.run_action, so no row is
+                                                     ever written here. See decision #2.]
 ```
 
 Module layout:
@@ -158,7 +168,9 @@ src/ccf/prep/
   pipeline.py       stage orchestration + resumption
   screen.py         catalog-driven lexical screen
   expand.py         context expansion
-  classify.py       LLM classification via ai_actions
+  classify.py       LLM classification via ai.gateway directly [not yet
+                    routed through ai_actions -- corrected 2026-08-10, see
+                    decision #2]
   embed.py          embedding via ai.gateway
   retriever.py      hybrid lexical + vector retrieval
   jobs.py           DB-backed job queue
@@ -187,8 +199,10 @@ column headers; the same section; a fixed window of `prep_expand_window` lines
 either side within the same page; the trigger line alone. Records
 `source_line_ids` for traceback.
 
-**classify** — batched calls over units, through `ai_actions.run_action`, using
-`gateway.generate_structured` with a JSON schema. Returns control identifiers,
+**classify** — batched calls over units, using `gateway.generate_structured`
+directly with a JSON schema, **not** routed through `ai_actions.run_action`
+despite the `classify_evidence_unit` `ActionDef` being registered for it
+[corrected 2026-08-10, see decision #2]. Returns control identifiers,
 `artifact_type` (policy / procedure / technical implementation / testing evidence
 / management approval), `evidence_strength`, and `model_confidence`.
 

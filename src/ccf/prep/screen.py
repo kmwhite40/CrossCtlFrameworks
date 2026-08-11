@@ -122,6 +122,14 @@ def control_identifier_spellings(identifier: str) -> list[str]:
     ``AC-99``). For a CMMC-style or otherwise non-family-number identifier,
     where there is no padding convention to reconcile, this returns exactly
     the one (suffix-stripped) form.
+
+    Assumes two-digit padding specifically, not padding of arbitrary width:
+    a hypothetical three-digit-padded row (``AC-002``) would not be covered
+    and would stay unreachable from an unpadded or two-digit query. NIST
+    800-53 family sequence numbers top out at two digits in the real
+    catalog, so this is not a form Concord's own data ever takes -- if that
+    ever changes, this would need a general "strip all leading zeros" match
+    instead of a fixed two-digit re-pad.
     """
     base = re.sub(_BASE_CONTROL_PATTERN, "", identifier).strip()
     match = _PADDED_FAMILY_PATTERN.match(base)

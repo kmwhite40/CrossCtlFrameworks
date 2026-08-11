@@ -96,12 +96,25 @@ depends_on = None
 #: use, so this shows up through the same handler with no extra configuration.
 log = logging.getLogger("alembic.runtime.migration")
 
-_MANUAL_STEP = (
-    "ALTER DATABASE <dbname> SET search_path = ccf, public;  "
-    "-- run as the database owner or a superuser, then restart the API "
-    "process (or recycle its connection pool) so already-open connections "
-    "pick up the new default."
-)
+#: Keyed by the same ``action`` passed to :func:`_alter_database_search_path`
+#: -- the manual step for a failed ``upgrade()`` (SET) is not the same
+#: statement as for a failed ``downgrade()`` (RESET); printing the wrong one
+#: would send an operator recovering from a failed downgrade to re-run the
+#: very statement they were trying to undo.
+_MANUAL_STEPS = {
+    "set": (
+        "ALTER DATABASE <dbname> SET search_path = ccf, public;  "
+        "-- run as the database owner or a superuser, then restart the API "
+        "process (or recycle its connection pool) so already-open connections "
+        "pick up the new default."
+    ),
+    "reset": (
+        "ALTER DATABASE <dbname> RESET search_path;  "
+        "-- run as the database owner or a superuser, then restart the API "
+        "process (or recycle its connection pool) so already-open connections "
+        "pick up the reset default."
+    ),
+}
 
 
 def _alter_database_search_path(sql: str, *, action: str) -> None:
@@ -130,7 +143,7 @@ def _alter_database_search_path(sql: str, *, action: str) -> None:
             "ccf.vector <=> ccf.vector' until this is corrected manually. "
             "MANUAL STEP REQUIRED: %s Original error: %s",
             action,
-            _MANUAL_STEP,
+            _MANUAL_STEPS[action],
             exc,
         )
 

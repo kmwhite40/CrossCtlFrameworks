@@ -208,6 +208,17 @@ class Settings(BaseSettings):
     # that a freshly enqueued job is picked up promptly; long enough that an
     # idle worker isn't hammering the jobs table.
     prep_worker_poll_interval_seconds: float = Field(default=5.0)
+    # How often a long-running `--loop` worker re-checks for stale (crashed
+    # mid-stage) jobs, rather than only once at process start. Deliberately
+    # smaller than `prep_job_stale_after_minutes` (the staleness window
+    # itself, default 60 min): the retry-cap machinery below only makes
+    # progress -- a stale job gets requeued, reclaimed, and (after
+    # `prep_job_max_attempts` reclaims) dead-lettered -- if reaping actually
+    # runs again after startup. At the 60-minute window's own timescale, that
+    # would take `prep_job_max_attempts` hours to fully engage. Not every
+    # cycle either, to avoid extra DB round trips when the queue is busy and
+    # cycles run back-to-back with no sleep in between.
+    prep_worker_reap_interval_seconds: float = Field(default=300.0)
     prep_job_stale_after_minutes: int = Field(default=60)
     # A job that fails gracefully (advance() raises, or a stage completes to
     # run.status="failed") stops after one attempt already -- claim() only

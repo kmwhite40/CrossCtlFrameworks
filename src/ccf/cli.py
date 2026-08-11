@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ from rich.table import Table
 from sqlalchemy import func, select
 
 from .auth import hash_password, new_api_token
-from .config import get_settings
+from .config import Settings, get_settings
 from .db import session_scope
 from .etl import ingest_workbook
 from .etl.sources import poll as poll_sources
@@ -312,6 +314,63 @@ def scheduler_run() -> None:
     asyncio.run(_run())
 
 
+async def _drain_loop(
+    *,
+    once: bool,
+    worker: str,
+    batch: int,
+    settings: Settings,
+    now: Callable[[], float] = time.monotonic,
+) -> None:
+    """Claim-and-drive cycles until ``once``, or forever in ``--loop`` mode.
+
+    Reaping stale (crashed mid-stage) jobs runs on its own cadence
+    (``prep_worker_reap_interval_seconds``), gated inside this loop rather
+    than once before it. A prior version of this function ran the reap
+    exactly once, before the loop started -- harmless for ``--once``, but for
+    a long-running ``--loop`` worker it meant the reap could never fire again
+    for the rest of the process's life, when no job could possibly be stale
+    yet (every ``claimed_at`` is necessarily fresher than
+    ``prep_job_stale_after_minutes``). A job whose worker later died mid-stage
+    would then stay ``claimed`` forever: never requeued, never dead-lettered
+    -- the entire retry-cap machinery in ``jobs.py``/``config.py`` becomes
+    unreachable.
+
+    ``now`` defaults to ``time.monotonic`` (not wall-clock, so a system clock
+    adjustment can't skip or repeat a reap) but is an injectable parameter
+    rather than a bare module-level call: ``time`` is one shared module
+    object for the whole process, so a test monkeypatching ``time.monotonic``
+    directly would also repatch it for asyncio's own internal scheduling,
+    which calls it constantly -- not just the handful of calls this function
+    itself makes.
+    """
+    reap_interval = settings.prep_worker_reap_interval_seconds
+    last_reap = float("-inf")  # forces a reap on the very first cycle
+    while True:
+        current = now()
+        if current - last_reap >= reap_interval:
+            async with session_scope() as session:
+                reaped = await prep_jobs.reap_stale(
+                    session, older_than_minutes=settings.prep_job_stale_after_minutes
+                )
+            if reaped:
+                console.print(f"[yellow]Reaped {reaped} stale job(s)[/yellow]")
+            last_reap = current
+        async with session_scope() as session:
+            stats = await prep_jobs.run_once(session, worker=worker, limit=batch)
+        console.print_json(json.dumps(stats))
+        if once:
+            break
+        if stats["claimed"] == 0:
+            # Nothing to do this cycle -- sleep rather than either hammering
+            # the jobs table in a tight loop or (the actual prior bug)
+            # exiting outright: `--loop` returned after the first empty
+            # cycle, which is not "loop forever", and under docker-compose's
+            # `restart: unless-stopped` restart-looped the container forever
+            # the moment the queue went idle.
+            await asyncio.sleep(settings.prep_worker_poll_interval_seconds)
+
+
 @app.command(name="prep-worker")
 def prep_worker(
     once: bool = typer.Option(
@@ -335,30 +394,8 @@ def prep_worker(
         )
         return
 
-    async def _run() -> None:
-        batch = limit if limit is not None else settings.prep_worker_batch_size
-        async with session_scope() as session:
-            reaped = await prep_jobs.reap_stale(
-                session, older_than_minutes=settings.prep_job_stale_after_minutes
-            )
-        if reaped:
-            console.print(f"[yellow]Reaped {reaped} stale job(s)[/yellow]")
-        while True:
-            async with session_scope() as session:
-                stats = await prep_jobs.run_once(session, worker=worker, limit=batch)
-            console.print_json(json.dumps(stats))
-            if once:
-                break
-            if stats["claimed"] == 0:
-                # Nothing to do this cycle -- sleep rather than either
-                # hammering the jobs table in a tight loop or (the actual
-                # prior bug) exiting outright: `--loop` returned after the
-                # first empty cycle, which is not "loop forever", and under
-                # docker-compose's `restart: unless-stopped` restart-looped
-                # the container forever the moment the queue went idle.
-                await asyncio.sleep(settings.prep_worker_poll_interval_seconds)
-
-    asyncio.run(_run())
+    batch = limit if limit is not None else settings.prep_worker_batch_size
+    asyncio.run(_drain_loop(once=once, worker=worker, batch=batch, settings=settings))
 
 
 @app.command(name="data-quality")
