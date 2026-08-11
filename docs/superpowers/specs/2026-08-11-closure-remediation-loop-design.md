@@ -18,12 +18,21 @@ and makes completed work come back for re-evaluation.
 (`src/ccf/assessment/engine/service.py:319`) upserts an `AssessmentControlResult`
 and stops. Its own docstring says that row is "the only path by which engine
 output reaches the existing SAR generator or an auto-created POA&M" — but no
-caller anywhere invokes the POA&M creation path after acceptance. Worse, the
-endpoint that would do it, `POST /{assessment_id}/poams-from-findings`
-(`src/ccf/api/routes/assessments.py:205`), reads the **legacy** `AssessmentResult`
-table, not the `AssessmentControlResult` rows the engine writes. So the engine
-can produce an `other_than_satisfied` finding that never becomes tracked work at
-all.
+caller anywhere invokes the POA&M creation path after acceptance. Turning an
+accepted finding into tracked work requires a human to remember to
+`POST /{assessment_id}/poams-from-findings`
+(`src/ccf/api/routes/assessments.py:205`). So the engine can produce an
+`other_than_satisfied` finding that never becomes tracked work at all.
+
+**Correction to an earlier draft of this document**, which claimed that endpoint
+reads the *legacy* `AssessmentResult` table. It does not: `_results`
+(`assessments.py:91`) selects `AssessmentControlResult`, the same table the
+engine writes. The gap is narrower than that claim implied — the endpoint would
+work, nothing calls it — and it is still worth closing, because a loop that
+depends on someone remembering to trigger it is a loop that silently stops.
+It also means the bridge and that endpoint must not fight: both key on
+`source_ref`, so whichever runs first wins and the other is a no-op. That is why
+the bridge extends the existing convention rather than inventing one.
 
 **Nothing ever comes back.** Re-testing is purely calendar-driven:
 `control_tests.run_due` and `conmon.scan` re-evaluate on a frequency cadence.
