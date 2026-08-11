@@ -27,8 +27,15 @@ def control_family(control_identifier: str) -> str:
     """The family prefix (``AC``, ``SC``) a control belongs to.
 
     Folds through the shared identifier normaliser first, so ``AC-02`` and
-    ``AC-2`` group together. CMMC-style identifiers (``AC.L2-3.1.1``) keep their
+    ``AC-2`` group together and surrounding whitespace does not produce a
+    family of its own. CMMC-style identifiers (``AC.L2-3.1.1``) keep their
     leading alphabetic run, which is the family there too.
+
+    The prefix is upper-cased because the family is a grouping key, not a
+    display value: without it ``ac-2`` and ``AC-2`` would land in two separate
+    buckets and each would report half of that family's real counts. The
+    shared normaliser deliberately preserves case for identifier matching, so
+    the folding has to happen here.
     """
     canonical = normalize_control_identifier(control_identifier)
     prefix = ""
@@ -37,7 +44,7 @@ def control_family(control_identifier: str) -> str:
             prefix += char
         else:
             break
-    return prefix or canonical
+    return (prefix or canonical).upper()
 
 
 @dataclass(slots=True)

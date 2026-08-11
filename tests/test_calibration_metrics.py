@@ -51,6 +51,20 @@ def test_control_family_folds_padded_and_unpadded() -> None:
     assert control_family("CP-9") == "CP"
 
 
+def test_control_family_folds_whitespace_and_case() -> None:
+    """Both foldings are load-bearing and neither was covered by the padding test.
+
+    Zero-padding happens to leave the alphabetic prefix untouched, so the
+    padding case above passes even with the normaliser removed. Surrounding
+    whitespace does not -- it is what makes that call testable. Case matters
+    because the family is a grouping key: unfolded, ``ac-2`` and ``AC-2``
+    become two buckets each holding half of AC's real counts.
+    """
+    assert control_family(" AC-2 ") == "AC"
+    assert control_family("ac-2") == "AC"
+    assert control_family("Ac.L2-3.1.1") == "AC"
+
+
 def test_control_family_survives_a_cmmc_style_identifier() -> None:
     """Must not corrupt the grouping or raise."""
     assert control_family("AC.L2-3.1.1") == "AC"
@@ -100,19 +114,28 @@ async def test_wasted_remediation_effort_is_a_false_alarm() -> None:
 
 
 async def test_the_two_error_directions_are_never_conflated() -> None:
-    """One of each must not collapse into a single '2 errors' figure."""
+    """Errors in both directions must not collapse into a single '3 errors' figure.
+
+    The counts are deliberately asymmetric (2 missed, 1 false alarm). A
+    symmetric fixture passes against code with the two branches transposed,
+    which makes it a test of nothing at all -- the exact defect this file's
+    first draft shipped with.
+    """
     org_id, aid = await _assessment("cal-both")
     await _decided(
         org_id, aid, "AC-2", "satisfied", accepted=False, corrected="other_than_satisfied"
+    )
+    await _decided(
+        org_id, aid, "AC-6", "satisfied", accepted=False, corrected="other_than_satisfied"
     )
     await _decided(
         org_id, aid, "SC-7", "other_than_satisfied", accepted=False, corrected="satisfied"
     )
     async with session_scope() as s:
         m = await compute_metrics(s, organization_id=org_id)
-    assert m.missed_findings == 1
+    assert m.missed_findings == 2
     assert m.false_alarms == 1
-    assert m.decided == 2
+    assert m.decided == 3
     assert m.agreed == 0
 
 
