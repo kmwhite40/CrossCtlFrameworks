@@ -95,18 +95,32 @@ own assertion:
 2. **It actually filters.** With the tenant GUC set to org A, a row belonging to
    org B is not visible. Asserted per table, against a session that has the GUC
    set — not the bootstrap session, which is unrestricted by design.
-3. **The real code paths set the GUC.** The API sets it through
-   `deps.get_session`. The **workers and the CLI are the open question** — the
-   prep pipeline and the assessment worker claim jobs and write across all eleven
-   of these tables, and if they run with the tenant unset then the policy is
-   decorative on exactly the paths that touch the most rows. This must be
-   established by reading the code and asserting on it, not assumed.
+3. **The real code paths set the GUC.** ANSWERED, by reading the code rather
+   than assuming. The API sets it through `Depends(get_session)`. **Every CLI
+   command and both worker drain loops do not**: they use `ccf.db.session_scope`,
+   which at `src/ccf/db.py:98` unconditionally calls
+   `set_session_tenant(session, None)` — commented "CLI/ETL run unscoped
+   (bypass)". Under the `IS NULL` escape that means RLS does not filter them.
 
-If a worker genuinely must run unscoped — a reaper sweeping across tenants, for
-instance — that is legitimate, but it must be **named as a deliberate exception
-with its reason**, the way `scanners.py`'s auto-close is documented as a
-deliberate exception to the POA&M closure gate. An undocumented unscoped path is
-indistinguishable from a bug.
+**This bounds what the slice delivers, and the boundary must be stated rather
+than glossed.** After migration `0060`, the eleven tables are protected on the
+API path and *not* on the worker and CLI paths.
+
+That is a deliberate pre-existing design, not an oversight: `ccf.queue.claim_jobs`
+has no organization filter because one worker drains every tenant's queue, which
+is inherently a cross-tenant operation. A per-tenant GUC would break it.
+
+It is still worth doing, because the API path is where the failures actually
+happened — three endpoints in slice 1 leaked by trusting a body field, and a
+slice-5 check was passing only because RLS filtered first. But this slice must
+not be described, in its docs or its changelog, as making these tables
+tenant-isolated at the database layer. It makes them isolated **on the request
+path**. Anyone reading the coverage number needs that qualifier, or the next
+person to add a worker will believe a protection is there that is not.
+
+Scoping the workers is a separate, larger question — it would mean per-tenant
+claim loops or an explicit privileged role — and is filed as debt, not attempted
+here.
 
 ## Ownership and `FORCE`
 
