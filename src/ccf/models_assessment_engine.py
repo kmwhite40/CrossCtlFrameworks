@@ -127,6 +127,12 @@ class AssessmentControlProposal(Base):
 
     objectives_total: Mapped[int] = mapped_column(Integer, default=0)
     objectives_evaluated: Mapped[int] = mapped_column(Integer, default=0)
+    #: How many of this control's objectives were contested by a challenger
+    #: (AI dissent path, migration 0059) -- so a reviewer sees it without a
+    #: join. Reset to 0 at the top of every evaluate_control_proposal rerun
+    #: (ccf.assessment.engine.service), same as objectives_evaluated above,
+    #: so a clean re-evaluation does not carry a prior run's dissent forward.
+    dissent_count: Mapped[int] = mapped_column(Integer, default=0)
 
     accepted_by: Mapped[str | None] = mapped_column(String(255))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -225,6 +231,51 @@ class AssessmentObjectiveProposal(Base):
         ForeignKey("ccf.ai_action_runs.id", ondelete="SET NULL"), index=True
     )
     error: Mapped[str | None] = mapped_column(Text)
+
+    #: AI dissent path (2026-08-11 design). The primary call's original
+    #: verdict, preserved here because `verdict` above is deliberately
+    #: overwritten to "insufficient_evidence" on a genuine disagreement --
+    #: which is what lets ccf.assessment.engine.rollup work with this
+    #: proposal with no change of its own. Recorded rather than inferred:
+    #: under the current satisfied-only challenge policy a contested
+    #: objective's primary verdict was always "satisfied" by construction and
+    #: could in principle be inferred from the fact of a challenge, but that
+    #: policy is expected to broaden (see the 2026-08-11 dissent-path
+    #: design), and the moment it does, every previously contested row
+    #: becomes unreadable without this column. NULL means "not challenged";
+    #: populated whenever a challenge ran, agreement included.
+    primary_verdict: Mapped[str | None] = mapped_column(String(32))
+    #: All four of the columns in this block (primary_verdict above, and the
+    #: three below) NULL together mean "not challenged" -- the primary
+    #: verdict above was not satisfied, or CCF_ASSESSMENT_DISSENT_ENABLED was
+    #: off -- and all four NULL can *also* mean "challenged, but the
+    #: challenge call itself failed": those two cases are distinguishable
+    #: only in the logs (assessment.challenger_failed), never from these
+    #: columns alone. See ccf.assessment.engine.evaluate's module docstring
+    #: for the full reasoning.
+    #:
+    #: The challenger's own verdict, retained separately from `verdict`
+    #: above rather than overwriting it -- overwriting would destroy the
+    #: record that a disagreement happened at all, which is what an assessor
+    #: needs in order to adjudicate it. Populated whenever a challenge ran
+    #: and succeeded, agreement included -- "challenged and agreed" must stay
+    #: distinguishable from "not challenged".
+    challenger_verdict: Mapped[str | None] = mapped_column(String(32))
+    #: The challenger's own argument, shown to the assessor. Populated
+    #: alongside challenger_verdict under the same rule.
+    challenger_rationale: Mapped[str | None] = mapped_column(Text)
+    #: Provenance for the challenger's own model call, recorded through
+    #: ccf.ai_actions.provenance.record_ai_run under its own
+    #: action_key="challenge_assessment_objective" -- a distinct row from the
+    #: primary verdict's own ai_action_run_id above, so one query over
+    #: ai_action_runs can separate a verdict from the argument made against
+    #: it. ON DELETE SET NULL, not CASCADE: this row is a record of what
+    #: happened and must survive its provenance row being cleaned up, exactly
+    #: matching ai_action_run_id's own existing FK on this table (migration
+    #: 0056).
+    challenger_ai_action_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.ai_action_runs.id", ondelete="SET NULL"), index=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
