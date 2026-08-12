@@ -12,17 +12,27 @@ The objectives themselves are not stored. They already exist as sub-clause rows 
 objective's label and a SHA-256 of its text, so a catalog re-ingest that changes
 wording makes a stale proposal detectable rather than silently wrong.
 
-**These three tables carry no row-level-security policies**, matching the seven
-``prep_*`` tables (see ``models_prep.py``'s identical note) rather than the
-110 of Concord's 131 ``ccf`` tables that do. Isolation is application-layer
-instead: every route and service function filters by ``organization_id``
-explicitly (derived from ``Assessment -> System -> Organization``, never from a
-caller-supplied id -- see ``ccf.assessment.engine.service``), and
-``ccf.assessment.engine.jobs``'s job claim is intentionally unscoped by
-organization, since one worker drains every organization's queued jobs by
-design. This is an explicit, deliberate exemption, not an oversight to be
-inferred -- see ``docs/ARCHITECTURE.md``'s "Objective-level assessment engine"
-section for the same note alongside the rest of the engine's description.
+**These three tables carry a ``tenant_isolation`` RLS policy** (migration
+``0060``, 2026-08-12 RLS-coverage design), matching the seven ``prep_*``
+tables (see ``models_prep.py``'s identical note) and 121 of Concord's 135
+``ccf`` tables overall. It is defence in depth, not the primary control:
+every route and service function still filters by ``organization_id``
+explicitly (derived from ``Assessment -> System -> Organization``, never from
+a caller-supplied id -- see ``ccf.assessment.engine.service``), and those
+checks are not removed or relaxed by the policy's addition.
+``ccf.assessment.engine.jobs``'s job claim is **intentionally, still,
+unscoped** by organization -- one worker drains every organization's queued
+jobs by design -- which means the RLS policy above provides no protection on
+that specific path: the claim runs through ``ccf.db.session_scope()``, which
+leaves the tenant GUC unset and the bootstrap (table-owning) role in effect,
+and an unset GUC is exactly what every policy in this schema treats as
+bypass. The application-level guard on that path --
+``ccf.assessment.engine.jobs.enqueue_reevaluation``'s ``result_org_id !=
+organization_id`` check -- is what actually protects it, verified by
+``tests/test_assessment_engine_api.py::test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_of_rls``
+and (for the GUC mechanism itself) ``tests/test_rls_worker_guc_bypass.py``.
+See ``docs/ARCHITECTURE.md``'s "Objective-level assessment engine" section
+for the same note alongside the rest of the engine's description.
 
 **No governed-AI-action audit trail.** Objective evaluation
 (``ccf.assessment.engine.evaluate``) calls ``ccf.ai.gateway.generate_structured_resolved``

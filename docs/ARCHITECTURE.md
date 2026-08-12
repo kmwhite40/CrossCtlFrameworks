@@ -167,13 +167,22 @@ Built on the reference catalog + operational tables:
   `organization_id`. With `CCF_AUTH_ENABLED=false` (the default), every
   principal is unscoped, so the supplied `organization_id` is trusted
   outright — true of the whole app in that mode, not specific to prep. The
-  seven `prep_*` tables deliberately carry no row-level-security policies
-  (unlike 110 of Concord's 131 `ccf` tables) — every prep query filters by
-  `organization_id` in application code instead (`ccf.prep.retriever._base_filters`
-  and equivalent per-stage filters), the same pattern the worker already
-  relies on (`claim()` is intentionally unscoped, since one worker drains
-  every organization's jobs). See `models_prep.py` for the same note next to
-  the table definitions.
+  seven `prep_*` tables carry a `tenant_isolation` RLS policy (migration
+  `0060`, 2026-08-12 RLS-coverage design), matching 121 of Concord's 135
+  `ccf` tables — but as defence in depth, not the primary control: every prep
+  query still filters by `organization_id` in application code
+  (`ccf.prep.retriever._base_filters` and equivalent per-stage filters), and
+  `claim()` is **still, intentionally, unscoped by organization**, since one
+  worker drains every organization's jobs by design. That claim path runs
+  through `ccf.db.session_scope()`, which leaves the tenant GUC unset and the
+  bootstrap (table-owning) role in effect — exactly what every policy in this
+  schema treats as bypass — so RLS protects these tables only on the request
+  path, not on the worker/CLI path; the application-level guards
+  (`ccf.prep.sources.resolve_source_organization_id`, `ccf.prep.pipeline`'s
+  per-stage organization reconciliation) are what actually protect that path,
+  verified by `tests/test_prep_tenant_isolation.py` and (for the GUC
+  mechanism itself) `tests/test_rls_worker_guc_bypass.py`. See
+  `models_prep.py` for the same note next to the table definitions.
 - **Objective-level assessment engine** (`/api/assessment-engine`,
   `ccf assessment-worker`, `ccf.assessment.engine`): evaluates individual NIST
   SP 800-53A assessment objectives — not whole controls — against evidence the
@@ -236,15 +245,25 @@ Built on the reference catalog + operational tables:
   Historical proposals predate this column and keep a `NULL`
   `ai_action_run_id` permanently — historical rows are not retrofitted.
   The three `assessment_control_proposals` / `assessment_objective_proposals`
-  / `assessment_jobs` tables deliberately carry no row-level-security
-  policies, the same exemption as the `prep_*` tables and for the same
-  reason: every route and service function filters by `organization_id` in
-  application code instead (derived from `Assessment -> System ->
-  Organization`, never from a caller-supplied id), and the job claim is
-  intentionally unscoped, since one worker drains every organization's queue.
+  / `assessment_jobs` tables carry a `tenant_isolation` RLS policy (migration
+  `0060`, 2026-08-12 RLS-coverage design), the same as the `prep_*` tables —
+  but as defence in depth, not the primary control: every route and service
+  function still filters by `organization_id` in application code (derived
+  from `Assessment -> System -> Organization`, never from a caller-supplied
+  id), and the job claim is **still, intentionally, unscoped**, since one
+  worker drains every organization's queue by design. That claim path runs
+  through `ccf.db.session_scope()`, which leaves the tenant GUC unset and the
+  bootstrap (table-owning) role in effect — exactly what every policy in this
+  schema treats as bypass — so RLS protects these three tables only on the
+  request path, not on the worker/CLI path; the application-level guard
+  (`ccf.assessment.engine.jobs.enqueue_reevaluation`'s `result_org_id`
+  check) is what actually protects that path, verified by
+  `tests/test_assessment_engine_api.py::test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_of_rls`
+  and (for the GUC mechanism itself) `tests/test_rls_worker_guc_bypass.py`.
   `systems`, `assessments`, and `assessment_control_results` — the tables the
   accepted finding actually lands in — do carry the `tenant_isolation` RLS
-  policy. See `models_assessment_engine.py` for the same RLS and AI-action
+  policy, enforced on every path since they have no worker/CLI bypass of this
+  kind. See `models_assessment_engine.py` for the same RLS and AI-action
   notes next to the table definitions.
 - **Calibration harness** (`/api/assessment-engine/proposals/{id}/reject`,
   `/api/assessment-engine/calibration`, `ccf calibration-snapshot`,

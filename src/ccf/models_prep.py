@@ -11,15 +11,25 @@ section_path + table cell``: every retrieved passage cites a page and, for
 tabular sources, a specific cell. Kept in a dedicated module so the layer is easy
 to review, matching ``models_evidence`` and ``models_ai_actions``.
 
-**These seven tables deliberately carry no row-level-security policies** —
-unlike 110 of Concord's 131 ``ccf`` tables, which do. Isolation is
-application-layer instead: every prep query filters by ``organization_id``
-explicitly (``ccf.prep.retriever._base_filters`` and the equivalent per-stage
-filters in ``screen.py``/``expand.py``/``classify.py``/``embed.py``), and
-:func:`ccf.prep.jobs.claim` is intentionally unscoped by organization, since
-one worker process drains every organization's queued jobs by design. This
-exemption from Concord's usual RLS-by-default posture is explicit and
-deliberate, not an oversight to be inferred — see ``docs/ARCHITECTURE.md``'s
+**These seven tables carry a ``tenant_isolation`` RLS policy** (migration
+``0060``, 2026-08-12 RLS-coverage design), matching 121 of Concord's 135
+``ccf`` tables. It is defence in depth, not the primary control: every prep
+query still filters by ``organization_id`` explicitly
+(``ccf.prep.retriever._base_filters`` and the equivalent per-stage filters in
+``screen.py``/``expand.py``/``classify.py``/``embed.py``), and those checks
+are not removed or relaxed by the policy's addition.
+:func:`ccf.prep.jobs.claim` is **intentionally, still, unscoped** by
+organization — one worker process drains every organization's queued jobs by
+design — which means the RLS policy above provides no protection on that
+specific path: ``ccf.prep.jobs.claim`` runs through ``ccf.db.session_scope()``,
+which leaves the tenant GUC unset and the bootstrap (table-owning) role in
+effect, and an unset GUC is exactly what every policy in this schema treats
+as bypass. The application-level guards on that path —
+:func:`ccf.prep.sources.resolve_source_organization_id` and
+``ccf.prep.pipeline``'s per-stage organization reconciliation — are what
+actually protect it, verified by
+``tests/test_prep_tenant_isolation.py`` and (for the GUC mechanism itself)
+``tests/test_rls_worker_guc_bypass.py``. See ``docs/ARCHITECTURE.md``'s
 "Evidence preparation" section for the same note alongside the rest of the
 pipeline's description.
 """
