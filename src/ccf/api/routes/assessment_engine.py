@@ -207,6 +207,14 @@ async def _proposal_detail(
             # itself failed. See ccf.assessment.engine.evaluate's module
             # docstring: the two NULL cases are distinguishable only in the
             # logs, not in this response.
+            # primary_verdict is what the primary call concluded before a
+            # disagreement rewrote `verdict` above. It is returned because
+            # this response is what an assessor reads to adjudicate a
+            # contested objective: without it the body says only "the engine
+            # could not tell", losing the fact that one reviewer did reach a
+            # conclusion and which one. Deliberately not inferred from the
+            # satisfied-only policy -- that policy is expected to broaden.
+            "primary_verdict": o.primary_verdict,
             "challenger_verdict": o.challenger_verdict,
             "challenger_rationale": o.challenger_rationale,
         }

@@ -113,10 +113,12 @@ def _fake_evaluate(
     *,
     challenger_verdict: str | None = None,
     challenger_rationale: str | None = None,
+    primary_verdict: str | None = None,
 ) -> Any:
     async def _fake(session: Any, **kwargs: Any) -> ObjectiveEvaluation:
         return ObjectiveEvaluation(
             verdict=verdict, rationale="primary rationale", confidence=0.9,
+            primary_verdict=primary_verdict,
             challenger_verdict=challenger_verdict, challenger_rationale=challenger_rationale,
             challenger_ai_action_run_id=None,
         )
@@ -188,6 +190,7 @@ async def test_a_disagreement_is_surfaced_and_counted(monkeypatch: pytest.Monkey
         _fake_evaluate(
             "insufficient_evidence", challenger_verdict="not_satisfied",
             challenger_rationale="the challenger's own distinct argument",
+            primary_verdict="satisfied",
         ),
     )
 
@@ -201,3 +204,10 @@ async def test_a_disagreement_is_surfaced_and_counted(monkeypatch: pytest.Monkey
     assert objective["verdict"] == "insufficient_evidence"
     assert objective["challenger_verdict"] == "not_satisfied"
     assert objective["challenger_rationale"] == "the challenger's own distinct argument"
+    # Without this the body says only "the engine could not tell", losing the
+    # fact that one reviewer did reach a conclusion and which one -- which is
+    # the whole reason the column exists. The three verdicts are deliberately
+    # all different, so a field wired to the wrong source is visible.
+    assert objective["primary_verdict"] == "satisfied"
+    assert objective["primary_verdict"] != objective["verdict"]
+    assert objective["primary_verdict"] != objective["challenger_verdict"]

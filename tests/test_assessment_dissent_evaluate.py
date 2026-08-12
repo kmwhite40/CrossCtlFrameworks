@@ -350,3 +350,32 @@ async def test_the_primary_verdict_is_recorded_not_inferred(
     assert contested.verdict == "insufficient_evidence"
     assert contested.primary_verdict == "satisfied", "must survive the flip"
     assert contested.primary_verdict != contested.verdict
+
+
+async def test_a_disagreement_citing_a_passage_never_offered_does_not_escalate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The challenger may cite only from the passages it was shown.
+
+    Only unit 7 is retrieved, so a citation of 99 is a passage the challenger
+    was never offered -- it either hallucinated the id or reached outside its
+    evidence. Either way that is not a credible disagreement, and the escalation
+    bar requires a real citation.
+
+    This guard had no test at all: the final review deleted the `in offered`
+    check and all eighteen dissent tests stayed green. The cited id is
+    deliberately one that does not exist, so a missing guard admits something
+    unresolvable rather than silently substituting a real passage.
+    """
+    _enable_dissent(monkeypatch)
+    out_of_scope = {
+        "verdict": "not_satisfied", "cited_unit_ids": [99],
+        "rationale": "The challenger cites a passage it was never shown.",
+    }
+    result, calls = await _run(
+        monkeypatch, await _org("dissent-oob-cite"), _SATISFIED, out_of_scope
+    )
+
+    assert calls == [PURPOSE, DISSENT_CHALLENGE_PURPOSE], "the challenge still ran"
+    assert result.verdict == "satisfied", "an out-of-scope citation is not a credible disagreement"
+    assert result.challenger_verdict == "not_satisfied", "but the dissent is still recorded"
