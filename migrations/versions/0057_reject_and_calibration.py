@@ -78,7 +78,16 @@ def upgrade() -> None:
         schema=_SCHEMA,
     )
 
-    op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ccf TO ccf_app")
+    # Matches 0054's exact block: a no-op if ccf_app doesn't exist in this
+    # environment (e.g. a dev DB that never split roles), and otherwise
+    # ensures every table in the schema -- calibration_snapshots included --
+    # is usable by the scoped application role regardless of which role
+    # actually ran the migrations.
+    op.execute(
+        "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ccf_app') THEN "
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ccf TO ccf_app; "
+        "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ccf TO ccf_app; END IF; END $$"
+    )
 
 
 def downgrade() -> None:
