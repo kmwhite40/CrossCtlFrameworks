@@ -198,6 +198,7 @@ async def evaluate_control_proposal(
     """
     settings = get_settings()
     proposal.state = "draft"
+    proposal.dissent_count = 0
     proposal.config_snapshot = {
         "retrieval_limit": settings.assessment_engine_retrieval_limit,
         "max_objectives": settings.assessment_engine_max_objectives_per_control,
@@ -269,9 +270,41 @@ async def evaluate_control_proposal(
                         # AI run before returning here, so this is a plain
                         # field assignment, not a second provenance attempt.
                         ai_action_run_id=evaluation.ai_action_run_id,
+                        # AI dissent path (slice 6): all four NULL together for
+                        # an un-challenged objective, or for a challenge that
+                        # failed -- see evaluate_objective's own docstring for
+                        # why those two cases are distinguishable only in the
+                        # logs, not here. primary_verdict is recorded
+                        # separately from verdict above (not inferred from
+                        # it): under today's satisfied-only challenge policy a
+                        # contested objective's primary verdict was always
+                        # "satisfied" by construction, but that policy is
+                        # expected to broaden, and the day it does, every
+                        # previously contested row would become unreadable
+                        # without this column.
+                        primary_verdict=evaluation.primary_verdict,
+                        challenger_verdict=evaluation.challenger_verdict,
+                        challenger_rationale=evaluation.challenger_rationale,
+                        challenger_ai_action_run_id=evaluation.challenger_ai_action_run_id,
                     )
                 )
                 await session.flush()
+                # A challenger reaching a different, cited verdict is the one
+                # condition evaluate_objective folds into `verdict` itself
+                # (insufficient_evidence) rather than a separate flag.
+                # challenger_verdict is not None only when a challenge
+                # actually ran and succeeded -- evaluate_objective resets it
+                # to None on failure -- so this combination can only be true
+                # for a genuine disagreement: it can never be true for the
+                # no-evidence path or for a primary verdict that was already
+                # insufficient_evidence on its own, since neither of those
+                # ever reaches the challenge gate (which only fires on a
+                # primary verdict of "satisfied").
+                if (
+                    evaluation.challenger_verdict is not None
+                    and evaluation.verdict == "insufficient_evidence"
+                ):
+                    proposal.dissent_count += 1
         except Exception as exc:  # any objective fault must leave the control resumable
             # A savepoint isolates this objective's write: the exception unwinds
             # the `async with` above and rolls back only its savepoint, so the
