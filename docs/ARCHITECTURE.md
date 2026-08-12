@@ -265,6 +265,27 @@ Built on the reference catalog + operational tables:
   policy, enforced on every path since they have no worker/CLI bypass of this
   kind. See `models_assessment_engine.py` for the same RLS and AI-action
   notes next to the table definitions.
+- **RLS coverage** (migration `0060`, 2026-08-12 RLS-coverage design): 121 of
+  the 135 tables in the `ccf` schema carry a `tenant_isolation` policy —
+  every tenant-owned table has one. The remaining fourteen are global
+  reference data with no tenant dimension and are named explicitly rather
+  than exempted by omission: `controls`, `frameworks`, `control_families`,
+  `framework_mappings`, `worksheets`, `worksheet_rows`, `ingestion_runs`,
+  `catalog_sources`, `catalog_checks`, `scoring_controls`,
+  `statement_templates`, `ksis`, `ai_action_definitions`, and
+  `alembic_version` — none carries an `organization_id` column.
+  `tests/test_rls_registry_no_gap.py` asserts both sides of this split live
+  against the schema, so a future tenant-owned table added without a policy
+  fails CI immediately rather than shipping unnoticed. **RLS here is defence
+  in depth, not a replacement for application-level scoping** — every route,
+  service function, and worker still derives and checks `organization_id` in
+  code, and this slice removes none of those checks. The one place RLS
+  provides no protection at all is the prep and assessment-engine worker
+  processes' own job-claim queries, which run unscoped by design (one worker
+  drains every organization's queue in a single query) — see "Evidence
+  preparation" and "Objective-level assessment engine" above for that
+  exception named alongside the application-level check that actually
+  covers it.
 - **Calibration harness** (`/api/assessment-engine/proposals/{id}/reject`,
   `/api/assessment-engine/calibration`, `ccf calibration-snapshot`,
   `ccf.assessment.engine.{service,calibration}`): completes the acceptance

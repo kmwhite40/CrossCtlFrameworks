@@ -6,6 +6,53 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — RLS coverage for the engine tables
+- **121 of the 135 tables in the `ccf` schema now carry a `tenant_isolation`
+  RLS policy** (migration `0060`) — up from 110. The eleven added:
+  `prep_runs`, `prep_lines`, `prep_screens`, `prep_units`,
+  `prep_classifications`, `prep_embeddings`, `prep_jobs`, `assessment_jobs`,
+  `calibration_snapshots`, `assessment_control_proposals`,
+  `assessment_objective_proposals` — every table slices 1–6 added with no
+  database backstop, filtered by application-level `organization_id` checks
+  alone until now. The remaining fourteen — `controls`, `frameworks`,
+  `control_families`, `framework_mappings`, `worksheets`, `worksheet_rows`,
+  `ingestion_runs`, `catalog_sources`, `catalog_checks`, `scoring_controls`,
+  `statement_templates`, `ksis`, `ai_action_definitions`, `alembic_version`
+  — are global reference data with no `organization_id` column and stay
+  unpolicied for that reason, named explicitly rather than exempted by
+  omission.
+- **Both `ENABLE` and `FORCE ROW LEVEL SECURITY`**: the owning role (`ccf`)
+  bypasses its own policy without `FORCE`, which would have produced a
+  policy that exists, reports as enabled, and is bypassed on exactly the
+  connections the application uses. `relforcerowsecurity`, not merely
+  `relrowsecurity`, is asserted by every new test.
+- **Defence in depth, not a replacement**: no application-level
+  organization check was removed. **RLS protects these tables only on the
+  request path** — every CLI command and both worker drain loops go through
+  `ccf.db.session_scope()`, which leaves the tenant GUC unset (`src/ccf/db.py:98`,
+  "CLI/ETL run unscoped (bypass)"), and the prep and assessment-engine
+  workers' own job-claim queries remain deliberately unscoped by
+  organization (one worker drains every organization's queue by design) —
+  so on that path RLS provides no protection at all, and the pre-existing
+  application-level ownership checks are what actually protect it, now
+  verified independently of RLS by `tests/test_rls_worker_guc_bypass.py`.
+- **A registry test** (`tests/test_rls_registry_no_gap.py`) asserts, live
+  against the schema, that no tenant-owned table lacks a policy and that the
+  fourteen tables with neither a tenant column nor a policy are exactly the
+  named global-reference-data allow-list — so a future table added without a
+  policy fails CI immediately.
+- **Standing debt this slice does not close**: scoping the workers
+  themselves (per-tenant claim loops, or an explicit privileged role) is a
+  separate, larger question, filed as debt rather than attempted here;
+  migrations `0057` and `0058` still lack the `IF EXISTS (SELECT 1 FROM
+  pg_roles WHERE rolname = 'ccf_app')` GRANT guard that `0054` establishes
+  as the repo standard (`0060` carries it, but does not retrofit the two
+  before it); and `ccf.prep.jobs`'s enqueue-time ownership check
+  (`resolve_source_organization_id`) is now partly redundant with RLS on the
+  API path, but not on the worker path where RLS does not apply — it wants
+  a direct worker-path test of its own, not just the API-path coverage
+  `tests/test_prep_tenant_isolation.py` already has.
+
 ### Added — AI dissent path
 - **A `satisfied` verdict can now be challenged** by an independent second
   model call before an assessor ever sees it (`CCF_ASSESSMENT_DISSENT_ENABLED`,
