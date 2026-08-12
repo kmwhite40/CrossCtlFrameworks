@@ -430,6 +430,54 @@ async def test_run_due_also_resolves_a_recovered_task() -> None:
         assert task.status == "done", "run_due must delegate to record_result for recovery too"
 
 
+async def test_closed_poam_is_left_alone_on_recovery() -> None:
+    """The ``POAM.status.in_(_OPEN_POAM)`` guard on the recovery lookup,
+    unexercised until now: deleting that filter entirely still passes every
+    other test in this file (and in ``tests/test_conmon_recovery.py``, whose
+    sibling guard shares the same shape). A POA&M a human has already closed
+    must not gain a "now passes" note (or a recovery notification) when the
+    test later recovers to pass.
+    """
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Recovery ClosedPoam Org")
+        test = await _make_test(s, org_id, sys_id, "AC-RECOVER-CLOSED")
+        test_id = test.id
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="fail", detail="no evidence"
+        )
+
+    source_ref = f"control_test:{test_id}"
+    async with session_scope() as s:
+        poam = (
+            await s.execute(
+                select(POAM).where(POAM.system_id == sys_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        poam.status = "closed"
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="pass", detail="fixed"
+        )
+
+    async with session_scope() as s:
+        poam = (
+            await s.execute(
+                select(POAM).where(POAM.system_id == sys_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert poam.status == "closed"
+        assert poam.remediation_plan is None
+        notes = (
+            await s.execute(
+                select(Notification).where(Notification.dedupe_key == f"poam-recovery:{poam.id}")
+            )
+        ).scalars().all()
+        assert notes == []
+
+
 async def test_a_task_a_human_has_taken_up_is_not_resolved() -> None:
     """The untouched-only guard on the Task's own status, which nothing covered.
 

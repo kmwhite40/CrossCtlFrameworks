@@ -351,6 +351,12 @@ async def test_recovery_failure_is_isolated_and_logged(monkeypatch: pytest.Monke
         # Must not raise -- scan() must complete for every other implementation.
         result = await conmon.scan(s, today=date.today() + timedelta(days=1), org_id=org_id)
         assert result["poams_recovered"] == 0  # the forced failure prevented it
+        # The Task write happens BEFORE the POA&M half raises, inside the same
+        # begin_nested() block -- the savepoint rolls both back together, so
+        # the counter must reflect that rollback, not the pre-rollback intent.
+        # A dashboard reading "1 task resolved" when the DB still shows it
+        # open is worse than reading nothing.
+        assert result["tasks_resolved"] == 0
 
     async with session_scope() as s:
         task = (
@@ -358,3 +364,123 @@ async def test_recovery_failure_is_isolated_and_logged(monkeypatch: pytest.Monke
         ).scalar_one()
         assert task.status == "open"  # rolled back with the rest of the savepoint
     assert any(event == "conmon.recovery_failed" for event, _ in warn_calls)
+
+
+async def test_recovery_ignores_a_foreign_poam_with_a_colliding_source_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The POA&M lookup in ``_resolve_on_recovery`` must also filter
+    ``POAM.source == "conmon"``, matching ``_upsert_poam``'s own dedupe
+    filter exactly. Without it, a same-system, same-``source_ref`` POA&M
+    from an unrelated source (e.g. a manually-filed one that happens to
+    collide with conmon's ``conmon:impl:{id}`` naming convention) makes the
+    lookup return two rows; ``scalar_one_or_none()`` raises
+    ``MultipleResultsFound``, the outer ``except Exception`` swallows it as
+    a warning, and the whole savepoint -- including the legitimate Task
+    resolution that already happened earlier in the same block -- rolls
+    back. The result: the real Task never resolves and the real POA&M never
+    gets its note, permanently and silently, every scan.
+    """
+    warn_calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        conmon.log, "warning", lambda event, **kw: warn_calls.append((event, kw))
+    )
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Conmon Recovery Collision Org")
+        impl = await _at_risk_impl(s, sys_id, "AC-CONMON-COLLIDE")
+        impl_id = impl.id
+
+    async with session_scope() as s:
+        await conmon.scan(s, today=date.today(), org_id=org_id)
+
+    source_ref = f"conmon:impl:{impl_id}"
+    async with session_scope() as s:
+        # A decoy sharing this system + source_ref but a different source --
+        # e.g. a manual entry that coincidentally collides with conmon's
+        # naming convention.
+        decoy = POAM(
+            system_id=sys_id,
+            title="Manually filed, coincidentally colliding",
+            weakness="unrelated manual weakness",
+            severity="low",
+            status="open",
+            source="manual",
+            source_ref=source_ref,
+        )
+        s.add(decoy)
+        await s.flush()
+        decoy_id = decoy.id
+
+    async with session_scope() as s:
+        impl = await _reload_impl(s, impl_id)
+        impl.status = "partial"
+
+    async with session_scope() as s:
+        result = await conmon.scan(s, today=date.today() + timedelta(days=1), org_id=org_id)
+        assert result["tasks_resolved"] == 1
+        assert result["poams_recovered"] == 1
+    assert warn_calls == []  # a clean match, not a swallowed MultipleResultsFound
+
+    async with session_scope() as s:
+        task = (
+            await s.execute(select(Task).where(Task.dedupe_key == f"conmon:impl:{impl_id}"))
+        ).scalar_one()
+        assert task.status == "done"
+
+        real_poam = (
+            await s.execute(
+                select(POAM).where(POAM.source == "conmon", POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert "returned to healthy" in (real_poam.remediation_plan or "")
+
+        decoy = (await s.execute(select(POAM).where(POAM.id == decoy_id))).scalar_one()
+        assert decoy.remediation_plan is None
+        assert decoy.status == "open"
+
+
+async def test_closed_poam_is_left_alone_on_recovery() -> None:
+    """The ``POAM.status.in_(_OPEN_POAM)`` guard on the recovery lookup,
+    unexercised until now: deleting that filter entirely still passes every
+    other test in this file. A POA&M a human has already closed must not
+    gain a "returned to healthy" note (or a recovery notification) when the
+    control later recovers -- a closed POA&M mutating in an authorization
+    artifact would be a small integrity problem even though it is not a
+    status change.
+    """
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Conmon Recovery ClosedPoam Org")
+        impl = await _at_risk_impl(s, sys_id, "AC-CONMON-RECOVER-CLOSED")
+        impl_id = impl.id
+
+    async with session_scope() as s:
+        await conmon.scan(s, today=date.today(), org_id=org_id)
+
+    source_ref = f"conmon:impl:{impl_id}"
+    async with session_scope() as s:
+        poam = (
+            await s.execute(select(POAM).where(POAM.source_ref == source_ref))
+        ).scalar_one()
+        poam.status = "closed"
+        poam.closed_on = date.today()
+
+    async with session_scope() as s:
+        impl = await _reload_impl(s, impl_id)
+        impl.status = "partial"
+
+    async with session_scope() as s:
+        result = await conmon.scan(s, today=date.today() + timedelta(days=1), org_id=org_id)
+        assert result["poams_recovered"] == 0  # nothing open left to surface
+
+    async with session_scope() as s:
+        poam = (
+            await s.execute(select(POAM).where(POAM.source_ref == source_ref))
+        ).scalar_one()
+        assert poam.status == "closed"
+        assert poam.remediation_plan is None
+        notes = (
+            await s.execute(
+                select(Notification).where(Notification.dedupe_key == f"poam-recovery:{poam.id}")
+            )
+        ).scalars().all()
+        assert notes == []

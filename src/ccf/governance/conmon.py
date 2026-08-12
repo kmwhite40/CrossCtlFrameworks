@@ -339,10 +339,14 @@ async def _resolve_on_recovery(
     and would otherwise unwind the whole scan's already-flushed work).
 
     Only acts on the Task/POA&M this machinery itself created, identified by
-    the exact dedupe_key/source_ref _upsert_task/_upsert_poam use for this
-    implementation, and only while untouched (Task.status == "open"; POA&M
-    still in _OPEN_POAM) -- and only ever writes Task.status/closed_at and
-    POAM.remediation_plan, so a human's edit to any other field survives.
+    the exact dedupe_key/source_ref/source _upsert_task/_upsert_poam use for
+    this implementation -- the POA&M lookup filters system_id + source ==
+    "conmon" + source_ref + open-status, matching _upsert_poam's own dedupe
+    filter exactly, so a same-system, same-source_ref POA&M from an
+    unrelated source (e.g. "manual") is never matched -- and only while
+    untouched (Task.status == "open"; POA&M still in _OPEN_POAM) -- and only
+    ever writes Task.status/closed_at and POAM.remediation_plan, so a
+    human's edit to any other field survives.
     """
     task_resolved = poam_recovered = False
     try:
@@ -361,6 +365,7 @@ async def _resolve_on_recovery(
                 await session.execute(
                     select(POAM).where(
                         POAM.system_id == system_id,
+                        POAM.source == "conmon",
                         POAM.source_ref == source_ref,
                         POAM.status.in_(_OPEN_POAM),
                     )
@@ -387,6 +392,12 @@ async def _resolve_on_recovery(
                 )
                 poam_recovered = True
     except Exception as exc:
+        # The savepoint rolled back everything the block above did, so any
+        # flags it flipped before the failure no longer reflect the database
+        # -- report nothing, not the pre-rollback intent (see scan()'s
+        # tasks_resolved/poams_recovered, which feed persisted MonitoringRun
+        # counters read straight off these return values).
+        task_resolved = poam_recovered = False
         log.warning(
             "conmon.recovery_failed",
             implementation_id=impl_id,
