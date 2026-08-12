@@ -101,7 +101,7 @@ infer it.
 
 ## 3. Data model
 
-Three nullable columns on `assessment_objective_proposals`, all NULL for
+Four nullable columns on `assessment_objective_proposals`, all NULL for
 un-challenged objectives, plus one on the control proposal. Migration `0059`.
 
 - `primary_verdict` (`String(32)`) — what the primary call concluded, before
