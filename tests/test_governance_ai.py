@@ -36,6 +36,7 @@ from ccf.models import (
     User,
 )
 from ccf.ssp.constants import DRAFT_PREFIX
+from ccf.ssp.statements import is_draft_narrative
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -136,16 +137,19 @@ async def _seed_control(session, control_id: str, prefix: str) -> None:
     await session.flush()
 
 
-async def _seeded(name: str, prefix: str) -> tuple[str, int, int, int]:
-    """Seed one AC-domain control on aws_govcloud, derive + generate the SSP
-    once (use_ai=False), and return (control_id, project_id, system_id, org_id)
-    so each test can re-derive statements with its own AI configuration."""
+async def _seeded(
+    name: str, prefix: str, *, platform: str = _PLATFORM
+) -> tuple[str, int, int, int]:
+    """Seed one AC-domain control on ``platform`` (default aws_govcloud), derive
+    + generate the SSP once (use_ai=False), and return (control_id, project_id,
+    system_id, org_id) so each test can re-derive statements with its own AI
+    configuration."""
     control_id = f"AC.{prefix}-3.1.1"
     async with session_scope() as session:
         sys = await _make_system(session, name)
         await _seed_control(session, control_id, prefix)
         profile = SystemProfile(
-            system_id=sys.id, environment_type="cloud", cloud_platform=_PLATFORM
+            system_id=sys.id, environment_type="cloud", cloud_platform=platform
         )
         session.add(profile)
         await session.flush()
@@ -230,29 +234,100 @@ async def test_ai_used_marks_draft_prefix_and_preserves_ai_text(
         await _cleanup_control(control_id)
 
 
-# --- Property 2: mark_draft=False, stated as the code actually behaves --------
+# --- Property 2: mark_draft=False no longer suppresses the AI draft marker ----
 
 
-async def test_mark_draft_false_lets_unmarked_ai_text_reach_the_statement(
+async def test_mark_draft_false_still_marks_ai_text_as_draft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Documents the code AS WRITTEN: with mark_draft=False, generate_statements
-    splices raw AI text into the statement with NO [DRAFT] marker at all — the
-    resulting narrative is indistinguishable from human-authored prose. This is
-    not asserting a desired behaviour; it is pinning down what actually happens
-    so a future change to it is a deliberate, visible decision, not a silent
-    regression. See the report for why this is worth a second look."""
+    """Was: "documents the code AS WRITTEN: with mark_draft=False, ... NO
+    [DRAFT] marker at all". That behaviour was a bug, not a decision: CISO-02
+    (is_draft_narrative's docstring) requires AI-drafted content to stay
+    visibly distinguishable until a human clears it, and DRAFT_PREFIX in the
+    stored text is the *only* durable record of that once persisted --
+    compose()'s needs_review flag is never saved. automation.py:580 now
+    applies DRAFT_PREFIX to AI-sourced text unconditionally; mark_draft
+    still legitimately gates the review marker on *deterministic* text (see
+    test_mark_draft_false_still_suppresses_deterministic_review_marker below
+    for proof that knob wasn't turned into a no-op).
+
+    This also ties the fix to the requirement the report/UI actually consume:
+    is_draft_narrative(...) must be True for such an entry, since that's the
+    signal reports.py and ui.py key off to flag AI-sourced content -- not
+    merely the presence of the prefix string as an implementation detail."""
     monkeypatch.setenv("CCF_ANTHROPIC_API_KEY", _LEGACY_KEY)
     get_settings.cache_clear()
     monkeypatch.setattr(ai.httpx, "AsyncClient", _FakeAsyncClient)
 
     control_id, proj_id, sys_id, _org_id = await _seeded("Ai Unmarked Org", "AIUNMK")
     try:
+        async with session_scope() as session:
+            proj = await session.get(SSPProject, proj_id)
+            assert proj is not None
+            profile = (
+                await session.execute(
+                    select(SystemProfile).where(SystemProfile.system_id == sys_id)
+                )
+            ).scalar_one()
+            out = await generate_statements(
+                session, project=proj, profile=profile, use_ai=True, mark_draft=False
+            )
+            await session.flush()
+            entry = (
+                await session.execute(
+                    select(SSPControlEntry).where(
+                        SSPControlEntry.project_id == proj.id,
+                        SSPControlEntry.control_id == control_id,
+                    )
+                )
+            ).scalar_one()
+            parts = entry.part_narratives or []
+            assert len(parts) == 1
+            text = parts[0].get("text") or ""
+
+            assert out["ai_used"] >= 1  # see marker test's note on >=1 vs ==1
+            # A test asserting only the prefix would still pass against code
+            # that dropped the AI content after prepending it -- assert both.
+            assert text.startswith(DRAFT_PREFIX), f"missing DRAFT_PREFIX: {text!r}"
+            assert _FAKE_AI_TEXT in text
+            assert text[len(DRAFT_PREFIX) :].startswith(_FAKE_AI_TEXT)
+            # The signal reports.py/ui.py actually consume, not just the raw
+            # string -- ties the fix to the requirement, not an implementation
+            # detail of where the prefix happens to sit.
+            assert is_draft_narrative(parts) is True
+    finally:
+        await _cleanup_control(control_id)
+
+
+async def test_mark_draft_false_still_suppresses_deterministic_review_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the fix was surgical: mark_draft=False with NO AI text involved
+    (use_ai=False) must behave exactly as before.
+
+    Uses intake code "azure_gov" (-> ssp platform "azure" via PLATFORM_TO_SSP)
+    rather than the module's usual aws_govcloud fixture platform specifically
+    because "azure" carries no capture connector (see ssp/platforms.py
+    CONNECTOR_PLATFORMS) -- this exercises the automation.py:588
+    ``if mark_draft and not text.startswith(DRAFT_PREFIX)`` branch directly
+    (the "no capture connector, force review" path), which is the second,
+    untouched call site for the ``mark_draft`` knob besides statements.py:174.
+    If either deterministic-path gate regressed into an unconditional prefix,
+    mark_draft would have become a no-op outside the AI path too -- which is
+    not the change that was made."""
+    monkeypatch.delenv("CCF_ANTHROPIC_API_KEY", raising=False)
+    get_settings.cache_clear()
+
+    control_id, proj_id, sys_id, _org_id = await _seeded(
+        "Ai Deterministic Org", "AIDETM", platform="azure_gov"
+    )
+    try:
         text, out = await _regenerate_and_get_text(
-            proj_id, sys_id, control_id, use_ai=True, mark_draft=False
+            proj_id, sys_id, control_id, use_ai=False, mark_draft=False
         )
-        assert out["ai_used"] >= 1  # see marker test's note on >=1 vs ==1
-        assert _FAKE_AI_TEXT in text
+        assert out["ai_used"] == 0
+        assert out["manual_evidence_required"] >= 1  # confirms the :588 branch ran
+        assert _FAKE_AI_TEXT not in text
         assert not text.startswith(DRAFT_PREFIX)
         assert DRAFT_PREFIX not in text
     finally:

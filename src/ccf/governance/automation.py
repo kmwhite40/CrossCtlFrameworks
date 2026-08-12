@@ -577,7 +577,17 @@ async def generate_statements(
                 organization_id=project.organization_id,
             )
             if ai_text:
-                text = (stmt.DRAFT_PREFIX if mark_draft else "") + ai_text
+                # Unconditional, unlike the deterministic-path DRAFT_PREFIX uses
+                # below (which `mark_draft` legitimately gates): `mark_draft`
+                # only controls whether a *heuristically-judged* review marker
+                # is shown, but this text is machine-drafted by definition, and
+                # DRAFT_PREFIX in the stored text is the only durable record of
+                # that once persisted -- compose()'s needs_review flag isn't
+                # saved (see is_draft_narrative's docstring, CISO-02). Without
+                # this prefix an AI-authored statement is indistinguishable
+                # from human-authored prose, and invisible to the reports/UI
+                # that key off is_draft_narrative to flag AI-sourced entries.
+                text = stmt.DRAFT_PREFIX + ai_text
                 ai_used += 1
         if not connector_backed:
             # Nothing about this platform has been technically verified by any

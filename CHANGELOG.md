@@ -6,6 +6,20 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — AI-drafted SSP narrative always carries the draft marker
+- `generate_statements` (`src/ccf/governance/automation.py:580`) now prepends
+  `DRAFT_PREFIX` to AI-drafted narrative text unconditionally, instead of
+  only when `mark_draft=True`. Previously, calling with `mark_draft=False`
+  spliced machine-drafted prose into an SSP statement with no marker at
+  all — indistinguishable from human-authored text once stored, and
+  invisible to the reports and UI that flag AI-sourced entries via
+  `is_draft_narrative` (CISO-02: AI-drafted content must stay visibly
+  distinguishable until a human clears it — `src/ccf/ssp/statements.py:40`).
+  `mark_draft` remains a legitimate knob for *deterministic* statements,
+  where it still gates the heuristic review marker
+  (`src/ccf/ssp/statements.py:174`, `automation.py:588`) — that plumbing is
+  unchanged.
+
 ### Added — RLS coverage for the engine tables
 - **121 of the 135 tables in the `ccf` schema now carry a `tenant_isolation`
   RLS policy** (migration `0060`) — up from 110. The eleven added:
