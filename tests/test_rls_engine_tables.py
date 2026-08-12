@@ -37,12 +37,17 @@ swapped which org's id was checked would otherwise be invisible.
 
 from __future__ import annotations
 
+import json
 import uuid
+from typing import Any
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select, text, update
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.exc import DBAPIError
 
 from ccf.config import get_settings
@@ -259,12 +264,12 @@ async def test_engine_table_refuses_to_write_a_row_into_another_org(table: str) 
     policy" even then. So this test guards the re-parent, and USING is what
     stands behind it.
 
-    WITH CHECK is therefore still uncovered on the path where it is the *only*
-    guard: an INSERT of a brand-new row carrying another org's id, where there
-    is no old row for USING to inspect. The final review demonstrated that a
-    cross-tenant INSERT persists silently under a weakened WITH CHECK. Closing
-    that needs a valid FK chain per table and is filed as debt rather than
-    claimed here.
+    WITH CHECK was therefore still uncovered on the path where it is the
+    *only* guard: an INSERT of a brand-new row carrying another org's id,
+    where there is no old row for USING to inspect. The final review
+    demonstrated that a cross-tenant INSERT persists silently under a
+    weakened WITH CHECK. That path is now closed by
+    ``test_engine_table_refuses_a_cross_tenant_insert`` below.
     """
     if not str(get_settings().database_url).startswith("postgresql"):
         pytest.skip("RLS is a PostgreSQL feature")
@@ -292,3 +297,151 @@ async def test_engine_table_refuses_to_write_a_row_into_another_org(table: str) 
         row = await s.get(model, id_a)  # type: ignore[arg-type]
         assert row is not None, f"{table}: org A's row vanished"
         assert row.organization_id == org_a, f"{table}: org A's row was re-parented to org B"
+
+
+@pytest.mark.parametrize("table", ENGINE_TABLES)
+async def test_engine_table_refuses_a_cross_tenant_insert(table: str) -> None:
+    """WITH CHECK, exercised on the one path where it is the *only* guard.
+
+    The UPDATE test above refuses a re-parent, but (per its own docstring,
+    confirmed by mutation) that refusal is USING's doing -- this is a FOR ALL
+    policy, and Postgres applies USING to the new row on UPDATE too, so
+    WITH CHECK is never actually exercised alone there.
+
+    INSERT is different: there is no old row for USING to inspect, so
+    WITH CHECK alone stands between the caller and a row belonging to another
+    tenant. A prior review weakened WITH CHECK to ``(true)`` and every
+    existing RLS test still passed, then showed by raw SQL that a
+    cross-tenant INSERT silently persists under it -- this test is what would
+    have caught that.
+
+    The forged row is built generically, from org A's own persisted row, so
+    this covers all eleven tables without eleven hand-written fixtures: read
+    the row back unscoped, drop the primary key, and override
+    organization_id to org B's id. Every foreign key on the row is still
+    valid (it pointed into a real chain when org A's own insert succeeded);
+    the only thing wrong with the row is the tenant it claims.
+
+    Three tables carry a table-wide (not per-organization) uniqueness
+    constraint on a column this straight copy would otherwise duplicate
+    verbatim from org A's row: prep_embeddings.unit_id, and the
+    (assessment_id, control_identifier) / (control_proposal_id, label) partial
+    unique indexes on the two assessment-engine proposal tables. Verified
+    live: left alone, that constraint fires before WITH CHECK ever runs, and
+    the resulting DBAPIError would not mention row-level security --
+    silently defeating this test's whole purpose without the assertion below
+    ever going red. So those three columns are perturbed to a fresh,
+    still-valid value first, leaving organization_id as the forged row's one
+    and only problem, same as every other table here.
+
+    The INSERT itself is issued as raw parameterised SQL, not SQLAlchemy's
+    ``insert()`` construct, for a reason verified the hard way rather than
+    assumed: SQLAlchemy compiles a plain ORM/Core ``INSERT`` against a
+    Postgres table with an implicit ``RETURNING id``, to fetch the generated
+    primary key, and Postgres applies the table's *SELECT* (USING) policy to
+    whatever a RETURNING clause would hand back -- separately from WITH
+    CHECK. A first draft built on ``insert()`` kept raising "row-level
+    security" even with WITH CHECK alone weakened to ``(true)``, not because
+    WITH CHECK caught the forged row but because the implicit RETURNING did,
+    through USING -- reintroducing exactly the masking this test exists to
+    avoid, and doing it silently: every assertion still read as green. Trying
+    to suppress that by flipping the mapped ``Table.implicit_returning`` flag
+    at runtime did not help either -- ``_seed_chain`` above already flushed an
+    ORM insert against these same tables earlier in the test, and whatever
+    SQLAlchemy caches from that first compile ignores a later flag flip, so
+    the RETURNING clause came back anyway. Raw SQL sidesteps both problems at
+    once: it is never compiled with implicit RETURNING in the first place.
+    Two column types need their own handling to build that SQL generically --
+    JSONB columns are passed through ``json.dumps`` with an explicit
+    ``::jsonb`` cast, since asyncpg cannot infer a JSON parameter's type on
+    its own, and pgvector's ``Vector`` / Postgres's ``TSVECTOR`` columns are
+    left out of the statement entirely (both are nullable and irrelevant to
+    whether WITH CHECK refuses the row on organization_id alone, and neither
+    has a plain literal syntax worth reproducing here).
+    """
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("RLS is a PostgreSQL feature")
+    org_a, ids_a = await _seed_chain("A")
+    org_b, ids_b = await _seed_chain("B")
+    model = _MODEL_BY_TABLE[table]
+    id_a, id_b = ids_a[table], ids_b[table]
+
+    mapper = sa_inspect(model)
+    pk_keys = {c.key for c in mapper.primary_key}
+
+    async with session_scope() as s:  # bootstrap role -- unscoped, full access
+        row = await s.get(model, id_a)  # type: ignore[arg-type]
+        assert row is not None, f"{table}: org A's seeded row is missing"
+        forged = {
+            col.key: getattr(row, col.key) for col in mapper.columns if col.key not in pk_keys
+        }
+
+    forged["organization_id"] = org_b
+
+    if table == "prep_embeddings":
+        # unit_id is unique across the whole table -- org A's own unit
+        # already has the embedding row this copy started from, so reusing
+        # it collides regardless of tenant. A second, not-yet-embedded unit
+        # on org A's own chain sidesteps that without touching organization_id.
+        async with session_scope() as s:
+            spare_unit = PrepUnit(
+                run_id=ids_a["prep_runs"],
+                organization_id=org_a,
+                trigger_line_id=ids_a["prep_lines"],
+                content="Spare unit for the cross-tenant INSERT probe.",
+            )
+            s.add(spare_unit)
+            await s.flush()
+            forged["unit_id"] = int(spare_unit.id)
+    elif table == "assessment_control_proposals":
+        # uq_control_proposal_first_pass: (assessment_id, control_identifier)
+        # where source_poam_id IS NULL -- org A's row already holds that pair.
+        forged["control_identifier"] = f"{forged['control_identifier']}-XTENANT"
+    elif table == "assessment_objective_proposals":
+        # uq_objective_proposal_label: (control_proposal_id, label).
+        forged["label"] = f"{forged['label']}-XTENANT"
+
+    columns: list[str] = []
+    placeholders: list[str] = []
+    params: dict[str, Any] = {}
+    for col in mapper.columns:
+        if col.key not in forged:
+            continue
+        if isinstance(col.type, (TSVECTOR, Vector)):
+            continue
+        columns.append(col.key)
+        if isinstance(col.type, JSONB):
+            # CAST(...), not a bare ``::jsonb`` suffix -- SQLAlchemy's
+            # text() bind-param parser trips on ``:name::jsonb``, reading
+            # the second colon as the start of another (invalid) parameter.
+            placeholders.append(f"CAST(:{col.key} AS jsonb)")
+            params[col.key] = json.dumps(forged[col.key])
+        else:
+            placeholders.append(f":{col.key}")
+            params[col.key] = forged[col.key]
+    insert_sql = text(
+        f"INSERT INTO ccf.{table} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
+    )
+
+    async with session_scope() as s:
+        await set_session_tenant(s, org_a)
+        with pytest.raises(DBAPIError) as excinfo:
+            await s.execute(insert_sql, params)
+        assert "row-level security" in str(excinfo.value).lower(), (
+            f"{table}: the insert was refused, but not by the RLS policy"
+        )
+
+    # And no such row landed -- checked unscoped, so this cannot pass by being
+    # filtered out. Org B's *own* legitimately seeded row (id_b) is expected;
+    # anything else with organization_id == org_b would be the forged row
+    # having partially persisted despite the raised error.
+    async with session_scope() as s:
+        org_b_ids = (
+            await s.execute(
+                select(model.id).where(model.organization_id == org_b)  # type: ignore[attr-defined]
+            )
+        ).scalars().all()
+        assert org_b_ids == [id_b], (
+            f"{table}: a cross-tenant row landed for org B "
+            f"(found {org_b_ids}, expected only {id_b})"
+        )
