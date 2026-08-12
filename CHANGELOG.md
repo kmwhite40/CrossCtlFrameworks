@@ -6,6 +6,55 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — AI dissent path
+- **A `satisfied` verdict can now be challenged** by an independent second
+  model call before an assessor ever sees it (`CCF_ASSESSMENT_DISSENT_ENABLED`,
+  **disabled by default**). Only `satisfied` is challenged — the expensive
+  error direction is a missed finding, not a false alarm — and the
+  challenger sees the exact same retrieved passages the primary call saw,
+  never a fresh retrieval.
+- **Disagreement is never averaged, majority-voted, or tie-broken.** A
+  challenger reaching a different, cited verdict flips the objective to
+  `insufficient_evidence` (both verdicts retained on
+  `AssessmentObjectiveProposal.challenger_verdict` /
+  `.challenger_rationale`) and increments
+  `AssessmentControlProposal.dissent_count`; the existing rollup already
+  forces the whole control to `insufficient_evidence` on any such objective,
+  and `accept_control_proposal` already refuses to accept it — no rollup
+  code change required. The bar is any *credible* disagreement — a differing
+  verdict with at least one citation — never a confidence threshold.
+- **Failure isolation:** a challenger failure (provider error, timeout,
+  malformed response) never fails the evaluation — the primary verdict
+  persists, the challenger columns stay `NULL`, and a warning is logged.
+  Runs inside its own `begin_nested()` savepoint, nested inside the
+  per-objective savepoint the evaluation already uses.
+- **Migration `0059`** adds `dissent_count` (`NOT NULL`, default `0`) to
+  `assessment_control_proposals` and four nullable columns to
+  `assessment_objective_proposals`: `primary_verdict` (the primary call's
+  own verdict, preserved because `verdict` itself is overwritten on a
+  genuine disagreement), `challenger_verdict`, `challenger_rationale`, and
+  `challenger_ai_action_run_id` (`FK -> ai_action_runs.id`,
+  `ON DELETE SET NULL`). Recorded through
+  `ccf.ai_actions.provenance.record_ai_run` under its own
+  `action_key="challenge_assessment_objective"`, the same pipeline-provenance
+  path the primary verdict uses, not the approval-gated `run_action`.
+- **Calibration is fingerprint-aware of dissent:** `config_fingerprint` now
+  folds in `CCF_ASSESSMENT_DISSENT_ENABLED` and
+  `DISSENT_CHALLENGE_POLICY_VERSION` (naming and versioning the
+  "satisfied-only" policy), so two snapshots taken with dissent toggled
+  between them compare as **not comparable**, never as an unexplained shift
+  in `missed_findings`. This is how the slice gets evaluated: the
+  calibration harness answers whether dissent reduces missed findings, or
+  only throughput.
+- `GET /api/assessment-engine/proposals/{id}` surfaces `dissent_count` on
+  the proposal and `challenger_verdict` / `challenger_rationale` on each
+  objective.
+- Not retrofitted: objectives evaluated before this slice, or with the flag
+  off, carry no dissent record — a `NULL` `challenger_verdict` means either
+  "not challenged" or "challenged but the challenge itself failed,"
+  distinguishable only in the logs (`assessment.challenger_failed`), never
+  from this column alone.
+
 ### Added — closure & remediation loop
 - **An accepted other-than-satisfied finding now creates a POA&M**, closing
   the dead end where `accept_control_proposal`'s own docstring promised an

@@ -493,14 +493,50 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   — alongside `agreement_rate` and a per-family breakdown. A
   `calibration_snapshots` row records each measurement with a
   `config_fingerprint` (a hash over `prep_screen_threshold`, the rollup
-  policy version, and the model name); two snapshots with different
-  fingerprints compare as **not comparable**, not drift, which matters
-  because `prep_screen_threshold`'s narrow margin (above) means it will be
+  policy version, the model name, and — see `CCF_ASSESSMENT_DISSENT_ENABLED`
+  below — whether the AI dissent path is on and which policy version it
+  challenges under); two snapshots with different fingerprints compare as
+  **not comparable**, not drift, which matters because
+  `prep_screen_threshold`'s narrow margin (above) means it will be
   re-derived. Nothing here is retrofitted: proposals decided before this
   reject path existed carry no recorded disagreement, so an early snapshot's
   `decided` count starting near zero is expected. The harness measures; it
   does not tune the threshold, gate CI on a metric change, or generate
   synthetic evidence — all deliberately out of scope for this slice.
+- `CCF_ASSESSMENT_DISSENT_ENABLED` — run an independent second model call (a
+  "challenger") against a `satisfied` verdict before an assessor ever sees
+  it; **disabled by default**, same reasoning as the other AI-call flags
+  above: this doubles model calls on the passing subset, and a deployment
+  must opt into that cost. Only `satisfied` is ever challenged — the
+  expensive error direction is a control passing that should not, not the
+  reverse — and the challenger sees the exact same retrieved passages the
+  primary call saw, never a fresh retrieval. A challenger that reaches a
+  different, cited verdict flips the objective to `insufficient_evidence`
+  (never averaged, majority-voted, or tie-broken toward either side) and
+  increments `AssessmentControlProposal.dissent_count`; one contested
+  objective is enough to force the whole control's rollup to
+  `insufficient_evidence`, which `accept_control_proposal` already refuses.
+  Both verdicts are retained — `AssessmentObjectiveProposal.challenger_verdict`
+  / `.challenger_rationale` — surfaced on `GET /api/assessment-engine/
+  proposals/{id}` alongside each objective. A challenger failure (provider
+  error, timeout, malformed response) never fails the evaluation: the
+  primary verdict persists, the challenger columns stay `NULL`, and a
+  warning is logged — a `NULL` `challenger_verdict` means either "not
+  challenged" or "challenged but failed," distinguishable only in the logs.
+  Toggling this flag changes what the calibration harness above is
+  measuring, so `config_fingerprint` folds it in (plus
+  `DISSENT_CHALLENGE_POLICY_VERSION`, naming the "satisfied only" policy so
+  a later change to which verdicts get challenged is visible too) — two
+  snapshots taken with the flag toggled between them compare as **not
+  comparable**, not drift. Not retrofitted: objectives evaluated before this
+  slice, or with the flag off, carry no dissent record. Migration `0059`
+  adds five new columns: four nullable columns on
+  `assessment_objective_proposals` (`primary_verdict` — the primary call's
+  verdict, preserved because `verdict` itself is overwritten on a genuine
+  disagreement — plus `challenger_verdict`, `challenger_rationale`, and
+  `challenger_ai_action_run_id`), and `dissent_count` (`NOT NULL default 0`)
+  on `assessment_control_proposals`; see `docs/ARCHITECTURE.md`'s "AI
+  dissent path" for the full reasoning.
 
 ## Security posture
 

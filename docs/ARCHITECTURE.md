@@ -404,6 +404,94 @@ Built on the reference catalog + operational tables:
   pg_roles WHERE rolname = 'ccf_app')` guard migration `0054` establishes as
   the repo standard for exactly this GRANT.
 
+- **AI dissent path** (`ccf.assessment.engine.evaluate`, `.calibration`,
+  `CCF_ASSESSMENT_DISSENT_ENABLED`, migration `0059`): runs an independent
+  second model call — a challenger — against a verdict where being wrong is
+  expensive. Self-reported `model_confidence` (`AssessmentObjectiveProposal
+  .model_confidence`) is a weak error signal on its own: a model confidently
+  wrong is exactly the failure the calibration harness above measures after
+  the fact, from an assessor's rejection, and the expensive direction is a
+  `satisfied` verdict on a control that is not — a missed finding in an
+  authorization package. This tries to catch that before an assessor ever
+  sees it, without waiting for a rejection to exist.
+
+  **Satisfied-only, named and versioned as a policy**
+  (`DISSENT_CHALLENGE_POLICY_VERSION`, currently `"v1"`): only a `satisfied`
+  verdict is challenged. Challenging every objective doubles model calls —
+  AC-4 alone has 98 — and a `not_satisfied` or `insufficient_evidence`
+  verdict is the cheap error direction (wasted remediation effort, or the
+  engine already declining to conclude) rather than the expensive one. The
+  challenger sees the *same* retrieved passages the primary call saw, never a
+  fresh retrieval — contesting which evidence was retrieved is a different
+  problem and would confound the measurement.
+
+  **Disagreement is never averaged, majority-voted, or tie-broken.** When the
+  challenger reaches a different, cited verdict, the objective's own `verdict`
+  column is overwritten to `insufficient_evidence` — a third, neutral outcome
+  that is neither reviewer's opinion — and the challenger's own verdict and
+  rationale are retained separately on `challenger_verdict` /
+  `challenger_rationale`, so the disagreement itself is not destroyed by
+  being resolved one way or the other. `insufficient_evidence` already does
+  everything this needs with no further code change: the rollup
+  (`rollup.py`) already forces the whole control to `insufficient_evidence`
+  on any such objective, `accept_control_proposal` already refuses to accept
+  it, and the calibration harness already excludes it from
+  `CORRECTED_FINDINGS`. The bar for escalation is any *credible* disagreement
+  — a differing verdict with at least one citation — never a confidence
+  threshold: gating on the challenger's self-reported confidence would make
+  the escalation depend on exactly the signal this slice exists because it
+  is not trusted. An **agreeing** challenge is recorded too, not just a
+  disagreeing one — `challenger_verdict` populated, the objective's own
+  `verdict` unchanged — so "not challenged" (`challenger_verdict IS NULL`)
+  stays distinguishable from "challenged and agreed."
+
+  `AssessmentControlProposal.dissent_count` (migration `0059`, `NOT NULL`,
+  default `0`, reset to `0` at the top of every `evaluate_control_proposal`
+  rerun) counts how many of a control's objectives were contested, so a
+  reviewer sees it without a join; `GET /api/assessment-engine/proposals/
+  {id}` surfaces it alongside each objective's `challenger_verdict` /
+  `challenger_rationale`. The three challenger columns on
+  `assessment_objective_proposals` are all nullable, all `NULL` for an
+  un-challenged objective by design (never a sentinel), and
+  `challenger_ai_action_run_id` is a `NULL`-on-delete FK to
+  `ai_action_runs.id` — the challenger's own call is recorded through
+  `ccf.ai_actions.provenance.record_ai_run` under its own
+  `action_key="challenge_assessment_objective"`, exactly like the primary
+  verdict's own recording, and deliberately not through the approval-gated
+  `run_action`, for the same reasons the primary evaluation isn't (see
+  "Objective-level assessment engine" above).
+
+  **Failure isolation.** A challenger failure — a provider error, a timeout,
+  a malformed response — must never fail the evaluation: the primary verdict
+  is the deliverable, the challenge is an enhancement. The challenger call
+  runs inside its own `begin_nested()` savepoint, nested one level deeper
+  than the per-objective savepoint `ccf.assessment.engine.service` already
+  wraps each objective's evaluation in, and a bare `except Exception` — never
+  a manual `session.rollback()`, which is not savepoint-scoped and would
+  unwind the caller's already-good primary verdict, the same trap
+  `record_ai_run` itself guards against — leaves the objective with its
+  primary verdict, `NULL` challenger columns, and a warning log
+  (`assessment.challenger_failed`). A `NULL` `challenger_verdict` therefore
+  means either "not challenged" or "challenged, but the challenge failed" —
+  the two are distinguishable only in the logs, never from this column
+  alone.
+
+  **`CCF_ASSESSMENT_DISSENT_ENABLED`** defaults to `false`: like the prep and
+  assessment engines above, this spends real money on model calls, doubling
+  them on the passing subset, and a deployment must opt in. With it unset,
+  `evaluate_objective` never attempts a second call regardless of verdict.
+  Enabling it **changes what calibration is measuring**, exactly as much as
+  `prep_screen_threshold`, the rollup policy, or the model name do:
+  `ccf.assessment.engine.calibration.config_fingerprint` folds in both
+  `CCF_ASSESSMENT_DISSENT_ENABLED` and `DISSENT_CHALLENGE_POLICY_VERSION`, so
+  toggling dissent between two snapshots makes `compare_snapshots` report
+  `{"comparable": false, ...}` rather than an unexplained shift in
+  `missed_findings` — this is in fact how the slice is meant to be evaluated:
+  the calibration harness answers whether dissent actually reduces missed
+  findings, or only throughput. Not retrofitted: objectives evaluated before
+  this slice, and any objective evaluated with the flag off, carry no
+  dissent record at all.
+
 ## Schemas
 
 See `docs/DATA_MODEL.md` for the full ERD.
