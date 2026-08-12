@@ -17,6 +17,17 @@ accepted verdict here can become a Security Assessment Report finding and
 auto-create a POA&M, so this is the record that answers "which model decided
 this, and from what evidence."
 
+When CCF_ASSESSMENT_DISSENT_ENABLED is on and the primary verdict is
+"satisfied", a second, independent call -- the challenger -- argues the
+opposite conclusion from the *same* retrieved passages, and is recorded
+under its own action_key (DISSENT_CHALLENGE_ACTION_KEY). A credible
+disagreement (a differing, cited verdict) overwrites this objective's own
+verdict to "insufficient_evidence"; the two verdicts are never averaged,
+majority-voted, or tie-broken, and both are retained --
+AssessmentObjectiveProposal.challenger_verdict alongside the unchanged
+verdict column. A challenger failure never costs the objective its primary
+verdict.
+
 Recording writes an ``ai_action_runs`` row (provider, model, prompt version,
 input/output SHA-256 hashes) with ``status="recorded"``, distinguishing it
 from an approval-gated ``run_action`` run, plus a link back on
@@ -78,6 +89,47 @@ EVALUATION_SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+#: Provenance action_key for the challenger's own model call -- distinct from
+#: ACTION_KEY above, so one query over ai_action_runs can separate a primary
+#: verdict from the argument made against it.
+DISSENT_CHALLENGE_ACTION_KEY = "challenge_assessment_objective"
+DISSENT_CHALLENGE_PURPOSE = "assessment.challenge_objective"
+
+#: Identifies the policy that decides which verdicts get challenged --
+#: currently "satisfied only" (see evaluate_objective's own docstring for
+#: why: challenging a satisfied verdict guards against a missed finding, the
+#: expensive error direction slice 4's calibration harness measures after
+#: the fact; challenging not_satisfied or insufficient_evidence would not).
+#: Named and versioned, not left implicit, so a later change to which
+#: verdicts get challenged is visible rather than silent -- imported into
+#: ccf.assessment.engine.calibration.config_fingerprint for exactly that
+#: reason, mirroring ccf.assessment.engine.rollup.ROLLUP_POLICY_VERSION.
+DISSENT_CHALLENGE_POLICY_VERSION = "v1"
+
+#: The challenger's own structured-output contract. Deliberately identical in
+#: shape to EVALUATION_SCHEMA -- the challenger is doing the same job (judge
+#: the objective against the same passages), just under a system prompt that
+#: instructs it to argue the opposite conclusion -- kept as its own named
+#: constant rather than aliased so the two can diverge later without
+#: coupling them.
+CHALLENGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": ["satisfied", "not_satisfied", "not_applicable", "insufficient_evidence"],
+        },
+        "cited_unit_ids": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "Passage ids that support the challenger's verdict, from those offered.",
+        },
+        "rationale": {"type": "string"},
+    },
+    "required": ["verdict", "cited_unit_ids", "rationale"],
+    "additionalProperties": False,
+}
+
 _SYSTEM_PROMPT = (
     "You evaluate a single NIST SP 800-53A assessment objective against evidence "
     "passages drawn from an organization's own documentation. You are not deciding "
@@ -86,6 +138,17 @@ _SYSTEM_PROMPT = (
     "you are shown demonstrate that this one objective is met. Cite only the passage "
     "ids you were given. If the evidence does not settle the question, say "
     "insufficient_evidence rather than guessing."
+)
+
+_CHALLENGE_SYSTEM_PROMPT = (
+    "You are a second, independent reviewer. A first reviewer read the same evidence "
+    "passages and judged that this NIST SP 800-53A assessment objective is satisfied. "
+    "Your job is to make the strongest possible case that it is NOT satisfied, using "
+    "only the passages you are shown -- the same passages the first reviewer saw. Do "
+    "not simply agree for the sake of agreement, and do not invent evidence outside "
+    "what you were given: if the passages genuinely support satisfied and you cannot "
+    "construct a credible case against it, say so honestly by answering satisfied "
+    "yourself. Cite only the passage ids you were given."
 )
 
 
@@ -102,6 +165,17 @@ class ObjectiveEvaluation:
     contradictions: list[str] = field(default_factory=list)
     model_name: str | None = None
     ai_action_run_id: int | None = None
+    #: AI dissent path (2026-08-11 design). Populated only when
+    #: CCF_ASSESSMENT_DISSENT_ENABLED challenged this objective -- which only
+    #: ever happens when `verdict` above was "satisfied" *before* any
+    #: challenge could flip it (the satisfied-only policy,
+    #: DISSENT_CHALLENGE_POLICY_VERSION). NULL means either "not challenged"
+    #: or "challenged but the challenge call itself failed" -- those two are
+    #: distinguishable only in the logs (assessment.challenger_failed), never
+    #: from this field alone.
+    challenger_verdict: str | None = None
+    challenger_rationale: str | None = None
+    challenger_ai_action_run_id: int | None = None
 
 
 def build_prompt(objective_text: str, units: list[RetrievedUnit]) -> str:
@@ -118,6 +192,29 @@ def build_prompt(objective_text: str, units: list[RetrievedUnit]) -> str:
         "Cite the passage ids that support your verdict. List any gap that keeps "
         "the objective from being fully demonstrated, and any passage that "
         "contradicts another. This is analysis for an assessor, not a finding."
+    )
+
+
+def build_challenge_prompt(objective_text: str, units: list[RetrievedUnit]) -> str:
+    """Build the challenger's prompt for one objective -- the same passages
+    build_prompt uses, framed as a request to argue the opposite conclusion.
+    Same citation set as the primary call is load-bearing (see the design
+    doc): it isolates the variable being tested to "does the evidence
+    support this," not "did the challenger find different evidence."
+    """
+    passages = "\n\n".join(
+        f"[{u.unit_id}] (page {', '.join(str(p) for p in u.page_numbers) or 'n/a'}"
+        f"{f', {u.section_path}' if u.section_path else ''})\n{u.content}"
+        for u in units
+    )
+    return (
+        f"Assessment objective:\n{objective_text}\n\n"
+        f"Evidence passages (the same ones a first reviewer judged as satisfying this "
+        f"objective):\n{passages}\n\n"
+        "Argue the strongest case that these passages do NOT demonstrate the objective "
+        "is met. Cite the passage ids that support your position. If you genuinely "
+        "cannot construct a credible case against it, answer satisfied instead of "
+        "manufacturing a disagreement."
     )
 
 
@@ -286,9 +383,114 @@ async def evaluate_objective(
         )
         ai_run = None
 
+    verdict = str(data["verdict"])
+    rationale = str(data.get("rationale", ""))
+    final_verdict = verdict
+
+    challenger_verdict: str | None = None
+    challenger_rationale: str | None = None
+    challenger_ai_action_run_id: int | None = None
+
+    # AI dissent path (design 2026-08-11). Satisfied-only policy
+    # (DISSENT_CHALLENGE_POLICY_VERSION): a satisfied verdict that is wrong is
+    # a missed finding in an authorization package, the expensive error
+    # direction slice 4 measures after the fact -- this challenges it before
+    # an assessor ever sees it. Off by default (CCF_ASSESSMENT_DISSENT_ENABLED):
+    # this doubles model calls on the passing subset, and a deployment must
+    # opt into that cost.
+    if get_settings().assessment_dissent_enabled and verdict == "satisfied":
+        try:
+            # Runs inside its own savepoint, nested one level deeper than the
+            # per-objective savepoint ccf.assessment.engine.service already
+            # wraps this whole call in. A challenger failure must never fail
+            # the evaluation -- the primary verdict above is the deliverable,
+            # the challenge is an enhancement -- so this except clause, not a
+            # bare session.rollback() (which is NOT savepoint-scoped and would
+            # unwind the caller's already-good work, exactly the trap slice 3
+            # hit with record_ai_run), is what keeps a challenger fault from
+            # costing this objective its primary verdict.
+            async with session.begin_nested():
+                challenge_prompt = build_challenge_prompt(objective.text, units)
+                challenge_result = await gateway.generate_structured_resolved(
+                    session,
+                    org_id,
+                    prompt=challenge_prompt,
+                    schema=CHALLENGE_SCHEMA,
+                    purpose=DISSENT_CHALLENGE_PURPOSE,
+                    system=_CHALLENGE_SYSTEM_PROMPT,
+                )
+                c_data = challenge_result.data
+
+                # Same offered/units_by_id sets the primary citation
+                # validation above used -- the challenger sees the same
+                # retrieved passages, never a fresh retrieval. Contesting
+                # which evidence was retrieved is a different problem and
+                # would confound the measurement (see the design doc's
+                # non-goals).
+                c_cited: list[int] = []
+                c_seen: set[int] = set()
+                for raw in c_data.get("cited_unit_ids", []):
+                    try:
+                        c_unit_id = int(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if c_unit_id in offered and c_unit_id not in c_seen:
+                        c_cited.append(c_unit_id)
+                        c_seen.add(c_unit_id)
+                c_citations = [
+                    CitationRef(
+                        source_type="prep_unit",
+                        source_id=str(c_unit_id),
+                        label=_citation_label(units_by_id[c_unit_id]),
+                    )
+                    for c_unit_id in c_cited
+                ]
+
+                challenger_run = await record_ai_run(
+                    session,
+                    action_key=DISSENT_CHALLENGE_ACTION_KEY,
+                    entity_type="assessment_objective",
+                    entity_id=objective.label,
+                    organization_id=org_id,
+                    provider=challenge_result.provider,
+                    model=challenge_result.model,
+                    prompt=challenge_prompt,
+                    output=c_data,
+                    citations=c_citations,
+                )
+
+                c_verdict = str(c_data["verdict"])
+                challenger_verdict = c_verdict
+                challenger_rationale = str(c_data.get("rationale", ""))
+                challenger_ai_action_run_id = (
+                    challenger_run.id if challenger_run is not None else None
+                )
+
+                # The bar is any credible disagreement -- a differing verdict
+                # with at least one citation, never a confidence threshold
+                # (the challenger's self-reported confidence is exactly the
+                # signal this slice exists because we do not trust it). Two
+                # verdicts are never averaged, majority-voted, or
+                # tie-broken: a disagreement routes to insufficient_evidence,
+                # a state that already means "the engine could not tell" and
+                # already forces the whole control to insufficient_evidence
+                # in rollup.py with no rollup change required.
+                if c_verdict != "satisfied" and c_cited:
+                    final_verdict = "insufficient_evidence"
+        except Exception as exc:
+            log.warning(
+                "assessment.challenger_failed",
+                control_identifier=control_identifier,
+                label=objective.label,
+                error=str(exc),
+            )
+            challenger_verdict = None
+            challenger_rationale = None
+            challenger_ai_action_run_id = None
+
     return ObjectiveEvaluation(
-        verdict=str(data["verdict"]),
-        rationale=str(data.get("rationale", "")),
+        verdict=final_verdict,
+        rationale=rationale,
         confidence=float(data.get("confidence", 0.0)),
         cited_unit_ids=cited,
         retrieved_unit_ids=retrieved_ids,
@@ -296,4 +498,7 @@ async def evaluate_objective(
         contradictions=[str(c) for c in data.get("contradictions", [])],
         model_name=result.model,
         ai_action_run_id=ai_run.id if ai_run is not None else None,
+        challenger_verdict=challenger_verdict,
+        challenger_rationale=challenger_rationale,
+        challenger_ai_action_run_id=challenger_ai_action_run_id,
     )

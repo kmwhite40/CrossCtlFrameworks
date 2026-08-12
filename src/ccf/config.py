@@ -262,6 +262,16 @@ class Settings(BaseSettings):
     # re-checks for stale jobs rather than only once at process start.
     assessment_worker_poll_interval_seconds: float = Field(default=30.0)
     assessment_worker_reap_interval_seconds: float = Field(default=300.0)
+    # AI dissent path (slice 6): runs an independent second model call (a
+    # "challenger") against a satisfied verdict before an assessor ever sees
+    # it -- a satisfied verdict that is wrong is a missed finding in an
+    # authorization package, the expensive error direction slice 4's
+    # calibration harness measures after the fact. Off by default: like
+    # assessment_engine_enabled above, this doubles model calls on the
+    # passing subset, and a deployment must opt into that cost. See
+    # ccf.assessment.engine.evaluate's module docstring for the full
+    # reasoning.
+    assessment_dissent_enabled: bool = Field(default=False)
 
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
