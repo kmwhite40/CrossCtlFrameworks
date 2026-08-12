@@ -11,8 +11,8 @@ pass CI. This module closes that gap with two complementary checks:
    from the Postgres catalog (``pg_policy``/``pg_class``/``pg_namespace``) and
    asserts, for each, that ``relrowsecurity`` and ``relforcerowsecurity`` are
    both true. The enumerated set is compared against a hardcoded snapshot of
-   every table policied as of this writing (110 tables spanning migrations
-   0010 through 0046) — so the test fails loudly if a table's policy is
+   every table policied as of this writing (121 tables spanning migrations
+   0010 through 0060) — so the test fails loudly if a table's policy is
    dropped (it silently disappears from the live-enumerated set) or if RLS
    enforcement is disabled on a table that still has one.
 2. A BEHAVIORAL check (``test_rls_scopes_representative_org_scoped_tables``)
@@ -88,13 +88,15 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "ai_agent_approvals", "ai_agent_incidents", "ai_agent_kill_switch_events",
         "ai_agent_monitoring_events", "ai_agent_risk_assessments", "ai_agents",
         "ai_approved_mutations", "ai_guardrail_violations", "ai_provider_configs", "approvals",
-        "artifacts", "assessment_control_results", "assessment_results", "assessments",
+        "artifacts", "assessment_control_proposals", "assessment_control_results",
+        "assessment_jobs", "assessment_objective_proposals", "assessment_results", "assessments",
         "assurance_build_runs", "assurance_edges", "assurance_impacts", "assurance_nodes",
         "assurance_queries", "assurance_query_results", "assurance_snapshots", "audit_engagements",
         "audit_findings", "audit_log", "audit_requests", "authorization_delta_memos",
         "authorization_package_artifacts", "authorization_package_diffs",
         "authorization_package_facts", "authorization_package_replay_runs",
-        "authorization_packages", "capture_snapshots", "compliance_pack_versions",
+        "authorization_packages", "calibration_snapshots", "capture_snapshots",
+        "compliance_pack_versions",
         "compliance_packs", "connector_configs", "control_implementations",
         "control_test_results", "control_tests", "events", "evidence",
         "evidence_access_events", "evidence_confidence_scores", "evidence_objects",
@@ -109,7 +111,9 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "ksi_validation_results", "monitoring_runs", "notifications", "organizations",
         "pack_controls", "pack_evidence_requirements", "pack_install_runs", "pack_mappings",
         "pack_rules", "pack_test_results", "people", "poam_milestones", "poams", "policies",
-        "policy_attestations", "policy_versions", "questionnaire_responses",
+        "policy_attestations", "policy_versions", "prep_classifications", "prep_embeddings",
+        "prep_jobs", "prep_lines", "prep_runs", "prep_screens", "prep_units",
+        "questionnaire_responses",
         "questionnaire_templates", "regulatory_updates", "risks", "scan_ingestions",
         "scim_provisioning_events",
         "scoring_statuses", "self_assurance_runs", "ssp_control_entries", "ssp_projects",
@@ -158,7 +162,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 110
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 121
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
