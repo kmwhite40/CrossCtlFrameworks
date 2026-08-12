@@ -173,6 +173,14 @@ class ObjectiveEvaluation:
     #: or "challenged but the challenge call itself failed" -- those two are
     #: distinguishable only in the logs (assessment.challenger_failed), never
     #: from this field alone.
+    #:
+    #: ``primary_verdict`` records what the primary call concluded, before a
+    #: disagreement rewrote ``verdict``. It is deliberately stored rather than
+    #: inferred: under today's satisfied-only policy a challenged objective's
+    #: primary verdict was "satisfied" by construction, but that policy is
+    #: expected to broaden, and on the day it does every previously contested
+    #: row would become unreadable.
+    primary_verdict: str | None = None
     challenger_verdict: str | None = None
     challenger_rationale: str | None = None
     challenger_ai_action_run_id: int | None = None
@@ -387,6 +395,7 @@ async def evaluate_objective(
     rationale = str(data.get("rationale", ""))
     final_verdict = verdict
 
+    primary_verdict: str | None = None
     challenger_verdict: str | None = None
     challenger_rationale: str | None = None
     challenger_ai_action_run_id: int | None = None
@@ -460,6 +469,10 @@ async def evaluate_objective(
                 )
 
                 c_verdict = str(c_data["verdict"])
+                # Recorded whenever a challenge ran, agreeing or not -- not
+                # only on disagreement, so "challenged and agreed" stays
+                # readable without inferring it from the policy.
+                primary_verdict = final_verdict
                 challenger_verdict = c_verdict
                 challenger_rationale = str(c_data.get("rationale", ""))
                 challenger_ai_action_run_id = (
@@ -484,6 +497,7 @@ async def evaluate_objective(
                 label=objective.label,
                 error=str(exc),
             )
+            primary_verdict = None
             challenger_verdict = None
             challenger_rationale = None
             challenger_ai_action_run_id = None
@@ -498,6 +512,7 @@ async def evaluate_objective(
         contradictions=[str(c) for c in data.get("contradictions", [])],
         model_name=result.model,
         ai_action_run_id=ai_run.id if ai_run is not None else None,
+        primary_verdict=primary_verdict,
         challenger_verdict=challenger_verdict,
         challenger_rationale=challenger_rationale,
         challenger_ai_action_run_id=challenger_ai_action_run_id,

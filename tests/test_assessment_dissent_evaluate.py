@@ -314,3 +314,39 @@ async def test_a_malformed_challenger_response_rolls_back_its_own_partial_write(
         "a failed challenge must leave no orphan AiActionRun row behind for this "
         "organization -- this is what begin_nested() actually protects"
     )
+
+
+async def test_the_primary_verdict_is_recorded_not_inferred(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """primary_verdict must be stored on both outcomes of a challenge.
+
+    Under today's satisfied-only policy a challenged objective's primary
+    verdict was "satisfied" by construction, so it looks inferable. The spec
+    expects that policy to broaden, and on the day it does every previously
+    contested row becomes unreadable. So it is recorded, not derived.
+
+    Both branches are asserted, and the contested one asymmetrically:
+    primary_verdict must differ from verdict, which a test asserting only
+    `primary_verdict == "satisfied"` would still pass if the field were wired
+    to `verdict` *before* the flip by coincidence rather than by intent.
+    """
+    _enable_dissent(monkeypatch)
+    agrees = {
+        "verdict": "satisfied", "cited_unit_ids": [7],
+        "rationale": "The challenger could not make the opposite case.",
+    }
+    agreed, _ = await _run(monkeypatch, await _org("dissent-pv-agree"), _SATISFIED, agrees)
+    assert agreed.verdict == "satisfied"
+    assert agreed.primary_verdict == "satisfied", "recorded even when the challenge agreed"
+
+    disagrees = {
+        "verdict": "not_satisfied", "cited_unit_ids": [7],
+        "rationale": "The challenger's own argument.",
+    }
+    contested, _ = await _run(
+        monkeypatch, await _org("dissent-pv-contest"), _SATISFIED, disagrees
+    )
+    assert contested.verdict == "insufficient_evidence"
+    assert contested.primary_verdict == "satisfied", "must survive the flip"
+    assert contested.primary_verdict != contested.verdict
