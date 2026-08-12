@@ -2,7 +2,7 @@
 
 A metric is comparable to an earlier one only if what was being measured did
 not change underneath it. These tests exercise the fingerprint itself (same
-configuration digests identically; each of its three inputs actually moves
+configuration digests identically; each of its five inputs actually moves
 the digest) and the snapshot flow built on top of it (storage, org scoping,
 and the comparison outcome -- "not comparable" is a distinct result, not a
 number, when the fingerprints differ).
@@ -103,6 +103,28 @@ def test_changing_the_rollup_policy_version_changes_the_fingerprint(
     assert before != after
 
 
+def test_toggling_dissent_enabled_changes_the_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = config_fingerprint(model="claude-sonnet-5")
+    monkeypatch.setenv("CCF_ASSESSMENT_DISSENT_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        after = config_fingerprint(model="claude-sonnet-5")
+    finally:
+        get_settings.cache_clear()
+    assert before != after
+
+
+def test_changing_the_dissent_challenge_policy_version_changes_the_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    before = config_fingerprint(model="claude-sonnet-5")
+    monkeypatch.setattr(calibration, "DISSENT_CHALLENGE_POLICY_VERSION", "v2-test")
+    after = config_fingerprint(model="claude-sonnet-5")
+    assert before != after
+
+
 # ---------------------------------------------------------------------------
 # Snapshots
 # ---------------------------------------------------------------------------
@@ -182,6 +204,37 @@ async def test_snapshots_under_different_configurations_are_not_comparable(
     assert result["comparable"] is False
     assert "deltas" not in result
     assert "drift" not in str(result).lower()
+
+
+async def test_two_snapshots_with_dissent_toggled_between_them_are_not_comparable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """This is how the slice actually gets evaluated (design doc, section 4):
+    enabling dissent must read as a configuration change, not as an
+    unexplained shift in missed_findings.
+    """
+    org_id, aid = await _assessment("snap-dissent-not-comparable")
+    await _decided(org_id, aid, "AC-2", "satisfied", accepted=True)
+    async with session_scope() as s:
+        first = await take_snapshot(s, organization_id=org_id, model="claude-sonnet-5")
+        await s.flush()
+        first_id = int(first.id)
+
+    monkeypatch.setenv("CCF_ASSESSMENT_DISSENT_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        async with session_scope() as s:
+            second = await take_snapshot(s, organization_id=org_id, model="claude-sonnet-5")
+            await s.flush()
+            second_id = int(second.id)
+
+        async with session_scope() as s:
+            result = await compare_snapshots(s, first_id, second_id, organization_id=org_id)
+    finally:
+        get_settings.cache_clear()
+
+    assert result["comparable"] is False
+    assert "deltas" not in result
 
 
 async def test_snapshots_are_scoped_to_one_organization() -> None:

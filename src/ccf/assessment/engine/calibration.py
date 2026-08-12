@@ -16,8 +16,9 @@ data starts with a small ``decided`` count. That is expected, not a bug.
 
 A snapshot's ``config_fingerprint`` is what makes a later comparison meaningful.
 Two measurements are comparable only if what was being measured -- the screen
-threshold, the rollup policy, the evaluation model -- did not change underneath
-them; a changed fingerprint reports as "not comparable", never as drift. See
+threshold, the rollup policy, the evaluation model, whether AI dissent is
+enabled, and which verdicts it challenges -- did not change underneath them;
+a changed fingerprint reports as "not comparable", never as drift. See
 :func:`config_fingerprint` and :func:`compare_snapshots`.
 """
 
@@ -34,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...config import get_settings
 from ...models_assessment_engine import AssessmentControlProposal, CalibrationSnapshot
 from ...prep.screen import normalize_control_identifier
+from .evaluate import DISSENT_CHALLENGE_POLICY_VERSION
 from .rollup import ROLLUP_POLICY_VERSION
 
 
@@ -163,15 +165,21 @@ def config_fingerprint(*, model: str | None = None) -> str:
     """A SHA-256 digest over what a calibration measurement depends on.
 
     A metric is comparable to an earlier one only if what was being measured
-    did not change underneath it. Three things determine that here:
+    did not change underneath it. Five things determine that here:
     ``prep_screen_threshold`` (the screening cutoff decides which passages ever
     reach evaluation), the rollup policy identity (the rule that turns objective
-    verdicts into a proposed finding), and the evaluation model name (a different
-    model is a different measuring instrument). Anything read but not folded into
-    this digest is invisible to a comparison -- it can change and the comparison
-    will keep reporting drift instead of "not comparable".
+    verdicts into a proposed finding), the evaluation model name (a different
+    model is a different measuring instrument), whether the AI dissent path
+    (``CCF_ASSESSMENT_DISSENT_ENABLED``) is on, and which verdicts it
+    challenges (``DISSENT_CHALLENGE_POLICY_VERSION``, currently "satisfied
+    only" -- see ``ccf.assessment.engine.evaluate``). Dissent changes what is
+    being measured just as surely as the other four: enabling it must make a
+    prior snapshot read as *not comparable*, never as an unexplained shift in
+    ``missed_findings``. Anything read but not folded into this digest is
+    invisible to a comparison -- it can change and the comparison will keep
+    reporting drift instead of "not comparable".
 
-    The three inputs are serialised through a fixed set of dict keys and hashed
+    The five inputs are serialised through a fixed set of dict keys and hashed
     with ``sort_keys=True`` so the digest never depends on dict iteration order --
     the same configuration must always produce the same digest, or every
     comparison degrades to "not comparable" even when nothing changed.
@@ -185,6 +193,8 @@ def config_fingerprint(*, model: str | None = None) -> str:
         "prep_screen_threshold": settings.prep_screen_threshold,
         "rollup_policy_version": ROLLUP_POLICY_VERSION,
         "model": model if model is not None else settings.ai_model,
+        "assessment_dissent_enabled": settings.assessment_dissent_enabled,
+        "dissent_challenge_policy_version": DISSENT_CHALLENGE_POLICY_VERSION,
     }
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
