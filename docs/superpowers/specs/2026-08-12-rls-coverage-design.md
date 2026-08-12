@@ -135,6 +135,21 @@ produce a policy that exists, reports as enabled, and is bypassed on exactly the
 connections the application uses — the silent-no-op failure this design is most
 concerned with, arrived at by a second route.
 
+**Correction, from the final review — the reasoning above is wrong, though the
+conclusion to set `FORCE` stands.** Checked against `pg_roles`: `ccf` is a
+superuser with `rolbypassrls = true`, so it bypasses RLS regardless of `FORCE`;
+and `ccf_app` is not the table owner, so it is subject to RLS regardless of
+`FORCE`. Dropping `FORCE` on `prep_runs` changed the filtering behaviour for
+`ccf_app` not at all. So in this deployment `FORCE` is effectively inert, and
+the "the owner would otherwise bypass" argument does not apply to either role
+actually in use.
+
+It is still set, for two reasons worth keeping: all 110 pre-existing RLS tables
+carry it, and a divergence between the new tables and the old ones is its own
+bug; and it becomes load-bearing the moment ownership changes or the app stops
+authenticating as a superuser — which is a change someone would reasonably make
+without thinking about RLS. What is *not* true is that it is doing work today.
+
 Each of the eleven gets:
 
 ```sql

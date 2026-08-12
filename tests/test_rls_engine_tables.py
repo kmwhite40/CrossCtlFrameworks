@@ -42,7 +42,8 @@ import uuid
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
@@ -241,3 +242,53 @@ async def test_engine_table_scopes_to_owning_org(table: str) -> None:
         visible = (await s.execute(select(model.id))).scalars().all()  # type: ignore[attr-defined]
         assert id_b in visible, f"{table}: org B cannot see its own row"
         assert id_a not in visible, f"{table}: org B can see org A's row"
+
+
+@pytest.mark.parametrize("table", ENGINE_TABLES)
+async def test_engine_table_refuses_to_write_a_row_into_another_org(table: str) -> None:
+    """Writes, which nothing else in this file exercises -- every other test reads.
+
+    Re-parenting org A's own row to org B must be refused. Verified to be a
+    real guard: with the policy weakened, the update succeeds.
+
+    On what actually enforces it, stated precisely because the obvious reading
+    is wrong. This is a FOR ALL policy, and Postgres applies its USING
+    expression to the *new* row on UPDATE as well as the old one. Weakening
+    only WITH CHECK to (true) still leaves this refused -- confirmed by
+    mutation, with Postgres reporting "new row violates row-level security
+    policy" even then. So this test guards the re-parent, and USING is what
+    stands behind it.
+
+    WITH CHECK is therefore still uncovered on the path where it is the *only*
+    guard: an INSERT of a brand-new row carrying another org's id, where there
+    is no old row for USING to inspect. The final review demonstrated that a
+    cross-tenant INSERT persists silently under a weakened WITH CHECK. Closing
+    that needs a valid FK chain per table and is filed as debt rather than
+    claimed here.
+    """
+    if not str(get_settings().database_url).startswith("postgresql"):
+        pytest.skip("RLS is a PostgreSQL feature")
+    org_a, ids_a = await _seed_chain("A")
+    org_b, _ids_b = await _seed_chain("B")
+    model = _MODEL_BY_TABLE[table]
+    id_a = ids_a[table]
+
+    async with session_scope() as s:
+        await set_session_tenant(s, org_a)
+        with pytest.raises(DBAPIError) as excinfo:
+            await s.execute(
+                update(model)  # type: ignore[arg-type]
+                .where(model.id == id_a)  # type: ignore[attr-defined]
+                .values(organization_id=org_b)
+            )
+            await s.flush()
+        assert "row-level security" in str(excinfo.value).lower(), (
+            f"{table}: the write was refused, but not by the RLS policy"
+        )
+
+    # And the row really did stay put -- a refused write must not be a silent
+    # partial one. Checked unscoped, so this cannot pass by being filtered out.
+    async with session_scope() as s:
+        row = await s.get(model, id_a)  # type: ignore[arg-type]
+        assert row is not None, f"{table}: org A's row vanished"
+        assert row.organization_id == org_a, f"{table}: org A's row was re-parented to org B"
