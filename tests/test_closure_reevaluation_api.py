@@ -8,10 +8,12 @@ import os
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
-from ccf.auth import hash_password, new_api_token
+from ccf.api.routes.assessment_engine import list_reevaluation_proposals
+from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import POAM, Assessment, Organization, System, User
@@ -156,3 +158,37 @@ async def test_a_nonexistent_poam_id_also_404s(monkeypatch: pytest.MonkeyPatch) 
             headers=_auth(token),
         )
     assert response.status_code == 404
+
+
+async def test_the_app_level_org_check_holds_independently_of_rls() -> None:
+    """The cross-tenant test above passes even with the app check deleted.
+
+    ``deps.get_session`` sets the RLS tenant GUC for the real HTTP path, so
+    Postgres already excludes org B's rows from ``ccf.systems`` and
+    ``ccf.poams`` before the handler's own comparison runs -- which makes that
+    comparison untested by any HTTP test. The same shape is documented on
+    ``create_proposal`` in ``test_assessment_engine_api.py``.
+
+    This drives the handler directly on a ``session_scope()`` session, which
+    authenticates as the bootstrap role and so is *not* RLS-filtered. That
+    isolates the application check as the only thing standing between an org-A
+    principal and org B's POA&M. Deleting it fails this test and nothing else.
+    """
+    _token_a, org_a = await _mk_user("reeval-rls-a@ae-api.test", "Reeval RLS Org A")
+    _token_b, org_b = await _mk_user("reeval-rls-b@ae-api.test", "Reeval RLS Org B")
+    assessment_b = await _assessment_for(org_b, "reeval-rls-b")
+    poam_b = await _poam_for_org(org_b, "reeval-rls-b-poam")
+    await _reevaluation_proposal_for(poam_b, org_b, assessment_b)
+
+    principal_a = Principal(user_id=None, email="a@ae-api.test", org_id=org_a, role="viewer")
+
+    async with session_scope() as s:
+        # Proves the session really is unfiltered: without RLS the row is visible,
+        # so a pass below cannot be Postgres doing the work.
+        assert await s.get(POAM, poam_b) is not None, "session must not be RLS-filtered"
+        with pytest.raises(HTTPException) as excinfo:
+            await list_reevaluation_proposals(
+                source_poam_id=poam_b, session=s, principal=principal_a
+            )
+
+    assert excinfo.value.status_code == 404, "404, never 403 -- do not confirm the id exists"
