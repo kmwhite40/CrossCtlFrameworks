@@ -17,6 +17,7 @@ from ccf.db import session_scope
 from ccf.models import Organization, Policy, PolicyVersion
 from ccf.models_prep import PrepJob, PrepRun
 from ccf.prep import jobs
+from ccf.prep.sources import SourceOwnershipMismatch
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -105,6 +106,57 @@ async def test_enqueue_creates_a_run_and_a_pending_job() -> None:
         assert job.next_stage == "parse"
         run = (await s.execute(select(PrepRun).where(PrepRun.id == job.run_id))).scalar_one()
         assert run.organization_id == org_id
+
+
+async def test_enqueue_refuses_a_cross_tenant_source_on_the_worker_path() -> None:
+    """``jobs.enqueue``'s ownership check is genuinely load-bearing on the
+    worker/CLI path, not just the API path.
+
+    ``test_prep_tenant_isolation.py::test_enqueue_refuses_a_cross_tenant_evidence_version_source_id``
+    drives this same refusal through the real HTTP path, where
+    ``deps.get_session`` has already set the RLS tenant GUC — so Postgres
+    itself would exclude org B's ``PolicyVersion``/``EvidenceVersion`` row
+    from a scoped org-A connection's view before the handler's own
+    comparison ever runs, which would make that comparison pass even with the
+    check deleted.
+
+    This drives ``jobs.enqueue`` directly on a ``session_scope()`` session —
+    the real shape every worker/CLI call uses (``ccf.db.session_scope`` calls
+    ``set_session_tenant(session, None)``, "CLI/ETL run unscoped (bypass)"),
+    and deliberately not RLS-filtered. That isolates the application check as
+    the only thing standing between an org-A claim and org B's real source.
+    """
+    org_a = await _org("jobs-worker-guard-a")
+    org_b = await _org("jobs-worker-guard-b")
+    victim_source_id = await _uri_only_policy_version(org_b)
+
+    async with session_scope() as s:
+        # Proves the session really is unfiltered: without RLS the victim's
+        # row is visible, so a refusal below cannot be Postgres doing the work.
+        victim = (
+            await s.execute(select(PolicyVersion).where(PolicyVersion.id == victim_source_id))
+        ).scalar_one_or_none()
+        assert victim is not None, "session must not be RLS-filtered"
+
+        with pytest.raises(SourceOwnershipMismatch):
+            await jobs.enqueue(
+                s,
+                organization_id=org_a,
+                source_kind="policy_version",
+                source_id=victim_source_id,
+            )
+
+    async with session_scope() as s:
+        leaked = (
+            await s.execute(
+                select(PrepRun).where(
+                    PrepRun.organization_id == org_a,
+                    PrepRun.source_kind == "policy_version",
+                    PrepRun.source_id == victim_source_id,
+                )
+            )
+        ).scalars().all()
+        assert leaked == [], "no run should have been opened against the victim's source at all"
 
 
 async def test_claim_marks_jobs_and_records_the_worker() -> None:
