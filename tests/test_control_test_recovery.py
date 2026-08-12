@@ -428,3 +428,43 @@ async def test_run_due_also_resolves_a_recovered_task() -> None:
             await s.execute(select(Task).where(Task.dedupe_key == f"ctltest-fix:{test_id}"))
         ).scalar_one()
         assert task.status == "done", "run_due must delegate to record_result for recovery too"
+
+
+async def test_a_task_a_human_has_taken_up_is_not_resolved() -> None:
+    """The untouched-only guard on the Task's own status, which nothing covered.
+
+    ``test_human_edited_task_and_poam_fields_survive_recovery`` edits the
+    description and asserts the Task still resolves -- correct, but it leaves
+    the ``status == "open"`` guard untested. Removing that guard silently flips
+    a human's ``in_progress`` Task to ``done``, retiring work somebody had
+    picked up. Verified by mutation: without the guard this test fails and
+    every other test in this file still passes.
+
+    ``in_progress`` is used deliberately rather than a made-up value -- it is
+    what the UI sets when someone takes a task up.
+    """
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Recovery InProgress Org")
+        test = await _make_test(s, org_id, sys_id, "AC-RECOVER-INPROG")
+        test_id = test.id
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="fail", detail="no evidence"
+        )
+
+    dedupe = f"ctltest-fix:{test_id}"
+    async with session_scope() as s:
+        task = (await s.execute(select(Task).where(Task.dedupe_key == dedupe))).scalar_one()
+        task.status = "in_progress"
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="pass", detail="fixed"
+        )
+
+    async with session_scope() as s:
+        task = (await s.execute(select(Task).where(Task.dedupe_key == dedupe))).scalar_one()
+        assert task.status == "in_progress", (
+            "a task somebody had taken up must not be auto-resolved out from under them"
+        )
