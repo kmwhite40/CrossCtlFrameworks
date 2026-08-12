@@ -86,11 +86,26 @@ The original verdict and the challenger's verdict are both retained. Overwriting
 the primary verdict would destroy the evidence that a disagreement happened, and
 that record is what the assessor needs in order to adjudicate it.
 
+**How that is stored, made explicit.** `verdict` is the field the rollup reads,
+so on disagreement it *is* set to `insufficient_evidence` — that is what makes
+the existing rollup work unchanged, with no change to `rollup.py`. The primary's
+original conclusion therefore needs somewhere to live: a fourth column,
+`primary_verdict` (nullable `String(32)`), written whenever a challenge runs.
+
+It is tempting to skip it, since under the `satisfied`-only policy a contested
+objective's primary verdict was `satisfied` by construction and could be
+inferred. Do not rely on that. The policy is explicitly expected to change, and
+the moment it does, every previously contested row becomes unreadable — the
+primary verdict would be unrecoverable from stored data. Record it rather than
+infer it.
+
 ## 3. Data model
 
 Three nullable columns on `assessment_objective_proposals`, all NULL for
 un-challenged objectives, plus one on the control proposal. Migration `0059`.
 
+- `primary_verdict` (`String(32)`) — what the primary call concluded, before
+  any disagreement rewrote `verdict`.
 - `challenger_verdict` (`String(32)`) — the challenger's conclusion.
 - `challenger_rationale` (`Text`) — its argument, shown to the assessor.
 - `challenger_ai_action_run_id` (nullable `BigInteger`, FK to
