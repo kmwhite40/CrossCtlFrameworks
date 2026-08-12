@@ -12,10 +12,16 @@ faked — rather than mocking ``ai.draft_narrative`` itself, so ``ai.py``'s own
 
 from __future__ import annotations
 
+import os
+
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from ccf.ai import gateway
+from ccf.ai.providers.base import GenerateTextResponse
+from ccf.api.main import create_app
+from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.governance import ai
@@ -27,10 +33,20 @@ from ccf.models import (
     SSPProject,
     System,
     SystemProfile,
+    User,
 )
 from ccf.ssp.constants import DRAFT_PREFIX
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+
+@pytest.fixture(autouse=True)
+def _credential_master_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Required for ``gateway.set_credential`` to envelope-encrypt the org's
+    provider key in the call-site tests below (real gateway config resolution,
+    not mocked away)."""
+    monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "unit-test-master-key-32-chars-xx")
+    get_settings.cache_clear()
 
 # A connector-backed platform (see ssp/platforms.py CONNECTOR_PLATFORMS) with an
 # AC-domain control lands as responsibility "unknown" (aws_govcloud's per-domain
@@ -327,3 +343,200 @@ async def test_org_scoped_gateway_preferred_over_legacy_global_key(
             "draft AC-2", session=session, organization_id=org.id, purpose="ssp_narrative"
         )
     assert text == "ORG-SCOPED-TEXT-9d21"
+
+
+# --- Property 6/7/8/9: the CALL SITES actually pass session/organization_id ---
+#
+# Properties 1-5 above cover ai.py's own generate/draft_narrative logic and
+# already passed while both real callers (automation.py's generate_statements
+# and the /api/ai/narrative route) silently dropped session/organization_id,
+# which is exactly the defect: those callers never reached this file's tests.
+# These four go through the real gateway DB resolution (AiProviderConfig via
+# gateway.set_credential, real gateway.resolve) with only the provider adapter
+# boundary (gateway.build_provider) stubbed -- so a mix-up between two orgs'
+# configs would be caught by a real (mis-scoped) SQL WHERE, not a mock keyed by
+# the right answer already baked in.
+
+
+def _model_echoing_provider(provider: str, _key: str) -> object:
+    """Stand-in adapter that echoes the resolved model into the generated text,
+    so the caller's returned text proves *which* org's config was resolved."""
+
+    class _StubProvider:
+        name = provider
+
+        async def generate_text(self, request: object) -> GenerateTextResponse:
+            model = request.model  # type: ignore[attr-defined]
+            return GenerateTextResponse(
+                text=f"ORG-TEXT::{model}", model=model, input_tokens=1, output_tokens=1
+            )
+
+    return _StubProvider()
+
+
+async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
+    async with session_scope() as session:
+        org = Organization(name=org_name)
+        session.add(org)
+        await session.flush()
+        user = User(
+            email=email,
+            organization_id=org.id,
+            role="viewer",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        session.add(user)
+        await session.flush()
+        return user.api_token, org.id
+
+
+async def test_generate_statements_reaches_org_scoped_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call site 1 (automation.py generate_statements -> ai.draft_narrative):
+    with the org configured, the org-scoped gateway must be used -- not the
+    legacy global key. The legacy client is poisoned to raise so a silent
+    fallback to it (e.g. from dropped kwargs) surfaces as no AI text at all."""
+    monkeypatch.setenv("CCF_ANTHROPIC_API_KEY", _LEGACY_KEY)
+    get_settings.cache_clear()
+    monkeypatch.setattr(ai.httpx, "AsyncClient", _RaisingAsyncClient)
+
+    control_id, proj_id, sys_id, org_id = await _seeded("Ai Gateway Site1 Org", "AIGATE1")
+    try:
+        async with session_scope() as session:
+            await gateway.set_credential(
+                session,
+                org_id,
+                "anthropic",
+                api_key="sk-ant-site1-org-key",
+                enabled=True,
+                default_model="site1-org-model-marker",
+            )
+        monkeypatch.setattr(gateway, "build_provider", _model_echoing_provider)
+
+        text, out = await _regenerate_and_get_text(
+            proj_id, sys_id, control_id, use_ai=True, mark_draft=True
+        )
+        assert out["ai_used"] >= 1
+        assert "ORG-TEXT::site1-org-model-marker" in text, (
+            f"expected the org-scoped gateway's marker in the statement, got: {text!r}"
+        )
+    finally:
+        await _cleanup_control(control_id)
+
+
+async def test_route_ai_narrative_reaches_org_scoped_gateway_from_principal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Call site 2 (api/routes/automation.py's /api/ai/narrative): organization
+    context must come from the authenticated principal (real bearer-token auth
+    below), never a request-body field -- ``NarrativeIn`` carries no org id at
+    all, so this also pins that it can't be reintroduced there."""
+    monkeypatch.setenv("CCF_ANTHROPIC_API_KEY", _LEGACY_KEY)
+    monkeypatch.setattr(ai.httpx, "AsyncClient", _RaisingAsyncClient)
+    os.environ["CCF_AUTH_ENABLED"] = "true"
+    os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"
+    get_settings.cache_clear()
+    try:
+        token, org_id = await _mk_user("route-org-scoped@ai-callsite.test", "Route Org Scoped Org")
+        async with session_scope() as session:
+            await gateway.set_credential(
+                session,
+                org_id,
+                "anthropic",
+                api_key="sk-ant-route-org-key",
+                enabled=True,
+                default_model="route-org-model-marker",
+            )
+        monkeypatch.setattr(gateway, "build_provider", _model_echoing_provider)
+
+        transport = ASGITransport(app=create_app())
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            resp = await client.post(
+                "/api/ai/narrative",
+                json={"control_id": "AC-2", "requirement": "limit system access"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["configured"] is True
+        assert body["text"] == "ORG-TEXT::route-org-model-marker", (
+            f"expected the principal's org-scoped gateway marker, got: {body!r}"
+        )
+    finally:
+        os.environ.pop("CCF_AUTH_ENABLED", None)
+        os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
+        get_settings.cache_clear()
+
+
+async def test_tenant_isolation_org_a_statement_never_uses_org_bs_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tenant isolation, asserted as an attack: org A and org B get genuinely
+    different configured models, both stored as real AiProviderConfig rows and
+    resolved through the real gateway.resolve() DB query. Org A's generated
+    statement must carry org A's marker and never org B's -- an identical-config
+    fixture would pass even against code that mixed the two orgs up."""
+    monkeypatch.setenv("CCF_ANTHROPIC_API_KEY", _LEGACY_KEY)
+    get_settings.cache_clear()
+    monkeypatch.setattr(ai.httpx, "AsyncClient", _RaisingAsyncClient)
+
+    control_a, proj_a, sys_a, org_a = await _seeded("Ai Isolation Org A", "AISOA")
+    control_b, _proj_b, _sys_b, org_b = await _seeded("Ai Isolation Org B", "AISOB")
+    try:
+        async with session_scope() as session:
+            await gateway.set_credential(
+                session,
+                org_a,
+                "anthropic",
+                api_key="sk-ant-tenant-a-key",
+                enabled=True,
+                default_model="tenant-a-model-marker",
+            )
+            await gateway.set_credential(
+                session,
+                org_b,
+                "anthropic",
+                api_key="sk-ant-tenant-b-key",
+                enabled=True,
+                default_model="tenant-b-model-marker",
+            )
+        monkeypatch.setattr(gateway, "build_provider", _model_echoing_provider)
+
+        text, out = await _regenerate_and_get_text(
+            proj_a, sys_a, control_a, use_ai=True, mark_draft=True
+        )
+        assert out["ai_used"] >= 1
+        assert "ORG-TEXT::tenant-a-model-marker" in text
+        assert "tenant-b-model-marker" not in text, (
+            "org A's statement leaked org B's provider config"
+        )
+    finally:
+        await _cleanup_control(control_a)
+        await _cleanup_control(control_b)
+
+
+async def test_generate_statements_falls_back_to_legacy_when_org_not_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirms the existing fallback still works post-fix: with session and
+    organization_id now passed for real, but no AiProviderConfig row for this
+    org, gateway.resolve() genuinely raises (no mock of the gateway itself) and
+    ai.generate falls back to the legacy global key, which still drafts text."""
+    monkeypatch.setenv("CCF_ANTHROPIC_API_KEY", _LEGACY_KEY)
+    get_settings.cache_clear()
+    monkeypatch.setattr(ai.httpx, "AsyncClient", _FakeAsyncClient)
+    # Deliberately no gateway.set_credential call -- this org has no configured
+    # provider, so the real gateway.resolve() must fail and fall back.
+
+    control_id, proj_id, sys_id, _org_id = await _seeded("Ai Legacy Fallback Org", "AILEGF")
+    try:
+        text, out = await _regenerate_and_get_text(
+            proj_id, sys_id, control_id, use_ai=True, mark_draft=True
+        )
+        assert out["ai_used"] >= 1
+        assert _FAKE_AI_TEXT in text
+    finally:
+        await _cleanup_control(control_id)

@@ -284,13 +284,25 @@ class NarrativeIn(BaseModel):
 
 @router.post("/ai/narrative")
 async def ai_narrative(
-    body: NarrativeIn, principal: Principal = Depends(get_principal)
+    body: NarrativeIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """Draft an implementation narrative with Claude (config-gated)."""
+    """Draft an implementation narrative with Claude (config-gated).
+
+    Organization context comes from the authenticated principal, never from the
+    request body — a body-supplied org id would let one tenant's caller draft
+    against another org's configured provider/credential.
+    """
     if not ai.is_configured():
         return {"configured": False, "text": None}
     text = await ai.draft_narrative(
-        body.control_id, body.requirement, body.environment, body.services
+        body.control_id,
+        body.requirement,
+        body.environment,
+        body.services,
+        session=session,
+        organization_id=principal.org_id,
     )
     return {"configured": True, "text": text}
 

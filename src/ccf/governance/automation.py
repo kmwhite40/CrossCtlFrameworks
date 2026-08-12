@@ -569,7 +569,12 @@ async def generate_statements(
         )
         if ai_ready and responsibility in ("customer", "shared", "unknown"):
             ai_text = await ai.draft_narrative(
-                e.control_id, e.requirement or "", environment, services
+                e.control_id,
+                e.requirement or "",
+                environment,
+                services,
+                session=session,
+                organization_id=project.organization_id,
             )
             if ai_text:
                 text = (stmt.DRAFT_PREFIX if mark_draft else "") + ai_text
