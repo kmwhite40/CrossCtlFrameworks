@@ -201,6 +201,14 @@ async def _proposal_detail(
             "gaps": o.gaps,
             "contradictions": o.contradictions,
             "citations": await _citations(session, o.cited_unit_ids, proposal.organization_id),
+            # AI dissent path (slice 6): NULL on every un-challenged
+            # objective, and NULL again -- not the challenger's last output
+            # -- if CCF_ASSESSMENT_DISSENT_ENABLED was on but the challenge
+            # itself failed. See ccf.assessment.engine.evaluate's module
+            # docstring: the two NULL cases are distinguishable only in the
+            # logs, not in this response.
+            "challenger_verdict": o.challenger_verdict,
+            "challenger_rationale": o.challenger_rationale,
         }
         for o in objectives
     ]
@@ -222,6 +230,7 @@ async def _proposal_detail(
         "rollup_rationale": proposal.rollup_rationale,
         "objectives_total": proposal.objectives_total,
         "objectives_evaluated": proposal.objectives_evaluated,
+        "dissent_count": proposal.dissent_count,
         "objectives": objectives_out,
     }
 
