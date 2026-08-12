@@ -6,6 +6,43 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Recovery closure for control tests and ConMon
+- **A control test recovering from `fail`/`warn` to `pass`, or a control
+  implementation returning to `healthy` in ConMon, now resolves the
+  remediation `Task` that was opened for it** — both `record_result`
+  (called by the manual UI/API run action and, now, the scheduler's
+  `run_due` as well) and `conmon.scan` gained a symmetric resolve path.
+  Previously nothing happened on recovery at all: the remediation backlog
+  filled with Tasks and POA&Ms that looked like live findings and were not.
+- **The POA&M is surfaced, never auto-closed.** Closing a POA&M is an
+  assertion, in an authorization package, that a weakness is remediated;
+  a single passing control test or healthy scan is not that assertion.
+  This is deliberately asymmetric with `ingest/scanners.py`'s
+  scan-absence auto-close (a missing vulnerability is direct evidence;
+  a passing test is weaker, possibly-partial evidence). The POA&M instead
+  gains a dated, id-stamped observation note and a notification, so a
+  human can close it through the existing ISSM-08/09 gate
+  (`api/routes/poams.py::_require_closure_gate`, unchanged by this slice)
+  with the evidence that gate demands.
+- **`run_due` (the scheduler's due-test evaluator) no longer duplicates
+  `record_result`'s write sequence** — it now delegates to it, so the
+  recovery behavior above applies on the scheduler-driven path, not only
+  the manual one.
+- **Only auto-created, untouched items are acted on**, identified by the
+  same `dedupe_key`/`source_ref` the opening code already uses, and only
+  while still in the state auto-creation left them — a human's edit to
+  any other field is never overwritten.
+- **A known, deliberate limit**: an overdue-triggered POA&M carries
+  `severity="high"`, and `assess_health`'s own crit check reads any open
+  high/critical POA&M as its own at-risk signal — so a control that ever
+  went overdue cannot report `healthy` again, and the recovery path never
+  fires for it, until a human closes that POA&M through the gate above.
+  The at-risk (moderate-severity) and control-test paths recover cleanly;
+  the overdue path does not, by design — not a bug this slice introduced.
+- **No retrofit**: Tasks and POA&Ms already open when this shipped are
+  unaffected; only transitions observed afterward are acted on. **No
+  migration**: no new table, column, or POA&M status value.
+
 ### Fixed — AI-drafted SSP narrative always carries the draft marker
 - `generate_statements` (`src/ccf/governance/automation.py:580`) now prepends
   `DRAFT_PREFIX` to AI-drafted narrative text unconditionally, instead of

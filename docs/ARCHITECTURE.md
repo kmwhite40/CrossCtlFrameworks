@@ -444,6 +444,45 @@ Built on the reference catalog + operational tables:
   pg_roles WHERE rolname = 'ccf_app')` guard migration `0054` establishes as
   the repo standard for exactly this GRANT.
 
+- **Recovery closure** (`ccf.governance.control_tests`, `.conmon`,
+  2026-08-12 recovery-closure design): a control test recovering from
+  `fail`/`warn` to `pass` (`record_result`, delegated to by both the manual
+  UI/API run action and the scheduler's `run_due`) resolves the remediation
+  `Task` `_alert_on_failure` opened, and conmon's own scan resolves the Task
+  its `_upsert_task` opened when a control implementation returns to
+  `healthy`. Neither path auto-closes the POA&M it opened. A `Task` is an
+  internal work item with a free status vocabulary and no gate; a `POAM` has
+  the ISSM-08/09 closure gate (`api/routes/poams.py::_require_closure_gate`:
+  all milestones complete, or dated closure evidence, plus a
+  separation-of-duties `Approval` when auth is enabled) — closing one
+  asserts, in an authorization package, that a weakness is remediated, and a
+  single passing control test or a single healthy scan is not that
+  assertion. This is deliberately asymmetric with
+  `ccf.ingest.scanners.reconcile_findings` (`src/ccf/ingest/scanners.py:397`),
+  which *does* auto-close a POA&M absent from the latest scan, for the same
+  reason the assessment engine's closure loop above already documents: a
+  vulnerability missing from a scan is direct evidence the weakness is gone,
+  where a control test passing once, or a scan reporting a control healthy
+  once, is weaker evidence that may cover only part of what the POA&M
+  describes. Instead the POA&M gains a dated, id-stamped observation note
+  (`remediation_plan`, the same append pattern `scanners.py:410-412` uses
+  for its own closure note) and a `Notification` via `governance.bus.notify`
+  — the same mechanism `_alert_on_failure` and `conmon.scan` already use for
+  "needs a human's attention," queryable and markable-read through the
+  existing `/api/notifications` endpoint. Both paths act only on the
+  Task/POA&M they themselves created, identified by the same
+  `dedupe_key`/`source_ref` the opening code uses, and only while still in
+  the state auto-creation left them — a human's edit to any other field
+  survives untouched. One interaction worth naming: conmon's own
+  `assess_health` treats an open `high`/`critical`-severity POA&M as its own
+  at-risk signal, and the POA&M opened for an `overdue` control is
+  `severity="high"` — so a control that ever went overdue cannot report
+  `healthy` again until a human closes that POA&M, even once the original
+  overdue cause is fixed. That is a correct consequence of never
+  auto-closing, not a bug. Not retrofitted: Tasks and POA&Ms already open
+  when this shipped are untouched; only transitions observed afterward are
+  acted on.
+
 - **AI dissent path** (`ccf.assessment.engine.evaluate`, `.calibration`,
   `CCF_ASSESSMENT_DISSENT_ENABLED`, migration `0059`): runs an independent
   second model call — a challenger — against a verdict where being wrong is
