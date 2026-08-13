@@ -1,7 +1,7 @@
 """Fix pgvector operator resolution for the ccf_app RLS role.
 
 ``ccf.prep.retriever.retrieve()`` compiles ``PrepEmbedding.embedding.cosine_distance(...)``
-to the unqualified ``<=>`` operator. The ``vector`` extension (0051) was created
+to the unqualified ``<=>`` operator. The ``vector`` extension (0055) was created
 into schema ``ccf`` (wherever the migrating role's own search_path put it), and
 that operator is only visible to a query when ``ccf`` is on ``search_path``.
 
@@ -47,7 +47,7 @@ session. Verified empirically end-to-end: with this in place,
   catches exactly that failure (a savepoint isolates it -- see ``upgrade()``)
   and logs it loudly with the manual step to run, rather than raising.**
   Before that, a permission failure here raised straight out of
-  ``alembic upgrade head`` and aborted the *entire* migration chain at 0052 —
+  ``alembic upgrade head`` and aborted the *entire* migration chain at 0056 —
   not just this fix — blocking every migration after it, prep-related or not,
   on any platform where the migrating role isn't the database owner. That is
   a strictly worse outcome than the vulnerability this migration exists to
@@ -74,8 +74,8 @@ session. Verified empirically end-to-end: with this in place,
   for. An operator relying on a non-default database-level ``search_path``
   should record it before running this migration.
 
-Revision ID: 0053_ccf_app_search_path
-Revises: 0052_prep_tables
+Revision ID: 0057_ccf_app_search_path
+Revises: 0056_prep_tables
 Create Date: 2026-08-10
 """
 
@@ -87,8 +87,8 @@ from alembic import op
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import DBAPIError
 
-revision = "0053_ccf_app_search_path"
-down_revision = "0052_prep_tables"
+revision = "0057_ccf_app_search_path"
+down_revision = "0056_prep_tables"
 branch_labels = None
 depends_on = None
 
@@ -136,7 +136,7 @@ def _alter_database_search_path(sql: str, *, action: str) -> None:
             bind.execute(sa_text(sql))
     except DBAPIError as exc:
         log.warning(
-            "0053_ccf_app_search_path: could not %s the database-level "
+            "0057_ccf_app_search_path: could not %s the database-level "
             "search_path default -- likely missing ownership on managed "
             "Postgres (RDS, Cloud SQL, etc). Every scoped (SET ROLE ccf_app) "
             "prep retrieval request will 500 with 'operator does not exist: "

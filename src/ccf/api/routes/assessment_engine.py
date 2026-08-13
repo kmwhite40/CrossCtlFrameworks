@@ -128,7 +128,7 @@ async def _citations(
     response over one stale reference.
 
     Scoped to ``organization_id`` explicitly -- ``prep_units`` carries no RLS
-    policy (see migration 0055), so this cannot rely on the database to keep a
+    policy (see migration 0059), so this cannot rely on the database to keep a
     foreign unit id out. In practice ``evaluate.py`` only ever cites ids from
     its own org-scoped retrieval, but that invariant lives two modules away;
     this join re-derives the tenant boundary itself rather than trusting it,

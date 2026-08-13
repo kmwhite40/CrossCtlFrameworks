@@ -12,7 +12,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   set the RLS tenant GUC (`ccf.db.set_session_tenant`) to the claimed job's
   own `organization_id` before driving it through `pipeline.advance` /
   `evaluate_control_proposal` — the work that reads and writes across the
-  eleven tables migration `0060` policied — and clear it explicitly after
+  eleven tables migration `0064` policied — and clear it explicitly after
   each job's outcome commits. Previously both drain loops ran their entire
   cycle on an unscoped (bypass) session, so RLS never applied to the paths
   that write the most rows into those tables.
@@ -87,17 +87,18 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   unchanged.
 
 ### Added — RLS coverage for the engine tables
-- **121 of the 135 tables in the `ccf` schema now carry a `tenant_isolation`
-  RLS policy** (migration `0060`) — up from 110. The eleven added:
+- **125 of the 140 tables in the `ccf` schema now carry a `tenant_isolation`
+  RLS policy** (migration `0064`) — up from 114. The eleven added:
   `prep_runs`, `prep_lines`, `prep_screens`, `prep_units`,
   `prep_classifications`, `prep_embeddings`, `prep_jobs`, `assessment_jobs`,
   `calibration_snapshots`, `assessment_control_proposals`,
   `assessment_objective_proposals` — every table slices 1–6 added with no
   database backstop, filtered by application-level `organization_id` checks
-  alone until now. The remaining fourteen — `controls`, `frameworks`,
+  alone until now. The remaining fifteen — `controls`, `frameworks`,
   `control_families`, `framework_mappings`, `worksheets`, `worksheet_rows`,
-  `ingestion_runs`, `catalog_sources`, `catalog_checks`, `scoring_controls`,
-  `statement_templates`, `ksis`, `ai_action_definitions`, `alembic_version`
+  `ingestion_runs`, `catalog_sources`, `catalog_checks`,
+  `catalog_integrity_reports`, `scoring_controls`, `statement_templates`,
+  `ksis`, `ai_action_definitions`, `alembic_version`
   — are global reference data with no `organization_id` column and stay
   unpolicied for that reason, named explicitly rather than exempted by
   omission.
@@ -118,15 +119,15 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   verified independently of RLS by `tests/test_rls_worker_guc_bypass.py`.
 - **A registry test** (`tests/test_rls_registry_no_gap.py`) asserts, live
   against the schema, that no tenant-owned table lacks a policy and that the
-  fourteen tables with neither a tenant column nor a policy are exactly the
+  fifteen tables with neither a tenant column nor a policy are exactly the
   named global-reference-data allow-list — so a future table added without a
   policy fails CI immediately.
 - **Standing debt this slice does not close**: scoping the workers
   themselves (per-tenant claim loops, or an explicit privileged role) is a
   separate, larger question, filed as debt rather than attempted here;
-  migrations `0057` and `0058` still lack the `IF EXISTS (SELECT 1 FROM
-  pg_roles WHERE rolname = 'ccf_app')` GRANT guard that `0054` establishes
-  as the repo standard (`0060` carries it, but does not retrofit the two
+  migrations `0061` and `0062` still lack the `IF EXISTS (SELECT 1 FROM
+  pg_roles WHERE rolname = 'ccf_app')` GRANT guard that `0058` establishes
+  as the repo standard (`0064` carries it, but does not retrofit the two
   before it); and `ccf.prep.jobs`'s enqueue-time ownership check
   (`resolve_source_organization_id`) is now partly redundant with RLS on the
   API path, but not on the worker path where RLS does not apply — it wants
@@ -155,7 +156,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   persists, the challenger columns stay `NULL`, and a warning is logged.
   Runs inside its own `begin_nested()` savepoint, nested inside the
   per-objective savepoint the evaluation already uses.
-- **Migration `0059`** adds `dissent_count` (`NOT NULL`, default `0`) to
+- **Migration `0063`** adds `dissent_count` (`NOT NULL`, default `0`) to
   `assessment_control_proposals` and four nullable columns to
   `assessment_objective_proposals`: `primary_verdict` (the primary call's
   own verdict, preserved because `verdict` itself is overwritten on a
@@ -193,7 +194,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   POA&M write can never cost an assessor their already-accepted finding.
 - **Closing an assessment-sourced POA&M enqueues a re-evaluation** of the
   control it remediated (`assessment_control_proposals.source_poam_id`,
-  migration `0058`, plus a constraint swap — `uq_control_proposal_first_pass`
+  migration `0062`, plus a constraint swap — `uq_control_proposal_first_pass`
   and `uq_control_proposal_source_poam` replace the old flat unique
   constraint — that lets the re-evaluation proposal coexist with the
   first-pass row it re-evaluates). A scan-sourced or profile-gap POA&M
@@ -220,7 +221,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   note}`) calls `reject_control_proposal`, which sets `state="rejected"` and
   records `corrected_finding`, `rejected_by`, `rejected_at`, `rejection_note`
   (four new nullable columns on `assessment_control_proposals`, migration
-  `0057`). It mirrors acceptance's `AiActionRun` stamping — `reviewer`,
+  `0061`). It mirrors acceptance's `AiActionRun` stamping — `reviewer`,
   `disposition="rejected"`, `decided_at` — on every run linked to the
   control's objectives, so the audit trail records disagreement as
   faithfully as agreement; `mutation_applied` stays `False`, because nothing
@@ -254,7 +255,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   proposals decided before this reject path existed carry no recorded
   disagreement, so the first snapshot's `decided` count starts at zero — a
   low early count is expected, not a sign anything is wrong.
-- **`calibration_snapshots`** (migration `0057`) stores a point-in-time
+- **`calibration_snapshots`** (migration `0061`) stores a point-in-time
   measurement plus a `config_fingerprint` — a SHA-256 over
   `prep_screen_threshold`, the rollup policy version
   (`ROLLUP_POLICY_VERSION`), and the evaluation model name. Two snapshots
@@ -291,8 +292,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   approval-gated `run_action` run — one `ai_action_citations` row per cited
   passage, and a link back from the pipeline table
   (`PrepClassification.ai_action_run_id`, already present but unused since
-  migration 0052; `AssessmentObjectiveProposal.ai_action_run_id`, added by
-  migration 0056). Both pipelines deliberately do **not** route through
+  migration 0056; `AssessmentObjectiveProposal.ai_action_run_id`, added by
+  migration 0060). Both pipelines deliberately do **not** route through
   `ccf.ai_actions.run_action`: that function takes an entity and builds its
   own prompt, whereas these pipelines' prompts are already bounded — one
   passage, or one objective plus only the passages retrieval returned for it
@@ -333,7 +334,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added — objective-level assessment engine
 - **Objective-level assessment engine** (`ccf.assessment.engine`, migration
-  0055, `/api/assessment-engine`, `ccf assessment-worker`) — evaluates
+  0059, `/api/assessment-engine`, `ccf assessment-worker`) — evaluates
   individual NIST SP 800-53A assessment objectives, not whole controls,
   against evidence the prep pipeline retrieved, then rolls the verdicts into a
   *proposed* control finding. The objectives are not a separate dataset: they

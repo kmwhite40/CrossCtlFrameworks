@@ -13,8 +13,8 @@ objective's label and a SHA-256 of its text, so a catalog re-ingest that changes
 wording makes a stale proposal detectable rather than silently wrong.
 
 **These three tables carry a ``tenant_isolation`` RLS policy** (migration
-``0060``, 2026-08-12 RLS-coverage design), matching the seven ``prep_*``
-tables (see ``models_prep.py``'s identical note) and 121 of Concord's 135
+``0064``, 2026-08-12 RLS-coverage design), matching the seven ``prep_*``
+tables (see ``models_prep.py``'s identical note) and 125 of Concord's 140
 ``ccf`` tables overall. It is defence in depth, not the primary control:
 every route and service function still filters by ``organization_id``
 explicitly (derived from ``Assessment -> System -> Organization``, never from
@@ -48,8 +48,8 @@ is the standing follow-up.
 
 **Two proposals per control, distinguished by ``source_poam_id``.** The
 original ``uq_control_proposal_assessment_control`` constraint was a flat
-unique index on ``(assessment_id, control_identifier)`` (migration 0055). A
-closure-triggered re-evaluation (migration 0058) needs a *second*,
+unique index on ``(assessment_id, control_identifier)`` (migration 0059). A
+closure-triggered re-evaluation (migration 0062) needs a *second*,
 distinct ``AssessmentControlProposal`` row for that same pair, alongside the
 already-accepted first-pass row -- so the flat constraint was replaced by two
 partial unique indexes: ``uq_control_proposal_first_pass`` scopes first-pass
@@ -147,7 +147,7 @@ class AssessmentControlProposal(Base):
     objectives_total: Mapped[int] = mapped_column(Integer, default=0)
     objectives_evaluated: Mapped[int] = mapped_column(Integer, default=0)
     #: How many of this control's objectives were contested by a challenger
-    #: (AI dissent path, migration 0059) -- so a reviewer sees it without a
+    #: (AI dissent path, migration 0063) -- so a reviewer sees it without a
     #: join. Reset to 0 at the top of every evaluate_control_proposal rerun
     #: (ccf.assessment.engine.service), same as objectives_evaluated above,
     #: so a clean re-evaluation does not carry a prior run's dissent forward.
@@ -291,7 +291,7 @@ class AssessmentObjectiveProposal(Base):
     #: it. ON DELETE SET NULL, not CASCADE: this row is a record of what
     #: happened and must survive its provenance row being cleaned up, exactly
     #: matching ai_action_run_id's own existing FK on this table (migration
-    #: 0056).
+    #: 0060).
     challenger_ai_action_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.ai_action_runs.id", ondelete="SET NULL"), index=True
     )

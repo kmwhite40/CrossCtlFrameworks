@@ -9,8 +9,8 @@ see that module's docstring for why a failed recording must not fail the
 evaluation it documents -- and because historical rows predate this column
 entirely.
 
-Revision ID: 0056_objective_proposal_ai_run
-Revises: 0055_assessment_engine
+Revision ID: 0060_objective_proposal_ai_run
+Revises: 0059_assessment_engine
 Create Date: 2026-08-11
 """
 
@@ -19,8 +19,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0056_objective_proposal_ai_run"
-down_revision = "0055_assessment_engine"
+revision = "0060_objective_proposal_ai_run"
+down_revision = "0059_assessment_engine"
 branch_labels = None
 depends_on = None
 

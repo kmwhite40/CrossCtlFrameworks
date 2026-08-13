@@ -12,7 +12,7 @@ tabular sources, a specific cell. Kept in a dedicated module so the layer is eas
 to review, matching ``models_evidence`` and ``models_ai_actions``.
 
 **These seven tables carry a ``tenant_isolation`` RLS policy** (migration
-``0060``, 2026-08-12 RLS-coverage design), matching 121 of Concord's 135
+``0064``, 2026-08-12 RLS-coverage design), matching 125 of Concord's 140
 ``ccf`` tables. It is defence in depth, not the primary control: every prep
 query still filters by ``organization_id`` explicitly
 (``ccf.prep.retriever._base_filters`` and the equivalent per-stage filters in

@@ -44,7 +44,7 @@ def _migrate() -> None:
 
 
 #: Global reference data with no tenant dimension (2026-08-12 design, "The
-#: remaining fourteen"). Verified live: none of these carry an
+#: remaining fifteen"). Verified live: none of these carry an
 #: organization_id column, so none is scoped by any tenant. A future table on
 #: this side of the split must be added here explicitly, in the same review
 #: that adds the table — test_tables_without_organization_id_match_the_named_global_allowlist
@@ -60,6 +60,7 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         "ingestion_runs",
         "catalog_sources",
         "catalog_checks",
+        "catalog_integrity_reports",
         "scoring_controls",
         "statement_templates",
         "ksis",
@@ -101,7 +102,7 @@ async def test_no_tenant_owned_table_is_missing_its_rls_policy() -> None:
         rows = (await s.execute(_ORG_TABLES_WITHOUT_POLICY_SQL)).scalars().all()
     assert rows == [], (
         f"tenant-owned table(s) with no tenant_isolation policy: {sorted(rows)} — "
-        "add the policy (see migration 0060 for the pattern) before this can pass"
+        "add the policy (see migration 0064 for the pattern) before this can pass"
     )
 
 

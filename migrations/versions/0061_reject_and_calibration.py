@@ -8,8 +8,8 @@ proposal. This adds the other half -- the four columns a rejection needs on
 point-in-time measurement of how often the engine's findings matched what
 assessors ultimately decided.
 
-Revision ID: 0057_reject_and_calibration
-Revises: 0056_objective_proposal_ai_run
+Revision ID: 0061_reject_and_calibration
+Revises: 0060_objective_proposal_ai_run
 Create Date: 2026-08-11
 """
 
@@ -19,8 +19,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0057_reject_and_calibration"
-down_revision = "0056_objective_proposal_ai_run"
+revision = "0061_reject_and_calibration"
+down_revision = "0060_objective_proposal_ai_run"
 branch_labels = None
 depends_on = None
 
@@ -78,7 +78,7 @@ def upgrade() -> None:
         schema=_SCHEMA,
     )
 
-    # Matches 0054's exact block: a no-op if ccf_app doesn't exist in this
+    # Matches 0058's exact block: a no-op if ccf_app doesn't exist in this
     # environment (e.g. a dev DB that never split roles), and otherwise
     # ensures every table in the schema -- calibration_snapshots included --
     # is usable by the scoped application role regardless of which role

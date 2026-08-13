@@ -602,7 +602,7 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   a later change to which verdicts get challenged is visible too) — two
   snapshots taken with the flag toggled between them compare as **not
   comparable**, not drift. Not retrofitted: objectives evaluated before this
-  slice, or with the flag off, carry no dissent record. Migration `0059`
+  slice, or with the flag off, carry no dissent record. Migration `0063`
   adds five new columns: four nullable columns on
   `assessment_objective_proposals` (`primary_verdict` — the primary call's
   verdict, preserved because `verdict` itself is overwritten on a genuine

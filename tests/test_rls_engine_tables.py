@@ -1,5 +1,5 @@
 """Structural + behavioral RLS coverage for the eleven engine tables slices
-1-6 built without it -- migration 0060 (2026-08-12 RLS-coverage design).
+1-6 built without it -- migration 0064 (2026-08-12 RLS-coverage design).
 
 `current_tenant() IS NULL` means *unrestricted*. The failure mode this module
 exists to catch is not an outage -- it is a policy that exists, reports as

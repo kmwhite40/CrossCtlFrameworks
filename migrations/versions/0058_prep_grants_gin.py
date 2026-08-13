@@ -1,16 +1,16 @@
-"""Close two production-readiness gaps in the prep tables (0052).
+"""Close two production-readiness gaps in the prep tables (0056).
 
 **Missing blanket GRANT.** Ten prior feature migrations (e.g. 0037) re-issue
 ``GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ccf TO
 ccf_app`` after adding new tables, because a deployment that migrates as a
 role other than ``ccf_app`` itself needs it re-issued: 0010's ``ALTER DEFAULT
-PRIVILEGES`` only covers objects created by the *same* migrating role. 0052
+PRIVILEGES`` only covers objects created by the *same* migrating role. 0056
 added seven ``prep_*`` tables without re-issuing that grant. It has worked so
 far only because this app's own Docker/CI setup happens to migrate as the
 same role application requests run as -- a deployment that migrates as a
 different role would get ``permission denied for table ccf.prep_units`` for
 every scoped tenant the moment it tried to use the pipeline. Fixed here,
-rather than by editing 0052 directly, because 0052 has already shipped in
+rather than by editing 0056 directly, because 0056 has already shipped in
 this branch's own history and other environments may already have run it —
 editing a migration that has already been applied elsewhere is exactly the
 kind of drift Alembic's linear revision chain exists to prevent.
@@ -24,8 +24,8 @@ pattern for JSONB columns elsewhere in this schema (e.g.
 ``idx_controls_audit_payload_gin`` in the 0001 baseline), supports ``@>``
 directly.
 
-Revision ID: 0054_prep_grants_gin
-Revises: 0053_ccf_app_search_path
+Revision ID: 0058_prep_grants_gin
+Revises: 0057_ccf_app_search_path
 Create Date: 2026-08-10
 """
 
@@ -33,8 +33,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0054_prep_grants_gin"
-down_revision = "0053_ccf_app_search_path"
+revision = "0058_prep_grants_gin"
+down_revision = "0057_ccf_app_search_path"
 branch_labels = None
 depends_on = None
 

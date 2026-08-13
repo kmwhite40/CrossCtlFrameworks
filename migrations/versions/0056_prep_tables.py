@@ -6,8 +6,8 @@ cites a page and cell; ``prep_units.search_vector`` is the lexical half of hybri
 retrieval and is maintained by a trigger rather than application code, so a unit
 written by any path is immediately searchable.
 
-Revision ID: 0052_prep_tables
-Revises: 0051_pgvector_extension
+Revision ID: 0056_prep_tables
+Revises: 0055_pgvector_extension
 Create Date: 2026-08-10
 """
 
@@ -18,8 +18,8 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql
 
-revision = "0052_prep_tables"
-down_revision = "0051_pgvector_extension"
+revision = "0056_prep_tables"
+down_revision = "0055_pgvector_extension"
 branch_labels = None
 depends_on = None
 

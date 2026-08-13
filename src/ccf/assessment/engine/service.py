@@ -140,7 +140,7 @@ async def open_reevaluation_proposal(
     """Open (or return the existing) re-evaluation proposal for a remediated control.
 
     Idempotent on ``source_poam_id`` (``uq_control_proposal_source_poam``,
-    migration 0058) -- closing the same POA&M twice returns the same
+    migration 0062) -- closing the same POA&M twice returns the same
     proposal rather than violating that index with a second insert.
     Deliberately does not call :func:`open_control_proposal`: that
     function's own idempotency (``uq_control_proposal_first_pass``) is now

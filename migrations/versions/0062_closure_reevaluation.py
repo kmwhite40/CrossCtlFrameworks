@@ -7,7 +7,7 @@ An accepted other_than_satisfied finding now creates a POA&M (the
 able to enqueue a *second*, distinct AssessmentControlProposal for the same
 (assessment_id, control_identifier) the first-pass proposal already
 occupies. The flat uq_control_proposal_assessment_control constraint that
-pair carried since migration 0055 would reject that second row outright, so
+pair carried since migration 0059 would reject that second row outright, so
 it is replaced here by two partial unique indexes: first-pass idempotency
 now applies only to source_poam_id-NULL rows, and a second index caps
 re-evaluation at one proposal per POA&M.
@@ -25,10 +25,10 @@ Deleting the re-evaluation rows is the correct reversal, not a workaround:
 they are records of a capability (closure-triggered re-evaluation) that does
 not exist below this revision, so a schema that no longer supports them
 should not carry them either. First-pass proposals -- the only kind that
-existed before 0058 -- are left untouched.
+existed before 0062 -- are left untouched.
 
-Revision ID: 0058_closure_reevaluation
-Revises: 0057_reject_and_calibration
+Revision ID: 0062_closure_reevaluation
+Revises: 0061_reject_and_calibration
 Create Date: 2026-08-11
 """
 
@@ -37,8 +37,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0058_closure_reevaluation"
-down_revision = "0057_reject_and_calibration"
+revision = "0062_closure_reevaluation"
+down_revision = "0061_reject_and_calibration"
 branch_labels = None
 depends_on = None
 
@@ -83,7 +83,7 @@ def upgrade() -> None:
         postgresql_where=sa.text("source_poam_id IS NOT NULL"),
     )
 
-    # Matches 0054's exact block: a no-op if ccf_app doesn't exist in this
+    # Matches 0058's exact block: a no-op if ccf_app doesn't exist in this
     # environment (e.g. a dev DB that never split roles), and otherwise
     # ensures every table in the schema is usable by the scoped application
     # role regardless of which role actually ran the migrations.
@@ -95,7 +95,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Re-evaluation rows have no representation in the pre-0058 schema (a flat
+    # Re-evaluation rows have no representation in the pre-0062 schema (a flat
     # unique constraint on (assessment_id, control_identifier) cannot hold both
     # a first-pass row and a re-evaluation row for the same pair) -- delete them
     # before the constraint that would otherwise reject their coexistence with

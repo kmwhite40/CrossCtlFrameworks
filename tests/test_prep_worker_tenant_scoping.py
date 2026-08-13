@@ -5,7 +5,7 @@ organization has a queued job, never its contents -- but once a job is
 claimed, ``ccf.prep.jobs.run_once`` now sets the RLS tenant GUC to that
 job's own ``organization_id`` before driving it through ``pipeline.advance``,
 which reads and writes across every one of the eleven tables migration
-``0060`` policied.
+``0064`` policied.
 
 Two hazards this module exists to catch, neither of which fails loudly:
 

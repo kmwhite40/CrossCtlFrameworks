@@ -6,8 +6,8 @@ set. The extension is created here rather than in the baseline so existing
 deployments pick it up on upgrade, and the DB image must be
 pgvector/pgvector:pg16 (a drop-in for stock PG16).
 
-Revision ID: 0051_pgvector_extension
-Revises: 0050_evidence_object_impl_fk
+Revision ID: 0055_pgvector_extension
+Revises: 0054_ssp_project_framework
 Create Date: 2026-08-10
 """
 
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0051_pgvector_extension"
-down_revision = "0050_evidence_object_impl_fk"
+revision = "0055_pgvector_extension"
+down_revision = "0054_ssp_project_framework"
 branch_labels = None
 depends_on = None
 

@@ -21,8 +21,8 @@ assessment_control_proposals gains dissent_count, NOT NULL with a default of
 0, so a reviewer sees how many of a control's objectives were contested
 without a join.
 
-Revision ID: 0059_ai_dissent_path
-Revises: 0058_closure_reevaluation
+Revision ID: 0063_ai_dissent_path
+Revises: 0062_closure_reevaluation
 Create Date: 2026-08-11
 """
 
@@ -31,8 +31,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0059_ai_dissent_path"
-down_revision = "0058_closure_reevaluation"
+revision = "0063_ai_dissent_path"
+down_revision = "0062_closure_reevaluation"
 branch_labels = None
 depends_on = None
 
@@ -63,8 +63,8 @@ def upgrade() -> None:
         schema=_SCHEMA,
     )
 
-    # Matches 0054's exact block -- the repo standard this migration must
-    # carry that 0057 and 0058 both omitted (a bare, unguarded GRANT
+    # Matches 0058's exact block -- the repo standard this migration must
+    # carry that 0061 and 0062 both omitted (a bare, unguarded GRANT
     # statement in each): a no-op if ccf_app doesn't exist in this
     # environment (e.g. a dev DB that never split roles), and otherwise
     # ensures every table in the schema is usable by the scoped application
@@ -84,6 +84,6 @@ def downgrade() -> None:
     op.drop_column(_OBJECTIVES, "challenger_verdict", schema=_SCHEMA)
     op.drop_column(_OBJECTIVES, "primary_verdict", schema=_SCHEMA)
     # The GRANT is intentionally not reversed -- every prior migration that
-    # re-issues it does the same (see 0037, 0054), since revoking a blanket
+    # re-issues it does the same (see 0037, 0058), since revoking a blanket
     # grant on downgrade could strand other, unrelated tables whose own
     # migrations already ran and still need it.

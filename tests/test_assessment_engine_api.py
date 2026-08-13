@@ -347,7 +347,7 @@ async def test_get_surfaces_job_status_and_last_error_on_a_failed_evaluation(
 async def test_citations_do_not_resolve_a_foreign_organizations_prep_unit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``prep_units`` carries no RLS (see migration 0055), so a foreign unit id
+    """``prep_units`` carries no RLS (see migration 0059), so a foreign unit id
     planted in ``cited_unit_ids`` -- e.g. by a bug two modules away in
     ``evaluate.py``, not reachable through this route today -- must still not
     resolve. Plants org B's real unit id directly into org A's objective

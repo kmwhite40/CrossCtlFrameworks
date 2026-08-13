@@ -1,4 +1,4 @@
-"""The four AI-dissent-path columns (migration 0059): four nullable
+"""The four AI-dissent-path columns (migration 0063): four nullable
 columns on assessment_objective_proposals (primary_verdict, and the three
 challenger columns), and a NOT NULL dissent_count rollup on
 assessment_control_proposals.
@@ -121,7 +121,7 @@ async def test_dissent_columns_round_trip() -> None:
 async def test_deleting_the_challenger_ai_run_sets_the_link_null_not_cascade() -> None:
     """ON DELETE SET NULL: the objective proposal is a record of what
     happened and must survive its provenance row being cleaned up -- exactly
-    matching this same table's existing ai_action_run_id FK (migration 0056).
+    matching this same table's existing ai_action_run_id FK (migration 0060).
     """
     org_id, assessment_id = await _assessment("dissent-fk-set-null")
     proposal_id = await _control_proposal(org_id, assessment_id)
@@ -165,7 +165,7 @@ async def test_dissent_count_defaults_to_zero_not_null() -> None:
 
 
 async def test_dissent_count_column_is_not_nullable() -> None:
-    """Guards migration 0059 declaring nullable=False in the migration
+    """Guards migration 0063 declaring nullable=False in the migration
     itself, not just relying on the ORM's Mapped[int] -- a migration that
     forgot nullable=False would let a raw INSERT (bypassing the ORM's own
     Python-side default entirely) slip a NULL past it.

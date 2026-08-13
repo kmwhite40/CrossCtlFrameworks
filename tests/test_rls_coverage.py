@@ -78,7 +78,7 @@ def _migrate() -> None:
 
 # Snapshot of every ccf-schema table carrying a `tenant_isolation` policy,
 # taken from `pg_policy`/`pg_class` on the fully-migrated schema (migrations
-# 0010 through 0052). If a future migration adds/removes RLS coverage, update
+# 0010 through 0064). If a future migration adds/removes RLS coverage, update
 # this set alongside it — that's the point: the test is living documentation
 # of exactly which tables are protected.
 EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(

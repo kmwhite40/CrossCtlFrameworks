@@ -5,8 +5,8 @@ SAR or POA&M creation directly; acceptance projects into assessment_control_resu
 Objectives themselves are not stored -- they are read from ccf.controls sub-clause
 rows -- so only a label and a SHA-256 of the objective text are kept here.
 
-Revision ID: 0055_assessment_engine
-Revises: 0054_prep_grants_gin
+Revision ID: 0059_assessment_engine
+Revises: 0058_prep_grants_gin
 Create Date: 2026-08-10
 """
 
@@ -16,8 +16,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0055_assessment_engine"
-down_revision = "0054_prep_grants_gin"
+revision = "0059_assessment_engine"
+down_revision = "0058_prep_grants_gin"
 branch_labels = None
 depends_on = None
 

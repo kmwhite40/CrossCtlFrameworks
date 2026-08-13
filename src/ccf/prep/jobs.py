@@ -178,7 +178,7 @@ async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
     reconciled_org = int(run.organization_id)
     if int(job.organization_id) != reconciled_org:
         # prep_jobs carries the same tenant_isolation policy prep_runs does
-        # (migration 0060), and hits the identical RLS hazard
+        # (migration 0064), and hits the identical RLS hazard
         # pipeline._reconcile_organization's own docstring explains: the
         # policy's USING clause is checked against this row's *pre*-update
         # organization_id, which is still the job's original, stale value on
@@ -227,7 +227,7 @@ async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[st
     organization has a queued job, not its contents. Once a job is claimed,
     though, its own processing reads and writes across every one of the
     eleven RLS'd tables (``pipeline.advance`` touches passages,
-    classifications, embeddings...) — exactly what migration ``0060``'s
+    classifications, embeddings...) — exactly what migration ``0064``'s
     policy exists to contain — so the tenant GUC is set to *that job's own*
     ``organization_id`` (:func:`ccf.db.set_session_tenant`) immediately
     before :func:`_drive_one` runs, and cleared again, explicitly, right

@@ -1,6 +1,6 @@
 """GUC audit (2026-08-12 RLS-coverage design, Task 2): direct assertions on
 the mechanism that makes the worker/CLI paths' unscoped access to the eleven
-newly-RLS'd engine tables (migration 0060) deliberate rather than an
+newly-RLS'd engine tables (migration 0064) deliberate rather than an
 oversight.
 
 ``ccf.db.session_scope()`` -- every CLI command, both worker drain loops
@@ -13,8 +13,8 @@ organization's queued jobs in a single claim query
 (``ccf.queue.claim_jobs``/``ccf.prep.jobs.claim`` have no organization_id
 filter, intentionally). This is not new to this slice -- ``models_prep.py``
 and ``models_assessment_engine.py`` already documented it before migration
-0060 existed, when it read as "no RLS at all"; both docstrings are updated
-in this same task to say "has RLS via 0060, worker deliberately bypasses
+0064 existed, when it read as "no RLS at all"; both docstrings are updated
+in this same task to say "has RLS via 0064, worker deliberately bypasses
 it," since after Task 1 the old wording is simply false.
 
 What was missing before this module: a *direct* assertion on the mechanism
@@ -51,7 +51,7 @@ async def test_session_scope_leaves_the_tenant_guc_unset_and_the_bootstrap_role_
     """Direct assertion on the mechanism, not just its effect: session_scope()
     never sets ccf.tenant_id and never SET ROLEs to ccf_app. It stays on the
     bootstrap `ccf` role, which the eleven tables' new FORCE RLS (migration
-    0060) cannot restrict -- a table's owner bypasses its own policy unless
+    0064) cannot restrict -- a table's owner bypasses its own policy unless
     it queries as a *different*, non-owning role (see the design doc's
     "Ownership and FORCE" section, and Global Constraints' "RLS mechanics").
     """
@@ -71,7 +71,7 @@ async def test_prep_worker_claim_drains_two_organizations_in_one_cycle() -> None
     (`prep_jobs.claim`, exactly what `ccf.prep.jobs.run_once` -- and therefore
     `ccf prep-worker` -- calls) on a `session_scope()` session, exactly as the
     CLI opens it. Two organizations' pending jobs are claimed in the same
-    call: proof migration 0060's FORCE RLS does not narrow this on the one
+    call: proof migration 0064's FORCE RLS does not narrow this on the one
     path that would fail loudly (a job silently never claimed, sitting
     `pending` forever) rather than leak.
 

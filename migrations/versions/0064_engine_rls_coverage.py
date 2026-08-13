@@ -28,8 +28,8 @@ deliberately unscoped by session_scope() rather than fixed here (Task 2 of
 the implementation plan audits and documents that as a named exception, not
 a gap this migration needs to close).
 
-Revision ID: 0060_engine_rls_coverage
-Revises: 0059_ai_dissent_path
+Revision ID: 0064_engine_rls_coverage
+Revises: 0063_ai_dissent_path
 Create Date: 2026-08-12
 """
 
@@ -37,8 +37,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0060_engine_rls_coverage"
-down_revision = "0059_ai_dissent_path"
+revision = "0064_engine_rls_coverage"
+down_revision = "0063_ai_dissent_path"
 branch_labels = None
 depends_on = None
 
@@ -66,7 +66,7 @@ _PREDICATE = "(ccf.current_tenant() IS NULL OR organization_id = ccf.current_ten
 
 
 def upgrade() -> None:
-    # Matches 0054's exact block (the repo standard 0057 and 0058 both
+    # Matches 0058's exact block (the repo standard 0061 and 0062 both
     # omitted): a no-op if ccf_app doesn't exist in this environment (e.g. a
     # dev DB that never split roles), and otherwise ensures every table in
     # the schema is usable by the scoped application role regardless of
@@ -91,6 +91,6 @@ def downgrade() -> None:
         op.execute(f"ALTER TABLE ccf.{table} NO FORCE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE ccf.{table} DISABLE ROW LEVEL SECURITY")
     # The GRANT is intentionally not reversed -- every prior migration that
-    # re-issues it does the same (see 0037, 0054), since revoking a blanket
+    # re-issues it does the same (see 0037, 0058), since revoking a blanket
     # grant on downgrade could strand other, unrelated tables whose own
     # migrations already ran and still need it.

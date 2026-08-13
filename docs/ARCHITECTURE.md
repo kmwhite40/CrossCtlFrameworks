@@ -168,7 +168,7 @@ Built on the reference catalog + operational tables:
   principal is unscoped, so the supplied `organization_id` is trusted
   outright — true of the whole app in that mode, not specific to prep. The
   seven `prep_*` tables carry a `tenant_isolation` RLS policy (migration
-  `0060`, 2026-08-12 RLS-coverage design), matching 121 of Concord's 135
+  `0064`, 2026-08-12 RLS-coverage design), matching 125 of Concord's 140
   `ccf` tables. Two different scopes apply to the worker path, deliberately
   (2026-08-12 worker-tenant-scoping design): `claim()` is **still,
   intentionally, unscoped by organization**, since one worker drains every
@@ -235,7 +235,7 @@ Built on the reference catalog + operational tables:
   `ai_action_runs` row, one `ai_action_citations` row per passage the model
   actually cited (`cited_unit_ids`, not everything retrieval offered), and a
   link back on `AssessmentObjectiveProposal.ai_action_run_id` (migration
-  0056) — and, for the same reason as classification, deliberately does not
+  0060) — and, for the same reason as classification, deliberately does not
   route through `ccf.ai_actions.run_action`: the prompt is already bounded to
   one objective plus only the passages retrieval returned for it, and its
   citations are validated against that exact set, which is the safety
@@ -258,7 +258,7 @@ Built on the reference catalog + operational tables:
   `ai_action_run_id` permanently — historical rows are not retrofitted.
   The three `assessment_control_proposals` / `assessment_objective_proposals`
   / `assessment_jobs` tables carry a `tenant_isolation` RLS policy (migration
-  `0060`, 2026-08-12 RLS-coverage design), the same as the `prep_*` tables.
+  `0064`, 2026-08-12 RLS-coverage design), the same as the `prep_*` tables.
   Two different scopes apply to the worker path, deliberately (2026-08-12
   worker-tenant-scoping design): the job claim (`ccf.queue.claim_jobs`) is
   **still, intentionally, unscoped**, since one worker drains every
@@ -284,15 +284,15 @@ Built on the reference catalog + operational tables:
   policy, enforced on every path since they have no worker/CLI bypass of this
   kind. See `models_assessment_engine.py` for the same RLS and AI-action
   notes next to the table definitions.
-- **RLS coverage** (migration `0060`, 2026-08-12 RLS-coverage design): 121 of
-  the 135 tables in the `ccf` schema carry a `tenant_isolation` policy —
-  every tenant-owned table has one. The remaining fourteen are global
+- **RLS coverage** (migration `0064`, 2026-08-12 RLS-coverage design): 125 of
+  the 140 tables in the `ccf` schema carry a `tenant_isolation` policy —
+  every tenant-owned table has one. The remaining fifteen are global
   reference data with no tenant dimension and are named explicitly rather
   than exempted by omission: `controls`, `frameworks`, `control_families`,
   `framework_mappings`, `worksheets`, `worksheet_rows`, `ingestion_runs`,
-  `catalog_sources`, `catalog_checks`, `scoring_controls`,
-  `statement_templates`, `ksis`, `ai_action_definitions`, and
-  `alembic_version` — none carries an `organization_id` column.
+  `catalog_sources`, `catalog_checks`, `catalog_integrity_reports`,
+  `scoring_controls`, `statement_templates`, `ksis`, `ai_action_definitions`,
+  and `alembic_version` — none carries an `organization_id` column.
   `tests/test_rls_registry_no_gap.py` asserts both sides of this split live
   against the schema, so a future tenant-owned table added without a policy
   fails CI immediately rather than shipping unnoticed. **RLS here is defence
@@ -315,7 +315,7 @@ Built on the reference catalog + operational tables:
   match assessors' decisions. `POST .../reject` (body `{corrected_finding,
   note}`) is `accept`'s sibling: `reject_control_proposal` sets
   `state="rejected"`, records `corrected_finding`, `rejected_by`,
-  `rejected_at`, `rejection_note` (migration `0057`), and mirrors acceptance's
+  `rejected_at`, `rejection_note` (migration `0061`), and mirrors acceptance's
   `AiActionRun` stamping (`reviewer`, `disposition="rejected"`, `decided_at`)
   on every run linked to the control's objectives — except `mutation_applied`
   stays `False`, because nothing authoritative was written. **It never writes
@@ -356,7 +356,7 @@ Built on the reference catalog + operational tables:
   first snapshot's `decided` count starts at zero and a low early count is
   expected, not a sign anything is wrong.
 
-  `CalibrationSnapshot` (migration `0057`) stores one measurement plus a
+  `CalibrationSnapshot` (migration `0061`) stores one measurement plus a
   `config_fingerprint` — a SHA-256 over `prep_screen_threshold`, the rollup
   policy identity (`ROLLUP_POLICY_VERSION`), and the evaluation model name.
   Two snapshots are comparable only if all three are unchanged;
@@ -402,7 +402,7 @@ Built on the reference catalog + operational tables:
   a scan-sourced or profile-gap POA&M's `source_ref` never matches the
   convention above and enqueues nothing. The re-evaluation is a second,
   distinct `AssessmentControlProposal` carrying `source_poam_id` (migration
-  `0058`) — not a reuse of the accepted first-pass row — which required
+  `0062`) — not a reuse of the accepted first-pass row — which required
   replacing the flat `uq_control_proposal_assessment_control` constraint
   with two partial unique indexes: `uq_control_proposal_first_pass` scopes
   first-pass idempotency to `source_poam_id IS NULL` rows, and
@@ -460,10 +460,10 @@ Built on the reference catalog + operational tables:
   touching either, `assessments.py:205` already keys its own idempotency on
   `source_ref = f"assessment:{id}"`, and `ui.py`'s still dedupes on POAM
   title alone, which collides across two systems assessing the same
-  control; and migration `0058` (like `0057` before it) re-issues its
+  control; and migration `0062` (like `0061` before it) re-issues its
   `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ccf TO
   ccf_app` as a bare statement, without the `IF EXISTS (SELECT 1 FROM
-  pg_roles WHERE rolname = 'ccf_app')` guard migration `0054` establishes as
+  pg_roles WHERE rolname = 'ccf_app')` guard migration `0058` establishes as
   the repo standard for exactly this GRANT.
 
 - **Recovery closure** (`ccf.governance.control_tests`, `.conmon`,
@@ -506,7 +506,7 @@ Built on the reference catalog + operational tables:
   acted on.
 
 - **AI dissent path** (`ccf.assessment.engine.evaluate`, `.calibration`,
-  `CCF_ASSESSMENT_DISSENT_ENABLED`, migration `0059`): runs an independent
+  `CCF_ASSESSMENT_DISSENT_ENABLED`, migration `0063`): runs an independent
   second model call — a challenger — against a verdict where being wrong is
   expensive. Self-reported `model_confidence` (`AssessmentObjectiveProposal
   .model_confidence`) is a weak error signal on its own: a model confidently
@@ -546,7 +546,7 @@ Built on the reference catalog + operational tables:
   `verdict` unchanged — so "not challenged" (`challenger_verdict IS NULL`)
   stays distinguishable from "challenged and agreed."
 
-  `AssessmentControlProposal.dissent_count` (migration `0059`, `NOT NULL`,
+  `AssessmentControlProposal.dissent_count` (migration `0063`, `NOT NULL`,
   default `0`, reset to `0` at the top of every `evaluate_control_proposal`
   rerun) counts how many of a control's objectives were contested, so a
   reviewer sees it without a join; `GET /api/assessment-engine/proposals/
