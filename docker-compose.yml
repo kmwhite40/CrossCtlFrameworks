@@ -41,7 +41,14 @@ services:
     depends_on:
       db:       { condition: service_healthy }
       migrator: { condition: service_completed_successfully }
-    environment: *ccf_env
+    # The prep and assessment-engine routers are registered only when their
+    # flag is set, and x-ccf-env is silent on both. Until now only the two
+    # worker services set them, so the workers could process jobs while the
+    # web app served no route for them and the features were invisible.
+    environment:
+      <<: *ccf_env
+      CCF_PREP_ENABLED: "true"
+      CCF_ASSESSMENT_ENGINE_ENABLED: "true"
     ports: ["8088:8000"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
