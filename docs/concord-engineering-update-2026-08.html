@@ -184,7 +184,7 @@
   <dl class="ledger">
     <div class="cell"><dt>Capabilities</dt><dd>6</dd></div>
     <div class="cell"><dt>Declined</dt><dd>3</dd></div>
-    <div class="cell"><dt>Tests</dt><dd>849 <span class="to">→</span> 1043</dd></div>
+    <div class="cell"><dt>Tests</dt><dd>849 <span class="to">→</span> 1205</dd></div>
     <div class="cell"><dt>Migrations</dt><dd>0055–0064</dd></div>
   </dl>
 
@@ -493,9 +493,11 @@
   </section>
 
   <footer>
-    <p>Branch <span class="mono">feat/evidence-prep-spine</span> — 131 commits, 1,043 tests
-    passing, migration head <span class="mono">0064</span>. Type-checked and linted clean.
-    Not yet merged.</p>
+    <p>Merged to <span class="mono">main</span> in three pull requests — the pipeline
+    work, then the inherited CI failures it exposed, then a Next.js major to clear the
+    last advisory. 1,205 tests passing, migration head <span class="mono">0064</span>,
+    type-checked and linted clean, no known vulnerabilities in either dependency tree.
+    CI is green end to end for the first time in a while.</p>
     <p>One item is open by design: a dedicated worker database role that would make the
     remaining claim-path bypass explicit and auditable. It adds no isolation, and it's
     infrastructure — so it ships when someone decides it does.</p>
