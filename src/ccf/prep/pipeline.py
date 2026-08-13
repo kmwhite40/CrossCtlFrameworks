@@ -24,6 +24,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..db import set_session_tenant
 from ..logging import get_logger
 from ..models_prep import PREP_STAGES, PrepLine, PrepRun
 from .classify import run_stage_classify
@@ -228,7 +229,41 @@ async def _reconcile_organization(session: AsyncSession, run: PrepRun) -> bool:
     ``run_stage_parse`` gives a source that disappears before first parse,
     now applied uniformly to a source that disappears between two resumes of
     an already-parsed run too.
+
+    **Deliberately unscoped lookup (2026-08-12 worker-tenant-scoping design,
+    Finding 1 follow-up).** ``ccf.prep.jobs.run_once`` sets the session's RLS
+    tenant to the *claimed job's own* ``organization_id`` before driving a
+    run through :func:`advance` — but that value can be stale: it is exactly
+    what this function exists to correct, whenever a source is reparented to
+    a different organization between enqueue and processing. Scoping this
+    lookup to the value it is supposed to validate makes it structurally
+    unable to detect the case it exists for — filtered by RLS to the job's
+    stale org, the query finds nothing, :class:`SourceMissing` fires, and a
+    reparented run is misreported ``orphaned`` ("source not found") instead
+    of reconciled. "Who really owns this source?" is inherently a
+    cross-tenant question, the same way ``ccf.queue.reap_stale_jobs`` and
+    ``claim_jobs`` are — see their module docstring — so the lookup below
+    runs with the tenant GUC cleared, exactly like those, and the window is
+    closed again immediately after: on success, to the *resolved* (possibly
+    corrected) organization, so every stage after this one runs properly RLS
+    -scoped; on :class:`SourceMissing`, back to ``None``, since the run is
+    now terminal and closing over a real organization would only be a
+    stale guess.
+
+    The corrected ``run.organization_id`` is flushed *before* the window
+    closes, still unscoped -- not after re-scoping to ``true_org``. The
+    ``UPDATE`` this flush issues is filtered by RLS's ``USING`` clause
+    against the row's *pre*-update ``organization_id`` (still the job's
+    stale value at this point, since nothing has persisted the correction
+    yet), not the incoming new one -- re-scoping to ``true_org`` first would
+    make that ``USING`` clause compare the stale on-disk value against the
+    new tenant, match nothing, and silently update zero rows. Flushing while
+    still unscoped (bypass) sidesteps that entirely.
     """
+    # Unscoped on purpose -- see the docstring above. Bracketed as tightly as
+    # possible around the single ownership lookup and the flush that commits
+    # its result.
+    await set_session_tenant(session, None)
     try:
         true_org = await resolve_source_organization_id(session, run.source_kind, run.source_id)
     except SourceMissing as exc:
@@ -238,8 +273,18 @@ async def _reconcile_organization(session: AsyncSession, run: PrepRun) -> bool:
         run.error = str(exc)
         await session.flush()
         log.info("prep.source_missing_on_resume", run_id=run.id, reason=str(exc))
+        # Left unscoped (None): the run is terminal, nothing further should
+        # run under any organization's tenant on this session until the next
+        # job's own set_session_tenant call takes over.
         return False
     run.organization_id = true_org
+    # Flushed here, still unscoped -- see the docstring for why this must
+    # happen before, not after, the re-scope below.
+    await session.flush()
+    # Re-close the window against the *resolved* organization, not the job's
+    # possibly-stale recorded one -- the rest of this stage's (and every
+    # later stage's) processing must run properly RLS-scoped.
+    await set_session_tenant(session, true_org)
     return True
 
 

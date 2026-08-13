@@ -175,7 +175,24 @@ async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
     # authorization (claim() has no org filter, by design), but leaving it
     # stale after a reparent would mean "every prep_* row for a run shares
     # one organization" is no longer literally true of this table too.
-    job.organization_id = run.organization_id
+    reconciled_org = int(run.organization_id)
+    if int(job.organization_id) != reconciled_org:
+        # prep_jobs carries the same tenant_isolation policy prep_runs does
+        # (migration 0060), and hits the identical RLS hazard
+        # pipeline._reconcile_organization's own docstring explains: the
+        # policy's USING clause is checked against this row's *pre*-update
+        # organization_id, which is still the job's original, stale value on
+        # disk -- and by this point the session is already scoped to the
+        # *new*, reconciled organization (set by _reconcile_organization for
+        # the run's own processing above). A plain scoped flush of this one
+        # column would therefore match zero rows, exactly like the run's own
+        # write would have without the same fix. Briefly unscoped, tightly
+        # bracketed around this one column, for the same reason -- then
+        # re-scoped so nothing else in this function runs unscoped.
+        await set_session_tenant(session, None)
+        job.organization_id = reconciled_org
+        await session.flush()
+        await set_session_tenant(session, reconciled_org)
 
     if run.status in _TERMINAL:
         job.status = "done"
@@ -233,6 +250,43 @@ async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[st
     any DB-level ABORTED state (see the scheduler's own docstring for the
     full trap this guards against), while leaving the tenant untouched
     underneath it.
+
+    **This ordering is not, and as of this writing cannot be, verified by a
+    black-box test.** Moving the ``set_session_tenant`` call above to be the
+    first statement *inside* ``session.begin_nested()`` instead — reproducing
+    exactly the hazard the previous paragraph describes — was tried against
+    this module's and ``test_prep_tenant_isolation.py``'s full test suites
+    and produced zero failures. That is not the ordering being safe; it is
+    two other properties independently masking it: (1) the ``except``
+    branch's own recovery write is a direct ``UPDATE ... WHERE id ==
+    job_id``, never filtered by tenant, so it succeeds under whatever role a
+    savepoint rollback leaves behind; and (2) the tenant is reset
+    unconditionally after every job's commit, so by the time the *next* job
+    starts, nothing survives from the failed job's savepoint either way. A
+    test that asserted only "the call happened before ``begin_nested()``"
+    would be asserting on call order via mocking, not on any behavior this
+    codebase's tests otherwise verify by effect — see the module's testing
+    conventions. If either masking property above is ever removed (a
+    tenant-filtered write added to the ``except`` branch, or the
+    between-jobs reset made conditional), this ordering stops being
+    incidental and starts being load-bearing; a change to either is the
+    trigger to revisit this, not a speculative test today.
+
+    **This job's own recorded organization_id can itself be stale** — a
+    source reparented after enqueue but before processing — which is exactly
+    what ``pipeline._reconcile_organization`` exists to catch, on every
+    stage, not only the first. That function briefly re-unscopes the session
+    for its one ownership lookup and re-scopes to whatever it resolves,
+    *inside* this loop's savepoint (see its own docstring for why the lookup
+    itself must be unscoped). A later stage failing in the same ``advance()``
+    call therefore rolls that re-scoping back too, same as this function's
+    own tenant ``SET`` would if it lived inside the savepoint — but the
+    ``except`` branch below only ever writes via a direct, PK-filtered
+    ``UPDATE`` (never a tenant-scoped query), and the explicit reset after
+    every job's commit does not depend on what the savepoint left behind, so
+    this is safe for the same reason the ordering below is: nothing between
+    a mid-savepoint tenant change and the next explicit reset trusts RLS to
+    have been correctly scoped in between.
 
     This is also why :func:`_drive_one` no longer catches or rolls back its
     own DB-level failures the way an earlier version did, directly, with a

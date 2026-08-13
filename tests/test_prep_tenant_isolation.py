@@ -47,7 +47,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 
 from ccf.ai import gateway
 from ccf.ai.providers.base import EmbedResponse
@@ -61,12 +61,13 @@ from ccf.models_evidence import EvidenceObject, EvidenceVersion
 from ccf.models_prep import (
     PrepClassification,
     PrepEmbedding,
+    PrepJob,
     PrepLine,
     PrepRun,
     PrepScreen,
     PrepUnit,
 )
-from ccf.prep import pipeline
+from ccf.prep import jobs, pipeline
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -566,3 +567,112 @@ async def test_resuming_a_run_after_parse_still_reconciles_organization_id(
 
     rows_by_table = await _load_all_stage_rows(run_id)
     _assert_every_table_populated_and_consistent(rows_by_table, victim_org)
+
+
+async def _pending_prep_job_backlog() -> int:
+    """Mirrors ``tests/test_prep_worker_tenant_scoping.py``'s identical
+    helper: this shared, session-scoped test database is not wiped per test,
+    and other modules legitimately leave ``pending`` ``PrepJob`` rows behind.
+    Sizing ``run_once``'s ``limit`` to the real backlog (rather than a fixed
+    small number) is what keeps this module's one ``run_once`` test from
+    starving on someone else's older rows -- the assertions below still key
+    off this test's own specific run/job ids, never a bare count.
+    """
+    async with session_scope() as s:
+        return int(
+            (
+                await s.execute(
+                    select(func.count()).select_from(PrepJob).where(PrepJob.status == "pending")
+                )
+            ).scalar_one()
+        )
+
+
+async def test_reparenting_between_enqueue_and_processing_still_reconciles_through_run_once(
+    seeded_control: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding-1 regression, reproduced through the REAL worker entry point.
+
+    The two tests above prove reconciliation works when ``pipeline.advance``
+    is driven directly on a bypass (unscoped) session -- but that is not what
+    a real worker cycle does. ``ccf.prep.jobs.run_once`` scopes the session's
+    RLS tenant to the *claimed job's own* ``organization_id``
+    (2026-08-12 worker-tenant-scoping design) before ever calling
+    ``advance()``, and that recorded value is exactly what can go stale: it
+    is a snapshot taken at enqueue time, and the whole reason
+    ``_reconcile_organization`` exists is that the source's true owner can
+    change after that snapshot was taken.
+
+    Before the Finding-1 fix, scoping ``_reconcile_organization``'s own
+    ownership lookup to the job's stale recorded organization made the
+    lookup blind to exactly the case it exists to catch: RLS filters the
+    query down to the wrong tenant, it finds nothing, ``SourceMissing``
+    fires, and the run is misreported ``orphaned`` ("... not found") instead
+    of reconciled to the source's real, new owner. Neither test above catches
+    this because neither goes through ``run_once``'s scoped session at all.
+    """
+    _, org_at_enqueue = await _mk_user(
+        "reparent-enqueue@prep-tenant.test", "Prep Tenant Reparent Enqueue"
+    )
+    _, org_after_reparent = await _mk_user(
+        "reparent-new@prep-tenant.test", "Prep Tenant Reparent New Owner"
+    )
+    version_id = await _evidence_version(
+        org_at_enqueue,
+        b"Administrators must use multifactor authentication for network access.\n",
+        "reparent.txt",
+    )
+
+    monkeypatch.setattr(gateway, "embed", _fake_embed([0.02] * 1024))
+    monkeypatch.setattr(
+        gateway, "generate_structured_resolved", _fake_generate_structured_echoing_candidates()
+    )
+
+    async with session_scope() as s:
+        # jobs.enqueue's own ownership check passes here -- org_at_enqueue
+        # genuinely owns the source at this moment. job.organization_id is
+        # therefore a legitimate snapshot, not a bypassed/forged claim like
+        # the two tests above deliberately use.
+        job = await jobs.enqueue(
+            s, organization_id=org_at_enqueue, source_kind="evidence_version",
+            source_id=version_id,
+        )
+        job_id, run_id = int(job.id), int(job.run_id)
+
+    # The reparent: the source's *real* owner changes after enqueue, while
+    # the already-queued job's own organization_id keeps pointing at
+    # org_at_enqueue -- the exact race/bug the finding describes.
+    async with session_scope() as s:
+        obj = (
+            await s.execute(
+                select(EvidenceObject)
+                .join(EvidenceVersion, EvidenceVersion.evidence_object_id == EvidenceObject.id)
+                .where(EvidenceVersion.id == version_id)
+            )
+        ).scalar_one()
+        obj.organization_id = org_after_reparent
+        await s.flush()
+
+    limit = await _pending_prep_job_backlog()
+    async with session_scope() as s:
+        stats = await jobs.run_once(s, worker="reparent-test", limit=limit)
+    assert stats["claimed"] >= 1
+
+    async with session_scope() as s:
+        run = await pipeline.load_run(s, run_id)
+        assert run is not None
+        assert run.status == "complete", (
+            f"status={run.status!r} error={run.error!r} -- a source reparented between "
+            "enqueue and processing must still be reconciled through the real worker "
+            "path, not misreported orphaned"
+        )
+        assert run.organization_id == org_after_reparent, (
+            "run.organization_id must end up at the source's true, new owner -- not "
+            "left at the job's stale, recorded organization_id"
+        )
+        job_row = (await s.execute(select(PrepJob).where(PrepJob.id == job_id))).scalar_one()
+        assert job_row.status == "done"
+        assert job_row.organization_id == org_after_reparent
+
+    rows_by_table = await _load_all_stage_rows(run_id)
+    _assert_every_table_populated_and_consistent(rows_by_table, org_after_reparent)
