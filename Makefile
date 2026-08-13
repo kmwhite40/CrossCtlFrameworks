@@ -1,5 +1,5 @@
 # CrossCtlFrameworks — Copyright © 2026 Colleen Townsend
-.PHONY: help install dev up down logs migrate ingest serve cli test lint typecheck fmt sbom scan clean
+.PHONY: help install dev up down logs migrate ingest serve cli test lint typecheck fmt sbom scan clean prep-worker assessment-worker
 
 PY      ?= python3
 COMPOSE ?= docker compose
@@ -52,6 +52,12 @@ sbom: ## Generate CycloneDX SBOM
 
 scan: ## Trivy filesystem scan
 	trivy fs --severity HIGH,CRITICAL --exit-code 1 .
+
+prep-worker: ## Drain queued evidence-preparation jobs
+	$(COMPOSE) --profile prep up -d prep-worker
+
+assessment-worker: ## Drain queued objective-level assessment jobs
+	$(COMPOSE) --profile assessment up -d assessment-worker
 
 reader-build: ## Build Concord Reader .exe via PyInstaller
 	pip install -e ".[reader]"

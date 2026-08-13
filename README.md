@@ -311,6 +311,12 @@ Then open:
 > Host ports: the API is published on **8088** (→ container 8000) and Postgres
 > on **5433** (→ 5432). Change the `ports:` lines in `docker-compose.yml` if
 > either is taken.
+>
+> Postgres runs as `pgvector/pgvector:pg16` (a drop-in replacement for stock
+> PG16 that adds the `vector` extension), not the plain `postgres` image —
+> the evidence preparation pipeline's embeddings require pgvector, so a
+> self-managed Postgres for local/prod use must have the `vector` extension
+> installed.
 
 The database persists in the `ccf_pgdata` Docker volume across restarts. Stop
 with `docker compose down` (keeps data) or `docker compose down -v` (full reset).
@@ -419,13 +425,16 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET | `/api/assurance/systems/{id}/graph` (+ `/impact`) | Assurance graph + change-impact analysis |
 | GET · POST | `/api/evidence-repo` (+ versions, review, download) | Versioned, content-addressed evidence with WORM lock |
 | GET · POST | `/api/packages` (+ `/{id}/diff`, `/{id}/replay`) | Authorization packages: provenance, diff, replay |
-| GET · POST | `/api/ai-actions` (+ `/{id}/approve`) | Typed, citation-first, human-approved AI actions |
+| GET · POST | `/api/ai-actions` (+ `/{id}/approve`, `?status=recorded` for prep/assessment-engine provenance) | Typed, citation-first, human-approved AI actions |
 | GET · POST | `/api/ai-agents` (+ `/{id}/kill-switch`) | AI-agent inventory, risk scoring, kill-switch |
 | GET · POST | `/api/packs` (+ `/{key}/install\|coverage\|test`) | Compliance-pack runtime |
 | POST · GET | `/api/admin/self-assurance/init\|run\|status\|package` | Concord-on-Concord self-assurance |
 | POST · GET | `/api/admin/portal/grants` (+ `/{id}/revoke`) | Issue/list/revoke external portal grants |
 | GET · POST | `/api/portal/session` · `/api/portal/comments` | External portal (token-authenticated) |
 | GET · POST | `/api/queries` · `/api/queries/{key}/run\|export` | Deterministic assurance query templates (+ CSV) |
+| POST · GET | `/api/prep/runs` · `/api/prep/runs/{id}` · `/api/prep/retrieve` | Evidence preparation pipeline: queue a run, check stage status, hybrid retrieval |
+| POST · GET | `/api/assessment-engine/proposals` (+ `/{id}`, `/{id}/accept`, `/{id}/reject`) | Objective-level assessment: queue evaluation, inspect a proposal, accept it into `AssessmentControlResult`, or reject it with an assessor's correction |
+| GET | `/api/assessment-engine/calibration` | Agreement between proposed and assessor-decided findings for the caller's org (`missed_findings` / `false_alarms` reported separately) |
 
 Full schema at `/openapi.json` / Swagger UI at `/docs`.
 
@@ -439,10 +448,10 @@ make sbom            # CycloneDX SBOM
 make scan            # Trivy HIGH/CRITICAL scan
 ```
 
-CI runs lint + mypy + **`bandit` SAST** + pytest against a Postgres 16 service
-container (with `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA=1`, so any non-conformant OSCAL
-export fails the build), plus a supply-chain job producing an SBOM + `pip-audit` +
-Trivy scan, plus a Docker build smoke test.
+CI runs lint + mypy + **`bandit` SAST** + pytest against a `pgvector/pgvector:pg16`
+service container (with `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA=1`, so any non-conformant
+OSCAL export fails the build), plus a supply-chain job producing an SBOM +
+`pip-audit` + Trivy scan, plus a Docker build smoke test.
 
 ## Configuration
 
@@ -476,6 +485,131 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
   default**; when enabled it stays citation-first and human-approved. Local/dev
   runs with a deterministic stub and no cloud credentials. The
   `ai_disabled_safe_default` reliability check confirms the safe default.
+- `CCF_PREP_ENABLED` — turn on the evidence preparation pipeline (`/api/prep`,
+  `ccf prep-worker`); **disabled by default**. When unset, the `/api/prep/*`
+  routes are not registered at all (a plain 404, not just a locked door) and
+  `ccf prep-worker` exits immediately without draining anything — there is no
+  way to spend a model-call dollar on this feature without opting in first.
+  Its own tenant scoping is derived from the authenticated principal
+  (`CCF_AUTH_ENABLED`); with auth off — the default, and true of the whole
+  app, not specific to prep — every caller is unscoped and the
+  `organization_id` a request supplies is trusted outright.
+  `CCF_PREP_SCREEN_THRESHOLD` (default **0.72**) is the `ts_rank_cd` cutoff a
+  parsed line must clear to be considered control-relevant — derived
+  empirically against the fully-ingested 5,430-row 800-53A catalog, with only
+  ~0.03 of margin between the highest-scoring boilerplate line and the
+  lowest-scoring genuine match, so re-derive it if the catalog is
+  re-ingested. `CCF_PREP_EXPAND_WINDOW` (default 4) bounds context expansion
+  around a triggered line. `CCF_PREP_EMBED_PROVIDER` /
+  `CCF_PREP_EMBED_MODEL` / `CCF_PREP_EMBED_DIMENSIONS` (default `openai` /
+  `text-embedding-3-small` / 1024) configure the embedding backend
+  independently of `CCF_AI_PROVIDER`, since Anthropic has no embeddings
+  endpoint. `CCF_PREP_WORKER_BATCH_SIZE` (default 10) and
+  `CCF_PREP_JOB_STALE_AFTER_MINUTES` (default 60) tune the `prep-worker`
+  queue; a job stuck `claimed` past the stale window is reaped back to
+  `pending`, and one still failing at `CCF_PREP_JOB_MAX_ATTEMPTS` (default 5)
+  claims is dead-lettered instead of being requeued forever.
+- `CCF_ASSESSMENT_ENGINE_ENABLED` — turn on the objective-level assessment
+  engine (`/api/assessment-engine`, `ccf assessment-worker`); **disabled by
+  default**, same reasoning as `CCF_PREP_ENABLED`: the worker spends money on
+  a model call per assessment objective. When unset, the
+  `/api/assessment-engine/*` routes are not registered at all (a plain 404,
+  absent from `/openapi.json`) and `ccf assessment-worker` exits immediately
+  without draining anything. Its tenant scoping is derived the same way prep's
+  is, from the authenticated principal (`CCF_AUTH_ENABLED`) by resolving the
+  named assessment's own `System -> Organization`; with auth off — the
+  default, and true of the whole app, not specific to this engine — every
+  principal is unscoped, so the assessment/proposal id a request names is
+  trusted outright. Do not run with auth disabled against data from more than
+  one real tenant. The `assessment_control_proposals` /
+  `assessment_objective_proposals` / `assessment_jobs` tables carry no
+  row-level-security policies, the same exemption as the `prep_*` tables —
+  isolation is application-layer, not database-enforced, for this engine.
+  `CCF_ASSESSMENT_ENGINE_RETRIEVAL_LIMIT` (default 8) bounds how many prepared
+  passages are retrieved per objective; `CCF_ASSESSMENT_ENGINE_BATCH_SIZE`
+  (default 5) and `CCF_ASSESSMENT_JOB_STALE_AFTER_MINUTES` (default 60) tune
+  the `assessment-worker` queue the same way the `CCF_PREP_*` equivalents tune
+  `prep-worker`, and one still failing at
+  `CCF_ASSESSMENT_JOB_MAX_ATTEMPTS` (default 5) claims is dead-lettered.
+  Proposals are inert: nothing an evaluation writes reaches the SAR generator
+  until an assessor accepts it, and a proposal that settled on
+  `insufficient_evidence` cannot be accepted at all — the engine could not
+  tell, which is not the same as the control failing. Accepting an
+  `other_than_satisfied` finding auto-creates a POA&M (idempotent on a
+  stable back-reference, never overwriting one a human has since edited),
+  and closing that POA&M enqueues a re-evaluation of the control — a passing
+  re-evaluation still surfaces as a proposal a human must accept, never an
+  auto-close; see `docs/ARCHITECTURE.md`'s "Closure & remediation loop" for
+  the full loop and its deliberate asymmetry with scan auto-closure. Both prep
+  classification and objective evaluation record their own AI provenance
+  (`ccf.ai_actions.provenance.record_ai_run`) on every call — an
+  `ai_action_runs` row with `status="recorded"`, citations, and a link back
+  from `PrepClassification`/`AssessmentObjectiveProposal` — independently of
+  `CCF_AI_ENABLED`'s approval-gated action layer above, and by design does not
+  route through it (see `docs/ARCHITECTURE.md` for why). Accepting a proposal
+  additionally stamps the accepting assessor (`reviewer`, `disposition`,
+  `decided_at`) onto every AI run linked to it, so `ai_action_runs` joined to
+  `ai_action_citations` answers which model, which evidence, and who accepted
+  it, for both pipelines, in one query. `POST
+  /api/assessment-engine/proposals/{id}/reject` is acceptance's other
+  outcome: an assessor records that a proposed finding was wrong, with the
+  finding they believe correct (`corrected_finding`, never
+  `insufficient_evidence` — that is proposal-only, and a correction asserts
+  what is true) and a required `note`. Rejection stamps the same
+  `AiActionRun`s with `disposition="rejected"` but never writes
+  `AssessmentControlResult` — the engine's wrong answer must not reach the
+  SAR with a human's name attached. `GET /api/assessment-engine/calibration`
+  and `ccf calibration-snapshot <organization_id>` compute agreement between
+  proposed and assessor-decided findings, reporting `missed_findings` (a
+  control passes that should not) and `false_alarms` (wasted remediation
+  effort) **separately** — they are never averaged into one accuracy figure
+  — alongside `agreement_rate` and a per-family breakdown. A
+  `calibration_snapshots` row records each measurement with a
+  `config_fingerprint` (a hash over `prep_screen_threshold`, the rollup
+  policy version, the model name, and — see `CCF_ASSESSMENT_DISSENT_ENABLED`
+  below — whether the AI dissent path is on and which policy version it
+  challenges under); two snapshots with different fingerprints compare as
+  **not comparable**, not drift, which matters because
+  `prep_screen_threshold`'s narrow margin (above) means it will be
+  re-derived. Nothing here is retrofitted: proposals decided before this
+  reject path existed carry no recorded disagreement, so an early snapshot's
+  `decided` count starting near zero is expected. The harness measures; it
+  does not tune the threshold, gate CI on a metric change, or generate
+  synthetic evidence — all deliberately out of scope for this slice.
+- `CCF_ASSESSMENT_DISSENT_ENABLED` — run an independent second model call (a
+  "challenger") against a `satisfied` verdict before an assessor ever sees
+  it; **disabled by default**, same reasoning as the other AI-call flags
+  above: this doubles model calls on the passing subset, and a deployment
+  must opt into that cost. Only `satisfied` is ever challenged — the
+  expensive error direction is a control passing that should not, not the
+  reverse — and the challenger sees the exact same retrieved passages the
+  primary call saw, never a fresh retrieval. A challenger that reaches a
+  different, cited verdict flips the objective to `insufficient_evidence`
+  (never averaged, majority-voted, or tie-broken toward either side) and
+  increments `AssessmentControlProposal.dissent_count`; one contested
+  objective is enough to force the whole control's rollup to
+  `insufficient_evidence`, which `accept_control_proposal` already refuses.
+  Both verdicts are retained — `AssessmentObjectiveProposal.challenger_verdict`
+  / `.challenger_rationale` — surfaced on `GET /api/assessment-engine/
+  proposals/{id}` alongside each objective. A challenger failure (provider
+  error, timeout, malformed response) never fails the evaluation: the
+  primary verdict persists, the challenger columns stay `NULL`, and a
+  warning is logged — a `NULL` `challenger_verdict` means either "not
+  challenged" or "challenged but failed," distinguishable only in the logs.
+  Toggling this flag changes what the calibration harness above is
+  measuring, so `config_fingerprint` folds it in (plus
+  `DISSENT_CHALLENGE_POLICY_VERSION`, naming the "satisfied only" policy so
+  a later change to which verdicts get challenged is visible too) — two
+  snapshots taken with the flag toggled between them compare as **not
+  comparable**, not drift. Not retrofitted: objectives evaluated before this
+  slice, or with the flag off, carry no dissent record. Migration `0063`
+  adds five new columns: four nullable columns on
+  `assessment_objective_proposals` (`primary_verdict` — the primary call's
+  verdict, preserved because `verdict` itself is overwritten on a genuine
+  disagreement — plus `challenger_verdict`, `challenger_rationale`, and
+  `challenger_ai_action_run_id`), and `dissent_count` (`NOT NULL default 0`)
+  on `assessment_control_proposals`; see `docs/ARCHITECTURE.md`'s "AI
+  dissent path" for the full reasoning.
 
 ## Security posture
 

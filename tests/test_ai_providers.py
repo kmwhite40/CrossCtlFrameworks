@@ -9,6 +9,7 @@ import pytest
 
 from ccf.ai.providers import build_provider
 from ccf.ai.providers.base import (
+    EmbedRequest,
     GenerateTextRequest,
     ProviderError,
     StructuredGenerationRequest,
@@ -132,3 +133,53 @@ async def test_structured_schema_violation_raises() -> None:
         await p.generate_structured_output(
             StructuredGenerationRequest(prompt="x", model="m", schema=_SCHEMA)
         )
+
+
+def _embed_handler(rows: list[dict]):  # type: ignore[no-untyped-def]
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/embeddings":
+            body = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"model": body["model"], "data": rows, "usage": {"prompt_tokens": 12}},
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_openai_embed_reorders_a_scrambled_response() -> None:
+    # The API returns rows out of request order; embed() must still line vector[i]
+    # up with texts[i] rather than trusting response order, or the vector store
+    # would silently pair each passage with the wrong embedding.
+    rows = [
+        {"index": 2, "embedding": [3.0]},
+        {"index": 0, "embedding": [1.0]},
+        {"index": 1, "embedding": [2.0]},
+    ]
+    p = _provider("openai", "good", _embed_handler(rows))
+    resp = await p.embed(EmbedRequest(texts=["a", "b", "c"], model="text-embedding-3-small"))
+    assert resp.vectors == [[1.0], [2.0], [3.0]]
+    assert resp.input_tokens == 12
+
+
+@pytest.mark.asyncio
+async def test_openai_embed_rejects_a_short_batch() -> None:
+    rows = [{"index": 0, "embedding": [1.0]}]
+    p = _provider("openai", "good", _embed_handler(rows))
+    with pytest.raises(ProviderError):
+        await p.embed(EmbedRequest(texts=["a", "b"], model="text-embedding-3-small"))
+
+
+@pytest.mark.asyncio
+async def test_openai_embed_rejects_duplicate_indices() -> None:
+    # Same count as requested, but a duplicated index means one text silently has no
+    # vector and another is overrepresented — as dangerous as a count mismatch.
+    rows = [
+        {"index": 0, "embedding": [1.0]},
+        {"index": 0, "embedding": [2.0]},
+    ]
+    p = _provider("openai", "good", _embed_handler(rows))
+    with pytest.raises(ProviderError):
+        await p.embed(EmbedRequest(texts=["a", "b"], model="text-embedding-3-small"))

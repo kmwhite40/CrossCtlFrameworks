@@ -10,6 +10,8 @@ from . import _structured
 from .base import (
     AIProvider,
     CredentialValidationResult,
+    EmbedRequest,
+    EmbedResponse,
     GenerateTextRequest,
     GenerateTextResponse,
     ModelDescriptor,
@@ -23,6 +25,7 @@ _DEFAULT_BASE = "https://api.openai.com"
 
 class OpenAIProvider(AIProvider):
     name = "openai"
+    supports_embeddings = True
 
     def __init__(
         self,
@@ -121,6 +124,38 @@ class OpenAIProvider(AIProvider):
             for m in resp.json().get("data", [])
             if m.get("id")
         ]
+
+    async def embed(self, request: EmbedRequest) -> EmbedResponse:
+        """Call POST /v1/embeddings and normalise the response.
+
+        The API is not guaranteed to return items in request order, so results are
+        sorted by the response's ``index`` field before being handed back — an
+        unsorted or truncated batch would silently corrupt the vector store, so both
+        the ordering and the count are treated as load-bearing here, not cosmetic.
+        """
+        payload = {"model": request.model, "input": request.texts}
+        data = await self._post("/v1/embeddings", payload)
+        rows = data.get("data", [])
+        if len(rows) != len(request.texts):
+            raise ProviderError(
+                f"embedding count mismatch: sent {len(request.texts)}, got {len(rows)}"
+            )
+        try:
+            items = sorted(rows, key=lambda row: int(row["index"]))
+            vectors = [[float(x) for x in row["embedding"]] for row in items]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ProviderError(f"malformed embedding response: {exc}") from exc
+        indices = [int(row["index"]) for row in items]
+        if indices != list(range(len(request.texts))):
+            raise ProviderError(
+                f"embedding response indices {indices} do not match a contiguous "
+                f"0..{len(request.texts) - 1} range"
+            )
+        return EmbedResponse(
+            vectors=vectors,
+            model=str(data.get("model", request.model)),
+            input_tokens=int(data.get("usage", {}).get("prompt_tokens", 0)),
+        )
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
         try:

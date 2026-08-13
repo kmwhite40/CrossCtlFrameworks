@@ -1,0 +1,308 @@
+"""Stage orchestration for the evidence preparation pipeline.
+
+Stages run in :data:`PREP_STAGES` order and each persists its full output before
+the next begins, so a failure is recoverable: :func:`next_stage` returns the
+first stage that is not ``complete`` and :func:`advance` restarts there rather
+than re-parsing a document that already parsed cleanly.
+
+Every stage is idempotent — it deletes its own prior output *before deciding its
+outcome*, not only on the path that succeeds — so a run that previously parsed
+successfully and is later re-run to a different outcome (source deleted, format
+now unsupported, a genuine parse failure) never leaves stale rows or stale
+``lines_parsed``/``parser_name`` behind. That property, held unconditionally, is
+what makes retry and Task 15's crash recovery safe without a distributed
+transaction.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any, overload
+
+from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..config import get_settings
+from ..db import set_session_tenant
+from ..logging import get_logger
+from ..models_prep import PREP_STAGES, PrepLine, PrepRun
+from .classify import run_stage_classify
+from .embed import run_stage_embed
+from .expand import run_stage_expand
+from .parsers import UnsupportedMediaType, dispatch
+from .screen import run_stage_screen
+from .sources import SourceMissing, resolve_source, resolve_source_organization_id
+
+log = get_logger(__name__)
+
+#: The signature every registered stage runner must satisfy. Tasks 9-13 each add
+#: one more entry to :data:`_STAGE_RUNNERS` with this shape.
+StageRunner = Callable[[AsyncSession, PrepRun], Awaitable[int]]
+
+
+@overload
+def _sanitize_text(value: str) -> str: ...
+@overload
+def _sanitize_text(value: str | None) -> str | None: ...
+def _sanitize_text(value: str | None) -> str | None:
+    """Strip NUL bytes before they reach a Postgres ``text`` column.
+
+    ``\\x00`` is valid UTF-8, so ``decode_text``'s ``errors="replace"`` (and
+    every other parser) passes it straight through untouched — none of the five
+    parsers reject it, and nothing sets ``ParsedDocument.error`` for it. But
+    Postgres's ``text`` type cannot store a NUL byte at all: it fails at
+    ``flush()`` with ``CharacterNotInRepertoireError``. This is reachable on
+    ordinary evidence — a truncated export, a null-padded fixed-width dump,
+    binary content misidentified as text — not a contrived input.
+
+    Sanitizing once here, at the boundary where parsed text becomes persisted
+    text, covers all five parsers without duplicating the check in each one.
+    Other C0 control characters (tab, newline, ...) are legal in a Postgres
+    ``text`` column and may be meaningful in the source, so only NUL is
+    stripped.
+    """
+    if value is None:
+        return None
+    return value.replace("\x00", "") if "\x00" in value else value
+
+
+def next_stage(run: PrepRun) -> str | None:
+    """Return the first stage that is not ``complete``, or ``None`` if all are."""
+    for stage in PREP_STAGES:
+        if getattr(run, f"stage_{stage}") not in ("complete", "skipped"):
+            return stage
+    return None
+
+
+async def create_run(
+    session: AsyncSession, *, organization_id: int, source_kind: str, source_id: int
+) -> PrepRun:
+    """Open a run, snapshotting the thresholds in force so re-runs are comparable."""
+    settings = get_settings()
+    snapshot: dict[str, Any] = {
+        "screen_threshold": settings.prep_screen_threshold,
+        "expand_window": settings.prep_expand_window,
+        "embed_provider": settings.prep_embed_provider,
+        "embed_model": settings.prep_embed_model,
+        "embed_dimensions": settings.prep_embed_dimensions,
+    }
+    run = PrepRun(
+        organization_id=organization_id,
+        source_kind=source_kind,
+        source_id=source_id,
+        status="pending",
+        config_snapshot=snapshot,
+    )
+    session.add(run)
+    await session.flush()
+    return run
+
+
+def _fail(run: PrepRun, stage: str, message: str) -> None:
+    run.status = "failed"
+    setattr(run, f"stage_{stage}", "failed")
+    run.error_stage = stage
+    run.error = message
+    log.warning("prep.stage_failed", run_id=run.id, stage=stage, error=message)
+
+
+async def run_stage_parse(session: AsyncSession, run: PrepRun) -> int:
+    """Parse the source into ``prep_lines``. Returns the number of lines persisted."""
+    run.status = "running"
+    run.stage_parse = "running"
+    # Idempotent from the first statement, not only on the success path: a run
+    # that previously parsed successfully and is now re-run to orphaned,
+    # unsupported, or failed must not keep its stale lines or stale counts.
+    run.lines_parsed = 0
+    run.parser_name = None
+    await session.execute(delete(PrepLine).where(PrepLine.run_id == run.id))
+    await session.flush()
+
+    try:
+        source = await resolve_source(session, run.source_kind, run.source_id)
+    except SourceMissing as exc:
+        run.status = "orphaned"
+        run.stage_parse = "skipped"
+        run.error = str(exc)
+        await session.flush()
+        log.info("prep.source_missing", run_id=run.id, reason=str(exc))
+        return 0
+
+    run.media_type = source.media_type
+    try:
+        parsed = dispatch(source.data, source.filename, source.media_type)
+    except UnsupportedMediaType as exc:
+        # A known coverage gap (image OCR, Visio), not an error: recording it as
+        # ``unsupported`` keeps it visible and reportable rather than noise in
+        # the failure counts.
+        run.status = "unsupported"
+        run.stage_parse = "skipped"
+        run.error = str(exc)
+        await session.flush()
+        log.info("prep.unsupported_media_type", run_id=run.id, reason=str(exc))
+        return 0
+
+    if parsed.error is not None:
+        _fail(run, "parse", parsed.error)
+        await session.flush()
+        return 0
+
+    lines = [
+        PrepLine(
+            run_id=run.id,
+            organization_id=source.organization_id,
+            line_number=record.line_number,
+            page_number=record.page_number,
+            section_path=_sanitize_text(record.section_path),
+            block_id=record.block_id,
+            block_type=record.block_type,
+            table_id=record.table_id,
+            row_index=record.row_index,
+            col_index=record.col_index,
+            cell_label=_sanitize_text(record.cell_label),
+            content=_sanitize_text(record.content),
+        )
+        for record in parsed.iter_lines()
+    ]
+
+    try:
+        # A savepoint isolates the write: if it fails (a value that slips past
+        # ``_sanitize_text``, an out-of-range integer, any other constraint
+        # violation), only these inserts roll back — the outer transaction, and
+        # `run` itself, stay usable for the caller. A plain ``session.rollback()``
+        # in the except clause below would instead discard the whole
+        # transaction, including work the caller did before calling this stage.
+        async with session.begin_nested():
+            session.add_all(lines)
+            await session.flush()
+    except SQLAlchemyError as exc:
+        _fail(run, "parse", f"failed to persist parsed lines: {exc}")
+        await session.flush()
+        return 0
+
+    run.parser_name = parsed.parser_name
+    run.lines_parsed = len(lines)
+    run.stage_parse = "complete"
+    await session.flush()
+    log.info(
+        "prep.parse_complete", run_id=run.id, lines=len(lines), parser=parsed.parser_name
+    )
+    return len(lines)
+
+
+async def load_run(session: AsyncSession, run_id: int) -> PrepRun | None:
+    return (
+        await session.execute(select(PrepRun).where(PrepRun.id == run_id))
+    ).scalar_one_or_none()
+
+
+#: Stage implementations are registered here as later tasks add them, keeping
+#: :func:`advance` free of a growing if/elif ladder.
+_STAGE_RUNNERS: dict[str, StageRunner] = {
+    "parse": run_stage_parse,
+    "screen": run_stage_screen,
+    "expand": run_stage_expand,
+    "classify": run_stage_classify,
+    "embed": run_stage_embed,
+}
+
+
+async def _reconcile_organization(session: AsyncSession, run: PrepRun) -> bool:
+    """Re-derive ``run.organization_id`` from the source's true owner.
+
+    Runs before *every* stage — not only on first parse — so the guarantee
+    that every ``prep_*`` row for a run shares one organization actually holds
+    regardless of entry point, including resuming a run whose ``parse`` stage
+    already completed. A version of this that lived only inside
+    ``run_stage_parse`` looked closed but wasn't: reopen a run at ``screen``
+    (parse already ``complete``, so it never re-runs and never re-resolves)
+    after ``organization_id`` was mutated by whatever means, and the split
+    reappears exactly as before this fix — ``PrepLine`` under the org parse
+    originally resolved, everything from ``screen`` onward under the new,
+    wrong one. Metadata-only (:func:`sources.resolve_source_organization_id`,
+    no storage fetch), so this costs nothing extra on the common,
+    already-consistent path.
+
+    Returns ``False`` (having already closed the run as ``orphaned``) if the
+    source no longer resolves at all — the same terminal outcome
+    ``run_stage_parse`` gives a source that disappears before first parse,
+    now applied uniformly to a source that disappears between two resumes of
+    an already-parsed run too.
+
+    **Deliberately unscoped lookup (2026-08-12 worker-tenant-scoping design,
+    Finding 1 follow-up).** ``ccf.prep.jobs.run_once`` sets the session's RLS
+    tenant to the *claimed job's own* ``organization_id`` before driving a
+    run through :func:`advance` — but that value can be stale: it is exactly
+    what this function exists to correct, whenever a source is reparented to
+    a different organization between enqueue and processing. Scoping this
+    lookup to the value it is supposed to validate makes it structurally
+    unable to detect the case it exists for — filtered by RLS to the job's
+    stale org, the query finds nothing, :class:`SourceMissing` fires, and a
+    reparented run is misreported ``orphaned`` ("source not found") instead
+    of reconciled. "Who really owns this source?" is inherently a
+    cross-tenant question, the same way ``ccf.queue.reap_stale_jobs`` and
+    ``claim_jobs`` are — see their module docstring — so the lookup below
+    runs with the tenant GUC cleared, exactly like those, and the window is
+    closed again immediately after: on success, to the *resolved* (possibly
+    corrected) organization, so every stage after this one runs properly RLS
+    -scoped; on :class:`SourceMissing`, back to ``None``, since the run is
+    now terminal and closing over a real organization would only be a
+    stale guess.
+
+    The corrected ``run.organization_id`` is flushed *before* the window
+    closes, still unscoped -- not after re-scoping to ``true_org``. The
+    ``UPDATE`` this flush issues is filtered by RLS's ``USING`` clause
+    against the row's *pre*-update ``organization_id`` (still the job's
+    stale value at this point, since nothing has persisted the correction
+    yet), not the incoming new one -- re-scoping to ``true_org`` first would
+    make that ``USING`` clause compare the stale on-disk value against the
+    new tenant, match nothing, and silently update zero rows. Flushing while
+    still unscoped (bypass) sidesteps that entirely.
+    """
+    # Unscoped on purpose -- see the docstring above. Bracketed as tightly as
+    # possible around the single ownership lookup and the flush that commits
+    # its result.
+    await set_session_tenant(session, None)
+    try:
+        true_org = await resolve_source_organization_id(session, run.source_kind, run.source_id)
+    except SourceMissing as exc:
+        run.status = "orphaned"
+        if run.stage_parse != "complete":
+            run.stage_parse = "skipped"
+        run.error = str(exc)
+        await session.flush()
+        log.info("prep.source_missing_on_resume", run_id=run.id, reason=str(exc))
+        # Left unscoped (None): the run is terminal, nothing further should
+        # run under any organization's tenant on this session until the next
+        # job's own set_session_tenant call takes over.
+        return False
+    run.organization_id = true_org
+    # Flushed here, still unscoped -- see the docstring for why this must
+    # happen before, not after, the re-scope below.
+    await session.flush()
+    # Re-close the window against the *resolved* organization, not the job's
+    # possibly-stale recorded one -- the rest of this stage's (and every
+    # later stage's) processing must run properly RLS-scoped.
+    await set_session_tenant(session, true_org)
+    return True
+
+
+async def advance(session: AsyncSession, run: PrepRun) -> PrepRun:
+    """Run every stage not yet complete, in order, stopping on failure."""
+    while (stage := next_stage(run)) is not None:
+        runner = _STAGE_RUNNERS.get(stage)
+        if runner is None:
+            # Stage not yet implemented — leave the run resumable rather than
+            # marking it complete on work that never ran.
+            log.info("prep.stage_not_implemented", run_id=run.id, stage=stage)
+            break
+        if not await _reconcile_organization(session, run):
+            return run
+        await runner(session, run)
+        if run.status in ("failed", "unsupported", "orphaned"):
+            return run
+    if next_stage(run) is None:
+        run.status = "complete"
+    await session.flush()
+    return run

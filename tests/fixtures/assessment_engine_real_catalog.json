@@ -1,0 +1,636 @@
+{
+  "AC-1": [
+    {
+      "row_idx": 2,
+      "identifier": "AC-01_ODP[01]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "personnel or roles to whom the access control policy is to be disseminated is/are defined;",
+      "ap_acronym": "AC-01a"
+    },
+    {
+      "row_idx": 3,
+      "identifier": "AC-01_ODP[02]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "personnel or roles to whom the access control procedures are to be disseminated is/are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 4,
+      "identifier": "AC-01_ODP[03]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "one or more of the following PARAMETER VALUES is/are selected: {organization-level; mission/business process-level; system-level};",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 5,
+      "identifier": "AC-01_ODP[04]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "an official to manage the access control policy and procedures is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 6,
+      "identifier": "AC-01_ODP[05]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the frequency at which the current access control policy is reviewed and updated is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 7,
+      "identifier": "AC-01_ODP[06]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "events that would require the current access control policy to be reviewed and updated are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 8,
+      "identifier": "AC-01_ODP[07]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the frequency at which the current access control procedures are reviewed and updated is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 9,
+      "identifier": "AC-01_ODP[08]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "events that would require procedures to be reviewed and updated are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 10,
+      "identifier": "AC-01a.[01]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "an access control policy is developed and documented;",
+      "ap_acronym": "AC-01a"
+    },
+    {
+      "row_idx": 11,
+      "identifier": "AC-01a.[02]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the access control policy is disseminated to <AC-01_ODP[01] personnel or roles>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 12,
+      "identifier": "AC-01a.[03]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "access control procedures to facilitate the implementation of the access control policy and associated controls are developed and documented;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 13,
+      "identifier": "AC-01a.[04]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the access control procedures are disseminated to <AC-01_ODP[02] personnel or roles>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 14,
+      "identifier": "AC-01a.01(a)[01]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses purpose;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 15,
+      "identifier": "AC-01a.01(a)[02]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses scope;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 16,
+      "identifier": "AC-01a.01(a)[03]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses roles;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 17,
+      "identifier": "AC-01a.01(a)[04]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses responsibilities;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 18,
+      "identifier": "AC-01a.01(a)[05]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses management commitment;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 19,
+      "identifier": "AC-01a.01(a)[06]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses coordination among organizational entities;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 20,
+      "identifier": "AC-01a.01(a)[07]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy addresses compliance;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 21,
+      "identifier": "AC-01a.01(b)",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[03] SELECTED PARAMETER VALUES> access control policy is consistent with applicable laws, Executive Orders, directives, regulations, policies, standards, and guidelines;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 22,
+      "identifier": "AC-01b.",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the <AC-01_ODP[04] official> is designated to manage the development, documentation, and dissemination of the access control policy and procedures;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 23,
+      "identifier": "AC-01c.01[01]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the current access control policy is reviewed and updated <AC-01_ODP[05] frequency>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 24,
+      "identifier": "AC-01c.01[02]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the current access control policy is reviewed and updated following <AC-01_ODP[06] events>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 25,
+      "identifier": "AC-01c.02[01]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the current access control procedures are reviewed and updated <AC-01_ODP[07] frequency>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 26,
+      "identifier": "AC-01c.02[02]",
+      "sequence_control": "AC-01",
+      "assessment_objective": "the current access control procedures are reviewed and updated following <AC-01_ODP[08] events>.",
+      "ap_acronym": null
+    }
+  ],
+  "AC-3": [
+    {
+      "row_idx": 120,
+      "identifier": "AC-03",
+      "sequence_control": "AC-03",
+      "assessment_objective": "approved authorizations for logical access to information and system resources are enforced in accordance with applicable access control policies.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 123,
+      "identifier": "AC-03(02)_ODP",
+      "sequence_control": "AC-03(02)",
+      "assessment_objective": "privileged commands and/or other actions requiring dual authorization are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 124,
+      "identifier": "AC-03(02)",
+      "sequence_control": "AC-03(02)",
+      "assessment_objective": "dual authorization is enforced for <AC-03(02)_ODP privileged commands and/or other actions>.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 126,
+      "identifier": "AC-03(03)_ODP[01]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "mandatory access control policy enforced over the set of covered subjects is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 127,
+      "identifier": "AC-03(03)_ODP[02]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "mandatory access control policy enforced over the set of covered objects is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 128,
+      "identifier": "AC-03(03)_ODP[03]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "subjects to be explicitly granted privileges are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 129,
+      "identifier": "AC-03(03)_ODP[04]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "privileges to be explicitly granted to subjects are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 130,
+      "identifier": "AC-03(03)[01]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> is enforced over the set of covered subjects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 131,
+      "identifier": "AC-03(03)[02]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[02] mandatory access control policy> is enforced over the set of covered objects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 132,
+      "identifier": "AC-03(03)(a)[01]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> is uniformly enforced across the covered subjects within the system;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 133,
+      "identifier": "AC-03(03)(a)[02]",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[02] mandatory access control policy> is uniformly enforced across the covered objects within the system;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 134,
+      "identifier": "AC-03(03)(b)(01)",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> and <AC-03(03)_ODP[02] mandatory access control policy> specifying that a subject that has been granted access to information is constrained from passing the information to unauthorized subjects or objects are enforced;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 135,
+      "identifier": "AC-03(03)(b)(02)",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> and <AC-03(03)_ODP[02] mandatory access control policy> specifying that a subject that has been granted access to information is constrained from granting its privileges to other subjects are enforced;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 136,
+      "identifier": "AC-03(03)(b)(03)",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> and <AC-03(03)_ODP[02] mandatory access control policy> specifying that a subject that has been granted access to information is constrained from changing one of more security attributes (specified by the policy) on subjects, objects, the system, or system components are enforced;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 137,
+      "identifier": "AC-03(03)(b)(04)",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> and <AC-03(03)_ODP[02] mandatory access control policy> specifying that a subject that has been granted access to information is constrained from choosing the security attributes and attribute values (specified by the policy) to be associated with newly created or modified objects are enforced;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 138,
+      "identifier": "AC-03(03)(b)(05)",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> and <AC-03(03)_ODP[02] mandatory access control policy> specifying that a subject that has been granted access to information is constrained from changing the rules governing access control are enforced;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 139,
+      "identifier": "AC-03(03)(c)",
+      "sequence_control": "AC-03(03)",
+      "assessment_objective": "<AC-03(03)_ODP[01] mandatory access control policy> and <AC-03(03)_ODP[02] mandatory access control policy> specifying that <AC-03(03)_ODP[03] subjects> may explicitly be granted <AC-03(03)_ODP[04] privileges> such that they are not limited by any defined subset (or all) of the above constraints are enforced.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 141,
+      "identifier": "AC-03(04)_ODP[01]",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "discretionary access control policy enforced over the set of covered subjects is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 142,
+      "identifier": "AC-03(04)_ODP[02]",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "discretionary access control policy enforced over the set of covered objects is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 143,
+      "identifier": "AC-03(04)[01]",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[01] discretionary access control policy> is enforced over the set of covered subjects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 144,
+      "identifier": "AC-03(04)[02]",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[02] discretionary access control policy> is enforced over the set of covered objects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 145,
+      "identifier": "AC-03(04)(a)",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[01] discretionary access control policy> and <AC-03(04)_ODP[02] discretionary access control policy> are enforced where the policy specifies that a subject that has been granted access to information can pass the information to any other subjects or objects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 146,
+      "identifier": "AC-03(04)(b)",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[01] discretionary access control policy> and <AC-03(04)_ODP[02] discretionary access control policy> are enforced where the policy specifies that a subject that has been granted access to information can grant its privileges to other subjects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 147,
+      "identifier": "AC-03(04)(c)",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[01] discretionary access control policy> and <AC-03(04)_ODP[02] discretionary access control policy> are enforced where the policy specifies that a subject that has been granted access to information can change security attributes on subjects, objects, the system, or the system\u00eds components;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 148,
+      "identifier": "AC-03(04)(d)",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[01] discretionary access control policy> and <AC-03(04)_ODP[02] discretionary access control policy> are enforced where the policy specifies that a subject that has been granted access to information can choose the security attributes to be associated with newly created or revised objects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 149,
+      "identifier": "AC-03(04)(e)",
+      "sequence_control": "AC-03(04)",
+      "assessment_objective": "<AC-03(04)_ODP[01] discretionary access control policy> and <AC-03(04)_ODP[02] discretionary access control policy> are enforced where the policy specifies that a subject that has been granted access to information can change the rules governing access control.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 151,
+      "identifier": "AC-03(05)_ODP",
+      "sequence_control": "AC-03(05)",
+      "assessment_objective": "security-relevant information to which access is prevented except during secure, non-operable system states is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 152,
+      "identifier": "AC-03(05)",
+      "sequence_control": "AC-03(05)",
+      "assessment_objective": "access to <AC-03(05)_ODP security-relevant information> is prevented except during secure, non-operable system states.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 155,
+      "identifier": "None",
+      "sequence_control": "AC-03(07)",
+      "assessment_objective": "roles upon which to base control of access are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 156,
+      "identifier": "None",
+      "sequence_control": "AC-03(07)",
+      "assessment_objective": "users authorized to assume roles (defined in AC-03(07)_ODP[01]) are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 157,
+      "identifier": "AC-03(07)[01]",
+      "sequence_control": "AC-03(07)",
+      "assessment_objective": "a role-based access control policy is enforced over defined subjects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 158,
+      "identifier": "AC-03(07)[02]",
+      "sequence_control": "AC-03(07)",
+      "assessment_objective": "a role-based access control policy is enforced over defined objects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 159,
+      "identifier": "AC-03(07)[03]",
+      "sequence_control": "AC-03(07)",
+      "assessment_objective": "access is controlled based on <AC-03(07)_ODP[01] roles> and <AC-03(07)_ODP[02] users authorized to assume such roles>.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 161,
+      "identifier": "AC-03(08)_ODP",
+      "sequence_control": "AC-03(08)",
+      "assessment_objective": "rules governing the timing of revocations of access authorizations are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 162,
+      "identifier": "AC-03(08)[01]",
+      "sequence_control": "AC-03(08)",
+      "assessment_objective": "revocation of access authorizations is enforced, resulting from changes to the security attributes of subjects based on <AC-03(08)_ODP rules>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 163,
+      "identifier": "AC-03(08)[02]",
+      "sequence_control": "AC-03(08)",
+      "assessment_objective": "revocation of access authorizations is enforced resulting from changes to the security attributes of objects based on <AC-03(08)_ODP rules>.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 165,
+      "identifier": "AC-03(09)_ODP[01]",
+      "sequence_control": "AC-03(09)",
+      "assessment_objective": "the outside system or system component to which to release information is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 166,
+      "identifier": "AC-03(09)_ODP[02]",
+      "sequence_control": "AC-03(09)",
+      "assessment_objective": "controls to be provided by the outside system or system component (defined in AC-03(09)_ODP[01]) are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 167,
+      "identifier": "AC-03(09)_ODP[03]",
+      "sequence_control": "AC-03(09)",
+      "assessment_objective": "controls used to validate appropriateness of information to be released are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 168,
+      "identifier": "AC-03(09)(a)",
+      "sequence_control": "AC-03(09)",
+      "assessment_objective": "information is released outside of the system only if the receiving <AC-03(09)_ODP[01] system or system component> provides <AC-03(09)_ODP[02] controls>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 169,
+      "identifier": "AC-03(09)(b)",
+      "sequence_control": "AC-03(09)",
+      "assessment_objective": "information is released outside of the system only if <AC-03(09)_ODP[03] controls> are used to validate the appropriateness of the information designated for release.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 171,
+      "identifier": "AC-03(10)_ODP[01]",
+      "sequence_control": "AC-03(10)",
+      "assessment_objective": "conditions under which to employ an audited override of automated access control mechanisms are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 172,
+      "identifier": "AC-03(10)_ODP[02]",
+      "sequence_control": "AC-03(10)",
+      "assessment_objective": "roles allowed to employ an audited override of automated access control mechanisms are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 173,
+      "identifier": "AC-03(10)",
+      "sequence_control": "AC-03(10)",
+      "assessment_objective": "an audited override of automated access control mechanisms is employed under <AC-03(10)_ODP[01] conditions> by <AC-03(10)_ODP[02] roles>.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 175,
+      "identifier": "AC-03(11)_ODP",
+      "sequence_control": "AC-03(11)",
+      "assessment_objective": "information types requiring restricted access to data repositories are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 176,
+      "identifier": "AC-03(11)",
+      "sequence_control": "AC-03(11)",
+      "assessment_objective": "access to data repositories containing <AC-03(11)_ODP information types> is restricted.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 178,
+      "identifier": "AC-03(12)_ODP",
+      "sequence_control": "AC-03(12)",
+      "assessment_objective": "system applications and functions requiring access assertion are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 179,
+      "identifier": "AC-03(12)(a)",
+      "sequence_control": "AC-03(12)",
+      "assessment_objective": "as part of the installation process, applications are required to assert the access needed to the following system applications and functions: <AC-03(12)_ODP system applications and functions>;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 180,
+      "identifier": "AC-03(12)(b)",
+      "sequence_control": "AC-03(12)",
+      "assessment_objective": "an enforcement mechanism to prevent unauthorized access is provided;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 181,
+      "identifier": "AC-03(12)(c)",
+      "sequence_control": "AC-03(12)",
+      "assessment_objective": "access changes after initial installation of the application are approved.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 183,
+      "identifier": "AC-03(13)_ODP",
+      "sequence_control": "AC-03(13)",
+      "assessment_objective": "attributes to assume access permissions are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 184,
+      "identifier": "AC-03(13)[01]",
+      "sequence_control": "AC-03(13)",
+      "assessment_objective": "the attribute-based access control policy is enforced over defined subjects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 185,
+      "identifier": "AC-03(13)[02]",
+      "sequence_control": "AC-03(13)",
+      "assessment_objective": "the attribute-based access control policy is enforced over defined objects;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 186,
+      "identifier": "AC-03(13)[03]",
+      "sequence_control": "AC-03(13)",
+      "assessment_objective": "access is controlled based on <AC-03(13)_ODP attributes>.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 188,
+      "identifier": "AC-03(14)_ODP[01]",
+      "sequence_control": "AC-03(14)",
+      "assessment_objective": "mechanisms enabling individuals to have access to elements of their personally identifiable information are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 189,
+      "identifier": "AC-03(14)_ODP[02]",
+      "sequence_control": "AC-03(14)",
+      "assessment_objective": "elements of personally identifiable information to which individuals have access are defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 190,
+      "identifier": "AC-03(14)",
+      "sequence_control": "AC-03(14)",
+      "assessment_objective": "<AC-03(14)_ODP[01] mechanisms> are provided to enable individuals to have access to <AC-03(14)_ODP[02] elements> of their personally identifiable information.",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 192,
+      "identifier": "AC-03(15)_ODP[01]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "a mandatory access control policy enforced over the set of covered subjects specified in the policy is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 193,
+      "identifier": "AC-03(15)_ODP[02]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "a mandatory access control policy enforced over the set of covered objects specified in the policy is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 194,
+      "identifier": "AC-03(15)_ODP[03]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "a discretionary access control policy enforced over the set of covered subjects specified in the policy is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 195,
+      "identifier": "AC-03(15)_ODP[04]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "a discretionary access control policy enforced over the set of covered objects specified in the policy is defined;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 196,
+      "identifier": "AC-03(15)(a)[01]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "<AC-03(15)_ODP[01] mandatory access control policy> is enforced over the set of covered subjects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 197,
+      "identifier": "AC-03(15)(a)[02]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "<AC-03(15)_ODP[02] mandatory access control policy> is enforced over the set of covered objects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 198,
+      "identifier": "AC-03(15)(b)[01]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "<AC-03(15)_ODP[03] discretionary access control policy> is enforced over the set of covered subjects specified in the policy;",
+      "ap_acronym": null
+    },
+    {
+      "row_idx": 199,
+      "identifier": "AC-03(15)(b)[02]",
+      "sequence_control": "AC-03(15)",
+      "assessment_objective": "<AC-03(15)_ODP[04] discretionary access control policy> is enforced over the set of covered objects specified in the policy.",
+      "ap_acronym": null
+    }
+  ]
+}

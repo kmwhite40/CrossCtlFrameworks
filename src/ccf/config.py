@@ -193,6 +193,102 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ---- Evidence preparation pipeline (parse → screen → expand → classify → embed)
+    prep_enabled: bool = Field(default=False)
+    # Screening is deliberately inclusive: false positives are cheap (resolved by
+    # downstream classification), false negatives are unrecoverable. This value is
+    # compared against ts_rank_cd(..., normalization=32) -- bounded to 0..1 -- from
+    # ccf.prep.screen.score_line, not a raw/unnormalized rank. 0.72 was derived by
+    # measuring real policy sentences against the fully-ingested 800-53A catalog
+    # (~1,200 base/enhancement controls): it sits strictly between the highest
+    # score any exercised administrative/boilerplate line reached (0.71) and the
+    # lowest score a genuine control-relevant sentence reached (0.74), so it
+    # separates the two on the one corpus that matters without needing to be
+    # re-tuned as the catalog is re-ingested. See test_prep_screen.py's
+    # realistic-scale test and task-9-report.md for the measurements.
+    prep_screen_threshold: float = Field(default=0.72)
+    # Lines either side of a trigger line when no block/table/section bound applies.
+    prep_expand_window: int = Field(default=4)
+    # Embeddings resolve independently of the generation provider: Anthropic has no
+    # embeddings endpoint, so an org generating with Anthropic still embeds elsewhere.
+    prep_embed_provider: str = Field(default="openai")
+    prep_embed_model: str = Field(default="text-embedding-3-small")
+    # Validation only — pgvector column width is fixed at 1024 in the schema. A
+    # mismatch fails the embed stage loudly rather than writing truncated vectors.
+    prep_embed_dimensions: int = Field(default=1024)
+    prep_worker_batch_size: int = Field(default=10)
+    # `ccf prep-worker --loop`'s sleep between cycles that claimed nothing.
+    # Without a sleep, an empty queue makes --loop spin the claim query in a
+    # tight loop (previously it didn't even do that -- it exited after the
+    # first empty cycle, see the CLI's own docstring correction). Short enough
+    # that a freshly enqueued job is picked up promptly; long enough that an
+    # idle worker isn't hammering the jobs table.
+    prep_worker_poll_interval_seconds: float = Field(default=5.0)
+    # How often a long-running `--loop` worker re-checks for stale (crashed
+    # mid-stage) jobs, rather than only once at process start. Deliberately
+    # smaller than `prep_job_stale_after_minutes` (the staleness window
+    # itself, default 60 min): the retry-cap machinery below only makes
+    # progress -- a stale job gets requeued, reclaimed, and (after
+    # `prep_job_max_attempts` reclaims) dead-lettered -- if reaping actually
+    # runs again after startup. At the 60-minute window's own timescale, that
+    # would take `prep_job_max_attempts` hours to fully engage. Not every
+    # cycle either, to avoid extra DB round trips when the queue is busy and
+    # cycles run back-to-back with no sleep in between.
+    prep_worker_reap_interval_seconds: float = Field(default=300.0)
+    prep_job_stale_after_minutes: int = Field(default=60)
+    # A job that fails gracefully (advance() raises, or a stage completes to
+    # run.status="failed") stops after one attempt already -- claim() only
+    # selects "pending" jobs, so a "failed" one is never reclaimed. The gap is a
+    # job whose worker crashes mid-stage every time: reap_stale requeues it to
+    # "pending" forever, burning a full stage's worth of parsing/model calls on
+    # every cycle. reap_stale dead-letters (leaves status="failed" with
+    # last_error set, instead of requeuing) a stale job at or past this many
+    # claim attempts, so a poisoned job stops cycling and becomes visible.
+    prep_job_max_attempts: int = Field(default=5)
+
+    # ---- Objective-level assessment engine (slice 2)
+    # Off by default: like the prep pipeline, this spends money on model calls.
+    assessment_engine_enabled: bool = Field(default=False)
+    assessment_engine_batch_size: int = Field(default=5)
+    # A guard against a pathological catalog row set -- NOT a claim about how
+    # many objectives a real control can have. Measured against the real
+    # workbook (data/NIST Cross Mappings Rev. 1.1.xlsx, replaying
+    # etl/pipeline.py's ingest semantics, 2026-08-10): 300 control groups,
+    # p50 10 objectives, p90 27, max 98 (AC-4; SI-4 88, AC-16 85, SA-8 83,
+    # SC-7 79, AC-2 77, AC-3 65 round out the top seven -- AC-2 is also the
+    # design spec's own worked example). 60 sat below that observed max and
+    # silently made those controls, including the spec's own example,
+    # impossible to evaluate. 150 stays comfortably above the observed
+    # ceiling while still catching a genuine extraction/grouping bug.
+    assessment_engine_max_objectives_per_control: int = Field(default=150)
+    # Passed to ccf.prep.retriever.retrieve as `limit` for each objective.
+    assessment_engine_retrieval_limit: int = Field(default=8)
+    # Added early (Task 8, not the Task 10 that was originally scoped to add
+    # these) because ccf.assessment.engine.jobs.reap needs both to call
+    # ccf.queue.reap_stale_jobs -- same style and reasoning as
+    # prep_job_stale_after_minutes/prep_job_max_attempts above, mirrored for
+    # the assessment_jobs queue.
+    assessment_job_stale_after_minutes: int = Field(default=60)
+    assessment_job_max_attempts: int = Field(default=5)
+    # `ccf assessment-worker`'s own batch/cadence settings -- named and
+    # documented identically to their prep_worker_* counterparts above (see
+    # those comments for the full reasoning): poll_interval_seconds is the
+    # `--loop` sleep between cycles that claimed nothing, and
+    # reap_interval_seconds is how often a long-running `--loop` worker
+    # re-checks for stale jobs rather than only once at process start.
+    assessment_worker_poll_interval_seconds: float = Field(default=30.0)
+    assessment_worker_reap_interval_seconds: float = Field(default=300.0)
+    # AI dissent path (slice 6): runs an independent second model call (a
+    # "challenger") against a satisfied verdict before an assessor ever sees
+    # it -- a satisfied verdict that is wrong is a missed finding in an
+    # authorization package, the expensive error direction slice 4's
+    # calibration harness measures after the fact. Off by default: like
+    # assessment_engine_enabled above, this doubles model calls on the
+    # passing subset, and a deployment must opt into that cost. See
+    # ccf.assessment.engine.evaluate's module docstring for the full
+    # reasoning.
+    assessment_dissent_enabled: bool = Field(default=False)
+
     # Compliance pack runtime — extra directory of installable packs (in addition
     # to the packs bundled with Concord). Local-first: no packs dir is required.
     packs_dir: Path | None = Field(default=None)

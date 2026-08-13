@@ -10,7 +10,7 @@ x-ccf-env: &ccf_env
 
 services:
   db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ccf-db
     restart: unless-stopped
     environment:
@@ -41,7 +41,14 @@ services:
     depends_on:
       db:       { condition: service_healthy }
       migrator: { condition: service_completed_successfully }
-    environment: *ccf_env
+    # The prep and assessment-engine routers are registered only when their
+    # flag is set, and x-ccf-env is silent on both. Until now only the two
+    # worker services set them, so the workers could process jobs while the
+    # web app served no route for them and the features were invisible.
+    environment:
+      <<: *ccf_env
+      CCF_PREP_ENABLED: "true"
+      CCF_ASSESSMENT_ENGINE_ENABLED: "true"
     ports: ["8088:8000"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
@@ -88,6 +95,62 @@ services:
     entrypoint: ["sh", "-c"]
     command: ["ccf sources-seed && ccf sources-check"]
     restart: "no"
+
+  # Evidence-prep worker. Preparation (parse -> screen -> expand -> classify ->
+  # embed) is minutes of parsing and model calls per document -- far too slow
+  # for a request cycle -- so it's queued in Postgres and drained here.
+  # `docker compose --profile prep up -d prep-worker`.
+  prep-worker:
+    build: .
+    container_name: ccf-prep-worker
+    profiles: ["prep"]
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    # CCF_PREP_ENABLED overrides x-ccf-env's silence on it (prep_enabled
+    # defaults to false -- the pipeline is opt-in). Without this, `ccf
+    # prep-worker --loop` printed "disabled" and exited immediately every
+    # cycle, and `restart: unless-stopped` below restart-looped the container
+    # forever. Opting into the "prep" profile at all (this service only
+    # starts via `docker compose --profile prep up`) is already the
+    # operator's explicit signal they want the pipeline running, so this
+    # override is scoped to this service rather than raised in x-ccf-env,
+    # which would silently flip the default for every other service too.
+    environment:
+      <<: *ccf_env
+      CCF_PREP_ENABLED: "true"
+    entrypoint: ["sh", "-c"]
+    command: ["ccf prep-worker --loop"]
+    restart: "unless-stopped"
+
+  # Objective-level assessment engine worker. Evaluating one control means a
+  # model call per objective -- too slow for a request cycle -- so it's
+  # queued in Postgres and drained here, the same shape as prep-worker above.
+  # `docker compose --profile assessment up -d assessment-worker`.
+  assessment-worker:
+    build: .
+    container_name: ccf-assessment-worker
+    profiles: ["assessment"]
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    # CCF_ASSESSMENT_ENGINE_ENABLED overrides x-ccf-env's silence on it
+    # (assessment_engine_enabled defaults to false -- the engine is opt-in).
+    # Without this, `ccf assessment-worker --loop` printed "disabled" and
+    # exited immediately every cycle, and `restart: unless-stopped` below
+    # restart-looped the container forever -- exactly the prior slice's
+    # compose omission. Opting into the "assessment" profile at all (this
+    # service only starts via `docker compose --profile assessment up`) is
+    # already the operator's explicit signal they want the engine running, so
+    # this override is scoped to this service rather than raised in
+    # x-ccf-env, which would silently flip the default for every other
+    # service too (including the API).
+    environment:
+      <<: *ccf_env
+      CCF_ASSESSMENT_ENGINE_ENABLED: "true"
+    entrypoint: ["sh", "-c"]
+    command: ["ccf assessment-worker --loop"]
+    restart: "unless-stopped"
 
 volumes:
   ccf_pgdata:

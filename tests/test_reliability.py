@@ -13,6 +13,7 @@ from sqlalchemy import text
 from ccf.api.main import create_app
 from ccf.config import get_settings
 from ccf.db import get_engine, session_scope
+from ccf.fedramp20x import package as pkg
 from ccf.governance import scheduler
 from ccf.reliability import checks as checks_mod
 from ccf.reliability import run_checks, summarize
@@ -119,3 +120,37 @@ async def test_scheduler_leader_lock_skips_when_held() -> None:
         await held.execute(
             text("SELECT pg_advisory_unlock(:k)"), {"k": scheduler._SCHEDULER_LOCK_KEY}
         )
+
+
+async def test_package_export_check_fails_when_oscal_validation_reports_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The FAIL branch of _check_package_service, which nothing exercised.
+
+    The check was tested only for appearing in the check list by name.
+    Replacing its `pkg.validate_oscal(...)` call with a bare `errors = []`
+    -- i.e. removing the validation entirely -- left all 18 reliability tests
+    green, so the ops layer would have reported the OSCAL exporter healthy
+    without ever validating anything.
+    """
+    monkeypatch.setattr(pkg, "validate_oscal", lambda _doc: ["missing required field: uuid"])
+    async with session_scope() as s:
+        result = await checks_mod._check_package_service(s)
+
+    assert result.name == "fedramp20x_package_export"
+    assert result.status == checks_mod.FAIL, "validation errors must fail the check"
+    assert "missing required field: uuid" in result.message, (
+        "the actual validator error must reach the operator, not just a generic failure"
+    )
+
+
+async def test_package_export_check_passes_when_oscal_validation_is_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other side, so the FAIL test above cannot pass by always failing."""
+    monkeypatch.setattr(pkg, "validate_oscal", lambda _doc: [])
+    async with session_scope() as s:
+        result = await checks_mod._check_package_service(s)
+
+    assert result.status == checks_mod.PASS
+    assert "OSCAL valid" in result.message

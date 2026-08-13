@@ -28,6 +28,7 @@ from .routes import (
     ai_settings,
     approvals,
     artifacts,
+    assessment_engine,
     assessments,
     assurance,
     audit,
@@ -60,6 +61,7 @@ from .routes import (
     policies,
     portal,
     posture,
+    prep,
     queries,
     questionnaires,
     reliability,
@@ -183,6 +185,18 @@ def create_app() -> FastAPI:
     app.include_router(audit.router)
     app.include_router(evidence.router)
     app.include_router(evidence_repo.router)
+    if settings.prep_enabled:
+        # A brand-new feature whose worker makes billable AI calls: register
+        # nothing at all when disabled, rather than registering the router and
+        # gating inside it, so a disabled deployment gets a plain 404 (route
+        # not found, absent from /openapi.json and /docs) instead of a 200
+        # that merely confirms the endpoints exist.
+        app.include_router(prep.router)
+    if settings.assessment_engine_enabled:
+        # Same reasoning as prep.router above: register nothing at all when
+        # disabled (plain 404, absent from /openapi.json), not a 200 that
+        # merely confirms the endpoints exist.
+        app.include_router(assessment_engine.router)
     app.include_router(poams.router)
     app.include_router(risks.router)
     app.include_router(scans.router)

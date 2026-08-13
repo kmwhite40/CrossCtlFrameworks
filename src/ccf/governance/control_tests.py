@@ -266,6 +266,94 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
     return True
 
 
+async def _resolve_on_recovery(
+    session: AsyncSession, test: ControlTest, *, result_id: int
+) -> None:
+    """Best-effort recovery bookkeeping when a test transitions fail/warn -> pass.
+
+    Resolves the remediation Task _alert_on_failure opened -- an internal
+    work item with a free status vocabulary and no formal gate, so
+    auto-resolving it once its triggering condition clears is
+    uncontroversial. The POA&M is deliberately NOT auto-closed: closing a
+    POA&M is an assertion, in an authorization package, that a weakness is
+    remediated, and a single passing control test is one observation --
+    possibly of a narrow assertion, possibly transient -- not that
+    assertion. This is deliberately asymmetric with
+    ingest/scanners.py:397's scan-absence auto-close: a vulnerability
+    missing from a scan is direct evidence the weakness is gone, where a
+    control test passing once is weaker evidence that may cover only part
+    of what the POA&M describes. Instead the POA&M gains a dated,
+    result-id-stamped observation note (the same append pattern
+    ingest/scanners.py:410-412 already uses for its own closure note) and a
+    notification, so a human sees it and can close it through
+    api/routes/poams.py's ISSM-08/09 gate with the evidence that gate
+    demands.
+
+    Runs in its own SAVEPOINT (AsyncSession.rollback() is NOT
+    savepoint-scoped -- it would unwind the caller's authoritative
+    ControlTestResult write) and swallows+logs any failure rather than
+    propagating it: losing the resolution is recoverable; discarding a
+    recorded test result because a derived update failed is not.
+
+    Only acts on the Task/POA&M this machinery itself created, identified
+    by the exact dedupe_key/source_ref _alert_on_failure/_upsert_poam use
+    for this test -- and only while they are still in the state
+    auto-creation left them (Task.status == "open"; POA&M still in
+    _OPEN_POAM) -- and only ever writes Task.status/closed_at and
+    POAM.remediation_plan, never title/description/priority/weakness/
+    severity, so a human's edit to any of those survives untouched.
+    """
+    try:
+        async with session.begin_nested():
+            task_dedupe = f"ctltest-fix:{test.id}"
+            task = (
+                await session.execute(select(Task).where(Task.dedupe_key == task_dedupe))
+            ).scalar_one_or_none()
+            if task is not None and task.status == "open":
+                task.status = "done"
+                task.closed_at = datetime.now(UTC)
+
+            if test.system_id is None:
+                return  # org-wide test never had a POA&M to surface (see _upsert_poam)
+            source_ref = f"control_test:{test.id}"
+            poam = (
+                await session.execute(
+                    select(POAM).where(
+                        POAM.system_id == test.system_id,
+                        POAM.source == "control_test",
+                        POAM.source_ref == source_ref,
+                        POAM.status.in_(_OPEN_POAM),
+                    )
+                )
+            ).scalar_one_or_none()
+            if poam is None:
+                return
+            note = (
+                f"Control test '{test.name}' now passes as of "
+                f"{datetime.now(UTC).isoformat()} (result #{result_id}) -- review for closure."
+            )
+            poam.remediation_plan = (
+                f"{poam.remediation_plan}\n{note}" if poam.remediation_plan else note
+            )
+            await bus.notify(
+                session,
+                category="conmon",
+                title=f"Control test recovered: {test.name} ({test.control_id})",
+                body=note,
+                org_id=test.organization_id,
+                severity="info",
+                entity_type="poam",
+                entity_id=poam.id,
+                dedupe_key=f"poam-recovery:{poam.id}",
+            )
+    except Exception as exc:
+        log.warning(
+            "control_tests.recovery_failed",
+            control_test_id=test.id,
+            error=str(exc)[:200],
+        )
+
+
 async def record_result(
     session: AsyncSession,
     test: ControlTest,
@@ -277,11 +365,17 @@ async def record_result(
 ) -> ControlTestResult:
     """Persist one test result, update the test, and alert on fail/warn.
 
-    Shared by the manual UI run action and the scheduler auto-run so the alert +
-    remediation-task behaviour is identical regardless of trigger.
+    Shared by the manual UI run action and the scheduler auto-run (run_due
+    delegates here) so the alert + remediation-task + recovery behaviour is
+    identical regardless of trigger.
     """
     if status not in ("pass", "warn", "fail"):
         raise ValueError("status must be pass|warn|fail")
+    # Must be captured before the reassignment two lines below -- if this
+    # instead read test.last_status after the assignment, it would always
+    # equal `status` and the fail/warn -> pass transition would be
+    # permanently undetectable.
+    previous_status = test.last_status
     res = ControlTestResult(
         control_test_id=test.id, status=status, detail=detail, evidence_ref=evidence_ref
     )
@@ -291,6 +385,8 @@ async def record_result(
     await session.flush()
     if status in ("fail", "warn"):
         await _alert_on_failure(session, test, status, detail or "")
+    elif status == "pass" and previous_status in ("fail", "warn"):
+        await _resolve_on_recovery(session, test, result_id=res.id)
     await bus.emit(
         session,
         verb="tested",
@@ -325,29 +421,16 @@ async def run_due(
         if not _is_due(test, today):
             continue
         status, detail, evidence_ref = await evaluate_test(session, test, today)
-        session.add(
-            ControlTestResult(
-                control_test_id=test.id,
-                status=status,
-                detail=detail,
-                evidence_ref=evidence_ref,
-            )
-        )
-        test.last_status = status
-        test.last_tested_at = datetime.now(UTC)
-        counts["evaluated"] += 1
-        counts[status] += 1
-        if status in ("fail", "warn"):
-            await _alert_on_failure(session, test, status, detail)
-        await bus.emit(
+        await record_result(
             session,
-            verb="tested",
-            entity_type="control_test",
-            entity_id=test.id,
-            summary=f"Auto-run control test {status}: {test.control_id}",
-            org_id=test.organization_id,
+            test,
+            status=status,
+            detail=detail,
+            evidence_ref=evidence_ref,
             actor="scheduler",
         )
+        counts["evaluated"] += 1
+        counts[status] += 1
     if counts["evaluated"]:
         log.info("control_tests.auto_run", **counts)
     return counts

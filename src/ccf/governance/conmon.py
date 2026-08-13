@@ -9,12 +9,13 @@ needs attention — turning static records into an active ConMon program.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..logging import get_logger
 from ..models import (
     POAM,
     ControlImplementation,
@@ -25,6 +26,8 @@ from ..models import (
     Task,
 )
 from . import bus
+
+log = get_logger(__name__)
 
 DUE_SOON_DAYS = 30
 
@@ -113,6 +116,7 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
     poams = (await session.execute(select(POAM).where(POAM.status.in_(_OPEN_POAM)))).scalars().all()
 
     checked = findings = tasks_created = notes_created = poams_created = 0
+    tasks_resolved = poams_recovered = 0
     by_status: dict[str, int] = {"healthy": 0, "due_soon": 0, "at_risk": 0, "overdue": 0}
 
     for impl in impls:
@@ -123,6 +127,13 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
         status, reasons = assess_health(impl, ev_by_impl.get(impl.id, []), impl_poams, today)
         by_status[status] += 1
         if status == "healthy":
+            resolved, recovered = await _resolve_on_recovery(
+                session, org_id=org_id, impl_id=impl.id, system_id=impl.system_id
+            )
+            if resolved:
+                tasks_resolved += 1
+            if recovered:
+                poams_recovered += 1
             continue
         findings += 1
         severity = {"overdue": "critical", "at_risk": "warning", "due_soon": "info"}[status]
@@ -175,7 +186,12 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
     run.findings = findings
     run.tasks_created = tasks_created
     run.notifications_created = notes_created
-    run.summary = {"by_status": by_status, "poams_created": poams_created}
+    run.summary = {
+        "by_status": by_status,
+        "poams_created": poams_created,
+        "tasks_resolved": tasks_resolved,
+        "poams_recovered": poams_recovered,
+    }
     await session.flush()
     await bus.emit(
         session,
@@ -193,6 +209,8 @@ async def scan(session: AsyncSession, *, today: date, org_id: int | None = None)
         "tasks_created": tasks_created,
         "notifications_created": notes_created,
         "poams_created": poams_created,
+        "tasks_resolved": tasks_resolved,
+        "poams_recovered": poams_recovered,
         "by_status": by_status,
     }
 
@@ -293,6 +311,99 @@ async def _upsert_poam(
     )
     session.add(poam)
     return True
+
+
+async def _resolve_on_recovery(
+    session: AsyncSession, *, org_id: int | None, impl_id: int, system_id: int | None
+) -> tuple[bool, bool]:
+    """Best-effort recovery bookkeeping when a control implementation returns
+    to healthy. Returns (task_resolved, poam_recovered).
+
+    Mirrors control_tests._resolve_on_recovery: resolves the Task
+    _upsert_task opened (free status vocabulary, no gate, safe to
+    auto-resolve); surfaces -- never auto-closes -- the POA&M _upsert_poam
+    opened, with a dated observation note and a notification. See that
+    function's docstring and the 2026-08-12 recovery-closure design doc for
+    the full reasoning (the asymmetry with ingest/scanners.py's
+    scan-absence auto-close applies identically here).
+
+    One deliberate interaction: assess_health treats any open
+    high/critical-severity POA&M as its own at-risk signal, and the POA&M
+    opened for an "overdue" control is severity="high" -- so a control that
+    ever went overdue cannot report healthy again until a human closes that
+    POA&M through the ISSM-08/09 gate, even once the original overdue cause
+    is fixed. That is a correct consequence of never auto-closing, not a bug.
+
+    Runs in its own SAVEPOINT and swallows+logs any failure so it can never
+    cost the caller's scan (AsyncSession.rollback() is NOT savepoint-scoped
+    and would otherwise unwind the whole scan's already-flushed work).
+
+    Only acts on the Task/POA&M this machinery itself created, identified by
+    the exact dedupe_key/source_ref/source _upsert_task/_upsert_poam use for
+    this implementation -- the POA&M lookup filters system_id + source ==
+    "conmon" + source_ref + open-status, matching _upsert_poam's own dedupe
+    filter exactly, so a same-system, same-source_ref POA&M from an
+    unrelated source (e.g. "manual") is never matched -- and only while
+    untouched (Task.status == "open"; POA&M still in _OPEN_POAM) -- and only
+    ever writes Task.status/closed_at and POAM.remediation_plan, so a
+    human's edit to any other field survives.
+    """
+    task_resolved = poam_recovered = False
+    try:
+        async with session.begin_nested():
+            task_dedupe = f"conmon:impl:{impl_id}"
+            task = (
+                await session.execute(select(Task).where(Task.dedupe_key == task_dedupe))
+            ).scalar_one_or_none()
+            if task is not None and task.status == "open":
+                task.status = "done"
+                task.closed_at = datetime.now(UTC)
+                task_resolved = True
+
+            source_ref = f"conmon:impl:{impl_id}"
+            poam = (
+                await session.execute(
+                    select(POAM).where(
+                        POAM.system_id == system_id,
+                        POAM.source == "conmon",
+                        POAM.source_ref == source_ref,
+                        POAM.status.in_(_OPEN_POAM),
+                    )
+                )
+            ).scalar_one_or_none()
+            if poam is not None:
+                note = (
+                    f"Control implementation {impl_id} returned to healthy as of "
+                    f"{datetime.now(UTC).isoformat()} -- review for closure."
+                )
+                poam.remediation_plan = (
+                    f"{poam.remediation_plan}\n{note}" if poam.remediation_plan else note
+                )
+                await bus.notify(
+                    session,
+                    category="conmon",
+                    title=f"Control {impl_id} recovered: POA&M ready for review",
+                    body=note,
+                    org_id=org_id,
+                    severity="info",
+                    entity_type="poam",
+                    entity_id=poam.id,
+                    dedupe_key=f"poam-recovery:{poam.id}",
+                )
+                poam_recovered = True
+    except Exception as exc:
+        # The savepoint rolled back everything the block above did, so any
+        # flags it flipped before the failure no longer reflect the database
+        # -- report nothing, not the pre-rollback intent (see scan()'s
+        # tasks_resolved/poams_recovered, which feed persisted MonitoringRun
+        # counters read straight off these return values).
+        task_resolved = poam_recovered = False
+        log.warning(
+            "conmon.recovery_failed",
+            implementation_id=impl_id,
+            error=str(exc)[:200],
+        )
+    return task_resolved, poam_recovered
 
 
 async def health_summary(
