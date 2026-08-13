@@ -34,6 +34,13 @@ services:
     entrypoint: ["alembic"]
     command: ["upgrade", "head"]
     restart: "no"
+    # The image-wide HEALTHCHECK (Dockerfile) curls the api's /healthz, which
+    # this one-shot `alembic upgrade` never serves. Disable it explicitly so
+    # nothing that gates on health (orchestrators, `depends_on:
+    # condition: service_healthy`) waits on a check this container can never
+    # pass -- do not re-add an HTTP healthcheck here.
+    healthcheck:
+      disable: true
 
   api:
     build: .
@@ -69,6 +76,11 @@ services:
     entrypoint: ["ccf"]
     command: ["ingest"]
     restart: "no"
+    # Same reasoning as migrator above: no HTTP server here, so the image's
+    # /healthz HEALTHCHECK can never pass. Disable it rather than leave a
+    # check that always fails.
+    healthcheck:
+      disable: true
 
   cli:
     build: .
@@ -79,6 +91,11 @@ services:
     environment: *ccf_env
     entrypoint: ["ccf"]
     restart: "no"
+    # Same reasoning as migrator above: no HTTP server here, so the image's
+    # /healthz HEALTHCHECK can never pass. Disable it rather than leave a
+    # check that always fails.
+    healthcheck:
+      disable: true
 
   # Catalog currency poller. One-shot: `docker compose --profile poller up`.
   # Wrap in a host cron / scheduler for daily runs, or run it from CI on a
@@ -95,6 +112,11 @@ services:
     entrypoint: ["sh", "-c"]
     command: ["ccf sources-seed && ccf sources-check"]
     restart: "no"
+    # Same reasoning as migrator above: no HTTP server here, so the image's
+    # /healthz HEALTHCHECK can never pass. Disable it rather than leave a
+    # check that always fails.
+    healthcheck:
+      disable: true
 
   # Evidence-prep worker. Preparation (parse -> screen -> expand -> classify ->
   # embed) is minutes of parsing and model calls per document -- far too slow
@@ -122,6 +144,17 @@ services:
     entrypoint: ["sh", "-c"]
     command: ["ccf prep-worker --loop"]
     restart: "unless-stopped"
+    # This worker has no HTTP server, so the image's /healthz HEALTHCHECK
+    # (which curls the api's port) can never pass -- it would report
+    # `unhealthy` forever despite the queue-polling loop above running fine,
+    # which then trips anything gating on health (`depends_on: condition:
+    # service_healthy`, orchestrator restart policies, monitoring). The
+    # runtime image has neither `ps`/`pgrep` nor a heartbeat file to probe
+    # cheaply, so there's no honest liveness check available here -- disable
+    # the inherited check rather than ship one that always fails. Do not
+    # re-add the api's HTTP healthcheck to this service.
+    healthcheck:
+      disable: true
 
   # Objective-level assessment engine worker. Evaluating one control means a
   # model call per objective -- too slow for a request cycle -- so it's
@@ -151,6 +184,13 @@ services:
     entrypoint: ["sh", "-c"]
     command: ["ccf assessment-worker --loop"]
     restart: "unless-stopped"
+    # Same reasoning as prep-worker above: no HTTP server, no cheap way to
+    # probe liveness in this slim image (no `ps`/`pgrep`, no heartbeat file),
+    # so the inherited /healthz HEALTHCHECK can never pass. Disable it rather
+    # than report `unhealthy` forever for a worker that is functioning
+    # correctly. Do not re-add the api's HTTP healthcheck to this service.
+    healthcheck:
+      disable: true
 
 volumes:
   ccf_pgdata:
