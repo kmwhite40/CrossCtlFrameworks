@@ -46,6 +46,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..db import set_session_tenant
 from ..logging import get_logger
 from ..models_prep import PrepJob
 from ..queue import claim_jobs, reap_stale_jobs
@@ -151,58 +152,22 @@ _MAX_LAST_ERROR_CHARS = 4_000
 async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
     """Advance one already-claimed job's run and update the job to match.
 
-    Does not commit — the caller (:func:`run_once`) commits immediately after
-    this returns, so this job's outcome (or the fact that it is still
-    ``claimed`` if this raises) is durable before the next job in the batch
-    starts. Returns ``"done"`` or ``"failed"`` for the caller's counters; a job
-    left ``pending`` for the next cycle counts as neither.
+    Does not commit, and does not manage the tenant GUC or catch a DB-level
+    failure -- :func:`run_once` sets the tenant to this job's
+    ``organization_id``, wraps this call in ``session.begin_nested()``,
+    records any failure, commits, and clears the tenant, all *around* this
+    function. See :func:`run_once`'s docstring for why the savepoint
+    boundary sits there rather than here. Returns ``"done"`` or ``"failed"``
+    for the caller's counters; a job left ``pending`` for the next cycle
+    counts as neither.
     """
-    # Captured before any DB work below, for use only in the except branch:
-    # once session.rollback() runs there, every ORM object already in this
-    # session (job included) is expired, and touching an expired attribute
-    # triggers an implicit refresh that requires an async-safe context --
-    # attempting it from plain attribute access (e.g. ``job.id``) raises
-    # ``MissingGreenlet``. Plain ints captured up front sidestep that
-    # entirely.
-    job_id = int(job.id)
-    job_run_id = int(job.run_id)
-
     run = await pipeline.load_run(session, job.run_id)
     if run is None:
         job.status = "failed"
         job.last_error = f"run {job.run_id} no longer exists"
         return "failed"
-    try:
-        await pipeline.advance(session, run)
-    except Exception as exc:  # a worker must survive any one job
-        # advance() can raise after leaving the session's underlying DB
-        # transaction aborted -- not every exception here is a plain Python
-        # error the ORM can shrug off. A raw DBAPI error (e.g. a stage's own
-        # savepoint didn't catch it, or a future stage lacks one) leaves
-        # Postgres refusing any further statement on this transaction until
-        # it is rolled back. Setting job.status/last_error via ORM attribute
-        # mutation looks fine here but was previously durable only if the
-        # caller's next commit() succeeded -- and it didn't: committing an
-        # already-aborted transaction raises InFailedSQLTransactionError,
-        # which propagated out of run_once uncaught, losing this job's
-        # last_error (it stayed "claimed" with last_error=NULL) and aborting
-        # the rest of the claimed batch along with it, stranding every other
-        # job in the same cycle regardless of which organization it belonged
-        # to. Rolling back first makes the transaction usable again; a direct
-        # UPDATE (rather than continuing to mutate `job`/`run` as ORM
-        # objects) is used to record the failure because rollback() expires
-        # every object already in the session, so their in-memory attributes
-        # can no longer be trusted to still reflect anything set on them
-        # before the rollback.
-        await session.rollback()
-        last_error = str(exc)[:_MAX_LAST_ERROR_CHARS]
-        await session.execute(
-            update(PrepJob)
-            .where(PrepJob.id == job_id)
-            .values(status="failed", last_error=last_error)
-        )
-        log.warning("prep.job_failed", job_id=job_id, run_id=job_run_id, error=last_error)
-        return "failed"
+
+    await pipeline.advance(session, run)
 
     # pipeline.advance() reconciles run.organization_id to the source's true
     # org before every stage (see pipeline._reconcile_organization) -- sync
@@ -228,31 +193,61 @@ async def _drive_one(session: AsyncSession, job: PrepJob) -> str:
 
 
 async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[str, int]:
-    """Claim and drive a batch of jobs, each committed independently.
+    """Claim and drive a batch of jobs, each committed independently and
+    scoped to its own organization while it processes.
 
-    Every job in the batch shares this one ``session``/connection, but not one
-    transaction: the claim is committed before any stage work runs, and each
-    job's outcome is committed before the next job starts. A worker killed
-    partway through the batch therefore loses at most the one job it was
-    mid-stage on — not the whole batch, and not the durable ``claimed`` record
-    (with its ``attempts`` bump) that lets :func:`reap_stale` find that job
-    again later. A single shared ``session`` — rather than a fresh one per job —
-    keeps the public signature exactly as documented in the interface and
-    matches how :func:`claim` and :func:`reap_stale` are already tested and
-    called; durability here comes from committing this session's transaction
-    boundary explicitly at each point, not from any particular Session object.
+    Every job in the batch shares this one ``session``/connection, but not
+    one transaction: the claim is committed before any stage work runs, and
+    each job's outcome is committed before the next job starts. A worker
+    killed partway through the batch therefore loses at most the one job it
+    was mid-stage on — not the whole batch, and not the durable ``claimed``
+    record (with its ``attempts`` bump) that lets :func:`reap_stale` find
+    that job again later.
+
+    **Tenant scoping (2026-08-12 worker-tenant-scoping design).** ``claim()``
+    stays unscoped — it reads only ``id``\\ s and writes only claim
+    bookkeeping, never evidence content, so a leak there discloses that some
+    organization has a queued job, not its contents. Once a job is claimed,
+    though, its own processing reads and writes across every one of the
+    eleven RLS'd tables (``pipeline.advance`` touches passages,
+    classifications, embeddings...) — exactly what migration ``0060``'s
+    policy exists to contain — so the tenant GUC is set to *that job's own*
+    ``organization_id`` (:func:`ccf.db.set_session_tenant`) immediately
+    before :func:`_drive_one` runs, and cleared again, explicitly, right
+    after that job's outcome commits. The reset never waits for the next
+    job's own assignment to overwrite it: a job that fails before it manages
+    to set anything must not inherit its predecessor's scope, and
+    :func:`reap_stale` (called by the CLI drain loop, `cli.py`'s
+    `_drain_loop`, on its own session immediately after a batch) must see a
+    clean, unscoped session regardless of which organization's job ran last.
+
+    The tenant is set *before* entering ``session.begin_nested()``, not
+    inside it, matching ``governance.scheduler._run_per_tenant_cycle``'s
+    exact ordering. A plain (non-``LOCAL``) ``SET ROLE``/``set_config``
+    issued inside a transaction is itself undone by any rollback of that
+    transaction — savepoint or full — so setting the tenant *inside* the
+    savepoint would mean a failed job's ``ROLLBACK TO SAVEPOINT`` also undoes
+    its own tenant scoping, right before the ``except`` branch below needs it
+    to record that same job's failure. Setting it outside means the
+    savepoint's rollback undoes only the failed job's own writes and clears
+    any DB-level ABORTED state (see the scheduler's own docstring for the
+    full trap this guards against), while leaving the tenant untouched
+    underneath it.
+
+    This is also why :func:`_drive_one` no longer catches or rolls back its
+    own DB-level failures the way an earlier version did, directly, with a
+    full ``session.rollback()``: that was safe before tenant scoping existed,
+    because nothing else was pending in the transaction at that point, but a
+    full rollback issued *after* the tenant was set for this job would undo
+    that ``SET`` too, same as above. A failure now propagates out of
+    ``_drive_one`` to this loop's own ``except``, which records it via a
+    direct ``UPDATE`` (not an ORM mutation — ``session.rollback()``/
+    ``ROLLBACK TO SAVEPOINT`` expires every ORM object already in the
+    session, so ``job``'s in-memory attributes can no longer be trusted to
+    still reflect anything set on it before the rollback).
     """
     claimed = await claim(session, worker=worker, limit=limit)
     await session.commit()
-    # Captured as plain ids, not held as ORM objects across the loop below:
-    # a mid-batch DBAPI error's session.rollback() (see _drive_one's except
-    # branch) expires every object already in this session -- every job
-    # claimed this cycle, not just the one that failed. Re-fetching by id
-    # each iteration via session.get() (a cheap identity-map hit when nothing
-    # expired it, a proper async-safe reload when something did) is what lets
-    # job 3..N still get driven after job 2 explodes, instead of the next
-    # iteration's own attribute access raising MissingGreenlet on a stale
-    # object.
     job_ids = [int(j.id) for j in claimed]
 
     finished = 0
@@ -261,8 +256,23 @@ async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[st
         job = await session.get(PrepJob, job_id)
         if job is None:  # pragma: no cover - not deletable via any current API
             continue
-        outcome = await _drive_one(session, job)
+        job_run_id = int(job.run_id)
+        organization_id = int(job.organization_id)
+        await set_session_tenant(session, organization_id)
+        try:
+            async with session.begin_nested():
+                outcome = await _drive_one(session, job)
+        except Exception as exc:  # a worker must survive any one job
+            last_error = str(exc)[:_MAX_LAST_ERROR_CHARS]
+            await session.execute(
+                update(PrepJob)
+                .where(PrepJob.id == job_id)
+                .values(status="failed", last_error=last_error)
+            )
+            log.warning("prep.job_failed", job_id=job_id, run_id=job_run_id, error=last_error)
+            outcome = "failed"
         await session.commit()
+        await set_session_tenant(session, None)
         if outcome == "done":
             finished += 1
         elif outcome == "failed":
