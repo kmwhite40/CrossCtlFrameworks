@@ -152,9 +152,20 @@ async def run_cycle() -> dict[str, Any]:
                 return {"skipped": "another instance holds the scheduler lock"}
         try:
             # GLOBAL: platform-wide upstream source registry, not org-owned.
-            with contextlib.suppress(Exception):
-                checks = await poll_sources(session)
-                out["catalog_checks"] = len(checks)
+            # Wrapped in its own SAVEPOINT for the same reason each per-tenant
+            # step is (see ``_run_per_tenant_cycle``'s docstring): a bare
+            # ``contextlib.suppress`` swallows the Python exception but, on a
+            # DB-level failure, leaves the shared transaction ABORTED — the
+            # very next statement on this session (``_active_org_ids`` below)
+            # would then raise and kill the whole cycle. ``begin_nested()``
+            # issues ``ROLLBACK TO SAVEPOINT`` on exception, which clears the
+            # abort and leaves the session usable for the next step.
+            try:
+                async with session.begin_nested():
+                    checks = await poll_sources(session)
+                    out["catalog_checks"] = len(checks)
+            except Exception as e:
+                log.warning("scheduler.global_step_failed", step="poll_sources", error=str(e)[:200])
 
             # PER-TENANT: collection, ConMon, and control-test auto-run — one
             # pass per organization, each clamped to its own RLS tenant.
@@ -163,12 +174,22 @@ async def run_cycle() -> dict[str, Any]:
 
             # GLOBAL: cross-module alert digest (ATO/POA&M/policy/vendor/etc.
             # rollups spanning the whole platform) — intentionally unscoped.
-            with contextlib.suppress(Exception):
-                out["digest"] = await digest.run(session, today=today)
-            with contextlib.suppress(Exception):
-                from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy, keeps startup light
+            # Same savepoint containment as above, so a digest failure can't
+            # abort the transaction out from under the fedramp20x scan below.
+            try:
+                async with session.begin_nested():
+                    out["digest"] = await digest.run(session, today=today)
+            except Exception as e:
+                log.warning("scheduler.global_step_failed", step="digest", error=str(e)[:200])
+            try:
+                async with session.begin_nested():
+                    from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy, keeps startup light
 
-                out["fedramp20x"] = await monitoring.scan(session, today=today)
+                    out["fedramp20x"] = await monitoring.scan(session, today=today)
+            except Exception as e:
+                log.warning(
+                    "scheduler.global_step_failed", step="fedramp20x_monitoring", error=str(e)[:200]
+                )
         finally:
             # Always release the tenant clamp before the advisory unlock, even
             # if the per-tenant loop raised past its own suppress (shouldn't,
