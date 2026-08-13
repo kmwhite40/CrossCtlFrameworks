@@ -30,7 +30,19 @@ async def set_session_tenant(session: AsyncSession, tenant_id: int | None) -> No
     ``RESET ROLE`` and clear the GUC, which the policies treat as *bypass* (full
     access). Every session-opening path calls this, so a pooled connection never
     inherits a prior request's role or tenant. No-op on SQLite (Reader build).
-    Set at session (connection) scope so it survives intermediate commits.
+
+    Set at session (connection) scope (``is_local=false`` on ``set_config``, a
+    plain ``SET ROLE`` rather than ``SET LOCAL ROLE``), so it survives an
+    intermediate ``COMMIT`` -- but **not** a ``ROLLBACK``, full or
+    ``ROLLBACK TO SAVEPOINT``: Postgres undoes a session-scoped
+    ``set_config``/``SET ROLE`` on rollback exactly like any other statement
+    issued inside the rolled-back transaction, ``is_local=false`` notwithstanding.
+    A caller that rolls back and then keeps using the same session is therefore
+    unscoped (bypass) afterward unless it calls this function again -- see
+    ``ccf.prep.jobs.run_once`` and ``ccf.assessment.engine.jobs.run_once``
+    (2026-08-12 worker-tenant-scoping design), which set the tenant *before*
+    entering ``session.begin_nested()`` rather than inside it, precisely so a
+    failed job's savepoint rollback cannot silently strip this scoping.
     """
     if get_engine().dialect.name != "postgresql":
         return

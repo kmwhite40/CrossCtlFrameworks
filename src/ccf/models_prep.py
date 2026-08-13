@@ -32,6 +32,15 @@ actually protect it, verified by
 ``tests/test_rls_worker_guc_bypass.py``. See ``docs/ARCHITECTURE.md``'s
 "Evidence preparation" section for the same note alongside the rest of the
 pipeline's description.
+
+Once a job is claimed, though, its *processing* is no longer unscoped
+(2026-08-12 worker-tenant-scoping design): ``ccf.prep.jobs.run_once`` sets
+the tenant GUC to the claimed job's own ``organization_id`` before driving
+it through ``pipeline.advance`` -- which reads and writes across every one
+of these seven tables -- and clears it explicitly after each job commits.
+Only the claim query itself remains a deliberate, documented exception, for
+the reason above (it touches no evidence content). See
+``tests/test_prep_worker_tenant_scoping.py``.
 """
 
 from __future__ import annotations

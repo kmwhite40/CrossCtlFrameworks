@@ -169,19 +169,31 @@ Built on the reference catalog + operational tables:
   outright — true of the whole app in that mode, not specific to prep. The
   seven `prep_*` tables carry a `tenant_isolation` RLS policy (migration
   `0060`, 2026-08-12 RLS-coverage design), matching 121 of Concord's 135
-  `ccf` tables — but as defence in depth, not the primary control: every prep
-  query still filters by `organization_id` in application code
-  (`ccf.prep.retriever._base_filters` and equivalent per-stage filters), and
-  `claim()` is **still, intentionally, unscoped by organization**, since one
-  worker drains every organization's jobs by design. That claim path runs
-  through `ccf.db.session_scope()`, which leaves the tenant GUC unset and the
-  bootstrap (table-owning) role in effect — exactly what every policy in this
-  schema treats as bypass — so RLS protects these tables only on the request
-  path, not on the worker/CLI path; the application-level guards
-  (`ccf.prep.sources.resolve_source_organization_id`, `ccf.prep.pipeline`'s
-  per-stage organization reconciliation) are what actually protect that path,
-  verified by `tests/test_prep_tenant_isolation.py` and (for the GUC
-  mechanism itself) `tests/test_rls_worker_guc_bypass.py`. See
+  `ccf` tables. Two different scopes apply to the worker path, deliberately
+  (2026-08-12 worker-tenant-scoping design): `claim()` is **still,
+  intentionally, unscoped by organization**, since one worker drains every
+  organization's jobs in a single query, and a claim touches only `id`,
+  status and claim bookkeeping on `prep_jobs` itself — never evidence
+  content — so a leak there discloses only that some organization has a
+  queued job, not its contents. Once a job is claimed, though,
+  `ccf.prep.jobs.run_once` sets the tenant GUC to *that job's own*
+  `organization_id` (`ccf.db.set_session_tenant`) before driving it through
+  `pipeline.advance`, which reads and writes across every one of the eleven
+  RLS'd tables — exactly what the policy exists to contain — and clears the
+  tenant explicitly after each job commits, rather than relying on the next
+  job's own assignment to overwrite it, so a job that fails before setting
+  its own tenant can never inherit its predecessor's. `reap_stale_jobs`
+  remains deliberately unscoped and runs on the same session immediately
+  after the batch, outside any per-job scoping, so it keeps sweeping every
+  organization's stale claims regardless of which org's job the batch most
+  recently processed. RLS is defence in depth throughout — every prep query
+  still filters by `organization_id` in application code
+  (`ccf.prep.retriever._base_filters` and equivalent per-stage filters),
+  and none of those checks is removed. Verified by
+  `tests/test_prep_tenant_isolation.py` (application-level guards),
+  `tests/test_rls_worker_guc_bypass.py` (the claim path's GUC/role
+  mechanism), and `tests/test_prep_worker_tenant_scoping.py` (the
+  processing path's scoping and its reset-between-jobs discipline). See
   `models_prep.py` for the same note next to the table definitions.
 - **Objective-level assessment engine** (`/api/assessment-engine`,
   `ccf assessment-worker`, `ccf.assessment.engine`): evaluates individual NIST
@@ -246,20 +258,27 @@ Built on the reference catalog + operational tables:
   `ai_action_run_id` permanently — historical rows are not retrofitted.
   The three `assessment_control_proposals` / `assessment_objective_proposals`
   / `assessment_jobs` tables carry a `tenant_isolation` RLS policy (migration
-  `0060`, 2026-08-12 RLS-coverage design), the same as the `prep_*` tables —
-  but as defence in depth, not the primary control: every route and service
-  function still filters by `organization_id` in application code (derived
-  from `Assessment -> System -> Organization`, never from a caller-supplied
-  id), and the job claim is **still, intentionally, unscoped**, since one
-  worker drains every organization's queue by design. That claim path runs
-  through `ccf.db.session_scope()`, which leaves the tenant GUC unset and the
-  bootstrap (table-owning) role in effect — exactly what every policy in this
-  schema treats as bypass — so RLS protects these three tables only on the
-  request path, not on the worker/CLI path; the application-level guard
-  (`ccf.assessment.engine.jobs.enqueue_reevaluation`'s `result_org_id`
-  check) is what actually protects that path, verified by
+  `0060`, 2026-08-12 RLS-coverage design), the same as the `prep_*` tables.
+  Two different scopes apply to the worker path, deliberately (2026-08-12
+  worker-tenant-scoping design): the job claim (`ccf.queue.claim_jobs`) is
+  **still, intentionally, unscoped**, since one worker drains every
+  organization's queue in a single query and touches only `id`, status, and
+  claim bookkeeping — never proposal or objective content — so a leak there
+  discloses at most that some organization has a queued job. Once a job is
+  claimed, though, `ccf.assessment.engine.jobs.run_once` sets the tenant GUC
+  to *that job's own* `organization_id` before driving it through
+  `evaluate_control_proposal`, which reads and writes across all three
+  RLS'd tables, and clears the tenant explicitly after each job commits,
+  rather than relying on the next job's own assignment to overwrite it. RLS
+  is defence in depth throughout — every route and service function still
+  filters by `organization_id` in application code (derived from
+  `Assessment -> System -> Organization`, never from a caller-supplied id),
+  and none of those checks is removed. Verified by
   `tests/test_assessment_engine_api.py::test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_of_rls`
-  and (for the GUC mechanism itself) `tests/test_rls_worker_guc_bypass.py`.
+  (application-level guard), `tests/test_rls_worker_guc_bypass.py` (the
+  claim path's GUC/role mechanism), and
+  `tests/test_assessment_worker_tenant_scoping.py` (the processing path's
+  scoping and its reset-between-jobs discipline).
   `systems`, `assessments`, and `assessment_control_results` — the tables the
   accepted finding actually lands in — do carry the `tenant_isolation` RLS
   policy, enforced on every path since they have no worker/CLI bypass of this
@@ -281,10 +300,13 @@ Built on the reference catalog + operational tables:
   service function, and worker still derives and checks `organization_id` in
   code, and this slice removes none of those checks. The one place RLS
   provides no protection at all is the prep and assessment-engine worker
-  processes' own job-claim queries, which run unscoped by design (one worker
-  drains every organization's queue in a single query) — see "Evidence
-  preparation" and "Objective-level assessment engine" above for that
-  exception named alongside the application-level check that actually
+  processes' own job-*claim* queries, which run unscoped by design (one
+  worker drains every organization's queue in a single query, touching only
+  job-bookkeeping columns) — everything downstream of a claim, the actual
+  processing of that job, runs scoped to the claimed job's own organization
+  (2026-08-12 worker-tenant-scoping design) — see "Evidence preparation" and
+  "Objective-level assessment engine" above for that one remaining
+  exception, named alongside the application-level check that actually
   covers it.
 - **Calibration harness** (`/api/assessment-engine/proposals/{id}/reject`,
   `/api/assessment-engine/calibration`, `ccf calibration-snapshot`,

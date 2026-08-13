@@ -6,6 +6,35 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Worker-path tenant scoping for the prep and assessment-engine job queues
+- **Once a job is claimed, its processing now runs scoped to that job's own
+  tenant.** `ccf.prep.jobs.run_once` and `ccf.assessment.engine.jobs.run_once`
+  set the RLS tenant GUC (`ccf.db.set_session_tenant`) to the claimed job's
+  own `organization_id` before driving it through `pipeline.advance` /
+  `evaluate_control_proposal` — the work that reads and writes across the
+  eleven tables migration `0060` policied — and clear it explicitly after
+  each job's outcome commits. Previously both drain loops ran their entire
+  cycle on an unscoped (bypass) session, so RLS never applied to the paths
+  that write the most rows into those tables.
+- **The claim query stays deliberately unscoped** — `claim_jobs` still reads
+  every organization's pending jobs in one query, touching only `id`,
+  status, and claim bookkeeping, never evidence content, so a leak there
+  discloses at most that some organization has a queued job. Named and
+  documented as the one remaining exception, not left as an unstated gap.
+- **The tenant is cleared explicitly after every job, not left for the next
+  job's own assignment to overwrite** — a drain loop shares one session
+  across jobs from different organizations, and a stale GUC would make the
+  next job filter *correctly for the wrong tenant*: silently missing rows,
+  not an error.
+- **`reap_stale_jobs` stays unscoped**, running immediately after a batch on
+  the same session the batch just used, so it keeps sweeping every
+  organization's stale claims regardless of which org's job ran last.
+- **No application-level check removed, no CLI change, no new role, no
+  migration.** A dedicated `ccf_worker` role with explicit `bypassrls` is
+  filed as a follow-up — it would add no additional isolation but would
+  make the claim path's bypass explicit and auditable rather than an
+  implicit property of `session_scope()`.
+
 ### Added — Recovery closure for control tests and ConMon
 - **A control test recovering from `fail`/`warn` to `pass`, or a control
   implementation returning to `healthy` in ConMon, now resolves the

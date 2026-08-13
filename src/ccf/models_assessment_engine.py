@@ -58,6 +58,15 @@ idempotency to ``source_poam_id IS NULL`` rows only, and
 POA&M. ``open_control_proposal`` filters ``source_poam_id IS NULL``
 explicitly for the same reason: once a re-evaluation row exists alongside a
 first-pass row for the same control, an unfiltered lookup would see two rows.
+
+Once a job is claimed, though, its *processing* is no longer unscoped
+(2026-08-12 worker-tenant-scoping design): ``ccf.assessment.engine.jobs.
+run_once`` sets the tenant GUC to the claimed job's own ``organization_id``
+before driving it through ``evaluate_control_proposal`` -- which reads and
+writes across all three of these tables -- and clears it explicitly after
+each job commits. Only the claim query itself remains a deliberate,
+documented exception, for the reason above (it touches no proposal or
+objective content). See ``tests/test_assessment_worker_tenant_scoping.py``.
 """
 
 from __future__ import annotations
