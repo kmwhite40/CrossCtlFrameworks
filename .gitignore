@@ -9,6 +9,10 @@ __pycache__/
 data/*
 # Ship the NIST catalog workbook with the repo so `ccf ingest` works on any clone.
 !data/NIST Cross Mappings Rev. 1.1.xlsx
+# Ship the pinned OSCAL 800-53r5 catalog + baselines so the verifying loader
+# works on any clone without a network fetch at runtime.
+!data/oscal/
+!data/oscal/*
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

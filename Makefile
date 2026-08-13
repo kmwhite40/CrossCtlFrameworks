@@ -30,7 +30,7 @@ ingest: ## Ingest the workbook into Postgres
 	ccf ingest --xlsx "$(WORKBOOK)"
 
 serve: ## Run the FastAPI app locally
-	ccf serve --reload
+	CCF_ENV=dev ccf serve --reload
 
 cli: ## Open a ccf CLI prompt (through compose)
 	$(COMPOSE) --profile cli run --rm cli --help

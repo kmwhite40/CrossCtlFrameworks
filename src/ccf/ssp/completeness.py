@@ -101,8 +101,98 @@ def _entry_gaps(entry: dict[str, Any]) -> list[str]:
     return gaps
 
 
-def assess(project_metadata: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return a completeness report: score, per-area gaps, and control detail."""
+def _odp_totals(entries: list[dict[str, Any]]) -> tuple[int, int]:
+    """Return ``(total_odps, unset_odps)`` across all entries' ``odp_values``.
+
+    ``odp_values`` is a dict ``{param_id: value_or_None}``; the 800-53r5 seed
+    scaffolds these with all-``None`` values. A value is "unset" if it's
+    ``None`` or an empty/whitespace-only string.
+    """
+    total = 0
+    unset = 0
+    for e in entries:
+        odp_values = e.get("odp_values") or {}
+        for v in odp_values.values():
+            total += 1
+            if v is None or (isinstance(v, str) and not v.strip()):
+                unset += 1
+    return total, unset
+
+
+def _boundary_gaps_and_pct(boundary: dict[str, Any]) -> tuple[list[str], float]:
+    """Score the four boundary checks and list human-readable gap messages for
+    the ones that fail. Returns ``(gaps, boundary_pct)`` where ``boundary_pct``
+    is the fraction of the four checks that passed (each weighted equally)."""
+    gaps: list[str] = []
+    passed = 0
+    checks = 4
+
+    if (boundary.get("components") or 0) >= 1:
+        passed += 1
+    else:
+        gaps.append("No boundary components defined")
+
+    if (boundary.get("info_types") or 0) >= 1:
+        passed += 1
+    else:
+        gaps.append("No information types categorized")
+
+    if boundary.get("categorization_reconciles"):
+        passed += 1
+    else:
+        gaps.append("System categorization does not reconcile with information types")
+
+    with_agreements, ic_total = boundary.get("interconnections_with_agreements") or (0, 0)
+    if ic_total in (0, with_agreements):
+        passed += 1
+    else:
+        lacking = ic_total - with_agreements
+        gaps.append(f"{lacking} of {ic_total} interconnections lack an agreement")
+
+    return gaps, passed / checks
+
+
+def assess(
+    project_metadata: dict[str, Any],
+    entries: list[dict[str, Any]],
+    boundary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a completeness report: score, per-area gaps, and control detail.
+
+    ``boundary``, when given, is a small summary dict describing the linked
+    system's boundary inventory::
+
+        {
+            "components": int,                        # SystemComponent count
+            "info_types": int,                        # InformationType count
+            "categorization_reconciles": bool,        # reconcile_categorization(...) == []
+            "interconnections_with_agreements": (k, n),  # k of n have an agreement
+        }
+
+    Scoring blend: the overall score stays ``100 * (0.8 * control_pct +
+    0.2 * section_pct)`` — control completeness remains the dominant 80%
+    weight. ``section_pct`` is the front-matter completion ratio
+    (``REQUIRED_METADATA`` present / total) when ``boundary`` is ``None``
+    (unchanged, fully backward compatible). When ``boundary`` is provided,
+    ``section_pct`` becomes the **average** of that front-matter ratio and a
+    boundary sub-score — the fraction of four equally-weighted checks that
+    pass (>=1 component, >=1 information type, categorization reconciles,
+    every interconnection has an agreement) — folding the boundary section
+    into the existing 20% non-control dimension rather than adding a third
+    weighted term. Any failing boundary check is appended to the report's
+    ``missing_sections`` list.
+
+    ODPs (organization-defined parameters, from each entry's ``odp_values``)
+    are folded in the same way: when any entries carry scaffolded ODPs
+    (``total_odps > 0``), an ODP fill ratio (filled / total) joins the
+    average that makes up ``section_pct``, and an unset-ODP gap is appended
+    to ``missing_sections``. When no entries carry any ``odp_values`` at all
+    (``total_odps == 0`` — the case for every project seeded before this
+    dimension existed, including CMMC projects), the ODP dimension is
+    entirely inert: no gap, no score change, byte-identical to before this
+    dimension existed. The report always carries an ``odp_summary``
+    ``{"total": int, "unset": int}`` field regardless.
+    """
     meta = project_metadata or {}
     missing_sections = [label for path, label in REQUIRED_METADATA if not _dig(meta, path)]
 
@@ -116,13 +206,33 @@ def assess(project_metadata: dict[str, Any], entries: list[dict[str, Any]]) -> d
             complete += 1
 
     total = len(entries)
-    # Weight: 80% controls complete, 20% front matter present.
+    # Weight: 80% controls complete, 20% front matter (+ boundary, when given) present.
     control_pct = (complete / total) if total else 0.0
     section_pct = (
         1.0
         if not REQUIRED_METADATA
         else (len(REQUIRED_METADATA) - len(missing_sections)) / len(REQUIRED_METADATA)
     )
+
+    if boundary is not None:
+        boundary_gaps, boundary_pct = _boundary_gaps_and_pct(boundary)
+        section_pct = (section_pct + boundary_pct) / 2.0
+        missing_sections = [*missing_sections, *boundary_gaps]
+
+    total_odps, unset_odps = _odp_totals(entries)
+    # Only fold ODPs into the score when some are UNSET (an actual gap). When every
+    # ODP is filled (unset == 0), leave the score untouched — this keeps existing
+    # CMMC projects (which carry only filled odp_values) byte-identical rather than
+    # nudging their score upward, while still penalizing a scaffolded 800-53 SSP
+    # whose ODPs haven't been filled in.
+    if unset_odps > 0:
+        odp_pct = (total_odps - unset_odps) / total_odps
+        section_pct = (section_pct + odp_pct) / 2.0
+        missing_sections = [
+            *missing_sections,
+            f"{unset_odps} of {total_odps} organization-defined parameters (ODPs) unset",
+        ]
+
     score = round(100 * (0.8 * control_pct + 0.2 * section_pct), 1)
     # "Ready" means genuinely done: every control complete (the 80/20 blend must
     # not let a high score mask empty controls), all required front matter present,
@@ -135,4 +245,5 @@ def assess(project_metadata: dict[str, Any], entries: list[dict[str, Any]]) -> d
         "controls_complete": complete,
         "missing_sections": missing_sections,
         "control_gaps": control_gaps[:200],
+        "odp_summary": {"total": total_odps, "unset": unset_odps},
     }

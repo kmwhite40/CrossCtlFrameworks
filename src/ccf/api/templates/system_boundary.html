@@ -1,0 +1,228 @@
+{% extends "base.html" %}
+{% block title %}Boundary · {{ system.name }} · Concord{% endblock %}
+{% block breadcrumbs %}
+<nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
+  <a href="/dashboard">Home</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/systems">Systems</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/systems/{{ system.id }}">{{ system.name }}</a>
+  <i data-lucide="chevron-right"></i>
+  <span>Boundary</span>
+</nav>
+{% endblock %}
+{% block heading %}Boundary &amp; inventory{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Components, inventory, information types, and interconnections for {{ system.name }} — the same records the OSCAL export and the authorization-boundary diagrams are generated from.</p>
+{% endblock %}
+{% block actions %}
+  <a class="btn btn--secondary btn--sm" href="/systems/{{ system.id }}"><i data-lucide="arrow-left"></i> Back to system</a>
+  <a class="btn btn--primary btn--sm" href="/api/oscal/component-definition/{{ system.id }}" target="_blank"><i data-lucide="download"></i> OSCAL</a>
+{% endblock %}
+{% block content %}
+
+<div class="row" style="gap:8px;margin-bottom:16px;flex-wrap:wrap">
+  <span class="chip chip--brand">{{ summary.components | length }} component(s)</span>
+  <span class="chip chip--brand">{{ summary.inventory | length }} inventory item(s)</span>
+  <span class="chip chip--brand">{{ summary.info_types | length }} information type(s)</span>
+  <span class="chip chip--brand">{{ summary.interconnections | length }} interconnection(s)</span>
+</div>
+
+<section class="cols-2" style="margin-bottom:16px">
+  <div class="card">
+    <div class="card__header"><div class="card__title">Authorization boundary</div></div>
+    <div class="card__body" style="overflow-x:auto">
+      <pre class="mermaid">{{ boundary_diagram }}</pre>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card__header"><div class="card__title">Data flow</div></div>
+    <div class="card__body" style="overflow-x:auto">
+      <pre class="mermaid">{{ dataflow_diagram }}</pre>
+    </div>
+  </div>
+</section>
+
+{# ── Components ──────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Components</div>
+    <span class="dim" style="font-size:13px">{{ summary.components | length }}</span>
+  </div>
+  <form class="card__body filters" id="component-form">
+    <select class="select" name="type" aria-label="Component type" required>
+      <option value="">Type…</option>
+      {% for t in component_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <input aria-label="Component title" class="input" name="title" placeholder="Title" required />
+    <select class="select" name="status" aria-label="Status">
+      {% for s in component_statuses %}<option value="{{ s }}" {% if s == 'operational' %}selected{% endif %}>{{ s }}</option>{% endfor %}
+    </select>
+    <input aria-label="Responsible role" class="input" name="responsible_role" placeholder="Responsible role" />
+    <input aria-label="Description" class="input" name="description" placeholder="Description" />
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add component</button>
+  </form>
+  {% if summary.components %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Title</th><th>Type</th><th>Status</th><th>Responsible role</th></tr></thead>
+    <tbody>
+      {% for c in summary.components %}<tr>
+        <td><strong>{{ c.title }}</strong></td>
+        <td><span class="chip">{{ c.type }}</span></td>
+        <td><span class="chip {% if c.status=='operational' %}chip--ok{% elif c.status=='disposition' %}chip--err{% else %}chip--warn{% endif %}">{{ c.status }}</span></td>
+        <td class="dim">{{ c.responsible_role or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No components recorded yet.</div>{% endif %}
+</section>
+
+{# ── Inventory items ─────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Inventory items</div>
+    <span class="dim" style="font-size:13px">{{ summary.inventory | length }}</span>
+  </div>
+  <form class="card__body filters" id="inventory-form">
+    <input aria-label="Asset ID" class="input" name="asset_id" placeholder="Asset ID" required />
+    <select class="select" name="asset_type" aria-label="Asset type" required>
+      <option value="">Type…</option>
+      {% for t in inventory_asset_types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+    </select>
+    <select class="select" name="component_id" aria-label="Owning component">
+      <option value="">(no component)</option>
+      {% for c in summary.components %}<option value="{{ c.id }}">{{ c.title }}</option>{% endfor %}
+    </select>
+    <input aria-label="Vendor" class="input" name="vendor_name" placeholder="Vendor" />
+    <input aria-label="Hostname" class="input" name="hostname" placeholder="Hostname" />
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add inventory item</button>
+  </form>
+  {% if summary.inventory %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Asset ID</th><th>Type</th><th>Component</th><th>Vendor</th><th>Hostname</th></tr></thead>
+    <tbody>
+      {% for item in summary.inventory %}
+      {% set comp = (summary.components | selectattr('id', 'equalto', item.component_id) | list | first) if item.component_id else none %}
+      <tr>
+        <td><strong>{{ item.asset_id }}</strong></td>
+        <td><span class="chip">{{ item.asset_type }}</span></td>
+        <td class="dim">{{ comp.title if comp else '—' }}</td>
+        <td class="dim">{{ item.vendor_name or '—' }}</td>
+        <td class="dim mono">{{ item.hostname or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No inventory items recorded yet.</div>{% endif %}
+</section>
+
+{# ── Information types ───────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Information types</div>
+    <span class="dim" style="font-size:13px">{{ summary.info_types | length }}</span>
+  </div>
+  <form class="card__body filters" id="infotype-form">
+    <input aria-label="Information type title" class="input" name="title" placeholder="Title" required />
+    <input aria-label="NIST SP 800-60 ID" class="input" name="nist_800_60_id" placeholder="NIST 800-60 ID" />
+    <select class="select" name="confidentiality_impact" aria-label="Confidentiality impact">
+      <option value="">Confidentiality…</option>
+      {% for lvl in fips199_impacts %}<option value="{{ lvl }}">{{ lvl }}</option>{% endfor %}
+    </select>
+    <select class="select" name="integrity_impact" aria-label="Integrity impact">
+      <option value="">Integrity…</option>
+      {% for lvl in fips199_impacts %}<option value="{{ lvl }}">{{ lvl }}</option>{% endfor %}
+    </select>
+    <select class="select" name="availability_impact" aria-label="Availability impact">
+      <option value="">Availability…</option>
+      {% for lvl in fips199_impacts %}<option value="{{ lvl }}">{{ lvl }}</option>{% endfor %}
+    </select>
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add information type</button>
+  </form>
+  {% if summary.info_types %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Title</th><th>NIST 800-60 ID</th><th>Confidentiality</th><th>Integrity</th><th>Availability</th></tr></thead>
+    <tbody>
+      {% for it in summary.info_types %}<tr>
+        <td><strong>{{ it.title }}</strong></td>
+        <td class="dim mono">{{ it.nist_800_60_id or '—' }}</td>
+        <td>{% if it.confidentiality_impact %}<span class="chip">{{ it.confidentiality_impact }}</span>{% else %}—{% endif %}</td>
+        <td>{% if it.integrity_impact %}<span class="chip">{{ it.integrity_impact }}</span>{% else %}—{% endif %}</td>
+        <td>{% if it.availability_impact %}<span class="chip">{{ it.availability_impact }}</span>{% else %}—{% endif %}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No information types recorded yet.</div>{% endif %}
+</section>
+
+{# ── Interconnections ────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Interconnections</div>
+    <span class="dim" style="font-size:13px">{{ summary.interconnections | length }}</span>
+  </div>
+  <form class="card__body filters" id="interconnection-form">
+    <input aria-label="Remote system name" class="input" name="remote_system_name" placeholder="Remote system name" required />
+    <select class="select" name="direction" aria-label="Direction" required>
+      <option value="">Direction…</option>
+      {% for d in interconnection_directions %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+    </select>
+    <select class="select" name="agreement_type" aria-label="Agreement type" required>
+      <option value="">Agreement…</option>
+      {% for a in interconnection_agreement_types %}<option value="{{ a }}">{{ a }}</option>{% endfor %}
+    </select>
+    <input aria-label="Remote organization" class="input" name="remote_org" placeholder="Remote org" />
+    <input aria-label="Data description" class="input" name="data_description" placeholder="Data description" />
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add interconnection</button>
+  </form>
+  {% if summary.interconnections %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Remote system</th><th>Direction</th><th>Agreement</th><th>Remote org</th><th>Data</th></tr></thead>
+    <tbody>
+      {% for ic in summary.interconnections %}<tr>
+        <td><strong>{{ ic.remote_system_name }}</strong></td>
+        <td><span class="chip">{{ ic.direction }}</span></td>
+        <td><span class="chip chip--brand">{{ ic.agreement_type }}</span></td>
+        <td class="dim">{{ ic.remote_org or '—' }}</td>
+        <td class="dim">{{ ic.data_description or '—' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:32px">No interconnections recorded yet.</div>{% endif %}
+</section>
+
+<script>
+function attachBoundaryForm(formId, url) {
+  const form = document.getElementById(formId);
+  if (!form) return;
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const body = Object.fromEntries([...fd.entries()].filter(([, v]) => v !== ''));
+    if ('component_id' in body) body.component_id = parseInt(body.component_id, 10);
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'content-type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (r.ok) location.reload();
+    else if (window.toast) window.toast('Failed to save — check the required fields');
+  });
+}
+attachBoundaryForm('component-form', '/api/systems/{{ system.id }}/boundary/components');
+attachBoundaryForm('inventory-form', '/api/systems/{{ system.id }}/boundary/inventory');
+attachBoundaryForm('infotype-form', '/api/systems/{{ system.id }}/boundary/information-types');
+attachBoundaryForm('interconnection-form', '/api/systems/{{ system.id }}/boundary/interconnections');
+if (window.lucide) lucide.createIcons();
+</script>
+
+{#- Vendored Mermaid renders every `.mermaid` block on the page (both diagram
+    panels above). Guarded so a future base.html-level Mermaid load can't
+    double-initialize this page. -#}
+<script src="/static/vendor/mermaid.min.js"></script>
+<script>
+if (typeof mermaid !== 'undefined' && !window.__ccfMermaidInited) {
+  window.__ccfMermaidInited = true;
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+}
+</script>
+{% endblock %}

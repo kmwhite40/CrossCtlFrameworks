@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from .assessment.engine import jobs as assessment_jobs
 from .assessment.engine.calibration import take_snapshot
-from .auth import hash_password, new_api_token
+from .auth import hash_password, new_api_token, validate_password_policy
 from .config import Settings, get_settings
 from .db import session_scope
 from .etl import ingest_workbook
@@ -605,6 +605,12 @@ def user_create(
     ),
 ) -> None:
     """Create (or update) a user with a password + API token for authentication."""
+
+    try:
+        validate_password_policy(password, min_length=get_settings().auth_password_min_length)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     async def _run() -> None:
         async with session_scope() as session:
@@ -1444,6 +1450,47 @@ def assurance_impact(
     )
     for etype, items in out["affected"].items():
         console.print(f"  {etype}: {len(items)}")
+
+
+catalog_app = typer.Typer(help="OSCAL catalog reconciliation (advisory).", no_args_is_help=True)
+app.add_typer(catalog_app, name="catalog")
+
+
+@catalog_app.command("reconcile")
+def catalog_reconcile(
+    strict: bool = typer.Option(
+        False, "--strict", help="Exit non-zero if the run has any high-severity findings."
+    ),
+) -> None:
+    """Run OSCAL 800-53r5 catalog reconciliation and store the report."""
+    from .catalog.report import render_text, run_and_store  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            report = await run_and_store(session)
+            await session.commit()
+            return report
+
+    report = asyncio.run(_run())
+    console.print(render_text(report))
+    if strict and report.findings_by_severity.get("high", 0):
+        raise typer.Exit(code=1)
+
+
+@catalog_app.command("show")
+def catalog_show() -> None:
+    """Show the most recent OSCAL catalog reconciliation report."""
+    from .catalog.report import latest_report, render_text  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            return await latest_report(session)
+
+    report = asyncio.run(_run())
+    if report is None:
+        console.print("No catalog reconciliation report yet.")
+        return
+    console.print(render_text(report))
 
 
 oscal_app = typer.Typer(help="OSCAL — validate exports against official or structural schema")

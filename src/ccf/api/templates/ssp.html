@@ -62,7 +62,12 @@
       </label>
       <label class="field-group"><span class="dim" style="font-size:12px">System name (if not listed)</span>
         <input aria-label="CUI Enclave" class="input" name="system_name" placeholder="CUI Enclave"></label>
-      <label class="field-group"><span class="dim" style="font-size:12px">Cloud platform (seeds sample statements)</span>
+      <label class="field-group"><span class="dim" style="font-size:12px">Framework</span>
+        <select class="select" name="framework">
+          <option value="cmmc-800-171">CMMC L2 / 800-171</option>
+          <option value="nist-800-53r5">FedRAMP / NIST 800-53r5</option>
+        </select></label>
+      <label class="field-group"><span class="dim" style="font-size:12px">Cloud platform (seeds sample statements; CMMC only)</span>
         <select class="select" name="platform">
           {% for code, label in platforms.items() %}<option value="{{ code }}">{{ label }}</option>{% endfor %}
         </select></label>

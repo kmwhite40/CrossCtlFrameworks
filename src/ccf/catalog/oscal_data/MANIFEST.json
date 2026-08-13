@@ -1,0 +1,11 @@
+{
+  "oscal_version": "5.2.0",
+  "source_url": "https://github.com/usnistgov/oscal-content (nist.gov/SP800-53/rev5/json)",
+  "retrieved_at": "2026-07-26",
+  "files": {
+    "NIST_SP-800-53_rev5_HIGH-baseline_profile.json": "60576970caef91b2cba56d46e5948b72e3b879434fc2a4840bc4179e5e75cfd7",
+    "NIST_SP-800-53_rev5_LOW-baseline_profile.json": "8fd206017c8d718b44bdef612c2ff321a9fd84d97a515c8ec33c4619accbef6e",
+    "NIST_SP-800-53_rev5_MODERATE-baseline_profile.json": "9030dbf1f13169947eb97eb101b4bd2f00d3c151b100455a923ac75803f00ea1",
+    "NIST_SP-800-53_rev5_catalog.json": "01f37cf90ea99d92242c936cbfbdebcc338eef1f71454e2acac36cc56e9bc062"
+  }
+}

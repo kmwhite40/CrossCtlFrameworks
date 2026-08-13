@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ccf.config import Settings, enforce_secure_config
+from ccf.config import Settings, enforce_secure_config, is_dev_env
 
 
 def _settings(**over) -> Settings:
@@ -37,6 +37,26 @@ def test_prod_secure_returns_no_problems() -> None:
     assert enforce_secure_config(_settings()) == []
 
 
-def test_prod_wildcard_cors_is_warning_not_fatal() -> None:
-    warnings = enforce_secure_config(_settings(api_cors_origins=["*"]))
-    assert warnings and "CORS" in warnings[0]
+def test_prod_wildcard_cors_refuses_start() -> None:
+    with pytest.raises(RuntimeError, match="CORS"):
+        enforce_secure_config(_settings(api_cors_origins=["*"]))
+
+
+def test_is_dev_env_true_for_dev_local_test() -> None:
+    for env in ("dev", "local", "test"):
+        assert is_dev_env(_settings(env=env)) is True
+
+
+def test_is_dev_env_false_for_production_and_empty() -> None:
+    assert is_dev_env(_settings(env="production")) is False
+    assert is_dev_env(_settings(env="")) is False
+
+
+def test_env_test_insecure_is_noop() -> None:
+    s = _settings(
+        env="test",
+        auth_enabled=False,
+        auth_session_secret="dev-insecure-change-me",
+        api_cors_origins=["*"],
+    )
+    assert enforce_secure_config(s) == []

@@ -36,6 +36,7 @@ dependencies = [
     "pgvector>=0.3,<1",
     "pymupdf>=1.24,<2",
     "python-pptx>=1.0,<2",
+    "defusedxml>=0.7,<1",
 ]
 
 [project.optional-dependencies]
@@ -46,6 +47,8 @@ dev = [
     "ruff>=0.5,<1",
     "mypy>=1.10,<2",
     "types-python-slugify",
+    "types-defusedxml",
+    "bandit>=1.7,<2",
 ]
 reader = [
     "pyinstaller>=6.10,<7",
@@ -68,6 +71,8 @@ where = ["src"]
 "ccf.scoring" = ["seed.json"]
 "ccf.fedramp20x" = ["ksi_catalog.json", "oscal_ksi.schema.json"]
 "ccf.packs" = ["bundled/*/pack.json"]
+"ccf.catalog" = ["oscal_data/*.json"]
+"ccf.oscal" = ["schemas/*.json"]
 
 [tool.ruff]
 line-length = 100

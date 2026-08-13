@@ -23,6 +23,7 @@ os.environ.setdefault(
     "CCF_DATABASE_URL_SYNC",
     "postgresql+psycopg://ccf:ccf@localhost:5432/ccf_test",
 )
+os.environ.setdefault("CCF_ENV", "test")
 
 
 @pytest.fixture(scope="session", autouse=True)

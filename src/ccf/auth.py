@@ -53,6 +53,17 @@ def verify_password(password: str, stored: str | None) -> bool:
     return hmac.compare_digest(dk.hex(), digest)
 
 
+def validate_password_policy(password: str, *, min_length: int) -> None:
+    """IA-5: enforce a minimum password length.
+
+    NIST 800-63B favors length over composition/rotation rules, so no
+    complexity (uppercase/digit/symbol) or rotation requirements are checked
+    here — just length.
+    """
+    if len(password) < min_length:
+        raise ValueError(f"password must be at least {min_length} characters")
+
+
 def new_api_token() -> str:
     return secrets.token_urlsafe(32)
 

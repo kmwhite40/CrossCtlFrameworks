@@ -64,6 +64,44 @@ accent, soft shadows, no chrome-heavy glassmorphism.
   customers/assessors/vendors with no internal account), and a **deterministic
   assurance query layer** (reusable, parameterized, exportable questions over the
   authorization data — no AI).
+- **Produces a complete, machine-readable authorization package** — an
+  end-to-end OSCAL pipeline: define the **system boundary & inventory**, generate a
+  real **NIST SP 800-53 Rev 5 SSP**, record an assessment, and export the whole
+  **authorization package** (SSP + SAR + POA&M + component-definition) as one ZIP —
+  every document **validated against the official NIST OSCAL v1.1.2 JSON Schema**
+  (see *Authorization package* below).
+- **Verifies control-read accuracy** — an advisory **OSCAL catalog reconciliation
+  engine** checks the workbook-sourced controls against the pinned authoritative NIST
+  OSCAL 800-53r5 catalog + 800-53B baselines (canonicalization, unknown/withdrawn
+  ids, baseline over/under-claims, dangling cross-framework mappings), producing a
+  catalog-integrity report (`ccf catalog reconcile`, `/catalog/integrity`).
+
+## Authorization package (OSCAL, NIST 800-53 Rev 5)
+
+An end-to-end, OSCAL-native path from "we have a system" to a downloadable
+authorization package — all validated against the **official NIST OSCAL v1.1.2
+schemas** (vendored in-package; `validate_document` runs official-schema validation
+by default and CI fails the build on any non-conformant export):
+
+- **System boundary & inventory** (`/systems/{id}/boundary`) — first-class,
+  tenant-scoped components, inventory items, per-type FIPS-199/800-60 information
+  types, and interconnections/ISAs, with **auto-generated boundary + data-flow
+  diagrams** (Mermaid, always in sync) and a categorization reconciler that flags
+  when the rollup disagrees with the system's triad. Maps to OSCAL
+  `system-implementation`.
+- **Real 800-53r5 SSP** — an `SSPProject` with `framework="nist-800-53r5"` selects
+  the authoritative 800-53B baseline control set for the system's FIPS-199 level
+  (287 controls at Moderate), scaffolds each control's **organization-defined
+  parameters (ODPs)** from the catalog, and generates an OSCAL SSP
+  (`implemented-requirements` + `set-parameters` + boundary-backed
+  `system-implementation`) and a FedRAMP-style `.docx`. The existing CMMC L2 /
+  800-171 generator is unchanged (`framework="cmmc-800-171"`, the default).
+- **Assessment results (SAR)** — `GET /api/oscal/sar/{assessment_id}` emits an OSCAL
+  assessment-results document: control-level findings (satisfied / not-satisfied,
+  with N/A preserved), evidence observations, and open POA&Ms as risks.
+- **Package bundle** — `GET /api/oscal/package/{system_id}` returns a ZIP of
+  `ssp.json` + `sar.json` + `poam.json` + `component-definition.json` + a README
+  manifest (absent artifacts are omitted and noted, never fabricated).
 
 ## FedRAMP 20x
 
@@ -112,13 +150,18 @@ Continuous-controls-monitoring (parity with commercial CCM/GRC platforms):
   connector capture, so a test asserts real posture (`mfa_enforced == true`,
   `retention_days >= 90`) instead of only that the connector synced. Run on demand via
   `POST /api/control-tests/{id}/evaluate` or automatically in the scheduler cycle.
-- **OSCAL POA&M export** — `GET /api/oscal/poam/{system_id}` emits an OSCAL 1.1
-  plan-of-action-and-milestones (alongside the existing OSCAL SSP + Component Definition).
-- **Official OSCAL validation** — `POST /api/oscal/validate` (and `ccf oscal validate`)
-  check SSP / Component Definition / POA&M / assessment docs against the upstream NIST
-  OSCAL JSON Schemas when `CCF_OSCAL_SCHEMA_DIR` is configured, and degrade to
-  structural checks (with a warning + `oscal_official_schema` reliability status)
-  otherwise. `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` fails closed.
+- **OSCAL exports** — SSP (`/api/oscal/ssp/{project_id}`), assessment-results/SAR
+  (`/api/oscal/sar/{assessment_id}`), POA&M (`/api/oscal/poam/{system_id}`),
+  component-definition (`/api/oscal/component-definition/{system_id}`), and a full
+  authorization-package ZIP (`/api/oscal/package/{system_id}`).
+- **Official OSCAL validation — on by default** — the pinned **NIST OSCAL v1.1.2**
+  JSON Schemas ship in-package, so `POST /api/oscal/validate` (and `ccf oscal
+  validate`) validate SSP / SAR / POA&M / component-definition against the official
+  schemas with no configuration. A small adapter handles OSCAL's draft-07 anchors and
+  ECMA `\p{}` patterns; every export is **machine-proven schema-valid** (`mode ==
+  "official"`). `CCF_OSCAL_SCHEMA_DIR` overrides the bundled schemas;
+  `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` (set in CI) fails closed if official validation
+  is unavailable, so a non-conformant export fails the build.
 - **UI** at `/scans` — upload a scan and review reconciliation counts + ingestion history.
 
 Personnel & Access (workforce security lifecycle, `/api/personnel` + `/api/access-reviews`):
@@ -199,6 +242,11 @@ src/ccf/
 │   └── pipeline.py      workbook → Postgres (all sheets, dedup-safe)
 ├── ingest/
 │   └── scanners.py      vuln-scan (Nessus/Tenable/Inspector/Qualys/CSV) → POA&M reconcile
+├── catalog/            OSCAL 800-53r5 catalog loader + control-read reconciliation engine
+│                        (pinned NIST catalog/baselines in catalog/oscal_data/)
+├── boundary/           system boundary & inventory service + summary + Mermaid diagrams
+├── oscal/              official OSCAL validation adapter + vendored v1.1.2 schemas/
+├── ssp/                SSP generators — CMMC L2/800-171 + nist80053 (800-53r5) + OSCAL/docx
 ├── governance/          scheduler, digest, conmon, control tests, personnel, tprm, …
 └── api/
     ├── main.py          FastAPI app factory, CORS, lifespan
@@ -237,6 +285,12 @@ tests/                   unit + integration (Postgres required)
   `ccf.training_records`, `ccf.access_reviews` / `access_review_items`; and TPRM
   `ccf.questionnaire_templates`, `ccf.vendor_questionnaires`,
   `ccf.questionnaire_responses`.
+- OSCAL authorization pipeline: `ccf.catalog_integrity_reports` (control-read
+  reconciliation runs + raw→canonical crosswalk); the boundary model
+  `ccf.system_components`, `ccf.inventory_items`, `ccf.information_types`,
+  `ccf.interconnections` (RLS, each with a stable `oscal_uuid` + discovery hooks);
+  `ssp_projects.framework` (cmmc-800-171 | nist-800-53r5); and `users.locked_until` /
+  `failed_login_attempts` (AC-7 lockout).
 - Every tenant-owned table is protected by **row-level security** keyed on the
   `ccf.tenant_id` session GUC; `ccf.audit_log` carries a `prev_hash`/`row_hash`
   chain for tamper evidence.
@@ -315,6 +369,10 @@ ccf fedramp20x dependency-check --system-id 1
 ccf fedramp20x monitor                     # continuous-monitoring sweep (drift)
 ccf fedramp20x export-package --system-id 1 --format bundle --out pkg.zip
 
+# OSCAL authorization pipeline
+ccf catalog reconcile                       # control-read accuracy vs official 800-53r5 catalog
+ccf oscal validate <doc.json>              # validate against official NIST OSCAL v1.1.2 schema
+
 # Operations
 ccf reliability-check                       # platform + 20x readiness checks
 ```
@@ -347,7 +405,12 @@ ccf reliability-check                       # platform + 20x readiness checks
 | GET | `/api/mappings/unified` | "Implement once, satisfy many" cross-framework ranking |
 | GET · POST | `/api/export/{dataset}` · `/api/import/{dataset}` | Register round-trip (poams\|risks\|vendors\|policies) |
 | POST · GET | `/api/scans/ingest` · `/api/scans/ingestions` | Vulnerability-scan ingestion → POA&M reconciliation |
+| GET | `/api/oscal/ssp/{project_id}` · `/api/oscal/component-definition/{system_id}` | OSCAL SSP + component-definition export (official-schema validated) |
 | GET | `/api/oscal/poam/{system_id}` | OSCAL 1.1 plan-of-action-and-milestones export |
+| GET | `/api/oscal/sar/{assessment_id}` · `/api/oscal/sar/system/{system_id}` | OSCAL assessment-results (SAR) export |
+| GET | `/api/oscal/package/{system_id}` | Authorization-package ZIP (SSP + SAR + POA&M + component-def + manifest) |
+| GET · POST · PATCH · DELETE | `/api/systems/{id}/boundary/{components\|inventory\|information-types\|interconnections}` | System boundary & inventory (OSCAL system-implementation) |
+| GET · POST | `/api/catalog/...` · `ccf catalog reconcile` | OSCAL 800-53r5 catalog reconciliation report (`/catalog/integrity` UI) |
 | GET · POST | `/api/control-tests` (+ `/{id}/run`, `/{id}/evaluate`) | Continuous control tests; manual result + assertion evaluate |
 | GET · POST | `/api/personnel` (+ `/{id}/offboard`, `/summary`) | Personnel lifecycle + workforce-security rollup |
 | POST | `/api/personnel/{id}/training` · `/api/training/{id}/complete` | Security-training assignment + completion |
@@ -385,9 +448,10 @@ make sbom            # CycloneDX SBOM
 make scan            # Trivy HIGH/CRITICAL scan
 ```
 
-CI runs lint + mypy + pytest against a `pgvector/pgvector:pg16` service container, plus a
-supply-chain job producing an SBOM + `pip-audit` + Trivy scan, plus a Docker
-build smoke test.
+CI runs lint + mypy + **`bandit` SAST** + pytest against a `pgvector/pgvector:pg16`
+service container (with `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA=1`, so any non-conformant
+OSCAL export fails the build), plus a supply-chain job producing an SBOM +
+`pip-audit` + Trivy scan, plus a Docker build smoke test.
 
 ## Configuration
 
@@ -397,10 +461,19 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
 - `CCF_DATABASE_URL_SYNC` — sync DSN used by Alembic + tests.
 - `CCF_LOG_LEVEL`, `CCF_LOG_JSON`.
 - `CCF_API_HOST`, `CCF_API_PORT`, `CCF_API_CORS_ORIGINS`.
+- `CCF_ENV` — deployment environment. **Defaults to `production` (fail-closed):** a
+  non-dev value enforces the secure-config gate at startup. Set `dev`/`local`/`test`
+  to relax for local work (compose/Makefile/CI do this automatically).
 - `CCF_WORKBOOK_PATH`.
 - `CCF_AUTH_ENABLED`, `CCF_AUTH_SESSION_SECRET` — enable auth/RBAC + set a strong
-  secret before serving federal data. The `auth_posture` reliability check **fails**
-  when auth is off or the default secret is used outside a dev environment.
+  secret before serving federal data; required (with explicit `CCF_API_CORS_ORIGINS`)
+  for the app to start in a non-dev environment.
+- `CCF_AUTH_LOCKOUT_THRESHOLD` / `CCF_AUTH_LOCKOUT_MINUTES` (default 5 / 15),
+  `CCF_AUTH_PASSWORD_MIN_LENGTH` (default 12), `CCF_AUTH_LOGIN_RATE_LIMIT`
+  (default `10/minute`) — authentication hardening.
+- `CCF_OSCAL_SCHEMA_DIR` — overrides the **bundled** NIST OSCAL v1.1.2 schemas (which
+  make official validation the default); `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` fails
+  closed if official validation is unavailable (set in CI).
 - `CCF_SCHEDULER_ENABLED`, `CCF_SCHEDULER_INTERVAL_HOURS` — in-app continuous
   monitoring. Multi-replica safe: a Postgres advisory lock elects a single runner
   per tick.
@@ -542,12 +615,21 @@ All settings are `CCF_*` environment variables (see [.env.example](.env.example)
 
 Shipped today:
 
+- **Fail-closed by default** — the app **refuses to start** in a non-dev
+  environment (`CCF_ENV` unset or `production`) when auth is disabled, the session
+  secret is the insecure default, or CORS is wildcard. You must explicitly set
+  `CCF_ENV=dev`/`local`/`test` to relax; local dev and CI do so automatically. This
+  closes the previous fail-open hole where a missing `CCF_ENV` silently ran insecure.
 - **AuthN / AuthZ** — session-cookie + bearer-token authentication
   (`CCF_AUTH_ENABLED`) and a separation-of-duties RBAC model
   (`admin` / `control_owner` / `assessor` / `viewer`, plus a
-  draft → submitted → approved approval workflow). An `auth_posture` reliability
-  check **fails** when auth is off or the default session secret is used outside a
-  dev environment.
+  draft → submitted → approved approval workflow). **Account lockout** (AC-7, 5
+  failed attempts → 15-min lock), a **password policy** (IA-5, 12-char minimum,
+  NIST 800-63B), and **per-IP login rate limiting** protect authentication.
+- **Secure response headers** (SC-8/SI-10) — a pure-ASGI middleware adds HSTS,
+  `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a baseline CSP.
+- **Static analysis (SAST)** — `bandit` runs in CI (RA-5/SA-11) over first-party code
+  (it caught and closed an XXE in scan-upload parsing, since fixed with `defusedxml`).
 - **Multi-tenant isolation** — PostgreSQL **row-level security** on every
   tenant-owned table (org- and system-scoped policies keyed on a `ccf.tenant_id`
   session GUC + a non-superuser `ccf_app` role), a database-enforced backstop
@@ -560,10 +642,12 @@ Shipped today:
 - **Observability** — Prometheus `/metrics` (HTTP + FedRAMP 20x series) with a
   bundled Grafana dashboard.
 
-Roadmap (see design review in git history): OIDC / SSO login, a finer DB role split
-(`ccf_migrator` / `ccf_etl` / `ccf_app` / `ccf_ro`), an append-only `ccf_audit`
-schema with `REVOKE UPDATE,DELETE`, pgaudit, a workbook object-store with object
-lock, cosign-signed images, OTEL tracing, and published runbooks / SLOs.
+Roadmap (see design review in git history): **MFA / PIV-CAC** + OIDC nonce/PKCE
+hardening, **KMS-backed key rotation + FIPS 140-3-validated crypto**, **SIEM/syslog
+audit export**, a finer DB role split (`ccf_migrator` / `ccf_etl` / `ccf_app` /
+`ccf_ro`), an append-only `ccf_audit` schema with `REVOKE UPDATE,DELETE`, pgaudit, a
+workbook object-store with object lock, cosign-signed images, OTEL tracing, a
+Section 508 / VPAT pass, and published runbooks / SLOs.
 
 ## Project status
 
@@ -581,13 +665,22 @@ and a tamper-evident audit hash-chain. Also in place: the **continuous-authoriza
 layer** — assurance graph, evidence confidence scoring, authorization-package
 provenance/diff/replay, a typed citation-first AI action layer, AI-agent
 governance, a compliance-pack runtime, Concord-on-Concord self-assurance, and an
-external collaboration portal. Alembic-managed schema (36 migrations),
-Docker/Compose, CI, and a reliability self-check subsystem. The suite runs 200+
-tests against a real Postgres.
+external collaboration portal; and the **OSCAL authorization pipeline** — control-read
+reconciliation against the authoritative NIST catalog, a system boundary & inventory
+model, a real NIST 800-53 Rev 5 SSP generator, assessment-results (SAR) export, and a
+single authorization-package ZIP — with every OSCAL export **machine-proven valid
+against the official NIST v1.1.2 schema**. Platform self-hardening is complete: the
+app is **fail-closed by default**, with account lockout, a password policy, login
+rate limiting, security-response-header middleware, and `bandit` SAST in CI.
+Alembic-managed schema (54 migrations), Docker/Compose, CI (lint · mypy · pytest ·
+bandit · SBOM · pip-audit · Trivy · Docker build), and a reliability self-check
+subsystem. The suite runs **720+ tests** against a real Postgres.
 
-Next: business-impact risk quantification, SCD-2 history, a finer DB-role split,
-wiring the real AI provider behind the disabled-by-default flag, and published
-production runbooks / SLOs.
+Next (deliberately-scoped depth): a FedRAMP Rev 5 baseline overlay (FedRAMP-added
+controls + assigned ODP values), objective-level (800-53A) SAR findings, a generated
+OSCAL assessment plan (SAP), MFA / PIV-CAC + SSO hardening, KMS-backed key rotation +
+FIPS-validated crypto, Azure Gov / GCP config connectors, and wiring the typed
+`ai_actions` path to the org AI gateway.
 
 ---
 

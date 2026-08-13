@@ -19,7 +19,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    env: str = Field(default="dev", description="Deployment environment")
+    env: str = Field(default="production", description="Deployment environment")
     log_level: str = Field(default="INFO")
     log_json: bool = Field(default=False)
 
@@ -32,7 +32,9 @@ class Settings(BaseSettings):
         description="Sync DSN used by Alembic migrations / CLI",
     )
 
-    api_host: str = Field(default="0.0.0.0")
+    # Container must bind all interfaces to be reachable; access is controlled
+    # at the network/ingress layer, not by bind address.
+    api_host: str = Field(default="0.0.0.0")  # nosec B104
     api_port: int = Field(default=8000)
     api_cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
@@ -103,6 +105,20 @@ class Settings(BaseSettings):
     auth_enabled: bool = Field(default=False)
     auth_session_secret: str = Field(default="dev-insecure-change-me")
     auth_session_ttl_hours: int = Field(default=12)
+
+    # AC-7: account lockout after repeated failed logins (NIST 800-63B aligned).
+    auth_lockout_threshold: int = Field(default=5)
+    auth_lockout_minutes: int = Field(default=15)
+
+    # IA-5: password minimum length. NIST 800-63B favors length over composition/
+    # rotation rules, so no complexity or rotation policy is enforced here.
+    auth_password_min_length: int = Field(default=12)
+
+    # AC-7/SC-5: per-IP login rate limit (slowapi limit-string syntax, e.g.
+    # "10/minute"). Documents the intended limit; the login route decorator
+    # currently hardcodes the matching literal (slowapi decorators need a
+    # static string or callable, not a config lookup at request time).
+    auth_login_rate_limit: str = Field(default="10/minute")
 
     # Enterprise SSO — OIDC authorization-code login + SCIM provisioning. All
     # optional and disabled by default: with OIDC off the app keeps its local
@@ -291,18 +307,22 @@ _DEV_ENVS = frozenset({"dev", "local", "test"})
 _DEFAULT_SESSION_SECRET = "dev-insecure-change-me"
 
 
+def is_dev_env(settings: Settings) -> bool:
+    return (settings.env or "").lower() in _DEV_ENVS
+
+
 def enforce_secure_config(settings: Settings) -> list[str]:
     """Fail closed on insecure configuration outside a dev environment (IA-01/IA-11).
 
     Raises ``RuntimeError`` — refusing startup — when ``env`` is not dev/local/test and
-    a hard-unsafe setting is active (auth disabled, or the default session secret,
-    which together let any request act as an unscoped global admin). Returns a list of
-    non-fatal warnings (e.g. wildcard CORS) for the caller to log. In dev environments
-    it is a no-op so local/reader use stays frictionless.
+    a hard-unsafe setting is active (auth disabled, the default session secret, or
+    wildcard CORS — together these let any request act as an unscoped global admin
+    from any origin). Returns a list of non-fatal warnings for the caller to log. In
+    dev environments it is a no-op so local/reader use stays frictionless.
     """
-    env = (settings.env or "").lower()
-    if env in _DEV_ENVS:
+    if is_dev_env(settings):
         return []
+    env = (settings.env or "").lower()
     problems: list[str] = []
     warnings: list[str] = []
     if not settings.auth_enabled:
@@ -310,7 +330,7 @@ def enforce_secure_config(settings: Settings) -> list[str]:
     if settings.auth_session_secret == _DEFAULT_SESSION_SECRET:
         problems.append("session secret is the insecure default (set CCF_AUTH_SESSION_SECRET)")
     if settings.api_cors_origins == ["*"]:
-        warnings.append("CORS is wildcard '*' — restrict CCF_API_CORS_ORIGINS in production")
+        problems.append("CORS is wildcard '*' (set CCF_API_CORS_ORIGINS to explicit origins)")
     if problems:
         raise RuntimeError(
             f"Refusing to start: insecure configuration for env={env!r}: "

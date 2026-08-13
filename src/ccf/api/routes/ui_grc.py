@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...auth import Principal
 from ...evidence import service as evidence_service
 from ...governance import control_tests, insights, personnel, tprm
 from ...ingest import parse_scan, reconcile_findings
@@ -35,6 +36,7 @@ from ...models_grc import (
 )
 from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
+from ..auth_deps import require_role
 from ..deps import get_session
 from .grc import _MOCK_DISCOVERY, CONNECTOR_TYPES
 from .ui import _principal_org, templates
@@ -59,6 +61,21 @@ async def executive_page(
         request,
         "executive.html",
         {"active": "executive", "r": rollup, "dq": dq, "unified": unified},
+    )
+
+
+# ── Catalog integrity (advisory OSCAL reconciliation) ────────────────────────
+@router.get("/catalog/integrity", response_class=HTMLResponse)
+async def catalog_integrity_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _principal: Principal = Depends(require_role("admin")),
+) -> HTMLResponse:
+    from ...catalog.report import latest_report  # noqa: PLC0415
+
+    report = await latest_report(session)
+    return templates.TemplateResponse(
+        request, "catalog_integrity.html", {"active": "catalogintegrity", "report": report}
     )
 
 

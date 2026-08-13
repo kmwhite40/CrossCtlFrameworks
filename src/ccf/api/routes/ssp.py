@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...boundary.summary import reconcile_categorization, system_boundary_summary
 from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
 from ...governance import automation
@@ -37,6 +38,7 @@ from ...models import (
 from ...ssp import completeness as ssp_completeness
 from ...ssp import constants
 from ...ssp.generator import generate_ssp_docx
+from ...ssp.nist80053_docx import render_80053_docx
 from ...ssp.odp import render as render_template
 from ...ssp.platforms import (
     GOV_ENVIRONMENTS,
@@ -45,7 +47,7 @@ from ...ssp.platforms import (
     platform_label,
     services_for,
 )
-from ...ssp.seed import entry_to_dict, seed_project_entries
+from ...ssp.seed import entry_to_dict, seed_80053_project, seed_project_entries
 from ...ssp.statements import STYLES
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -54,12 +56,38 @@ router = APIRouter(prefix="/api/ssp", tags=["ssp"])
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
+# Frameworks a project may target — validated on create.
+FRAMEWORKS = ("cmmc-800-171", "nist-800-53r5")
+
+_BASELINE_LABELS = {"low": "Low", "moderate": "Moderate", "high": "High"}
+_FIPS_ORDER = {"low": 0, "moderate": 1, "high": 2}
+
+
+def _fips_high_water(system: System) -> str | None:
+    """The FIPS-199 high-water mark across confidentiality/integrity/availability
+    (low < moderate < high), or ``None`` when all three are unset. Mirrors
+    ``ssp.seed._fips_high_water`` — used here only to label the docx cover page,
+    not to decide which controls to seed."""
+    levels = [
+        lvl
+        for lvl in (
+            system.fips199_confidentiality,
+            system.fips199_integrity,
+            system.fips199_availability,
+        )
+        if lvl
+    ]
+    if not levels:
+        return None
+    return max(levels, key=lambda lvl: _FIPS_ORDER.get(lvl.lower(), -1))
+
 
 class ProjectCreate(BaseModel):
     customer_name: str
     system_id: int | None = None
     system_name: str | None = None
     platform: str = "m365"
+    framework: str = "cmmc-800-171"
     title: str = "System Security Plan (SSP)"
     version: str = "0.1"
     prepared_by: str | None = None
@@ -98,6 +126,7 @@ class ProjectOut(BaseModel):
     customer_name: str
     system_name: str | None
     platform: str
+    framework: str
     title: str
     version: str
     prepared_by: str | None
@@ -149,6 +178,8 @@ async def create_project(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> ProjectOut:
+    if body.framework not in FRAMEWORKS:
+        raise HTTPException(422, f"framework must be one of {', '.join(FRAMEWORKS)}")
     system_name = body.system_name
     org_id = principal.org_id
     if body.system_id is not None:
@@ -169,6 +200,7 @@ async def create_project(
         customer_name=body.customer_name,
         system_name=system_name,
         platform=normalize_platform(body.platform),
+        framework=body.framework,
         title=body.title,
         version=body.version,
         prepared_by=body.prepared_by,
@@ -176,7 +208,14 @@ async def create_project(
     )
     session.add(proj)
     await session.flush()
-    await seed_project_entries(session, proj)
+    if proj.framework == "nist-800-53r5":
+        try:
+            await seed_80053_project(session, proj)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        await session.commit()
+    else:
+        await seed_project_entries(session, proj)
     await session.refresh(proj)
     return ProjectOut.model_validate(proj)
 
@@ -291,7 +330,33 @@ async def completeness(
         if linked:
             d["control_implementation"] = {"evidence": linked}
         rows.append(d)
-    return ssp_completeness.assess(proj.metadata_json or {}, rows)
+
+    boundary: dict[str, Any] | None = None
+    if proj.system_id is not None:
+        summary = await system_boundary_summary(session, proj.system_id)
+        system_row = await session.get(System, proj.system_id)
+        # No System row to compare against (e.g. it was deleted out from under
+        # the project, which SET NULLs system_id) -> nothing to reconcile, so
+        # don't hold the boundary check against the SSP.
+        reconciles = (
+            reconcile_categorization(system_row, summary.info_types) == []
+            if system_row is not None
+            else True
+        )
+        ic_total = len(summary.interconnections)
+        ic_with_agreement = sum(
+            1
+            for ic in summary.interconnections
+            if ic.agreement_type not in (None, "", "none") and (ic.agreement_ref or "").strip()
+        )
+        boundary = {
+            "components": len(summary.components),
+            "info_types": len(summary.info_types),
+            "categorization_reconciles": reconciles,
+            "interconnections_with_agreements": (ic_with_agreement, ic_total),
+        }
+
+    return ssp_completeness.assess(proj.metadata_json or {}, rows, boundary=boundary)
 
 
 class MetadataIn(BaseModel):
@@ -615,8 +680,21 @@ async def reseed_project(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, int | str]:
-    """Regenerate sample statements, optionally switching the target platform."""
+    """Regenerate sample statements, optionally switching the target platform.
+
+    NIST 800-53r5 projects have no CMMC platform-driven sample statements to
+    regenerate — this only backfills any 800-53 baseline controls missing from
+    the project (idempotent; never overwrites existing, possibly human-edited,
+    entries).
+    """
     proj = await _require_project(session, project_id, principal)
+    if proj.framework == "nist-800-53r5":
+        try:
+            touched = await seed_80053_project(session, proj)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        await session.commit()
+        return {"touched": touched, "platform": proj.platform}
     if platform is not None:
         proj.platform = normalize_platform(platform)
         await session.flush()
@@ -668,7 +746,7 @@ async def generate_document(
         .scalars()
         .all()
     )
-    project_meta = {
+    project_meta: dict[str, Any] = {
         "customer_name": proj.customer_name,
         "system_name": proj.system_name,
         "platform": PLATFORMS.get(proj.platform, proj.platform),
@@ -680,10 +758,23 @@ async def generate_document(
         "revision_history": proj.revision_history or [],
     }
     # python-docx is synchronous CPU work — keep it off the event loop.
-    data = await asyncio.to_thread(
-        generate_ssp_docx, project_meta, [entry_to_dict(e) for e in entries]
-    )
-    slug = slugify(f"{proj.customer_name}-ssp-appendix-a-v{proj.version}") or "ssp"
+    if proj.framework == "nist-800-53r5":
+        baseline = None
+        if proj.system_id is not None:
+            sysm = await session.get(System, proj.system_id)
+            if sysm is not None:
+                level = sysm.baseline or _fips_high_water(sysm)
+                baseline = _BASELINE_LABELS.get((level or "").lower())
+        project_meta["baseline"] = baseline
+        data = await asyncio.to_thread(
+            render_80053_docx, project_meta, [entry_to_dict(e) for e in entries]
+        )
+        slug = slugify(f"{proj.customer_name}-ssp-800-53r5-v{proj.version}") or "ssp"
+    else:
+        data = await asyncio.to_thread(
+            generate_ssp_docx, project_meta, [entry_to_dict(e) for e in entries]
+        )
+        slug = slugify(f"{proj.customer_name}-ssp-appendix-a-v{proj.version}") or "ssp"
     return StreamingResponse(
         iter([data]),
         media_type=DOCX_MIME,

@@ -37,7 +37,10 @@ from ...models import (
     Evidence,
     Framework,
     FrameworkMapping,
+    InformationType,
     IngestionRun,
+    Interconnection,
+    InventoryItem,
     Notification,
     Organization,
     Policy,
@@ -49,6 +52,7 @@ from ...models import (
     SSPProject,
     StatementTemplate,
     System,
+    SystemComponent,
     SystemProfile,
     Task,
     User,
@@ -67,12 +71,13 @@ from ...ssp.platforms import (
     platform_label,
     services_for,
 )
-from ...ssp.seed import seed_project_entries
+from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
 from ..auth_deps import SESSION_COOKIE, require_role
 from ..deps import get_session
 from .diff import diff_workbook
 from .scoring import compute_summary
+from .ssp import FRAMEWORKS
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
@@ -624,6 +629,38 @@ async def system_detail(
             .where(ControlImplementation.system_id == system_id)
         )
     ).scalar_one()
+    # Read-only boundary counts for the summary card (full CRUD lives on the
+    # dedicated /systems/{id}/boundary page — see ccf.api.routes.ui_boundary).
+    boundary_counts = {
+        "components": (
+            await session.execute(
+                select(func.count(SystemComponent.id)).where(
+                    SystemComponent.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+        "inventory": (
+            await session.execute(
+                select(func.count(InventoryItem.id)).where(
+                    InventoryItem.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+        "info_types": (
+            await session.execute(
+                select(func.count(InformationType.id)).where(
+                    InformationType.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+        "interconnections": (
+            await session.execute(
+                select(func.count(Interconnection.id)).where(
+                    Interconnection.system_id == system_id
+                )
+            )
+        ).scalar_one(),
+    }
     return templates.TemplateResponse(
         request,
         "system_detail.html",
@@ -633,6 +670,7 @@ async def system_detail(
             "impl_counts": {s: n for s, n in impl_counts},
             "poams": poams,
             "evidence_count": evidence_count,
+            "boundary_counts": boundary_counts,
         },
     )
 
@@ -1091,6 +1129,7 @@ async def ssp_page(request: Request, session: AsyncSession = Depends(get_session
             "organizations": orgs,
             "have_controls": have_controls,
             "platforms": PLATFORMS,
+            "frameworks": FRAMEWORKS,
         },
     )
 
@@ -1102,12 +1141,13 @@ async def ssp_create(
     system_id: str | None = Form(None),
     system_name: str | None = Form(None),
     platform: str = Form("m365"),
+    framework: str = Form("cmmc-800-171"),
     prepared_by: str | None = Form(None),
     version: str = Form("0.1"),
     document_date: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    if not customer_name.strip():
+    if not customer_name.strip() or framework not in FRAMEWORKS:
         return RedirectResponse("/ssp", status_code=303)
     org = _principal_org(request)
     sid = int(system_id) if system_id and system_id.isdigit() else None
@@ -1129,13 +1169,22 @@ async def ssp_create(
         customer_name=customer_name.strip(),
         system_name=(sname or None),
         platform=normalize_platform(platform),
+        framework=framework,
         prepared_by=(prepared_by or None),
         version=version or "0.1",
         document_date=doc_date,
     )
     session.add(proj)
     await session.flush()
-    await seed_project_entries(session, proj)
+    if framework == "nist-800-53r5":
+        try:
+            await seed_80053_project(session, proj)
+        except ValueError:
+            await session.rollback()
+            return RedirectResponse("/ssp", status_code=303)
+        await session.commit()
+    else:
+        await seed_project_entries(session, proj)
     return RedirectResponse(f"/ssp/{proj.id}", status_code=303)
 
 

@@ -11,16 +11,16 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
-from ..config import enforce_secure_config, get_settings
+from ..config import enforce_secure_config, get_settings, is_dev_env
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
+from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
     ai_actions,
@@ -34,6 +34,7 @@ from .routes import (
     audit,
     auth,
     automation,
+    boundary,
     catalog,
     conmon,
     connector_settings,
@@ -74,17 +75,17 @@ from .routes import (
     systems,
     tasks,
     ui,
+    ui_boundary,
     ui_grc,
     users,
     vendors,
     worksheets,
 )
+from .security_headers import SecurityHeadersMiddleware
 
 log = get_logger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
-
-limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 
 
 @asynccontextmanager
@@ -124,6 +125,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(SecurityHeadersMiddleware, hsts=not is_dev_env(settings))
     app.middleware("http")(metrics_middleware)
     if settings.audit_enabled and not settings.readonly:
         app.middleware("http")(audit_middleware)
@@ -175,6 +177,7 @@ def create_app() -> FastAPI:
     app.include_router(catalog.router)
     app.include_router(diff.router)
     app.include_router(systems.router)
+    app.include_router(boundary.router)
     app.include_router(scoring.router)
     app.include_router(ssp.router)
     app.include_router(assessments.router)
@@ -218,6 +221,7 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
+    app.include_router(ui_boundary.router)
     app.include_router(ui.router)
     return app
 

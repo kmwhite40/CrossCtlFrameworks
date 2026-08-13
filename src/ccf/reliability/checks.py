@@ -40,7 +40,10 @@ async def _regclass(session: AsyncSession, qualified: str) -> bool:
 async def _count(session: AsyncSession, qualified: str) -> int | None:
     if not await _regclass(session, qualified):
         return None
-    return int((await session.execute(text(f"SELECT count(*) FROM {qualified}"))).scalar() or 0)
+    # `qualified` is always a fixed internal "schema.table" literal from this
+    # module's own check functions, never user input.
+    query = text(f"SELECT count(*) FROM {qualified}")  # nosec B608
+    return int((await session.execute(query)).scalar() or 0)
 
 
 # --- platform checks --------------------------------------------------------
@@ -74,9 +77,10 @@ async def _check_migrations(session: AsyncSession) -> Check:
         elif await _regclass(session, "public.alembic_version"):
             version_table = "public.alembic_version"
         if version_table is not None:
-            current = (
-                await session.execute(text(f"SELECT version_num FROM {version_table}"))
-            ).scalar()
+            # version_table is one of two fixed literals set above, never user
+            # input.
+            query = text(f"SELECT version_num FROM {version_table}")  # nosec B608
+            current = (await session.execute(query)).scalar()
         if current is None:
             return Check(
                 "alembic_migration_status",
@@ -758,6 +762,29 @@ async def _check_external_portal_audit_completeness(session: AsyncSession) -> Ch
     return Check("external_portal_audit_completeness", PASS, "Every external grant is audited.")
 
 
+async def _check_catalog_integrity(session: AsyncSession) -> Check:
+    """Report advisory OSCAL 800-53r5 catalog reconciliation status (never blocks readiness)."""
+    from ..catalog.oscal import OscalManifestError, load_oscal_catalog  # noqa: PLC0415
+    from ..catalog.report import latest_report  # noqa: PLC0415
+
+    try:
+        catalog = load_oscal_catalog()
+    except OscalManifestError as exc:
+        return Check("catalog_integrity", WARN, f"OSCAL catalog unreadable: {exc}")
+    version = catalog.version
+    report = await latest_report(session)
+    if report is None:
+        return Check(
+            "catalog_integrity", PASS, f"OSCAL {version} loaded; no reconciliation run yet."
+        )
+    return Check(
+        "catalog_integrity",
+        PASS,
+        f"OSCAL {version}; last run {report.controls_checked} checked, "
+        f"{report.findings_total} findings {report.findings_by_severity}.",
+    )
+
+
 async def _check_query_templates_health(session: AsyncSession) -> Check:
     """Run every assurance query template (default params) to catch schema drift."""
     try:
@@ -822,6 +849,7 @@ _CHECKS = [
     _check_external_grant_expiration,
     _check_external_portal_audit_completeness,
     _check_query_templates_health,
+    _check_catalog_integrity,
 ]
 
 

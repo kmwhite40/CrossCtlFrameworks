@@ -420,6 +420,14 @@ async def ingest_workbook(session: AsyncSession, xlsx_path: Path) -> IngestionRu
         run.status = "succeeded"
         run.stats = {"sheets": per_sheet, "sha256": sha}
         await session.flush()
+
+        try:
+            from ..catalog.report import run_and_store  # noqa: PLC0415
+
+            await run_and_store(session)
+        except Exception as exc:  # advisory only — never fail ingest on reconciliation
+            log.warning("catalog.reconcile_failed", error=str(exc))
+
         return run
     except HeaderContractError as e:
         run.finished_at = datetime.now(UTC)
