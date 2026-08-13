@@ -11,7 +11,7 @@ from sqlalchemy import delete, select, text, update
 from ccf.assessment.engine import jobs, service
 from ccf.assessment.engine.evaluate import ObjectiveEvaluation
 from ccf.db import session_scope
-from ccf.models import Assessment, Control, Organization, System
+from ccf.models import POAM, Assessment, Control, Organization, System
 from ccf.models_assessment_engine import AssessmentControlProposal, AssessmentJob
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -414,3 +414,84 @@ async def test_the_claim_is_committed_before_evaluation_begins(
 
     assert seen["status"] == "claimed"
     assert seen["attempts"] == 1
+
+
+async def test_every_job_shares_its_proposals_organization_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the invariant the failure-path ``UPDATE`` in ``run_once`` relies
+    on: it scopes to the *job's* tenant, then updates the proposal by id
+    alone, so if a job's ``organization_id`` ever diverged from its
+    proposal's, that ``UPDATE`` would match zero rows under RLS and the
+    proposal would silently stay non-terminal.
+
+    Both real construction sites are exercised through their actual
+    entrypoints -- ``enqueue_control`` (first pass) and
+    ``enqueue_reevaluation`` (closure-triggered re-run), the latter reached
+    the same way the closure worker reaches it: evaluate, accept (which
+    bridges an ``other_than_satisfied`` finding into a POA&M), then
+    re-enqueue against that POA&M -- and the invariant is then checked as a
+    property of the data via a join between ``AssessmentJob`` and
+    ``AssessmentControlProposal``, not by re-reading the two lines that are
+    supposed to guarantee it.
+    """
+    monkeypatch.setattr(service, "evaluate_objective", _fake_evaluate_always("not_satisfied"))
+    org_id, assessment_id = await _assessment("aejobs-org-invariant")
+
+    async with session_scope() as s:
+        job1 = await jobs.enqueue_control(s, assessment_id=assessment_id, control_identifier=_SEQ)
+        proposal = (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.id == job1.control_proposal_id
+                )
+            )
+        ).scalar_one()
+        proposal = await service.evaluate_control_proposal(s, proposal)
+        result = await service.accept_control_proposal(
+            s, int(proposal.id), accepted_by="invariant-test@x.test"
+        )
+        result_id = int(result.id)
+        assert result.finding == "other_than_satisfied"
+
+    async with session_scope() as s:
+        poam = (
+            await s.execute(
+                select(POAM).where(POAM.source_ref == f"assessment_control_result:{result_id}")
+            )
+        ).scalar_one()
+        poam_id = int(poam.id)
+
+    async with session_scope() as s:
+        job2 = await jobs.enqueue_reevaluation(
+            s,
+            poam_id=poam_id,
+            source_ref=f"assessment_control_result:{result_id}",
+            organization_id=org_id,
+        )
+    assert job2 is not None
+    assert job2.id != job1.id
+
+    async with session_scope() as s:
+        mismatches = (
+            (
+                await s.execute(
+                    select(AssessmentJob.id)
+                    .join(
+                        AssessmentControlProposal,
+                        AssessmentControlProposal.id == AssessmentJob.control_proposal_id,
+                    )
+                    .where(
+                        AssessmentJob.organization_id
+                        != AssessmentControlProposal.organization_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert mismatches == [], (
+        "every AssessmentJob must carry the same organization_id as the "
+        "AssessmentControlProposal it references, or run_once's failure-path "
+        "UPDATE silently matches zero rows under RLS"
+    )
