@@ -22,7 +22,7 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from ccf.api.main import create_app
 from ccf.api.routes import assessment_engine
@@ -32,7 +32,7 @@ from ccf.assessment.engine.evaluate import ObjectiveEvaluation
 from ccf.assessment.engine.service import evaluate_control_proposal, open_control_proposal
 from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
-from ccf.db import session_scope
+from ccf.db import session_scope, set_session_tenant
 from ccf.models import Assessment, AssessmentControlResult, Control, Organization, System, User
 from ccf.models_assessment_engine import (
     AssessmentControlProposal,
@@ -278,6 +278,14 @@ async def test_get_surfaces_job_status_and_last_error_on_a_failed_evaluation(
     jobs.run_once, which claims every pending job system-wide and would risk
     dragging in unrelated jobs other tests in this module leave pending) so
     this test's failure is isolated to its own job.
+
+    Since the 2026-08-12 worker-tenant-scoping design, ``_drive_one`` itself
+    no longer catches or rolls back its own DB-level failure -- that moved to
+    ``run_once``'s own per-job ``begin_nested()``/``except`` block, wrapped
+    around the tenant GUC set/clear (see that function's docstring). This
+    test reproduces that exact surrounding shape for this one job, rather
+    than calling ``run_once`` itself, for the same claim-isolation reason
+    given above.
     """
     token, org_id = await _mk_user("fail-get-a@ae-api.test", "AE API Fail Get Org")
     assessment_id = await _assessment_for(org_id, "fail-get")
@@ -299,8 +307,26 @@ async def test_get_surfaces_job_status_and_last_error_on_a_failed_evaluation(
         job = (
             await s.execute(select(AssessmentJob).where(AssessmentJob.id == job_id))
         ).scalar_one()
-        outcome = await engine_jobs._drive_one(s, job)
+        control_proposal_id = int(job.control_proposal_id)
+        await set_session_tenant(s, int(job.organization_id))
+        try:
+            async with s.begin_nested():
+                outcome = await engine_jobs._drive_one(s, job)
+        except Exception as exc:  # mirrors run_once's own except block
+            last_error = str(exc)
+            await s.execute(
+                update(AssessmentJob)
+                .where(AssessmentJob.id == job_id)
+                .values(status="failed", last_error=last_error)
+            )
+            await s.execute(
+                update(AssessmentControlProposal)
+                .where(AssessmentControlProposal.id == control_proposal_id)
+                .values(state="failed", error=last_error)
+            )
+            outcome = "failed"
         await s.commit()
+        await set_session_tenant(s, None)
     assert outcome == "failed"
 
     async with _client() as client:

@@ -22,12 +22,16 @@ imitated because getting it wrong loses data silently, not loudly:
 * Each job's outcome is committed independently, right after
   :func:`_drive_one` returns, so one job crashing partway through cannot roll
   back another job's already-finished work from earlier in the same batch.
-* A job that raises is recorded ``failed`` only after ``session.rollback()``.
-  ``evaluate_control_proposal`` can raise after leaving the session's
-  underlying DB transaction aborted (a raw DBAPI error, not merely a Python
-  exception an ORM mutation can shrug off) -- committing straight into that
-  poisoned transaction raises instead of persisting, losing ``last_error``
-  and the failure both.
+* A job that raises is now recorded ``failed`` without a full
+  ``session.rollback()`` -- :func:`_drive_one` runs inside
+  ``session.begin_nested()``, whose ``ROLLBACK TO SAVEPOINT`` clears the same
+  DB-level aborted-transaction state a raw DBAPI error can leave behind (the
+  reason a rollback of some kind is needed at all -- ``evaluate_control_proposal``
+  can raise after leaving the session's underlying DB transaction aborted, not
+  merely a Python exception an ORM mutation can shrug off) without undoing the
+  tenant GUC :func:`run_once` sets for this job just before entering that
+  savepoint (2026-08-12 worker-tenant-scoping design; see that function's
+  docstring for the full reasoning, mirrored from ``ccf.prep.jobs.run_once``).
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...config import get_settings
+from ...db import set_session_tenant
 from ...logging import get_logger
 from ...models import Assessment, AssessmentControlResult, System
 from ...models_assessment_engine import AssessmentControlProposal, AssessmentJob
@@ -212,21 +217,16 @@ async def enqueue_reevaluation(
 async def _drive_one(session: AsyncSession, job: AssessmentJob) -> str:
     """Evaluate one already-claimed job's control proposal.
 
-    Does not commit -- the caller (:func:`run_once`) commits immediately after
-    this returns, so this job's outcome (or the fact that it is still
-    ``claimed`` if this raises) is durable before the next job in the batch
-    starts. Returns ``"done"`` or ``"failed"`` for the caller's counters.
+    Does not commit, and does not manage the tenant GUC or catch a DB-level
+    failure -- :func:`run_once` sets the tenant to this job's
+    ``organization_id``, wraps this call in ``session.begin_nested()``,
+    records any failure (on both the job and its proposal), commits, and
+    clears the tenant, all *around* this function. See :func:`run_once`'s
+    docstring, and ``ccf.prep.jobs.run_once``'s identical reasoning, for why
+    the savepoint boundary sits there rather than here. Returns ``"done"``
+    or ``"failed"`` for the caller's counters.
     """
-    # Captured before any DB work below, for use only in the except branch:
-    # once session.rollback() runs there every ORM object already in this
-    # session (job included) is expired, and touching an expired attribute
-    # triggers an implicit refresh that requires an async-safe context --
-    # attempting it from plain attribute access raises MissingGreenlet. Plain
-    # ints captured up front sidestep that entirely. See ccf.prep.jobs's
-    # _drive_one for the identical reasoning.
-    job_id = int(job.id)
     control_proposal_id = int(job.control_proposal_id)
-
     proposal = (
         await session.execute(
             select(AssessmentControlProposal).where(
@@ -239,68 +239,34 @@ async def _drive_one(session: AsyncSession, job: AssessmentJob) -> str:
         job.last_error = f"control proposal {control_proposal_id} no longer exists"
         return "failed"
 
-    try:
-        await evaluate_control_proposal(session, proposal)
-    except Exception as exc:  # a worker must survive any one job
-        # See the module docstring: evaluate_control_proposal can raise after
-        # leaving the session's DB transaction aborted, not just a plain
-        # Python error the ORM can shrug off. Rolling back first makes the
-        # transaction usable again; a direct UPDATE (rather than continuing to
-        # mutate `job` as an ORM object) records the failure because
-        # rollback() expires every object already in the session, so `job`'s
-        # in-memory attributes can no longer be trusted to still reflect
-        # anything set on it before the rollback.
-        await session.rollback()
-        last_error = str(exc)[:_MAX_LAST_ERROR_CHARS]
-        await session.execute(
-            update(AssessmentJob)
-            .where(AssessmentJob.id == job_id)
-            .values(status="failed", last_error=last_error)
-        )
-        # evaluate_control_proposal sets proposal.state = "draft" as its very
-        # first act, but that assignment lives only in this now-rolled-back
-        # transaction -- session.rollback() above discards it along with
-        # everything else this attempt did, so without this the DB row is
-        # left at whatever state it already had (most commonly still
-        # "draft", indistinguishable from "queued but never started") with no
-        # record of what went wrong at all. A direct UPDATE, not an ORM
-        # mutation, for the same expired-object reason the job update above
-        # already is -- see this function's comment on job_id/
-        # control_proposal_id being captured as plain ints up front.
-        await session.execute(
-            update(AssessmentControlProposal)
-            .where(AssessmentControlProposal.id == control_proposal_id)
-            .values(state="failed", error=last_error)
-        )
-        log.warning(
-            "assessment.job_failed",
-            job_id=job_id,
-            control_proposal_id=control_proposal_id,
-            error=last_error,
-        )
-        return "failed"
+    await evaluate_control_proposal(session, proposal)
 
     job.status = "done"
     return "done"
 
 
 async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[str, int]:
-    """Claim and drive a batch of jobs, each committed independently.
+    """Claim and drive a batch of jobs, each committed independently and
+    scoped to its own organization while it processes.
 
-    See the module docstring for why the claim is committed before any
-    evaluation runs, and why each job's outcome is committed before the next
-    job starts. Mirrors ``ccf.prep.jobs.run_once`` exactly -- the same
-    session/connection drives every job in the batch, but not one shared
-    transaction.
+    Mirrors ``ccf.prep.jobs.run_once`` -- see that function's docstring for
+    the full reasoning behind the claim/commit boundaries and, especially,
+    the tenant-scoping ordering (2026-08-12 worker-tenant-scoping design):
+    the tenant is set to the claimed job's own ``organization_id`` *before*
+    ``session.begin_nested()`` opens, not inside it, and cleared explicitly
+    after that job's outcome commits -- never left for the next job's own
+    assignment to overwrite. ``claim_jobs`` itself stays unscoped (it reads
+    only ``id``\\ s and writes only claim bookkeeping); processing does not,
+    since :func:`evaluate_control_proposal` reads and writes across the
+    RLS'd proposal/objective tables.
+
+    Unlike the prep queue, one job's failure here writes to *two* tables --
+    ``AssessmentJob`` and its ``AssessmentControlProposal`` -- both inside
+    the same direct-``UPDATE`` recovery below, for the same
+    expired-object/ORM-mutation-is-unsafe reason ``ccf.prep.jobs`` documents.
     """
     claimed = await claim_jobs(session, AssessmentJob, worker=worker, limit=limit)
     await session.commit()
-    # Captured as plain ids, not held as ORM objects across the loop below:
-    # a mid-batch DBAPI error's session.rollback() (see _drive_one's except
-    # branch) expires every object already in this session -- every job
-    # claimed this cycle, not just the one that failed. Re-fetching by id
-    # each iteration via session.get() is what lets job 3..N still get driven
-    # after job 2 explodes.
     job_ids = [int(j.id) for j in claimed]
 
     finished = 0
@@ -309,8 +275,33 @@ async def run_once(session: AsyncSession, *, worker: str, limit: int) -> dict[st
         job = await session.get(AssessmentJob, job_id)
         if job is None:  # pragma: no cover - not deletable via any current API
             continue
-        outcome = await _drive_one(session, job)
+        control_proposal_id = int(job.control_proposal_id)
+        organization_id = int(job.organization_id)
+        await set_session_tenant(session, organization_id)
+        try:
+            async with session.begin_nested():
+                outcome = await _drive_one(session, job)
+        except Exception as exc:  # a worker must survive any one job
+            last_error = str(exc)[:_MAX_LAST_ERROR_CHARS]
+            await session.execute(
+                update(AssessmentJob)
+                .where(AssessmentJob.id == job_id)
+                .values(status="failed", last_error=last_error)
+            )
+            await session.execute(
+                update(AssessmentControlProposal)
+                .where(AssessmentControlProposal.id == control_proposal_id)
+                .values(state="failed", error=last_error)
+            )
+            log.warning(
+                "assessment.job_failed",
+                job_id=job_id,
+                control_proposal_id=control_proposal_id,
+                error=last_error,
+            )
+            outcome = "failed"
         await session.commit()
+        await set_session_tenant(session, None)
         if outcome == "done":
             finished += 1
         elif outcome == "failed":
