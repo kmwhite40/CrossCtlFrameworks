@@ -88,7 +88,14 @@ async def approve(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    return await _decide(session, entity_type, entity_id, True, principal, body)
+    return await _decide(
+        session,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        approve_it=True,
+        principal=principal,
+        body=body,
+    )
 
 
 @router.post("/{entity_type}/{entity_id}/reject")
@@ -99,11 +106,19 @@ async def reject(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    return await _decide(session, entity_type, entity_id, False, principal, body)
+    return await _decide(
+        session,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        approve_it=False,
+        principal=principal,
+        body=body,
+    )
 
 
 async def _decide(
     session: AsyncSession,
+    *,
     entity_type: str,
     entity_id: str,
     approve_it: bool,

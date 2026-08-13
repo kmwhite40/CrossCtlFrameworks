@@ -436,6 +436,7 @@ async def add_revision(
 @router.post("/projects/{project_id}/auto-statements")
 async def auto_statements(
     project_id: int,
+    *,
     use_ai: bool = False,
     style: str = "standard",
     include_captured: bool = True,

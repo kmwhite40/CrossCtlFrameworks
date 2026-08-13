@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from ccf import cli
@@ -53,13 +54,31 @@ def test_worker_is_absent_when_the_engine_is_disabled(monkeypatch: pytest.Monkey
 
 
 def test_worker_help_lists_the_expected_options() -> None:
-    result = runner.invoke(cli.app, ["assessment-worker", "--help"])
+    """Asserted against the declared parameters, not the rendered help text.
 
+    The first version of this test matched substrings in ``result.stdout``.
+    Typer renders help through rich, which wraps to the terminal width, so
+    ``--once`` split across a line break at CI's 80 columns and the test
+    failed there while passing on a wider local terminal. Reading the
+    command's own parameter declarations tests the same thing and does not
+    depend on how wide the screen is.
+    """
+    command = typer.main.get_command(cli.app)
+    worker = command.commands["assessment-worker"]  # type: ignore[attr-defined]
+    # secondary_opts carries the negative half of a boolean flag -- --loop is
+    # the inverse of --once, not a parameter of its own.
+    declared = {
+        opt
+        for param in worker.params
+        for opt in (*param.opts, *param.secondary_opts)
+    }
+
+    assert {"--once", "--loop", "--limit", "--worker"} <= declared
+
+    # The help still has to render without blowing up, which is what the
+    # original test incidentally covered.
+    result = runner.invoke(cli.app, ["assessment-worker", "--help"])
     assert result.exit_code == 0
-    assert "--once" in result.stdout
-    assert "--loop" in result.stdout
-    assert "--limit" in result.stdout
-    assert "--worker" in result.stdout
 
 
 async def test_the_reaper_runs_inside_the_loop_not_once_at_startup(

@@ -166,6 +166,7 @@ async def home(request: Request, session: AsyncSession = Depends(get_session)) -
 @router.get("/controls", response_class=HTMLResponse)
 async def controls_page(
     request: Request,
+    *,
     session: AsyncSession = Depends(get_session),
     q: str | None = Query(None),
     family: str | None = Query(None),
@@ -447,6 +448,7 @@ async def create_org(
 @router.post("/systems/new")
 async def create_system(
     request: Request,
+    *,
     organization_id: int = Form(...),
     name: str = Form(...),
     description: str | None = Form(None),
@@ -975,6 +977,7 @@ async def _scoring_rows(
 @router.get("/scoring", response_class=HTMLResponse)
 async def scoring_page(
     request: Request,
+    *,
     session: AsyncSession = Depends(get_session),
     system_id: int | None = Query(None),
     domain: str | None = Query(None),
@@ -1137,6 +1140,7 @@ async def ssp_page(request: Request, session: AsyncSession = Depends(get_session
 @router.post("/ssp/new")
 async def ssp_create(
     request: Request,
+    *,
     customer_name: str = Form(...),
     system_id: str | None = Form(None),
     system_name: str | None = Form(None),
@@ -1280,6 +1284,7 @@ async def ssp_detail(
 async def ssp_save_meta(
     project_id: int,
     request: Request,
+    *,
     customer_name: str = Form(...),
     system_name: str | None = Form(None),
     prepared_by: str | None = Form(None),
@@ -1719,6 +1724,7 @@ async def assessments_page(
 @router.post("/assessments/new")
 async def assessment_create_ui(
     request: Request,
+    *,
     system_id: int = Form(...),
     name: str = Form("CMMC L2 Assessment"),
     kind: str = Form("self"),
@@ -1807,6 +1813,7 @@ async def assessment_save_result(
     assessment_id: int,
     result_id: int,
     request: Request,
+    *,
     finding: str = Form("not_assessed"),
     examine_note: str = Form(""),
     interview_note: str = Form(""),
@@ -1995,6 +2002,7 @@ async def fedramp20x_page(
 async def fedramp20x_save_profile(
     request: Request,
     system_id: int,
+    *,
     service_name: str = Form(""),
     deployment_model: str = Form(""),
     cloud_environment: str = Form(""),
@@ -2030,6 +2038,7 @@ async def fedramp20x_save_profile(
 async def fedramp20x_add_dependency(
     request: Request,
     system_id: int,
+    *,
     name: str = Form(...),
     provider: str = Form(""),
     service_type: str = Form(""),
@@ -2059,6 +2068,7 @@ async def fedramp20x_add_dependency(
 async def fedramp20x_record_review(
     request: Request,
     system_id: int,
+    *,
     ksi_id: int = Form(...),
     status: str = Form(...),
     assessor: str = Form(""),
@@ -2098,6 +2108,7 @@ async def fedramp20x_record_review(
 async def fedramp20x_add_exception(
     request: Request,
     system_id: int,
+    *,
     ksi_id: int = Form(...),
     rationale: str = Form(...),
     status: str = Form("open"),

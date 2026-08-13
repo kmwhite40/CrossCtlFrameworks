@@ -63,6 +63,7 @@ def _out(t: Task) -> dict[str, Any]:
 
 @router.get("")
 async def list_tasks(
+    *,
     status: str | None = None,
     assignee_user_id: int | None = None,
     system_id: int | None = None,

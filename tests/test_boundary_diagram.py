@@ -36,6 +36,7 @@ def _inv(
 def _ic(
     ic_id: int,
     remote_system_name: str,
+    *,
     direction: str = "incoming",
     agreement_type: str = "isa",
     data_description: str | None = None,

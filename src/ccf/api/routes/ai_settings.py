@@ -167,6 +167,7 @@ async def ai_settings_page(
 
 @ui_router.post("/admin/ai-settings/providers")
 async def ai_settings_add(
+    *,
     provider: str = Form(...),
     api_key: str = Form(""),
     default_model: str = Form(""),
