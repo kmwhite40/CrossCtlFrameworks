@@ -57,6 +57,7 @@ class AuditEntryOut(BaseModel):
 
 @router.get("", response_model=list[AuditEntryOut])
 async def list_audit(
+    *,
     session: AsyncSession = Depends(get_session),
     entity_type: str | None = Query(None),
     action: str | None = Query(None),

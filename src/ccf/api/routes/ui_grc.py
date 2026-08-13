@@ -100,6 +100,7 @@ async def trust_page(
 @router.post("/trust/access-requests")
 async def trust_access_create(
     request: Request,
+    *,
     requester_name: str = Form(...),
     company: str = Form(""),
     email: str = Form(""),
@@ -173,6 +174,7 @@ async def regulatory_page(
 @router.post("/regulatory")
 async def regulatory_create(
     request: Request,
+    *,
     title: str = Form(...),
     source: str = Form(""),
     framework_impacted: str = Form(""),
@@ -324,6 +326,7 @@ async def control_tests_page(
 @router.post("/control-tests")
 async def control_tests_create(
     request: Request,
+    *,
     control_id: str = Form(...),
     name: str = Form(...),
     method: str = Form("manual"),
@@ -505,6 +508,7 @@ async def personnel_page(
 @router.post("/personnel")
 async def personnel_create(
     request: Request,
+    *,
     full_name: str = Form(...),
     email: str = Form(""),
     employment_type: str = Form("employee"),
@@ -863,6 +867,7 @@ async def evidence_page(
 @router.post("/evidence")
 async def evidence_create(
     request: Request,
+    *,
     title: str = Form(...),
     control_id: str = Form(""),
     framework: str = Form(""),
@@ -1131,6 +1136,7 @@ async def portal_admin_page(
 @router.post("/admin/portal/grants", response_class=HTMLResponse)
 async def portal_admin_create(
     request: Request,
+    *,
     organization_id: int = Form(...),
     principal_name: str = Form(...),
     kind: str = Form("customer"),

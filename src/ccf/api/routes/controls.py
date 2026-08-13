@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api/controls", tags=["controls"])
 
 @router.get("", response_model=ControlPage)
 async def list_controls(
+    *,
     session: AsyncSession = Depends(get_session),
     family: str | None = Query(None, description="Family code (e.g. AC, AU)"),
     baseline: str | None = Query(None, pattern="^(low|mod|high)$"),

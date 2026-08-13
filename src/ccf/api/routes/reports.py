@@ -79,6 +79,7 @@ async def _scope_controls(session: AsyncSession, baseline: Baseline | None) -> l
 
 @router.get("/build", response_model=None)
 async def build_report(
+    *,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
     organization_id: str | None = Query(None, description="Scope to an organization's systems"),
