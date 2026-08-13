@@ -82,6 +82,36 @@ exactly what the RLS policy was written to contain.
 This is the same shape the scheduler already uses: **scope around the unit of
 work, not around the dispatch.**
 
+### A rollback silently unscopes the session — verified
+
+`set_session_tenant` (`src/ccf/db.py:23`) issues
+`set_config('ccf.tenant_id', ..., false)` and `SET ROLE ccf_app`. Its docstring
+says these are "set at session (connection) scope so it survives intermediate
+commits" — true of commits, **not of rollbacks**. Both statements were executed
+inside a transaction, and Postgres undoes them when it rolls back. Confirmed
+empirically:
+
+```
+BEGIN; SELECT set_config('ccf.tenant_id','42',false); SET ROLE ccf_app; ROLLBACK;
+SELECT current_setting('ccf.tenant_id', true), current_user;  -->  '' , ccf
+```
+
+The GUC comes back empty and the role reverts to the superuser `ccf`. Because
+the policies read an empty tenant as *bypass*, a rollback leaves the session
+**unrestricted** — this fails open, not closed.
+
+That is the trap in this slice. `_drive_one` today issues its own full
+`session.rollback()` on a DB-level failure and then the loop continues. Harmless
+while the workers are unscoped; the moment scoping is added, every job after a
+failed one would run with no tenant at all, and RLS would silently stop
+applying — with no error and nothing in the logs.
+
+So `_drive_one` must stop catching its own failures. The handling moves up to
+the drain loop, outside the savepoint, where the tenant is re-established for
+the next job rather than assumed. A test must cover a job *after* a failed one,
+asserting it cannot see another tenant's rows — asserting only that the loop
+survived would pass against the unscoped version.
+
 ### Failure containment, which is not optional here
 
 The scheduler's docstring records the trap in detail and it applies unchanged: on
