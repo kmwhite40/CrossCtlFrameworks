@@ -1,0 +1,504 @@
+<title>Concord — What Shipped This Cycle</title>
+<style>
+  :root {
+    --ink:        #171b26;
+    --ink-soft:   #454c60;
+    --ink-faint:  #6d7489;
+    --ground:     #f7f8fa;
+    --panel:      #ffffff;
+    --rule:       #dfe3ec;
+    --rule-soft:  #ebeef4;
+    --accent:     #2f3aa3;
+    --accent-dim: #e8eaf7;
+    --built:      #1d6b4f;
+    --built-bg:   #e3f2ea;
+    --declined:   #8a5a12;
+    --declined-bg:#f8eeda;
+    --hardened:   #2f3aa3;
+    --hardened-bg:#e8eaf7;
+    --shadow:     0 1px 2px rgba(23,27,38,.05), 0 8px 24px -12px rgba(23,27,38,.16);
+
+    --display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --body:    ui-sans-serif, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono:    ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+    --step--1: clamp(.78rem, .76rem + .1vw, .83rem);
+    --step-0:  clamp(1rem, .97rem + .14vw, 1.07rem);
+    --step-1:  clamp(1.2rem, 1.13rem + .3vw, 1.38rem);
+    --step-2:  clamp(1.5rem, 1.36rem + .6vw, 1.9rem);
+    --step-3:  clamp(2rem, 1.7rem + 1.3vw, 3rem);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:        #e6e9f2;
+      --ink-soft:   #a7aec4;
+      --ink-faint:  #7b8299;
+      --ground:     #10121a;
+      --panel:      #171a24;
+      --rule:       #2a2f3e;
+      --rule-soft:  #222634;
+      --accent:     #99a3f0;
+      --accent-dim: #1e2340;
+      --built:      #6fce9f;
+      --built-bg:   #14291f;
+      --declined:   #e0b25f;
+      --declined-bg:#2b2415;
+      --hardened:   #99a3f0;
+      --hardened-bg:#1e2340;
+      --shadow:     0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:        #e6e9f2;
+    --ink-soft:   #a7aec4;
+    --ink-faint:  #7b8299;
+    --ground:     #10121a;
+    --panel:      #171a24;
+    --rule:       #2a2f3e;
+    --rule-soft:  #222634;
+    --accent:     #99a3f0;
+    --accent-dim: #1e2340;
+    --built:      #6fce9f;
+    --built-bg:   #14291f;
+    --declined:   #e0b25f;
+    --declined-bg:#2b2415;
+    --hardened:   #99a3f0;
+    --hardened-bg:#1e2340;
+    --shadow:     0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: var(--step-0);
+    line-height: 1.6;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 46rem; margin: 0 auto; padding: clamp(2rem, 5vw, 4.5rem) 1.35rem 6rem; }
+  code, .mono { font-family: var(--mono); font-size: .88em; }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: .9rem; padding-bottom: 1.6rem;
+              border-bottom: 2px solid var(--ink); }
+  .eyebrow { font-family: var(--mono); font-size: var(--step--1); letter-spacing: .13em;
+             text-transform: uppercase; color: var(--ink-faint); display: flex;
+             flex-wrap: wrap; gap: .5rem 1.1rem; }
+  h1 { font-family: var(--display); font-size: var(--step-3); line-height: 1.06;
+       font-weight: 600; margin: 0; text-wrap: balance; letter-spacing: -.015em; }
+  .standfirst { font-size: var(--step-1); line-height: 1.45; color: var(--ink-soft);
+                margin: 0; max-width: 34ch; text-wrap: balance; }
+
+  /* ---- ledger ---- */
+  .ledger { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+            gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+            margin: 2.2rem 0 0; box-shadow: var(--shadow); }
+  .cell { background: var(--panel); padding: 1rem 1.1rem; display: flex;
+          flex-direction: column; gap: .2rem; }
+  .cell dt { font-family: var(--mono); font-size: var(--step--1); letter-spacing: .09em;
+             text-transform: uppercase; color: var(--ink-faint); }
+  .cell dd { margin: 0; font-family: var(--display); font-size: var(--step-2);
+             font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .cell dd .to { color: var(--ink-faint); font-weight: 400; }
+
+  /* ---- sections ---- */
+  section { margin-top: 3.4rem; }
+  .sec-head { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap;
+              padding-bottom: .55rem; border-bottom: 1px solid var(--rule); }
+  h2 { font-family: var(--display); font-size: var(--step-2); font-weight: 600;
+       margin: 0; letter-spacing: -.01em; }
+  .sec-note { font-size: var(--step--1); color: var(--ink-faint); font-family: var(--mono); }
+  .lede { color: var(--ink-soft); margin: 1rem 0 0; max-width: 62ch; }
+
+  .items { display: flex; flex-direction: column; gap: 0; margin-top: 1.4rem;
+           border-top: 1px solid var(--rule-soft); }
+  .item { display: grid; grid-template-columns: 6.4rem 1fr; gap: 1.2rem;
+          padding: 1.15rem 0; border-bottom: 1px solid var(--rule-soft); }
+  .item h3 { margin: 0 0 .3rem; font-size: var(--step-0); font-weight: 650;
+             letter-spacing: -.005em; }
+  .item p { margin: 0; color: var(--ink-soft); max-width: 60ch; }
+  .item p + p { margin-top: .5rem; }
+
+  .tag { font-family: var(--mono); font-size: .68rem; letter-spacing: .1em;
+         text-transform: uppercase; padding: .28rem .5rem; border-radius: 2px;
+         align-self: start; text-align: center; font-weight: 600; }
+  .t-built    { color: var(--built);    background: var(--built-bg); }
+  .t-declined { color: var(--declined); background: var(--declined-bg); }
+  .t-hardened { color: var(--hardened); background: var(--hardened-bg); }
+
+  /* ---- pull: typographic, no panel ---- */
+  .pull { margin: 2.6rem 0 .6rem; padding: 1.6rem 0 1.5rem;
+          border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .pull p { margin: 0; font-family: var(--display); font-size: var(--step-2);
+            line-height: 1.3; letter-spacing: -.012em; color: var(--ink);
+            text-wrap: pretty; max-width: 26ch; text-indent: -.42em; }
+  .pull p + p { margin-top: 1rem; font-family: var(--body); font-size: var(--step-0);
+                line-height: 1.6; letter-spacing: 0; color: var(--ink-soft);
+                max-width: 58ch; text-indent: 0; }
+
+  /* ---- capability grid ---- */
+  .caps { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+          gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+          margin-top: 1.6rem; box-shadow: var(--shadow); }
+  .cap { background: var(--panel); padding: 1.15rem 1.25rem 1.3rem;
+         display: flex; flex-direction: column; gap: .4rem; }
+  .cap h3 { margin: 0; font-family: var(--mono); font-size: .72rem; font-weight: 600;
+            letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+  .cap p { margin: 0; font-size: .95rem; line-height: 1.55; color: var(--ink-soft); }
+
+  .callout { margin-top: 1.5rem; padding: 1rem 1.2rem; background: var(--accent-dim);
+             border-radius: 3px; }
+  .callout p { margin: 0; color: var(--ink); }
+  .callout strong { font-weight: 650; }
+
+  ul.plain { margin: 1rem 0 0; padding-left: 1.1rem; color: var(--ink-soft); }
+  ul.plain li { margin-bottom: .5rem; max-width: 60ch; }
+  ul.plain li::marker { color: var(--ink-faint); }
+
+  footer { margin-top: 4rem; padding-top: 1.4rem; border-top: 2px solid var(--ink);
+           font-size: var(--step--1); color: var(--ink-faint); }
+  footer p { margin: 0 0 .5rem; max-width: 62ch; }
+  footer .mono { color: var(--ink-soft); }
+
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible, :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  @media (max-width: 34rem) {
+    .item { grid-template-columns: 1fr; gap: .55rem; }
+    .tag { justify-self: start; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">
+      <span>Concord Platform</span><span>Engineering Update</span><span>August 2026</span>
+    </div>
+    <h1>Six capabilities shipped. Three proposals declined.</h1>
+    <p class="standfirst">The declines were the most productive part of the cycle.</p>
+  </header>
+
+  <dl class="ledger">
+    <div class="cell"><dt>Capabilities</dt><dd>6</dd></div>
+    <div class="cell"><dt>Declined</dt><dd>3</dd></div>
+    <div class="cell"><dt>Tests</dt><dd>849 <span class="to">→</span> 1043</dd></div>
+    <div class="cell"><dt>Migrations</dt><dd>0051–0060</dd></div>
+  </dl>
+
+  <section>
+    <div class="sec-head">
+      <h2>What we built</h2>
+      <span class="sec-note">assessment pipeline, end to end</span>
+    </div>
+    <p class="lede">
+      Concord can now take a raw evidence document and carry it all the way to a proposed
+      control finding — with every verdict traceable to the passage and the model that
+      produced it, and a human gate at the only point where it becomes authoritative.
+    </p>
+
+    <div class="items">
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Evidence preparation &amp; retrieval</h3>
+          <p>Documents are parsed, screened against the control catalog, expanded, classified
+          and embedded — each stage persisted separately so a failed run resumes where it
+          stopped rather than starting over. Retrieval fuses vector similarity with full-text
+          ranking, so a passage can surface on meaning or on exact language.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Objective-level assessment</h3>
+          <p>The engine evaluates 800-53A objectives individually and rolls them up into a
+          control finding. It <em>proposes</em> — it never writes an assessment result. An
+          assessor accepts, and acceptance is the only path to an authoritative record.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>AI provenance</h3>
+          <p>Every classification and verdict now has a recorded run: model, provider, prompt
+          version, input and output hashes, and one citation row per passage cited. Accepting
+          a finding stamps the reviewer onto those runs, so <em>which model produced this,
+          from what evidence, and who signed off</em> is a single query.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Calibration harness</h3>
+          <p>Assessors can now record that a proposed finding was <em>wrong</em>, with the
+          finding they believe correct. That turns routine review into labelled data.</p>
+          <p>The two error directions are reported separately and never averaged. A control
+          that passed and should not have is a missed finding in an authorization package;
+          the reverse is wasted remediation effort. Collapsing them into one accuracy figure
+          would hide the number worth watching.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Closure &amp; remediation loop</h3>
+          <p>An accepted <em>other-than-satisfied</em> finding now becomes a POA&amp;M
+          automatically, and closing that POA&amp;M queues a fresh look at the control. The
+          loop used to be open at both ends: findings that never became tracked work, and
+          remediation that never triggered re-assessment.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>AI dissent path</h3>
+          <p>A second model argues the opposite case against any <em>satisfied</em> verdict,
+          reading the same passages. Genuine disagreement routes the objective to
+          <em>insufficient evidence</em> — a state that already blocks acceptance. Two verdicts
+          are never averaged or majority-voted; that would manufacture precision that isn't
+          there. Off by default, since it doubles model calls on the passing subset.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>What we declined to build</h2>
+      <span class="sec-note">and what that turned up instead</span>
+    </div>
+    <p class="lede">
+      Three capabilities on the roadmap were investigated and cancelled. In each case
+      Concord already had the capability, or the gap wasn't worth a slice. Every
+      cancellation was cheaper than the feature — and each one surfaced a real defect
+      that the feature work would have walked past.
+    </p>
+
+    <div class="items">
+      <div class="item">
+        <span class="tag t-declined">Declined</span>
+        <div>
+          <h3>Generated-artifact validation</h3>
+          <p>Already built. Concord validates OSCAL documents against the official schema,
+          scores SSP completeness, and enforces closed-set citations — two of which go
+          <em>beyond</em> the capability we were proposing to copy.</p>
+          <p><strong>Found instead:</strong> a health check that reported the OSCAL exporter
+          healthy without validating anything. Its test only asserted the check appeared in
+          the list by name.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-declined">Declined</span>
+        <div>
+          <h3>Project-context assistant</h3>
+          <p>The one genuine gap — open-ended Q&amp;A over the project — is a surface Concord
+          has deliberately avoided for citation-bearing output. Building it would cut against
+          a safety property, not fill a hole.</p>
+          <p><strong>Found instead:</strong> the module that drafts SSP narrative prose had
+          zero test coverage, and every tenant's draft was being generated on a shared global
+          API key rather than their own configured provider. Both fixed.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-declined">Declined</span>
+        <div>
+          <h3>Continuous-verification drift records</h3>
+          <p>Concord's continuous monitoring, scheduled control tests and scan reconciliation
+          already cover this ground, and cover it well.</p>
+          <p><strong>Found instead:</strong> failing control tests opened remediation tasks
+          and POA&amp;Ms that nothing ever closed when the control recovered. The backlog was
+          filling with entries that looked like live findings and weren't. Now fixed — the
+          task resolves, and the POA&amp;M is surfaced for a human rather than auto-closed.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="pull">
+      <p>“Closing a POA&amp;M asserts, in an authorization package, that a weakness is
+      remediated. A single passing test is not that assertion.”</p>
+      <p>This is why recovery surfaces a POA&amp;M rather than closing it — and why a passing
+      re-assessment proposes rather than decides. The engine never retires its own finding.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>Tenant isolation</h2>
+      <span class="sec-note">the largest single fix</span>
+    </div>
+    <p class="lede">
+      An audit found that eleven tables built during this cycle had no row-level security
+      policy, while 110 others in the same schema did. Isolation rested entirely on
+      application-level checks with no database backstop.
+    </p>
+
+    <div class="items">
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Policies on all eleven tables</h3>
+          <p>Each carries an enforced <code>tenant_isolation</code> policy, verified by
+          testing that one organization genuinely cannot see another's rows — not merely
+          that a policy exists. A registry test now fails if any future table with a tenant
+          column ships without one.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Background workers scoped</h3>
+          <p>Both job queues now process each job under its own tenant, so the paths that
+          write the most rows are covered too. The claim query stays deliberately
+          cross-tenant — it reads only job identifiers — and that exception is documented
+          rather than left unstated.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Two traps worth knowing</h3>
+          <p>A database rollback silently undoes the tenant context — and because an unset
+          tenant means <em>bypass</em>, it fails open rather than closed. Every affected path
+          was audited; all were already contained, and the misleading docstring that implied
+          otherwise is corrected.</p>
+          <p>Separately, a scheduled job failing at the database level could abort the entire
+          nightly cycle for every tenant, because the error was caught in Python while the
+          transaction stayed poisoned.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>How the defects were found</h2>
+      <span class="sec-note">a practice worth keeping</span>
+    </div>
+    <p class="lede">
+      Roughly two dozen defects surfaced this cycle. Almost none were found by reading code.
+      They were found by deleting a guard, re-running the tests, and checking whether
+      anything noticed.
+    </p>
+    <p class="lede">
+      The expensive cases were tests that passed <em>for the wrong reason</em> — they looked
+      like coverage and weren't:
+    </p>
+    <ul class="plain">
+      <li>A fixture with one error of each kind passed against code that had the two
+      branches swapped. Balanced test data proves nothing about which is which.</li>
+      <li>A cross-tenant test passed because the database filtered the row before the
+      application check ever ran — leaving that check entirely unverified.</li>
+      <li>An insert test was satisfied by the wrong policy clause, so it never tested the
+      one it claimed to.</li>
+      <li>A best-effort error handler made “skipped correctly” and “crashed and was
+      swallowed” look identical from outside. Three separate findings traced to this.</li>
+    </ul>
+
+    <div class="callout">
+      <p><strong>The rule we landed on:</strong> when a mutation produces no failure, the
+      question isn't “which mutation will fail?” — it's whether the guard is untested or the
+      hazard is designed out. Those need different responses, and only checking the adjacent
+      mutation tells them apart.</p>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <h2>The platform around it</h2>
+      <span class="sec-note">capabilities in place today</span>
+    </div>
+    <p class="lede">
+      This cycle's work sits on top of an existing surface. For anyone who hasn't looked at
+      Concord recently, here is what it already covers.
+    </p>
+
+    <div class="caps">
+      <div class="cap">
+        <h3>Authorization packages</h3>
+        <p>SSP, SAR and POA&amp;M generation with OSCAL export, validated against the official
+        schema. Packages carry provenance, and any two can be diffed or replayed to show what
+        changed between submissions.</p>
+      </div>
+      <div class="cap">
+        <h3>Continuous controls monitoring</h3>
+        <p>Vulnerability scans ingest and reconcile into POA&amp;Ms automatically, closing and
+        reopening as findings come and go. Control tests run on a schedule, with optional
+        machine-checkable assertions rather than a human attesting.</p>
+      </div>
+      <div class="cap">
+        <h3>Evidence repository</h3>
+        <p>Versioned evidence with confidence scoring and reproducibility tracking, so a
+        citation in a package resolves to a specific artifact at a specific point in time.</p>
+      </div>
+      <div class="cap">
+        <h3>Personnel &amp; access</h3>
+        <p>The workforce security lifecycle end to end — position risk designation, background
+        screening, security training, and periodic access reviews, each mapped to the control
+        it satisfies (PS-2, PS-3, AT-2, AT-3, AC-2).</p>
+      </div>
+      <div class="cap">
+        <h3>Vendor risk</h3>
+        <p>Security questionnaires with reusable templates, sent and tracked through response,
+        so third-party assessments live alongside the rest of the evidence rather than in a
+        spreadsheet.</p>
+      </div>
+      <div class="cap">
+        <h3>Assurance graph</h3>
+        <p>A queryable model of the authorization — the digital twin — backed by a registry of
+        deterministic queries, so posture questions are answered from data rather than
+        assembled by hand.</p>
+      </div>
+      <div class="cap">
+        <h3>Collaboration portal</h3>
+        <p>An external surface for auditors and assessors to work a request list without
+        needing accounts in the main application.</p>
+      </div>
+      <div class="cap">
+        <h3>Enterprise identity</h3>
+        <p>OIDC single sign-on and SCIM provisioning, with row-level tenant isolation enforced
+        in the database across 121 tables.</p>
+      </div>
+      <div class="cap">
+        <h3>AI governance</h3>
+        <p>A typed action layer for AI operations with human approval gating, plus governance
+        records for the agents themselves — so model-assisted work is reviewable rather than
+        opaque.</p>
+      </div>
+      <div class="cap">
+        <h3>Compliance packs</h3>
+        <p>Framework content ships as versioned packs, so a new baseline or an updated catalog
+        is a data change rather than a release.</p>
+      </div>
+    </div>
+
+    <p class="lede" style="margin-top:1.8rem;">
+      Two product changes are worth calling out separately. The primary navigation was
+      consolidated from eleven top-level items to five, which is the difference between a tool
+      people can learn and one they need training for. And Concord now runs its own assurance
+      against itself — the platform is assessed by the platform, which means the team finds
+      the rough edges before a customer does.
+    </p>
+  </section>
+
+  <footer>
+    <p>Branch <span class="mono">feat/evidence-prep-spine</span> — 131 commits, 1,043 tests
+    passing, migration head <span class="mono">0060</span>. Type-checked and linted clean.
+    Not yet merged.</p>
+    <p>One item is open by design: a dedicated worker database role that would make the
+    remaining claim-path bypass explicit and auditable. It adds no isolation, and it's
+    infrastructure — so it ships when someone decides it does.</p>
+  </footer>
+
+</div>
