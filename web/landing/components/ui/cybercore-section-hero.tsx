@@ -32,6 +32,12 @@ const CybercoreBackground: React.FC<CybercoreBackgroundProps> = ({
         },
       }
     })
+    // Beam positions/timings are randomized (Math.random()) and must be
+    // generated client-side only: computing them during render would produce
+    // a different result on the server than on the client and break
+    // hydration. Deferring to an effect is the correct pattern here, not a
+    // synchronization anti-pattern.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBeams(generated)
   }, [beamCount])
 
