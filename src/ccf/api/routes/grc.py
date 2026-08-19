@@ -234,6 +234,31 @@ class RegulatoryIn(BaseModel):
     status: str = "new"
 
 
+class RegulatoryUpdateIn(BaseModel):
+    """Partial update for a regulatory record.
+
+    Separate from ``RegulatoryIn`` because that model's defaults are only
+    meaningful on create. ``applicability`` defaults to "assessing" and
+    ``status`` to "new", so reusing it on PATCH silently reset the two fields
+    the regulatory workflow is tracked by whenever a caller sent anything else.
+    Mirrors the all-optional shape ``RequestUpdate``/``FindingUpdate`` already
+    use in this module.
+    """
+
+    title: str | None = None
+    source: str | None = None
+    framework_impacted: str | None = None
+    requirement_impacted: str | None = None
+    summary: str | None = None
+    applicability: str | None = None
+    control_impact: str | None = None
+    policy_impact: str | None = None
+    system_impact: str | None = None
+    owner: str | None = None
+    due_on: date | None = None
+    status: str | None = None
+
+
 def _reg_out(r: RegulatoryUpdate) -> dict[str, Any]:
     return {
         "id": r.id,
@@ -287,7 +312,7 @@ async def create_regulatory(
 @router.patch("/regulatory/{reg_id}")
 async def update_regulatory(
     reg_id: int,
-    body: RegulatoryIn,
+    body: RegulatoryUpdateIn,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:

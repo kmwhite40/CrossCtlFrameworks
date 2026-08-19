@@ -1062,6 +1062,12 @@ def _ai_decision(run_id: int, *, approve: bool, reason: str | None) -> None:
     if status == "not_found":
         console.print("[red]Run not found.[/red]")
         raise typer.Exit(1)
+    if status.startswith("blocked:"):
+        # A guardrail refused the decision. This must not report success: CI and
+        # cron callers read the exit code, and an AI action that was BLOCKED
+        # exiting 0 is indistinguishable from one that was approved.
+        console.print(f"[red]Run {run_id}: {status}[/red]")
+        raise typer.Exit(1)
     console.print(f"Run {run_id}: [cyan]{status}[/cyan]")
 
 

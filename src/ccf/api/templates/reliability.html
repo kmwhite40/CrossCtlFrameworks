@@ -12,7 +12,7 @@
     <div>
       <div class="card__title">
         Overall:
-        <span class="badge badge--{{ 'ok' if summary.overall == 'pass' else ('warn' if summary.overall == 'warn' else 'bad') }}">
+        <span class="chip {{ 'chip--ok' if summary.overall == 'pass' else ('chip--warn' if summary.overall == 'warn' else 'chip--err') }}">
           {{ summary.overall | upper }}
         </span>
       </div>
@@ -33,7 +33,7 @@
       {% for c in summary.checks %}
         <tr>
           <td><code>{{ c.name }}</code></td>
-          <td><span class="badge badge--{{ 'ok' if c.status == 'pass' else ('warn' if c.status == 'warn' else 'bad') }}">{{ c.status | upper }}</span></td>
+          <td><span class="chip {{ 'chip--ok' if c.status == 'pass' else ('chip--warn' if c.status == 'warn' else 'chip--err') }}">{{ c.status | upper }}</span></td>
           <td>{{ c.message }}</td>
           <td class="dim">{{ c.remediation or '' }}</td>
         </tr>

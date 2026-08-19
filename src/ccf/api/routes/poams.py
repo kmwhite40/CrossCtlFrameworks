@@ -20,7 +20,7 @@ from ...config import get_settings
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...logging import get_logger
-from ...models import POAM, Approval, ControlImplementation, Evidence, PoamMilestone, System
+from ...models import POAM, ControlImplementation, Evidence, PoamMilestone, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
 
@@ -205,17 +205,6 @@ async def _has_closure_evidence(session: AsyncSession, obj: POAM) -> bool:
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
-async def _is_approved(session: AsyncSession, entity_type: str, entity_id: int | str) -> bool:
-    row = (
-        await session.execute(
-            select(Approval).where(
-                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
-            )
-        )
-    ).scalar_one_or_none()
-    return row is not None and row.state == "approved"
-
-
 async def _require_closure_gate(session: AsyncSession, obj: POAM) -> None:
     if not _milestones_satisfy_closure(obj) and not await _has_closure_evidence(session, obj):
         raise HTTPException(
@@ -223,7 +212,7 @@ async def _require_closure_gate(session: AsyncSession, obj: POAM) -> None:
             "cannot close: requires either all milestones completed or a linked closure "
             "evidence artifact for the remediated control",
         )
-    if get_settings().auth_enabled and not await _is_approved(session, "poam", obj.id):
+    if get_settings().auth_enabled and await entity_state(session, "poam", obj.id) != "approved":
         raise HTTPException(
             409,
             "cannot close: requires an approved review (submit for approval, then have a "
@@ -251,7 +240,7 @@ async def _require_risk_accepted_gate(
             "risk_accepted requires an owner (owner_user_id) and an expiration/due_on date",
         )
     if get_settings().auth_enabled and (
-        poam_id is None or not await _is_approved(session, "poam", poam_id)
+        poam_id is None or await entity_state(session, "poam", poam_id) != "approved"
     ):
         raise HTTPException(
             409,

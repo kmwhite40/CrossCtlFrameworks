@@ -78,7 +78,11 @@ async def install_pack(
 
     if existing is not None:
         # Replace materialized children; keeps other packs untouched.
-        for model in (PackControl, PackMapping, PackEvidenceRequirement, PackRule):
+        # PackTestResult is included: a verdict computed against a superseded
+        # manifest must not outlive the manifest it described.
+        for model in (
+            PackControl, PackMapping, PackEvidenceRequirement, PackRule, PackTestResult
+        ):
             await session.execute(delete(model).where(model.pack_id == pack.id))
 
     for c in manifest.get("controls", []):
@@ -179,6 +183,11 @@ async def run_tests(session: AsyncSession, pack: CompliancePack) -> list[PackTes
         "controls", "mappings", "evidence_requirements", "rules",
         "policy_templates", "questionnaire_templates", "connector_mappings", "tests",
     )}
+    # Conformance results are CURRENT STATE per pack, not history: the only
+    # consumer counts rows with status='fail' across all time, so appending a
+    # fresh set each run made one past failure warn forever, unclearable by
+    # fixing the manifest. Replace rather than accumulate.
+    await session.execute(delete(PackTestResult).where(PackTestResult.pack_id == pack.id))
     results: list[PackTestResult] = []
     for t in manifest.get("tests", []):
         key = str(t.get("key", "test"))

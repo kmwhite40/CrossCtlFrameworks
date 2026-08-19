@@ -112,7 +112,7 @@
       {% for d in dependencies %}
         <tr>
           <td>{{ d.name }}</td><td class="dim">{{ d.provider or '' }}</td><td class="dim">{{ d.service_type or '' }}</td>
-          <td><span class="badge badge--{{ 'ok' if d.fedramp_status == 'authorized' else ('warn' if d.fedramp_status in ('in_process','unknown') else 'bad') }}" title="Stored value: {{ d.fedramp_status }}">{{ d.fedramp_status | cr26_label }}</span></td>
+          <td><span class="chip {{ 'chip--ok' if d.fedramp_status == 'authorized' else ('chip--warn' if d.fedramp_status in ('in_process','unknown') else 'chip--err') }}" title="Stored value: {{ d.fedramp_status }}">{{ d.fedramp_status | cr26_label }}</span></td>
           <td class="dim">{{ d.dependency_risk or '' }}</td>
         </tr>
       {% else %}
@@ -160,7 +160,7 @@
       {% for e in exceptions %}
         <tr>
           <td><code>{{ ksi_names.get(e.ksi_id, e.ksi_id) }}</code></td>
-          <td><span class="badge badge--{{ 'ok' if e.status == 'closed' else ('warn' if e.status == 'accepted' else 'bad') }}">{{ e.status }}</span></td>
+          <td><span class="chip {{ 'chip--ok' if e.status == 'closed' else ('chip--warn' if e.status == 'accepted' else 'chip--err') }}">{{ e.status }}</span></td>
           <td class="dim">{{ e.rationale }}</td>
         </tr>
       {% else %}
@@ -198,7 +198,7 @@
           {% if system_id %}
           <td>
             {% set st = states.get(k.id, 'not_tested') %}
-            <span class="badge badge--{{ 'ok' if st == 'pass' else ('warn' if st in ('warn','manual_review_required') else ('bad' if st == 'fail' else 'muted')) }}">{{ st }}</span>
+            <span class="chip {{ 'chip--ok' if st == 'pass' else ('chip--warn' if st in ('warn','manual_review_required') else ('chip--err' if st == 'fail' else 'chip--ghost')) }}">{{ st }}</span>
           </td>
           <td class="dim">{{ assessor.get(k.id, 'not_reviewed') }}</td>
           {% endif %}
