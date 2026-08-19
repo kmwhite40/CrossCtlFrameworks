@@ -11,14 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import RequestResponseEndpoint
 
-from ..auth import SYSTEM_PRINCIPAL, Principal, hash_token, verify_session
+from ..auth import SYSTEM_PRINCIPAL, Principal, hash_token, read_session
 from ..config import get_settings
 from ..db import get_session_factory, set_session_tenant
 from ..models import System, User
 
 SESSION_COOKIE = "concord_session"
 
-# Paths reachable without authentication even when auth is enabled.
+# Paths reachable without authentication even when auth is enabled. Matched on
+# segment boundaries by ``is_public_path`` — never as a bare string prefix.
 _PUBLIC_PREFIXES = (
     "/api/auth",
     "/auth/login",
@@ -32,13 +33,37 @@ _PUBLIC_PREFIXES = (
     "/healthz",
     "/readyz",
     "/livez",
-    "/metrics",
     "/static",
     "/docs",
     "/redoc",
     "/openapi.json",
     "/favicon",
 )
+
+# Entries matched as a true string prefix rather than on a segment boundary:
+# browsers request favicons as sibling files (/favicon.ico, /favicon-32x32.png),
+# not as a /favicon/ subtree.
+_PUBLIC_LITERAL_PREFIXES = ("/favicon",)
+
+
+def is_public_path(path: str) -> bool:
+    """True when ``path`` is reachable without authentication.
+
+    Matches each public entry on a segment boundary — the path must equal the
+    entry or continue with ``/``. A bare ``startswith`` would exempt unrelated
+    routes that merely share a textual prefix (``/api/authorization-packages``
+    silently inheriting the ``/api/auth`` exemption, for example).
+    """
+    if path == "/":
+        return True
+    if path == "/metrics":
+        # AC-3: telemetry is authenticated by default; a scraper presents an API
+        # token. CCF_METRICS_REQUIRE_AUTH=false restores the open endpoint for
+        # deployments that restrict it at the network layer instead.
+        return not get_settings().metrics_require_auth
+    if any(path == p or path.startswith(p + "/") for p in _PUBLIC_PREFIXES):
+        return True
+    return path.startswith(_PUBLIC_LITERAL_PREFIXES)
 
 
 async def _lookup_principal(request: Request, session: AsyncSession) -> Principal | None:
@@ -59,11 +84,19 @@ async def _lookup_principal(request: Request, session: AsyncSession) -> Principa
     if user is None:
         cookie = request.cookies.get(SESSION_COOKIE)
         if cookie:
-            uid = verify_session(cookie, settings.auth_session_secret)
-            if uid is not None:
+            claims = read_session(cookie, settings.auth_session_secret)
+            if claims is not None:
+                uid, sv = claims
                 user = (
                     await session.execute(
-                        select(User).where(User.id == uid, User.active.is_(True))
+                        select(User).where(
+                            User.id == uid,
+                            User.active.is_(True),
+                            # AC-12: reject cookies minted before the user's
+                            # session version was bumped (logout, password
+                            # change) so revocation is effective server-side.
+                            User.session_version == sv,
+                        )
                     )
                 ).scalar_one_or_none()
     if user is None:
@@ -143,7 +176,7 @@ async def auth_gate_middleware(
     if not get_settings().auth_enabled:
         return await call_next(request)
     path = request.url.path
-    if path != "/" and not any(path.startswith(p) for p in _PUBLIC_PREFIXES):
+    if not is_public_path(path):
         factory = get_session_factory()
         async with factory() as session:
             await set_session_tenant(session, None)

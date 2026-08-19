@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session, verify_session
-from ...config import get_settings
+from ...config import get_settings, is_dev_env
 from ...portal import (
     add_comment,
     create_grant,
@@ -257,7 +257,7 @@ async def portal_ui(
             max_age=ttl_hours * 3600,
             httponly=True,
             samesite="lax",
-            secure=settings.env == "prod",
+            secure=not is_dev_env(settings),
         )
         return redirect
 

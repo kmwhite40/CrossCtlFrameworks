@@ -88,15 +88,40 @@ def verify_token(token: str, stored_hash: str | None) -> bool:
     return hmac.compare_digest(hash_token(token), stored_hash)
 
 
-def sign_session(user_id: int, secret: str, *, ttl_hours: int, now: float | None = None) -> str:
+def sign_session(
+    user_id: int,
+    secret: str,
+    *,
+    ttl_hours: int,
+    session_version: int = 0,
+    now: float | None = None,
+) -> str:
+    """Mint a signed session token.
+
+    ``session_version`` binds the token to ``users.session_version``; bumping
+    that column server-side invalidates every token already issued for the user
+    (AC-12). It is omitted from the payload when zero so tokens for non-user
+    subjects — e.g. portal grant ids — keep their original shape.
+    """
     exp = int(now if now is not None else time.time()) + ttl_hours * 3600
-    raw = json.dumps({"uid": user_id, "exp": exp}, separators=(",", ":")).encode()
+    claims: dict[str, int] = {"uid": user_id, "exp": exp}
+    if session_version:
+        claims["sv"] = session_version
+    raw = json.dumps(claims, separators=(",", ":")).encode()
     payload = base64.urlsafe_b64encode(raw).decode().rstrip("=")
     sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
 
-def verify_session(token: str, secret: str, *, now: float | None = None) -> int | None:
+def read_session(
+    token: str, secret: str, *, now: float | None = None
+) -> tuple[int, int] | None:
+    """Verify ``token`` and return ``(user_id, session_version)``, else ``None``.
+
+    A token minted before session versioning existed carries no ``sv`` claim and
+    reads as version ``0`` — matching the column default, so upgrading does not
+    log every active user out.
+    """
     try:
         payload, sig = token.split(".", 1)
     except ValueError:
@@ -112,4 +137,17 @@ def verify_session(token: str, secret: str, *, now: float | None = None) -> int 
     if not isinstance(data, dict) or data.get("exp", 0) < (now if now is not None else time.time()):
         return None
     uid = data.get("uid")
-    return uid if isinstance(uid, int) else None
+    if not isinstance(uid, int):
+        return None
+    sv = data.get("sv", 0)
+    return (uid, sv) if isinstance(sv, int) else None
+
+
+def verify_session(token: str, secret: str, *, now: float | None = None) -> int | None:
+    """Verify ``token`` and return just the subject id.
+
+    Retained for subjects that have no session version of their own (the
+    external portal signs grant ids with this same scheme).
+    """
+    result = read_session(token, secret, now=now)
+    return None if result is None else result[0]

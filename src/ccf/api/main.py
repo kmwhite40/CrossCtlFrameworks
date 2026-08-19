@@ -20,6 +20,7 @@ from ..config import enforce_secure_config, get_settings, is_dev_env
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
+from .csrf import CsrfOriginMiddleware
 from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
@@ -125,6 +126,16 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    if settings.csrf_protection:
+        # Defense in depth beneath the session cookie's SameSite=Lax. Trusts the
+        # served host implicitly, plus any explicitly configured origin (the
+        # CORS allow-list is included so a separately-hosted front end that is
+        # already permitted to call the API is not blocked here).
+        app.add_middleware(
+            CsrfOriginMiddleware,
+            trusted_origins=(*settings.csrf_trusted_origins, *settings.api_cors_origins),
+        )
+    # Added after the CSRF guard so it wraps it and decorates the guard's 403.
     app.add_middleware(SecurityHeadersMiddleware, hsts=not is_dev_env(settings))
     app.middleware("http")(metrics_middleware)
     if settings.audit_enabled and not settings.readonly:

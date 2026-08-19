@@ -8,6 +8,7 @@ login route falls back to the local `/login` form, so dev needs no IdP.
 
 from __future__ import annotations
 
+import hmac
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
@@ -17,25 +18,31 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session
-from ...config import get_settings
+from ...config import get_settings, is_dev_env
 from ...identity import provisioning
 from ...identity.oidc import authorization_url, exchange_code, new_state
 from ...models import Organization, User
 from ...models_identity import GroupRoleMapping, IdentityProvider
 from ..auth_deps import SESSION_COOKIE, get_principal, require_role
 from ..deps import get_session
+from ..login_service import revoke_sessions_for_request
 
 router = APIRouter(tags=["identity"])
 
 _STATE_COOKIE = "concord_oidc_state"
 
 
-def _set_session_cookie(response: Response, user_id: int) -> None:
+def _set_session_cookie(response: Response, user_id: int, session_version: int = 0) -> None:
     s = get_settings()
-    token = sign_session(user_id, s.auth_session_secret, ttl_hours=s.auth_session_ttl_hours)
+    token = sign_session(
+        user_id,
+        s.auth_session_secret,
+        ttl_hours=s.auth_session_ttl_hours,
+        session_version=session_version,
+    )
     response.set_cookie(
         SESSION_COOKIE, token, max_age=s.auth_session_ttl_hours * 3600,
-        httponly=True, samesite="lax", secure=s.env == "prod",
+        httponly=True, samesite="lax", secure=not is_dev_env(s),
     )
 
 
@@ -65,7 +72,10 @@ async def sso_login() -> RedirectResponse:
     except Exception as e:
         raise HTTPException(503, "OIDC login is unavailable") from e
     resp = RedirectResponse(url, status_code=303)
-    resp.set_cookie(_STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600)
+    resp.set_cookie(
+        _STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600,
+        secure=not is_dev_env(s),
+    )
     return resp
 
 
@@ -100,13 +110,17 @@ async def sso_callback(
     await session.commit()
     resp = RedirectResponse("/", status_code=303)
     resp.delete_cookie(_STATE_COOKIE)
-    _set_session_cookie(resp, user.id)
+    _set_session_cookie(resp, user.id, user.session_version or 0)
     return resp
 
 
 @router.get("/auth/logout")
 @router.post("/auth/logout")
-async def sso_logout() -> RedirectResponse:
+async def sso_logout(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    # AC-12: revoke server-side as well as clearing the browser's cookie.
+    await revoke_sessions_for_request(request, session)
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE)
     return resp
@@ -213,7 +227,10 @@ async def _scim_org(authorization: str = Header(default="")) -> int | None:
     if not s.scim_enabled or not s.scim_bearer_token:
         raise HTTPException(404, "SCIM is not enabled")
     token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
-    if token != s.scim_bearer_token:
+    # Constant-time comparison: this token authorizes full user provisioning
+    # (create/update/deactivate/delete), so a short-circuiting ``!=`` would leak
+    # it byte-by-byte to an attacker able to measure response latency.
+    if not hmac.compare_digest(token, s.scim_bearer_token):
         raise HTTPException(401, "invalid SCIM token")
     return None
 

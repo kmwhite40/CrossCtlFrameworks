@@ -310,6 +310,10 @@ class User(Base):
     # ``auth_lockout_minutes``.
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # AC-12: bumped on logout and password change to invalidate every session
+    # cookie already issued for this user. The signed cookie carries the version
+    # it was minted with; a mismatch fails principal lookup.
+    session_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     organization: Mapped[Organization] = relationship(back_populates="users")
 

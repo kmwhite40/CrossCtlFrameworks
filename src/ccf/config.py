@@ -106,6 +106,27 @@ class Settings(BaseSettings):
     auth_session_secret: str = Field(default="dev-insecure-change-me")
     auth_session_ttl_hours: int = Field(default=12)
 
+    # AC-3: the Prometheus endpoint exposes operational telemetry (route paths,
+    # request volumes, error rates). It requires authentication by default once
+    # auth is enabled; a scraper authenticates with an API token
+    # (``Authorization: Bearer …``). Set false only where the endpoint is
+    # already restricted at the network layer — accepting the disclosure risk.
+    metrics_require_auth: bool = Field(default=True)
+
+    # CSRF defense in depth. The session cookie is SameSite=Lax, which already
+    # blocks cross-site POST; this additionally rejects state-changing requests
+    # whose browser-supplied Origin/Referer is neither the served host nor an
+    # explicitly trusted origin. Requests with no Origin/Referer at all (CLI,
+    # SCIM, CI integrations) are unaffected — see ``api/csrf.py``.
+    csrf_protection: bool = Field(default=True)
+    csrf_trusted_origins: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Extra origins allowed to make state-changing requests, e.g. a "
+            "separately-hosted front end: [\"https://app.example.gov\"]."
+        ),
+    )
+
     # AC-7: account lockout after repeated failed logins (NIST 800-63B aligned).
     auth_lockout_threshold: int = Field(default=5)
     auth_lockout_minutes: int = Field(default=15)
