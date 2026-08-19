@@ -22,6 +22,7 @@ from .auth import hash_password, new_api_token, validate_password_policy
 from .config import Settings, get_settings
 from .db import session_scope
 from .etl import ingest_workbook
+from .etl.reclassify import apply_reclassification, plan_reclassification
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
 from .governance import conmon, digest, insights, scheduler
@@ -503,6 +504,55 @@ def calibration_snapshot(
             f"[green]Calibration snapshot {snapshot.id}[/green] for org {organization_id}: "
             f"{decided} decided, agreement {rate}"
         )
+
+    asyncio.run(_run())
+
+
+@app.command(name="frameworks-reclassify")
+def frameworks_reclassify(
+    apply: bool = typer.Option(
+        False, "--apply", help="Write the changes. Without it, only the plan is printed."
+    ),
+) -> None:
+    """Re-apply the header classifier to mappings already loaded.
+
+    Adding a classification rule does not change rows that are already in the
+    database. This moves them, without deleting controls the way a re-ingest
+    would. It is idempotent, and dry-run by default.
+    """
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            plan = (
+                await apply_reclassification(session)
+                if apply
+                else await plan_reclassification(session)
+            )
+            if apply:
+                await session.commit()
+
+        table = Table(title="Framework reclassification" + ("" if apply else " (dry run)"))
+        table.add_column("from")
+        table.add_column("to")
+        table.add_column("rows", justify="right")
+        for (old, new), n in sorted(plan.moves.items(), key=lambda kv: -kv[1]):
+            table.add_row(old, new, str(n))
+        console.print(table)
+        if plan.new_frameworks:
+            console.print(f"new frameworks: {', '.join(plan.new_frameworks)}")
+        if plan.demotions:
+            console.print(
+                "[yellow]warning[/yellow] some rows move INTO "
+                f"{', '.join(sorted({k[1] for k in plan.demotions}))} — a rule "
+                "stopped recognising a header it used to recognise"
+            )
+        verb = "moved" if apply else "would move"
+        console.print(
+            f"[green]{plan.changed}[/green] of {plan.total} mapping(s) {verb}; "
+            f"{plan.unchanged} unchanged"
+        )
+        if not apply:
+            console.print("re-run with --apply to write")
 
     asyncio.run(_run())
 
