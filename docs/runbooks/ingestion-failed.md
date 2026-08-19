@@ -60,3 +60,24 @@ intact because the run rolled back. A re-run with a good workbook will:
   payloads and the workbook `sha256`.
 - Same run failing three times in a row with distinct errors ⇒ roll
   back the last Alembic migration and reopen.
+
+### Foreign key violation on `DELETE FROM ccf.controls`
+
+Historic. The load used to delete and reload the whole catalog, which fails
+against the RESTRICT foreign key from `control_implementations` once any SSP
+work exists. Controls are now matched on `identifier` and updated in place, so
+ids survive. If you see this error, the running image predates that change —
+rebuild it (`docker compose build etl api migrator`).
+
+### `controls_retained` is non-zero in the run stats
+
+Controls the workbook no longer contains, which an implementation, POA&M or risk
+still refers to. They are kept deliberately rather than deleted, because
+`poams.control_id` and `risks.control_id` are ON DELETE SET NULL and would lose
+the link without complaint. The identifiers are in the `ingest.controls_retained`
+log line. Usually it means a control row was created outside the ingest under a
+different spelling — `IA-2` where the catalog uses `IA-02`.
+
+### A lookup by identifier returns nothing, but the row exists
+
+Not an ingest fault. See the **corrupt text indexes** runbook.
