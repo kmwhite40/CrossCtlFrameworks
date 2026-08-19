@@ -120,12 +120,35 @@ def create_app() -> FastAPI:
         RateLimitExceeded,
         cast(ExceptionHandler, _rate_limit_exceeded_handler),
     )
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.api_cors_origins,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    # ---- Middleware stack -------------------------------------------------
+    # Starlette inserts each registration at position 0 and then builds the app
+    # with ``reversed(user_middleware)``, so THE LAST ONE ADDED IS OUTERMOST.
+    # The block below is therefore written innermost-first, and the intended
+    # runtime order (outermost -> innermost) is:
+    #
+    #   CORS -> SecurityHeaders -> readonly_guard -> metrics -> Csrf
+    #        -> auth_gate -> audit -> router
+    #
+    # Each position is load-bearing:
+    #   CORS outermost      - a browser preflight (OPTIONS) carries neither
+    #                         cookie nor Authorization by spec. Below the auth
+    #                         gate it was answered 401 with no Access-Control-*
+    #                         headers, so every preflighted cross-origin request
+    #                         failed whenever auth was enabled.
+    #   SecurityHeaders next- every guard below it can short-circuit. Beneath
+    #                         them, auth-gate 401s, /login redirects and the
+    #                         readonly 403 all shipped with no CSP or HSTS.
+    #   metrics above auth  - so ccf_http_requests_total counts rejections; you
+    #                         cannot alert on an auth-failure spike otherwise.
+    #   Csrf above auth     - reject a forged origin before doing auth work.
+    #   auth_gate above audit - auth_gate sets request.state.principal, which
+    #                         the audit middleware reads.
+    #
+    # tests/test_middleware_order.py pins this. Change the order there too.
+    if settings.audit_enabled and not settings.readonly:
+        app.middleware("http")(audit_middleware)
+    if settings.auth_enabled:
+        app.middleware("http")(auth_gate_middleware)
     if settings.csrf_protection:
         # Defense in depth beneath the session cookie's SameSite=Lax. Trusts the
         # served host implicitly, plus any explicitly configured origin (the
@@ -135,14 +158,7 @@ def create_app() -> FastAPI:
             CsrfOriginMiddleware,
             trusted_origins=(*settings.csrf_trusted_origins, *settings.api_cors_origins),
         )
-    # Added after the CSRF guard so it wraps it and decorates the guard's 403.
-    app.add_middleware(SecurityHeadersMiddleware, hsts=not is_dev_env(settings))
     app.middleware("http")(metrics_middleware)
-    if settings.audit_enabled and not settings.readonly:
-        app.middleware("http")(audit_middleware)
-    # Registered last → runs first, so the principal is resolved before audit/routes.
-    if settings.auth_enabled:
-        app.middleware("http")(auth_gate_middleware)
 
     if settings.readonly:
 
@@ -154,6 +170,14 @@ def create_app() -> FastAPI:
                     status_code=403,
                 )
             return await call_next(request)
+
+    app.add_middleware(SecurityHeadersMiddleware, hsts=not is_dev_env(settings))
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.api_cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

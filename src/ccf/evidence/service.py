@@ -36,6 +36,16 @@ class EvidenceIntegrityError(EvidenceError):
     on read)."""
 
 
+class EvidenceContentMissingError(EvidenceError):
+    """Raised when a version record exists but its stored bytes are unreachable.
+
+    Distinct from EvidenceIntegrityError (bytes present but altered) so the
+    replay path can record "missing" and "drifted" separately — the reliability
+    check counts both, and collapsing them into a generic error made it report
+    PASS on exactly the two conditions it exists to flag.
+    """
+
+
 async def create_object(
     session: AsyncSession,
     *,
@@ -194,7 +204,7 @@ async def read_version(
         raise EvidenceError("version not found for this object")
     data = get_backend().get(version.storage_ref)
     if data is None:
-        raise EvidenceError("stored content is unavailable")
+        raise EvidenceContentMissingError("stored content is unavailable")
     recomputed = hashlib.sha256(data).hexdigest()
     if recomputed != version.sha256:
         raise EvidenceIntegrityError(

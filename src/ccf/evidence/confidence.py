@@ -9,7 +9,6 @@ per-dimension breakdown. The service layer scores objects, runs replay checks
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -186,7 +185,11 @@ async def score_all(session: AsyncSession, *, org_id: int | None = None) -> int:
 
 async def replay(session: AsyncSession, obj: EvidenceObject) -> EvidenceReplayRun:
     """Attempt to reproduce an object's evidence; never raises (errors are captured)."""
-    from .service import read_version  # noqa: PLC0415 — avoid import cycle
+    from .service import (  # noqa: PLC0415 — avoid import cycle
+        EvidenceContentMissingError,
+        EvidenceIntegrityError,
+        read_version,
+    )
 
     status = "error"
     detail: dict[str, Any] = {}
@@ -200,15 +203,24 @@ async def replay(session: AsyncSession, obj: EvidenceObject) -> EvidenceReplayRu
             status = "missing"
             detail = {"reason": "no version to replay"}
         else:
-            version, data = await read_version(session, obj)
-            recomputed = hashlib.sha256(data).hexdigest()
-            if recomputed == version.sha256:
-                status, method, reproducible = "reproduced", "digest", True
-                detail = {"sha256": recomputed}
-            else:
-                status = "drifted"
-                detail = {"expected": version.sha256, "recomputed": recomputed}
-    except Exception as e:  # replay failure is captured, not fatal
+            # read_version already recomputes the digest and raises
+            # EvidenceIntegrityError on a mismatch, so recomputing it here made
+            # the comparison always true and the "drifted" branch unreachable.
+            # Real tampering fell through to the bare ``except`` and was stored
+            # as "error" — which is why _check_evidence_replayability, whose
+            # whole job is to count drifted/missing, returned PASS on it.
+            version, _bytes = await read_version(session, obj)
+            status, method, reproducible = "reproduced", "digest", True
+            detail = {"sha256": version.sha256}
+    except EvidenceIntegrityError as e:
+        # The stored bytes no longer hash to the recorded digest.
+        status = "drifted"
+        detail = {"reason": str(e)[:200]}
+    except EvidenceContentMissingError as e:
+        # The version record exists but its bytes are unreachable.
+        status = "missing"
+        detail = {"reason": str(e)[:200]}
+    except Exception as e:  # anything unexpected — captured, not fatal
         status = "error"
         detail = {"error": str(e)[:200]}
 

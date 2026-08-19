@@ -191,15 +191,41 @@ async def run_cycle() -> dict[str, Any]:
                     "scheduler.global_step_failed", step="fedramp20x_monitoring", error=str(e)[:200]
                 )
         finally:
-            # Always release the tenant clamp before the advisory unlock, even
-            # if the per-tenant loop raised past its own suppress (shouldn't,
-            # but never leave the session's next use pinned to a stale org).
-            await set_session_tenant(session, None)
+            # Release the advisory lock, and do not let anything above it stop
+            # that from happening.
+            #
+            # pg_try_advisory_lock is SESSION-scoped: a rollback does not
+            # release it, and the connection returns to the pool still holding
+            # it. So if the unlock is skipped, every later cycle on every
+            # replica logs "another instance holds the lock" — a silent,
+            # permanent scheduler outage caused by one transient step failure.
+            #
+            # The hazard is an ABORTED transaction: a DB-level error in any step
+            # leaves the shared transaction unusable, and every subsequent
+            # statement on it raises — including the unlock itself, and
+            # including set_session_tenant, which issues SQL on Postgres.
+            #
+            # Do NOT roll back unconditionally to avoid that. run_cycle executes
+            # inside session_scope, which commits on normal exit, so a blanket
+            # rollback here would discard the whole cycle's work on the happy
+            # path. Instead: attempt the unlock, and only if it fails (i.e. the
+            # transaction really is aborted, in which case the cycle's work is
+            # already lost to Postgres) roll back and try once more.
             if is_pg:
-                with contextlib.suppress(Exception):
+                try:
                     await session.execute(
                         text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK_KEY}
                     )
+                except Exception:
+                    with contextlib.suppress(Exception):
+                        await session.rollback()
+                    with contextlib.suppress(Exception):
+                        await session.execute(
+                            text("SELECT pg_advisory_unlock(:k)"), {"k": _SCHEDULER_LOCK_KEY}
+                        )
+            # Never leave the session's next use pinned to a stale org.
+            with contextlib.suppress(Exception):
+                await set_session_tenant(session, None)
     log.info("scheduler.cycle", **{k: (v if isinstance(v, int) else "ok") for k, v in out.items()})
     return out
 
