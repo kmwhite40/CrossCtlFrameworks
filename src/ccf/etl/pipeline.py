@@ -29,14 +29,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
 from ..models import (
+    POAM,
     Control,
     ControlFamily,
     ControlHistory,
+    ControlImplementation,
     Framework,
     FrameworkMapping,
     IngestionRun,
     MappingHistory,
     RejectedRow,
+    Risk,
     WorkbookVersion,
     Worksheet,
     WorksheetRow,
@@ -179,7 +182,15 @@ async def _ingest_assessment(
     run: IngestionRun,
     workbook_version: WorkbookVersion | None,
 ) -> dict[str, int]:
-    stats = {"rows": 0, "mappings": 0, "rejected": 0}
+    stats = {
+        "rows": 0,
+        "mappings": 0,
+        "rejected": 0,
+        "controls_created": 0,
+        "controls_updated": 0,
+        "controls_removed": 0,
+        "controls_retained": 0,
+    }
     family_cache: dict[str, int] = {}
 
     # Validate the header contract BEFORE touching existing data — this runs even
@@ -190,8 +201,23 @@ async def _ingest_assessment(
     if diff.added:
         log.info("ingest.header_drift", new_headers_count=len(diff.added))
 
+    # Mappings are derived data with no inbound foreign keys, so replacing them
+    # wholesale is safe and keeps the load simple.
     await session.execute(delete(FrameworkMapping))
-    await session.execute(delete(Control))
+
+    # Controls are NOT replaceable. ``controls.id`` is a sequence, so deleting
+    # and reloading mints new ids, and four tables point at the old ones:
+    # framework_mappings (CASCADE), control_implementations (RESTRICT),
+    # poams (SET NULL) and risks (SET NULL). The RESTRICT makes the delete fail
+    # outright once any SSP work exists; the two SET NULLs would succeed and
+    # silently sever every POA&M and risk from its control.
+    #
+    # So match on the natural key instead — ``controls.identifier`` is UNIQUE —
+    # and update in place. An id, once handed out, is never reused or reissued.
+    existing_controls = {
+        c.identifier: c for c in (await session.execute(select(Control))).scalars()
+    }
+    workbook_identifiers: set[str] = set()
 
     core_map = {
         "Sequence Control": "sequence_control",
@@ -250,12 +276,17 @@ async def _ingest_assessment(
         )
 
         audit_payload = {k: v for k, v in record.items() if _clean(v) is not None}
-        ctl = Control(
-            identifier=identifier,
-            family_id=family_id,
-            source_row=row_idx,
-            audit_payload=audit_payload,
-        )
+        workbook_identifiers.add(identifier)
+        ctl = existing_controls.get(identifier)
+        if ctl is None:
+            ctl = Control(identifier=identifier)
+            session.add(ctl)
+            stats["controls_created"] += 1
+        else:
+            stats["controls_updated"] += 1
+        ctl.family_id = family_id
+        ctl.source_row = row_idx
+        ctl.audit_payload = audit_payload
         for header, attr in core_map.items():
             val = record.get(header)
             if attr in bool_fields:
@@ -263,7 +294,6 @@ async def _ingest_assessment(
             else:
                 cleaned = _clean(val)
                 setattr(ctl, attr, str(cleaned) if cleaned is not None else None)
-        session.add(ctl)
         await session.flush()
         stats["rows"] += 1
 
@@ -319,6 +349,8 @@ async def _ingest_assessment(
         session.add_all(history_mappings)
     await session.flush()
 
+    await _retire_absent_controls(session, existing_controls, workbook_identifiers, stats)
+
     # Postgres-only: refresh tsvector. SQLite (Reader) skips this.
     dialect = session.bind.dialect.name if session.bind else ""
     if dialect == "postgresql":
@@ -333,6 +365,65 @@ async def _ingest_assessment(
         """)
         )
     return stats
+
+
+
+#: Tables that hold a reference to ``ccf.controls`` which a delete would not
+#: clean up. ``framework_mappings`` is absent deliberately: it cascades, and the
+#: load has already replaced it. Each entry is (model, attribute).
+_CONTROL_DEPENDANTS: tuple[tuple[type[Any], str], ...] = (
+    (ControlImplementation, "control_id"),
+    (POAM, "control_id"),
+    (Risk, "control_id"),
+)
+
+
+async def _retire_absent_controls(
+    session: AsyncSession,
+    existing: dict[str, Control],
+    seen: set[str],
+    stats: dict[str, int],
+) -> None:
+    """Remove controls the workbook no longer contains — but only safely.
+
+    A control that disappears from the catalog should not linger. A control that
+    someone has written an implementation, POA&M or risk against must not vanish
+    underneath them: ``poams`` and ``risks`` are ON DELETE SET NULL, so deleting
+    one would quietly cut the link rather than refuse. Those are kept and counted,
+    and the run says so.
+
+    Doing nothing at all was not an option either — that is how a renamed control
+    ends up in the catalog twice.
+    """
+    absent = [c for identifier, c in existing.items() if identifier not in seen]
+    if not absent:
+        return
+
+    absent_ids = [c.id for c in absent]
+    referenced: set[int] = set()
+    for model, attr in _CONTROL_DEPENDANTS:
+        column = getattr(model, attr)
+        rows = (
+            await session.execute(select(column).where(column.in_(absent_ids)).distinct())
+        ).all()
+        referenced.update(cid for (cid,) in rows if cid is not None)
+
+    removable = [c for c in absent if c.id not in referenced]
+    for control in removable:
+        await session.delete(control)
+    stats["controls_removed"] = len(removable)
+    stats["controls_retained"] = len(absent) - len(removable)
+
+    if stats["controls_retained"]:
+        log.warning(
+            "ingest.controls_retained",
+            count=stats["controls_retained"],
+            reason="referenced by an implementation, POA&M or risk",
+            identifiers=sorted(c.identifier for c in absent if c.id in referenced)[:20],
+        )
+    if removable:
+        log.info("ingest.controls_removed", count=len(removable))
+    await session.flush()
 
 
 async def _ingest_generic_sheet(
