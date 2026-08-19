@@ -9,6 +9,8 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
 from ccf.api.routes.oscal import _OSCAL_POAM_STATE
 from ccf.constants import POAM_ACTIVE_STATUSES, POAM_STATUSES, POAM_UNRESOLVED_STATUSES
 from ccf.queries import registry
@@ -49,27 +51,51 @@ def test_risk_accepted_projects_to_its_own_oscal_state() -> None:
 # --- F-S26-1: the query template must use the canonical overdue rule ---------
 
 
-def test_overdue_template_uses_the_shared_active_statuses() -> None:
-    """`status <> 'closed'` admitted completed AND risk_accepted."""
-    src = inspect.getsource(registry._overdue_poams)
-    assert "po.status <> 'closed'" not in src, "template still uses its own openness rule"
-    assert "POAM_ACTIVE_STATUSES" in src
-    for status in POAM_ACTIVE_STATUSES:
-        assert f"'{status}'" in src
+async def _capture_sql(monkeypatch) -> str:
+    """Run the template with a stubbed executor and return the SQL it built.
 
-
-def test_overdue_template_uses_the_canonical_due_date_precedence() -> None:
-    """Precedence was inverted, and original_due_on was missing entirely.
-
-    analytics.posture coalesces due_on -> scheduled_completion ->
-    original_due_on. The template had scheduled_completion first and no
-    original_due_on, so a POA&M with both dates set was classified one way in
-    the row list and the other way in the count rendered beside it.
+    Asserting on the generated SQL rather than on the function's source text:
+    the source contains an explanatory comment that quotes the OLD rule, so a
+    text match there tests the comment, not the query.
     """
-    src = inspect.getsource(registry._overdue_poams)
+    captured: dict[str, str] = {}
+
+    async def fake_rows(session, sql, params):
+        captured["sql"] = sql
+        return []
+
+    monkeypatch.setattr(registry, "_rows", fake_rows)
+    await registry._overdue_poams(None, {}, None)  # type: ignore[arg-type]
+    return captured["sql"]
+
+
+@pytest.mark.asyncio
+async def test_overdue_query_selects_only_the_active_statuses(monkeypatch) -> None:
+    """`status <> 'closed'` admitted completed AND risk_accepted."""
+    sql = await _capture_sql(monkeypatch)
+    assert "po.status <> 'closed'" not in sql
+    assert "po.status IN ('open', 'in_progress')" in sql
+    # risk_accepted and completed must not be selectable by this template
+    for excluded in ("risk_accepted", "completed", "closed"):
+        assert f"'{excluded}'" not in sql, f"{excluded} is still selectable as overdue"
+
+
+@pytest.mark.asyncio
+async def test_overdue_query_uses_the_canonical_due_precedence(monkeypatch) -> None:
+    """Precedence was inverted and original_due_on was missing entirely."""
+    sql = await _capture_sql(monkeypatch)
     canonical = "COALESCE(po.due_on, po.scheduled_completion, po.original_due_on)"
-    assert canonical in src
-    assert "COALESCE(po.scheduled_completion, po.due_on)" not in src
+    assert canonical in sql
+    assert "COALESCE(po.scheduled_completion, po.due_on)" not in sql
+    # the displayed `due` column must be the same expression the filter used
+    assert f"{canonical} AS due" in sql
+
+
+@pytest.mark.asyncio
+async def test_overdue_query_still_scopes_by_org(monkeypatch) -> None:
+    """Guard the tenant predicate through the rewrite."""
+    sql = await _capture_sql(monkeypatch)
+    assert "s.organization_id = CAST(:org AS integer)" in sql
 
 
 def test_template_and_dashboard_agree_on_the_predicate_shape() -> None:
