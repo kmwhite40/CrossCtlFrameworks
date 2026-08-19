@@ -70,7 +70,7 @@ xlsx path
   → sha256
   → ccf_audit.workbook_versions  (content-addressed; dedup by sha)
   → ccf.ingestion_runs (fk → workbook_versions; status='running')
-  → validate SP.800-53Ar5_assessment headers against contracts/headers.v1_1.json
+  → validate SP.800-53Ar5_assessment headers against src/ccf/etl/headers.v1_1.json
        ├─ required header missing ⇒ HeaderContractError → status='failed'
        └─ added headers           ⇒ log.info("ingest.header_drift")
   → sheet "SP.800-53Ar5_assessment"

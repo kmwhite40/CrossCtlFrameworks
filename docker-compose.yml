@@ -1,3 +1,10 @@
+# Compose project name. This line OWNS the "ccf" namespace: its images
+# (ccf-api, ccf-migrator, ...) and containers are the deployed stack.
+#
+# A second, divergent checkout lives at ~/Documents/CrossCtlFrameworks (GitLab
+# remote). It used to share this project name, so a build there silently
+# overwrote the images this stack runs. That copy now builds ccf-gitlab-*.
+# Do not rename this project without renaming the running containers.
 name: ccf
 
 x-ccf-env: &ccf_env

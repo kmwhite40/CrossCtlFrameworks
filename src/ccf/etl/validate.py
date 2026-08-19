@@ -11,11 +11,27 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-CONTRACT_PATH = Path(__file__).resolve().parents[3] / "contracts" / "headers.v1_1.json"
+# Packaged alongside this module (declared in [tool.setuptools.package-data]).
+# It must NOT be resolved by walking out of the package with ``parents[N]``: the
+# repo checkout, the installed wheel, the Docker image and the PyInstaller
+# one-file build all put ``__file__`` at a different depth, so a relative walk
+# resolves correctly in a source tree and nowhere else. The contract gates
+# ingestion, and ingestion truncates the catalog, so "cannot find the contract"
+# must never be indistinguishable from "the workbook is fine".
+CONTRACT_PATH = Path(__file__).with_name("headers.v1_1.json")
 
 
 class HeaderContractError(RuntimeError):
     """Raised when a workbook is missing a required header."""
+
+
+class HeaderContractUnavailableError(HeaderContractError):
+    """Raised when the packaged header contract itself cannot be loaded.
+
+    A deployment fault, not a workbook fault — but it subclasses
+    ``HeaderContractError`` so the ingest pipeline's existing handler records
+    the run as failed instead of letting an unvalidated workbook through.
+    """
 
 
 @dataclass(frozen=True)
@@ -27,7 +43,12 @@ class HeaderDiff:
 def load_contract(path: Path | None = None) -> dict[str, list[str]]:
     p = path or CONTRACT_PATH
     if not p.is_file():
-        return {"required_headers": []}
+        raise HeaderContractUnavailableError(
+            f"Header contract not found at {p}. It ships as package data next to "
+            "ccf/etl/validate.py; a missing file means a packaging fault, not a "
+            "workbook problem. Refusing to ingest, because an empty contract "
+            "would validate every workbook and ingestion truncates the catalog."
+        )
     raw = json.loads(p.read_text(encoding="utf-8"))
     required_headers = raw.get("required_headers", [])
     if not isinstance(required_headers, list):
@@ -46,6 +67,6 @@ def validate_headers(
     if missing:
         raise HeaderContractError(
             f"Workbook is missing required headers: {missing}. "
-            "Either update contracts/headers.v1_1.json or fix the source."
+            "Either update src/ccf/etl/headers.v1_1.json or fix the source."
         )
     return HeaderDiff(missing=missing, added=added)
