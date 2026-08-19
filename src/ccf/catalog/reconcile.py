@@ -12,6 +12,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from .canonical import canonicalize
+from .csf import extract_ids, load_csf_catalog
 from .oscal import OscalCatalog
 
 _BASELINE_FIELDS = {"fisma_low": "low", "fisma_mod": "moderate", "fisma_high": "high"}
@@ -246,6 +247,43 @@ def check_mapping_endpoints(
     return findings, uncovered
 
 
+def check_csf_endpoints(mappings: list[MappingRow]) -> list[CatalogFinding]:
+    """Resolve CSF 2.0 crosswalk values against NIST's published catalog.
+
+    The workbook's CSF columns are free text and arrive in several shapes — a
+    bare id, an id with a trailing colon, an id followed by prose, or a
+    semicolon-joined list. ``extract_ids`` pulls the subcategory ids out; each
+    one must exist in the OSCAL catalog.
+
+    A value that names only a function or category ("Protect: Platform Security
+    (PR.PS)") yields no subcategory ids and is NOT a finding — those columns
+    legitimately carry coarser references.
+    """
+    csf = load_csf_catalog()
+    findings: list[CatalogFinding] = []
+    for m in mappings:
+        if (m.framework_code or "") != "NIST_CSF_2_0":
+            continue
+        for cid in extract_ids(m.value):
+            if csf.has(cid):
+                continue
+            shown = (m.value or "").strip() or "(empty)"
+            findings.append(
+                CatalogFinding(
+                    "csf_endpoint",
+                    "medium",
+                    cid,
+                    cid,
+                    m.column_key,
+                    shown,
+                    None,
+                    f"dangling_csf_endpoint: '{cid}' is not a CSF "
+                    f"{csf.version} subcategory",
+                )
+            )
+    return findings
+
+
 @dataclass
 class ReconcileResult:
     controls_checked: int
@@ -264,7 +302,8 @@ def reconcile(
     base_findings = check_baseline(catalog, control_rows, failed)
     drift_findings = check_content_drift(catalog, control_rows, failed)
     map_findings, uncovered = check_mapping_endpoints(catalog, mapping_rows)
-    findings = id_findings + base_findings + drift_findings + map_findings
+    csf_findings = check_csf_endpoints(mapping_rows)
+    findings = id_findings + base_findings + drift_findings + map_findings + csf_findings
 
     # Partition distinct controls into evaluated vs not-evaluated on a CANONICAL
     # basis so the counts always reconcile even when several raw spellings
@@ -295,6 +334,7 @@ def reconcile(
         "baseline": 0,
         "content_drift": 0,
         "mapping_endpoint": 0,
+        "csf_endpoint": 0,
     }
     by_sev: dict[str, int] = {"high": 0, "medium": 0, "low": 0}
     for f in findings:
