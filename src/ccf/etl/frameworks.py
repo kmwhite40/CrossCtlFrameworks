@@ -45,6 +45,37 @@ FRAMEWORKS: list[FrameworkSpec] = [
     FrameworkSpec("GCP", "Google Cloud", "Cloud", ""),
     FrameworkSpec("CDM", "CISA CDM", "Federal", ""),
     FrameworkSpec("CUI_OVERLAY", "CUI Overlay", "Federal", ""),
+    # DoD / IC frameworks that were previously swept into OTHER. Each is a real,
+    # named authority carried as its own column family in the source workbook —
+    # not org-specific inheritance, which stays in OTHER by design.
+    FrameworkSpec(
+        "DOD_SRG_IL", "DoD Cloud Computing SRG Impact Levels", "DoD",
+        "IL-2/4/5/6 Moderate and High baselines",
+    ),
+    FrameworkSpec(
+        "DISA_CCI", "DISA Control Correlation Identifiers", "DoD",
+        "CCI decomposition of control text",
+    ),
+    FrameworkSpec(
+        "CNSSI_1253", "CNSSI 1253", "IC",
+        "Security categorization for National Security Systems (C/I/A)",
+    ),
+    FrameworkSpec(
+        "RMF_TAG", "RMF KS Technical Advisory Group", "DoD",
+        "RMF Knowledge Service assessment procedures and BoE",
+    ),
+    FrameworkSpec("JSIG", "Joint SAP Implementation Guide", "DoD", ""),
+    FrameworkSpec("DOD_RAR", "DoD Risk Assessment Report", "DoD", ""),
+    FrameworkSpec(
+        "NIST_800_53B", "NIST SP 800-53B", "NIST",
+        "Control baselines (non-NSS Low/Moderate/High by C/I/A)",
+    ),
+    FrameworkSpec("ZERO_TRUST", "DoD Zero Trust Overlay", "DoD", ""),
+    FrameworkSpec("EMASS", "eMASS", "DoD", "Enterprise Mission Assurance Support Service"),
+    FrameworkSpec(
+        "DOD_DSPAV", "DoD Specific Assigned Values", "DoD",
+        "DoD-assigned organization-defined parameter values",
+    ),
 ]
 
 # Headers treated as control-identity / non-framework-mapping.
@@ -113,6 +144,48 @@ _PREFIX_RULES: list[tuple[str, str]] = [
     ("Container from Tech", "CDM"),
     ("CUI Overlay", "CUI_OVERLAY"),
     ("DoD Organization Defined", "NIST_800_171_R3"),
+    # --- DoD / IC families -------------------------------------------------
+    # NOTE: these are appended, so every rule above still wins first. Within
+    # this block the C/I/A-prefixed variants must precede the bare ones,
+    # because the source spells them "Integrity CNSSI 1253 High" etc.
+    ("Confidentiality NIST SP 800-53B", "NIST_800_53B"),
+    ("Integrity NIST SP 800-53B", "NIST_800_53B"),
+    ("Availability NIST SP 800-53B", "NIST_800_53B"),
+    ("NIST SP 800-53B", "NIST_800_53B"),
+    ("Confidentiality CNSSI", "CNSSI_1253"),
+    ("Integrity CNSSI", "CNSSI_1253"),
+    ("Availability CNSSI", "CNSSI_1253"),
+    ("CNSSI", "CNSSI_1253"),
+    ("IL-2", "DOD_SRG_IL"),
+    ("IL-4", "DOD_SRG_IL"),
+    ("IL-5", "DOD_SRG_IL"),
+    ("IL-6", "DOD_SRG_IL"),
+    ("CCI ", "DISA_CCI"),
+    ("CCI Rev", "DISA_CCI"),
+    ("Consolidated CCIs", "DISA_CCI"),
+    ("SSDF Consolidated CCIs", "DISA_CCI"),
+    ("RMF TAG", "RMF_TAG"),
+    ("RMFKS", "RMF_TAG"),
+    ("Associated with STIG?", "RMF_TAG"),
+    ("JSIG", "JSIG"),
+    ("DoD RAR", "DOD_RAR"),
+    ("DoD Specific Assigned Values", "DOD_DSPAV"),
+    ("Zero Trust Overlay", "ZERO_TRUST"),
+    ("ZT Overlay", "ZERO_TRUST"),
+    ("Appendix C ZT", "ZERO_TRUST"),
+    ("Appendix D ZT", "ZERO_TRUST"),
+    ("Appendix E ZT", "ZERO_TRUST"),
+    ("eMASS", "EMASS"),
+    # --- columns that belong to an ALREADY-REGISTERED framework but whose
+    # header does not start with the existing prefix. These were bugs, not
+    # gaps: the framework existed and the mapping still landed in OTHER.
+    ("All MARS", "MARS_E"),
+    ("CDM?", "CDM"),
+    ("NIST SP 800-171 Rev 3", "NIST_800_171_R3"),
+    ("SP 800-171 Rev 3", "NIST_800_171_R3"),
+    ("Microsoft NIST 800-172", "NIST_800_172"),
+    ("Microsoft Azure", "AZURE"),
+    ("Landing Zone Accelerator on AWS", "AWS"),
 ]
 
 
