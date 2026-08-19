@@ -27,7 +27,7 @@ automatically suffixes the later row with `#row<N>`. No action.
 
 A previously-required header has been removed. Either:
 - Update the source to restore the header, **or**
-- Update `contracts/headers.v1_1.json` to drop the requirement (PR +
+- Update `src/ccf/etl/headers.v1_1.json` to drop the requirement (PR +
   review).
 
 Then re-run the ETL.

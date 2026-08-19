@@ -3,7 +3,7 @@
 Flow per run:
   1. SHA-256 the source; upsert ccf_audit.workbook_versions (content-addressed).
   2. Open a ccf.ingestion_runs row linked to the version.
-  3. Validate assessment-tab headers against contracts/headers.v1_1.json.
+  3. Validate assessment-tab headers against the packaged header contract.
   4. Ingest assessment -> ccf.controls + ccf.framework_mappings.
      Rows without identifier are quarantined in ccf_audit.rejected_rows.
   5. Snapshot the authoritative row set into ccf_audit.control_history and

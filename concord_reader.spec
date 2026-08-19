@@ -21,7 +21,6 @@ for p in pkgs:
 datas += [
     ("src/ccf/api/templates", "ccf/api/templates"),
     ("src/ccf/api/static",    "ccf/api/static"),
-    ("contracts",             "contracts"),
 ]
 
 # Route modules imported dynamically by create_app().

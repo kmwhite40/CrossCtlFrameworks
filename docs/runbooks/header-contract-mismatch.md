@@ -7,7 +7,7 @@ headers: [...]`. The ingestion run is marked `failed` with
 ## Why this fires
 
 `src/ccf/etl/validate.py` asserts that every header listed in
-`contracts/headers.v1_1.json` under `required_headers` is present in the
+`src/ccf/etl/headers.v1_1.json` under `required_headers` is present in the
 source workbook's `SP.800-53Ar5_assessment` tab. This is a fail-closed
 check: removing a required header silently would corrupt downstream
 crosswalks.
@@ -24,7 +24,7 @@ deleted a column.
 If the source intentionally renamed a column (e.g., workbook revision
 1.1 → 1.2):
 
-1. Open `contracts/headers.v1_1.json` and either update the name or
+1. Open `src/ccf/etl/headers.v1_1.json` and either update the name or
    drop the requirement.
 2. Bump the filename to `headers.v1_2.json` and update the loader
    path in `src/ccf/etl/validate.py::CONTRACT_PATH` — or add a version

@@ -68,6 +68,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "ccf.api" = ["templates/*.html", "static/**/*"]
+"ccf.etl" = ["headers.v1_1.json"]
 "ccf.scoring" = ["seed.json"]
 "ccf.fedramp20x" = ["ksi_catalog.json", "oscal_ksi.schema.json"]
 "ccf.packs" = ["bundled/*/pack.json"]
