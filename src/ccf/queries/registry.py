@@ -14,8 +14,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..constants import POAM_ACTIVE_STATUSES
 
 Runner = Callable[[AsyncSession, dict[str, Any], int | None], Awaitable[list[dict[str, Any]]]]
 
@@ -40,8 +42,25 @@ class QueryTemplate:
     run: Runner = None  # type: ignore[assignment]
 
 
-async def _rows(session: AsyncSession, sql: str, binds: dict[str, Any]) -> list[dict[str, Any]]:
-    result = await session.execute(text(sql), binds)
+async def _rows(
+    session: AsyncSession,
+    sql: str,
+    binds: dict[str, Any],
+    *,
+    expanding: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Execute a template's SQL with bound parameters.
+
+    ``expanding`` names binds that hold a sequence and should be rendered as an
+    ``IN`` list. That keeps the SQL a plain string — a template must never build
+    its WHERE clause by interpolating values, even constants, both because it
+    would trip the B608 SQL-injection check and because the next value to be
+    interpolated may not be a constant.
+    """
+    stmt = text(sql)
+    if expanding:
+        stmt = stmt.bindparams(*(bindparam(name, expanding=True) for name in expanding))
+    result = await session.execute(stmt, binds)
     return [dict(r) for r in result.mappings().all()]
 
 
@@ -101,18 +120,39 @@ async def _controls_failing(
 async def _overdue_poams(
     session: AsyncSession, p: dict[str, Any], org_id: int | None
 ) -> list[dict[str, Any]]:
+    # "Overdue" must mean here exactly what it means on the dashboard. This
+    # template previously diverged from analytics.posture in three ways, so the
+    # auditor-facing row list and the "Overdue POA&Ms" number in the same report
+    # (reporting/export.py renders posture's count) could disagree:
+    #
+    #   1. `status <> 'closed'` admitted `completed` AND `risk_accepted`,
+    #      listing formally-accepted residual risk as overdue remediation.
+    #   2. Due-date precedence was INVERTED — scheduled_completion before
+    #      due_on — so a POA&M with both set and differing was classified one
+    #      way here and the other way everywhere else, and the `due` column
+    #      shown to the auditor was not the date the judgment used.
+    #   3. `original_due_on` was missing, so a POA&M tracked only via that
+    #      field was invisible here but counted by posture.
+    #
+    # The status list is a BOUND parameter, not interpolated: the SQL stays a
+    # plain string, so nothing here can construct a WHERE clause from a value.
     sql = """
         SELECT s.name AS system, po.title, po.severity, po.status,
-               COALESCE(po.scheduled_completion, po.due_on) AS due
+               COALESCE(po.due_on, po.scheduled_completion, po.original_due_on) AS due
         FROM ccf.poams po
         JOIN ccf.systems s ON s.id = po.system_id
         WHERE (CAST(:org AS integer) IS NULL OR s.organization_id = CAST(:org AS integer))
-          AND po.status <> 'closed'
-          AND COALESCE(po.scheduled_completion, po.due_on) IS NOT NULL
-          AND COALESCE(po.scheduled_completion, po.due_on) < CURRENT_DATE
+          AND po.status IN :statuses
+          AND COALESCE(po.due_on, po.scheduled_completion, po.original_due_on) IS NOT NULL
+          AND COALESCE(po.due_on, po.scheduled_completion, po.original_due_on) < CURRENT_DATE
         ORDER BY due
     """
-    return await _rows(session, sql, {"org": org_id})
+    return await _rows(
+        session,
+        sql,
+        {"org": org_id, "statuses": list(POAM_ACTIVE_STATUSES)},
+        expanding=("statuses",),
+    )
 
 
 async def _expiring_grants(

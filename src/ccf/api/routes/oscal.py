@@ -887,7 +887,13 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
             "uuid": str(uuid.uuid4()),
             "title": p.title,
             "description": p.weakness or p.title or "",
-            "status": "open",
+            # Project the POA&M's real lifecycle state through the same map the
+            # POA&M document uses. Hardcoding "open" meant one ZIP asserted two
+            # different things about one record: poam.json rendered
+            # `risk-accepted` (or `investigating`) while sar.json said `open`.
+            # The OSCAL risk-status field accepts any token, so schema
+            # validation could never flag the contradiction.
+            "status": _OSCAL_POAM_STATE.get(p.status, p.status),
             "statement": p.title or "",
         }
         for p in poams
