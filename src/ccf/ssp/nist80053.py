@@ -69,8 +69,17 @@ def build_80053_entries(
                 "requirement": oc.statement,
                 "responsible_role": role,
                 "odp_values": {p.id: None for p in oc.params},
-                "implementation_status": ["planned"],
-                "control_origination": ["system-specific"],
+                # Canonical vocabulary (ssp.constants). This seeder used to emit
+                # a lowercase/hyphenated set — ["planned"], ["system-specific"] —
+                # that appears nowhere in constants.py, giving one column two
+                # disjoint vocabularies depending on which framework seeded it.
+                # Consumers assume the canonical spelling and compare
+                # case-sensitively: ssp/completeness.py's evidence gate, the
+                # editor's checkbox filter in api/routes/ui.py, and the docx
+                # renderer. An 800-53 project therefore rendered with no status
+                # selected, and the first HTML save silently rewrote the value.
+                "implementation_status": [constants.PLANNED],
+                "control_origination": [constants.ORG_SYSTEM_SPECIFIC],
                 "part_narratives": [
                     {
                         "label": "",

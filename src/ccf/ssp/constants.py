@@ -38,6 +38,10 @@ IMPLEMENTATION_STATUS_OPTIONS = (
     "Not Applicable",
 )
 
+# Named members used by the seeders, so a default is never retyped as a literal.
+PLANNED = "Planned"
+ORG_SYSTEM_SPECIFIC = "Organization System Specific"
+
 CONTROL_ORIGINATION_OPTIONS = (
     "Organization Corporate",
     "Organization System Specific",

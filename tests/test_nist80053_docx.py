@@ -63,8 +63,8 @@ def _entries() -> list[dict[str, object]]:
             "title": "Account Management",
             "requirement": "The organization manages information system accounts.",
             "responsible_role": "System Administrator",
-            "implementation_status": ["planned"],
-            "control_origination": ["system-specific"],
+            "implementation_status": ["Planned"],
+            "control_origination": ["Organization System Specific"],
             "part_narratives": [
                 {
                     "label": "",
