@@ -86,3 +86,35 @@ def normalize_finding(value: str | None) -> str:
     if not key:
         return NOT_ASSESSED
     return _FINDING_ALIASES.get(key, UNKNOWN)
+
+
+# ---------------------------------------------------------------------------
+# POA&M status vocabulary (ISSM). The DB enum ``ccf.poam_status`` is the source
+# of truth; ``models.POAM.status`` is built from POAM_STATUSES below so the
+# column, the API validator and every filter cannot drift apart.
+#
+# TWO "open" sets exist, and the split is DELIBERATE — do not collapse them:
+#
+#   POAM_ACTIVE_STATUSES     the remediation backlog. Excludes risk_accepted,
+#                            which is residual risk leadership has formally
+#                            accepted rather than work still to do. Every
+#                            dashboard rollup uses this (see
+#                            analytics/posture.py, which buckets accepted
+#                            separately and says so).
+#   POAM_UNRESOLVED_STATUSES not yet remediated. INCLUDES risk_accepted,
+#                            because OSCAL has a first-class "risk-accepted"
+#                            item state and the authorization package is
+#                            expected to render it (see _OSCAL_POAM_STATE).
+#
+# They answer different questions. Unifying them would either hide accepted risk
+# from the AO or count it as outstanding work on the dashboard.
+POAM_STATUSES: tuple[str, ...] = (
+    "open",
+    "in_progress",
+    "completed",
+    "risk_accepted",
+    "closed",
+)
+POAM_ACTIVE_STATUSES: tuple[str, ...] = ("open", "in_progress")
+POAM_UNRESOLVED_STATUSES: tuple[str, ...] = ("open", "in_progress", "risk_accepted")
+POAM_CLOSED_STATUSES: tuple[str, ...] = ("completed", "closed")

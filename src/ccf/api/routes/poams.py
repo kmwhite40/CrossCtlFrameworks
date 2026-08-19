@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from ...assessment.engine import jobs as engine_jobs
 from ...auth import Principal
 from ...config import get_settings
+from ...constants import POAM_STATUSES
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...logging import get_logger
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/api/poams", tags=["poams"])
 log = get_logger(__name__)
 
 SEVERITIES = r"^(low|moderate|high|critical)$"
-STATUSES = r"^(open|in_progress|completed|risk_accepted|closed)$"
+STATUSES = r"^(" + "|".join(POAM_STATUSES) + r")$"
 MS_STATUS = r"^(pending|in_progress|completed|delayed)$"
 
 

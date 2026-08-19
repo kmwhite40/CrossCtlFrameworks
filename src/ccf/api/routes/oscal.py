@@ -24,6 +24,7 @@ from sqlalchemy.orm import selectinload
 from ...auth import Principal
 from ...boundary.summary import BoundarySummary, system_boundary_summary
 from ...catalog.canonical import canonical_to_oscal_id, canonicalize
+from ...constants import POAM_UNRESOLVED_STATUSES
 from ...models import (
     POAM,
     Assessment,
@@ -636,7 +637,12 @@ async def build_poam_doc(
         .order_by(POAM.id)
     )
     if open_only:
-        stmt = stmt.where(POAM.status.not_in(("closed", "completed")))
+        # Positively enumerated: a future status added to the enum then defaults
+        # to EXCLUDED here rather than silently becoming "open" in the exported
+        # package. Includes risk_accepted deliberately — OSCAL renders it as a
+        # first-class "risk-accepted" item state (see _OSCAL_POAM_STATE), which
+        # is why this set differs from the dashboards' POAM_ACTIVE_STATUSES.
+        stmt = stmt.where(POAM.status.in_(POAM_UNRESOLVED_STATUSES))
     poams = (await session.execute(stmt)).scalars().all()
 
     # Resolve control identifiers for POA&Ms tied to a catalog control.
@@ -868,7 +874,7 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
                 select(POAM)
                 .where(
                     POAM.system_id == assessment.system_id,
-                    POAM.status.not_in(("closed", "completed")),
+                    POAM.status.in_(POAM_UNRESOLVED_STATUSES),
                 )
                 .order_by(POAM.id)
             )

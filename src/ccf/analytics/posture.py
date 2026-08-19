@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
     POAM,
     ControlImplementation,
@@ -70,7 +71,7 @@ async def systems_scorecard(
             await session.execute(
                 select(func.count(POAM.id))
                 .where(POAM.system_id == sys.id)
-                .where(POAM.status.in_(("open", "in_progress")))
+                .where(POAM.status.in_(POAM_ACTIVE_STATUSES))
             )
         ).scalar_one()
         # Overdue falls back to scheduled_completion / original_due_on when due_on
@@ -80,7 +81,7 @@ async def systems_scorecard(
             await session.execute(
                 select(func.count(POAM.id))
                 .where(POAM.system_id == sys.id)
-                .where(POAM.status.in_(("open", "in_progress")))
+                .where(POAM.status.in_(POAM_ACTIVE_STATUSES))
                 .where(effective_due.is_not(None))
                 .where(effective_due < today)
             )
@@ -144,7 +145,7 @@ async def poam_aging(
     ``no_due_date`` rather than defaulting to on-track. Invariant:
     ``on_track + overdue + no_due_date == open_total``.
     """
-    stmt = select(POAM).where(POAM.status.in_(("open", "in_progress")))
+    stmt = select(POAM).where(POAM.status.in_(POAM_ACTIVE_STATUSES))
     if org_id is not None:
         stmt = stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
     rows = (await session.execute(stmt)).scalars().all()

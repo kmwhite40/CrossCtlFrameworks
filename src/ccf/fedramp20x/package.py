@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
     KSI,
     POAM,
@@ -315,7 +316,7 @@ def render_markdown(pkg: dict[str, Any]) -> str:
             )
     else:
         lines.append("_No dependencies recorded._")
-    open_poams = sum(1 for p in pkg["poams"] if p["status"] in ("open", "in_progress"))
+    open_poams = sum(1 for p in pkg["poams"] if p["status"] in POAM_ACTIVE_STATUSES)
     lines += ["", f"**Open POA&Ms:** {open_poams}", ""]
     return "\n".join(lines)
 

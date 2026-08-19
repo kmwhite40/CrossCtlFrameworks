@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...constants import POAM_ACTIVE_STATUSES
 from ...governance import bus, reactions
 from ...models import (
     POAM,
@@ -36,7 +37,7 @@ from ..deps import get_session
 # Severities that block authorization while an open weakness exists.
 _ATO_BLOCKING_SEVERITIES = ("critical", "high")
 # POA&M statuses that represent an unresolved weakness (mirrors compliance_summary).
-_ATO_BLOCKING_STATUSES = ("open", "in_progress")
+_ATO_BLOCKING_STATUSES = POAM_ACTIVE_STATUSES
 # Default authorization period when the caller doesn't specify an expiration.
 _DEFAULT_ATO_PERIOD_DAYS = 365
 
@@ -267,14 +268,14 @@ async def compliance_summary(
         await session.execute(
             select(func.count(POAM.id))
             .where(POAM.system_id == system_id)
-            .where(POAM.status.in_(("open", "in_progress")))
+            .where(POAM.status.in_(POAM_ACTIVE_STATUSES))
         )
     ).scalar_one()
     overdue_poams = (
         await session.execute(
             select(func.count(POAM.id))
             .where(POAM.system_id == system_id)
-            .where(POAM.status.in_(("open", "in_progress")))
+            .where(POAM.status.in_(POAM_ACTIVE_STATUSES))
             .where(POAM.due_on < func.current_date())
         )
     ).scalar_one()

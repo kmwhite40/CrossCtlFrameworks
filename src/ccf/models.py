@@ -36,6 +36,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .auth import hash_token
+from .constants import POAM_STATUSES
 
 
 class Base(DeclarativeBase):
@@ -802,15 +803,7 @@ class POAM(Base):
         default="moderate",
     )
     status: Mapped[str] = mapped_column(
-        Enum(
-            "open",
-            "in_progress",
-            "completed",
-            "risk_accepted",
-            "closed",
-            name="poam_status",
-            schema="ccf",
-        ),
+        Enum(*POAM_STATUSES, name="poam_status", schema="ccf"),
         default="open",
     )
     identified_on: Mapped[date | None] = mapped_column(Date)
