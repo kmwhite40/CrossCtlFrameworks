@@ -17,6 +17,8 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES
+
 Runner = Callable[[AsyncSession, dict[str, Any], int | None], Awaitable[list[dict[str, Any]]]]
 
 
@@ -101,15 +103,33 @@ async def _controls_failing(
 async def _overdue_poams(
     session: AsyncSession, p: dict[str, Any], org_id: int | None
 ) -> list[dict[str, Any]]:
-    sql = """
+    # "Overdue" must mean here exactly what it means on the dashboard. This
+    # template previously diverged from analytics.posture in three ways, so the
+    # auditor-facing row list and the "Overdue POA&Ms" number in the same report
+    # (reporting/export.py renders posture's count) could disagree:
+    #
+    #   1. `status <> 'closed'` admitted `completed` AND `risk_accepted`,
+    #      listing formally-accepted residual risk as overdue remediation.
+    #   2. Due-date precedence was INVERTED — scheduled_completion before
+    #      due_on — so a POA&M with both set and differing was classified one
+    #      way here and the other way everywhere else, and the `due` column
+    #      shown to the auditor was not the date the judgment used.
+    #   3. `original_due_on` was missing, so a POA&M tracked only via that
+    #      field was invisible here but counted by posture.
+    #
+    # The status list is interpolated from the shared constant rather than
+    # typed out, so it cannot drift again. The values are module constants,
+    # never user input.
+    statuses = ", ".join(f"'{s}'" for s in POAM_ACTIVE_STATUSES)
+    sql = f"""
         SELECT s.name AS system, po.title, po.severity, po.status,
-               COALESCE(po.scheduled_completion, po.due_on) AS due
+               COALESCE(po.due_on, po.scheduled_completion, po.original_due_on) AS due
         FROM ccf.poams po
         JOIN ccf.systems s ON s.id = po.system_id
         WHERE (CAST(:org AS integer) IS NULL OR s.organization_id = CAST(:org AS integer))
-          AND po.status <> 'closed'
-          AND COALESCE(po.scheduled_completion, po.due_on) IS NOT NULL
-          AND COALESCE(po.scheduled_completion, po.due_on) < CURRENT_DATE
+          AND po.status IN ({statuses})
+          AND COALESCE(po.due_on, po.scheduled_completion, po.original_due_on) IS NOT NULL
+          AND COALESCE(po.due_on, po.scheduled_completion, po.original_due_on) < CURRENT_DATE
         ORDER BY due
     """
     return await _rows(session, sql, {"org": org_id})
