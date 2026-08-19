@@ -29,6 +29,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES, POAM_CLOSED_STATUSES
 from ..models import POAM
 
 # Remediation SLA (days from identification) by normalized severity. Aligned to
@@ -310,8 +311,12 @@ class ReconcileResult:
         }
 
 
-_OPEN_STATES = ("open", "in_progress")
-_RESOLVED_STATES = ("completed", "closed", "risk_accepted")
+# Scanner semantics: a re-detected finding REOPENS a risk-accepted POA&M, so
+# 'resolved' here deliberately includes risk_accepted while the dashboards'
+# POAM_ACTIVE_STATUSES does not. Derived from the shared vocabulary so a new
+# status cannot land in neither bucket.
+_OPEN_STATES = POAM_ACTIVE_STATUSES
+_RESOLVED_STATES = (*POAM_CLOSED_STATUSES, "risk_accepted")
 
 
 def _weakness(f: ScanFinding) -> str:

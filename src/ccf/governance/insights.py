@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics import org_summary
+from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
     POAM,
     Control,
@@ -105,7 +106,7 @@ async def data_quality(session: AsyncSession, *, org_id: int | None = None) -> d
             "count": await _n(
                 select(func.count(POAM.id))
                 .where(POAM.system_id.in_(sys_ids))
-                .where(POAM.status.in_(("open", "in_progress")))
+                .where(POAM.status.in_(POAM_ACTIVE_STATUSES))
                 .where(POAM.due_on.is_(None))
             ),
         }

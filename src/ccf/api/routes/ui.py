@@ -21,6 +21,7 @@ from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session
 from ...config import get_settings, is_dev_env
+from ...constants import POAM_ACTIVE_STATUSES
 from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
@@ -525,10 +526,10 @@ async def poams_page(
         ms = list(p.milestones or [])
         done = sum(1 for m in ms if m.status == "completed")
         overdue = (
-            p.due_on is not None and p.due_on < today and p.status in ("open", "in_progress")
+            p.due_on is not None and p.due_on < today and p.status in POAM_ACTIVE_STATUSES
         )
         metrics["total"] += 1
-        if p.status in ("open", "in_progress"):
+        if p.status in POAM_ACTIVE_STATUSES:
             metrics["open"] += 1
         if overdue:
             metrics["overdue"] += 1

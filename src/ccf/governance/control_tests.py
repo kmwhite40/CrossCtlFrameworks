@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES
 from ..logging import get_logger
 from ..models import POAM, CaptureSnapshot, Control, PoamMilestone, Task
 from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
@@ -26,7 +27,7 @@ log = get_logger(__name__)
 
 # How stale a test result may be before the test is re-run, by frequency.
 _FREQ_DAYS = {"daily": 1, "weekly": 7, "monthly": 30, "quarterly": 91, "annual": 365}
-_OPEN_POAM = ("open", "in_progress")
+_OPEN_POAM = POAM_ACTIVE_STATUSES
 
 
 def _coerce(v: str) -> object:

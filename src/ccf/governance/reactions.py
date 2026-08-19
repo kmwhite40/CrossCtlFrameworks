@@ -15,11 +15,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES
 from ..models import POAM, Control, ControlImplementation, FrameworkMapping
 from . import bus
 
 _MET = ("implemented", "inherited", "not_applicable")
-_OPEN = ("open", "in_progress")
+_OPEN = POAM_ACTIVE_STATUSES
 
 
 async def on_scoring_status_changed(

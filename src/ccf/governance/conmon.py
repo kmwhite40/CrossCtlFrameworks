@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES
 from ..logging import get_logger
 from ..models import (
     POAM,
@@ -33,7 +34,7 @@ DUE_SOON_DAYS = 30
 
 # healthy < due_soon < at_risk < overdue
 _RANK = {"healthy": 0, "due_soon": 1, "at_risk": 2, "overdue": 3}
-_OPEN_POAM = ("open", "in_progress")
+_OPEN_POAM = POAM_ACTIVE_STATUSES
 
 # ConMon health status -> POA&M severity, for the statuses that open one
 # (at_risk/overdue — the same guard the auto-task uses).

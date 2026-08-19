@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_ACTIVE_STATUSES
 from ..models import POAM, CatalogSource, Policy, Risk, System, Task, Vendor
 from ..models_grc import AuditEngagement, AuditRequest, RegulatoryUpdate
 from ..models_people import AccessReview, Person, TrainingRecord
@@ -199,7 +200,7 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
         counts["catalog"] += 1
 
     # Overdue POA&M load (single rollup alert).
-    poam_stmt = select(POAM).where(POAM.status.in_(("open", "in_progress")))
+    poam_stmt = select(POAM).where(POAM.status.in_(POAM_ACTIVE_STATUSES))
     if org_id is not None:
         poam_stmt = poam_stmt.where(
             POAM.system_id.in_(select(System.id).where(System.organization_id == org_id))
