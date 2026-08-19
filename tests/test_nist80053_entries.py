@@ -30,8 +30,11 @@ def test_moderate_baseline_entry_count_and_shape() -> None:
     assert ac2["responsible_role"]
     assert ac2["odp_values"]
     assert all(v is None for v in ac2["odp_values"].values())
-    assert ac2["implementation_status"] == ["planned"]
-    assert ac2["control_origination"] == ["system-specific"]
+    # Canonical vocabulary (ssp.constants) — this seeder used to emit a
+    # lowercase/hyphenated set that existed nowhere else, so an 800-53 entry
+    # matched none of the case-sensitive consumers.
+    assert ac2["implementation_status"] == ["Planned"]
+    assert ac2["control_origination"] == ["Organization System Specific"]
     assert ac2["part_narratives"][0]["draft"] is True
     assert "AC-2" in ac2["part_narratives"][0]["text"]
 

@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from slugify import slugify
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,12 +105,45 @@ class ProjectUpdate(BaseModel):
     status: str | None = None
 
 
+def _validate_vocabulary(
+    values: list[str] | None, allowed: tuple[str, ...], label: str
+) -> list[str] | None:
+    """Reject values outside a controlled vocabulary, naming what was wrong."""
+    if values is None:
+        return None
+    unknown = [v for v in values if v not in allowed]
+    if unknown:
+        raise ValueError(
+            f"unknown {label} value(s): {unknown}. Allowed: {list(allowed)}"
+        )
+    return values
+
+
 class EntryUpdate(BaseModel):
     responsible_role: str | None = None
     implementation_status: list[str] | None = None
     control_origination: list[str] | None = None
     part_narratives: list[dict[str, str]] | None = None
     odp_values: dict[str, str] | None = None
+
+    # These two columns are plain JSONB lists with no DB constraint, and the
+    # handler applies them with a blind setattr — so before this validator any
+    # string at all could be stored. Downstream consumers compare
+    # case-sensitively against ssp.constants (the evidence-required gate in
+    # ssp/completeness.py, the editor's checkbox filter, the docx renderer), so
+    # an off-vocabulary value is not rejected anywhere: it simply stops matching
+    # and the control silently drops out of those checks.
+    @field_validator("implementation_status")
+    @classmethod
+    def _known_status(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_vocabulary(
+            v, constants.IMPLEMENTATION_STATUS_OPTIONS, "implementation status"
+        )
+
+    @field_validator("control_origination")
+    @classmethod
+    def _known_origination(cls, v: list[str] | None) -> list[str] | None:
+        return _validate_vocabulary(v, constants.CONTROL_ORIGINATION_OPTIONS, "control origination")
 
 
 class ApplyTemplate(BaseModel):
