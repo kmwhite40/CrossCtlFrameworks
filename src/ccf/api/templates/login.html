@@ -26,8 +26,12 @@
           <p class="dim" style="font-size:13px;margin:0">Use your Concord account credentials.</p>
         </div>
         {% if error %}
-        <div class="chip chip--err" style="width:100%;justify-content:flex-start;padding:8px 12px">
+        <div class="chip chip--err" style="width:100%;justify-content:flex-start;padding:8px 12px" role="alert">
+          {% if locked %}
+          Too many failed attempts. This account is temporarily locked — try again later.
+          {% else %}
           Invalid email or password.
+          {% endif %}
         </div>
         {% endif %}
         <label class="field-group">

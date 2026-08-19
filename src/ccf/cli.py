@@ -630,6 +630,9 @@ def user_create(
             user.role = role
             user.active = True
             user.password_hash = hash_password(password)
+            # AC-12: a credential change must invalidate sessions issued under
+            # the old password (and any role change under the old role).
+            user.session_version = (user.session_version or 0) + 1
             token = new_api_token()
             user.api_token = token
             await session.flush()

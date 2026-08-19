@@ -19,8 +19,8 @@ from sqlalchemy.orm import selectinload
 from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
-from ...auth import Principal, sign_session, verify_password
-from ...config import get_settings
+from ...auth import Principal, sign_session
+from ...config import get_settings, is_dev_env
 from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
@@ -75,6 +75,8 @@ from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
 from ..auth_deps import SESSION_COOKIE, require_role
 from ..deps import get_session
+from ..limiter import limiter
+from ..login_service import LoginResult, authenticate, revoke_sessions_for_request
 from .diff import diff_workbook
 from .scoring import compute_summary
 from .ssp import FRAMEWORKS
@@ -1597,40 +1599,59 @@ async def intake_submit(
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, error: int | None = Query(None)) -> Response:
+async def login_page(request: Request, error: str | None = Query(None)) -> Response:
     if not get_settings().auth_enabled:
         return RedirectResponse("/", status_code=303)
-    return templates.TemplateResponse(request, "login.html", {"error": bool(error)})
+    # "locked" renders the AC-7 lockout notice; any other truthy value is the
+    # generic invalid-credentials banner (which must not reveal whether the
+    # account exists).
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"error": bool(error), "locked": error == "locked"},
+    )
 
 
 @router.post("/login")
+@limiter.limit("10/minute")
 async def login_submit(
+    request: Request,
     email: str = Form(...),
     password: str = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    user = (
-        await session.execute(select(User).where(User.email == email, User.active.is_(True)))
-    ).scalar_one_or_none()
-    if user is None or not verify_password(password, user.password_hash):
+    # AC-7/SC-5: the form login goes through the same lockout + rate-limit path
+    # as POST /api/auth/login. Enforcing it on only one surface would let an
+    # attacker spray the other one freely.
+    user, result = await authenticate(session, email, password)
+    if result is LoginResult.LOCKED:
+        return RedirectResponse("/login?error=locked", status_code=303)
+    if user is None:
         return RedirectResponse("/login?error=1", status_code=303)
     settings = get_settings()
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(
         SESSION_COOKIE,
         sign_session(
-            user.id, settings.auth_session_secret, ttl_hours=settings.auth_session_ttl_hours
+            user.id,
+            settings.auth_session_secret,
+            ttl_hours=settings.auth_session_ttl_hours,
+            session_version=user.session_version or 0,
         ),
         max_age=settings.auth_session_ttl_hours * 3600,
         httponly=True,
         samesite="lax",
-        secure=settings.env == "prod",
+        secure=not is_dev_env(settings),
     )
     return resp
 
 
 @router.get("/logout")
-async def logout_ui() -> RedirectResponse:
+async def logout_ui(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> RedirectResponse:
+    # AC-12: revoke server-side as well as clearing the browser's cookie.
+    await revoke_sessions_for_request(request, session)
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(SESSION_COOKIE)
     return resp
