@@ -173,7 +173,25 @@ def _token(request: Request) -> str:
 
 
 async def _require_grant(request: Request, session: AsyncSession) -> Any:
-    grant = await resolve_grant(session, _token(request))
+    """Resolve the portal caller from EITHER credential channel.
+
+    A grant arrives two ways: as a token (bearer header or ``?token=``) and, once
+    the HTML entry point has exchanged that token, as a signed cookie. These used
+    to be resolved by two separate functions, each wired to one surface, so a
+    request could be authenticated for ``/portal`` and anonymous for
+    ``/api/portal/*`` in the same browser, same second, same grant.
+
+    That broke the external comment form outright: the HTML entry point strips
+    ``token`` from the URL on redirect, so the page's fetch sent
+    ``Authorization: Bearer `` (empty) and always got 401.
+
+    The cookie is tried first: it is the fresher credential, and a stale
+    ``?token=`` left in a bookmarked URL must not override it. Both paths
+    re-validate the grant's live revoked/expiry state in the database.
+    """
+    grant = await _grant_from_cookie(request, session)
+    if grant is None:
+        grant = await resolve_grant(session, _token(request))
     if grant is None:
         raise HTTPException(status_code=401, detail="invalid or expired token")
     return grant
