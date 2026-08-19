@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -51,39 +52,41 @@ def test_risk_accepted_projects_to_its_own_oscal_state() -> None:
 # --- F-S26-1: the query template must use the canonical overdue rule ---------
 
 
-async def _capture_sql(monkeypatch) -> str:
+async def _capture_sql(monkeypatch) -> dict:
     """Run the template with a stubbed executor and return the SQL it built.
 
     Asserting on the generated SQL rather than on the function's source text:
     the source contains an explanatory comment that quotes the OLD rule, so a
     text match there tests the comment, not the query.
     """
-    captured: dict[str, str] = {}
+    captured: dict[str, Any] = {}
 
-    async def fake_rows(session, sql, params):
+    async def fake_rows(session, sql, binds, **kwargs):
         captured["sql"] = sql
+        captured["binds"] = binds
+        captured["kwargs"] = kwargs
         return []
 
     monkeypatch.setattr(registry, "_rows", fake_rows)
     await registry._overdue_poams(None, {}, None)  # type: ignore[arg-type]
-    return captured["sql"]
+    return captured
 
 
 @pytest.mark.asyncio
 async def test_overdue_query_selects_only_the_active_statuses(monkeypatch) -> None:
     """`status <> 'closed'` admitted completed AND risk_accepted."""
-    sql = await _capture_sql(monkeypatch)
+    sql = (await _capture_sql(monkeypatch))["sql"]
     assert "po.status <> 'closed'" not in sql
-    assert "po.status IN ('open', 'in_progress')" in sql
-    # risk_accepted and completed must not be selectable by this template
-    for excluded in ("risk_accepted", "completed", "closed"):
-        assert f"'{excluded}'" not in sql, f"{excluded} is still selectable as overdue"
+    assert "po.status IN :statuses" in sql, "status list must be a bound parameter"
+    # No status value may be interpolated into the SQL at all.
+    for status in POAM_STATUSES:
+        assert f"'{status}'" not in sql, f"{status} is interpolated; it must be bound"
 
 
 @pytest.mark.asyncio
 async def test_overdue_query_uses_the_canonical_due_precedence(monkeypatch) -> None:
     """Precedence was inverted and original_due_on was missing entirely."""
-    sql = await _capture_sql(monkeypatch)
+    sql = (await _capture_sql(monkeypatch))["sql"]
     canonical = "COALESCE(po.due_on, po.scheduled_completion, po.original_due_on)"
     assert canonical in sql
     assert "COALESCE(po.scheduled_completion, po.due_on)" not in sql
@@ -94,7 +97,7 @@ async def test_overdue_query_uses_the_canonical_due_precedence(monkeypatch) -> N
 @pytest.mark.asyncio
 async def test_overdue_query_still_scopes_by_org(monkeypatch) -> None:
     """Guard the tenant predicate through the rewrite."""
-    sql = await _capture_sql(monkeypatch)
+    sql = (await _capture_sql(monkeypatch))["sql"]
     assert "s.organization_id = CAST(:org AS integer)" in sql
 
 
@@ -107,6 +110,22 @@ def test_template_and_dashboard_agree_on_the_predicate_shape() -> None:
         assert col in tpl, f"template omits {col}"
 
 
-def test_interpolated_statuses_cannot_carry_injection() -> None:
-    """The status list is interpolated, not bound. Assert it stays constant-only."""
+def test_status_values_stay_plain_identifiers() -> None:
+    """Defence in depth on the vocabulary itself.
+
+    The status list is a BOUND parameter, so it cannot carry injection today.
+    This guards the weaker property that the values remain plain identifiers, so
+    that a future template which does interpolate them is not handed something
+    hostile.
+    """
     assert all(s.replace("_", "").isalnum() for s in POAM_ACTIVE_STATUSES)
+
+
+@pytest.mark.asyncio
+async def test_overdue_query_binds_exactly_the_active_statuses(monkeypatch) -> None:
+    """Assert the VALUES that reach the database, not only the SQL text."""
+    cap = await _capture_sql(monkeypatch)
+    assert cap["binds"]["statuses"] == list(POAM_ACTIVE_STATUSES)
+    assert cap["kwargs"]["expanding"] == ("statuses",)
+    assert "risk_accepted" not in cap["binds"]["statuses"]
+    assert "completed" not in cap["binds"]["statuses"]
