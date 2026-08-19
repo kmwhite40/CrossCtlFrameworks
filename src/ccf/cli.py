@@ -22,6 +22,7 @@ from .auth import hash_password, new_api_token, validate_password_policy
 from .config import Settings, get_settings
 from .db import session_scope
 from .etl import ingest_workbook
+from .etl.dedupe import apply_dedupe, plan_dedupe
 from .etl.reclassify import apply_reclassification, plan_reclassification
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
@@ -504,6 +505,53 @@ def calibration_snapshot(
             f"[green]Calibration snapshot {snapshot.id}[/green] for org {organization_id}: "
             f"{decided} decided, agreement {rate}"
         )
+
+    asyncio.run(_run())
+
+
+@app.command(name="controls-dedupe")
+def controls_dedupe(
+    apply: bool = typer.Option(
+        False, "--apply", help="Write the changes. Without it, only the plan is printed."
+    ),
+) -> None:
+    """Fold stub controls back onto the catalog control they duplicate.
+
+    The catalog pads single digits (``IA-02``). A caller spelling the same
+    control ``IA-2`` misses, and anything that creates the control on a miss
+    leaves a second row behind. This moves the references onto the catalog row
+    and deletes the stub. Dry-run by default.
+    """
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            plan = await apply_dedupe(session) if apply else await plan_dedupe(session)
+            if apply:
+                await session.commit()
+
+        table = Table(title="Stub controls" + ("" if apply else " (dry run)"))
+        table.add_column("stub")
+        table.add_column("catalog control")
+        table.add_column("refs", justify="right")
+        table.add_column("outcome")
+        for merge in plan.merges:
+            outcome = "blocked" if merge.blocked else ("merged" if apply else "would merge")
+            table.add_row(
+                f"{merge.stub_identifier} (#{merge.stub_id})",
+                f"{merge.canonical_identifier} (#{merge.canonical_id})",
+                str(merge.moves),
+                outcome,
+            )
+        console.print(table)
+        for merge in plan.blocked:
+            console.print(f"[yellow]blocked[/yellow] {merge.stub_identifier}: {merge.blocked}")
+        verb = "merged" if apply else "would be merged"
+        console.print(
+            f"[green]{len(plan.applicable)}[/green] stub(s) {verb}; "
+            f"{len(plan.blocked)} blocked"
+        )
+        if not apply and plan.applicable:
+            console.print("re-run with --apply to write")
 
     asyncio.run(_run())
 
