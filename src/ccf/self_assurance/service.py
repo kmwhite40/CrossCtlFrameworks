@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..etl.dedupe import identity_key
 from ..evidence import confidence as ev_confidence
 from ..evidence import service as ev_service
 from ..models import Control, ControlImplementation, Organization, System
@@ -65,6 +66,35 @@ async def _self_ids(session: AsyncSession) -> tuple[int, int]:
     return org.id, sysm.id
 
 
+
+async def _resolve_control(session: AsyncSession, identifier: str) -> Control | None:
+    """Find the catalog control a pack means, tolerating the padding difference.
+
+    The catalog pads single digits (``IA-02``); a pack usually does not
+    (``IA-2``). An exact match misses, and the caller used to create a second
+    control row for a control the catalog already had -- silently, because the
+    UNIQUE constraint on ``identifier`` is satisfied by the different spelling.
+    Three such rows accumulated on the deployed database before anyone noticed.
+
+    Exact match first, so a pack that spells the identifier the catalog's way is
+    unaffected. Only on a miss is the padding folded, and only against controls
+    that came from the workbook.
+    """
+    exact = (
+        await session.execute(select(Control).where(Control.identifier == identifier))
+    ).scalar_one_or_none()
+    if exact is not None:
+        return exact
+
+    key = identity_key(identifier)
+    for control in (
+        await session.execute(select(Control).where(Control.source_row.is_not(None)))
+    ).scalars():
+        if identity_key(control.identifier) == key:
+            return control
+    return None
+
+
 async def init_self_assurance(session: AsyncSession, *, actor: str | None = None) -> dict[str, Any]:
     """Seed the Concord Platform system, install the self pack, and stub controls/evidence."""
     org_id, system_id = await _self_ids(session)
@@ -77,10 +107,11 @@ async def init_self_assurance(session: AsyncSession, *, actor: str | None = None
     ev_reqs = {e["control_id"]: e["description"] for e in manifest.get("evidence_requirements", [])}
     for c in controls:
         cid = str(c["control_id"])
-        control = (
-            await session.execute(select(Control).where(Control.identifier == cid))
-        ).scalar_one_or_none()
+        control = await _resolve_control(session, cid)
         if control is None:
+            # Only reached for Concord's own controls (CSA-*), which have no
+            # catalog counterpart. A pack naming an 800-53 control gets the
+            # catalog row, padded spelling and all.
             control = Control(identifier=cid, control_name=c.get("title", cid))
             session.add(control)
             await session.flush()
