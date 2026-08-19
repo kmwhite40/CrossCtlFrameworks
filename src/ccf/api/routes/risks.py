@@ -21,7 +21,7 @@ from ...config import get_settings
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...governance.risk import band, compute_scores
-from ...models import Approval, Risk, System, Task
+from ...models import Risk, System, Task
 from ...models_grc import AuditFinding
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
@@ -135,17 +135,6 @@ def _rescore(obj: Risk) -> None:
 # an AO-role approval recorded via the existing Approval workflow. -----------
 
 
-async def _is_approved(session: AsyncSession, entity_type: str, entity_id: int | str) -> bool:
-    row = (
-        await session.execute(
-            select(Approval).where(
-                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
-            )
-        )
-    ).scalar_one_or_none()
-    return row is not None and row.state == "approved"
-
-
 async def _require_acceptance_gate(
     session: AsyncSession, *, owner_user_id: int | None, next_review_on: object, risk_id: int | str
 ) -> None:
@@ -155,7 +144,7 @@ async def _require_acceptance_gate(
             "risk acceptance requires an owner (owner_user_id) and an expiration/"
             "next_review_on date",
         )
-    if get_settings().auth_enabled and not await _is_approved(session, "risk", risk_id):
+    if get_settings().auth_enabled and await entity_state(session, "risk", risk_id) != "approved":
         raise HTTPException(
             409,
             "risk acceptance requires an approved authorizing-official review (submit for "
