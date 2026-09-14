@@ -1755,6 +1755,45 @@ def catalog_adopt(
     console.print(f"[green]Adopted revision {rev}[/green]")
 
 
+posture_app = typer.Typer(
+    help="Live security posture — scan an environment and record findings.",
+    no_args_is_help=True,
+)
+app.add_typer(posture_app, name="posture")
+
+
+@posture_app.command("scan")
+def posture_scan(
+    system: int = typer.Option(..., "--system", help="System id to scan."),
+    connector: str = typer.Option(
+        ..., "--connector", help="Connector key, e.g. aws_govcloud."
+    ),
+) -> None:
+    """Scan one system with one connector and record per-resource findings."""
+    from .posture.scan import scan_for_system  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            out = await scan_for_system(
+                session, system_id=system, connector_key=connector, actor="cli"
+            )
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    if not out["checks_run"]:
+        console.print(
+            f"[yellow]No checks run:[/yellow] {out.get('reason', 'no checks registered')}"
+        )
+        return
+    for r in out["results"]:
+        colour = "green" if r["verdict"] == "pass" else "red"
+        console.print(
+            f"  [{colour}]{r['verdict']:<22}[/{colour}] {r['check_key']}"
+            f"  ({r['failing']}/{r['evaluated']} failing)"
+        )
+
+
 capability_app = typer.Typer(
     help="Assurance capabilities — the reusable unit of implementation.",
     no_args_is_help=True,
