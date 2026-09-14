@@ -75,6 +75,49 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         "enabled": True,
     },
     {
+        "key": "nist_800_53_r5_low_baseline",
+        "name": "NIST SP 800-53B Rev. 5 - LOW baseline (OSCAL profile)",
+        "authority": "NIST",
+        # A profile is not a catalog: content-hash only, like the HIGH baseline.
+        "kind": "generic",
+        "url": f"{_NIST_RAW}/SP800-53/rev5/json/NIST_SP-800-53_rev5_LOW-baseline_profile.json",
+        "framework_code": "NIST_800_53_R5",
+        "enabled": True,
+    },
+    {
+        "key": "nist_800_53_r5_moderate_baseline",
+        "name": "NIST SP 800-53B Rev. 5 - MODERATE baseline (OSCAL profile)",
+        "authority": "NIST",
+        # A profile is not a catalog: content-hash only, like the HIGH baseline.
+        "kind": "generic",
+        "url": (
+            f"{_NIST_RAW}/SP800-53/rev5/json/"
+            "NIST_SP-800-53_rev5_MODERATE-baseline_profile.json"
+        ),
+        "framework_code": "NIST_800_53_R5",
+        "enabled": True,
+    },
+    {
+        "key": "nist_csf_2_0_catalog",
+        "name": "NIST CSF 2.0 - framework catalog (OSCAL)",
+        "authority": "NIST",
+        "kind": "oscal_catalog",
+        "url": f"{_NIST_RAW}/CSF/v2.0/json/NIST_CSF_v2.0_catalog.json",
+        "framework_code": "NIST_CSF_2_0",
+        "enabled": True,
+    },
+    {
+        # Filename confirmed against usnistgov/oscal-content: 800-171 uses
+        # "NIST_SP800-171" (no hyphen after SP), unlike 800-53's "NIST_SP-800-53".
+        "key": "nist_800_171_r3_catalog",
+        "name": "NIST SP 800-171 Rev. 3 - CUI requirements catalog (OSCAL)",
+        "authority": "NIST",
+        "kind": "oscal_catalog",
+        "url": f"{_NIST_RAW}/SP800-171/rev3/json/NIST_SP800-171_rev3_catalog.json",
+        "framework_code": "NIST_800_171_R3",
+        "enabled": True,
+    },
+    {
         "key": "cross_mappings_workbook",
         "name": "Concord cross-mapping workbook (curated)",
         "authority": "Concord",

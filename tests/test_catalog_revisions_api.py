@@ -115,7 +115,9 @@ async def test_adopt_returns_409_with_impact_when_unacknowledged(tmp_path: Path)
             upstream_commit_sha="d" * 40,
             data_root=tmp_path,
         )
-        await adopt_revision(session, revision_id=first.id, actor="seed")
+        await adopt_revision(
+            session, revision_id=first.id, actor="seed", acknowledge_impact=True
+        )
 
         org = Organization(name=f"ApiOrg-{next(_ORG_SEQ)}")
         session.add(org)

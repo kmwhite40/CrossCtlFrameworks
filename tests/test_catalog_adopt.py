@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+import ccf.catalog.revisions as revisions_mod
+from ccf.catalog.impact import AdoptionImpact
 from ccf.catalog.revisions import AdoptionRefusedError, adopt_revision, materialize_revision
 from ccf.db import session_scope
 from ccf.models import (
@@ -25,6 +27,10 @@ _ORG_SEQ = itertools.count()
 _EMPTY_CATALOG = json.dumps({"catalog": {"metadata": {"version": "5.3.0"}, "groups": []}}).encode()
 
 
+async def _empty_impact(session: object, **kw: object) -> AdoptionImpact:
+    return AdoptionImpact()
+
+
 async def _src(session, key: str) -> CatalogSource:
     s = CatalogSource(
         key=key, name=key, kind="oscal_catalog", url="https://example.test/catalog.json"
@@ -34,7 +40,9 @@ async def _src(session, key: str) -> CatalogSource:
     return s
 
 
-async def test_adopts_when_impact_is_empty(tmp_path: Path) -> None:
+async def test_adopts_when_impact_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     async with session_scope() as session:
         src = await _src(session, "ad_clean")
         rev = await materialize_revision(
@@ -43,6 +51,12 @@ async def test_adopts_when_impact_is_empty(tmp_path: Path) -> None:
             documents=_documents(),
             upstream_commit_sha="a" * 40,
             data_root=tmp_path,
+        )
+        # Force a genuinely empty impact rather than depending on an empty
+        # database: the suite shares one schema, so other tests' rows would
+        # otherwise make every impact non-empty.
+        monkeypatch.setattr(
+            revisions_mod, "build_adoption_impact", _empty_impact
         )
         adopted = await adopt_revision(session, revision_id=rev.id, actor="kevin")
         assert adopted.status == "adopted"
@@ -60,7 +74,9 @@ async def test_refuses_non_empty_impact_without_acknowledgement(tmp_path: Path) 
             upstream_commit_sha="a" * 40,
             data_root=tmp_path,
         )
-        await adopt_revision(session, revision_id=first.id, actor="kevin")
+        await adopt_revision(
+            session, revision_id=first.id, actor="kevin", acknowledge_impact=True
+        )
 
         # Authored content that the next revision would orphan.
         org = Organization(name=f"AdOrg-{next(_ORG_SEQ)}")
@@ -102,7 +118,9 @@ async def test_previous_revision_is_superseded(tmp_path: Path) -> None:
             upstream_commit_sha="c" * 40,
             data_root=tmp_path,
         )
-        await adopt_revision(session, revision_id=first.id, actor="kevin")
+        await adopt_revision(
+            session, revision_id=first.id, actor="kevin", acknowledge_impact=True
+        )
         docs = _documents()
         docs["NIST_SP-800-53_rev5_catalog.json"] = _EMPTY_CATALOG
         second = await materialize_revision(
@@ -126,7 +144,9 @@ async def test_adoption_writes_a_chained_audit_entry(tmp_path: Path) -> None:
             upstream_commit_sha="e" * 40,
             data_root=tmp_path,
         )
-        await adopt_revision(session, revision_id=rev.id, actor="kevin")
+        await adopt_revision(
+            session, revision_id=rev.id, actor="kevin", acknowledge_impact=True
+        )
         rows = (
             await session.execute(
                 select(AuditLog).where(AuditLog.entity_type == "catalog_revision")
@@ -162,9 +182,13 @@ async def test_adopting_an_already_adopted_revision_is_a_noop(tmp_path: Path) ->
             upstream_commit_sha="1" * 40,
             data_root=tmp_path,
         )
-        once = await adopt_revision(session, revision_id=rev.id, actor="kevin")
+        once = await adopt_revision(
+            session, revision_id=rev.id, actor="kevin", acknowledge_impact=True
+        )
         stamp = once.adopted_at
-        twice = await adopt_revision(session, revision_id=rev.id, actor="someone-else")
+        twice = await adopt_revision(
+            session, revision_id=rev.id, actor="someone-else", acknowledge_impact=True
+        )
         assert twice.adopted_at == stamp
         assert twice.adopted_by == "kevin"
 
@@ -186,7 +210,9 @@ async def test_rollback_to_an_earlier_revision(tmp_path: Path) -> None:
             upstream_commit_sha="2" * 40,
             data_root=tmp_path,
         )
-        await adopt_revision(session, revision_id=first.id, actor="kevin")
+        await adopt_revision(
+            session, revision_id=first.id, actor="kevin", acknowledge_impact=True
+        )
         docs = _documents()
         docs["NIST_SP-800-53_rev5_catalog.json"] = _EMPTY_CATALOG
         second = await materialize_revision(

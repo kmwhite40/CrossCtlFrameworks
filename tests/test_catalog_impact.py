@@ -5,6 +5,8 @@ from __future__ import annotations
 import itertools
 import json
 
+from sqlalchemy import select
+
 from ccf.catalog.diff import CatalogDiff, ControlChange
 from ccf.catalog.impact import build_adoption_impact
 from ccf.catalog.oscal import OscalCatalog, OscalControl
@@ -168,41 +170,59 @@ async def test_systems_on_other_baselines_are_not_reported() -> None:
 async def test_dangling_mapping_detected_via_reconcile() -> None:
     """A mapping targeting a control the candidate lacks must surface."""
     async with session_scope() as session:
-        fw = Framework(code="NIST_800_53_R5", name="NIST 800-53 Rev 5")
-        session.add(fw)
-        ctl = Control(identifier="AC-1")
+        # Framework.code and Control.identifier are unique and the workbook
+        # fixtures create real ids, so use values that cannot collide.
+        fw = (
+            await session.execute(select(Framework).where(Framework.code == "NIST_800_53_R5"))
+        ).scalars().first()
+        if fw is None:
+            fw = Framework(code="NIST_800_53_R5", name="NIST 800-53 Rev 5")
+            session.add(fw)
+        ctl = Control(identifier="ZZ-IMPACT-1")
         session.add(ctl)
         await session.flush()
-        session.add(
-            FrameworkMapping(
-                control_id=ctl.id,
-                framework_id=fw.id,
-                column_key="NIST 800-53 Rev 5",
-                value="AC-99",
-            )
+        mapping = FrameworkMapping(
+            control_id=ctl.id,
+            framework_id=fw.id,
+            column_key="NIST 800-53 Rev 5",
+            value="AC-99",
         )
+        session.add(mapping)
         await session.flush()
-        impact = await build_adoption_impact(
-            session, diff=_diff(removed=("AC-99",)), candidate=_candidate("AC-1")
-        )
-        assert any("AC-99" in json.dumps(m) for m in impact.dangling_mappings)
+        try:
+            impact = await build_adoption_impact(
+                session, diff=_diff(removed=("AC-99",)), candidate=_candidate("AC-1")
+            )
+            assert any("AC-99" in json.dumps(m) for m in impact.dangling_mappings)
+        finally:
+            # Leave no rows behind: other modules assert on catalog totals.
+            await session.delete(mapping)
+            await session.delete(ctl)
+            await session.flush()
 
 
 async def test_ksi_referencing_removed_control_is_reported() -> None:
     async with session_scope() as session:
-        session.add(
-            KSI(
-                identifier="KSI-IAM-07",
-                category="IAM",
-                name="Securely manage account lifecycle",
-                nist_refs=["AC-2", "IA-2"],
-            )
+        ksi = KSI(
+            identifier="KSI-ZZ-IMPACT",
+            category="ZZ",
+            name="Impact-test indicator",
+            nist_refs=["AC-2", "IA-2"],
         )
+        session.add(ksi)
         await session.flush()
-        impact = await build_adoption_impact(
-            session, diff=_diff(removed=("IA-2",)), candidate=_candidate("AC-2")
-        )
-        assert any(k["ksi_key"] == "KSI-IAM-07" for k in impact.ksi_references)
+        try:
+            impact = await build_adoption_impact(
+                session, diff=_diff(removed=("IA-2",)), candidate=_candidate("AC-2")
+            )
+            entry = next(
+                k for k in impact.ksi_references if k["ksi_key"] == "KSI-ZZ-IMPACT"
+            )
+            assert entry["lost_refs"] == ["IA-2"]
+        finally:
+            # test_fedramp20x asserts an exact KSI count; leave the table as found.
+            await session.delete(ksi)
+            await session.flush()
 
 
 async def test_to_dict_is_json_serialisable() -> None:
