@@ -28,10 +28,18 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..api.audit import record_event
 from ..etl.sources import parse_oscal_catalog
 from ..logging import get_logger
 from ..models import CatalogRevision, CatalogSource
-from .oscal import OscalManifestError, generate_manifest, load_oscal_catalog
+from .diff import CatalogDiff, diff_revisions
+from .impact import AdoptionImpact, build_adoption_impact
+from .oscal import (
+    OscalCatalog,
+    OscalManifestError,
+    generate_manifest,
+    load_oscal_catalog,
+)
 
 log = get_logger(__name__)
 
@@ -245,3 +253,108 @@ async def resolve_adopted_dir(session: AsyncSession, *, source_key: str) -> Path
         )
         return None
     return d
+
+
+class AdoptionRefusedError(RuntimeError):
+    """Adoption was blocked because its impact had not been acknowledged."""
+
+    def __init__(self, impact: AdoptionImpact) -> None:
+        super().__init__(
+            "adopting this revision affects existing content; re-run with "
+            "acknowledge_impact=True after reviewing the impact report"
+        )
+        self.impact = impact
+
+
+def _catalog_for(revision: CatalogRevision) -> OscalCatalog:
+    """Load a revision's catalog, falling back to packaged content when unset."""
+    return load_oscal_catalog(Path(revision.content_dir) if revision.content_dir else None)
+
+
+async def _adopted_revision(
+    session: AsyncSession, *, source_id: int
+) -> CatalogRevision | None:
+    return (
+        await session.execute(
+            select(CatalogRevision).where(
+                CatalogRevision.source_id == source_id,
+                CatalogRevision.status == "adopted",
+            )
+        )
+    ).scalars().first()
+
+
+async def compute_revision_diff(
+    session: AsyncSession, *, revision: CatalogRevision
+) -> CatalogDiff:
+    """Diff ``revision`` against its source's currently adopted revision."""
+    adopted = await _adopted_revision(session, source_id=revision.source_id)
+    old = _catalog_for(adopted) if adopted is not None else OscalCatalog(version="")
+    return diff_revisions(old, _catalog_for(revision))
+
+
+async def adopt_revision(
+    session: AsyncSession,
+    *,
+    revision_id: int,
+    actor: str,
+    acknowledge_impact: bool = False,
+) -> CatalogRevision:
+    """Make ``revision_id`` the revision the platform loads.
+
+    Always a human action: no scheduler or API path adopts implicitly. A
+    non-empty impact report blocks adoption until explicitly acknowledged, and
+    the report as reviewed is stored on the row -- so the record shows what was
+    actually approved, not merely that someone approved something.
+
+    Rolling back is adopting an earlier revision, through this same gate.
+    """
+    row = await session.get(CatalogRevision, revision_id)
+    if row is None:
+        raise ValueError(f"unknown catalog revision: {revision_id}")
+    if row.status == "rejected":
+        raise ValueError(f"revision {row.revision} was rejected and cannot be adopted")
+    if row.status == "adopted":
+        return row
+
+    diff = await compute_revision_diff(session, revision=row)
+    impact = await build_adoption_impact(session, diff=diff, candidate=_catalog_for(row))
+    if not impact.is_empty() and not acknowledge_impact:
+        raise AdoptionRefusedError(impact)
+
+    prior = (
+        await session.execute(
+            select(CatalogRevision).where(
+                CatalogRevision.source_id == row.source_id,
+                CatalogRevision.status == "adopted",
+            )
+        )
+    ).scalars().all()
+    for p in prior:
+        p.status = "superseded"
+    # Flush the supersede before claiming adoption so the partial unique index
+    # never sees two adopted rows for one source mid-transaction.
+    await session.flush()
+
+    row.status = "adopted"
+    row.adopted_by = actor
+    row.adopted_at = datetime.now(UTC)
+    row.adoption_impact = impact.to_dict()
+    # record_event maintains the prev_hash/row_hash chain. Building an AuditLog
+    # by hand would append an unchained row and silently defeat tamper-evidence.
+    await record_event(
+        session,
+        actor=actor,
+        action="adopt",
+        entity_type="catalog_revision",
+        entity_id=str(row.id),
+        diff={
+            "source_id": row.source_id,
+            "revision": row.revision,
+            "diff": diff.to_dict(),
+            "impact_acknowledged": acknowledge_impact,
+        },
+    )
+    await session.flush()
+    log.info("catalog.revision_adopted", revision=row.revision, actor=actor)
+    return row
