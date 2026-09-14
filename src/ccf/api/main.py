@@ -36,6 +36,7 @@ from .routes import (
     auth,
     automation,
     boundary,
+    capabilities,
     catalog,
     conmon,
     connector_settings,
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(identity.router)
     app.include_router(assurance.router)
+    app.include_router(capabilities.router)
     app.include_router(packages.router)
     app.include_router(packages.delta_router)
     app.include_router(packs.router)

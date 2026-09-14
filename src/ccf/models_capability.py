@@ -11,7 +11,10 @@ control-to-control. One MFA decision therefore had to be restated in every
 dependent control, per project, per framework.
 
 Every table here is tenant-owned and carries ``organization_id``, because the
-RLS policy compares ``ccf.current_tenant()`` against that column. Omitting it
+RLS policy compares ``ccf.current_tenant()`` against that column. It is
+nullable, matching ``vendors`` and ``people``: an unscoped principal writes a
+row with no organization, and the policy makes such rows invisible to every
+scoped tenant. Omitting it
 would force these onto the ``GLOBAL_TABLES`` allowlist in
 ``tests/test_rls_registry_no_gap.py``, which is for authority-published
 reference data -- using it here would be a tenant-isolation hole.
@@ -63,7 +66,7 @@ class Capability(Base):
     __tablename__ = "capabilities"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    organization_id: Mapped[int] = mapped_column(
+    organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
     #: Stable, addressable slug -- also what a future capability pack installs by.
@@ -105,7 +108,7 @@ class CapabilityControl(Base):
     __tablename__ = "capability_controls"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    organization_id: Mapped[int] = mapped_column(
+    organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
     capability_id: Mapped[int] = mapped_column(
@@ -135,7 +138,7 @@ class CapabilityComponent(Base):
     __tablename__ = "capability_components"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    organization_id: Mapped[int] = mapped_column(
+    organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
     capability_id: Mapped[int] = mapped_column(
@@ -164,7 +167,7 @@ class CapabilityRisk(Base):
     __tablename__ = "capability_risks"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    organization_id: Mapped[int] = mapped_column(
+    organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
     capability_id: Mapped[int] = mapped_column(
@@ -195,7 +198,7 @@ class CapabilityKsi(Base):
     __tablename__ = "capability_ksis"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    organization_id: Mapped[int] = mapped_column(
+    organization_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
     capability_id: Mapped[int] = mapped_column(

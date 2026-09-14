@@ -7,7 +7,9 @@ per framework. `capabilities` is the missing object -- what the organization
 *does* -- with edges to canonical controls, system components, risks, and KSIs.
 
 Tenancy: all five tables are tenant-owned and get the standard
-`tenant_isolation` policy. They are deliberately NOT added to GLOBAL_TABLES in
+`tenant_isolation` policy. `organization_id` is nullable, matching `vendors`
+and `people`: an unscoped principal writes a row with no organization, and the
+policy predicate makes such rows invisible to every scoped tenant. They are deliberately NOT added to GLOBAL_TABLES in
 tests/test_rls_registry_no_gap.py -- that allowlist is for authority-published
 reference data like catalog_sources, and using it here would be an isolation
 hole.
@@ -66,11 +68,15 @@ _IMPL_STATUS = postgresql.ENUM(
 
 
 def _org_fk() -> sa.Column:
+    # Nullable, matching the established convention for tenant-owned tables in
+    # this schema (vendors, people): an unscoped/global principal writes a row
+    # with no organization, and the RLS predicate below makes such rows
+    # invisible to any scoped tenant (NULL = current_tenant() is never true).
     return sa.Column(
         "organization_id",
         sa.Integer,
         sa.ForeignKey("ccf.organizations.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
 
 
