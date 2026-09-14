@@ -19,12 +19,15 @@ coverage for the UI, not asserted.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import httpx
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture.providers import m365
+from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
 log = get_logger(__name__)
@@ -136,6 +139,98 @@ class MsGraphConnector(ConfigConnector):
             log.warning("connector.msgraph.capture_failed", error=str(e)[:200])
             return []
         return out
+
+    async def scan(self) -> list[CheckOutcome]:
+        """Assess this tenant against the registered M365 posture checks.
+
+        Never raises: an unconfigured org, a failed token, or a provider error
+        all produce results (or none) rather than an exception, because
+        ``ConfigConnector.scan``'s contract says so and ``scan_for_system``
+        does not expect one.
+        """
+        if not self.is_configured():
+            return []
+        s = get_settings()
+        tenant_id = str((self.credential or {}).get("tenant_id") or "unknown")
+        outcomes: list[CheckOutcome] = []
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                token = await self._token(client)
+                if not token:
+                    return []
+                headers = {"Authorization": f"Bearer {token}"}
+                now = datetime.now(UTC)
+                for check in m365.CHECKS:
+                    # Per-check isolation: one permission gap must not discard
+                    # the checks that did run, matching capture()'s
+                    # per-sub-capture try and the scheduler's per-tenant
+                    # savepoint.
+                    try:
+                        rows = await self._get_all(
+                            client, f"{s.graph_base_url}{m365.ENDPOINTS[check.key]}", headers
+                        )
+                    except Exception as e:
+                        outcomes.append(self._unrunnable(check, e))
+                        continue
+                    outcomes.append(self._evaluate(check, rows, tenant_id=tenant_id, now=now))
+        except Exception as e:  # token/transport failure -- nothing to report
+            log.warning("connector.msgraph.scan_failed", error=str(e)[:200])
+            return []
+        return outcomes
+
+    def _evaluate(
+        self,
+        check: PostureCheck,
+        rows: list[dict[str, Any]],
+        *,
+        tenant_id: str,
+        now: datetime,
+    ) -> CheckOutcome:
+        """Dispatch one check's rows to its evaluator.
+
+        The evaluators take different keyword arguments -- the tenant check
+        needs the tenant id, the staleness check needs a clock -- so each is
+        called with what it declares rather than forcing a uniform signature
+        that most checks would ignore.
+        """
+        evaluator = m365.EVALUATORS[check.key]
+        if check.key == m365.LEGACY_AUTH_BLOCKED.key:
+            findings = evaluator(rows, tenant_id=tenant_id)
+        elif check.key == m365.STALE_ACCOUNTS.key:
+            findings = evaluator(rows, now=now)
+        else:
+            findings = evaluator(rows)
+        return CheckOutcome.from_findings(check, tuple(findings))
+
+    def _unrunnable(self, check: PostureCheck, error: Exception) -> CheckOutcome:
+        """A check that could not run -- never a clean fleet.
+
+        P2a's rollup maps zero findings to ``not_applicable``, so returning
+        nothing here would hide a missing app permission behind a
+        benign-looking verdict. Instead one finding carries
+        ``manual_review_required`` and names the status and the permission the
+        check needs, which puts the reason in the resource list where an
+        operator looks.
+        """
+        status = ""
+        if isinstance(error, httpx.HTTPStatusError):
+            status = f"{error.response.status_code} "
+        needed = ", ".join(check.required_permissions) or "unknown permissions"
+        log.warning(
+            "connector.msgraph.check_unrunnable", check=check.key, error=str(error)[:200]
+        )
+        return CheckOutcome.from_findings(
+            check,
+            (
+                ResourceFinding(
+                    resource_id=(self.credential or {}).get("tenant_id") or "unknown",
+                    resource_type=check.resource_type,
+                    verdict="manual_review_required",
+                    observed=f"{status}could not read Graph; requires {needed}",
+                    detail={"error": str(error)[:300]},
+                ),
+            ),
+        )
 
     def _map_mfa(self, payload: dict[str, Any]) -> list[CapturedParameter]:
         """Detect an enabled Conditional Access policy that grants/requires MFA."""

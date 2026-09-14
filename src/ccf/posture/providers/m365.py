@@ -16,7 +16,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from ..checks import PostureCheck, ResourceFinding
+from ..types import PostureCheck, ResourceFinding
 
 #: Inactivity threshold for the stale-account check. Wants to be an
 #: organization-defined parameter -- the ODP machinery already exists for
