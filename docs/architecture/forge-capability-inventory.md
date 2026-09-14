@@ -232,12 +232,20 @@ already present. No new subsystem.
 `governance/conmon.py`/`control_tests.py` auto-opening alerts and tasks on
 failure.
 
-**Known open defect (pre-existing, documented):** auto-opened Tasks and POA&Ms
-**never close** when a control test later passes, and no test covers the
-fail→pass transition. Resource-level posture testing multiplies auto-opened
-volume, so this must be fixed as **resolve-or-propose (never auto-close)** in
-the same work, consistent with the deliberate ISSM-08/09 gate that stops the
-engine retiring its own finding.
+**Closure loop — EXISTS (corrected 2026-09-14).** An earlier assessment of mine
+listed "auto-opened Tasks and POA&Ms never close on a later pass" as an open
+defect. It has since been fixed, exactly as resolve-or-propose:
+`control_tests.py:270` `_resolve_on_recovery` handles the fail/warn → pass
+transition, resolving the remediation Task (an internal work item with a free
+status vocabulary) while deliberately **not** auto-closing the POA&M — closing
+one asserts in an authorization package that a weakness is remediated, and a
+single passing test is one observation. The POA&M instead gains a dated,
+result-id-stamped note plus a notification so a human closes it through the
+ISSM-08/09 gate. Deliberately asymmetric with `scanners.py:397`'s
+scan-absence auto-close, and the reasoning is in the docstring. Covered by
+`tests/test_control_test_recovery.py` and `tests/test_conmon_recovery.py`
+(fail→pass, POA&M surfaced-not-closed, pass→pass no-op, human edits surviving
+recovery, failure isolation).
 
 **Action:** EXTEND — close the loop, add retest/closure, and relate findings to
 capabilities and evidence.
