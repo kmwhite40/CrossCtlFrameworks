@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from ccf.etl.sources import DEFAULT_SOURCES
+from sqlalchemy import delete
+
+from ccf.db import session_scope
+from ccf.etl.sources import DEFAULT_SOURCES, parse_commit_url
+from ccf.models import CatalogRevision
+from ccf.reliability.checks import _check_catalog_integrity
 
 
 def _keys() -> set[str]:
@@ -36,8 +41,6 @@ def test_source_keys_are_unique() -> None:
 
 def test_oscal_source_urls_are_commit_pinnable() -> None:
     """OSCAL sources must be GitHub raw URLs so revisions can be commit-pinned."""
-    from ccf.etl.sources import parse_commit_url
-
     for s in DEFAULT_SOURCES:
         if s.get("kind", "oscal_catalog") != "oscal_catalog":
             continue
@@ -47,9 +50,6 @@ def test_oscal_source_urls_are_commit_pinnable() -> None:
 
 async def test_reliability_check_reports_the_adopted_revision() -> None:
     """The existing catalog check is extended, not replaced, to see revisions."""
-    from ccf.db import session_scope
-    from ccf.reliability.checks import _check_catalog_integrity
-
     async with session_scope() as session:
         check = await _check_catalog_integrity(session)
     assert check.name == "catalog_integrity"
@@ -59,12 +59,6 @@ async def test_reliability_check_reports_the_adopted_revision() -> None:
 
 async def test_reliability_check_survives_a_missing_revision_table_row() -> None:
     """A deployment with no adopted revision must degrade, not fail."""
-    from sqlalchemy import delete
-
-    from ccf.db import session_scope
-    from ccf.models import CatalogRevision
-    from ccf.reliability.checks import _check_catalog_integrity
-
     async with session_scope() as session:
         await session.execute(delete(CatalogRevision))
         check = await _check_catalog_integrity(session)
