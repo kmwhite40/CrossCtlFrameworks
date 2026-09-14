@@ -181,6 +181,57 @@ def diff_content_index(old: dict[str, str], new: dict[str, str]) -> dict[str, li
 _diff_index = diff_content_index
 
 
+_GH_RAW_PREFIX = "https://raw.githubusercontent.com/"
+_GH_API = "https://api.github.com"
+
+
+def parse_commit_url(url: str) -> tuple[str | None, str | None, str | None]:
+    """Split a raw.githubusercontent URL into ``(repo, ref, path)``.
+
+    Returns ``(None, None, None)`` for anything that is not a GitHub raw URL --
+    ``file://`` sources and other hosts simply have no commit concept, and the
+    caller falls back to a content-addressed revision label.
+    """
+    if not url.startswith(_GH_RAW_PREFIX):
+        return None, None, None
+    parts = url[len(_GH_RAW_PREFIX) :].split("/")
+    if len(parts) < 4:
+        return None, None, None
+    owner, repo, ref = parts[0], parts[1], parts[2]
+    return f"{owner}/{repo}", ref, "/".join(parts[3:])
+
+
+async def _get_json(url: str) -> Any:
+    async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": _UA}) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def resolve_commit_sha(url: str) -> str | None:
+    """The commit that last touched ``url``'s path, for reproducible pinning.
+
+    Best-effort by design. Sources poll a moving ref (``main``) because that is
+    what detects drift; the pin is recorded per *revision*, which is where
+    reproducibility actually matters. Any failure returns ``None`` and the
+    revision falls back to a content-addressed label rather than failing the
+    poll -- pinning is a provenance nicety, not a precondition.
+    """
+    repo, ref, path = parse_commit_url(url)
+    if not (repo and ref and path):
+        return None
+    try:
+        payload = await _get_json(
+            f"{_GH_API}/repos/{repo}/commits?path={path}&sha={ref}&per_page=1"
+        )
+        if isinstance(payload, list) and payload:
+            sha = payload[0].get("sha")
+            return str(sha) if sha else None
+    except Exception as exc:  # pinning must never break a poll
+        log.debug("catalog.commit_resolution_failed", url=url, error=str(exc)[:200])
+    return None
+
+
 # --- per-source check -------------------------------------------------------
 
 
@@ -189,8 +240,16 @@ async def check_source(
     source: CatalogSource,
     *,
     data_dir: Path | None = None,
+    revision_data_root: Path | None = None,
 ) -> CatalogCheck:
-    """Fetch one source, detect drift, and persist a :class:`CatalogCheck`."""
+    """Fetch one source, detect drift, and persist a :class:`CatalogCheck`.
+
+    When ``revision_data_root`` is given and the source is an OSCAL catalog,
+    changed content is additionally captured as a retained
+    :class:`~ccf.models.CatalogRevision` so a human can diff and adopt it.
+    Capture never adopts. Omitting the argument -- which every pre-existing
+    caller does -- leaves behaviour exactly as it was.
+    """
     started = time.monotonic()
     now = datetime.now(UTC)
     check = CatalogCheck(source_id=source.id)
@@ -254,6 +313,23 @@ async def check_source(
             source.last_sha256 = sha
             check.detail = detail
             return _finish(session, source, check, started)
+
+        if revision_data_root is not None and source.kind == "oscal_catalog":
+            # Capture the changed content as a retained revision. Never adopts --
+            # a human does that after reading the impact report.
+            # Lazy import: catalog.revisions imports this module for its parser.
+            from ..catalog.revisions import materialize_revision  # noqa: PLC0415
+
+            captured = await materialize_revision(
+                session,
+                source=source,
+                documents={Path(source.url).name: body},
+                upstream_commit_sha=await resolve_commit_sha(source.url),
+                data_root=revision_data_root,
+                retrieved_by="poller",
+            )
+            detail["captured_revision"] = captured.revision
+            detail["captured_status"] = captured.status
 
         check.status = "changed"
         source.last_status = "changed"
@@ -334,8 +410,16 @@ async def poll(
         stmt = stmt.where(CatalogSource.enabled.is_(True))
 
     sources = (await session.execute(stmt)).scalars().all()
+    # Revision capture is opt-in: it writes files, so it needs a durable volume.
+    revision_root = (
+        settings.data_dir / "oscal" if settings.catalog_capture_revisions else None
+    )
     checks: list[CatalogCheck] = []
     for src in sources:
-        checks.append(await check_source(session, src, data_dir=settings.data_dir))
+        checks.append(
+            await check_source(
+                session, src, data_dir=settings.data_dir, revision_data_root=revision_root
+            )
+        )
         await session.flush()
     return checks

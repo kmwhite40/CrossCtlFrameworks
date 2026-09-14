@@ -166,6 +166,13 @@ class Settings(BaseSettings):
     # its built-in structural checks and reports a degraded status. When
     # CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA is set, a missing official schema is a hard
     # failure rather than a warning.
+    # Capture changed upstream catalog content as a retained CatalogRevision
+    # during polling, under ``data_dir/oscal/<source>/<revision>/``. Off by
+    # default: capture writes files, so it is only useful where that path is a
+    # durable volume. Capture never adopts -- promoting a revision into the
+    # catalog the platform reads is always an explicit human action.
+    catalog_capture_revisions: bool = Field(default=False)
+
     oscal_schema_dir: Path | None = Field(default=None)
     oscal_require_official_schema: bool = Field(default=False)
 
