@@ -173,6 +173,12 @@ class Settings(BaseSettings):
     # catalog the platform reads is always an explicit human action.
     catalog_capture_revisions: bool = Field(default=False)
 
+    # Annotate control implementations from capability coverage on each
+    # scheduler cycle. Default on: derivation is non-destructive by
+    # construction -- it never writes ControlImplementation.status and never
+    # creates a row (see ccf.capability.derive).
+    capability_derive_enabled: bool = Field(default=True)
+
     oscal_schema_dir: Path | None = Field(default=None)
     oscal_require_official_schema: bool = Field(default=False)
 

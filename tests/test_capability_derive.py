@@ -143,9 +143,15 @@ async def test_not_applicable_capability_writes_nothing() -> None:
         impl = ControlImplementation(system_id=sys_.id, control_id=ctl.id, status="planned")
         session.add(impl)
         await session.flush()
-        await derive_for_system(session, system_id=sys_.id)
+        touched = await derive_for_system(session, system_id=sys_.id)
         await session.refresh(impl)
+        # The row must be left completely untouched, not merely left with a
+        # null status: writing derived_status=None is indistinguishable from
+        # writing nothing, so assert the timestamp and contributors too.
         assert impl.derived_status is None
+        assert impl.derived_at is None
+        assert impl.derived_from == {}
+        assert touched == 0
 
 
 async def test_mixed_statuses_derive_partial() -> None:

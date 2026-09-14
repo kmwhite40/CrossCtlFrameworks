@@ -32,6 +32,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..capability import derive as capability_derive
 from ..config import get_settings
 from ..db import get_engine, session_scope, set_session_tenant
 from ..etl.sources import poll as poll_sources
@@ -77,6 +78,8 @@ async def _run_per_tenant_cycle(
     collection_results: list[dict[str, Any]] = []
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
+    derive_results: list[dict[str, Any]] = []
+    derive_enabled = get_settings().capability_derive_enabled
     for org_id in org_ids:
         await set_session_tenant(session, org_id)
         try:
@@ -111,6 +114,21 @@ async def _run_per_tenant_cycle(
                 step="control_tests",
                 error=str(e)[:200],
             )
+        if derive_enabled:
+            try:
+                async with session.begin_nested():
+                    derive_results.append(
+                        await capability_derive.derive_for_org(
+                            session, organization_id=org_id
+                        )
+                    )
+            except Exception as e:
+                log.warning(
+                    "scheduler.per_tenant_step_failed",
+                    org_id=org_id,
+                    step="capability_derive",
+                    error=str(e)[:200],
+                )
     # Back to bypass before any global step (or the advisory unlock) runs.
     # Suppressed: a prior step's failure must not prevent the tenant clamp
     # from being reset — mirrors the advisory-unlock suppress in run_cycle.
@@ -129,6 +147,11 @@ async def _run_per_tenant_cycle(
         },
         "conmon": conmon_results,
         "control_tests": control_test_results,
+        "capability_derive": {
+            "organizations_processed": [r["organization_id"] for r in derive_results],
+            "systems": sum(r["systems"] for r in derive_results),
+            "rows_annotated": sum(r["rows_annotated"] for r in derive_results),
+        },
     }
 
 

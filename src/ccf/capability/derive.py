@@ -137,3 +137,33 @@ async def derive_for_system(session: AsyncSession, *, system_id: int) -> int:
         await session.flush()
         log.info("capability.derived", system_id=system_id, rows=touched)
     return touched
+
+
+async def derive_for_org(session: AsyncSession, *, organization_id: int) -> dict[str, Any]:
+    """Derive every live system in one organization.
+
+    The org-level sibling of :func:`derive_for_system`, shaped like
+    ``collection.collect_for_org`` so the scheduler can run it as one
+    per-tenant step inside its own savepoint.
+
+    Soft-deleted systems are skipped: a deleted system is not something the
+    platform should still be annotating.
+    """
+    from ..models import System  # noqa: PLC0415 -- avoids a models import cycle
+
+    system_ids = (
+        await session.execute(
+            select(System.id)
+            .where(System.organization_id == organization_id, System.deleted_at.is_(None))
+            .order_by(System.id)
+        )
+    ).scalars().all()
+
+    rows = 0
+    for sid in system_ids:
+        rows += await derive_for_system(session, system_id=sid)
+    return {
+        "organization_id": organization_id,
+        "systems": len(system_ids),
+        "rows_annotated": rows,
+    }
