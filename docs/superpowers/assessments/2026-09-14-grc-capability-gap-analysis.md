@@ -436,9 +436,15 @@ Against Paramify's four pillars:
 | **Gap Assessment** | `ssp/completeness.py`, `scoring/`, `fedramp20x/readiness.py`, `catalog/reconcile.py` | Components exist but no single "pick a framework, see gaps, get a living roadmap" surface; no CMMC SPRS score tracking |
 
 Additional field gaps: **eMASS interop** (no import/export — table stakes for
-DoD), **SSO/SCIM** (session-cookie + bearer only; no OIDC/SAML or SCIM),
-**ticketing/notification integrations** (internal `Task` only; no Jira,
-ServiceNow, or Slack).
+DoD) and **ticketing integrations** (no Jira or ServiceNow adapter, though
+`ConnectorConfig.connector_type` already enumerates both).
+
+**Corrected 2026-09-14:** this row previously claimed SSO/SCIM and Slack
+notifications were missing. Both exist — `identity/` and
+`api/routes/identity.py` implement **OIDC SSO and SCIM v2**, and
+`governance/delivery.py` posts severity-gated alerts to a Slack/Teams webhook.
+See `docs/architecture/forge-capability-inventory.md`, which supersedes this
+document wherever they disagree.
 
 ### G11 — Significant Change Notification engine absent
 
