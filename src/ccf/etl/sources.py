@@ -43,7 +43,12 @@ from .pipeline import ingest_workbook
 log = get_logger(__name__)
 
 _UA = "ConcordCatalogPoller/0.1 (+compliance-controls-platform)"
+# Two distinct NIST authorities, deliberately not conflated:
+#   * usnistgov/oscal-content -- the CONTENT (catalogs, baseline profiles).
+#   * usnistgov/OSCAL         -- the SPECIFICATION (the JSON schemas we validate
+#     exports against, bundled under ccf/oscal/schemas).
 _NIST_RAW = "https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov"
+_OSCAL_SPEC_RAW = "https://raw.githubusercontent.com/usnistgov/OSCAL/main"
 
 # Seeded on `ccf sources-seed`. Authoritative, machine-readable upstreams.
 DEFAULT_SOURCES: list[dict[str, Any]] = [
@@ -115,6 +120,22 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         "kind": "oscal_catalog",
         "url": f"{_NIST_RAW}/SP800-171/rev3/json/NIST_SP800-171_rev3_catalog.json",
         "framework_code": "NIST_800_171_R3",
+        "enabled": True,
+    },
+    {
+        # The OSCAL specification itself, not catalog content. ccf/oscal/schemas
+        # pins these by sha256 in a hand-maintained manifest (v1.1.2, retrieved
+        # 2026-07-28), which has the same drift blindness the catalog had: a new
+        # OSCAL release goes unnoticed until someone looks. Registering it here
+        # means drift is at least detected and recorded for a human to act on.
+        # Consumed by ccf.oscal.validation, not by the catalog loader, so the
+        # kind is content-hash only.
+        "key": "nist_oscal_schema_ssp",
+        "name": "NIST OSCAL - SSP JSON schema (specification)",
+        "authority": "NIST",
+        "kind": "generic",
+        "url": f"{_OSCAL_SPEC_RAW}/json/schema/oscal_ssp_schema.json",
+        "framework_code": None,
         "enabled": True,
     },
     {

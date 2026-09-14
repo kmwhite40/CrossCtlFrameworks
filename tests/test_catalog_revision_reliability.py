@@ -65,3 +65,19 @@ async def test_reliability_check_survives_a_missing_revision_table_row() -> None
         assert check.name == "catalog_integrity"
         assert "no adopted revision" in check.message.lower()
         await session.rollback()
+
+
+def test_oscal_specification_repo_is_a_distinct_registered_source() -> None:
+    """usnistgov/OSCAL (the spec) is not usnistgov/oscal-content (the content).
+
+    The schemas under ccf/oscal/schemas are pinned by a hand-maintained
+    manifest, so a new OSCAL release goes unnoticed. Registering the spec repo
+    means drift is detected even though the catalog loader never reads it.
+    """
+    by_key = {s["key"]: s for s in DEFAULT_SOURCES}
+    spec = by_key["nist_oscal_schema_ssp"]
+    assert "usnistgov/OSCAL/" in spec["url"]
+    # Content sources must not be confused with the specification repo.
+    for key, s in by_key.items():
+        if key.startswith("nist_") and key != "nist_oscal_schema_ssp":
+            assert "usnistgov/oscal-content/" in s["url"] or s["kind"] == "xlsx"

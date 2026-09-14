@@ -118,6 +118,38 @@ unaffected by CR26. FedRAMP's Certification Classes A–D are a separate FedRAMP
 construct landing in P9a. Nothing here renames them or depends on the
 unresolved Class-to-impact mapping.
 
+## 3a. Authoritative source hierarchy
+
+Three upstream repositories are routinely conflated. They are not the same
+authority and this design keeps them separate:
+
+| Repository | What it is | Concord's use |
+|---|---|---|
+| `usnistgov/oscal-content` | The **content** — 800-53 catalogs, 800-53B baseline profiles, CSF, 800-171 | Registered sources; parsed by `catalog/oscal.py` |
+| `usnistgov/OSCAL` | The **specification** — the JSON schemas exports are validated against | Bundled under `ccf/oscal/schemas` (pinned v1.1.2, retrieved 2026-07-28, hand-maintained); registered as a `generic` source so releases are at least *detected* |
+| `GSA/fedramp-automation` | Historical FedRAMP OSCAL baselines | Deferred to the second pass (§3) |
+
+**There is no official FedRAMP 20x OSCAL package.** The OSCAL Foundation
+publishes a community-maintained Phase One KSI catalog; it is not a FedRAMP PMO
+artifact and **must not** become Concord's system of record. The FedRAMP
+community has itself noted that experimental OSCAL use for 20x was not an
+official FedRAMP position.
+
+The rule that follows, governing P9a:
+
+> **FedRAMP provides the requirements. NIST provides OSCAL. Concord converts
+> the authoritative FedRAMP 20x requirements into OSCAL itself.**
+
+Concord already takes this posture and it should be preserved rather than
+rediscovered: `fedramp20x/catalog.py` seeds KSIs from
+`data/fedramp_20x_ksi_catalog.json` with an idempotent upsert keyed on
+`identifier`, and the `fedramp20x` package docstring explicitly disclaims
+official FedRAMP authorization or validated OSCAL output. The normalized KSI
+object is Concord's own, carrying its FedRAMP identifier, requirement,
+objective, source URL, source version, and publication date — and an OSCAL
+representation is *generated* from it against the NIST schemas, never ingested
+from a community catalog.
+
 ## 4. Approach
 
 Add a **revision** object between the existing poll layer and the existing
