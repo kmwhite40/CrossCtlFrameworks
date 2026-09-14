@@ -100,3 +100,10 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
 def checks_for(provider: str) -> tuple[PostureCheck, ...]:
     """Checks registered for one provider; empty for an unknown provider."""
     return CHECK_REGISTRY.get(provider, ())
+
+
+# Imported last: providers.m365 depends on PostureCheck/ResourceFinding above,
+# so registering from here rather than at the top avoids a circular import.
+from .providers import m365 as _m365  # noqa: E402
+
+CHECK_REGISTRY["msgraph"] = _m365.CHECKS
