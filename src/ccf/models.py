@@ -1867,3 +1867,23 @@ class CatalogIntegrityReport(Base):
     findings: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     crosswalk: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+
+
+# ---------------------------------------------------------------------------
+# Cross-module metadata completeness.
+#
+# Two foreign keys cross module boundaries: ``Evidence.capability_id`` and
+# ``ControlTest.capability_id`` both target ``ccf.capabilities``, declared in
+# ``models_capability``. Anything that builds DDL, sorts tables, or configures
+# mappers from ``Base.metadata`` -- ``migrations/env.py`` imports only this
+# module -- raises NoReferencedTableError unless the target table has been
+# registered.
+#
+# The modules are bound to a name rather than imported bare. An unused-import
+# suppression comment is exactly what ``ruff --fix`` strips, which silently
+# reintroduced this bug once already; a real reference cannot be stripped.
+from . import models_capability, models_grc  # noqa: E402
+
+#: Sibling model modules whose tables must be in ``Base.metadata``.
+CROSS_MODULE_MODEL_MODULES = (models_capability, models_grc)
+

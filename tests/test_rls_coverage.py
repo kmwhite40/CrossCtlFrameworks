@@ -11,7 +11,7 @@ pass CI. This module closes that gap with two complementary checks:
    from the Postgres catalog (``pg_policy``/``pg_class``/``pg_namespace``) and
    asserts, for each, that ``relrowsecurity`` and ``relforcerowsecurity`` are
    both true. The enumerated set is compared against a hardcoded snapshot of
-   every table policied as of this writing (130 tables spanning migrations
+   every table policied as of this writing (131 tables spanning migrations
    0010 through 0064) — so the test fails loudly if a table's policy is
    dropped (it silently disappears from the live-enumerated set) or if RLS
    enforcement is disabled on a table that still has one.
@@ -103,7 +103,11 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "capture_snapshots",
         "compliance_pack_versions",
         "compliance_packs", "connector_configs", "control_implementations",
-        "control_test_results", "control_tests", "events", "evidence",
+        "control_test_results",
+        # 0068 posture spine -- policied through the two-hop parent chain
+        # (resource result -> result -> test), like poam_milestones, so it has
+        # no organization_id of its own.
+        "control_test_resource_results", "control_tests", "events", "evidence",
         "evidence_access_events", "evidence_confidence_scores", "evidence_objects",
         "evidence_replay_runs", "evidence_reproducibility_checks", "evidence_retention_policies",
         "evidence_reviews", "evidence_source_trust_policies", "evidence_versions",
@@ -169,7 +173,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 130
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 131
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -245,9 +246,35 @@ class ControlTest(Base):
     # checking that the connector synced. See ccf.governance.control_tests.
     assertion: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
-    last_status: Mapped[str | None] = mapped_column(String(8))  # pass|fail|warn
+    # Provenance. 'generated' rows are created by a posture scan from a
+    # PostureCheck definition; 'authored' is a human-defined test. Defaults to
+    # authored so every pre-existing row is correctly labelled without a data
+    # migration, and so a scan can never be mistaken for someone's intent.
+    source: Mapped[str] = mapped_column(
+        String(16), default="authored", server_default="authored"
+    )
+    #: The PostureCheck this test was generated from; null for authored tests.
+    check_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    #: Optional: this test evidences a capability directly (P1 ontology).
+    #: SET NULL on delete -- removing a capability must not destroy validation
+    #: history.
+    capability_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.capabilities.id", ondelete="SET NULL"), index=True
+    )
+    # Widened from String(8) in 0068: the vocabulary is now
+    # ccf.fedramp20x.VALIDATION_STATUSES, whose longest member
+    # ('manual_review_required') is 22 characters.
+    last_status: Mapped[str | None] = mapped_column(String(32))
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # Nulls are distinct in Postgres unique indexes, so authored tests
+        # (check_key NULL) are deliberately unconstrained while a generated
+        # (system_id, check_key) pair can exist only once -- which is what
+        # makes re-scanning idempotent.
+        UniqueConstraint("system_id", "check_key", name="uq_control_test_system_check"),
+    )
 
     results: Mapped[list[ControlTestResult]] = relationship(
         back_populates="test", cascade="all, delete-orphan"
@@ -266,13 +293,53 @@ class ControlTestResult(Base):
     run_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
-    status: Mapped[str] = mapped_column(String(8))  # pass|fail|warn
+    status: Mapped[str] = mapped_column(String(32))  # widened in 0068
     detail: Mapped[str | None] = mapped_column(Text)
     evidence_ref: Mapped[str | None] = mapped_column(String(1024))
+    #: Resources considered by this run, and how many failed -- so "47
+    #: evaluated, 3 failing" is answerable without counting child rows.
+    evaluated: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failing: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    #: The expectation as evaluated, recorded with the result so a later
+    #: change to the check definition cannot rewrite history.
+    expected: Mapped[str | None] = mapped_column(Text)
 
     test: Mapped[ControlTest] = relationship(back_populates="results")
 
     __table_args__ = (Index("ix_control_test_results_test_run", "control_test_id", "run_at"),)
+
+
+class ControlTestResourceResult(Base):
+    """One resource's verdict within a control-test run.
+
+    This is what lets the platform say *which* resources failed -- "47 storage
+    accounts evaluated, 3 allow public access, here are their ids" -- rather
+    than only that a test failed.
+
+    Deliberately carries no ``organization_id``: ``control_test_results`` has
+    none either and is policied through ``control_tests``, and
+    ``poam_milestones`` chains through ``poams -> systems``. This table follows
+    that established parent-chain shape one hop further. Adding an org column
+    would denormalize against the convention and create a second source of
+    truth for the row's tenant.
+    """
+
+    __tablename__ = "control_test_resource_results"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    result_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.control_test_results.id", ondelete="CASCADE"), index=True
+    )
+    resource_id: Mapped[str] = mapped_column(String(512))
+    resource_type: Mapped[str] = mapped_column(String(64))
+    verdict: Mapped[str] = mapped_column(String(32), index=True)
+    observed: Mapped[str | None] = mapped_column(Text)
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_ctrr_type_verdict", "resource_type", "verdict"),)
 
 
 __all__ = [
