@@ -18,6 +18,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Enum,
@@ -638,6 +639,28 @@ class ControlImplementation(Base):
         ForeignKey("ccf.users.id", ondelete="SET NULL")
     )
     narrative: Mapped[str | None] = mapped_column(Text)
+    # Capability-derived status, written by ccf.capability.derive. Deliberately
+    # a SIBLING of `status`, not a replacement: UNIQUE (system_id, control_id)
+    # forbids two rows, and keeping both means `status` retains its exact
+    # meaning for every existing reader while divergence stays visible --
+    # "your SSP says planned but your capabilities say implemented" is
+    # actionable, and an overwrite would destroy it.
+    derived_status: Mapped[str | None] = mapped_column(
+        Enum(
+            "not_implemented",
+            "planned",
+            "partial",
+            "implemented",
+            "inherited",
+            "not_applicable",
+            name="impl_status",
+            schema="ccf",
+            create_type=False,
+        )
+    )
+    derived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Which capabilities contributed, so a conservative rollup is explainable.
+    derived_from: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     conmon_frequency: Mapped[str | None] = mapped_column(String(32))
     last_assessed_on: Mapped[date | None] = mapped_column(Date)
     next_assessment_due: Mapped[date | None] = mapped_column(Date)
@@ -661,9 +684,17 @@ class Evidence(Base):
     __tablename__ = "evidence"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    implementation_id: Mapped[int] = mapped_column(
+    # Nullable since 0067: evidence may hang off a capability instead, so
+    # "our MFA configuration" is stored once rather than per control. The
+    # table CHECK guarantees at least one parent, which is strictly stronger
+    # than the NOT NULL it replaces.
+    implementation_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.control_implementations.id", ondelete="CASCADE"),
         index=True,
+        nullable=True,
+    )
+    capability_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.capabilities.id", ondelete="CASCADE"), index=True
     )
     kind: Mapped[str] = mapped_column(
         Enum(
@@ -691,7 +722,20 @@ class Evidence(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    implementation: Mapped[ControlImplementation] = relationship(back_populates="evidence")
+    implementation: Mapped[ControlImplementation | None] = relationship(
+        back_populates="evidence"
+    )
+
+    __table_args__ = (
+        # Since 0067 either parent may be null, so the invariant moves here.
+        # Strictly stronger than the NOT NULL it replaces: a row must be
+        # reachable from a control implementation or a capability, never
+        # orphaned from both.
+        CheckConstraint(
+            "implementation_id IS NOT NULL OR capability_id IS NOT NULL",
+            name="ck_evidence_has_parent",
+        ),
+    )
 
 
 class Assessment(Base):
