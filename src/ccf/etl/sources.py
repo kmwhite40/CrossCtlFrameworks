@@ -163,12 +163,22 @@ def parse_oscal_catalog(body: bytes) -> tuple[str | None, dict[str, str]]:
     return revision, index
 
 
-def _diff_index(old: dict[str, str], new: dict[str, str]) -> dict[str, list[str]]:
+def diff_content_index(old: dict[str, str], new: dict[str, str]) -> dict[str, list[str]]:
+    """Added / modified / removed control ids between two content indexes.
+
+    Public because :mod:`ccf.catalog.diff` reuses it for the control-set half of
+    a revision diff rather than recomputing the same set arithmetic -- so the
+    poller and the revision differ can never disagree about what "added" means.
+    """
     old_keys, new_keys = set(old), set(new)
     added = sorted(new_keys - old_keys)
     removed = sorted(old_keys - new_keys)
     modified = sorted(k for k in old_keys & new_keys if old[k] != new[k])
     return {"added": added, "modified": modified, "removed": removed}
+
+
+# Retained for existing callers/tests that import the private name.
+_diff_index = diff_content_index
 
 
 # --- per-source check -------------------------------------------------------
