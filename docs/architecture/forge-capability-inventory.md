@@ -300,10 +300,13 @@ Pure function of profile + vendor register, idempotent, snapshot is the single
 source SSP and coverage read. `FedRAMPDependency` tracks authorized
 dependencies for 20x.
 
-**Gap:** inheritance is not expressed in **SSP narrative** — no
-customer/provider responsibility split in statements and no CRM (Customer
-Responsibility Matrix) generation. `FedRAMPDependency` is not wired into SSP
-statements.
+**Gap — corrected 2026-09-14.** Inheritance *is* expressed in SSP narrative:
+`ssp/statements.compose` handles inherited/shared/customer responsibility,
+names the provider, carries a CRM reference, and refuses to claim retained
+evidence without one (FR-11). `governance/automation.py:545` supplies that
+reference from `vendor.authorization`. What is genuinely missing is CRM
+*document* generation — the reference is a string, not a produced matrix — and
+narrative authored once on a capability rather than re-derived per control.
 
 **Action:** EXTEND into the document layer (programme item P4). The derivation
 engine itself is done.

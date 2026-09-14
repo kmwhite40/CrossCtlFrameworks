@@ -367,17 +367,39 @@ and idempotently — good framework, wrong format family. No STIG checklist
 (`.ckl`) parser and no XCCDF/SCAP ARF parser. These carry the CCI references,
 so G5 is what makes G4 pay off.
 
-### G6 — SSP generator is a per-control editor, not an engine
+### G6 — SSP narrative is derived per control, not authored once
+
+**Corrected 2026-09-14.** The original framing ("a per-control editor")
+understated what exists. `ssp/statements.compose` is a real composer: it
+tailors a statement from responsibility, inheritance source, environment,
+services, ODP values, live captures, responsible role, review frequency,
+policy reference, and CRM reference, in three style variants, returning a
+`needs_review` flag and marking drafts with `DRAFT_PREFIX`.
+
+The actual gap is narrower and sharper: **`compose` derives narrative from a
+control's derivation inputs, not from a capability's authored text.** So one
+MFA decision is still *re-derived* for every dependent control rather than
+*written once and reused* — edit-once-propagate does not exist. That is P4's
+core, and it is additive to a composer that works rather than a replacement
+for one.
 
 Beyond the re-parenting in G1:
 
 1. **OSCAL SSP is export-only.** No import/round-trip, so a CSP's OSCAL SSP or
    a prior authorization package cannot be ingested. (Paramify sells this as a
    service — "SSP ingestion and digitalization.")
-2. **No inheritance / shared responsibility in statements.**
-   `FedRAMPDependency` exists for 20x but is not wired into SSP narrative, so
-   "inherited from AWS GovCloud" and the customer/provider responsibility split
-   cannot be expressed. No CRM (Customer Responsibility Matrix) generation.
+2. **Inheritance in statements — CORRECTED 2026-09-14.** This previously said
+   inheritance and shared responsibility were absent from SSP narrative. They
+   are not. `ssp/statements.compose` handles `not_applicable`, `inherited`,
+   `shared`, and `customer` responsibility; `_inherited_evidence_clause`
+   names the provider and a CRM reference and **deliberately refuses to claim
+   evidence is retained without one** (FR-11), returning `needs_review`
+   instead. `governance/automation.py:545` feeds `crm_ref` from
+   `vendor.authorization` and `policy_ref` from a real `Policy` matched by
+   control id. Statements also carry the responsible role, review frequency,
+   ODP values, and live connector captures.
+   **What is genuinely missing is CRM *document* generation** — `crm_ref` is a
+   reference string, not a produced Customer Responsibility Matrix.
 3. **No evidence or posture citation in statements.**
 4. **No narrative diff/redline between SSP revisions.** `packages/` has diff;
    SSP prose does not.
