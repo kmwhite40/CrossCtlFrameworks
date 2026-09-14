@@ -1157,6 +1157,65 @@ class CatalogCheck(Base):
     source: Mapped[CatalogSource] = relationship(back_populates="checks")
 
 
+class CatalogRevision(Base):
+    """One retained, content-addressed revision of a :class:`CatalogSource`.
+
+    Bridges the currency poller to the pinned loader. :mod:`ccf.etl.sources`
+    detects that upstream content changed; a revision captures *that content* on
+    disk with a generated ``MANIFEST.json``, so a human can diff it, read its
+    impact, and adopt it -- at which point :mod:`ccf.catalog.oscal` resolves this
+    directory. Without this object, detected drift has nowhere to go.
+
+    Exactly one revision per source may be ``adopted``; that is a partial unique
+    index, not application discipline. Global reference data -- no
+    ``organization_id`` and no RLS, like ``catalog_sources``/``catalog_checks``.
+    """
+
+    __tablename__ = "catalog_revisions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    source_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.catalog_sources.id", ondelete="CASCADE"), index=True
+    )
+    # 12-char prefix of the upstream commit sha, 'bundled' for shipped content,
+    # or 'sha-xxxxxxxx' when the host offers no commit concept.
+    revision: Mapped[str] = mapped_column(String(64))
+    upstream_commit_sha: Mapped[str | None] = mapped_column(String(64))
+    upstream_url: Mapped[str | None] = mapped_column(Text)
+    oscal_version: Mapped[str | None] = mapped_column(String(32))
+    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    # {filename: sha256} -- mirrors the generated manifest.
+    files: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # {control_id: prose_hash} in parse_oscal_catalog's shape, so
+    # etl.sources.diff_content_index works on it directly.
+    content_index: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # None => the packaged in-wheel directory (the implicit 'bundled' revision).
+    content_dir: Mapped[str | None] = mapped_column(Text)
+    # available | adopted | superseded | rejected
+    status: Mapped[str] = mapped_column(String(16), default="available", index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    retrieved_by: Mapped[str | None] = mapped_column(String(255))
+    adopted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    adopted_by: Mapped[str | None] = mapped_column(String(255))
+    # The impact report exactly as reviewed when this revision was adopted --
+    # the record of what a human actually approved.
+    adoption_impact: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "revision", name="uq_catalog_revision"),
+        Index(
+            "uq_catalog_revision_adopted",
+            "source_id",
+            unique=True,
+            postgresql_where=text("status = 'adopted'"),
+        ),
+        {"schema": "ccf"},
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 
