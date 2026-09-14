@@ -212,3 +212,36 @@ async def import_revision(
         row.notes = notes if not row.notes else f"{row.notes}; {notes}"
         await session.flush()
     return row
+
+
+async def resolve_adopted_dir(session: AsyncSession, *, source_key: str) -> Path | None:
+    """Directory of ``source_key``'s adopted revision, if it has a usable one.
+
+    Returns ``None`` -- meaning "use the packaged content" -- when the source is
+    unknown, has no adopted revision, its adopted revision is the packaged
+    ``bundled`` one (``content_dir`` NULL), or its directory has gone missing.
+    That last case keeps a container whose ``data/oscal`` volume disappeared
+    serving the in-wheel catalog rather than failing to start.
+
+    Deliberately separate from :func:`ccf.catalog.oscal.load_oscal_catalog`,
+    which must stay database-free for its pure and offline callers.
+    """
+    row = (
+        await session.execute(
+            select(CatalogRevision)
+            .join(CatalogSource, CatalogSource.id == CatalogRevision.source_id)
+            .where(CatalogSource.key == source_key, CatalogRevision.status == "adopted")
+        )
+    ).scalars().first()
+    if row is None or not row.content_dir:
+        return None
+    d = Path(row.content_dir)
+    if not (d / _MANIFEST_NAME).is_file():
+        log.warning(
+            "catalog.adopted_revision_missing",
+            source=source_key,
+            revision=row.revision,
+            content_dir=row.content_dir,
+        )
+        return None
+    return d
