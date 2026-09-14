@@ -1600,6 +1600,161 @@ def catalog_show() -> None:
     console.print(render_text(report))
 
 
+@catalog_app.command("revisions")
+def catalog_revisions(
+    source: str = typer.Option(None, "--source", help="Only this source key."),
+) -> None:
+    """List retained catalog revisions, newest first."""
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from .models import CatalogRevision, CatalogSource  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            stmt = (
+                select(CatalogRevision, CatalogSource.key)
+                .join(CatalogSource, CatalogSource.id == CatalogRevision.source_id)
+                .order_by(CatalogRevision.id.desc())
+            )
+            if source:
+                stmt = stmt.where(CatalogSource.key == source)
+            return [
+                (r[1], r[0].revision, r[0].status, r[0].oscal_version, r[0].retrieved_at)
+                for r in (await session.execute(stmt)).all()
+            ]
+
+    rows = asyncio.run(_run())
+    if not rows:
+        console.print("No catalog revisions recorded.")
+        return
+    for key, rev, status, ver, at in rows:
+        mark = "[green]*[/green]" if status == "adopted" else " "
+        console.print(f"{mark} {key:<34} {rev:<14} {status:<11} {ver or '-':<8} {at:%Y-%m-%d}")
+
+
+@catalog_app.command("diff")
+def catalog_diff(
+    revision_id: int = typer.Argument(..., help="Revision id (see `ccf catalog revisions`)."),
+) -> None:
+    """Diff one revision against its source's currently adopted revision."""
+    from .catalog.revisions import compute_revision_diff  # noqa: PLC0415
+    from .models import CatalogRevision  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            row = await session.get(CatalogRevision, revision_id)
+            if row is None:
+                return None
+            return (await compute_revision_diff(session, revision=row)).to_dict()
+
+    diff = asyncio.run(_run())
+    if diff is None:
+        console.print(f"[red]No such revision: {revision_id}[/red]")
+        raise typer.Exit(code=1)
+    console.print_json(data=diff)
+
+
+@catalog_app.command("impact")
+def catalog_impact(
+    revision_id: int = typer.Argument(..., help="Revision id to assess."),
+) -> None:
+    """Report what adopting a revision would do to this deployment's content."""
+    from .catalog.impact import build_adoption_impact  # noqa: PLC0415
+    from .catalog.revisions import _catalog_for, compute_revision_diff  # noqa: PLC0415
+    from .models import CatalogRevision  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            row = await session.get(CatalogRevision, revision_id)
+            if row is None:
+                return None
+            diff = await compute_revision_diff(session, revision=row)
+            impact = await build_adoption_impact(
+                session, diff=diff, candidate=_catalog_for(row)
+            )
+            return impact.to_dict()
+
+    impact = asyncio.run(_run())
+    if impact is None:
+        console.print(f"[red]No such revision: {revision_id}[/red]")
+        raise typer.Exit(code=1)
+    console.print_json(data=impact)
+
+
+@catalog_app.command("import-revision")
+def catalog_import_revision(
+    source_key: str = typer.Argument(..., help="Registered catalog source key."),
+    path: str = typer.Argument(..., help="Directory or zip of OSCAL JSON documents."),
+    notes: str = typer.Option(None, "--notes", help="Provenance note for the record."),
+) -> None:
+    """Import a revision offline — the air-gapped path. No network."""
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    from .catalog.revisions import import_revision  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            settings = get_settings()
+            row = await import_revision(
+                session,
+                source_key=source_key,
+                payload=_Path(path),
+                data_root=settings.data_dir / "oscal",
+                retrieved_by="cli-import",
+                notes=notes,
+            )
+            await session.commit()
+            return row.revision, row.status, row.notes
+
+    try:
+        rev, status, note = asyncio.run(_run())
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1) from e
+    colour = "green" if status == "available" else "red"
+    console.print(f"Imported revision [{colour}]{rev}[/{colour}] ({status})")
+    if status == "rejected":
+        console.print(f"[red]{note}[/red]")
+        raise typer.Exit(code=1)
+
+
+@catalog_app.command("adopt")
+def catalog_adopt(
+    revision_id: int = typer.Argument(..., help="Revision id to adopt."),
+    actor: str = typer.Option(..., "--actor", help="Who is adopting (recorded in the audit log)."),
+    acknowledge_impact: bool = typer.Option(
+        False,
+        "--acknowledge-impact",
+        help="Proceed even though adoption affects existing content.",
+    ),
+) -> None:
+    """Adopt a revision — the catalog the platform loads. Always deliberate."""
+    from .catalog.revisions import AdoptionRefusedError, adopt_revision  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            row = await adopt_revision(
+                session,
+                revision_id=revision_id,
+                actor=actor,
+                acknowledge_impact=acknowledge_impact,
+            )
+            await session.commit()
+            return row.revision
+
+    try:
+        rev = asyncio.run(_run())
+    except AdoptionRefusedError as e:
+        console.print("[yellow]Adoption refused — it would affect existing content:[/yellow]")
+        console.print_json(data=e.impact.to_dict())
+        console.print("Re-run with [bold]--acknowledge-impact[/bold] once reviewed.")
+        raise typer.Exit(code=2) from e
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1) from e
+    console.print(f"[green]Adopted revision {rev}[/green]")
+
+
 oscal_app = typer.Typer(help="OSCAL — validate exports against official or structural schema")
 app.add_typer(oscal_app, name="oscal")
 
