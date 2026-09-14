@@ -34,6 +34,10 @@ class PostureCheck:
     #: A missing capability is not an error: checks ship as content, while
     #: capabilities are authored per tenant.
     capability_key: str | None = None
+    #: Provider permissions this check needs, e.g. ("AuditLog.Read.All",).
+    #: Carried so a manual_review_required verdict can name the missing
+    #: permission instead of leaving an operator to infer it from a 403.
+    required_permissions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

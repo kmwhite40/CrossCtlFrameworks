@@ -34,6 +34,10 @@ class MsGraphConnector(ConfigConnector):
     key = "msgraph"
     label = "Microsoft 365 Government (Graph)"
 
+    #: Hard cap on pages followed, so a pathological or self-referential
+    #: ``@odata.nextLink`` cannot spin forever.
+    _MAX_PAGES: ClassVar[int] = 50
+
     # ODP key → the Graph signal it is (or will be) derived from.
     PARAMETER_MAP: ClassVar[dict[str, str]] = {
         "mfa_enforced": "Conditional Access grant requiring multi-factor authentication",
@@ -64,6 +68,30 @@ class MsGraphConnector(ConfigConnector):
         resp.raise_for_status()
         token = resp.json().get("access_token")
         return token if isinstance(token, str) else None
+
+    async def _get_all(
+        self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Every page of a Graph collection, following ``@odata.nextLink``.
+
+        Posture scanning needs this where :meth:`capture` does not: capture
+        reads Conditional Access policies, of which there are few, but a fleet
+        check that stopped at page one would report ``pass`` while three
+        non-compliant users sat on page four. Raises on a non-2xx status so
+        :meth:`scan` can tell "could not look" from "nothing to see".
+        """
+        rows: list[dict[str, Any]] = []
+        next_url: str | None = url
+        for _ in range(self._MAX_PAGES):
+            if not next_url:
+                break
+            resp = await client.get(next_url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+            rows.extend(payload.get("value") or [])
+            nxt = payload.get("@odata.nextLink")
+            next_url = nxt if isinstance(nxt, str) else None
+        return rows
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can obtain a Graph token for this org's Gov tenant."""
