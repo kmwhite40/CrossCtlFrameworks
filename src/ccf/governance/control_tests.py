@@ -11,6 +11,7 @@ remediation task the manual run endpoint creates.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -18,9 +19,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
+from ..fedramp20x import VALIDATION_STATUSES
 from ..logging import get_logger
 from ..models import POAM, CaptureSnapshot, Control, PoamMilestone, Task
-from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
+from ..models_grc import (
+    ConnectorConfig,
+    ControlTest,
+    ControlTestResourceResult,
+    ControlTestResult,
+)
+from ..posture.checks import ResourceFinding
 from . import bus
 
 log = get_logger(__name__)
@@ -363,27 +371,60 @@ async def record_result(
     detail: str | None = None,
     evidence_ref: str | None = None,
     actor: str = "user",
+    evaluated: int = 0,
+    failing: int = 0,
+    expected: str | None = None,
+    resources: Sequence[ResourceFinding] = (),
 ) -> ControlTestResult:
     """Persist one test result, update the test, and alert on fail/warn.
 
-    Shared by the manual UI run action and the scheduler auto-run (run_due
-    delegates here) so the alert + remediation-task + recovery behaviour is
-    identical regardless of trigger.
+    Shared by the manual UI run action, the scheduler auto-run (run_due
+    delegates here), and posture scans -- so the alert + remediation-task +
+    recovery behaviour is identical regardless of trigger. This is
+    deliberately the only writer of results.
+
+    ``evaluated``/``failing``/``expected``/``resources`` are the posture
+    additions (0068) and all default to empty, so every pre-existing caller
+    behaves exactly as before.
     """
-    if status not in ("pass", "warn", "fail"):
-        raise ValueError("status must be pass|warn|fail")
+    if status not in VALIDATION_STATUSES:
+        raise ValueError(f"status must be one of {VALIDATION_STATUSES}")
     # Must be captured before the reassignment two lines below -- if this
     # instead read test.last_status after the assignment, it would always
     # equal `status` and the fail/warn -> pass transition would be
     # permanently undetectable.
     previous_status = test.last_status
     res = ControlTestResult(
-        control_test_id=test.id, status=status, detail=detail, evidence_ref=evidence_ref
+        control_test_id=test.id,
+        status=status,
+        detail=detail,
+        evidence_ref=evidence_ref,
+        evaluated=evaluated,
+        failing=failing,
+        expected=expected,
     )
     session.add(res)
     test.last_status = status
     test.last_tested_at = datetime.now(UTC)
     await session.flush()
+    for f in resources:
+        # Truncated rather than rejected: an over-long resource id must not
+        # cost the whole run its recorded result.
+        session.add(
+            ControlTestResourceResult(
+                result_id=res.id,
+                resource_id=f.resource_id[:512],
+                resource_type=f.resource_type[:64],
+                verdict=f.verdict,
+                observed=f.observed,
+                detail=f.detail,
+            )
+        )
+    if resources:
+        await session.flush()
+    # The recovery condition is deliberately unchanged by the widened
+    # vocabulary: only `pass` from fail/warn clears a failure. Neither
+    # not_applicable nor manual_review_required asserts the weakness cleared.
     if status in ("fail", "warn"):
         await _alert_on_failure(session, test, status, detail or "")
     elif status == "pass" and previous_status in ("fail", "warn"):
