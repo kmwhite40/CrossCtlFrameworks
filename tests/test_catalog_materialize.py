@@ -201,3 +201,30 @@ async def test_import_rejects_empty_payload(tmp_path: Path) -> None:
             await import_revision(
                 session, source_key="imp_empty", payload=payload, data_root=tmp_path / "root"
             )
+
+
+async def test_rejection_after_the_directory_exists_removes_it(tmp_path: Path) -> None:
+    """A document that parses but fails to load must leave nothing behind.
+
+    The earlier rejection test supplies unparseable JSON, which fails before
+    the directory is created -- so it never exercises the cleanup. Here the
+    catalog parses (parse_oscal_catalog is lenient) and the directory is
+    written, but load_oscal_catalog rejects it because the required baseline
+    profiles are absent.
+    """
+    async with session_scope() as session:
+        src = await _source(session, "mat_late_reject")
+        only_catalog = {"NIST_SP-800-53_rev5_catalog.json": json.dumps(CATALOG).encode()}
+        rev = await materialize_revision(
+            session,
+            source=src,
+            documents=only_catalog,
+            upstream_commit_sha="9" * 40,
+            data_root=tmp_path,
+        )
+        assert rev.status == "rejected"
+        assert rev.notes and "OscalManifestError" in rev.notes
+        assert rev.files == {}
+        assert rev.content_dir is None
+        # The partially-written directory must be gone.
+        assert not revision_root(tmp_path, "mat_late_reject", rev.revision).exists()

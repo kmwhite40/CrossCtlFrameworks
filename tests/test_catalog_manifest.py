@@ -78,3 +78,32 @@ def test_recorded_hashes_match_bytes_on_disk(tmp_path: Path) -> None:
     for name, want in manifest["files"].items():
         got = hashlib.sha256((tmp_path / name).read_bytes()).hexdigest()
         assert got == want
+
+
+def test_regenerating_over_an_existing_manifest_excludes_it(tmp_path: Path) -> None:
+    """The exclusion only bites on the second call -- the first has none to glob.
+
+    Re-importing into a directory that already holds a manifest must not hash
+    the manifest into its own files map, which would make it unverifiable.
+    """
+    _full_set(tmp_path)
+    first = generate_manifest(
+        tmp_path,
+        oscal_version="5.2.0",
+        source_url="https://example.test/catalog.json",
+        upstream_commit_sha=None,
+        retrieved_at="2026-09-14",
+    )
+    assert (tmp_path / "MANIFEST.json").is_file()
+
+    second = generate_manifest(
+        tmp_path,
+        oscal_version="5.2.0",
+        source_url="https://example.test/catalog.json",
+        upstream_commit_sha=None,
+        retrieved_at="2026-09-15",
+    )
+    assert "MANIFEST.json" not in second["files"]
+    assert second["files"] == first["files"]
+    # And it still round-trips through the real verifier.
+    assert _verify(tmp_path)["files"] == second["files"]
