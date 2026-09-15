@@ -730,6 +730,42 @@ Revised matrix row: **#4 EXISTING (one provider)**.
 **Remaining:** #7 patch orchestration and #9 PuppetDB — both optional, both
 downstream of #4, and both now unblocked.
 
+## 6.2h Status — #7 is built as measurement and governance (2026-09-15)
+
+**Implemented and verified**, with its scope narrower than the name implies and
+stated as such.
+
+Discovery reshaped it. Concord already normalized five scanner formats into
+POA&Ms with severity, asset and identification date, reconciled
+deterministically. The data was complete; two things were missing.
+
+**Nothing measured remediation against a declared timeframe.** SI-2 requires
+flaws fixed within an organization-defined period, and that parameter existed
+in Concord *only as free text in an SSP template* — a sentence in a document
+with nothing comparing it to reality. `patching/sla.py` now measures it, with
+`unknown` as its own bucket (a finding with no identification date cannot be
+*shown* to have been remediated in time, and unknowns stay in the compliance
+denominator so poor record-keeping cannot improve the score).
+
+**Patching was not organized.** `PatchCampaign` groups open flaws into ordered
+waves — a canary of one first, so a bad patch's blast radius is bounded —
+refusing overlapping windows, empty campaigns, and out-of-order completion.
+
+**Nothing applies a patch, and no route implies one** (a test enumerates the
+OpenAPI paths to keep it that way). Concord has no endpoint-management
+provider; a wave records completion with evidence or references an enforcement
+plan (#4) when a deployment supplies one. That is a seam, not a stub — the same
+call made for SCN.
+
+Spec `docs/superpowers/specs/2026-09-15-flaw-remediation-design.md`, plan
+`docs/superpowers/plans/2026-09-15-flaw-remediation.md`.
+
+Revised matrix row: **#7 EXISTING (measurement and governance; no executor)**.
+
+**Remaining: #9 PuppetDB only** — a read-only inventory source implementing
+`ConfigConnector`, flagged optional in the directive and cheap now that
+everything it would feed exists.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem
