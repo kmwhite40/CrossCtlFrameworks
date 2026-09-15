@@ -30,6 +30,7 @@ from ..models_grc import (
 )
 from ..posture.checks import ResourceFinding
 from . import bus
+from .waivers import cover, waivers_for_test
 
 log = get_logger(__name__)
 
@@ -407,26 +408,52 @@ async def record_result(
     test.last_status = status
     test.last_tested_at = datetime.now(UTC)
     await session.flush()
+    resource_rows: list[ControlTestResourceResult] = []
     for f in resources:
         # Truncated rather than rejected: an over-long resource id must not
         # cost the whole run its recorded result.
-        session.add(
-            ControlTestResourceResult(
-                result_id=res.id,
-                resource_id=f.resource_id[:512],
-                resource_type=f.resource_type[:64],
-                verdict=f.verdict,
-                observed=f.observed,
-                detail=f.detail,
-            )
+        row = ControlTestResourceResult(
+            result_id=res.id,
+            resource_id=f.resource_id[:512],
+            resource_type=f.resource_type[:64],
+            verdict=f.verdict,
+            observed=f.observed,
+            detail=f.detail,
         )
+        resource_rows.append(row)
+        session.add(row)
     if resources:
         await session.flush()
+
+    # Waivers are consulted only here -- after every observation is persisted,
+    # so no bug in waiver logic can cost a recorded finding. A waiver
+    # suppresses the *consequence* and never the evidence: the status stays
+    # `fail`, the resource rows stay, last_status stays, and effective_verdict
+    # still reports the failure. See
+    # docs/superpowers/specs/2026-09-15-waivers-design.md section 2.
+    coverage = None
+    if status in ("fail", "warn"):
+        candidates = await waivers_for_test(session, test)
+        if candidates:
+            coverage = cover(resources, candidates, today=datetime.now(UTC).date())
+            res.waived = coverage.waived
+            for row, f in zip(resource_rows, resources, strict=True):
+                waiver_id = coverage.by_resource.get(f.resource_id)
+                if waiver_id is not None:
+                    row.waiver_id = waiver_id
+            await session.flush()
+
     # The recovery condition is deliberately unchanged by the widened
     # vocabulary: only `pass` from fail/warn clears a failure. Neither
     # not_applicable nor manual_review_required asserts the weakness cleared.
+    #
+    # A fully waived failure takes NEITHER branch. It must not alert, and it
+    # must not be mistaken for a recovery -- nothing was fixed, the finding was
+    # accepted, and treating it as recovery would resolve the remediation task
+    # a human still owns.
     if status in ("fail", "warn"):
-        await _alert_on_failure(session, test, status, detail or "")
+        if coverage is None or not coverage.suppress:
+            await _alert_on_failure(session, test, status, detail or "")
     elif status == "pass" and previous_status in ("fail", "warn"):
         await _resolve_on_recovery(session, test, result_id=res.id)
     await bus.emit(
