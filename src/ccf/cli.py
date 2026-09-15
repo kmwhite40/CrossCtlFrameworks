@@ -306,6 +306,44 @@ def notify_digest() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="enforcement-plans")
+def enforcement_plans(
+    status: str = typer.Option(None, "--status", help="Filter by plan status"),
+) -> None:
+    """List remediation plans. Read-only, deliberately.
+
+    There is no CLI command that approves or applies a plan. A shell one-liner
+    is the wrong interface for an irreversible change to a production tenant:
+    applying requires the API, where the role gate and the separation-of-duties
+    check live with an authenticated identity attached.
+    """
+
+    async def _run() -> None:
+        from .models_enforcement import RemediationPlan  # noqa: PLC0415
+
+        async with session_scope() as session:
+            stmt = select(RemediationPlan).order_by(RemediationPlan.id.desc())
+            if status is not None:
+                stmt = stmt.where(RemediationPlan.status == status)
+            rows = (await session.execute(stmt)).scalars().all()
+            out = [
+                {
+                    "id": p.id,
+                    "system_id": p.system_id,
+                    "check_key": p.check_key,
+                    "status": p.status,
+                    "resources": p.resource_count,
+                    "requested_by": p.requested_by,
+                    "approved_by": p.approved_by,
+                    "refusal_reason": p.refusal_reason,
+                }
+                for p in rows
+            ]
+        console.print_json(json.dumps(out, default=str))
+
+    asyncio.run(_run())
+
+
 @app.command(name="packs-sync")
 def packs_sync(
     org_id: int = typer.Option(None, "--org-id", help="One organization (default: all)"),
