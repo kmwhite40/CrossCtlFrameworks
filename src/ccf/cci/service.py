@@ -188,3 +188,64 @@ async def load_cci_overlay(session: AsyncSession, *, path: Path | None = None) -
         written += 1
     await session.flush()
     return written
+
+
+@dataclass(frozen=True)
+class CciCoverage:
+    cci: str
+    status: str
+    type: str
+    definition: str
+    raw_index: str
+    oscal_part_id: str | None
+
+
+async def ccis_for_control(
+    session: AsyncSession, canonical_control: str, *, revision: str = "5"
+) -> list[CciCoverage]:
+    """Which CCIs decompose this control, in the given revision."""
+    rows = (
+        await session.execute(
+            select(CciItemRow, CciControlRef)
+            .join(CciControlRef, CciControlRef.cci_id == CciItemRow.id)
+            .where(
+                CciControlRef.canonical_control == canonical_control,
+                CciControlRef.revision == revision,
+            )
+            .order_by(CciItemRow.cci, CciControlRef.raw_index)
+        )
+    ).all()
+    return [
+        CciCoverage(
+            cci=item.cci,
+            status=item.status,
+            type=item.type,
+            definition=item.definition,
+            raw_index=ref.raw_index,
+            oscal_part_id=ref.oscal_part_id,
+        )
+        for item, ref in rows
+    ]
+
+
+async def controls_for_cci(
+    session: AsyncSession, cci: str, *, revision: str = "5"
+) -> list[str]:
+    """The P5 seam: a scanner finding names a CCI and nothing else.
+
+    Returns canonical control ids, de-duplicated and ordered. Empty for an
+    unknown CCI -- an unrecognised identifier in a scan file is data, not an
+    error.
+    """
+    rows = (
+        await session.execute(
+            select(CciControlRef.canonical_control)
+            .join(CciItemRow, CciControlRef.cci_id == CciItemRow.id)
+            .where(
+                CciItemRow.cci == cci,
+                CciControlRef.revision == revision,
+                CciControlRef.canonical_control.is_not(None),
+            )
+        )
+    ).scalars().all()
+    return sorted({r for r in rows if r})
