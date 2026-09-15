@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -193,3 +194,67 @@ class PackTestResult(Base):
     status: Mapped[str] = mapped_column(String(8))  # pass|fail
     detail: Mapped[str | None] = mapped_column(Text)
     run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PackSource(Base):
+    """A git-backed location a tenant's desired state is declared in.
+
+    GitOps for desired state (CC&E #10). The repository holds the pack
+    manifest, changes arrive as reviewed commits, and the commit sha is the
+    version identity.
+
+    Deliberately **not** ``CatalogSource``, even though the polling mechanics
+    are shared. That table is global reference data -- NIST's catalog is the
+    same for every tenant -- while a desired-state repository belongs to one
+    organization. The *functions* in ``etl/sources.py`` are reused; the table
+    is not.
+
+    ``auto_install`` defaults to False for the reason ``CatalogSource``'s
+    ``auto_ingest`` does, and with more force: a pack rule executes against a
+    customer tenant, so a changed manifest is stored as ``pending_manifest``
+    and reviewed -- with the change-impact report -- before it takes effect. A
+    platform that silently changes what it asserts about a system because
+    someone merged a PR is one whose SSP no longer describes a reviewed
+    decision.
+    """
+
+    __tablename__ = "pack_sources"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    #: Which pack this source provides. Matches ``CompliancePack.pack_key``.
+    pack_key: Mapped[str] = mapped_column(String(64), index=True)
+    #: Raw manifest URL. A ``file://`` path is supported, which is what the
+    #: tests and an air-gapped deployment use.
+    url: Mapped[str] = mapped_column(String(1024))
+    #: The branch or tag being polled, for display. The authoritative identity
+    #: is the resolved commit sha, not this.
+    ref: Mapped[str | None] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_install: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    etag: Mapped[str | None] = mapped_column(String(255))
+    last_sha256: Mapped[str | None] = mapped_column(String(64))
+    last_commit_sha: Mapped[str | None] = mapped_column(String(64))
+    #: unchanged | pending | installed | invalid | error
+    last_status: Mapped[str | None] = mapped_column(String(16))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    #: A fetched, validated manifest awaiting review. Empty when nothing is
+    #: pending.
+    pending_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    pending_sha256: Mapped[str | None] = mapped_column(String(64))
+    pending_commit_sha: Mapped[str | None] = mapped_column(String(64))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "pack_key", "url", name="uq_pack_source_org_key_url"
+        ),
+    )
