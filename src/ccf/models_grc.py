@@ -300,6 +300,11 @@ class ControlTestResult(Base):
     #: evaluated, 3 failing" is answerable without counting child rows.
     evaluated: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     failing: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    #: How many of the failing resources an approved waiver accepted. Beside
+    #: evaluated/failing so "failing but accepted" is answerable without a
+    #: join. A waived result is still recorded as failing -- the waiver
+    #: suppresses the consequence, never the observation.
+    waived: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     #: The expectation as evaluated, recorded with the result so a later
     #: change to the check definition cannot rewrite history.
     expected: Mapped[str | None] = mapped_column(Text)
@@ -334,6 +339,12 @@ class ControlTestResourceResult(Base):
     resource_type: Mapped[str] = mapped_column(String(64))
     verdict: Mapped[str] = mapped_column(String(32), index=True)
     observed: Mapped[str | None] = mapped_column(Text)
+    #: The waiver that accepted this resource's finding, if any. ON DELETE SET
+    #: NULL, never CASCADE: deleting an acceptance must not delete the
+    #: observation it accepted -- the evidence outlives the waiver.
+    waiver_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ccf.waivers.id", ondelete="SET NULL")
+    )
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

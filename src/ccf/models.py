@@ -1882,8 +1882,8 @@ class CatalogIntegrityReport(Base):
 # The modules are bound to a name rather than imported bare. An unused-import
 # suppression comment is exactly what ``ruff --fix`` strips, which silently
 # reintroduced this bug once already; a real reference cannot be stripped.
-from . import models_capability, models_grc  # noqa: E402
+from . import models_capability, models_grc, models_waivers  # noqa: E402
 
 #: Sibling model modules whose tables must be in ``Base.metadata``.
-CROSS_MODULE_MODEL_MODULES = (models_capability, models_grc)
+CROSS_MODULE_MODEL_MODULES = (models_capability, models_grc, models_waivers)
 
