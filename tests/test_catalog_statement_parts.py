@@ -24,3 +24,13 @@ def test_statement_parts_absent_where_the_control_has_none() -> None:
     # SI-18 b has no sub-items in Rev 5 -- this is the CCI-005020 case.
     assert "si-18_smt.b" in si18.statement_parts
     assert "si-18_smt.b.1" not in si18.statement_parts
+
+
+def test_statement_root_id_is_present_for_bare_control_references() -> None:
+    cat = load_oscal_catalog()
+    ac1 = cat.get("AC-1")
+    assert ac1 is not None
+    # Task 3 resolves bare control references like "AC-1" (no item path)
+    # to exactly "ac-1_smt", the root statement part. This must be present
+    # even though 800-53r5 has empty prose on the root part itself.
+    assert "ac-1_smt" in ac1.statement_parts

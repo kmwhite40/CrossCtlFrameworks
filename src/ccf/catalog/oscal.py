@@ -211,7 +211,7 @@ def _walk_statement_part(part: dict[str, Any], acc: dict[str, str]) -> None:
     if pid:
         label = _part_label(part)
         prose = part.get("prose") or ""
-        acc[str(pid)] = f"{label} {prose}".strip() if label else prose
+        acc[str(pid)] = f"{label} {prose}".strip() if label else prose.strip()
     for sub in part.get("parts", []) or []:
         _walk_statement_part(sub, acc)
 
