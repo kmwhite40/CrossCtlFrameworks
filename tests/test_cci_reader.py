@@ -136,3 +136,65 @@ def test_empty_anchor_in_reference_row_is_skipped_not_raised(tmp_path) -> None:
     assert {i.cci for i in result.items} == {"CCI-900002", "CCI-900003"}
     item = next(i for i in result.items if i.cci == "CCI-900002")
     assert item.references == (CciReference(revision="5", raw_index="AC-1 a 1 (a)"),)
+
+
+def test_unrecognised_reference_title_is_kept_verbatim_not_dropped(tmp_path) -> None:
+    # An authority whose title isn't in _REVISIONS is still a real reference:
+    # storing it as the (truncated) verbatim title is what makes an
+    # unexpected publication visible instead of silently vanishing as "".
+    html = """<html><body><b>CCI List</b><br><b>Version 2020-01-01</b><hr>
+<table>
+<tr>
+<td class="header">CCI:</td><td>CCI-900004</td>
+<td class="header">Status:</td><td>draft</td>
+</tr>
+<tr>
+<td class="header">Contributor:</td><td>Test</td>
+<td class="header">Published Date:</td><td>2020-01-01</td>
+</tr>
+<tr><td class="header">Definition:</td><td colspan="3">A definition.</td></tr>
+<tr><td class="header">Type:</td><td colspan="3">policy</td></tr>
+<tr><td class="header">References:</td><td colspan="3">Other:
+<a href="http://x">Some Future Publication (v9)</a>:  AC-1 a</td></tr>
+</table>
+</body></html>"""
+    path = tmp_path / "unknown_title.html"
+    path.write_text(html, encoding="utf-8")
+
+    result = read_cci_html(path)
+
+    item = next(i for i in result.items if i.cci == "CCI-900004")
+    assert item.references == (
+        CciReference(revision="Some Future Publication (v9)", raw_index="AC-1 a"),
+    )
+
+
+def test_a_malformed_cci_id_is_not_stored_as_an_item(tmp_path) -> None:
+    # A "CCI:" cell whose value doesn't look like CCI-###### is not a
+    # trustworthy item -- storing it anyway would let a hand-edited or
+    # mis-rendered table entry masquerade as real DISA content.
+    html = """<html><body><b>CCI List</b><br><b>Version 2020-01-01</b><hr>
+<table>
+<tr>
+<td class="header">CCI:</td><td>CCI-900005</td>
+<td class="header">Status:</td><td>draft</td>
+</tr>
+<tr><td class="header">Definition:</td><td colspan="3">A definition.</td></tr>
+<tr><td class="header">Type:</td><td colspan="3">policy</td></tr>
+</table>
+<hr>
+<table>
+<tr>
+<td class="header">CCI:</td><td>CCI-NOTANUMBER</td>
+<td class="header">Status:</td><td>draft</td>
+</tr>
+<tr><td class="header">Definition:</td><td colspan="3">Malformed cci id.</td></tr>
+<tr><td class="header">Type:</td><td colspan="3">policy</td></tr>
+</table>
+</body></html>"""
+    path = tmp_path / "malformed_cci.html"
+    path.write_text(html, encoding="utf-8")
+
+    result = read_cci_html(path)
+
+    assert {i.cci for i in result.items} == {"CCI-900005"}

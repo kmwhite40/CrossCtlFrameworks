@@ -2234,3 +2234,34 @@ git commit -m "docs(cci): record the mutation results and mark G4's CCI half clo
 - **Do not write to `controls`, `framework_mappings`, or any `*_history` table.** The workbook owns those and the next ingest rebuilds them.
 - **Do not build CKL or XCCDF parsing.** That is P5, and `controls_for_cci` is the seam it will use.
 - After committing a task, run `git show --stat` and confirm the intended files are actually in the commit. A green suite answers "does the tree work", not "is the tree committed".
+
+## Mutation results
+
+Harness verified first: mutation #1 (the enhancement-absorption `while` loop) was applied and `test_leading_parenthetical_is_an_enhancement_not_an_item` failed before anything else was trusted. Every row below was applied, observed, and reverted individually; `git diff f2a96c7 -- src/` is empty at the end.
+
+| # | File | Mutation | Expected to fail | Result |
+|---|---|---|---|---|
+| 1 | `cci/resolve.py` | Remove the enhancement-absorption `while` loop | `test_leading_parenthetical_is_an_enhancement_not_an_item` | Caught |
+| 2 | `cci/resolve.py` | Return the part id unconditionally (drop `if part_id in part_ids`) | `test_unresolvable_item_keeps_its_control` | Caught |
+| 3 | `cci/resolve.py` | Drop the `oscal_id not in control_ids` check | `test_non_80053_reference_resolves_to_nothing_rather_than_guessing` | **Escaped** — the named test uses `"AC-1.1 (iii)"`, which `canonicalize()` already rejects before the mutated line ever runs, so all 7 tests in the file still passed with the guard gone |
+| 4 | `cci/reader.py` | Map an unknown reference title to `""` instead of the verbatim title | add a test if none fails | **Escaped** — the committed `CCI List.html` has no reference title outside the four known ones, so the fallback branch never executes against real data |
+| 5 | `cci/reader.py` | Drop the `_CCI_RE.match(cci)` guard in `_item` | `test_reads_every_cci_with_its_version` (count moves) | **Escaped** — the real file has no table that produces a non-matching `cci`, so the item count stayed at 5149 either way |
+| 6 | `cci/overlay.py` | Remove the `_REV5_CONTROL` filter | `test_only_rev5_spelled_rows_are_returned` | **Escaped** — confirmed by design: the module docstring already documents that the wording filter subsumes the spelling filter on the real file (same 2,362 rows, zero duplicates either way); the spelling guard is real "belt and braces" for a case the current file doesn't exercise |
+| 7 | `cci/service.py` | Drop the `skipped_unchanged` short-circuit | `test_second_load_of_the_same_file_is_a_no_op` | Caught |
+| 8 | `cci/service.py` | Keep the old refs (remove the `delete` before re-adding) | add a test if none fails | Caught — by the existing `test_changed_content_updates_items_and_replaces_references`, which failed on a `uq_cci_ref` unique-constraint violation (duplicate `(cci_id, revision, raw_index)`), not the assertions themselves |
+| 9 | `cci/service.py` | Attach overlay rows to unknown CCIs (remove the `pk is None` skip) | `test_overlay_attaches_only_to_known_ccis_and_names_its_source` | Caught — that named test doesn't exercise an unknown CCI (every real overlay row's CCI is in the loaded list), but the existing `test_overlay_row_for_unknown_cci_is_skipped_not_inserted` (a monkeypatched fixture case) does, and failed |
+| 10 | `cci/reconcile.py` | Report empty workbook cells as disagreements | `test_an_empty_workbook_cell_is_not_a_disagreement` | Caught |
+| 11 | `cci/reconcile.py` | Stop stripping `*` | `test_workbook_value_splits_and_strips_the_compliance_marker` | Caught — the current parser never captures `*` in the first place (`_CCI` only ever matches `CCI-\d{6}`); the mutation was realized as widening the regex to `CCI-\d{6}\*?` so the marker is captured instead of excluded, and the test failed on the trailing-`*` assertion |
+| 12 | `objectives.py` | Put `ap_acronym` back ahead of `identifier` | `test_label_prefers_the_rows_own_identifier` | **Escaped** — that test leaves `ap_acronym` unset (falsy) on both fixture rows, so `identifier or ap_acronym` and `ap_acronym or identifier` are indistinguishable; it can't tell which field was tried first |
+
+**5 of 12 mutations escaped** the row's named test; each escape was closed with a new, narrowly-targeted test (verified red under the mutation, green after reverting):
+
+- Row 3: `tests/test_cci_resolve.py::test_syntactically_valid_but_uncataloged_control_resolves_to_nothing` — `"ZZ-1"` is syntactically a valid control id (passes `canonicalize()`) but doesn't exist in the catalog, isolating the `oscal_id not in control_ids` check from the earlier syntax check.
+- Row 4: `tests/test_cci_reader.py::test_unrecognised_reference_title_is_kept_verbatim_not_dropped` — a synthetic HTML fixture with a reference title outside `_REVISIONS`, asserting the title is stored (truncated) verbatim rather than silently emptied.
+- Row 5: `tests/test_cci_reader.py::test_a_malformed_cci_id_is_not_stored_as_an_item` — a synthetic HTML fixture with a second table whose `CCI:` cell doesn't match `CCI-######`, asserting it produces no item.
+- Row 6: `tests/test_cci_overlay.py::test_rev4_spelled_control_is_excluded_even_with_rev5_wording` — a synthetic single-row `.ods` with a Rev. 4-spelled control number (`AC-1`) but Rev. 5-style "Determine if" procedure wording, isolating the spelling guard from the wording guard.
+- Row 12: `tests/test_assessment_objectives.py::test_identifier_wins_even_when_ap_acronym_is_also_populated` — a fixture row with both `identifier` and `ap_acronym` set to different, truthy values, isolating fallback *order* from fallback *presence*.
+
+Row 6's escape is not a gap to close in the guard itself — the module docstring already documents, with measured numbers, that the spelling filter is redundant on the real file and kept only as a defensive second check. The new test exists so that redundancy claim is itself verified rather than merely asserted.
+
+No production code was changed by this task: `git diff f2a96c7 -- src/` is empty. Only test files gained coverage: `tests/test_cci_resolve.py`, `tests/test_cci_reader.py`, `tests/test_cci_overlay.py`, `tests/test_assessment_objectives.py`.

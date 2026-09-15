@@ -60,6 +60,18 @@ def test_non_80053_reference_resolves_to_nothing_rather_than_guessing() -> None:
     assert r.oscal_part_id is None
 
 
+def test_syntactically_valid_but_uncataloged_control_resolves_to_nothing() -> None:
+    # "ZZ-1" satisfies canonicalize()'s family-then-number shape, so it is not
+    # caught by the non-800-53-syntax guard above -- it is caught by the
+    # separate "does this control actually exist in the catalog" check.
+    # Dropping that check would leave canonical_control/oscal_control_id
+    # populated for a control the catalog has never heard of.
+    r = _r("ZZ-1")
+    assert r.canonical_control is None
+    assert r.oscal_control_id is None
+    assert r.oscal_part_id is None
+
+
 def test_every_rev5_reference_but_one_resolves_to_a_part() -> None:
     """The measured rate. A regression here means the rule or the catalog moved."""
     items = read_cci_html(DEFAULT_CCI_HTML).items

@@ -814,6 +814,61 @@ source)**.
 
 **CC&E #1–#12 are now all built.**
 
+## 6.2j Status — G4's CCI half is built, outside the CC&E-12 (2026-09-15)
+
+Not a CC&E ask — this closes **G4** from
+`docs/superpowers/assessments/2026-09-14-grc-capability-gap-analysis.md`, the
+DISA CCI gap this document's own §2.5 flagged as unregistered. Recorded here
+because it is the same kind of "implemented and verified" status update as
+6.2a–6.2i, on the CCI source spine described in
+`docs/superpowers/specs/2026-09-15-cci-source-spine-design.md`
+(`ccf/cci/reader.py`, `resolve.py`, `overlay.py`, `service.py`,
+`reconcile.py`, a `cci` CLI group, three global reference tables under
+migration 0074).
+
+CCI was shallow here, not absent, and that correction shaped the design: the
+cross-mapping workbook's column 163 already produced unparsed,
+**one-directional** CCI strings in `framework_mappings` — "which CCIs touch
+this control," never "which control does CCI-003612 belong to." The reverse
+index is what was missing, and it is the whole point: a STIG or SCAP finding
+names a CCI and nothing else.
+
+Four judgements are load-bearing and each is pinned by a test:
+
+- **`"All Rev. 5 CCIs.ods"` is not all Rev. 5.** 1,010 of its 3,626 rows are
+  Rev. 4 spelling, and zero-padded spelling alone cannot discriminate
+  generations for a two-digit control number (`AC-10` is identical in both).
+  The discriminator that works is the 800-53A objective phrasing "Determine
+  if," which yields 2,362 rows with zero duplicate `(control, ap, cci)`
+  triples.
+- **A leading `(n)` in a DISA reference is an enhancement, not a statement
+  item.** `AC-2 (1)` is `ac-2.1`, not `ac-2_smt.1`. With that rule, 3,848 of
+  3,849 Rev. 5 references resolve to an exact OSCAL part id; the one failure
+  (`CCI-005020` citing `SI-18 b 1` against a control with no `b.1`) is why
+  resolution is opportunistic — `oscal_part_id` is nullable — and never a
+  gate on the load.
+- **The reconciliation report's identifier fold must keep numeric
+  parenthesised groups and drop alphabetic ones**, or it silently skips 48.2%
+  of CCI-bearing workbook rows. The first version did exactly that, reporting
+  1,129 disagreements where the true figure is 2,906.
+- **Objective labels were fixed without any CCI data.** `Control.identifier`
+  already carries the item path and is UNIQUE; `ap_acronym` is populated on 4
+  of 5,435 rows. The label-source correction (identifier before ap_acronym)
+  landed on the same branch and needed nothing from this spine to be right.
+
+Verified by mutation testing against the guards named above: 12 mutations
+run, 7 caught immediately by the test named for them or an existing
+neighbor, 5 escaped and were closed with a new, narrowly-targeted test each
+(`docs/superpowers/plans/2026-09-15-cci-source-spine.md`'s "Mutation
+results" section has the row-by-row detail). No production code changed
+closing those escapes — only test coverage did.
+
+**G4's CCI half is closed.** **P5 (STIG/SCAP ingestion) is unblocked but not
+built** — `controls_for_cci` is the seam it will use: a scanner finding names
+a CCI and nothing else, and that function is the only thing that needs to
+exist for a `.ckl` or XCCDF parser to have somewhere to land. No CKL or
+XCCDF parsing was written here; that is P5's own scope.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem

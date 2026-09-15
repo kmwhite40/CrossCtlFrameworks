@@ -295,6 +295,32 @@ async def test_label_prefers_the_rows_own_identifier(clean_migrated_db) -> None:
 
 
 @pytest.mark.asyncio
+async def test_identifier_wins_even_when_ap_acronym_is_also_populated(
+    clean_migrated_db,
+) -> None:
+    """identifier must be tried BEFORE ap_acronym, not merely be present in the
+    fallback chain: a row with both populated must still label from identifier.
+    ``test_label_prefers_the_rows_own_identifier`` leaves ap_acronym unset on
+    both rows, so it can't tell ``identifier or ap_acronym`` apart from
+    ``ap_acronym or identifier`` -- this uses two different, both-truthy values."""
+    try:
+        async with session_scope() as s:
+            s.add(
+                Control(
+                    identifier="ZZ-02a.[01]", sequence_control="ZZ-02",
+                    ap_acronym="ZZ-02-WRONG", control_name=None,
+                    assessment_objective="an objective", source_row=1,
+                )
+            )
+        async with session_scope() as s:
+            got = await objectives_for(s, "ZZ-02")
+        assert [o.label for o in got] == ["ZZ-02a.[01]"]
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Control).where(Control.sequence_control == "ZZ-02"))
+
+
+@pytest.mark.asyncio
 async def test_ordinal_fallback_survives_a_missing_identifier(clean_migrated_db) -> None:
     """identifier is NOT NULL in practice, but the fallback must still run --
     removing it silently would make a future schema change label-less."""

@@ -1,4 +1,6 @@
 """The .ods is mixed-generation despite its name; only Rev. 5 rows load."""
+import zipfile
+
 import pytest
 from sqlalchemy import func, select
 
@@ -12,6 +14,42 @@ from ccf.models_cci import CciAssessmentOverlay, CciItemRow
 @pytest.fixture(scope="module")
 def rows():
     return read_overlay_ods(DEFAULT_CCI_ODS)
+
+
+def _write_ods(path, control: str, procedure: str) -> None:
+    """A minimal, single-row .ods -- just enough structure for read_overlay_ods."""
+    content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content
+    xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+    xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+    xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0">
+<office:body><office:spreadsheet><table:table>
+<table:table-row>
+<table:table-cell><text:p>Inherited</text:p></table:table-cell>
+<table:table-cell><text:p>{control}</text:p></table:table-cell>
+<table:table-cell><text:p>AC-01a</text:p></table:table-cell>
+<table:table-cell><text:p>CCI-000001</text:p></table:table-cell>
+<table:table-cell><text:p>EM-1</text:p></table:table-cell>
+<table:table-cell><text:p>Definition text</text:p></table:table-cell>
+<table:table-cell><text:p>{procedure}</text:p></table:table-cell>
+<table:table-cell><text:p>Examine</text:p></table:table-cell>
+</table:table-row>
+</table:table></office:spreadsheet></office:body></office:document-content>"""
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr("content.xml", content.encode("utf-8"))
+
+
+def test_rev4_spelled_control_is_excluded_even_with_rev5_wording(tmp_path) -> None:
+    # The wording test subsumes the spelling test on the real committed file
+    # (see the module docstring), but the spelling guard is kept as a second,
+    # independent check -- this is the synthetic case where only the spelling
+    # guard would catch a mis-generation row: a Rev. 4-spelled control number
+    # ("AC-1", not "AC-01") whose procedure text happens to start with the
+    # Rev. 5 "Determine if" phrasing.
+    path = tmp_path / "synthetic.ods"
+    _write_ods(path, control="AC-1", procedure="Determine if the organization does something.")
+
+    assert read_overlay_ods(path) == []
 
 
 def test_only_rev5_spelled_rows_are_returned(rows) -> None:
