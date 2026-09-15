@@ -37,7 +37,14 @@ from ..models_enforcement import RemediationPlan
 from ..models_grc import ControlTest, ControlTestResult
 from ..posture.drift import findings_for_result
 from ..posture.latest import latest_result_ids
-from .types import RemediationProvider, RemediationStep, StepOutcome, build_steps, provider_for
+from . import registry as _registry  # noqa: F401 - registers providers
+from .types import (
+    RemediationProvider,
+    RemediationStep,
+    StepOutcome,
+    build_steps,
+    provider_for,
+)
 
 log = get_logger(__name__)
 
@@ -52,6 +59,24 @@ async def _audit(session: AsyncSession, **kw: Any) -> None:
     await record_event(session, **kw)
     # record_event adds without flushing and the session does not autoflush.
     await session.flush()
+
+
+async def _bind_provider(
+    session: AsyncSession, check_key: str, org_id: int | None
+) -> RemediationProvider | None:
+    """The provider for a check, bound to this organization's WRITE credential.
+
+    A distinct ``connector_type`` from the read credential, so a deployment
+    that never created one cannot write: there is no fallback path, by
+    construction.
+    """
+    from ..connectors.credentials import resolve_credential  # noqa: PLC0415
+
+    cls = provider_for(check_key)
+    if cls is None:
+        return None
+    credential = await resolve_credential(session, org_id, cls.write_credential_type)
+    return cls(credential=credential)
 
 
 def _limit(explicit: int | None) -> int:
@@ -100,7 +125,7 @@ async def create_plan(
     system = await session.get(System, system_id)
     if system is None or system.deleted_at is not None:
         raise EnforcementError(f"unknown system: {system_id}")
-    chosen = provider if provider is not None else provider_for(check_key)
+    chosen = provider or await _bind_provider(session, check_key, system.organization_id)
     if chosen is None:
         raise EnforcementError(f"no remediation provider handles check {check_key!r}")
 
@@ -252,7 +277,9 @@ async def apply_plan(
     """
     if plan.status != "approved":
         raise EnforcementError(f"plan is not approved (status={plan.status})")
-    chosen = provider if provider is not None else provider_for(plan.check_key)
+    chosen = provider or await _bind_provider(
+        session, plan.check_key, plan.organization_id
+    )
     if chosen is None:
         raise EnforcementError(f"no remediation provider handles check {plan.check_key!r}")
     if not await chosen.is_write_configured():
@@ -326,7 +353,9 @@ async def reverse_plan(
     """
     if plan.status != "applied":
         raise EnforcementError(f"plan is not applied (status={plan.status})")
-    chosen = provider if provider is not None else provider_for(plan.check_key)
+    chosen = provider or await _bind_provider(
+        session, plan.check_key, plan.organization_id
+    )
     if chosen is None:
         raise EnforcementError(f"no remediation provider handles check {plan.check_key!r}")
 

@@ -20,6 +20,7 @@ class _Provider:
     key = "fake"
     write_credential_type = "fake_write"
     required_permissions = ("Fake.Write.All",)
+    handled_checks = ("fake.check",)
 
     def __init__(self, *, reversible: bool = True, write_ok: bool = True) -> None:
         self.reversible = reversible
@@ -27,9 +28,6 @@ class _Provider:
         self.applied: list[str] = []
         self.reversed: list[str] = []
         self.planned: list[str] = []
-
-    def handles(self, check_key: str) -> bool:
-        return check_key.startswith("fake.")
 
     async def is_write_configured(self) -> bool:
         return self.write_ok

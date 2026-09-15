@@ -96,21 +96,28 @@ class RemediationProvider(Protocol):
     #: two providers claiming the same check.
     handled_checks: tuple[str, ...]
 
-    def handles(self, check_key: str) -> bool: ...
+    #: Declared so the registry can hold classes and the service can bind one
+    #: organization's write credential to a fresh instance -- matching
+    #: ``connectors.get_connector``. A provider is never shared between
+    #: tenants, because a shared instance would carry a credential across a
+    #: tenant boundary.
+    def __init__(self, credential: dict[str, Any] | None = None) -> None: ...
+
     async def is_write_configured(self) -> bool: ...
     async def plan(self, findings: Sequence[ResourceFinding]) -> list[RemediationStep]: ...
     async def apply(self, step: RemediationStep) -> StepOutcome: ...
     async def reverse(self, step: RemediationStep) -> StepOutcome: ...
 
 
-#: Every registered provider. Populated by :mod:`ccf.enforcement.registry`,
-#: which is imported for its side effect; kept here so ``types`` has no import
-#: back-edge to the provider modules.
-PROVIDER_REGISTRY: list[RemediationProvider] = []
+#: Registered provider **classes**, matching ``connectors.get_connector``'s
+#: shape: a provider is instantiated bound to one organization's write
+#: credential, never shared. Populated by :mod:`ccf.enforcement.providers`,
+#: which is imported for its side effect.
+PROVIDER_REGISTRY: list[type[RemediationProvider]] = []
 
 
-def register(provider: RemediationProvider) -> RemediationProvider:
-    """Add a provider, refusing a check another provider already claims.
+def register(provider: type[RemediationProvider]) -> type[RemediationProvider]:
+    """Add a provider class, refusing a check another provider already claims.
 
     Two providers handling one check would make the change that gets applied
     depend on registry order -- which is not a property anyone should have to
@@ -130,10 +137,16 @@ def register(provider: RemediationProvider) -> RemediationProvider:
     return provider
 
 
-def provider_for(check_key: str) -> RemediationProvider | None:
-    """The provider that can remediate this check, or ``None``."""
+def provider_for(check_key: str) -> type[RemediationProvider] | None:
+    """The provider class that can remediate this check, or ``None``.
+
+    Matched on :attr:`RemediationProvider.handled_checks` rather than a
+    ``handles()`` method, so there is one source of truth for what a provider
+    claims -- a method that could disagree with the attribute the registry
+    guards against is exactly the ambiguity to avoid here.
+    """
     for provider in PROVIDER_REGISTRY:
-        if provider.handles(check_key):
+        if check_key in provider.handled_checks:
             return provider
     return None
 
