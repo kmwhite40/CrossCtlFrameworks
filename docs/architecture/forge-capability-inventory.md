@@ -494,7 +494,7 @@ baseline**, which is a different problem than converging a Linux host.
 |---|---|---|
 | Continuous execution loop | **EXISTING** | `governance/scheduler.py` — an asyncio cycle running catalog drift poll, ConMon scan, digest, and connector collection; GLOBAL vs PER-TENANT jobs with the tenant clamped per iteration so RLS backstops app-layer scoping |
 | Provider abstraction | **EXISTING** | `connectors/base.py:ConfigConnector` — `capture()` / `verify()` / `scan()`, per-org credentials, `PARAMETER_MAP` advertising intended coverage |
-| Policy-as-code packaging | **EXISTING** | `packs/` — JSON manifests, validate/install/coverage/`run_tests`, written only under the installing tenant |
+| Policy-as-code packaging | **EXISTING (format only — see correction below)** | `packs/` — JSON manifests, validate/install/coverage/`run_tests`, written only under the installing tenant |
 | Check registry (the rules themselves) | **EXISTING** | `posture/checks.py:CHECK_REGISTRY` + `posture/providers/m365.py` — declarative checks with `required_permissions`, per-resource findings |
 | Assessment result spine | **EXISTING** | `ControlTestResult` via `governance/control_tests.py:record_result` — append-only time series, and the **only** writer (alerting, POA&M, recovery, events all hang off it) |
 | Findings → remediation workflow | **EXISTING** | `governance/reactions.py` + POA&M auto-close; §2.6, §2.7 above |
@@ -526,6 +526,29 @@ baseline**, which is a different problem than converging a Linux host.
 
 **Count: 2 EXISTING/WIRE, 6 NEEDS EXTENSION, 4 MISSING** — of which one (#4) is
 gated and two (#7, #10) depend on a gated or unbuilt prerequisite.
+
+## 6.2a Correction — the declaration format has no reader
+
+Found while designing #1: **`PackRule` is written by `packs/service.install_pack`,
+deleted on upgrade, and never read by anything.** Three bundled packs declare
+`rules` entries that no code evaluates. Searching `src/ccf` for `PackRule` or
+`pack_rules` returns only the install path.
+
+So §6.1's "policy-as-code packaging — EXISTING" is true of the *packaging*
+(validated, versioned, tenant-scoped, audit-logged, atomically replaced on
+upgrade) and false of the *runtime*. Symmetrically, `posture/checks.py` has a
+working runtime whose rules are hardcoded Python, so declaring a new expectation
+needs a code release and every tenant gets the same thresholds.
+
+This makes #1 smaller and better-shaped than first classified: not "design a
+desired-state subsystem" but **bridge a validated declaration format to a
+working evaluation runtime**. Spec:
+`docs/superpowers/specs/2026-09-14-declared-posture-checks-design.md`. It is
+also exactly programme item P2b, and `posture/checks.py`'s own docstring already
+anticipated it — *"the registry is deliberately the same shape as
+`etl.sources.DEFAULT_SOURCES` so P2b's move into `packs/` relocates content
+rather than redesigning it."* Building CC&E #1 as a new subsystem would have
+forked P2b.
 
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
