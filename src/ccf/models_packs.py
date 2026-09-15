@@ -236,7 +236,16 @@ class PackSource(Base):
     auto_install: Mapped[bool] = mapped_column(Boolean, default=False)
 
     etag: Mapped[str | None] = mapped_column(String(255))
+    #: SHA-256 of the raw bytes at the URL. Answers "did the file change",
+    #: which is what change detection needs.
     last_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: Canonical SHA of the parsed manifest, the same digest
+    #: ``install_pack`` stores on ``CompliancePack.manifest_sha``. Answers "is
+    #: the installed manifest the one this source provided", which is a
+    #: different question -- whitespace and key order change the raw bytes
+    #: without changing the manifest, so comparing the raw sha to an installed
+    #: pack would never match.
+    last_manifest_sha: Mapped[str | None] = mapped_column(String(64))
     last_commit_sha: Mapped[str | None] = mapped_column(String(64))
     #: unchanged | pending | installed | invalid | error
     last_status: Mapped[str | None] = mapped_column(String(16))
@@ -247,6 +256,7 @@ class PackSource(Base):
     #: pending.
     pending_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     pending_sha256: Mapped[str | None] = mapped_column(String(64))
+    pending_manifest_sha: Mapped[str | None] = mapped_column(String(64))
     pending_commit_sha: Mapped[str | None] = mapped_column(String(64))
 
     created_at: Mapped[datetime] = mapped_column(

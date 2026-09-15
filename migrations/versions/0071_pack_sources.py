@@ -53,7 +53,13 @@ def upgrade() -> None:
         sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("auto_install", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("etag", sa.String(length=255), nullable=True),
+        # Two digests, two questions. last_sha256 is the raw bytes at the URL
+        # ("did the file change"); last_manifest_sha is the canonical manifest
+        # digest install_pack stores, so divergence can compare like with like
+        # -- whitespace and key order move the raw sha without changing the
+        # manifest.
         sa.Column("last_sha256", sa.String(length=64), nullable=True),
+        sa.Column("last_manifest_sha", sa.String(length=64), nullable=True),
         sa.Column("last_commit_sha", sa.String(length=64), nullable=True),
         sa.Column("last_status", sa.String(length=16), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
@@ -65,6 +71,7 @@ def upgrade() -> None:
             server_default=sa.text("'{}'::jsonb"),
         ),
         sa.Column("pending_sha256", sa.String(length=64), nullable=True),
+        sa.Column("pending_manifest_sha", sa.String(length=64), nullable=True),
         sa.Column("pending_commit_sha", sa.String(length=64), nullable=True),
         sa.Column(
             "created_at",
