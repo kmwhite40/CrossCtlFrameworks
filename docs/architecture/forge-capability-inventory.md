@@ -550,6 +550,27 @@ anticipated it — *"the registry is deliberately the same shape as
 rather than redesigning it."* Building CC&E #1 as a new subsystem would have
 forked P2b.
 
+## 6.2b Status — #1 is built (2026-09-14)
+
+Capability #1 (desired-state declaration) is **implemented and verified**, which
+also completes programme item P2b. `PackRule` has a reader.
+
+A tenant declares a posture check in a pack manifest in one of two forms: **Form
+A** parameterizes a platform evaluator (the platform keeps logic that needs a
+clock or real arithmetic; the tenant supplies the threshold), and **Form B**
+supplies a closed, fail-closed predicate for the genuinely declarative shapes.
+Validation refuses anything unevaluable at install, so a pack that installs can
+be scanned. Each pack version's manifest is now retained, so a desired-state
+change is diffable — which is what #6 (change impact) and the
+configuration-timeline ask needed for *desired* state.
+
+Spec `docs/superpowers/specs/2026-09-14-declared-posture-checks-design.md`,
+plan `docs/superpowers/plans/2026-09-14-declared-posture-checks.md` (results
+section carries the mutation-testing outcome and one deferred finding).
+
+Revised matrix rows: **#1 EXISTING**; **#6 partially satisfied** for desired
+state (observed-state change impact still open); **#11** unchanged.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem
