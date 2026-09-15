@@ -1,12 +1,35 @@
 """Loading the real list is idempotent and content-addressed."""
+from pathlib import Path
+
 import pytest
 from sqlalchemy import func, select
 
+from ccf.cci.reader import DEFAULT_CCI_HTML
 from ccf.cci.service import load_cci_list
 from ccf.db import session_scope
 from ccf.models_cci import CciControlRef, CciItemRow
 
 pytestmark = pytest.mark.asyncio
+
+#: CCI-000001's definition, verbatim from the committed file. Modified below
+#: to prove an item-level change is picked up and stored.
+_ORIGINAL_DEFINITION = (
+    "The organization develops an access control policy that addresses purpose, "
+    "scope, roles, responsibilities, management commitment, coordination among "
+    "organizational entities, and compliance."
+)
+
+#: One whole reference row belonging to a DIFFERENT CCI (CCI-000004). Removed
+#: below to prove wholesale reference replacement actually drops a row rather
+#: than merely adding new ones.
+_REMOVED_REFERENCE_ROW = (
+    '      <tr>\n'
+    '        <td class="header"></td>\n'
+    '        <td colspan="3">NIST:  '
+    '<a href="http://csrc.nist.gov/publications/PubsSPs.html">'
+    "NIST SP 800-53A (v1)</a>:  AC-1.1 (iv and v)</td>\n"
+    "      </tr>\n"
+)
 
 
 async def test_load_writes_every_item_and_reference(clean_migrated_db) -> None:
@@ -69,4 +92,70 @@ async def test_reverse_index_is_populated(clean_migrated_db) -> None:
         async with session_scope() as s:
             rows2 = (await s.execute(select(CciItemRow))).scalars().all()
             for row in rows2:
+                await s.delete(row)
+
+
+async def test_changed_content_updates_items_and_replaces_references(
+    tmp_path: Path,
+    clean_migrated_db,
+) -> None:
+    """A reload with different bytes updates every item and drops removed refs.
+
+    The other tests here either load into an empty table (all-created) or
+    reload byte-identical content (short-circuited by the skipped_unchanged
+    check before either pass runs). Neither exercises the update-existing +
+    wholesale-replace-references path, which is exactly what the two-pass
+    flush restructuring could get wrong. This test builds a modified copy of
+    the real file -- one CCI's definition changed, a different CCI's
+    reference dropped -- and loads that.
+    """
+    original = DEFAULT_CCI_HTML.read_text(encoding="utf-8")
+    assert original.count(_ORIGINAL_DEFINITION) == 1
+    assert original.count(_REMOVED_REFERENCE_ROW) == 1
+    modified = original.replace(
+        _ORIGINAL_DEFINITION, _ORIGINAL_DEFINITION + " (TEST-MODIFIED)"
+    ).replace(_REMOVED_REFERENCE_ROW, "")
+    tmp_html = tmp_path / "CCI List modified.html"
+    tmp_html.write_text(modified, encoding="utf-8")
+
+    try:
+        async with session_scope() as s:
+            await load_cci_list(s)  # baseline: the real, committed file
+
+        async with session_scope() as s:
+            second = await load_cci_list(s, path=tmp_html)
+
+        assert second.skipped_unchanged is False
+        assert second.items_created == 0
+        assert second.items_updated == 5149
+
+        async with session_scope() as s:
+            edited = (
+                await s.execute(
+                    select(CciItemRow).where(CciItemRow.cci == "CCI-000001")
+                )
+            ).scalar_one()
+            assert edited.definition == _ORIGINAL_DEFINITION + " (TEST-MODIFIED)"
+
+            trimmed = (
+                await s.execute(
+                    select(CciItemRow).where(CciItemRow.cci == "CCI-000004")
+                )
+            ).scalar_one()
+            refs = (
+                await s.execute(
+                    select(CciControlRef).where(CciControlRef.cci_id == trimmed.id)
+                )
+            ).scalars().all()
+            # The real file gives CCI-000004 three references (v3, v4,
+            # 800-53A); the modified copy drops the 800-53A one.
+            assert len(refs) == 2
+            assert not any(
+                r.revision == "800-53A" and r.raw_index == "AC-1.1 (iv and v)"
+                for r in refs
+            )
+    finally:
+        async with session_scope() as s:
+            rows3 = (await s.execute(select(CciItemRow))).scalars().all()
+            for row in rows3:
                 await s.delete(row)

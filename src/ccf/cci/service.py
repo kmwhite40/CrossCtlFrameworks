@@ -11,7 +11,7 @@ from ..catalog.oscal import OscalCatalog, load_oscal_catalog
 from ..logging import get_logger
 from ..models_cci import CciControlRef, CciItemRow
 from .reader import DEFAULT_CCI_HTML, read_cci_html
-from .resolve import ResolvedReference, catalog_index, resolve_reference
+from .resolve import catalog_index, resolve_reference
 
 log = get_logger(__name__)
 
@@ -96,17 +96,20 @@ async def load_cci_list(
     for i, item in enumerate(parsed.items, start=1):
         row = rows[item.cci]
         for ref in item.references:
+            # Only Rev. 5 has a catalog here, so only Rev. 5 gets the real
+            # part_ids to check the reference's item against -- passing an
+            # empty set for every other revision guarantees oscal_part_id
+            # comes back null by construction (not a failed lookup) without
+            # spending a real catalog membership check on a result that
+            # would be discarded anyway. canonical_control / oscal_control_id
+            # are unaffected: both are derived from control_ids alone, which
+            # every revision still receives.
             resolved = resolve_reference(
-                ref.raw_index, control_ids=control_ids, part_ids=part_ids
+                ref.raw_index,
+                control_ids=control_ids,
+                part_ids=part_ids if ref.revision == "5" else frozenset(),
             )
-            if ref.revision != "5":
-                # Only Rev. 5 has a catalog here; null by construction, not failure.
-                resolved = ResolvedReference(
-                    canonical_control=resolved.canonical_control,
-                    oscal_control_id=resolved.oscal_control_id,
-                    oscal_part_id=None,
-                )
-            elif resolved.oscal_part_id is None:
+            if ref.revision == "5" and resolved.oscal_part_id is None:
                 unresolved += 1
             session.add(
                 CciControlRef(
