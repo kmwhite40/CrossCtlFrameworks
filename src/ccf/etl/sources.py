@@ -153,15 +153,24 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
 ]
 
 
-def _sha256_bytes(body: bytes) -> str:
+def sha256_bytes(body: bytes) -> str:
+    """Content digest. Shared with :mod:`ccf.packs.sync`."""
     return hashlib.sha256(body).hexdigest()
 
 
-async def _fetch(url: str, etag: str | None) -> tuple[int, bytes | None, str | None]:
+async def fetch_conditional(
+    url: str, etag: str | None
+) -> tuple[int, bytes | None, str | None]:
     """Return ``(http_status, body_or_None, etag)``.
 
     ``body`` is ``None`` on a 304 (not modified). Supports ``file://`` and bare
     local paths so the curated workbook can be polled from disk.
+
+    Public because :mod:`ccf.packs.sync` polls a tenant's desired-state
+    repository the same way. A second conditional-fetch implementation would
+    drift from this one -- and the ETag-plus-sha belt and braces here (a server
+    that ignores ``If-None-Match`` must not produce a false "changed") is
+    exactly the subtlety that would be lost in a reimplementation.
     """
     if url.startswith("file://") or url.startswith("/"):
         path = Path(url.removeprefix("file://"))
@@ -177,6 +186,12 @@ async def _fetch(url: str, etag: str | None) -> tuple[int, bytes | None, str | N
         return 304, None, etag
     resp.raise_for_status()
     return resp.status_code, resp.content, resp.headers.get("ETag")
+
+
+#: Private aliases kept so existing call sites -- and any test reaching for the
+#: old names -- keep working after the promotion.
+_sha256_bytes = sha256_bytes
+_fetch = fetch_conditional
 
 
 async def _read_file(path: Path) -> bytes:
