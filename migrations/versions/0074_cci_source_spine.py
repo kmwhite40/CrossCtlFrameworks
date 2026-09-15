@@ -45,7 +45,6 @@ def upgrade() -> None:
         sa.UniqueConstraint("cci", name="uq_cci_items_cci"),
         schema=_SCHEMA,
     )
-    op.create_index("ix_cci_items_cci", "cci_items", ["cci"], schema=_SCHEMA)
 
     op.create_table(
         "cci_control_refs",

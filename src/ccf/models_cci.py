@@ -31,7 +31,7 @@ class CciItemRow(Base):
     __tablename__ = "cci_items"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    cci: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    cci: Mapped[str] = mapped_column(String(16), unique=True)
     status: Mapped[str] = mapped_column(String(16))
     type: Mapped[str] = mapped_column(String(32))
     contributor: Mapped[str | None] = mapped_column(String(128))

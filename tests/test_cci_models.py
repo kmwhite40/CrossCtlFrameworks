@@ -31,41 +31,51 @@ async def test_an_item_and_its_references_round_trip(clean_migrated_db) -> None:
                 oscal_part_id="ac-1_smt.a.1.a",
             )
         )
-    async with session_scope() as s:
-        got = (
-            await s.execute(select(CciControlRef).where(CciControlRef.canonical_control == "AC-1"))
-        ).scalars().all()
-        assert any(r.raw_index == "AC-1 a 1 (a)" for r in got)
-        # cleanup: other modules count rows in shared tables
-        for r in got:
-            if r.raw_index == "AC-1 a 1 (a)":
-                await s.delete(r)
-        stale = (
-            await s.execute(select(CciItemRow).where(CciItemRow.cci == "CCI-999001"))
-        ).scalars().all()
-        for row in stale:
-            await s.delete(row)
+    try:
+        async with session_scope() as s:
+            got = (
+                await s.execute(
+                    select(CciControlRef).where(CciControlRef.canonical_control == "AC-1")
+                )
+            ).scalars().all()
+            assert any(r.raw_index == "AC-1 a 1 (a)" for r in got)
+    finally:
+        # cleanup: other modules count rows in shared tables. Runs whether the
+        # assertion above passed or failed -- ON DELETE CASCADE on
+        # cci_control_refs.cci_id removes the reference row when its parent
+        # item is deleted, so deleting the item alone is enough.
+        async with session_scope() as s:
+            stale = (
+                await s.execute(select(CciItemRow).where(CciItemRow.cci == "CCI-999001"))
+            ).scalars().all()
+            for row in stale:
+                await s.delete(row)
 
 
 async def test_cci_is_unique(clean_migrated_db) -> None:
-    async with session_scope() as s:
-        s.add(
-            CciItemRow(
-                cci="CCI-999002", status="draft", type="policy",
-                definition="a", source_version="test", source_sha256="0" * 64,
-            )
-        )
-    with pytest.raises(IntegrityError):
+    try:
         async with session_scope() as s:
             s.add(
                 CciItemRow(
                     cci="CCI-999002", status="draft", type="policy",
-                    definition="b", source_version="test", source_sha256="0" * 64,
+                    definition="a", source_version="test", source_sha256="0" * 64,
                 )
             )
-    async with session_scope() as s:
-        rows = (
-            await s.execute(select(CciItemRow).where(CciItemRow.cci == "CCI-999002"))
-        ).scalars().all()
-        for row in rows:
-            await s.delete(row)
+        with pytest.raises(IntegrityError):
+            async with session_scope() as s:
+                s.add(
+                    CciItemRow(
+                        cci="CCI-999002", status="draft", type="policy",
+                        definition="b", source_version="test", source_sha256="0" * 64,
+                    )
+                )
+    finally:
+        # cleanup: runs even if uniqueness were NOT enforced -- the exact
+        # regression this test exists to catch, where pytest.raises itself
+        # raises Failed and would otherwise skip everything below it.
+        async with session_scope() as s:
+            rows = (
+                await s.execute(select(CciItemRow).where(CciItemRow.cci == "CCI-999002"))
+            ).scalars().all()
+            for row in rows:
+                await s.delete(row)
