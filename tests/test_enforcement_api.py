@@ -79,16 +79,22 @@ class _Session:
     with two people, which is the real deployment shape.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, org_id: int | None = None, role: str = "admin") -> None:
         self.app = create_app()
         self.email = "isso@acme.gov"
+        self.org_id = org_id
+        self.role = role
         self.app.dependency_overrides[get_principal] = self._principal
 
     def _principal(self) -> Principal:
-        return Principal(user_id=1, email=self.email, org_id=None, role="admin")
+        return Principal(
+            user_id=1, email=self.email, org_id=self.org_id, role=self.role
+        )
 
-    def as_(self, email: str) -> _Session:
+    def as_(self, email: str, *, role: str | None = None) -> _Session:
         self.email = email
+        if role is not None:
+            self.role = role
         return self
 
     def client(self) -> AsyncClient:
@@ -335,3 +341,39 @@ async def test_a_scoped_principal_cannot_reach_another_tenants_plan() -> None:
         assert caught.value.status_code == 404
         owner = Principal(user_id=2, email="owner@example.gov", org_id=owning, role="admin")
         assert (await _require_plan(session, plan_id, owner)).id == plan_id
+
+
+@pytest.mark.asyncio
+async def test_apply_is_role_gated() -> None:
+    """A scoped principal without an enforcer role cannot apply.
+
+    The default test principal is global, and ``is_global`` bypasses
+    ``require_role`` by design -- so the gate is unreachable through the usual
+    client and went untested until mutation testing said so. This drives it
+    with a scoped, non-enforcer identity.
+    """
+    system_id = await _scanned_system()
+    async with session_scope() as db:
+        sys_row = (await db.execute(select(System).where(System.id == system_id))).scalar_one()
+        org_id = sys_row.organization_id
+
+    author = _Session(org_id=org_id, role="isso").as_("isso@acme.gov")
+    async with author.client() as client:
+        created = await client.post(
+            f"/api/systems/{system_id}/remediation-plans", json={"check_key": CHECK}
+        )
+        assert created.status_code == 201, created.text
+        plan_id = created.json()["id"]
+
+    viewer = _Session(org_id=org_id, role="viewer").as_("viewer@acme.gov")
+    async with viewer.client() as client:
+        for suffix in ("approve", "apply", "reverse"):
+            resp = await client.post(f"/api/remediation-plans/{plan_id}/{suffix}")
+            assert resp.status_code == 403, f"{suffix}: {resp.text}"
+
+    async with session_scope() as db:
+        plan = (
+            await db.execute(select(RemediationPlan).where(RemediationPlan.id == plan_id))
+        ).scalar_one()
+        assert plan.status == "pending_approval", "a rejected call changed nothing"
+        assert plan.outcomes == []

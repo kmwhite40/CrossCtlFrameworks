@@ -697,6 +697,39 @@ blast-radius limits, reversal data), then #7 patch orchestration and #9
 PuppetDB, both optional and dependent on #4. Everything buildable read-only is
 now built.
 
+## 6.2g Status — #4 enforcement is built, behind the §6.4 gate (2026-09-15)
+
+**Implemented and verified**, with every element of §6.4's gate present and
+tested. Also a **correction to §6.4's own wording**: it said to reuse
+`ai_actions`' approval path, and that is wrong — `approve_run` is bound to an
+LLM-drafted payload with a citation guardrail and mutates GRC records, not
+environments. The waiver path from #8 was reused instead.
+
+The design is a sequence of refusals, and each is verified by observing that
+nothing was written:
+
+| Gate requirement (§6.4) | How it is met |
+|---|---|
+| write-scoped opt-in credentials | a distinct `connector_type` (`msgraph_write`) in the existing encrypted store — a read-only deployment cannot write, with no fallback path |
+| plan-then-apply, plan persisted and diffable | `RemediationPlan.steps` is stored and read back; the plan approved is the plan applied |
+| human approval | role-gated, plus `can_approve` with `is_global=False` — no development exemption |
+| blast-radius limits that refuse | `enforcement_max_resources`, default 10, refused at plan time **and re-checked at apply** |
+| reversal data captured before mutation | a step whose `current_state` cannot be read now is never planned |
+| recorded as a candidate significant change | an `enforced` bus event carrying what a submission needs; SCN proper stays §2.19's capability |
+
+Not built, deliberately: automatic enforcement (the scheduler applies nothing),
+any CLI command that applies, and a provider for Conditional Access — a test
+asserts that check has no provider, because one that can lock every
+administrator out of a tenant is not the one to learn on.
+
+Spec `docs/superpowers/specs/2026-09-15-enforcement-design.md`, plan
+`docs/superpowers/plans/2026-09-15-enforcement.md`.
+
+Revised matrix row: **#4 EXISTING (one provider)**.
+
+**Remaining:** #7 patch orchestration and #9 PuppetDB — both optional, both
+downstream of #4, and both now unblocked.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem

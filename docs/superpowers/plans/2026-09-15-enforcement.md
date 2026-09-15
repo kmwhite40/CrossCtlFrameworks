@@ -48,7 +48,7 @@
   `PlanRefusal`, `build_steps(findings, provider, *, max_resources, only) -> tuple[list[RemediationStep], str | None]`,
   `PROVIDER_REGISTRY`, `provider_for(check_key)`
 
-- [ ] **Step 1: Write the failing test.** The refusal logic is the product, so
+- [x] **Step 1: Write the failing test.** The refusal logic is the product, so
   it is tested as a pure function first:
 
 ```python
@@ -84,12 +84,12 @@ async def test_the_registry_maps_a_check_to_at_most_one_provider() -> None:
     registry order."""
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement.** `build_steps` filters to findings needing cover
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement.** `build_steps` filters to findings needing cover
   (reuse `governance.waivers.REQUIRES_COVER`), applies `only`, calls the
   provider's `plan`, drops steps with empty `current_state`, then checks the
   count against `max_resources`.
-- [ ] **Step 4: Run tests. Lint, mypy, commit.**
+- [x] **Step 4: Run tests. Lint, mypy, commit.**
 
 ---
 
@@ -108,17 +108,17 @@ async def test_the_registry_maps_a_check_to_at_most_one_provider() -> None:
   `approved_at`, `applied_at`, `reversed_at`, `result_id`, `created_at`;
   `PLAN_STATUSES`
 
-- [ ] **Step 1: Write the failing test** — a plan round-trips; `status`
+- [x] **Step 1: Write the failing test** — a plan round-trips; `status`
   defaults to `draft`; a DB `CheckConstraint` pins the status vocabulary;
   `steps`/`outcomes` default to `[]`; `resource_count` defaults to 0.
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Write the model**, nullable `organization_id` per convention,
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Write the model**, nullable `organization_id` per convention,
   `result_id` FK to `control_test_results` with `ON DELETE SET NULL` — deleting
   a result must never delete the record of what was done about it.
-- [ ] **Step 4: Bind into `CROSS_MODULE_MODEL_MODULES`.**
-- [ ] **Step 5: Migration 0072**, `down_revision = "0071_pack_sources"`, direct
+- [x] **Step 4: Bind into `CROSS_MODULE_MODEL_MODULES`.**
+- [x] **Step 5: Migration 0072**, `down_revision = "0071_pack_sources"`, direct
   tenant policy.
-- [ ] **Step 6: RLS guard 133 → 134. `alembic heads`. Commit.**
+- [x] **Step 6: RLS guard 133 → 134. `alembic heads`. Commit.**
 
 ---
 
@@ -132,7 +132,7 @@ async def test_the_registry_maps_a_check_to_at_most_one_provider() -> None:
 - Produces: `create_plan`, `approve_plan`, `apply_plan`, `reverse_plan`,
   `EnforcementError`
 
-- [ ] **Step 1: Write the failing test.** Each refusal observed through a
+- [x] **Step 1: Write the failing test.** Each refusal observed through a
   recording double:
 
 ```python
@@ -165,10 +165,10 @@ async def test_an_applied_plan_emits_an_enforced_event() -> None: ...
 async def test_another_tenants_plan_is_not_reachable() -> None: ...
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement**, auditing through `ccf.api.audit.record_event` and
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement**, auditing through `ccf.api.audit.record_event` and
   emitting through `governance.bus.emit`.
-- [ ] **Step 4: Run tests. Commit.**
+- [x] **Step 4: Run tests. Commit.**
 
 ---
 
@@ -180,15 +180,15 @@ async def test_another_tenants_plan_is_not_reachable() -> None: ...
 - Modify: `src/ccf/enforcement/registry.py`
 - Test: `tests/test_enforcement_m365.py`
 
-- [ ] **Step 1: Write the failing test** — `plan` reads each user's current
+- [x] **Step 1: Write the failing test** — `plan` reads each user's current
   `accountEnabled` and captures it; the PATCH body is exactly
   `{"accountEnabled": false}`; reversal is exactly `{"accountEnabled": true}`;
   a 403 is a `failed` outcome naming `User.ReadWrite.All`, not an exception;
   `is_write_configured` is False with only a read credential;
   `handles` matches only the stale-account check.
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement**, `write_credential_type = "msgraph_write"`.
-- [ ] **Step 4: Run tests. Commit.**
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement**, `write_credential_type = "msgraph_write"`.
+- [x] **Step 4: Run tests. Commit.**
 
 ---
 
@@ -208,33 +208,117 @@ async def test_another_tenants_plan_is_not_reachable() -> None: ...
 - `POST /api/remediation-plans/{id}/reverse`
 - `ccf enforcement-plans` (list, read-only)
 
-- [ ] **Step 1: Write the failing test** — the whole loop through HTTP; approve
+- [x] **Step 1: Write the failing test** — the whole loop through HTTP; approve
   and apply are role-gated; another tenant's plan id is 404; a refused plan
   cannot be approved (409); `organization_id` comes from the principal.
-- [ ] **Step 2: Run it.** Expect 404s.
-- [ ] **Step 3: Implement.** **No CLI command applies anything** — the CLI is
+- [x] **Step 2: Run it.** Expect 404s.
+- [x] **Step 3: Implement.** **No CLI command applies anything** — the CLI is
   read-only here, deliberately: a shell one-liner is the wrong interface for an
   irreversible act on a production tenant.
-- [ ] **Step 4: Run tests + the API suite. Commit.**
+- [x] **Step 4: Run tests + the API suite. Commit.**
 
 ---
 
 ### Task 6: Verification, mutation testing, demonstration
 
-- [ ] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
+- [x] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
   `alembic heads`. Only the known
   `test_dashboard_overview_sla_excludes_no_due_date_from_on_track` failure.
-- [ ] **Step 2: Mutate every guard**, and for each refusal assert the mutation
+- [x] **Step 2: Mutate every guard**, and for each refusal assert the mutation
   is caught by a test that observes **no write**. At minimum: the
   write-credential check at plan and at apply; the blast-radius check at both;
   the reversal-data filter; the empty-plan refusal; `can_approve`; the
   approved-status check in `apply`; the already-applied check; the applied-status
   check in `reverse`; per-step isolation; both `organization_id` filters; the
   `handles` match; the PATCH bodies.
-- [ ] **Step 3:** Report every ESCAPED honestly.
-- [ ] **Step 4: Demonstrate** against a stubbed Graph — plan for three stale
+- [x] **Step 3:** Report every ESCAPED honestly.
+- [x] **Step 4: Demonstrate** against a stubbed Graph — plan for three stale
   accounts, show the plan and its captured reversal data, try to approve as the
   requester (refused), approve as an AO, apply, show the outcomes, reverse, and
   show a fourth attempt refused by the blast radius. **No live tenant is
   involved and none can be from this environment.**
-- [ ] **Step 5: Commit** with results recorded here.
+- [x] **Step 5: Commit** with results recorded here.
+
+---
+
+## Results
+
+All six tasks complete. Full suite **2091 passed**, 1 skipped, and the one
+pre-existing `test_dashboard_overview_sla_excludes_no_due_date_from_on_track`
+failure that also fails on `main`. `ruff check src tests` and `mypy src` clean.
+One migration head, `0072_remediation_plans`. RLS guard 133 → 134.
+
+Commits: `4e4c8b5` (T1), `e551e5c` (T2), `0346cca` (T3), `d6796e1` + `44ed3bd`
+(T4), `d848bbc` (T5).
+
+### The demonstration
+
+Against a **stubbed** Graph. No live tenant was involved and none is reachable
+from this environment.
+
+```
+1. PLAN                     status=pending_approval  resources=3
+                            graph writes so far: 0
+2. REQUESTER APPROVES?      refused: the requester may not approve their own plan
+                            graph writes so far: 0
+3. AO APPROVES, APPLIES     all three accountEnabled True -> False
+                            events emitted: ['enforced']   <- the SCN seam
+4. REVERSE                  all three restored to True
+5. PLAN OVER THE RADIUS     refused: 3 resources exceeds the limit of 2
+
+total graph writes across the whole demo: 6   (3 apply + 3 reverse; none from
+                                               planning or any refusal)
+```
+
+The last line is the property the whole sub-project exists for: every refusal
+wrote nothing, and the only writes were the approved ones and their undo.
+
+### Mutation testing: 32 guards, all caught
+
+30 on the first pass; two escaped, both real, and one of them is the fourth
+appearance of a familiar shape:
+
+1. **The registry's duplicate-check refusal.** My test iterated the registry
+   and asserted no check was claimed twice — which is a property of today's
+   *content*, not of the guard. Now asserted by attempting a duplicate
+   registration and expecting `ValueError`.
+2. **The role gate on approve/apply/reverse.** Unreachable through the usual
+   client, because the test principal is global and `is_global` bypasses
+   `require_role` by design. Now driven with a scoped, non-enforcer identity
+   asserting 403 on all three — and that the plan's status and outcomes are
+   unchanged afterwards.
+
+**Fourth sub-project where a branch keyed on something the test harness holds
+constant went untested.** The standing lesson is now specific enough to act on:
+any branch reading `principal.org_id` or `principal.role` needs a fabricated
+scoped `Principal`, because the client never varies either.
+
+### A test that failed because the code was right
+
+The first API test could not drive plan → approve → apply at all: separation of
+duties refused it, since one test client is one identity that both requested
+and approved. That is the control working through HTTP. The routes are now
+exercised with two identities via `dependency_overrides`, and the refusal is
+asserted through HTTP as well, so it cannot be bypassed by calling the route
+instead of the function.
+
+### One correction to the spec's own wording, made before coding
+
+§6.4 of the inventory said to reuse `ai_actions`' approval path. Reading it
+showed that to be wrong: `approve_run` is bound to an LLM-drafted payload with
+a citation guardrail, and its mutations are on GRC records. The waiver path
+from #8 was reused instead, and `can_approve` is called with
+`is_global=False` deliberately — enforcement gets no development exemption,
+because "auth is disabled" is not a reason to skip the second pair of eyes on a
+production change.
+
+### Stated limitations
+
+- **One provider.** Stale-account disable only. Conditional Access has no
+  provider on purpose, and a test asserts it: a provider that can lock every
+  administrator out of a tenant is not the one to learn on.
+- **No SCN workflow.** An applied plan emits `enforced` with what a submission
+  would need; the workflow is §2.19's own capability.
+- **Nothing automatic.** The scheduler applies nothing, and no CLI command
+  approves or applies — the API is the only path, because that is where the
+  role gate and the identity live.

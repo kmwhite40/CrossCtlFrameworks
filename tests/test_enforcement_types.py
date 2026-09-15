@@ -10,6 +10,7 @@ from ccf.enforcement.types import (
     StepOutcome,
     build_steps,
     provider_for,
+    register,
 )
 from ccf.posture.types import ResourceFinding
 
@@ -190,3 +191,33 @@ def test_a_check_maps_to_at_most_one_provider() -> None:
 
 def test_an_unhandled_check_has_no_provider() -> None:
     assert provider_for("nothing.handles.this") is None
+
+
+def test_registering_a_second_provider_for_one_check_is_refused() -> None:
+    """Asserted by attempting it, not by observing that nobody has.
+
+    Two providers handling one check would make the applied change depend on
+    registry order -- and "the registry happens to contain no duplicate" is a
+    property of today's content, not of the guard.
+    """
+
+    class _First:
+        key = "dup_first"
+        write_credential_type = "dup_write"
+        required_permissions = ("Dup.Write",)
+        handled_checks = ("dup.check",)
+
+    class _Second:
+        key = "dup_second"
+        write_credential_type = "dup_write"
+        required_permissions = ("Dup.Write",)
+        handled_checks = ("dup.check",)
+
+    before = list(PROVIDER_REGISTRY)
+    try:
+        register(_First)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="already handled"):
+            register(_Second)  # type: ignore[arg-type]
+        assert provider_for("dup.check") is _First
+    finally:
+        PROVIDER_REGISTRY[:] = before
