@@ -102,7 +102,13 @@ async def install_pack(
             pack_id=pack.id, rule_key=str(r.get("key", "")), kind=r.get("kind"),
             definition=r.get("definition", {})))
 
-    session.add(CompliancePackVersion(pack_id=pack.id, version=pack.version, manifest_sha=sha))
+    # The manifest, not only its sha: desired-state diff needs the content of
+    # the version it is diffing against (see packs.diff).
+    session.add(
+        CompliancePackVersion(
+            pack_id=pack.id, version=pack.version, manifest_sha=sha, manifest=manifest
+        )
+    )
     session.add(PackInstallRun(
         organization_id=org_id, pack_key=key, action=action, status="ok",
         summary={"controls": len(manifest.get("controls", [])),

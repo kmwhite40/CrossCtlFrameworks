@@ -72,7 +72,14 @@ class CompliancePack(Base):
 
 
 class CompliancePackVersion(Base):
-    """A record of one installed version of a pack (history)."""
+    """A record of one installed version of a pack (history).
+
+    The manifest is retained per version, not just its sha: a sha proves two
+    versions differ without saying how, and a declared posture rule IS desired
+    state -- so "what changed in my expectations between v1 and v2" has to be
+    answerable. Rows written before migration 0069 keep ``{}``; no backfill is
+    possible because those manifests were never stored.
+    """
 
     __tablename__ = "compliance_pack_versions"
 
@@ -82,6 +89,7 @@ class CompliancePackVersion(Base):
     )
     version: Mapped[str] = mapped_column(String(24))
     manifest_sha: Mapped[str | None] = mapped_column(String(64))
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     installed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
