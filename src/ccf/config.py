@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # deletes assessment detail on its own.
     posture_resource_retention_days: int = Field(default=400)
 
+    # Closed-loop enforcement blast radius: a remediation plan touching more
+    # resources than this is refused at plan time. Deliberately small -- the
+    # first enforcement action a deployment takes should be too small to be a
+    # disaster, and raising it should be a conscious act by someone who has
+    # watched it work. Zero disables enforcement entirely.
+    enforcement_max_resources: int = Field(default=10)
+
     # Outbound notification delivery (best-effort). Set a Slack/Teams incoming
     # webhook to fan critical alerts out of the app.
     notify_webhook_url: str | None = Field(default=None)

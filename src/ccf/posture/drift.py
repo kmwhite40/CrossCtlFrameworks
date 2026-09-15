@@ -163,10 +163,15 @@ def diff_resources(
     return out
 
 
-async def _findings_for_result(
+async def findings_for_result(
     session: AsyncSession, result_id: int
 ) -> list[ResourceFinding]:
-    """One result's resource rows as findings, so the pure differ can take them."""
+    """One result's resource rows as findings.
+
+    Public because :mod:`ccf.enforcement.service` needs the same rows to decide
+    what a remediation plan would touch -- and it must read them from the
+    recorded result rather than restating the schema.
+    """
     rows = (
         await session.execute(
             select(ControlTestResourceResult).where(
@@ -184,6 +189,10 @@ async def _findings_for_result(
         )
         for r in rows
     ]
+
+
+#: Private alias kept so nothing internal breaks on the promotion.
+_findings_for_result = findings_for_result
 
 
 async def latest_drift(session: AsyncSession, *, test_id: int) -> list[ResourceTransition]:
@@ -210,8 +219,8 @@ async def latest_drift(session: AsyncSession, *, test_id: int) -> list[ResourceT
         return []
     newer_id, older_id = recent[0], recent[1]
     return diff_resources(
-        await _findings_for_result(session, older_id),
-        await _findings_for_result(session, newer_id),
+        await findings_for_result(session, older_id),
+        await findings_for_result(session, newer_id),
     )
 
 
