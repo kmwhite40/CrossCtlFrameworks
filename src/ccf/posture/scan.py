@@ -29,7 +29,9 @@ from ..models import System
 from ..models_capability import Capability
 from ..models_grc import ControlTest, ControlTestResult
 from .checks import CheckOutcome
+from .drift import latest_drift
 from .resolve import resolve_checks
+from .telemetry import observe
 
 log = get_logger(__name__)
 
@@ -154,6 +156,7 @@ async def scan_for_system(
     outcomes: list[CheckOutcome] = await conn.scan(checks=resolved)
 
     recorded: list[dict[str, Any]] = []
+    failing_total = 0
     for outcome in outcomes:
         check = by_key.get(outcome.check_key)
         if check is None:
@@ -206,6 +209,34 @@ async def scan_for_system(
                 "failing": outcome.failing,
             }
         )
+        failing_total += outcome.failing
+
+        # Counted here, at write time, and never in the drift endpoint: a
+        # counter incremented by a read double-counts every dashboard refresh
+        # and reports activity that did not happen. One extra query per check
+        # per scan is the correct trade.
+        from ..api.metrics import (  # noqa: PLC0415 - avoids an import cycle
+            POSTURE_CHECK_RESULTS,
+            POSTURE_DRIFT_TRANSITIONS,
+        )
+
+        def _count_verdict(verdict: str = outcome.verdict) -> None:
+            POSTURE_CHECK_RESULTS.labels(verdict).inc()
+
+        observe("check_results", _count_verdict)
+        for transition in await latest_drift(session, test_id=test.id):
+
+            def _count_transition(kind: str = transition.kind) -> None:
+                POSTURE_DRIFT_TRANSITIONS.labels(kind).inc()
+
+            observe("drift_transitions", _count_transition)
+
+    from ..api.metrics import POSTURE_FAILING_RESOURCES  # noqa: PLC0415
+
+    def _set_failing_gauge() -> None:
+        POSTURE_FAILING_RESOURCES.labels(str(system_id)).set(failing_total)
+
+    observe("failing_resources", _set_failing_gauge)
 
     return {
         "system_id": system_id,

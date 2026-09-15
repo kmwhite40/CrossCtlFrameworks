@@ -50,6 +50,50 @@ FEDRAMP20X_READINESS = Gauge(
 )
 
 
+# --- Posture: drift, suppression, retention ---------------------------------
+#
+# One constraint shapes every label here: **bound the cardinality.** A label per
+# resource would put one Prometheus series per user, storage account or device
+# -- ten thousand series from a single check on a mid-sized tenant -- and a
+# label per check key grows with content nobody controls. So verdict and
+# transition kind (small closed vocabularies) are labelled, ``system_id``
+# follows the precedent FEDRAMP20X_READINESS already set, and nothing else is.
+# ``POSTURE_METRICS`` exists so a test can enforce that structurally rather
+# than relying on a reviewer to remember it.
+POSTURE_CHECK_RESULTS = Counter(
+    "ccf_posture_check_results_total",
+    "Posture check outcomes recorded by a scan, by verdict",
+    ["verdict"],
+)
+POSTURE_DRIFT_TRANSITIONS = Counter(
+    "ccf_posture_drift_transitions_total",
+    "Per-resource transitions observed between consecutive scans, by kind",
+    ["kind"],
+)
+WAIVER_SUPPRESSIONS = Counter(
+    "ccf_posture_waiver_suppressions_total",
+    "Failing results whose alert, task and POA&M an approved waiver suppressed",
+)
+POSTURE_DETAIL_PRUNED = Counter(
+    "ccf_posture_resource_detail_pruned_total",
+    "Per-resource posture rows deleted by retention",
+)
+POSTURE_FAILING_RESOURCES = Gauge(
+    "ccf_posture_failing_resources",
+    "Resources failing at the most recent scan, per system",
+    ["system_id"],
+)
+
+#: Every posture metric, so the cardinality rule is enforced by a test.
+POSTURE_METRICS = (
+    POSTURE_CHECK_RESULTS,
+    POSTURE_DRIFT_TRANSITIONS,
+    WAIVER_SUPPRESSIONS,
+    POSTURE_DETAIL_PRUNED,
+    POSTURE_FAILING_RESOURCES,
+)
+
+
 async def metrics_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
     start = time.perf_counter()
     response = await call_next(request)
