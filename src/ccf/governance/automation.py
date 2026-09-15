@@ -16,6 +16,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..capability.service import capability_statements_by_control
+from ..catalog.canonical import canonicalize
 from ..models import (
     POAM,
     CaptureSnapshot,
@@ -433,6 +435,22 @@ async def generate_ssp(
     return proj.id
 
 
+def _cap_key(entry: SSPControlEntry) -> str | None:
+    """The canonical control id this entry's capabilities would be filed under.
+
+    ``control_id`` may be a CMMC practice (``AC.L2-3.1.1``), which does not
+    canonicalize, while ``nist_id`` carries the 800-53 form. Both are tried so
+    a CMMC project is not silently left without capability narrative -- the
+    same two id spaces this module already bridges for captures via
+    ``caps_by_nist.get(e.nist_id)``.
+    """
+    for candidate in (entry.control_id, entry.nist_id):
+        c = canonicalize(candidate or "")
+        if c is not None:
+            return c.value
+    return None
+
+
 async def generate_statements(
     session: AsyncSession,
     *,
@@ -517,6 +535,17 @@ async def generate_statements(
         for cid in p.linked_controls or []:
             policy_by_control.setdefault(str(cid), p)
 
+    # Authored capability statements for this project's system, by canonical
+    # control id. One query, like the maps above -- a project can carry 400+
+    # entries, and a per-control lookup would be 400 round trips. Empty when
+    # the project is not bound to a system (SSPProject.system_id is nullable),
+    # in which case every statement composes exactly as it did before P4a.
+    caps_by_control: dict[str, list[str]] = {}
+    if project.system_id is not None:
+        caps_by_control = await capability_statements_by_control(
+            session, system_id=project.system_id
+        )
+
     entries = (
         (
             await session.execute(
@@ -533,6 +562,8 @@ async def generate_statements(
         responsibility = row.get("responsibility", "customer")
         services = services_for(ssp_plat, e.domain)
         captured = caps_by_nist.get(e.nist_id or "", [])
+        cap_key = _cap_key(e)
+        cap_statements = caps_by_control.get(cap_key, []) if cap_key else []
         source = row.get("source")
         policy = policy_by_control.get(e.control_id)
         # A vendor-inherited control's real authorization reference/review
@@ -566,6 +597,7 @@ async def generate_statements(
             frequency=frequency,
             policy_ref=policy.name if policy else None,
             crm_ref=crm_ref,
+            capability_statements=cap_statements,
         )
         if ai_ready and responsibility in ("customer", "shared", "unknown"):
             ai_text = await ai.draft_narrative(
