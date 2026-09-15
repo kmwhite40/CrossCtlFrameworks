@@ -48,12 +48,17 @@ LEGACY_AUTH_BLOCKED = PostureCheck(
     required_permissions=("Policy.Read.All",),
 )
 
+#: The one place the stale-account expectation is worded. A pack that
+#: parameterizes the threshold re-renders this template, so the prose in an SSP
+#: can never claim 90 days while the check enforces 60.
+STALE_ACCOUNTS_EXPECTED = "no enabled account has been inactive longer than {threshold_days} days"
+
 STALE_ACCOUNTS = PostureCheck(
     key="m365.identity.stale_accounts",
     title="No enabled account is inactive past the threshold",
     provider="msgraph",
     resource_type="entra_user",
-    expected=f"no enabled account has been inactive longer than {STALE_ACCOUNT_DAYS} days",
+    expected=STALE_ACCOUNTS_EXPECTED.format(threshold_days=STALE_ACCOUNT_DAYS),
     control_ids=("AC-2", "AC-2(3)"),
     required_permissions=("AuditLog.Read.All", "User.Read.All"),
 )
@@ -163,12 +168,15 @@ def _parse_graph_datetime(value: Any) -> datetime | None:
 
 
 def evaluate_stale_accounts(
-    rows: list[dict[str, Any]], *, now: datetime
+    rows: list[dict[str, Any]], *, now: datetime, threshold_days: int = STALE_ACCOUNT_DAYS
 ) -> list[ResourceFinding]:
     """One finding per user: has an enabled account gone inactive?
 
     ``now`` is a parameter so the evaluator stays pure and the threshold is
-    testable without freezing the clock.
+    testable without freezing the clock. ``threshold_days`` defaults to the
+    module constant, so every existing caller is unaffected; a pack supplies
+    its own through :mod:`ccf.posture.parameters` (Form A), which is what the
+    constant's own note above always wanted.
 
     Two cases are ``not_applicable`` rather than ``pass`` or ``fail``. A
     disabled account is not a stale-access risk. And Graph omits
@@ -210,7 +218,7 @@ def evaluate_stale_accounts(
             ResourceFinding(
                 resource_id=ref,
                 resource_type="entra_user",
-                verdict="fail" if days > STALE_ACCOUNT_DAYS else "pass",
+                verdict="fail" if days > threshold_days else "pass",
                 observed=f"last interactive sign-in {days} day(s) ago",
                 detail={"last_sign_in": activity.get("lastSignInDateTime")},
             )
