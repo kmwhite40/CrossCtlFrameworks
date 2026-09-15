@@ -5,9 +5,12 @@ from __future__ import annotations
 import itertools
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
+from ccf.api.routes.posture import _owned_test
+from ccf.auth import Principal
 from ccf.db import session_scope
 from ccf.governance.control_tests import record_result
 from ccf.models import Organization, System
@@ -279,3 +282,24 @@ async def test_an_unknown_test_is_not_found_on_both_endpoints() -> None:
             "/api/control-tests/9999999/resources/anything/timeline"
         )
         assert timeline.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_principal_cannot_reach_another_tenants_test() -> None:
+    """Exercised directly: the API client runs as a global principal, so the
+    cross-tenant branch is unreachable through HTTP and would go untested --
+    which is how it escaped mutation testing on the first pass.
+    """
+    async with session_scope() as session:
+        test = await _test_on_new_system(session)
+        intruder = Principal(
+            user_id=1, email="other@example.gov", org_id=test.organization_id + 1000, role="admin"
+        )
+        with pytest.raises(HTTPException) as caught:
+            await _owned_test(session, test.id, intruder)
+        assert caught.value.status_code == 404, "never confirm existence across tenants"
+
+        owner = Principal(
+            user_id=2, email="owner@example.gov", org_id=test.organization_id, role="admin"
+        )
+        assert (await _owned_test(session, test.id, owner)).id == test.id

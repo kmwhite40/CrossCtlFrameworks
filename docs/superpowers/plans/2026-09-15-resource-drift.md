@@ -43,7 +43,7 @@
   `after`, `observed`), `TRANSITION_KINDS`,
   `diff_resources(before, after) -> list[ResourceTransition]`
 
-- [ ] **Step 1: Write the failing test.** Table-driven over every kind, and
+- [x] **Step 1: Write the failing test.** Table-driven over every kind, and
   the classifications that must be explicit rather than incidental:
 
 ```python
@@ -69,11 +69,11 @@ def test_transitions_are_sorted_by_resource_id() -> None:
 def test_both_sides_empty_yields_nothing() -> None: ...
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement.** Index both sides by `resource_id`; walk the union
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement.** Index both sides by `resource_id`; walk the union
   of keys sorted; classify. Import `REQUIRES_COVER` from
   `ccf.governance.waivers`.
-- [ ] **Step 4: Run tests. Lint, mypy, commit.**
+- [x] **Step 4: Run tests. Lint, mypy, commit.**
 
 ---
 
@@ -91,7 +91,7 @@ most.
 - Produces: `latest_result_ids() -> Select` (rows of
   `(control_test_id, result_id)`)
 
-- [ ] **Step 1: Write the failing test.** The regression test and its
+- [x] **Step 1: Write the failing test.** The regression test and its
   companion, because a fix that returns nothing would satisfy the first alone:
 
 ```python
@@ -122,9 +122,9 @@ async def test_another_tenants_failing_resource_is_not_returned() -> None:
     """The existing org filter must survive the rewrite."""
 ```
 
-- [ ] **Step 2: Run it.** Expect the first test to FAIL (the bug) and the
+- [x] **Step 2: Run it.** Expect the first test to FAIL (the bug) and the
   second to pass.
-- [ ] **Step 3: Implement `latest_result_ids`:**
+- [x] **Step 3: Implement `latest_result_ids`:**
 
 ```python
 def latest_result_ids() -> Select:
@@ -144,12 +144,12 @@ def latest_result_ids() -> Select:
     )
 ```
 
-- [ ] **Step 4: Join it in `failing_resources`** and correct the docstring to
+- [x] **Step 4: Join it in `failing_resources`** and correct the docstring to
   say what it now does.
-- [ ] **Step 5: Run the new tests plus `tests/test_posture_api.py`** — the
+- [x] **Step 5: Run the new tests plus `tests/test_posture_api.py`** — the
   existing posture API tests must pass unedited unless one of them asserted
   the buggy behaviour, in which case **fix the test and say so in the commit**.
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ---
 
@@ -166,16 +166,16 @@ def latest_result_ids() -> Select:
   - `GET /api/control-tests/{test_id}/drift`
   - `GET /api/control-tests/{test_id}/resources/{resource_id}/timeline`
 
-- [ ] **Step 1: Write the failing test** — drift between the two most recent
+- [x] **Step 1: Write the failing test** — drift between the two most recent
   results reports each kind; a test with only one result reports **no drift
   rather than everything appeared** (there is no baseline, and inventing one
   would report a first scan as wholesale change); an unknown test is 404;
   another tenant's test is 404 (never confirm existence); the timeline is
   newest-first and carries `waiver_id`.
-- [ ] **Step 2: Run it.** Expect 404s.
-- [ ] **Step 3: Implement** the two queries, then the two endpoints following
+- [x] **Step 2: Run it.** Expect 404s.
+- [x] **Step 3: Implement** the two queries, then the two endpoints following
   `result_resources`' existing ownership check.
-- [ ] **Step 4: Run tests. Commit.**
+- [x] **Step 4: Run tests. Commit.**
 
 ---
 
@@ -191,7 +191,7 @@ def latest_result_ids() -> Select:
   setting `posture_resource_retention_days: int = 400`;
   `ccf posture-prune [--retain-days N] [--dry-run]`
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```python
 async def test_rows_inside_the_window_survive() -> None: ...
@@ -212,34 +212,110 @@ async def test_another_tenants_rows_are_not_pruned_by_a_scoped_call() -> None:
     whole-deployment contract explicitly rather than leaving it implied."""
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement.** Delete `ControlTestResourceResult` where the
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement.** Delete `ControlTestResourceResult` where the
   parent result's `run_at < cutoff`, **excluding** result ids in
   `latest_result_ids()` and rows with a non-null `waiver_id`. Return counts.
-- [ ] **Step 4: Add the setting and the CLI command**, following an existing
+- [x] **Step 4: Add the setting and the CLI command**, following an existing
   `ccf` command's shape.
-- [ ] **Step 5: Run tests. Commit.**
+- [x] **Step 5: Run tests. Commit.**
 
 ---
 
 ### Task 5: Verification, mutation testing, demonstration
 
-- [ ] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
+- [x] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
   `alembic heads`. Only the known
   `test_dashboard_overview_sla_excludes_no_due_date_from_on_track` failure.
-- [ ] **Step 2: Mutate every guard.** At minimum: each of the five transition
+- [x] **Step 2: Mutate every guard.** At minimum: each of the five transition
   classifications; the `REQUIRES_COVER` keying; the sort; the
   single-result no-drift guard; the `latest_result_ids` join in
   `failing_resources`; the org filter there; `MAX(id)` → `MIN(id)`; the
   retention cutoff comparison; the latest-result exemption; the waiver-id
   exemption; the dry-run guard. Harness invariants: assert the perl-alarm
   watchdog, hash the files, **key backups by full path**, restore on a trap.
-- [ ] **Step 3:** Report every ESCAPED honestly. For each, ask whether the
+- [x] **Step 3:** Report every ESCAPED honestly. For each, ask whether the
   fixture could express the bug, and whether the guard is redundant — both
   have been the answer before.
-- [ ] **Step 4: Demonstrate** — three scans over one check where a resource
+- [x] **Step 4: Demonstrate** — three scans over one check where a resource
   regresses, one recovers, one appears and one disappears; print the drift
   report and one resource's timeline; then prune with a short window and show
   the aggregate series intact and the latest detail retained.
-- [ ] **Step 5: Commit**, recording results, the mutation outcome, and the
+- [x] **Step 5: Commit**, recording results, the mutation outcome, and the
   bug's before/after in the plan.
+
+---
+
+## Results
+
+All five tasks complete. Full suite **1948 passed**, 1 skipped, and the one
+pre-existing `test_dashboard_overview_sla_excludes_no_due_date_from_on_track`
+failure that also fails on `main`. `ruff check src tests` and `mypy src` clean.
+One migration head, `0070_waivers` — no migration added, as the spec required.
+
+Commits: `55c1d71` (T1), `e41f32e` (T2, the bug fix), `48c6384` (T3),
+`3556107` (T4).
+
+### The bug, before and after
+
+The same throwaway script proved both. Record a failing resource, record it
+passing, call the endpoint:
+
+```
+before:  /failing-resources returns 1 row  -> "fixed-later@acme.gov", observed "no MFA"
+after:   /failing-resources returns 0 rows -> correct: latest state only
+```
+
+All existing posture API tests passed unedited — none had asserted the buggy
+behaviour, so nothing had to be unlearned.
+
+### The demonstration
+
+```
+1. DRIFT between scan 2 and scan 3
+   regressed     alice@acme.gov     pass -> fail   MFA method removed
+   recovered     bob@acme.gov       fail -> pass   MFA registered
+   appeared      carol@acme.gov     -    -> fail   no MFA method registered
+   disappeared   svc-old@acme.gov   fail -> -
+
+2. TIMELINE alice@acme.gov:  fail (result 22) <- pass (21) <- pass (20)
+
+3. RETENTION with a 30-day window
+   before: results=3  resource rows=9
+   after:  results=3  resource rows=3   (the latest scan's detail, kept at any age)
+   the aggregate survived: 3 results, each still evaluated=3 failing=2
+```
+
+### Mutation testing: 24 guards, all caught
+
+21 on the first pass; three escaped, all real gaps:
+
+1. **`sorted()` in `diff_resources`** — the test *was* an absolute order
+   assertion, but over only three resources, so there was a one-in-six chance
+   the unsorted set order was coincidentally alphabetical. It took that chance.
+   Widened to eight resources (one in 40,320). **An absolute assertion is not
+   automatically a strong one when the space is small.**
+2. **The cross-tenant branch of `_owned_test`** — unreachable through the API
+   client, which runs as a global principal, so no HTTP test could exercise it.
+   Now tested directly with a fabricated scoped `Principal`.
+3. **The waiver exemption in retention** — a vacuous assertion. The test
+   asserted "some remaining row carries the waiver", which the *latest*
+   result's row satisfied — and that row is protected by the latest-result
+   exemption regardless. Now asserted against the aged result's id
+   specifically.
+
+The recurring shape, in a new form: the first two escapes were both cases where
+the test could not distinguish the mutated behaviour, not cases where an
+assertion was missing.
+
+### A gap against this plan, found by the demonstration and closed
+
+The plan asked for a test pinning the tenancy contract of `prune_resource_detail`
+and I had not written it. The demonstration exposed the omission: the reported
+delete count (7) did not match the rows this check lost (6), because the prune is
+**deployment-wide** and had collected a leftover row from another test's data.
+The behaviour is correct and intended — it takes no `org_id` — but it was
+implied rather than stated. Now pinned by
+`test_the_prune_is_deployment_wide_not_per_tenant` and spelled out in the
+function's docstring, so a future per-tenant prune has to change that test
+deliberately.

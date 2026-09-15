@@ -103,10 +103,17 @@ def test_an_appearance_has_no_before_and_a_disappearance_no_after() -> None:
 
 
 def test_transitions_are_sorted_by_resource_id() -> None:
-    """Regenerating a drift report must not reorder it."""
-    before = [_f("zulu", "pass"), _f("alpha", "pass"), _f("mike", "pass")]
-    after = [_f("zulu", "fail"), _f("alpha", "fail"), _f("mike", "fail")]
-    assert [t.resource_id for t in diff_resources(before, after)] == ["alpha", "mike", "zulu"]
+    """Regenerating a drift report must not reorder it.
+
+    Eight resources, not three: set iteration order is hash-dependent, so with
+    three there is a one-in-six chance the unsorted order is coincidentally
+    alphabetical -- which is exactly how this escaped mutation testing on the
+    first pass.
+    """
+    names = ["zulu", "alpha", "mike", "tango", "bravo", "kilo", "delta", "echo"]
+    before = [_f(n, "pass") for n in names]
+    after = [_f(n, "fail") for n in names]
+    assert [t.resource_id for t in diff_resources(before, after)] == sorted(names)
 
 
 def test_both_sides_empty_yields_nothing() -> None:

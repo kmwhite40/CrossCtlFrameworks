@@ -58,6 +58,12 @@ async def prune_resource_detail(
     ``dry_run`` counts what would go without deleting it, so an operator can
     see the blast radius first. The count is computed by the same predicate the
     delete uses, so the two cannot disagree.
+
+    **Deployment-wide, not per tenant.** There is no ``org_id`` parameter: this
+    is an operator maintenance action over every organization, and the reported
+    count spans all of them. A test pins that contract, so adding a per-tenant
+    prune means changing it deliberately -- a maintenance job whose scope is
+    ambiguous is one that eventually deletes the wrong tenant's evidence.
     """
     window = (
         retain_days

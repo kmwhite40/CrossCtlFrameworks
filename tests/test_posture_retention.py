@@ -153,7 +153,8 @@ async def test_a_waived_row_survives_at_any_age() -> None:
             session, test, status="fail", detail="waived", evaluated=1, failing=1,
             resources=[_f("accepted@acme.gov")],
         )
-        await _age(session, old.id, 500)
+        old_id = old.id
+        await _age(session, old_id, 500)
         # A newer result, so the waived one is not protected by being latest.
         await record_result(
             session, test, status="fail", detail="newer", evaluated=1, failing=1,
@@ -161,7 +162,12 @@ async def test_a_waived_row_survives_at_any_age() -> None:
         )
         await prune_resource_detail(session, retain_days=30)
         rows = await _resource_rows(session, test.id)
-        assert any(r.waiver_id == w.id for r in rows), "the accepted row was pruned"
+        # Asserted against the AGED result specifically. "some row carries the
+        # waiver" was satisfied by the latest result's row, which is protected
+        # regardless -- a vacuous assertion mutation testing caught.
+        assert old_id in {r.result_id for r in rows}, "the aged accepted row was pruned"
+        aged = next(r for r in rows if r.result_id == old_id)
+        assert aged.waiver_id == w.id
 
 
 @pytest.mark.asyncio
@@ -280,3 +286,36 @@ async def test_a_zero_or_negative_window_is_refused() -> None:
             await prune_resource_detail(session, retain_days=0)
         with pytest.raises(ValueError):
             await prune_resource_detail(session, retain_days=-1)
+
+
+@pytest.mark.asyncio
+async def test_the_prune_is_deployment_wide_not_per_tenant() -> None:
+    """Stated as a test rather than left implied.
+
+    ``prune_resource_detail`` takes no organization: it is an operator action
+    over the whole deployment, and its reported count therefore includes other
+    tenants' rows. Anyone adding a per-tenant prune has to change this test,
+    which is the point -- a maintenance job whose scope is ambiguous is one
+    that eventually deletes the wrong tenant's evidence.
+    """
+    async with session_scope() as session:
+        first = await _test_on_new_system(session)
+        second = await _test_on_new_system(session)
+        aged_ids = []
+        for test in (first, second):
+            old = await record_result(
+                session, test, status="fail", detail="old", evaluated=1, failing=1,
+                resources=[_f("a@acme.gov")],
+            )
+            aged_ids.append(old.id)
+            await _age(session, old.id, 500)
+            await record_result(
+                session, test, status="fail", detail="new", evaluated=1, failing=1,
+                resources=[_f("a@acme.gov")],
+            )
+
+        await prune_resource_detail(session, retain_days=30)
+        for test, aged in zip((first, second), aged_ids, strict=True):
+            remaining = {r.result_id for r in await _resource_rows(session, test.id)}
+            assert aged not in remaining, "both organizations' aged detail is pruned"
+            assert len(remaining) == 1, "each keeps only its latest result's detail"
