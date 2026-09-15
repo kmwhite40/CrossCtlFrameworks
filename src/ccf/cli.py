@@ -306,6 +306,39 @@ def notify_digest() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="posture-prune")
+def posture_prune(
+    retain_days: int = typer.Option(
+        None, "--retain-days", help="Keep per-resource detail this many days (default: setting)"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Report what would be deleted without deleting it"
+    ),
+) -> None:
+    """Prune aged per-resource posture detail (the result series is kept).
+
+    Deliberately a command rather than a scheduled job: deleting assessment
+    detail should be an operator's knowing decision. Run --dry-run first to see
+    the blast radius. The latest result for each check and any row covered by a
+    waiver are never pruned.
+    """
+
+    async def _run() -> None:
+        from .posture.retention import prune_resource_detail  # noqa: PLC0415
+
+        async with session_scope() as session:
+            out = await prune_resource_detail(
+                session, retain_days=retain_days, dry_run=dry_run
+            )
+        verb = "Would delete" if out["dry_run"] else "Deleted"
+        console.print(
+            f"[green]{verb} {out['deleted']} resource row(s)[/green] "
+            f"(retaining {out['retain_days']} days, cutoff {out['cutoff']})"
+        )
+
+    asyncio.run(_run())
+
+
 @app.command(name="scheduler")
 def scheduler_run() -> None:
     """Run one full automation cycle (catalog poll + ConMon + digest + collection)."""

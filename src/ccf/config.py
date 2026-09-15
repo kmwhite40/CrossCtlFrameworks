@@ -70,6 +70,13 @@ class Settings(BaseSettings):
     scheduler_enabled: bool = Field(default=False)
     scheduler_interval_hours: float = Field(default=24.0)
 
+    # How long per-resource posture detail is kept. The aggregate
+    # ControlTestResult series is never pruned; only the per-resource rows age
+    # out (see posture/retention.py). Default is over a year, so an annual
+    # assessment window is always covered. Pruning is explicit -- no timer
+    # deletes assessment detail on its own.
+    posture_resource_retention_days: int = Field(default=400)
+
     # Outbound notification delivery (best-effort). Set a Slack/Teams incoming
     # webhook to fan critical alerts out of the app.
     notify_webhook_url: str | None = Field(default=None)
