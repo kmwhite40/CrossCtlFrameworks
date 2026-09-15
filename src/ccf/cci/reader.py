@@ -170,6 +170,11 @@ def _reference(cell: _Cell) -> CciReference | None:
     tail = cell.text.split(raw_title, 1)[-1]
     index = _clean(tail.lstrip(": "))
     if not index:
+        # The anchor names a real publication but nothing follows it to
+        # record as the index -- there is no part to resolve, so the
+        # reference is dropped, but silently would hide a future DISA file
+        # that starts omitting indices instead of just this one.
+        log.warning("cci.empty_reference_index", title=title)
         return None
     revision = _REVISIONS.get(title)
     if revision is None:
@@ -203,6 +208,11 @@ def _item(table: list[list[_Cell]]) -> CciItem | None:
         if ref is not None:
             references.append(ref)
     if not _CCI_RE.match(cci):
+        # Not a trustworthy item -- storing it would let a hand-edited or
+        # mis-rendered table entry masquerade as real DISA content -- but
+        # dropping it without a trace would lose the signal that something
+        # in the source file didn't match the expected shape.
+        log.warning("cci.malformed_cci_id", cci=cci)
         return None
     return CciItem(
         cci=cci,

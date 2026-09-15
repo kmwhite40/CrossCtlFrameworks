@@ -220,9 +220,10 @@ def test_ordinal_label_derives_letter_suffixes_from_position() -> None:
     label selection now tries identifier first -- so no real Control row can
     ever reach this function through ``objectives_for`` (see this module's
     other Task-10-updated tests, and
-    ``test_ordinal_fallback_survives_a_missing_identifier``'s docstring,
-    which documents the same gap for the dedup fallback). Direct coverage
-    keeps the function honestly tested rather than silently unreachable.
+    ``test_a_row_deduplicated_identifier_is_used_verbatim_as_the_label``'s
+    docstring, which documents the same gap for the dedup fallback). Direct
+    coverage keeps the function honestly tested rather than silently
+    unreachable.
     """
     assert _ordinal_label("AC-02", 0) == "AC-02a"
     assert _ordinal_label("AC-02", 1) == "AC-02b"
@@ -321,9 +322,21 @@ async def test_identifier_wins_even_when_ap_acronym_is_also_populated(
 
 
 @pytest.mark.asyncio
-async def test_ordinal_fallback_survives_a_missing_identifier(clean_migrated_db) -> None:
-    """identifier is NOT NULL in practice, but the fallback must still run --
-    removing it silently would make a future schema change label-less."""
+async def test_a_row_deduplicated_identifier_is_used_verbatim_as_the_label(
+    clean_migrated_db,
+) -> None:
+    """Confirms a "#rowN" identifier -- the loader's own scheme (see
+    ``reader/ingest.py`` and ``etl/pipeline.py``) for de-duplicating an
+    otherwise-repeated item path -- is used verbatim as the label, same as
+    any other identifier. This is a variant of
+    ``test_label_prefers_the_rows_own_identifier``, not a test of the
+    ordinal fallback: ``Control.identifier`` is NOT NULL, so the
+    absent-identifier case this test was previously named for cannot be
+    built through the database at all -- deleting
+    ``or row.ap_acronym or _ordinal_label(...)`` from ``objectives.py``
+    fails no test here. The ordinal fallback itself is unreachable via the
+    database and is covered directly, with no database involved, by
+    ``test_ordinal_label_derives_letter_suffixes_from_position`` below."""
     try:
         async with session_scope() as s:
             s.add(

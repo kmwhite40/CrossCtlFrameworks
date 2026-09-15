@@ -46,4 +46,4 @@ def test_control_runs_against_an_unloaded_database() -> None:
 def test_reconcile_runs_against_an_unloaded_database() -> None:
     result = runner.invoke(app, ["cci", "reconcile"])
     assert result.exit_code == 0
-    assert "0 control rows disagree" in result.stdout
+    assert "0 controls disagree" in result.stdout

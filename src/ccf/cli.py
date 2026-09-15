@@ -1955,12 +1955,19 @@ def cci_reconcile() -> None:
 
         async with session_scope() as s:
             findings = await reconcile_cci(s)
-        console.print(f"{len(findings)} control rows disagree")
+        row_total = sum(len(d.rows) for d in findings)
+        console.print(
+            f"{len(findings)} controls disagree ({row_total} rows carry a "
+            "workbook-only CCI)"
+        )
         for d in findings[:50]:
-            console.print(
-                f"  {d.control_identifier}: workbook-only={list(d.workbook_only)} "
-                f"disa-only={list(d.disa_only)}"
-            )
+            if d.disa_only:
+                console.print(f"  {d.control_identifier}: disa-only={list(d.disa_only)}")
+            for row in d.rows:
+                console.print(
+                    f"  {d.control_identifier} {row.row_identifier}: "
+                    f"workbook-only={list(row.workbook_only)}"
+                )
 
     asyncio.run(_run())
 

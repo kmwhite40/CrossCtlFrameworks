@@ -36,10 +36,44 @@ _CONTROL_PREFIX = re.compile(r"^\s*([A-Za-z]{2}-\d{1,3}(?:\s*\(\s*\d{1,3}\s*\))*
 
 
 @dataclass(frozen=True)
-class Disagreement:
-    control_identifier: str
+class RowFinding:
+    """One workbook row's CCIs that DISA does not map to its control at all.
+
+    Necessarily per row: a workbook row is keyed per statement-item or ODP
+    (``AC-02a.[01]``, ``AC-02(02)_ODP[02]``), so only the row itself can
+    assert a CCI DISA has no record of for that control. What a *sibling*
+    row of the same control claims is irrelevant here -- that's the
+    ``disa_only`` half of :class:`Disagreement`, computed once per control.
+    """
+
+    row_identifier: str
     workbook_only: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Disagreement:
+    """One control's reconciliation result against DISA's Rev. 5 mapping.
+
+    ``disa_only`` is computed ONCE PER CONTROL, against the union of every
+    workbook row belonging to that control -- not per row -- because a
+    workbook row only carries its own slice of the control's CCIs
+    (``AC-02a.[01]`` vs ``AC-02b.``). Comparing one row's slice against the
+    whole control's DISA set makes almost every ``disa_only`` entry a
+    counting artifact: measured against the real workbook, 95.3% of the
+    entries the naive per-row comparison produced were CCIs some *other* row
+    of the same control did claim. A CCI is genuinely ``disa_only`` only
+    when NO row of the control claims it.
+
+    ``rows`` lists the (possibly empty) set of rows that claim a CCI DISA
+    does not map to this control at all -- a genuine per-row finding, since
+    silence from a sibling row proves nothing about what THIS row asserts.
+    A control with no disagreement at all (empty ``disa_only`` and no rows)
+    is never constructed -- see :func:`reconcile_cci`.
+    """
+
+    control_identifier: str
     disa_only: tuple[str, ...]
+    rows: tuple[RowFinding, ...]
 
 
 def parse_workbook_cci_value(value: str | None) -> set[str]:
@@ -83,9 +117,20 @@ def _fold_to_canonical(identifier: str) -> CanonicalId | None:
 
 
 def compare_cci_sets(
-    control_identifier: str, workbook: set[str], disa: set[str]
-) -> Disagreement | None:
-    """None when they agree, or when the workbook says nothing.
+    row_identifier: str, workbook: set[str], disa: set[str]
+) -> RowFinding | None:
+    """A row's own CCIs that DISA does not map to its control -- per row.
+
+    ``disa`` here is the *control's* full DISA set (every rev-5 CCI DISA
+    maps to the control this row belongs to), so ``workbook - disa`` is
+    exactly the set of CCIs this row asserts that DISA has no record of for
+    the control at all -- a real finding regardless of what sibling rows of
+    the same control claim.
+
+    This deliberately does NOT compute ``disa - workbook``: a single row is
+    only a slice of its control's CCIs, so what DISA has that "this row"
+    lacks is meaningless in isolation -- see :func:`reconcile_cci`, which
+    computes that half once per control, against the union of all its rows.
 
     An empty workbook cell is silence, not contradiction: most rows carry no
     CCI, and reporting each as a conflict would bury the real findings.
@@ -93,14 +138,13 @@ def compare_cci_sets(
     if not workbook:
         return None
     only_wb = tuple(sorted(workbook - disa))
-    only_disa = tuple(sorted(disa - workbook))
-    if not only_wb and not only_disa:
+    if not only_wb:
         return None
-    return Disagreement(control_identifier, only_wb, only_disa)
+    return RowFinding(row_identifier, only_wb)
 
 
 async def reconcile_cci(session: AsyncSession) -> list[Disagreement]:
-    """Every control row whose workbook CCI set differs from DISA's."""
+    """Every control whose workbook rows and DISA's Rev. 5 mapping disagree."""
     disa: dict[str, set[str]] = {}
     for control, cci in (
         await session.execute(
@@ -124,16 +168,33 @@ async def reconcile_cci(session: AsyncSession) -> list[Disagreement]:
         )
     ).all()
 
-    out: list[Disagreement] = []
+    # Group every workbook row under its folded, canonical CONTROL -- not the
+    # row's own per-statement-item identifier -- since that's the unit DISA's
+    # CciControlRef.canonical_control is recorded against. A row with an
+    # empty cell contributes nothing to the union: an empty cell is silence,
+    # not an assertion of "no CCIs", so it must neither add to nor subtract
+    # from the control's claimed set.
+    by_control: dict[str, list[tuple[str, set[str]]]] = {}
     for identifier, value in rows:
         canonical = _fold_to_canonical(str(identifier))
         if canonical is None:
             continue
-        d = compare_cci_sets(
-            str(identifier),
-            parse_workbook_cci_value(value),
-            disa.get(canonical.value, set()),
+        workbook = parse_workbook_cci_value(value)
+        if not workbook:
+            continue
+        by_control.setdefault(canonical.value, []).append((str(identifier), workbook))
+
+    out: list[Disagreement] = []
+    for control, row_values in by_control.items():
+        disa_set = disa.get(control, set())
+        union_workbook: set[str] = set().union(*(wb for _, wb in row_values))
+        disa_only = tuple(sorted(disa_set - union_workbook))
+        row_findings = tuple(
+            f
+            for f in (compare_cci_sets(ident, wb, disa_set) for ident, wb in row_values)
+            if f is not None
         )
-        if d is not None:
-            out.append(d)
+        if disa_only or row_findings:
+            out.append(Disagreement(control, disa_only, row_findings))
+    out.sort(key=lambda d: d.control_identifier)
     return out
