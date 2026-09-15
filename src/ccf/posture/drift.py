@@ -25,8 +25,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..governance.waivers import REQUIRES_COVER
+from ..models_grc import ControlTestResourceResult, ControlTestResult
 from .types import ResourceFinding
 
 #: Every kind :func:`diff_resources` can produce. A kind absent from here is
@@ -156,3 +161,92 @@ def diff_resources(
             )
         )
     return out
+
+
+async def _findings_for_result(
+    session: AsyncSession, result_id: int
+) -> list[ResourceFinding]:
+    """One result's resource rows as findings, so the pure differ can take them."""
+    rows = (
+        await session.execute(
+            select(ControlTestResourceResult).where(
+                ControlTestResourceResult.result_id == result_id
+            )
+        )
+    ).scalars().all()
+    return [
+        ResourceFinding(
+            resource_id=r.resource_id,
+            resource_type=r.resource_type,
+            verdict=r.verdict,
+            observed=r.observed or "",
+            detail=r.detail or {},
+        )
+        for r in rows
+    ]
+
+
+async def latest_drift(session: AsyncSession, *, test_id: int) -> list[ResourceTransition]:
+    """What changed between this check's two most recent results.
+
+    The two most recent, not the first and the last: drift means "what changed
+    in this scan", and comparing against an ancient baseline would report
+    months of accumulated change as though it had just happened.
+
+    A check with fewer than two results reports **no drift** rather than
+    treating everything as ``appeared``. There is no baseline, and inventing
+    one would report a first scan as wholesale change -- drowning the real
+    signal on the day the check is introduced.
+    """
+    recent = (
+        await session.execute(
+            select(ControlTestResult.id)
+            .where(ControlTestResult.control_test_id == test_id)
+            .order_by(ControlTestResult.id.desc())
+            .limit(2)
+        )
+    ).scalars().all()
+    if len(recent) < 2:
+        return []
+    newer_id, older_id = recent[0], recent[1]
+    return diff_resources(
+        await _findings_for_result(session, older_id),
+        await _findings_for_result(session, newer_id),
+    )
+
+
+async def resource_timeline(
+    session: AsyncSession, *, test_id: int, resource_id: str, limit: int = 50
+) -> list[dict[str, Any]]:
+    """One resource's verdicts for one check, newest first.
+
+    The "when did this start failing, and what has it been doing since"
+    question. ``waiver_id`` travels with each entry, so a stretch of accepted
+    failures is visible as acceptance rather than as unexplained silence.
+    """
+    rows = (
+        await session.execute(
+            select(ControlTestResourceResult, ControlTestResult.run_at, ControlTestResult.id)
+            .join(
+                ControlTestResult,
+                ControlTestResult.id == ControlTestResourceResult.result_id,
+            )
+            .where(
+                ControlTestResult.control_test_id == test_id,
+                ControlTestResourceResult.resource_id == resource_id,
+            )
+            .order_by(ControlTestResult.id.desc())
+            .limit(max(1, min(limit, 500)))
+        )
+    ).all()
+    return [
+        {
+            "result_id": result_id,
+            "run_at": run_at,
+            "verdict": row.verdict,
+            "observed": row.observed,
+            "detail": row.detail,
+            "waiver_id": row.waiver_id,
+        }
+        for row, run_at, result_id in rows
+    ]

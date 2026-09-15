@@ -25,6 +25,7 @@ from ...analytics import (
 )
 from ...auth import Principal
 from ...models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
+from ...posture.drift import latest_drift, resource_timeline
 from ...posture.latest import latest_result_ids
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -211,3 +212,60 @@ async def control_effective_verdict(
     from ...posture.scan import effective_verdict  # noqa: PLC0415
 
     return await effective_verdict(session, system_id=system_id, control_id=control_id)
+
+
+async def _owned_test(
+    session: AsyncSession, test_id: int, principal: Principal
+) -> ControlTest:
+    """One control test, or 404 -- including when it belongs to another tenant.
+
+    404 rather than 403, matching ``result_resources``: confirming an id exists
+    is itself a disclosure.
+    """
+    test = (
+        await session.execute(select(ControlTest).where(ControlTest.id == test_id))
+    ).scalars().first()
+    if test is None or (
+        principal.org_id is not None and test.organization_id != principal.org_id
+    ):
+        raise HTTPException(status_code=404, detail="Unknown control test")
+    return test
+
+
+@scan_router.get("/control-tests/{test_id}/drift")
+async def control_test_drift(
+    test_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """What changed between this check's two most recent runs.
+
+    Empty for a check with fewer than two results: there is no baseline, and a
+    first scan is not wholesale change.
+    """
+    await _owned_test(session, test_id, principal)
+    return [
+        {
+            "resource_id": t.resource_id,
+            "kind": t.kind,
+            "before": t.before,
+            "after": t.after,
+            "observed": t.observed,
+        }
+        for t in await latest_drift(session, test_id=test_id)
+    ]
+
+
+@scan_router.get("/control-tests/{test_id}/resources/{resource_id}/timeline")
+async def control_test_resource_timeline(
+    test_id: int,
+    resource_id: str,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """One resource's verdict history for this check, newest first."""
+    await _owned_test(session, test_id, principal)
+    return await resource_timeline(
+        session, test_id=test_id, resource_id=resource_id, limit=limit
+    )
