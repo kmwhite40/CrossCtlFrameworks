@@ -65,9 +65,21 @@ async def test_a_control_lists_the_ccis_covering_it() -> None:
 
 
 async def test_revision_scopes_the_answer() -> None:
+    # CCI-000002's Rev. 4 and Rev. 5 references both resolve to "AC-1", so
+    # that CCI cannot tell a real revision filter apart from a dropped one
+    # (or one hardcoded to "5") -- both would still return ["AC-1"] here.
+    # CCI-002364 resolves to genuinely different controls per revision
+    # (Rev. 4: AC-12(1), Rev. 5: AC-12(2)), so it is the pair that actually
+    # exercises the ``revision`` filter.
     async with session_scope() as s:
         rev4 = await controls_for_cci(s, "CCI-000002", revision="4")
-    assert rev4 == ["AC-1"]
+    assert rev4 == ["AC-1"]  # smoke check, not the guard
+
+    async with session_scope() as s:
+        rev4_disjoint = await controls_for_cci(s, "CCI-002364", revision="4")
+        rev5_disjoint = await controls_for_cci(s, "CCI-002364", revision="5")
+    assert rev4_disjoint == ["AC-12(1)"]
+    assert rev5_disjoint == ["AC-12(2)"]
 
 
 async def test_an_unknown_cci_returns_empty_rather_than_raising() -> None:
