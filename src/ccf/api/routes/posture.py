@@ -25,6 +25,7 @@ from ...analytics import (
 )
 from ...auth import Principal
 from ...models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
+from ...posture.latest import latest_result_ids
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -80,11 +81,19 @@ async def failing_resources(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
-    """Every resource currently failing a control test, newest first.
+    """Every resource failing a control test *as of its latest run*, newest first.
 
-    The org-wide question resource granularity exists to answer. Indexed on
-    ``verdict`` so this is a lookup rather than a table scan.
+    The org-wide question resource granularity exists to answer.
+
+    Restricted to each test's most recent result. Without that restriction this
+    read the append-only resource history as though it were current state and
+    reported resources fixed weeks earlier, carrying the stale ``observed``
+    text from the scan that found them broken -- so an operator's queue named
+    work that no longer existed. "Latest" comes from
+    :func:`ccf.posture.latest.latest_result_ids`, which is the one definition
+    every current-state read shares.
     """
+    latest = latest_result_ids()
     stmt = (
         select(
             ControlTestResourceResult,
@@ -97,6 +106,7 @@ async def failing_resources(
             ControlTestResult.id == ControlTestResourceResult.result_id,
         )
         .join(ControlTest, ControlTest.id == ControlTestResult.control_test_id)
+        .join(latest, latest.c.result_id == ControlTestResult.id)
         .where(ControlTestResourceResult.verdict == "fail")
         .order_by(ControlTestResourceResult.created_at.desc())
         .limit(min(max(limit, 1), 1000))
