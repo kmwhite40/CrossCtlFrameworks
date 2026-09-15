@@ -48,13 +48,18 @@ async def _catalog_rows() -> Any:
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao1", sequence_control=_SEQ, ap_acronym=f"{_SEQ}a",
+                # Task 10: identifier is the label source, and identifier IS the
+                # item path in the real workbook -- so this fixture's identifier
+                # carries the item-path suffix itself, matching what ap_acronym
+                # (and every downstream f"{_SEQ}a" reference in this module)
+                # already expects, rather than an arbitrary "-ao1" tag.
+                identifier=f"{_SEQ}a", sequence_control=_SEQ, ap_acronym=f"{_SEQ}a",
                 assessment_objective="the first fixture objective is met;", source_row=2,
             )
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao2", sequence_control=_SEQ, ap_acronym=f"{_SEQ}b",
+                identifier=f"{_SEQ}b", sequence_control=_SEQ, ap_acronym=f"{_SEQ}b",
                 assessment_objective="the second fixture objective is met;", source_row=3,
             )
         )
