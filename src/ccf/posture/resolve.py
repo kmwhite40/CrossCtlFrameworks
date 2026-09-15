@@ -194,6 +194,16 @@ def _build(rule_key: str, definition: Any, provider: str) -> ResolvedCheck:
     return _build_form_b(rule_key, definition, provider)
 
 
+def resolve_checks_from_registry(provider: str) -> tuple[ResolvedCheck, ...]:
+    """The platform's checks for one provider, with no database.
+
+    What a connector falls back to when its caller passed no checks -- keeping
+    ``scan()`` usable from a context that has no session, which is how the
+    existing connector tests drive it.
+    """
+    return tuple(_platform(provider))
+
+
 async def resolve_checks(
     session: AsyncSession, *, provider: str, org_id: int | None
 ) -> tuple[ResolvedCheck, ...]:

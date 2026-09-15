@@ -28,7 +28,8 @@ from ..logging import get_logger
 from ..models import System
 from ..models_capability import Capability
 from ..models_grc import ControlTest, ControlTestResult
-from .checks import CheckOutcome, checks_for
+from .checks import CheckOutcome
+from .resolve import resolve_checks
 
 log = get_logger(__name__)
 
@@ -143,8 +144,14 @@ async def scan_for_system(
             "reason": "connector not configured for this organization",
         }
 
-    by_key = {c.key: c for c in checks_for(connector_key)}
-    outcomes: list[CheckOutcome] = await conn.scan()
+    # Resolved once: the platform's checks plus anything this tenant's packs
+    # declared. The same sequence drives execution and attribution, so a
+    # declared check cannot be scanned and then discarded below as unknown.
+    resolved = await resolve_checks(
+        session, provider=connector_key, org_id=system.organization_id
+    )
+    by_key = {r.check.key: r.check for r in resolved}
+    outcomes: list[CheckOutcome] = await conn.scan(checks=resolved)
 
     recorded: list[dict[str, Any]] = []
     for outcome in outcomes:

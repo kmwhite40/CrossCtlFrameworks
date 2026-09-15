@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -43,7 +44,10 @@ class _FakeConnector:
     def is_configured(self) -> bool:
         return True
 
-    async def scan(self) -> list[CheckOutcome]:
+    async def scan(self, checks: object = None) -> list[CheckOutcome]:
+        # ``checks`` is accepted and ignored: this double returns canned
+        # outcomes, and what is asserted here is the recording path, not
+        # resolution (which tests/test_posture_resolve.py covers).
         return self._outcomes
 
 
@@ -53,7 +57,10 @@ def _patch(monkeypatch: pytest.MonkeyPatch, outcomes: list[CheckOutcome]) -> Non
     async def _fake_connector(*a: object, **k: object) -> _FakeConnector:
         return _FakeConnector(outcomes)
 
-    monkeypatch.setattr(scan_mod, "checks_for", lambda provider: (CHECK,))
+    async def _fake_resolve(*a: object, **k: object) -> tuple[object, ...]:
+        return (SimpleNamespace(check=CHECK, endpoint="/demo", source="platform"),)
+
+    monkeypatch.setattr(scan_mod, "resolve_checks", _fake_resolve)
     monkeypatch.setattr(scan_mod, "_connector_for_org", _fake_connector)
 
 
@@ -159,7 +166,6 @@ async def test_unconfigured_connector_scans_nothing(
     async def _no_connector(*a: object, **k: object) -> None:
         return None
 
-    monkeypatch.setattr(scan_mod, "checks_for", lambda provider: (CHECK,))
     monkeypatch.setattr(scan_mod, "_connector_for_org", _no_connector)
     async with session_scope() as session:
         sys_ = await _system(session)

@@ -26,7 +26,9 @@ import httpx
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture.declared import evaluate_declared
 from ..posture.providers import m365
+from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
 from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
@@ -140,8 +142,14 @@ class MsGraphConnector(ConfigConnector):
             return []
         return out
 
-    async def scan(self) -> list[CheckOutcome]:
-        """Assess this tenant against the registered M365 posture checks.
+    async def scan(
+        self, checks: tuple[ResolvedCheck, ...] | None = None
+    ) -> list[CheckOutcome]:
+        """Assess this tenant against its resolved posture checks.
+
+        ``checks`` is ``None`` for a caller that predates declared checks, in
+        which case the platform registry is used and behaviour is unchanged.
+        An empty tuple scans nothing -- see ``ConfigConnector.scan``.
 
         Never raises: an unconfigured org, a failed token, or a provider error
         all produce results (or none) rather than an exception, because
@@ -149,6 +157,9 @@ class MsGraphConnector(ConfigConnector):
         does not expect one.
         """
         if not self.is_configured():
+            return []
+        resolved = resolve_checks_from_registry(self.key) if checks is None else checks
+        if not resolved:
             return []
         s = get_settings()
         tenant_id = str((self.credential or {}).get("tenant_id") or "unknown")
@@ -160,19 +171,28 @@ class MsGraphConnector(ConfigConnector):
                     return []
                 headers = {"Authorization": f"Bearer {token}"}
                 now = datetime.now(UTC)
-                for check in m365.CHECKS:
-                    # Per-check isolation: one permission gap must not discard
-                    # the checks that did run, matching capture()'s
-                    # per-sub-capture try and the scheduler's per-tenant
-                    # savepoint.
+                for rc in resolved:
+                    # Per-check isolation: one permission gap -- or one pack's
+                    # malformed rule -- must not discard the checks that did
+                    # run, matching capture()'s per-sub-capture try and the
+                    # scheduler's per-tenant savepoint.
                     try:
                         rows = await self._get_all(
-                            client, f"{s.graph_base_url}{m365.ENDPOINTS[check.key]}", headers
+                            client, f"{s.graph_base_url}{rc.endpoint}", headers
                         )
                     except Exception as e:
-                        outcomes.append(self._unrunnable(check, e))
+                        outcomes.append(self._unrunnable(rc.check, e))
                         continue
-                    outcomes.append(self._evaluate(check, rows, tenant_id=tenant_id, now=now))
+                    try:
+                        outcomes.append(
+                            self._evaluate(rc, rows, tenant_id=tenant_id, now=now)
+                        )
+                    except Exception as e:
+                        # Evaluation itself failed -- a declared spec that
+                        # validation would have refused. It must report rather
+                        # than vanish: a check that silently stops producing
+                        # results is indistinguishable from one that passes.
+                        outcomes.append(self._unrunnable(rc.check, e))
         except Exception as e:  # token/transport failure -- nothing to report
             log.warning("connector.msgraph.scan_failed", error=str(e)[:200])
             return []
@@ -180,27 +200,37 @@ class MsGraphConnector(ConfigConnector):
 
     def _evaluate(
         self,
-        check: PostureCheck,
+        rc: ResolvedCheck,
         rows: list[dict[str, Any]],
         *,
         tenant_id: str,
         now: datetime,
     ) -> CheckOutcome:
-        """Dispatch one check's rows to its evaluator.
+        """Judge one check's rows -- declaratively, or via its evaluator.
+
+        A declared check (Form B) carries its own predicate. A platform check,
+        or a pack that parameterized one (Form A), dispatches to the evaluator
+        by ``evaluator_key`` rather than by the check's own key, because a
+        parameterized check runs under the pack's key while still using the
+        platform's logic.
 
         The evaluators take different keyword arguments -- the tenant check
         needs the tenant id, the staleness check needs a clock -- so each is
         called with what it declares rather than forcing a uniform signature
-        that most checks would ignore.
+        that most checks would ignore. Declared parameters are merged on top.
         """
-        evaluator = m365.EVALUATORS[check.key]
-        if check.key == m365.LEGACY_AUTH_BLOCKED.key:
-            findings = evaluator(rows, tenant_id=tenant_id)
-        elif check.key == m365.STALE_ACCOUNTS.key:
-            findings = evaluator(rows, now=now)
-        else:
-            findings = evaluator(rows)
-        return CheckOutcome.from_findings(check, tuple(findings))
+        if rc.spec is not None:
+            findings = evaluate_declared(rc.spec, rows, resource_id=tenant_id)
+            return CheckOutcome.from_findings(rc.check, tuple(findings))
+
+        evaluator = m365.EVALUATORS[rc.evaluator_key or rc.check.key]
+        kwargs: dict[str, Any] = dict(rc.parameters or {})
+        if (rc.evaluator_key or rc.check.key) == m365.LEGACY_AUTH_BLOCKED.key:
+            kwargs["tenant_id"] = tenant_id
+        elif (rc.evaluator_key or rc.check.key) == m365.STALE_ACCOUNTS.key:
+            kwargs["now"] = now
+        findings = evaluator(rows, **kwargs)
+        return CheckOutcome.from_findings(rc.check, tuple(findings))
 
     def _unrunnable(self, check: PostureCheck, error: Exception) -> CheckOutcome:
         """A check that could not run -- never a clean fleet.
