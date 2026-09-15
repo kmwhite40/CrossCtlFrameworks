@@ -64,55 +64,84 @@ class _Cell:
     links: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _TableFrame:
+    """One open <table>'s in-progress state.
+
+    A stack of these -- rather than three bare instance attributes -- is what
+    lets a <table> nested inside a cell push a new frame and pop back to the
+    outer one afterwards, instead of the outer table's in-progress row and
+    cell being silently overwritten and lost.
+    """
+
+    table: list[list[_Cell]]
+    row: list[_Cell] | None = None
+    cell: _Cell | None = None
+
+
 class _TableParser(HTMLParser):
     """Collect every <table> as rows of cells, keeping anchor text per cell.
 
     Anchor text is kept separately because a reference cell reads
     ``NIST:  <a>NIST SP 800-53 Revision 5 (v5)</a>:  AC-1 a 1 (a)`` -- the
     title and the index are only separable if we know where the anchor ended.
+
+    Tables nest via a stack of :class:`_TableFrame`, one per currently-open
+    <table>, so a <table> nested inside another (e.g. a stray one in a
+    future DISA revision, or a hand-edited file) pushes and pops instead of
+    clobbering the outer table's state.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.tables: list[list[list[_Cell]]] = []
         self.preamble: str = ""
-        self._table: list[list[_Cell]] | None = None
-        self._row: list[_Cell] | None = None
-        self._cell: _Cell | None = None
+        self._stack: list[_TableFrame] = []
         self._in_anchor = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag == "table":
-            self._table = []
-        elif tag == "tr" and self._table is not None:
-            self._row = []
-        elif tag == "td" and self._row is not None:
-            self._cell = _Cell()
-        elif tag == "a" and self._cell is not None:
+            self._stack.append(_TableFrame(table=[]))
+            return
+        if not self._stack:
+            return
+        frame = self._stack[-1]
+        if tag == "tr":
+            frame.row = []
+        elif tag == "td" and frame.row is not None:
+            frame.cell = _Cell()
+        elif tag == "a" and frame.cell is not None:
             self._in_anchor = True
-            self._cell.links.append("")
+            frame.cell.links.append("")
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "a":
             self._in_anchor = False
-        elif tag == "td" and self._cell is not None and self._row is not None:
-            self._row.append(self._cell)
-            self._cell = None
-        elif tag == "tr" and self._row is not None and self._table is not None:
-            self._table.append(self._row)
-            self._row = None
-        elif tag == "table" and self._table is not None:
-            self.tables.append(self._table)
-            self._table = None
+            return
+        if not self._stack:
+            return
+        frame = self._stack[-1]
+        row, cell = frame.row, frame.cell
+        if tag == "td" and cell is not None and row is not None:
+            row.append(cell)
+            frame.cell = None
+        elif tag == "tr" and row is not None:
+            frame.table.append(row)
+            frame.row = None
+        elif tag == "table":
+            self._stack.pop()
+            self.tables.append(frame.table)
 
     def handle_data(self, data: str) -> None:
-        if self._cell is None:
-            if self._table is None:
-                self.preamble += data
+        if not self._stack:
+            self.preamble += data
             return
-        self._cell.text += data
-        if self._in_anchor and self._cell.links:
-            self._cell.links[-1] += data
+        cell = self._stack[-1].cell
+        if cell is None:
+            return
+        cell.text += data
+        if self._in_anchor and cell.links:
+            cell.links[-1] += data
 
 
 def _clean(s: str) -> str:
@@ -130,8 +159,15 @@ def _reference(cell: _Cell) -> CciReference | None:
     """A reference cell: an anchor naming the publication, then ': index'."""
     if not cell.links:
         return None
-    title = _clean(cell.links[0])
-    tail = cell.text.split(cell.links[0], 1)[-1]
+    raw_title = cell.links[0]
+    title = _clean(raw_title)
+    if not title:
+        # An anchor with no (or only whitespace) text names nothing to
+        # decompose the reference against, and splitting the cell's text on
+        # an empty separator would raise -- skip the row instead of crashing
+        # the parse of the other entries in the file.
+        return None
+    tail = cell.text.split(raw_title, 1)[-1]
     index = _clean(tail.lstrip(": "))
     if not index:
         return None
@@ -163,7 +199,7 @@ def _item(table: list[list[_Cell]]) -> CciItem | None:
         if label in {"definition", "type"} and len(row) > 1:
             fields[label] = _clean(row[1].text)
             continue
-        ref = _reference(row[-1]) if row else None
+        ref = _reference(row[-1])
         if ref is not None:
             references.append(ref)
     if not _CCI_RE.match(cci):

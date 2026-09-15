@@ -7,7 +7,7 @@ from datetime import date
 
 import pytest
 
-from ccf.cci.reader import DEFAULT_CCI_HTML, read_cci_html
+from ccf.cci.reader import DEFAULT_CCI_HTML, CciReference, read_cci_html
 
 
 @pytest.fixture(scope="module")
@@ -53,3 +53,86 @@ def test_deprecated_status_is_preserved(cci_list) -> None:
     # 91 deprecated CCIs must survive the load: a STIG in the field may still
     # cite one, and silently dropping it would make that finding unroutable.
     assert sum(1 for i in cci_list.items if i.status == "deprecated") == 91
+
+
+def test_nested_table_does_not_lose_outer_rows(tmp_path) -> None:
+    # A <table> nested inside a table cell (e.g. a future DISA revision, or a
+    # hand-edited file) must not clobber the outer table's in-progress rows.
+    # The inner "junk" table has no CCI: row, so it parses to nothing; the
+    # outer entry must still come through intact, definition text on both
+    # sides of the nested table included.
+    html = """<html><body><b>CCI List</b><br><b>Version 2020-01-01</b><hr>
+<table>
+<tr>
+<td class="header">CCI:</td><td>CCI-900001</td>
+<td class="header">Status:</td><td>draft</td>
+</tr>
+<tr>
+<td class="header">Contributor:</td><td>Test</td>
+<td class="header">Published Date:</td><td>2020-01-01</td>
+</tr>
+<tr><td class="header">Definition:</td><td colspan="3">Outer definition text
+<table><tr><td>inner junk that must not swallow the outer table</td></tr></table>
+tail text</td></tr>
+<tr><td class="header">Type:</td><td colspan="3">policy</td></tr>
+<tr><td class="header">References:</td><td colspan="3">NIST:
+<a href="http://x">NIST SP 800-53 Revision 5 (v5)</a>:  AC-1 a</td></tr>
+</table>
+</body></html>"""
+    path = tmp_path / "nested.html"
+    path.write_text(html, encoding="utf-8")
+
+    result = read_cci_html(path)
+
+    item = next(i for i in result.items if i.cci == "CCI-900001")
+    assert item.status == "draft"
+    assert item.type == "policy"
+    assert "Outer definition text" in item.definition
+    assert "tail text" in item.definition
+    assert item.references == (CciReference(revision="5", raw_index="AC-1 a"),)
+
+
+def test_empty_anchor_in_reference_row_is_skipped_not_raised(tmp_path) -> None:
+    # An <a></a> with no text makes the naive `cell.text.split(anchor_text)`
+    # split on an empty separator, which raises. That must not crash the
+    # parse of the other entries in the file -- the malformed row is simply
+    # skipped, same as a reference row with no index already is.
+    html = """<html><body><b>CCI List</b><br><b>Version 2020-01-01</b><hr>
+<table>
+<tr>
+<td class="header">CCI:</td><td>CCI-900002</td>
+<td class="header">Status:</td><td>draft</td>
+</tr>
+<tr>
+<td class="header">Contributor:</td><td>Test</td>
+<td class="header">Published Date:</td><td>2020-01-01</td>
+</tr>
+<tr><td class="header">Definition:</td><td colspan="3">A definition.</td></tr>
+<tr><td class="header">Type:</td><td colspan="3">policy</td></tr>
+<tr><td class="header">References:</td><td colspan="3">NIST:
+<a href="http://x"></a>:  AC-1 a</td></tr>
+<tr><td class="header"></td><td colspan="3">NIST:
+<a href="http://x">NIST SP 800-53 Revision 5 (v5)</a>:  AC-1 a 1 (a)</td></tr>
+</table>
+<hr>
+<table>
+<tr>
+<td class="header">CCI:</td><td>CCI-900003</td>
+<td class="header">Status:</td><td>draft</td>
+</tr>
+<tr>
+<td class="header">Contributor:</td><td>Test</td>
+<td class="header">Published Date:</td><td>2020-01-01</td>
+</tr>
+<tr><td class="header">Definition:</td><td colspan="3">Another definition.</td></tr>
+<tr><td class="header">Type:</td><td colspan="3">policy</td></tr>
+</table>
+</body></html>"""
+    path = tmp_path / "empty_anchor.html"
+    path.write_text(html, encoding="utf-8")
+
+    result = read_cci_html(path)  # must not raise
+
+    assert {i.cci for i in result.items} == {"CCI-900002", "CCI-900003"}
+    item = next(i for i in result.items if i.cci == "CCI-900002")
+    assert item.references == (CciReference(revision="5", raw_index="AC-1 a 1 (a)"),)
