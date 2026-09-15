@@ -17,8 +17,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..catalog.canonical import canonicalize
-from ..models import Control, Framework, FrameworkMapping
-from ..models_capability import Capability, CapabilityControl
+from ..models import Control, Framework, FrameworkMapping, SystemComponent
+from ..models_capability import Capability, CapabilityComponent, CapabilityControl
 
 
 async def _canonical_edges(session: AsyncSession, capability_id: int) -> set[str]:
@@ -94,4 +94,57 @@ async def capabilities_for_control(
         c = canonicalize(raw)
         if c is not None and c.value == target.value:
             out.append(cap)
+    return out
+
+
+async def capability_statements_by_control(
+    session: AsyncSession, *, system_id: int
+) -> dict[str, list[str]]:
+    """Authored capability statements for one system, by canonical control id.
+
+    Loaded as one query so a caller rendering 400 controls does not make 400
+    round trips -- ``governance.automation.generate_statements`` pre-loads this
+    beside the maps it already builds for captures, vendors, and policies.
+
+    Three exclusions, each deliberate. A capability with no statement has
+    nothing to contribute. A ``not_applicable`` capability does not describe
+    this system's implementation, so its text must not claim to. And an edge
+    whose control id does not canonicalize is skipped rather than keyed under
+    a value nothing will look up.
+
+    The map has exactly one key space -- canonical ids. Reconciling the two id
+    forms an ``SSPControlEntry`` may carry is the caller's job.
+    """
+    rows = (
+        await session.execute(
+            select(CapabilityControl.control_id, Capability.statement)
+            .join(Capability, Capability.id == CapabilityControl.capability_id)
+            .join(
+                CapabilityComponent,
+                CapabilityComponent.capability_id == Capability.id,
+            )
+            .join(
+                SystemComponent,
+                SystemComponent.id == CapabilityComponent.component_id,
+            )
+            .where(
+                SystemComponent.system_id == system_id,
+                Capability.status != "not_applicable",
+            )
+        )
+    ).all()
+
+    out: dict[str, list[str]] = {}
+    for raw_control, statement in rows:
+        if not statement or not statement.strip():
+            continue
+        c = canonicalize(raw_control)
+        if c is None:
+            continue
+        bucket = out.setdefault(c.value, [])
+        text = statement.strip()
+        # A capability bound through two components would otherwise appear
+        # twice for the same control.
+        if text not in bucket:
+            bucket.append(text)
     return out
