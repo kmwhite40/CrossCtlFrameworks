@@ -67,6 +67,13 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         # gated by admin RBAC at the API layer instead.
         "catalog_revisions",
         "catalog_integrity_reports",
+        # DISA's Control Correlation Identifiers. Authority-published reference
+        # data, identical for every tenant exactly as the control catalog is:
+        # a per-tenant CCI list would make the CCI -> control reverse index
+        # incoherent across tenants. Writes are the `ccf cci load` admin path.
+        "cci_items",
+        "cci_control_refs",
+        "cci_assessment_overlay",
         "scoring_controls",
         "statement_templates",
         "ksis",

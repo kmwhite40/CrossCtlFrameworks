@@ -1884,6 +1884,7 @@ class CatalogIntegrityReport(Base):
 # reintroduced this bug once already; a real reference cannot be stripped.
 from . import (  # noqa: E402
     models_capability,
+    models_cci,
     models_enforcement,
     models_grc,
     models_patching,
@@ -1893,6 +1894,7 @@ from . import (  # noqa: E402
 #: Sibling model modules whose tables must be in ``Base.metadata``.
 CROSS_MODULE_MODEL_MODULES = (
     models_capability,
+    models_cci,
     models_enforcement,
     models_grc,
     models_patching,
