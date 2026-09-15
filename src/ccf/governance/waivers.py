@@ -25,7 +25,12 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol, runtime_checkable
 
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from ..fedramp20x import VALIDATION_STATUSES
+from ..models_grc import ControlTest
+from ..models_waivers import Waiver
 from ..posture.rollup import EXCLUDED_FROM_ROLLUP
 from ..posture.types import ResourceFinding
 
@@ -129,3 +134,39 @@ def cover(
         by_resource=attributed,
         uncovered=tuple(uncovered),
     )
+
+
+async def waivers_for_test(session: AsyncSession, test: ControlTest) -> list[Waiver]:
+    """Candidate waivers for one control test, scoped to its tenant and system.
+
+    Returns **candidates**, not active ones: status and expiry are decided by
+    :func:`is_active` in the pure layer, so there is exactly one definition of
+    "in force". Filtering status here as well would create a second definition
+    that could silently diverge from it.
+
+    A waiver matches either the test's ``check_key`` or its ``control_id``. The
+    ``check_key`` arm is included only when the test actually has one -- a
+    manual test's ``check_key`` is NULL, and matching NULL to NULL would pull in
+    every control-targeting waiver as though it were a check waiver.
+
+    An org-wide test (``system_id`` is NULL) resolves nothing: there is no
+    system to scope an acceptance to, and matching every system's waivers would
+    let one system's acceptance silence another's finding.
+    """
+    if test.system_id is None:
+        return []
+    targets = [Waiver.control_id == test.control_id]
+    if test.check_key:
+        targets.append(Waiver.check_key == test.check_key)
+    rows = (
+        await session.execute(
+            select(Waiver)
+            .where(
+                Waiver.organization_id == test.organization_id,
+                Waiver.system_id == test.system_id,
+                or_(*targets),
+            )
+            .order_by(Waiver.id)
+        )
+    ).scalars().all()
+    return list(rows)
