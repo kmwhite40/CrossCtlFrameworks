@@ -228,7 +228,15 @@ def test_a_global_principal_bypasses_separation_of_duties() -> None:
     assert can_approve("system", "system", is_global=True) is True
 
 
-def test_an_unattributed_request_can_be_approved() -> None:
-    """requested_by is nullable -- a waiver created before attribution existed
+def test_an_unattributed_request_can_be_approved_by_a_named_approver() -> None:
+    """requested_by is nullable -- a waiver written before attribution existed
     must not become permanently unapprovable."""
     assert can_approve(None, "ao@acme.gov", is_global=False) is True
+
+
+def test_approval_is_refused_when_neither_party_is_identified() -> None:
+    """Separation of duties cannot be demonstrated, so refuse. Found by
+    mutation testing: the explicit unattributed-request branch was redundant
+    for every named approver and weaker than the inequality here."""
+    assert can_approve(None, None, is_global=False) is False
+    assert can_approve("isso@acme.gov", "", is_global=False) is False

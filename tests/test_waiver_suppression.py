@@ -266,6 +266,14 @@ async def test_a_waived_failure_is_not_treated_as_a_recovery() -> None:
         ).scalar_one()
         assert poam.status == "open"
         assert test.last_status == "fail"
+        # The property actually at risk: recovery resolves the remediation
+        # task, and a waived failure is not a recovery. Nothing was fixed --
+        # the finding was accepted -- so the task a human still owns must stay
+        # open. (The elif-vs-if mutation was equivalent; this is not.)
+        task = (
+            await session.execute(select(Task).where(Task.organization_id == org.id))
+        ).scalar_one()
+        assert task.status == "open"
 
 
 async def test_the_recovery_path_still_works_unchanged() -> None:

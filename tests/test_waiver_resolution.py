@@ -114,6 +114,23 @@ async def test_a_test_without_a_check_key_matches_only_by_control() -> None:
         assert [x.id for x in await waivers_for_test(session, test)] == [by_control.id]
 
 
+async def test_a_null_check_key_does_not_match_a_control_waiver_for_another_control() -> None:
+    """The check_key arm must be omitted, not compared to NULL.
+
+    A control-targeting waiver always has check_key NULL, so an unconditional
+    ``check_key == test.check_key`` arm matches every one of them when the test
+    also has no check_key -- including waivers for a completely different
+    control. The previous test could not see that, because the only NULL-key
+    waiver it created was for the right control.
+    """
+    async with session_scope() as session:
+        org, sys_, test = await _test_on_system(session, check_key=None)
+        await _waiver(
+            session, org_id=org.id, system_id=sys_.id, check_key=None, control_id="AC-7"
+        )
+        assert await waivers_for_test(session, test) == []
+
+
 async def test_requested_and_revoked_waivers_are_still_returned() -> None:
     """Activity is decided in the pure layer, so there is one definition of it.
 
