@@ -7,6 +7,8 @@ from typing import Any
 import httpx
 import pytest
 
+from ccf.connectors.msgraph import MsGraphConnector
+from ccf.enforcement.providers import m365 as m365_provider
 from ccf.enforcement.providers.m365 import M365AccountProvider
 from ccf.enforcement.types import RemediationStep, provider_for
 from ccf.posture.providers import m365 as m365_checks
@@ -58,9 +60,7 @@ class _Recorder:
 
 
 def _patch_client(monkeypatch: pytest.MonkeyPatch, recorder: _Recorder) -> None:
-    import ccf.enforcement.providers.m365 as mod
-
-    monkeypatch.setattr(mod.httpx, "AsyncClient", lambda **k: recorder)
+    monkeypatch.setattr(m365_provider.httpx, "AsyncClient", lambda **k: recorder)
 
 
 # ── the credential separation ────────────────────────────────────────────────
@@ -84,8 +84,6 @@ async def test_a_complete_write_credential_is_write_configured() -> None:
 
 def test_the_write_credential_is_a_different_type_from_the_read_connector() -> None:
     """The whole safety property: a read-only deployment has no such credential."""
-    from ccf.connectors.msgraph import MsGraphConnector
-
     assert M365AccountProvider.write_credential_type == "msgraph_write"
     assert M365AccountProvider.write_credential_type != MsGraphConnector.key
 
@@ -146,17 +144,11 @@ async def test_plan_skips_an_account_whose_state_cannot_be_read(
 
 
 @pytest.mark.asyncio
-async def test_plan_writes_nothing() -> None:
+async def test_plan_writes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     recorder = _Recorder()
+    _patch_client(monkeypatch, recorder)
     provider = M365AccountProvider(credential=WRITE_CRED)
-    import ccf.enforcement.providers.m365 as mod
-
-    original = mod.httpx.AsyncClient
-    mod.httpx.AsyncClient = lambda **k: recorder  # type: ignore[assignment]
-    try:
-        await provider.plan([ResourceFinding("a@acme.gov", "entra_user", "fail", "idle")])
-    finally:
-        mod.httpx.AsyncClient = original  # type: ignore[assignment]
+    await provider.plan([ResourceFinding("a@acme.gov", "entra_user", "fail", "idle")])
     assert recorder.patches == [], "planning must never PATCH"
 
 
