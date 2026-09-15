@@ -41,6 +41,10 @@ class OscalControl:
     incorporated_into: list[str]
     param_ids: list[str]
     params: list[OscalParam]
+    #: OSCAL part id -> that part's labeled prose, e.g. "ac-1_smt.a.1.a".
+    #: DISA's CCI references address control *items*, so resolution needs the
+    #: ids the catalog defines rather than the flattened ``statement`` string.
+    statement_parts: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -190,6 +194,28 @@ def _statement_prose(control: dict[str, Any]) -> str:
     return ""
 
 
+def _collect_statement_parts(control: dict[str, Any], acc: dict[str, str]) -> None:
+    """Flatten the statement tree into {part id: labeled prose}.
+
+    Pure dict-walking, like every other helper here -- ``load_oscal_catalog``
+    must stay database-free.
+    """
+    for part in control.get("parts", []):
+        if part.get("name") != "statement":
+            continue
+        _walk_statement_part(part, acc)
+
+
+def _walk_statement_part(part: dict[str, Any], acc: dict[str, str]) -> None:
+    pid = part.get("id")
+    if pid:
+        label = _part_label(part)
+        prose = part.get("prose") or ""
+        acc[str(pid)] = f"{label} {prose}".strip() if label else prose
+    for sub in part.get("parts", []) or []:
+        _walk_statement_part(sub, acc)
+
+
 def _parse_param(p: dict[str, Any]) -> OscalParam:
     label = p.get("label", "")
     if not label:
@@ -210,6 +236,8 @@ def _parse_control(c: dict[str, Any]) -> OscalControl:
         for link in c.get("links", [])
         if link.get("rel") == "incorporated-into" and link.get("href")
     ]
+    parts_index: dict[str, str] = {}
+    _collect_statement_parts(c, parts_index)
     return OscalControl(
         canonical_id=oscal_id_to_canonical(c["id"]),
         title=c.get("title", ""),
@@ -219,6 +247,7 @@ def _parse_control(c: dict[str, Any]) -> OscalControl:
         incorporated_into=inc,
         param_ids=[p["id"] for p in c.get("params", []) if p.get("id")],
         params=[_parse_param(p) for p in c.get("params", [])],
+        statement_parts=parts_index,
     )
 
 
