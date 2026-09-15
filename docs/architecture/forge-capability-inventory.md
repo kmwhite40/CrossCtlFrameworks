@@ -766,6 +766,54 @@ Revised matrix row: **#7 EXISTING (measurement and governance; no executor)**.
 `ConfigConnector`, flagged optional in the directive and cheap now that
 everything it would feed exists.
 
+## 6.2i Status — #9 PuppetDB is built, read-only (2026-09-15)
+
+**Implemented and verified**, and it is the last of CC&E #1–#12. It reuses
+every seam built for the ones before it rather than adding a subsystem: it is a
+`ConfigConnector` in the existing registry, its checks are `PostureCheck`
+entries in `CHECK_REGISTRY`, its findings roll up through `roll_up_findings` and
+become `ControlTestResult` rows like any other scan, and its inventory writes go
+through `boundary.service`. No table, no migration, no scheduler, no route of
+its own.
+
+Two things in PuppetDB are worth reading, and they answer different questions:
+
+| Check | Controls | Question |
+|---|---|---|
+| `puppetdb.node.reporting` | CM-8, CM-2 | is this node *managed* — has it reported inside 24 hours? |
+| `puppetdb.node.last_run_succeeded` | CM-2, CM-6 | is its declared configuration *actually being applied*? |
+
+The second is the one that makes this more than an inventory feed. A node that
+reports reliably while every run fails is a node whose desired state is
+documented and unenforced — the exact gap CC&E exists to close — and nothing
+else in Concord could see it.
+
+Three judgements are load-bearing and each is pinned by a test:
+
+- **A `changed` run passes.** Puppet correcting a drifted node is Puppet
+  working. Only `failed` fails; an unrecognised status is
+  `manual_review_required`.
+- **`capture()` returns `[]`.** Puppet facts describe the machine (`os`,
+  `kernel`, `ipaddress`), not the policy values ODPs track. Inventing a mapping
+  from `kernel` to an ODP would be worse than returning nothing.
+- **`sync_inventory` never deletes.** A node absent from a query was
+  decommissioned, moved out of scope, *or the query truncated* — and the third
+  is indistinguishable from the first two at the API boundary. The row stays and
+  `last_seen_at` goes cold, which is the signal. Same distinction P2c draws for
+  a `disappeared` resource.
+
+Nothing here compiles a catalog, triggers an agent run, or enforces a resource.
+Concord enforces through §6.4's gated provider protocol; adding Puppet to that
+is a separate decision with a separate approval.
+
+Spec `docs/superpowers/specs/2026-09-15-puppetdb-design.md`, plan
+`docs/superpowers/plans/2026-09-15-puppetdb.md` (19 mutants, 0 escaped).
+
+Revised matrix row: **#9 EXISTING (read-only inventory and enforcement-health
+source)**.
+
+**CC&E #1–#12 are now all built.**
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem
