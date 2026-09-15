@@ -359,6 +359,36 @@ CCI is the DoD join key: STIG and SCAP results reference CCIs, CCIs map to
 800-53. Without it there is no path from technical scan output to control
 status, and no alignment with eMASS, which assesses at CCI granularity.
 
+**Source material reviewed 2026-09-14, and one finding changes the design.**
+Two sources were supplied: the DISA CCI list in flattened CSV form, and
+`commoncriteria.github.io/pp/references/nistvscci.html`.
+
+- **The CCI list tops out at 800-53 rev 4. There is no rev 5.** The CSV carries
+  repeating `(revision, control)` pairs for revisions **4, 3, and 1**, and the
+  second source is explicitly "NIST SP 800-53 **Revision 4** and the DISA FSO
+  CCI List". Concord's catalog is **rev 5**, so CCI cannot be joined to the
+  adopted catalog directly — it needs a rev4 → rev5 bridge, which NIST
+  publishes separately. Mapping CCI straight onto rev 5 would silently
+  mis-attribute controls, which is the failure mode this programme exists to
+  avoid.
+- **References are at control-*item* granularity** — `AC-1 b 1`,
+  `AC-2 (7) (a)`, `AC-19 (4) (b) (4)`. A CCI maps to a sentence of a control,
+  not a control, and that is finer than `catalog/canonical.py` parses today.
+- **The mapping is sparse per revision.** Rows with empty rev-4 columns
+  (`CCI-000062`) have no rev-4 home at all, so a parser must treat an empty
+  pair as absent rather than as a blank control.
+- **`type` is `policy` or `technical`**, and the distinction is load-bearing:
+  *technical* CCIs are what a STIG or SCAP result can satisfy, *policy* CCIs
+  are documentation obligations. That maps directly onto the
+  deterministic-check-wins principle — a technical CCI is a candidate for a
+  posture check, a policy CCI is not.
+- The second source is **HTML only** and is a coordination page rather than an
+  authority; DISA's `U_CCI_List.xml` remains the artifact to pin. Useful for
+  cross-checking a parser, not as a system of record.
+- The supplied CSV arrived **truncated** by message size, so it is a sample
+  (roughly the AC family) of a ~2,000-entry list — fixture-grade material, not
+  the full source.
+
 ### G5 — STIG/SCAP ingestion missing
 
 `ingest/scanners.py` parses Nessus/Tenable XML, AWS Inspector JSON, and
