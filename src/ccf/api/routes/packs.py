@@ -11,12 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...models import System
-from ...models_packs import CompliancePack, CompliancePackVersion
+from ...models_packs import CompliancePack, CompliancePackVersion, PackSource
 from ...packs import catalog
 from ...packs import service as pack_service
 from ...packs.diff import diff_posture_rules
 from ...packs.impact import build_config_change_impact
-from ..auth_deps import get_principal
+from ...packs.sync import adopt_pending, check_pack_source, divergence
+from ..audit import record_event
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/packs", tags=["packs"])
@@ -225,3 +227,153 @@ async def pack_impact(
         "diff": diff.as_dict(),
         "impact": impact.to_dict(),
     }
+
+
+class PackSourceIn(BaseModel):
+    url: str
+    ref: str | None = None
+    auto_install: bool = False
+
+
+#: Roles that may adopt a fetched change. The same gate waivers use, for the
+#: same reason: this is the act that changes what the platform asserts.
+ADOPTER_ROLES = ("admin", "issm", "isso")
+
+#: Its own router: these paths are addressed by source id, not pack key, so
+#: they do not sit under the /api/packs/{pack_key} prefix. Two routers in one
+#: module follows the precedent in api/routes/posture.py.
+source_router = APIRouter(prefix="/api/pack-sources", tags=["packs"])
+
+
+def _source_out(s: PackSource) -> dict[str, Any]:
+    return {
+        "id": s.id,
+        "pack_key": s.pack_key,
+        "url": s.url,
+        "ref": s.ref,
+        "enabled": s.enabled,
+        "auto_install": s.auto_install,
+        "last_status": s.last_status,
+        "last_error": s.last_error,
+        "last_checked_at": s.last_checked_at,
+        "last_commit_sha": s.last_commit_sha,
+        "pending": bool(s.pending_manifest),
+        "pending_version": str(s.pending_manifest.get("version", "")) or None,
+        "pending_commit_sha": s.pending_commit_sha,
+    }
+
+
+async def _require_source(
+    session: AsyncSession, source_id: int, principal: Principal
+) -> PackSource:
+    """One source, or 404 -- including another tenant's.
+
+    404 rather than 403: confirming an id exists is itself a disclosure.
+    """
+    s = (
+        await session.execute(select(PackSource).where(PackSource.id == source_id))
+    ).scalars().first()
+    if s is None or (
+        principal.org_id is not None and s.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "pack source not found")
+    return s
+
+
+@router.post("/{pack_key}/sources", status_code=201)
+async def register_source(
+    pack_key: str,
+    body: PackSourceIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Register a repository that declares this pack's desired state.
+
+    Polling it is automatic from here; installing what it declares is not,
+    unless ``auto_install`` is set.
+    """
+    if not body.url.strip():
+        raise HTTPException(400, "url is required")
+    src = PackSource(
+        # From the principal, never the body.
+        organization_id=principal.org_id,
+        pack_key=pack_key,
+        url=body.url.strip(),
+        ref=body.ref,
+        auto_install=body.auto_install,
+    )
+    session.add(src)
+    await session.flush()
+    await record_event(
+        session,
+        actor=principal.email,
+        action="create",
+        entity_type="pack_source",
+        entity_id=str(src.id),
+        diff={
+            "event": "registered",
+            "pack_key": pack_key,
+            "url": src.url,
+            "ref": src.ref,
+            "auto_install": src.auto_install,
+        },
+    )
+    await session.commit()
+    await session.refresh(src)
+    return _source_out(src)
+
+
+@router.get("/{pack_key}/sources")
+async def list_sources(
+    pack_key: str,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    stmt = select(PackSource).where(PackSource.pack_key == pack_key).order_by(PackSource.id)
+    if principal.org_id is not None:
+        stmt = stmt.where(PackSource.organization_id == principal.org_id)
+    return [_source_out(s) for s in (await session.execute(stmt)).scalars().all()]
+
+
+@source_router.post("/{source_id}/sync")
+async def sync_source(
+    source_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Poll now. Read-only unless the source opted into auto-install."""
+    src = await _require_source(session, source_id, principal)
+    out = await check_pack_source(session, src, actor=principal.email)
+    await session.commit()
+    return out
+
+
+@source_router.post("/{source_id}/adopt")
+async def adopt_source(
+    source_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ADOPTER_ROLES)),
+) -> dict[str, Any]:
+    """Install the manifest a poll stored as pending.
+
+    Role-gated like a waiver approval: this is the act that changes what the
+    platform asserts about a system.
+    """
+    src = await _require_source(session, source_id, principal)
+    try:
+        pack = await adopt_pending(session, src, actor=principal.email)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    await session.commit()
+    return {"pack_key": pack.pack_key, "version": pack.version, "status": "installed"}
+
+
+@source_router.get("/{source_id}/divergence")
+async def source_divergence(
+    source_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Is what is running what the repository declares?"""
+    src = await _require_source(session, source_id, principal)
+    return await divergence(session, src)

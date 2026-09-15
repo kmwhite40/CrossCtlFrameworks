@@ -195,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(packages.router)
     app.include_router(packages.delta_router)
     app.include_router(packs.router)
+    app.include_router(packs.source_router)
     app.include_router(self_assurance.router)
     app.include_router(portal.router)
     app.include_router(portal.public_router)

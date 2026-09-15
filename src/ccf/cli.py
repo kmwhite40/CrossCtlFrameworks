@@ -306,6 +306,34 @@ def notify_digest() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="packs-sync")
+def packs_sync(
+    org_id: int = typer.Option(None, "--org-id", help="One organization (default: all)"),
+) -> None:
+    """Poll every enabled pack source and report what each one found.
+
+    Read-only unless a source opted into auto-install: a changed manifest is
+    stored as pending for review, because a pack rule executes against a
+    customer tenant.
+    """
+
+    async def _run() -> None:
+        from .models import Organization  # noqa: PLC0415
+        from .packs.sync import sync_for_org  # noqa: PLC0415
+
+        async with session_scope() as session:
+            if org_id is not None:
+                org_ids = [org_id]
+            else:
+                org_ids = list(
+                    (await session.execute(select(Organization.id))).scalars().all()
+                )
+            out = [await sync_for_org(session, oid) for oid in org_ids]
+        console.print_json(json.dumps(out, default=str))
+
+    asyncio.run(_run())
+
+
 @app.command(name="posture-prune")
 def posture_prune(
     retain_days: int = typer.Option(
