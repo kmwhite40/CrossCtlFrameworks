@@ -35,6 +35,39 @@ def test_no_capability_is_byte_identical_to_not_passing_the_parameter() -> None:
             assert nr_without == nr_with, f"{responsibility}/{style}"
 
 
+def test_no_capability_leaves_no_implementation_sentence() -> None:
+    """Absolute, not relative -- the byte-identical test above cannot see this.
+
+    With the empty-clause guard gone, ``" Implementation: ."`` is appended to
+    *both* sides of every comparison in this file, so every equality assertion
+    still holds while the prose is broken. Only an absolute assertion about
+    the rendered text catches it.
+    """
+    for responsibility in ("customer", "shared", "inherited", "not_applicable"):
+        for style in STYLES:
+            text, _ = _c(responsibility=responsibility, style=style)
+            assert "Implementation: ." not in text, f"{responsibility}/{style}"
+            assert "implementation: ." not in text, f"{responsibility}/{style}"
+
+
+def test_statements_render_in_sorted_order() -> None:
+    """Sorted, not merely deduplicated.
+
+    Set iteration order is hash-randomized per process, so dropping ``sorted``
+    would still satisfy the input-order test above -- two calls with the same
+    statements agree with each other while the prose changes between runs.
+    Asserting the order itself is what pins it.
+    """
+    text, _ = _c(
+        capability_statements=(
+            "zulu", "mike", "alpha", "tango", "bravo", "kilo", "delta", "echo",
+        )
+    )
+    assert (
+        "Implementation: alpha; bravo; delta; echo; kilo; mike; tango; zulu." in text
+    )
+
+
 # ── Where the text goes, per branch ──────────────────────────────────────────
 
 
@@ -84,6 +117,42 @@ def test_ordering_is_stable_regardless_of_input_order() -> None:
     assert a == b
 
 
+def test_a_statement_that_already_ends_in_a_period_does_not_double_it() -> None:
+    """Authors write whole sentences, so most statements arrive punctuated.
+
+    Found by rendering three real controls: every statement came out
+    "...no legacy-auth exclusions.." -- the clause adds the sentence-ending
+    period, so the statement must not bring its own.
+    """
+    text, _ = _c(capability_statements=("Conditional Access requires MFA.",))
+    assert "Implementation: Conditional Access requires MFA." in text
+    assert ".." not in text
+
+
+def test_punctuated_statements_are_joined_without_stray_periods() -> None:
+    text, _ = _c(capability_statements=("alpha mechanism.", "beta mechanism."))
+    assert "Implementation: alpha mechanism; beta mechanism." in text
+    assert ".." not in text
+
+
+def test_the_residual_clause_is_punctuated_the_same_way() -> None:
+    text, _ = _c(
+        responsibility="inherited",
+        source="vendor:AWS GovCloud",
+        crm_ref="FedRAMP-1234",
+        capability_statements=("residual hardening is applied.",),
+    )
+    assert "residual implementation: residual hardening is applied." in text
+    assert ".." not in text
+
+
+def test_the_same_statement_punctuated_and_not_is_one_statement() -> None:
+    """Otherwise an author adding a period would render the sentence twice."""
+    text, _ = _c(capability_statements=("alpha mechanism", "alpha mechanism."))
+    assert "Implementation: alpha mechanism." in text
+    assert text.count("alpha mechanism") == 1
+
+
 # ── Exclusions ───────────────────────────────────────────────────────────────
 
 
@@ -91,6 +160,29 @@ def test_empty_and_whitespace_statements_are_dropped() -> None:
     """An empty clause would render "Implementation: ." ."""
     baseline, _ = _c()
     text, _ = _c(capability_statements=("", "   ", "\n"))
+    assert text == baseline
+
+
+def test_a_none_statement_is_dropped_not_crashed() -> None:
+    """``Capability.statement`` is nullable, so None can reach a careless caller.
+
+    Dropping it beats an AttributeError raised while rendering an
+    authorization package.
+    """
+    baseline, _ = _c()
+    text, _ = _c(capability_statements=(None,))  # type: ignore[arg-type]
+    assert text == baseline
+
+
+def test_a_statement_of_only_punctuation_is_dropped() -> None:
+    """Normalization can empty a statement that was not empty on arrival.
+
+    "." survives the incoming empty-string filter, then strips to nothing --
+    so the filter has to be applied again after stripping, or the clause
+    renders "Implementation: ." .
+    """
+    baseline, _ = _c()
+    text, _ = _c(capability_statements=(".", "...", " . "))
     assert text == baseline
 
 

@@ -125,14 +125,25 @@ def _inherited_evidence_clause(provider: str, crm_ref: str | None) -> tuple[str,
 
 
 def _usable_statements(capability_statements: Sequence[str]) -> list[str]:
-    """Non-empty capability statements, in a stable order.
+    """Non-empty capability statements, normalized, in a stable order.
 
     Sorted so regenerating an SSP produces identical prose -- reproducibility
     now, and a precondition for narrative redline later. Empty and
     whitespace-only entries are dropped: an empty clause would render
     "Implementation: ." .
+
+    A trailing period is stripped, because :func:`_capability_clause` supplies
+    the sentence-ending one and authors write whole sentences -- without this
+    every statement rendered "...no legacy-auth exclusions..". Normalizing
+    before de-duplication also means the same statement with and without its
+    period is one statement, not two.
     """
-    return sorted({s.strip() for s in capability_statements if s and s.strip()})
+    # ``if s`` is the None guard: ``Capability.statement`` is a nullable
+    # column, and a caller that forgets to filter should get dropped entries
+    # rather than an AttributeError from deep inside the SSP generator.
+    # Whitespace- and punctuation-only entries are caught after stripping.
+    cleaned = {s.strip().rstrip(".").strip() for s in capability_statements if s}
+    return sorted(c for c in cleaned if c)
 
 
 def _capability_clause(

@@ -44,7 +44,7 @@ Pure, no database, and it carries the safety property — so it comes first.
   - `_capability_clause(capability_statements: Sequence[str], *, residual: bool = False) -> str`
   - `_usable_statements(capability_statements: Sequence[str]) -> list[str]`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_statements_capability.py
@@ -188,12 +188,12 @@ def test_tails_survive_a_capability_statement() -> None:
     assert "Access Control Policy" in text
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_statements_capability.py -v`
 Expected: FAIL — `TypeError: compose() got an unexpected keyword argument 'capability_statements'`
 
-- [ ] **Step 3: Add the helpers to `src/ccf/ssp/statements.py`**
+- [x] **Step 3: Add the helpers to `src/ccf/ssp/statements.py`**
 
 Place them beside the other private clause builders (after `_policy_clause`):
 
@@ -215,7 +215,7 @@ def _usable_statements(capability_statements: Sequence[str]) -> list[str]:
 
 Add `from collections.abc import Sequence` to the imports.
 
-- [ ] **Step 4: Thread the parameter through `compose`**
+- [x] **Step 4: Thread the parameter through `compose`**
 
 Add to the signature, last, after `crm_ref`:
 
@@ -329,7 +329,7 @@ Every existing sentence is preserved character for character. `_mechanism_clause
 from Step 3 is **not needed** — delete it if you already added it, and keep
 `_usable_statements`, which `_capability_clause` uses.
 
-- [ ] **Step 5: Run the existing statement tests**
+- [x] **Step 5: Run the existing statement tests**
 
 Run: `pytest tests/test_statements.py tests/test_ssp_conformance.py tests/test_ssp_vocabulary.py tests/test_ssp_completeness.py -v`
 Expected: **all pass, with no test edited.** Because nothing is appended when
@@ -337,7 +337,7 @@ no capability covers a control, existing output is unchanged by construction.
 If any test fails, an existing sentence was altered — restore it rather than
 adjusting the test.
 
-- [ ] **Step 6: Update the capability tests for the append form**
+- [x] **Step 6: Update the capability tests for the append form**
 
 Two assertions in Step 1 assumed splicing and must now assert appending:
 
@@ -360,12 +360,12 @@ def test_inherited_branch_frames_the_capability_as_residual() -> None:
     assert f"The organization's residual implementation: {CAP}." in text
 ```
 
-- [ ] **Step 7: Run both suites**
+- [x] **Step 7: Run both suites**
 
 Run: `pytest tests/test_statements_capability.py tests/test_statements.py tests/test_ssp_conformance.py tests/test_ssp_vocabulary.py tests/test_ssp_completeness.py -v`
 Expected: all pass, with `tests/test_statements.py` unedited.
 
-- [ ] **Step 8: Lint and commit**
+- [x] **Step 8: Lint and commit**
 
 ```bash
 ruff check src/ccf/ssp/statements.py tests/test_statements_capability.py
@@ -386,7 +386,7 @@ git commit -m "feat(ssp): let a capability supply the implementation mechanism c
 - Consumes: `Capability`, `CapabilityControl`, `CapabilityComponent` (P1); `canonicalize`
 - Produces: `async capability_statements_by_control(session, *, system_id: int) -> dict[str, list[str]]`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_capability_statements_resolution.py
@@ -545,12 +545,12 @@ async def test_an_unparseable_edge_is_skipped_not_crashed() -> None:
         assert await capability_statements_by_control(session, system_id=sys_.id) == {}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_capability_statements_resolution.py -v`
 Expected: FAIL — `ImportError: cannot import name 'capability_statements_by_control'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `src/ccf/capability/service.py`:
 
@@ -611,12 +611,12 @@ async def capability_statements_by_control(
 Add `CapabilityComponent` to the `models_capability` import and
 `SystemComponent` to the `..models` import.
 
-- [ ] **Step 4: Run tests**
+- [x] **Step 4: Run tests**
 
 Run: `pytest tests/test_capability_statements_resolution.py tests/test_capability_reach.py -v`
 Expected: all pass — the new resolution tests plus P1's existing reach tests.
 
-- [ ] **Step 5: Lint and commit**
+- [x] **Step 5: Lint and commit**
 
 ```bash
 ruff check src/ccf/capability/service.py tests/test_capability_statements_resolution.py
@@ -637,7 +637,7 @@ git commit -m "feat(capability): resolve authored statements by control for one 
 - Consumes: `compose(..., capability_statements=...)` (Task 1); `capability_statements_by_control` (Task 2)
 - Produces: `_cap_key(entry: SSPControlEntry) -> str | None` (module-private)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 # tests/test_ssp_capability_narrative.py
@@ -829,12 +829,12 @@ async def test_a_project_with_no_system_still_generates() -> None:
         assert narratives["IA-2"], "composed without capability narrative"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_ssp_capability_narrative.py -v`
 Expected: FAIL — the capability text is absent from the rendered narrative.
 
-- [ ] **Step 3: Confirm the fields the test relies on**
+- [x] **Step 3: Confirm the fields the test relies on**
 
 The fixture guesses at some model fields. Verify each before implementing,
 and correct the test to the real names rather than the reverse:
@@ -845,7 +845,7 @@ grep -n "class SSPControlEntry" -A 14 src/ccf/models.py
 grep -n "part_narratives" src/ccf/governance/automation.py | head -4
 ```
 
-- [ ] **Step 4: Add the key helper and the pre-load**
+- [x] **Step 4: Add the key helper and the pre-load**
 
 In `src/ccf/governance/automation.py`, beside the other module-level helpers:
 
@@ -885,7 +885,7 @@ before the entry loop:
 Add the imports: `from ..capability.service import capability_statements_by_control`
 and `from ..catalog.canonical import canonicalize`.
 
-- [ ] **Step 5: Pass it into `compose`**
+- [x] **Step 5: Pass it into `compose`**
 
 In the entry loop, beside the existing `captured = caps_by_nist.get(...)`:
 
@@ -900,12 +900,12 @@ and add to the `stmt.compose(...)` call:
             capability_statements=cap_statements,
 ```
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run: `pytest tests/test_ssp_capability_narrative.py tests/test_automation.py tests/test_statements.py tests/test_statements_capability.py -v`
 Expected: all pass, including every existing automation test.
 
-- [ ] **Step 7: Lint and commit**
+- [x] **Step 7: Lint and commit**
 
 ```bash
 ruff check src/ccf/governance/automation.py tests/test_ssp_capability_narrative.py
@@ -918,7 +918,7 @@ git commit -m "feat(ssp): render capability-authored narrative into every mapped
 
 ### Task 4: Full verification and mutation testing
 
-- [ ] **Step 1: Run the full suite**
+- [x] **Step 1: Run the full suite**
 
 ```bash
 export CCF_DATABASE_URL=postgresql+asyncpg://ccf:ccf@localhost:5434/ccf_test
@@ -933,7 +933,7 @@ Expected: the only failure is the known pre-existing
 `test_analytics_residual_and_overdue.py::test_dashboard_overview_sla_excludes_no_due_date_from_on_track`
 (it fails on `main` at line 272 — confirm it is still the *only* failure).
 
-- [ ] **Step 2: Mutation-test the new guards**
+- [x] **Step 2: Mutation-test the new guards**
 
 The harness restores on a trap, so a mutation that hangs cannot leave a
 mutated file behind. Delete each guard, confirm a test fails, restore:
@@ -954,12 +954,12 @@ mutated file behind. Delete each guard, confirm a test fails, restore:
 10. the `if project.system_id is not None` guard (the unbound-project test
     must fail)
 
-- [ ] **Step 3: Verify each mutation result**
+- [x] **Step 3: Verify each mutation result**
 
 An ESCAPED guard is a test gap, not a pass. Strengthen the test until the
 mutation is caught, then re-run that mutation to confirm.
 
-- [ ] **Step 4: Demonstrate it end to end**
+- [x] **Step 4: Demonstrate it end to end**
 
 Write a short throwaway script that creates a system with one capability
 mapped to three controls, renders, prints the three narratives, edits the
@@ -967,9 +967,91 @@ capability's `statement`, re-renders, and prints them again — showing all
 three changed from one edit. Report the before/after; do not commit the
 script.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
 git commit -m "test(ssp): mutation-test the capability-narrative guards"
 ```
+
+---
+
+## Results
+
+All four tasks complete. Full suite: **1695 passed**, 1 skipped, and the one
+pre-existing `test_dashboard_overview_sla_excludes_no_due_date_from_on_track`
+failure that also fails on `main`. `ruff check src tests` and `mypy src`
+clean. One migration head (`0068_posture_validation_spine`) -- P4a adds none.
+
+Commits: `f550c2c` (Task 1), `687815d` (Task 2), `4cb9d4d` (Task 3).
+
+### Deviations from the plan
+
+**Appending, not splicing.** Recorded in Task 1 Step 4 before implementation:
+`customer` needs a gerund and `shared` a finite verb, and capability
+statements are whole sentences, so no single string can be spliced into the
+mechanism slot of both without rewording prose the byte-identical guarantee
+depends on.
+
+**A trailing-period normalization that was not in the spec.** The Step 4
+demonstration rendered `"...no legacy-auth exclusions.."` on all three
+controls: authors write whole sentences, so a statement usually arrives
+already punctuated, and `_capability_clause` supplies the sentence-ending
+period. `_usable_statements` now strips a trailing period before
+de-duplicating, which also makes the same statement with and without its
+period one statement rather than two. Four tests cover it.
+
+### Mutation testing
+
+Twelve guards. **Eleven are caught by a test**; one is caught only by the
+type gate:
+
+| Guard | Result |
+|---|---|
+| `if s` None guard in `_usable_statements` | CAUGHT |
+| `sorted(...)` ordering | CAUGHT |
+| post-strip `if c` empty filter | CAUGHT |
+| `.rstrip(".")` normalization | CAUGHT |
+| `if not usable: return ""` | CAUGHT |
+| `Capability.status != "not_applicable"` | CAUGHT |
+| empty/null statement skip in the query | CAUGHT |
+| unparseable-edge `c is None` skip | CAUGHT |
+| `if text not in bucket` de-duplication | CAUGHT |
+| `SystemComponent.system_id == system_id` scope | CAUGHT (9 tests) |
+| `entry.nist_id` fallback in `_cap_key` | CAUGHT |
+| `if project.system_id is not None` | **mypy only** |
+
+The last one is honest to state plainly: removing it breaks no test, because
+SQLAlchemy renders `system_id == None` as `IS NULL`, which matches no
+component and returns `{}` -- the same result the guard produces. `mypy src`
+does reject it (`Argument "system_id" ... has incompatible type "int | None";
+expected "int"`), and mypy is part of the gate, so the guard cannot be
+removed silently. No test was contrived to cover it.
+
+**Three guards escaped on the first pass and the tests were strengthened
+until they were caught** -- the escapes were the useful part of the exercise:
+
+1. `sorted(...)` -- `test_ordering_is_stable_regardless_of_input_order`
+   compares two calls with the same statements in different orders, and set
+   iteration order depends on element hashes rather than insertion order, so
+   the two agree even unsorted. The assertion could never have failed. Fixed
+   by asserting the rendered order itself over eight statements.
+2. `if not usable: return ""` -- with the guard gone, `" Implementation: ."`
+   is appended to **both** sides of every comparison in the file, so every
+   equality assertion still held while the prose was broken. This is the same
+   vacuous-assertion shape found in P1 (`derived_status is None`). Fixed with
+   an absolute assertion: no rendered statement may contain
+   `"Implementation: ."`.
+3. The post-strip empty filter -- `"."` passes the incoming filter and then
+   strips to nothing.
+
+### A harness bug worth remembering
+
+The first run reported **CAUGHT for all ten guards, with zero `FAILED`
+lines** -- `timeout` does not exist on macOS, so every pytest invocation
+exited 127 before running. A mutation harness that cannot fail is worse than
+none: it certifies whatever it is pointed at. The harness now asserts its
+watchdog (`perl -e 'alarm N; exec @ARGV'`) up front, compares the file hash
+before and after each mutation so a `str.replace` that matches nothing is
+reported `NOT-APPLIED` instead of scored, and reports `SUSPECT` when pytest
+exits non-zero without a `FAILED` line.
