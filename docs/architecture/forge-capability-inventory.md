@@ -571,6 +571,36 @@ section carries the mutation-testing outcome and one deferred finding).
 Revised matrix rows: **#1 EXISTING**; **#6 partially satisfied** for desired
 state (observed-state change impact still open); **#11** unchanged.
 
+## 6.2c Status and correction — #8 is built, and my classification was wrong (2026-09-15)
+
+Capability #8 (exception/waiver management) is **implemented and verified**.
+
+§6.2 classified it "NEEDS EXTENSION — generalize `KSIException`". That was
+wrong, and the reason matters. `fedramp20x/readiness.py` counts `KSIException`
+rows with `status == "open"` into `Readiness.open_exceptions`, a **detractor**
+surfaced in the readiness payload and the authorization package. It suppresses
+nothing — it is a *disclosure*. What #8 needed was the opposite effect: stop
+the operational consequence of an accepted finding. Conflating the two would
+fail in both directions, so `Waiver` is a distinct mechanism and `KSIException`
+is untouched.
+
+The whole design is one invariant: **a waiver changes what happens next, never
+what was observed.** A fail stays `fail`, every per-resource verdict and
+observation stays, `last_status` stays, `effective_verdict` still reports
+`fail`. Exactly one thing is suppressed — the `_alert_on_failure` call — and
+only when *every* failing resource is covered. The result records `waived` and
+each accepted resource records its `waiver_id`, so a waiver leaves a **stronger**
+record than an unwaived failure.
+
+Spec `docs/superpowers/specs/2026-09-15-waivers-design.md`, plan
+`docs/superpowers/plans/2026-09-15-waivers.md` (results carry the mutation
+outcome and two findings deliberately not fixed).
+
+Revised matrix row: **#8 EXISTING**. This also answers the P2b finding that two
+checks can now cover one control and disagree — a waiver is how one of them is
+accepted, though *which* verdict wins for a control remains open (see the P2b
+plan's results).
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem
