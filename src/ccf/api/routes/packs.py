@@ -11,9 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...models import System
-from ...models_packs import CompliancePack
+from ...models_packs import CompliancePack, CompliancePackVersion
 from ...packs import catalog
 from ...packs import service as pack_service
+from ...packs.diff import diff_posture_rules
+from ...packs.impact import build_config_change_impact
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -151,4 +153,75 @@ async def test_pack(
                     for r in results],
         "passed": sum(1 for r in results if r.status == "pass"),
         "failed": sum(1 for r in results if r.status == "fail"),
+    }
+
+
+async def _version_row(
+    session: AsyncSession, pack_id: int, version: str
+) -> CompliancePackVersion:
+    row = (
+        await session.execute(
+            select(CompliancePackVersion)
+            .where(
+                CompliancePackVersion.pack_id == pack_id,
+                CompliancePackVersion.version == version,
+            )
+            .order_by(CompliancePackVersion.id.desc())
+        )
+    ).scalars().first()
+    if row is None:
+        raise HTTPException(404, f"pack has no installed version {version!r}")
+    return row
+
+
+@router.get("/{pack_key}/impact")
+async def pack_impact(
+    pack_key: str,
+    from_version: str | None = None,
+    to_version: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """What adopting a desired-state change would affect in this deployment.
+
+    Defaults to the two most recently installed versions, which is the question
+    an operator has just after an upgrade: "what did that change?". Read-only --
+    it computes for review and applies nothing.
+
+    A pack with only one installed version is a 409 rather than an empty
+    impact: having nothing to compare against is not the same as a change with
+    no consequences, and reporting the two identically would hide the
+    difference.
+    """
+    pack = await _require(session, pack_key, principal)
+    versions = (
+        await session.execute(
+            select(CompliancePackVersion)
+            .where(CompliancePackVersion.pack_id == pack.id)
+            .order_by(CompliancePackVersion.id.desc())
+        )
+    ).scalars().all()
+    if from_version is None and to_version is None:
+        if len(versions) < 2:
+            raise HTTPException(
+                409,
+                "pack has only one version installed; there is nothing to compare it against",
+            )
+        newer, older = versions[0], versions[1]
+    else:
+        if from_version is None or to_version is None:
+            raise HTTPException(400, "supply both from_version and to_version, or neither")
+        older = await _version_row(session, pack.id, from_version)
+        newer = await _version_row(session, pack.id, to_version)
+
+    diff = diff_posture_rules(older.manifest, newer.manifest)
+    impact = await build_config_change_impact(
+        session, org_id=pack.organization_id, diff=diff
+    )
+    return {
+        "pack_key": pack.pack_key,
+        "from_version": older.version,
+        "to_version": newer.version,
+        "diff": diff.as_dict(),
+        "impact": impact.to_dict(),
     }
