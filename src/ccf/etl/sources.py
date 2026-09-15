@@ -150,6 +150,22 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         "enabled": False,  # off until a canonical URL is set
         "auto_ingest": False,
     },
+    {
+        "key": "disa_cci_list",
+        "name": "DISA Control Correlation Identifiers — CCI List",
+        "authority": "DISA",
+        # Not OSCAL: content-hash only, like the baseline profiles.
+        "kind": "generic",
+        "url": "https://public.cyber.mil/stigs/cci/",
+        "framework_code": "DISA_CCI",
+        # Disabled by default. cyber.mil refuses non-browser fetches, so an
+        # enabled source could only ever record an error, and a permanently
+        # failing source in the alert digest trains people to ignore it.
+        # Enable it where egress allows: the poller already records a
+        # per-source failure and moves on, and auto_ingest stays False either
+        # way, so a detected change is still reviewed by a human.
+        "enabled": False,
+    },
 ]
 
 
