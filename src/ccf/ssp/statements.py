@@ -9,6 +9,8 @@ generic template sentence. Pure and side-effect-free; the orchestration
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .constants import DRAFT_PREFIX as DRAFT_PREFIX  # noqa: PLC0414 — explicit re-export
 from .constants import responsible_role_for
 
@@ -122,6 +124,40 @@ def _inherited_evidence_clause(provider: str, crm_ref: str | None) -> tuple[str,
     )
 
 
+def _usable_statements(capability_statements: Sequence[str]) -> list[str]:
+    """Non-empty capability statements, in a stable order.
+
+    Sorted so regenerating an SSP produces identical prose -- reproducibility
+    now, and a precondition for narrative redline later. Empty and
+    whitespace-only entries are dropped: an empty clause would render
+    "Implementation: ." .
+    """
+    return sorted({s.strip() for s in capability_statements if s and s.strip()})
+
+
+def _capability_clause(
+    capability_statements: Sequence[str], *, residual: bool = False
+) -> str:
+    """An implementation sentence naming the capabilities that cover a control.
+
+    Appended rather than spliced into the body sentence. Capability statements
+    are whole sentences, and the ``customer`` and ``shared`` branches need
+    different grammatical forms ("by configuring X" versus "configures X"), so
+    interpolating one string into both would either break the grammar or force
+    rewording the existing prose -- and rewording it would break the
+    byte-identical guarantee for controls no capability covers.
+
+    ``residual`` frames it for an inherited control, where the provider
+    implements the control and the organization's capability covers only what
+    is left.
+    """
+    usable = _usable_statements(capability_statements)
+    if not usable:
+        return ""
+    lead = "The organization's residual implementation" if residual else "Implementation"
+    return f" {lead}: {'; '.join(usable)}."
+
+
 def compose(
     *,
     control_id: str,
@@ -139,6 +175,7 @@ def compose(
     frequency: str | None = None,
     policy_ref: str | None = None,
     crm_ref: str | None = None,
+    capability_statements: Sequence[str] = (),
 ) -> tuple[str, bool]:
     """Return ``(statement_text, needs_review)`` tailored to the derivation.
 
@@ -154,7 +191,11 @@ def compose(
     governing policy/procedure when one is available. ``crm_ref`` is a real
     leveraged-authorization / customer-responsibility-matrix reference for an
     *inherited* control — required for the statement to be auto-accepted
-    (FR-11).
+    (FR-11). ``capability_statements`` are the authored statements of the
+    capabilities that cover this control (P1); when present, an implementation
+    sentence naming them is appended to the body, so one capability edited once
+    re-renders every control it maps to. Empty by default, which makes every
+    existing call byte-identical.
     """
     obj = (requirement or "the control requirement").strip().rstrip(".")
     caps = captured if include_captured else []
@@ -190,7 +231,7 @@ def compose(
             f" Customer responsibility: {role} monitors {provider}'s continued authorization "
             f"and performs any residual configuration or hybrid actions needed to {obj} that "
             f"{provider} does not fully cover."
-        )
+        ) + _capability_clause(capability_statements, residual=True)
         text = (
             f"Control {control_id} is inherited from {provider}. The organization relies on "
             f"the provider's authorized implementation to {obj}." + customer_line
@@ -201,7 +242,7 @@ def compose(
         return _finish(
             f"Control {control_id} is a shared responsibility on {environment}. The platform "
             f"provides the underlying capability, and the organization configures {services} "
-            f"to {obj}.",
+            f"to {obj}." + _capability_clause(capability_statements),
             True,
             evidence=_evidence_clause("shared"),
         )
@@ -210,13 +251,14 @@ def compose(
     evidence = _evidence_clause("customer")
     if style == "concise":
         return _finish(
-            f"The organization configures {services} on {environment} to {obj}.",
+            f"The organization configures {services} on {environment} to {obj}."
+            + _capability_clause(capability_statements),
             True,
             evidence=evidence,
         )
     return _finish(
         f"The organization implements Control {control_id} on {environment} by configuring "
-        f"{services} to {obj}.",
+        f"{services} to {obj}." + _capability_clause(capability_statements),
         True,
         evidence=evidence,
     )
