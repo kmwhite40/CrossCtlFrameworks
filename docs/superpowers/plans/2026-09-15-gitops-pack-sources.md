@@ -44,15 +44,15 @@
   `fetch_conditional(url: str, etag: str | None) -> tuple[int, bytes | None, str | None]`
   (the private names kept as thin aliases so nothing internal breaks)
 
-- [ ] **Step 1: Write the failing test** — the public names exist, hash a known
+- [x] **Step 1: Write the failing test** — the public names exist, hash a known
   body to a known digest, and a 304 returns `(304, None, etag)`.
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Rename, keeping `_sha256_bytes = sha256_bytes` and
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Rename, keeping `_sha256_bytes = sha256_bytes` and
   `_fetch = fetch_conditional`** so existing call sites and any test that
   reaches for the private name keep working. Say in the docstring that these
   are shared with `packs/sync.py`.
-- [ ] **Step 4: Run the catalog-source suites** — all pass unedited.
-- [ ] **Step 5: Commit.**
+- [x] **Step 4: Run the catalog-source suites** — all pass unedited.
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -63,17 +63,17 @@
 - Modify: `src/ccf/models_packs.py`, `tests/test_rls_coverage.py`
 - Test: `tests/test_pack_source_models.py`
 
-- [ ] **Step 1: Write the failing test** — a source round-trips;
+- [x] **Step 1: Write the failing test** — a source round-trips;
   `auto_install` and `enabled` default correctly (False and True);
   `(organization_id, pack_key, url)` is unique so the same manifest cannot be
   registered twice for one tenant; `pending_manifest` defaults to `{}`.
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Write the model** in `models_packs.py` beside the other pack
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Write the model** in `models_packs.py` beside the other pack
   tables, nullable `organization_id` per the established convention.
-- [ ] **Step 4: Write migration 0071**, `down_revision = "0070_waivers"`, with
+- [x] **Step 4: Write migration 0071**, `down_revision = "0070_waivers"`, with
   the direct `organization_id = ccf.current_tenant()` policy.
-- [ ] **Step 5: Update the RLS guard** — add `pack_sources`, count **132 → 133**.
-- [ ] **Step 6: `alembic heads`, model tests, `tests/test_rls_coverage.py`.
+- [x] **Step 5: Update the RLS guard** — add `pack_sources`, count **132 → 133**.
+- [x] **Step 6: `alembic heads`, model tests, `tests/test_rls_coverage.py`.
   Commit.**
 
 ---
@@ -88,7 +88,7 @@
 - Produces: `check_pack_source`, `sync_for_org`, `adopt_pending`, `divergence`,
   `SYNC_OUTCOMES`
 
-- [ ] **Step 1: Write the failing test**, one per outcome plus the refusals:
+- [x] **Step 1: Write the failing test**, one per outcome plus the refusals:
 
 ```python
 async def test_a_new_manifest_is_stored_pending_and_installs_nothing() -> None:
@@ -126,12 +126,12 @@ async def test_sync_for_org_skips_another_tenants_source() -> None:
     """Two sources, one per org: the filter must exclude, not merely include."""
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement**, reusing `fetch_conditional`, `sha256_bytes`,
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement**, reusing `fetch_conditional`, `sha256_bytes`,
   `resolve_commit_sha`, `validate_manifest` and `install_pack`. Audit through
   `ccf.api.audit.record_event` — never a hand-built row, which breaks the hash
   chain.
-- [ ] **Step 4: Run tests. Commit.**
+- [x] **Step 4: Run tests. Commit.**
 
 ---
 
@@ -141,14 +141,14 @@ async def test_sync_for_org_skips_another_tenants_source() -> None:
 - Modify: `src/ccf/packs/sync.py`
 - Test: `tests/test_packs_divergence.py`
 
-- [ ] **Step 1: Write the failing test** — all four states:
+- [x] **Step 1: Write the failing test** — all four states:
   `in_sync` (installed sha equals the source's last sha), `pending_change`,
   `diverged` (a pack installed that the source never provided), `unknown`
   (never polled). `diverged` is the one nobody asks for and the one that
   catches a local install bypassing the source.
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement.**
-- [ ] **Step 4: Run tests. Commit.**
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement.**
+- [x] **Step 4: Run tests. Commit.**
 
 ---
 
@@ -165,33 +165,111 @@ async def test_sync_for_org_skips_another_tenants_source() -> None:
   `GET /api/pack-sources/{id}/divergence`
 - `ccf packs-sync [--org-id N]`
 
-- [ ] **Step 1: Write the failing test** — register, list, sync, adopt and
+- [x] **Step 1: Write the failing test** — register, list, sync, adopt and
   divergence through HTTP; `organization_id` comes from the principal;
   another tenant's source id is a 404 (never confirm existence); adopt
   requires an approver role, matching waivers.
-- [ ] **Step 2: Run it.** Expect 404s.
-- [ ] **Step 3: Add the scheduler step** inside `_run_per_tenant_cycle`, in its
+- [x] **Step 2: Run it.** Expect 404s.
+- [x] **Step 3: Add the scheduler step** inside `_run_per_tenant_cycle`, in its
   own `begin_nested()` savepoint with the same warning-log shape as its
   neighbours — the docstring there explains why a bare try/except is not
   enough.
-- [ ] **Step 4: Add the routes and the CLI command.**
-- [ ] **Step 5: Run tests plus the scheduler suite. Commit.**
+- [x] **Step 4: Add the routes and the CLI command.**
+- [x] **Step 5: Run tests plus the scheduler suite. Commit.**
 
 ---
 
 ### Task 6: Verification, mutation testing, demonstration
 
-- [ ] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
+- [x] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
   `alembic heads`. Only the known
   `test_dashboard_overview_sla_excludes_no_due_date_from_on_track` failure.
-- [ ] **Step 2: Mutate every guard.** At minimum: each of the five outcome
+- [x] **Step 2: Mutate every guard.** At minimum: each of the five outcome
   branches; the `enabled` and `auto_install` checks; the sha-unchanged
   short-circuit; the validate-before-install order; the pending-fields clear;
   the adopt-with-nothing-pending refusal; both `organization_id` filters; each
   divergence state; the scheduler savepoint.
-- [ ] **Step 3:** Report every ESCAPED honestly. Ask of each whether the
+- [x] **Step 3:** Report every ESCAPED honestly. Ask of each whether the
   fixture could express the bug and whether the guard is redundant.
-- [ ] **Step 4: Demonstrate** — a source pointing at a stubbed manifest; poll
+- [x] **Step 4: Demonstrate** — a source pointing at a stubbed manifest; poll
   it (pending); print the impact of adopting; adopt; poll again (unchanged);
   change the manifest and poll (pending again); print divergence at each step.
-- [ ] **Step 5: Commit** with results recorded here.
+- [x] **Step 5: Commit** with results recorded here.
+
+---
+
+## Results
+
+All six tasks complete. Full suite **2023 passed**, 1 skipped, and the one
+pre-existing `test_dashboard_overview_sla_excludes_no_due_date_from_on_track`
+failure that also fails on `main`. `ruff check src tests` and `mypy src` clean.
+One migration head, `0071_pack_sources`.
+
+Commits: `1779b72` (T1), `33e1096` (T2), `b442e1c` (T3+T4), `9b39479` (T5).
+
+### The demonstration
+
+The whole loop, with divergence reported at every step:
+
+```
+0. REGISTERED, never polled                unknown        source has never been polled
+1. POLLED -> PENDING                       pending_change a fetched change awaits review
+2. ADOPTED v1.0.0 by the AO                in_sync        installed == declared
+3. POLLED AGAIN -> UNCHANGED               in_sync
+4. NEW COMMIT POLLED -> PENDING            pending_change
+     what adopting it would do:
+       AC-2    changed  ['acme.stale_accounts.60d']
+       AC-2    removed  ['acme.no_guest_accounts']
+       AC-6    removed  ['acme.no_guest_accounts']
+5. SOMEONE INSTALLED v9.9.9 DIRECTLY       diverged       not the manifest this source provided
+```
+
+Step 1 is the gate: the manifest was fetched and validated, and **nothing
+ran**. Step 5 is the state nobody asks for, caught.
+
+### A defect the tests caught before the demonstration did
+
+The first `divergence` implementation compared `source.last_sha256` — the SHA
+of the **raw bytes at the URL** — against `CompliancePack.manifest_sha`, which
+`install_pack` computes as a **canonical digest of the parsed manifest**. Those
+can never be equal: whitespace and key order move one without moving the other,
+so `in_sync` was unreachable and every adopted source would have read as
+`diverged`.
+
+Two questions need two digests, and the fix says so: `last_sha256` answers "did
+the file change" and drives change detection, `last_manifest_sha` answers "is
+the installed manifest the one this source provided". `0071` was edited rather
+than patched by an `0072` — it was added minutes earlier in this same
+sub-project on an unmerged branch, and a migration that immediately amends its
+own table is worse to read than one that got it right.
+
+### Mutation testing: 23 guards, all caught
+
+20 on the first pass; three escaped, all real:
+
+1. **The 304 branch** — every test polled a `file://` URL, which always returns
+   200, so the conditional-request path was **unreachable**. Now tested with a
+   stubbed fetch that also asserts the stored ETag is sent.
+2. **`last_checked_at`** — only the *disabled* test asserted anything about it
+   (that it stays `None`), so removing the stamp on a real poll changed nothing
+   observable. Now a successful poll is asserted to set it, since that field is
+   how an operator tells a healthy source from a stuck one.
+3. **The cross-tenant guard on `_require_source`** — unreachable through the
+   HTTP client, which runs as a global principal. Tested directly with a
+   fabricated scoped `Principal`, exactly as the drift endpoints needed.
+
+**Escape 1 and 3 are the same failure of test design**: a branch keyed on
+something the harness never varies. The `file://` convenience that made every
+other test simple is precisely what hid the 304 path.
+
+The fixture for escape 3 was wrong on the first attempt too — it registered the
+source through HTTP, which leaves `organization_id` NULL, so the *owner*
+assertion 404'd as well. A test of an ownership check needs a row that is
+actually owned.
+
+### Stated limitation
+
+No credential storage: sources must be reachable unauthenticated. A private
+repository needs a token, and credentials belong in
+`connectors/credentials.py`'s encrypted per-org store rather than a new column
+on `pack_sources`. Left as a stated limitation rather than half-built.

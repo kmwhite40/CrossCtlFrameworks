@@ -660,6 +660,43 @@ Revised matrix rows: **#6 EXISTING**, **#11 EXISTING**.
 data), #4 enforcement behind the §6.4 gate, then #7 patch orchestration and
 #9 PuppetDB — both optional and downstream of #4.
 
+## 6.2f Status — #10 is built (2026-09-15)
+
+**Implemented and verified.** A tenant registers a repository that declares its
+desired state; the platform polls it on the scheduler's per-tenant cycle,
+reports what adopting the change would do (#6), and installs only when told.
+
+**No git client was added, and that is the design.** Three of GitOps' four
+properties already had machinery: P2b made desired state data, `etl/sources.py`
+polls with conditional fetch plus a content sha, and `resolve_commit_sha`
+already resolves a raw URL to the commit that last touched it. A manifest is a
+file, so a raw URL plus that commit sha is the whole of git's contribution —
+where shelling out to `git` would mean SSH credentials, a working tree and a
+clone cache inside a product that runs in GCC High. The *functions* are reused;
+the table is not, because `catalog_sources` is global reference data and a
+tenant's repository is its own.
+
+**Detection is automatic; adoption is not.** `auto_install` defaults to False,
+mirroring `CatalogSource.auto_ingest` and for a stronger reason: a pack rule
+executes against a customer tenant, so a platform that silently changed what it
+asserts because someone merged a PR would have an SSP that no longer describes
+a reviewed decision. This is deliberately not pure GitOps convergence.
+
+`divergence` answers the question GitOps exists for, and `diverged` is the state
+nobody asks for: a manifest installed through the API while a source is
+configured — how a deployment quietly stops matching its own repository.
+
+Spec `docs/superpowers/specs/2026-09-15-gitops-pack-sources-design.md`, plan
+`docs/superpowers/plans/2026-09-15-gitops-pack-sources.md`.
+
+Revised matrix row: **#10 EXISTING**.
+
+**Remaining CC&E work is all downstream of the §6.4 enforcement gate:** #4
+enforcement (its own spec — write-scoped opt-in credentials, plan-then-apply,
+blast-radius limits, reversal data), then #7 patch orchestration and #9
+PuppetDB, both optional and dependent on #4. Everything buildable read-only is
+now built.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem

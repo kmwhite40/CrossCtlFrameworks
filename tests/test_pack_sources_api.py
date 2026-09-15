@@ -7,12 +7,15 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from ccf.api.main import create_app
+from ccf.api.routes.packs import _require_source
+from ccf.auth import Principal
 from ccf.db import session_scope
-from ccf.models import AuditLog
+from ccf.models import AuditLog, Organization
 from ccf.models_packs import CompliancePack, PackSource
 
 _SEQ = itertools.count()
@@ -167,3 +170,40 @@ async def test_an_organization_id_in_the_body_is_ignored(tmp_path: Path) -> None
             await session.execute(select(PackSource).where(PackSource.id == source_id))
         ).scalar_one()
         assert src.organization_id != 424_242
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_principal_cannot_reach_another_tenants_source(
+    tmp_path: Path,
+) -> None:
+    """Exercised directly: the HTTP client runs as a global principal, so the
+    cross-tenant branch is unreachable through it and went untested -- the same
+    gap mutation testing found in the drift endpoints."""
+    pack_key = f"api-src-{next(_SEQ)}"
+    path = tmp_path / f"{pack_key}.json"
+    path.write_text(json.dumps(_manifest(pack_key)), encoding="utf-8")
+    async with session_scope() as session:
+        # Created directly with a real organization: the HTTP client registers
+        # as a global principal, which leaves organization_id NULL and cannot
+        # exercise an ownership check at all.
+        org = Organization(name=f"PackSrcApiOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        src = PackSource(
+            organization_id=org.id, pack_key=pack_key, url=f"file://{path}"
+        )
+        session.add(src)
+        await session.flush()
+        source_id, owning_org = src.id, org.id
+
+        intruder = Principal(
+            user_id=1, email="other@example.gov", org_id=owning_org + 1000, role="admin"
+        )
+        with pytest.raises(HTTPException) as caught:
+            await _require_source(session, source_id, intruder)
+        assert caught.value.status_code == 404, "never confirm existence across tenants"
+
+        owner = Principal(
+            user_id=2, email="owner@example.gov", org_id=owning_org, role="admin"
+        )
+        assert (await _require_source(session, source_id, owner)).id == source_id

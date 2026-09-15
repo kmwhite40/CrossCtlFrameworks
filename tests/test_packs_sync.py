@@ -12,7 +12,13 @@ from sqlalchemy import select
 from ccf.db import session_scope
 from ccf.models import AuditLog, Organization
 from ccf.models_packs import CompliancePack, PackSource
-from ccf.packs.sync import SYNC_OUTCOMES, adopt_pending, check_pack_source, sync_for_org
+from ccf.packs import sync as sync_mod
+from ccf.packs.sync import (
+    SYNC_OUTCOMES,
+    adopt_pending,
+    check_pack_source,
+    sync_for_org,
+)
 
 _SEQ = itertools.count()
 
@@ -192,6 +198,51 @@ async def test_a_disabled_source_is_skipped(tmp_path: Path) -> None:
         assert out["status"] == "unchanged"
         assert out["reason"] == "source disabled"
         assert src.last_checked_at is None, "a skipped source was never checked"
+
+
+@pytest.mark.asyncio
+async def test_a_304_is_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The conditional-request branch.
+
+    Every other test polls a ``file://`` URL, which always returns 200, so this
+    branch was unreachable -- which is how it escaped mutation testing. The
+    fetch is stubbed rather than a server stood up: what is under test is the
+    branch, not httpx.
+    """
+    path = tmp_path / f"nm-{next(_SEQ)}.json"
+    async with session_scope() as session:
+        org = await _org(session)
+        src = await _source(session, org, path)
+        src.etag = 'W/"abc"'
+        await session.flush()
+
+        async def _not_modified(url: str, etag: str | None):
+            assert etag == 'W/"abc"', "the stored ETag must be sent"
+            return 304, None, etag
+
+        monkeypatch.setattr(sync_mod, "fetch_conditional", _not_modified)
+        out = await check_pack_source(session, src)
+        assert out["status"] == "unchanged"
+        assert out["reason"] == "not modified"
+        assert src.last_checked_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_successful_poll_records_that_it_happened(tmp_path: Path) -> None:
+    """last_checked_at is how an operator tells a healthy source from a stuck
+    one, so every poll that looked must set it."""
+    path = tmp_path / f"stamped-{next(_SEQ)}.json"
+    async with session_scope() as session:
+        org = await _org(session)
+        _write(path, _manifest(pack_id=path.stem))
+        src = await _source(session, org, path)
+        assert src.last_checked_at is None
+        await check_pack_source(session, src)
+        assert src.last_checked_at is not None
+        first = src.last_checked_at
+        # A second, unchanged poll still looked, so it still stamps.
+        await check_pack_source(session, src)
+        assert src.last_checked_at >= first
 
 
 # ── adoption ─────────────────────────────────────────────────────────────────
