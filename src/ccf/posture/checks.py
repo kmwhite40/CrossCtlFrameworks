@@ -15,10 +15,12 @@ from .types import CheckOutcome, PostureCheck, ResourceFinding
 
 __all__ = [
     "CHECK_REGISTRY",
+    "ENDPOINT_REGISTRY",
     "CheckOutcome",
     "PostureCheck",
     "ResourceFinding",
     "checks_for",
+    "endpoint_for",
     "platform_check_keys",
 ]
 
@@ -31,6 +33,21 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
     # under it is a registry edit rather than a new dict entry.
     "aws_govcloud": (),
 }
+
+
+#: Provider key -> {check key: the collection the check reads}. Symmetric with
+#: :data:`CHECK_REGISTRY` and kept beside it so a provider cannot register a
+#: check without also saying where its data comes from -- a check with no
+#: endpoint cannot be scanned, and resolution refuses to return one.
+ENDPOINT_REGISTRY: dict[str, dict[str, str]] = {
+    "msgraph": m365.ENDPOINTS,
+    "aws_govcloud": {},
+}
+
+
+def endpoint_for(provider: str, check_key: str) -> str | None:
+    """The collection a platform check reads, or ``None`` if unregistered."""
+    return ENDPOINT_REGISTRY.get(provider, {}).get(check_key)
 
 
 def checks_for(provider: str) -> tuple[PostureCheck, ...]:
