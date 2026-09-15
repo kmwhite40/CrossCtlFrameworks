@@ -9,6 +9,14 @@ controls anyone can cite -- which is exactly what makes them objectives.
 Nothing is materialised. A proposal stores a label and a SHA-256 of the objective
 text, so a catalog re-ingest that rewords an objective makes a stored verdict
 detectable as stale rather than silently wrong.
+
+Labels come from the row's own ``identifier``, which in the real workbook *is*
+the item path -- ``AC-02a.[01]``, ``AC-02b.``, ``AC-02_ODP[01]`` -- and is
+UNIQUE in the schema, so it is unique by construction. ``ap_acronym`` is kept
+as a fallback but is populated on 4 of 5,435 catalog rows, and the ordinal
+derivation below is the last resort. The duplicate handling further down stays
+regardless: uniqueness by construction is a property of the current schema,
+not a promise, and ``uq_objective_proposal_label`` is what actually enforces it.
 """
 
 from __future__ import annotations
@@ -110,7 +118,9 @@ async def objectives_for(session: AsyncSession, control_identifier: str) -> list
         text = (row.assessment_objective or "").strip()
         if not text:
             continue
-        label = row.ap_acronym or _ordinal_label(row.sequence_control or canonical, index)
+        label = row.identifier or row.ap_acronym or _ordinal_label(
+            row.sequence_control or canonical, index
+        )
         if label in seen_labels:
             # ap_acronym is sparse and inconsistently unique -- confirmed live
             # on AC-1, which carries two sub-clause rows both stamped

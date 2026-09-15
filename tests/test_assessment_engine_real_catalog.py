@@ -136,12 +136,29 @@ async def test_ac1_yields_every_real_sub_clause_row() -> None:
 async def test_ac1s_duplicate_ap_acronym_does_not_produce_duplicate_labels() -> None:
     """CRITICAL 3's reproduction case, against the real rows, not a synthetic
     stand-in (see test_assessment_objectives.py for the synthetic version).
+
+    Before Task 10 this asserted ``labels.count("AC-01a") == 1`` -- only one
+    of the two rows sharing ap_acronym "AC-01a" could keep it as a label, the
+    other fell back to an ordinal derivation. Labels now come from each row's
+    own identifier (Task 10), which is unique by construction, so the two
+    colliding rows -- real identifiers "AC-01_ODP[01]" and "AC-01a.[01]" --
+    never collide on label at all; "AC-01a" the ap_acronym never surfaces as
+    a label in the first place. What remains true, and worth asserting: no
+    label repeats, and each of the two ap_acronym-colliding rows keeps its
+    own distinct identifier as its label.
     """
     async with session_scope() as s:
         objectives = await objectives_for(s, "AC-1")
     labels = [o.label for o in objectives]
     assert len(labels) == len(set(labels)), f"duplicate labels survived: {labels}"
-    assert labels.count("AC-01a") == 1, "only one row may keep the catalog-supplied label"
+    assert "AC-01a" not in labels, "ap_acronym must not surface as a label"
+
+    dup_ap_acronym_indices = [
+        i for i, row in enumerate(_REAL_ROWS["AC-1"]) if row["ap_acronym"] == "AC-01a"
+    ]
+    assert len(dup_ap_acronym_indices) == 2, "fixture must still include the real AC-1 collision"
+    dup_labels = {labels[i] for i in dup_ap_acronym_indices}
+    assert len(dup_labels) == 2, "each colliding row must keep its own identifier as its label"
 
 
 async def test_ac3_exceeds_the_old_default_guard_and_clears_the_new_one() -> None:
