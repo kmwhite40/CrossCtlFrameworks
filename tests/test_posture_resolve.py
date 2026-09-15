@@ -161,6 +161,41 @@ async def test_a_non_posture_rule_is_ignored() -> None:
         assert "some_metric" not in keys
 
 
+async def test_a_non_posture_rule_that_looks_posture_shaped_is_still_excluded() -> None:
+    """The kind filter has to do the work, not the provider filter.
+
+    A rule of another kind can carry a definition that names a provider -- an
+    'assert' rule is free-form JSON -- so excluding non-posture rules cannot be
+    left to _targets() happening to reject them.
+    """
+    async with session_scope() as session:
+        org = await _org(session)
+        disguised = {
+            "key": "org.disguised",
+            "kind": "assert",
+            "definition": dict(FORM_B["definition"]),
+        }
+        await install_pack(session, org_id=org.id, manifest=_manifest(disguised))
+        resolved = await resolve_checks(session, provider="msgraph", org_id=org.id)
+        assert "org.disguised" not in {r.check.key for r in resolved}
+
+
+async def test_declared_checks_come_back_in_key_order() -> None:
+    """Asserted absolutely, not by comparing two runs: two resolutions of the
+    same rows agree whatever order the database returns them in, so only the
+    order itself pins it."""
+    async with session_scope() as session:
+        org = await _org(session)
+        zulu = {**FORM_B, "key": "org.zulu"}
+        alpha = {**FORM_B, "key": "org.alpha"}
+        mike = {**FORM_B, "key": "org.mike"}
+        # Installed in a deliberately unsorted order.
+        await install_pack(session, org_id=org.id, manifest=_manifest(zulu, mike, alpha))
+        resolved = await resolve_checks(session, provider="msgraph", org_id=org.id)
+        declared = [r.check.key for r in resolved if r.source.startswith("pack:")]
+        assert declared == ["org.alpha", "org.mike", "org.zulu"]
+
+
 async def test_an_unevaluable_stored_rule_is_skipped_not_returned() -> None:
     """Validation should have caught it, so a row reaching here predates
     validation. Dropping it is safer than scanning a tenant with a rule whose

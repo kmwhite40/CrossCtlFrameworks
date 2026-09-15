@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -39,8 +40,16 @@ GUEST_RESOLVED = ResolvedCheck(
     ),
 )
 
+# A Form A check as resolution actually produces it: the pack's OWN key, with
+# evaluator_key pointing at the platform logic it reuses. Using the platform
+# check's key here would make the two indistinguishable and hide a dispatch
+# that looked up the wrong one.
 STALE_60 = ResolvedCheck(
-    check=m365.STALE_ACCOUNTS,
+    check=replace(
+        m365.STALE_ACCOUNTS,
+        key="org.stale_accounts.60d",
+        expected="no enabled account has been inactive longer than 60 days",
+    ),
     endpoint=m365.ENDPOINTS[m365.STALE_ACCOUNTS.key],
     source="pack:test",
     evaluator_key=m365.STALE_ACCOUNTS.key,
@@ -115,7 +124,9 @@ async def test_a_parameterized_platform_check_uses_the_declared_threshold(
     monkeypatch.setattr(MsGraphConnector, "_get_all", fake_get_all)
 
     at_60 = await MsGraphConnector(credential=CRED).scan(checks=(STALE_60,))
+    assert at_60[0].check_key == "org.stale_accounts.60d", "runs under the pack's key"
     assert at_60[0].verdict == "fail", "a 60-day threshold must fail a 75-day-idle account"
+    assert "60 days" in at_60[0].expected
 
     default = ResolvedCheck(
         check=m365.STALE_ACCOUNTS,
