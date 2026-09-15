@@ -37,8 +37,11 @@ class PostureRuleDiff:
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
-    #: Rule key -> (before, after), for the changed rules only. A diff that
-    #: says only "changed" cannot be reviewed.
+    #: Rule key -> (before, after) for **every** rule in the diff. An added
+    #: rule has ``{}`` before, a removed one ``{}`` after. A diff that names a
+    #: rule without its definition cannot be reviewed or acted on -- and a
+    #: consumer computing what a change affects needs the added and removed
+    #: definitions just as much as the changed ones.
     definitions: dict[str, tuple[dict[str, Any], dict[str, Any]]] = field(default_factory=dict)
 
     @property
@@ -85,16 +88,22 @@ def diff_posture_rules(old: Any, new: Any) -> PostureRuleDiff:
 
     before = _posture_rules(old)
     after = _posture_rules(new)
+    added = sorted(set(after) - set(before))
+    removed = sorted(set(before) - set(after))
     changed: list[str] = []
     definitions: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
     for key in sorted(set(before) & set(after)):
         if _canonical(before[key]) != _canonical(after[key]):
             changed.append(key)
             definitions[key] = (before[key], after[key])
+    for key in added:
+        definitions[key] = ({}, after[key])
+    for key in removed:
+        definitions[key] = (before[key], {})
     return PostureRuleDiff(
         baseline=KNOWN_BASELINE,
-        added=sorted(set(after) - set(before)),
-        removed=sorted(set(before) - set(after)),
+        added=added,
+        removed=removed,
         changed=changed,
         definitions=definitions,
     )
