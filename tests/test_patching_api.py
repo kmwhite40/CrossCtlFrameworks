@@ -16,7 +16,7 @@ from ccf.api.routes.patching import _owned_campaign
 from ccf.auth import Principal
 from ccf.db import session_scope
 from ccf.models import POAM, Organization, System
-from ccf.models_patching import PatchCampaign
+from ccf.models_patching import PatchWave
 
 _SEQ = itertools.count()
 TODAY = date.today()
@@ -229,8 +229,6 @@ async def test_completing_a_wave_is_role_gated() -> None:
         resp = await client.post(f"/api/patch-waves/{waves[0]['id']}/complete", json={})
         assert resp.status_code == 403
     async with session_scope() as db:
-        from ccf.models_patching import PatchWave
-
         wave = (
             await db.execute(select(PatchWave).where(PatchWave.id == waves[0]["id"]))
         ).scalar_one()
@@ -240,7 +238,7 @@ async def test_completing_a_wave_is_role_gated() -> None:
 @pytest.mark.asyncio
 async def test_listing_filters_by_system() -> None:
     """Two systems, so the filter must exclude."""
-    mine, org_id = await _system_with_flaws(2)
+    mine, _org_id = await _system_with_flaws(2)
     theirs, _ = await _system_with_flaws(2)
     async with _client() as client:
         for system_id in (mine, theirs):
