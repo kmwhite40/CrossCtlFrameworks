@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..catalog.oscal import OscalCatalog, load_oscal_catalog
 from ..logging import get_logger
-from ..models_cci import CciControlRef, CciItemRow
+from ..models_cci import CciAssessmentOverlay, CciControlRef, CciItemRow
+from .overlay import DEFAULT_CCI_ODS, OVERLAY_SOURCE, read_overlay_ods
 from .reader import DEFAULT_CCI_HTML, read_cci_html
 from .resolve import catalog_index, resolve_reference
 
@@ -144,3 +145,46 @@ async def load_cci_list(
         refs_unresolved=unresolved,
         skipped_unchanged=False,
     )
+
+
+async def load_cci_overlay(session: AsyncSession, *, path: Path | None = None) -> int:
+    """Attach derived Rev. 5 assessment metadata to CCIs already loaded.
+
+    A row whose CCI is not in the list is skipped rather than inventing an
+    item: the authority decides which CCIs exist.
+    """
+    ids = {
+        cci: pk
+        for cci, pk in (
+            await session.execute(select(CciItemRow.cci, CciItemRow.id))
+        ).all()
+    }
+    written = 0
+    seen: set[tuple[int, str]] = set()
+    for row in read_overlay_ods(path or DEFAULT_CCI_ODS):
+        pk = ids.get(row.cci)
+        if pk is None:
+            continue
+        key = (pk, row.ap_acronym)
+        if key in seen:
+            continue
+        seen.add(key)
+        await session.execute(
+            delete(CciAssessmentOverlay).where(
+                CciAssessmentOverlay.cci_id == pk,
+                CciAssessmentOverlay.ap_acronym == row.ap_acronym,
+            )
+        )
+        session.add(
+            CciAssessmentOverlay(
+                cci_id=pk,
+                ap_acronym=row.ap_acronym,
+                emass_identifier=row.emass_identifier,
+                assessment_procedure=row.assessment_procedure,
+                assessment_methods=row.assessment_methods,
+                source=OVERLAY_SOURCE,
+            )
+        )
+        written += 1
+    await session.flush()
+    return written
