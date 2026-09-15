@@ -138,7 +138,12 @@ async def build_config_change_impact(
     for key in diff.changed:
         changes.append((key, "changed", diff.definitions.get(key, ({}, {}))[1]))
 
-    by_control: dict[str, dict[str, Any]] = {}
+    # Keyed by (control, change kind), not by control alone. One rule removed
+    # and another re-parameterized can touch the same control, and collapsing
+    # that into a single row would tell an operator the control loses all
+    # coverage when a tightened rule still evidences it -- the exact misreading
+    # an impact report exists to prevent.
+    by_control: dict[tuple[str, str], dict[str, Any]] = {}
     for key, change, definition in changes:
         control_ids = _control_ids_for(definition)
         if control_ids is None:
@@ -146,16 +151,18 @@ async def build_config_change_impact(
             continue
         for control_id in control_ids:
             row = by_control.setdefault(
-                control_id, {"control_id": control_id, "change": change, "rule_keys": []}
+                (control_id, change),
+                {"control_id": control_id, "change": change, "rule_keys": []},
             )
-            row["rule_keys"].append(key)
-    impact.controls_affected = [by_control[c] for c in sorted(by_control)]
+            if key not in row["rule_keys"]:
+                row["rule_keys"].append(key)
+    impact.controls_affected = [by_control[k] for k in sorted(by_control)]
     impact.unresolved.sort()
 
     # Capabilities reaching any affected control -- how a rule change reaches
     # authored SSP prose, which P4a made capability-derived.
     by_capability: dict[str, dict[str, Any]] = {}
-    for control_id in sorted(by_control):
+    for control_id in sorted({control_id for control_id, _change in by_control}):
         for cap in await capabilities_for_control(session, control_id=control_id):
             if org_id is not None and cap.organization_id != org_id:
                 continue

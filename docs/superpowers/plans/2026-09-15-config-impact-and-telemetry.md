@@ -43,7 +43,7 @@
 - Produces: `ConfigChangeImpact`,
   `async build_config_change_impact(session, *, org_id: int | None, diff: PostureRuleDiff) -> ConfigChangeImpact`
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```python
 async def test_an_added_rule_reports_the_controls_it_would_evidence() -> None: ...
@@ -69,13 +69,13 @@ async def test_a_form_a_rule_inherits_the_platform_checks_controls() -> None:
 async def test_an_empty_diff_is_an_empty_impact() -> None: ...
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Implement.** Resolve each changed rule key to its control ids —
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Implement.** Resolve each changed rule key to its control ids —
   Form B from `definition["control_ids"]`, Form A from the named platform
   check. Then: capabilities per control, `ControlTest` rows whose `check_key`
   matches a removed key (scoped to `org_id`), and `Waiver` rows whose
   `check_key` matches a removed key (scoped to `org_id`).
-- [ ] **Step 4: Run tests. Lint, mypy, commit.**
+- [x] **Step 4: Run tests. Lint, mypy, commit.**
 
 ---
 
@@ -85,15 +85,15 @@ async def test_an_empty_diff_is_an_empty_impact() -> None: ...
 - Modify: `src/ccf/api/routes/packs.py`
 - Test: `tests/test_packs_impact_api.py`
 
-- [ ] **Step 1: Write the failing test** — `GET /api/packs/{pack_key}/impact`
+- [x] **Step 1: Write the failing test** — `GET /api/packs/{pack_key}/impact`
   with `from_version`/`to_version` returns the impact; an unknown pack is 404;
   an unknown version is 404 naming which; omitting `from_version` compares the
   two most recent versions; another tenant's pack is 404.
-- [ ] **Step 2: Run it.** Expect 404 on the route itself.
-- [ ] **Step 3: Implement**, loading the two `CompliancePackVersion` rows,
+- [x] **Step 2: Run it.** Expect 404 on the route itself.
+- [x] **Step 3: Implement**, loading the two `CompliancePackVersion` rows,
   diffing their manifests, and passing the diff to
   `build_config_change_impact`.
-- [ ] **Step 4: Run tests + the packs API suite. Commit.**
+- [x] **Step 4: Run tests + the packs API suite. Commit.**
 
 ---
 
@@ -108,7 +108,7 @@ async def test_an_empty_diff_is_an_empty_impact() -> None: ...
 - Produces: `POSTURE_CHECK_RESULTS`, `POSTURE_DRIFT_TRANSITIONS`,
   `WAIVER_SUPPRESSIONS`, `POSTURE_DETAIL_PRUNED`, `POSTURE_FAILING_RESOURCES`
 
-- [ ] **Step 1: Write the failing test:**
+- [x] **Step 1: Write the failing test:**
 
 ```python
 def test_no_posture_metric_carries_a_resource_or_check_label() -> None:
@@ -133,10 +133,10 @@ async def test_a_failing_metrics_call_does_not_fail_a_scan() -> None:
     """Monkeypatch an increment to raise; the scan must still record."""
 ```
 
-- [ ] **Step 2: Run it.** Expect `ImportError`.
-- [ ] **Step 3: Define the metrics** in `api/metrics.py` with a
+- [x] **Step 2: Run it.** Expect `ImportError`.
+- [x] **Step 3: Define the metrics** in `api/metrics.py` with a
   `POSTURE_METRICS` tuple so the structural test has something to enumerate.
-- [ ] **Step 4: Increment them**, each behind a guard, with local imports
+- [x] **Step 4: Increment them**, each behind a guard, with local imports
   (`# noqa: PLC0415`) exactly as `fedramp20x/monitoring.py` does:
 
 ```python
@@ -148,25 +148,91 @@ def _observe(fn: Callable[[], None]) -> None:
         log.warning("posture.metrics_failed", error=str(e)[:200])
 ```
 
-- [ ] **Step 5: Run the new tests plus the posture, waiver and retention
+- [x] **Step 5: Run the new tests plus the posture, waiver and retention
   suites.** All pre-existing tests unedited.
-- [ ] **Step 6: Commit.**
+- [x] **Step 6: Commit.**
 
 ---
 
 ### Task 4: Verification, mutation testing, demonstration
 
-- [ ] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
+- [x] **Step 1:** full suite, `ruff check src tests`, `mypy src`,
   `alembic heads`. Only the known
   `test_dashboard_overview_sla_excludes_no_due_date_from_on_track` failure.
-- [ ] **Step 2: Mutate every guard.** At minimum: the Form A control-id
+- [x] **Step 2: Mutate every guard.** At minimum: the Form A control-id
   inheritance; the removed-key filter for checks and for waivers; both
   `org_id` filters; the unknown-baseline guard; each metric increment; the
   dry-run guard on the prune counter; the `_observe` guard; the
   no-drift-on-first-scan path.
-- [ ] **Step 3:** Report every ESCAPED honestly. Ask of each: could the fixture
+- [x] **Step 3:** Report every ESCAPED honestly. Ask of each: could the fixture
   express the bug, and is the guard redundant?
-- [ ] **Step 4: Demonstrate** — tighten a pack's threshold and remove a rule
+- [x] **Step 4: Demonstrate** — tighten a pack's threshold and remove a rule
   that has a waiver, print the impact, then run two scans and print the
   resulting metric samples.
-- [ ] **Step 5: Commit** with results recorded in this plan.
+- [x] **Step 5: Commit** with results recorded in this plan.
+
+---
+
+## Results
+
+All four tasks complete. Full suite **1985 passed**, 1 skipped, and the one
+pre-existing `test_dashboard_overview_sla_excludes_no_due_date_from_on_track`
+failure that also fails on `main`. `ruff check src tests` and `mypy src` clean.
+One migration head, `0070_waivers` — no migration added.
+
+Commits: `e83461b` (T1), `e7f8ceb` (T2), `ec4f9b2` (T3).
+
+### The demonstration
+
+Adopting a pack version that tightens one threshold and drops another rule:
+
+```
+IMPACT 1.0.0 -> 2.0.0
+  controls affected:
+    AC-2     changed  by ['acme.stale_accounts.60d']
+    AC-2     removed  by ['acme.no_guest_accounts']
+    AC-2(3)  changed  by ['acme.stale_accounts.60d']
+    AC-6     removed  by ['acme.no_guest_accounts']
+  capabilities whose narrative may need review:
+    acme-accounts  Account lifecycle management (via AC-2)
+  checks that would be RETIRED:  test 6  acme.no_guest_accounts  last_status=fail
+  waivers that would be ORPHANED: waiver 6  acme.no_guest_accounts  approved
+```
+
+### A defect the demonstration found, which no test did
+
+The first run reported:
+
+```
+AC-2     removed  by ['acme.no_guest_accounts', 'acme.stale_accounts.60d']
+```
+
+AC-2 is touched by a removal *and* a change, but `by_control` was keyed on the
+control alone, so the first kind encountered won and the rule keys accumulated
+under it. An operator reading that would conclude AC-2 loses all coverage when a
+tightened rule still evidences it — the exact misreading an impact report exists
+to prevent. Now keyed on `(control, change)`, so both rows appear.
+
+**Third sub-project in a row where reading real output caught something the
+tests did not** (after P4a's double period and P2c's mismatched prune count).
+Every test asserted a single change kind, so none could see it.
+
+### Mutation testing: 24 guards, all caught
+
+19 on the first pass; **three escaped, and two shared one shape** — a query
+filter that selected the right row only because the fixture contained a single
+row. `check_key.in_(removed)` replaced with `check_key.isnot(None)` escaped
+because the organization had exactly one `ControlTest`; the same held for the
+orphaned-waiver query, which I then mutated deliberately to confirm it had the
+same weakness (it did). Both now have a second, unrelated row in the same
+organization. The third was the capability org filter, escaping because the
+test asserted only that the expected capability *was* present, never that
+another tenant's was absent.
+
+**A filter tested against a single row is not tested.** Two rows, one of which
+must be excluded, is the cheapest way to make a `WHERE` clause load-bearing.
+
+One guard remains escaped and is left so knowingly:
+`if not diff.removed: return impact` is an efficiency short-circuit — an empty
+`IN ()` matches nothing, so removing it changes no behaviour. Kept for clarity,
+and reported rather than covered with a contrived test.
