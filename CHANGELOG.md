@@ -6,6 +6,67 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — DISA CCI list as an authoritative source, with a CCI → control reverse index (P0″a)
+- **DISA's published CCI List is now loaded as authority-published reference
+  data** — 5,149 CCIs with status, type, contributor, publication date and
+  definition, plus all 10,216 of their references across 800-53 v3, Revision 4,
+  Revision 5 and 800-53A. Three global tables (`cci_items`,
+  `cci_control_refs`, `cci_assessment_overlay`, migration `0074`), no tenant
+  dimension: DISA's list is identical for every organization, so per-tenant
+  divergence would make the reverse index incoherent.
+- **`controls_for_cci` is the reverse index the platform did not have.** A
+  scanner finding names a CCI and nothing else; previously the workbook's CCI
+  column produced only unparsed, one-directional strings in
+  `framework_mappings`. This unblocks P5 (STIG/SCAP ingestion), which is **not
+  built** — the seam exists, the parsers do not.
+- **A leading `(n)` in a DISA reference is a control enhancement, not a
+  statement item** — `AC-2 (1)` is `ac-2.1`, never `ac-2_smt.1`. With that
+  rule, 3,848 of 3,849 Revision 5 references resolve to an exact OSCAL
+  statement part id. The one that does not, CCI-005020 citing `SI-18 b 1`
+  against a control with no `b.1`, is why resolution is opportunistic: the
+  control is always stored, the raw index always kept, and the part id stored
+  only when the catalog agrees. A CCI is never dropped for failing to resolve.
+- **The derived Rev. 5 workbook is filtered by objective wording, not
+  spelling.** Zero-padding (`AC-01` vs `AC-1`) cannot separate generations for
+  two-digit control numbers — `AC-10` is identical in both — so the 800-53A
+  phrasing "Determine if" is the discriminator. It yields 2,362 rows with zero
+  duplicate `(control, AP acronym, CCI)` triples. Every persisted row carries
+  `source = "derived:All Rev. 5 CCIs.ods"`, so it can never be mistaken for
+  DISA's own data.
+- **`ccf cci reconcile` reports where the cross-mapping workbook and DISA
+  disagree, and corrects neither** — following `catalog/reconcile.py`. The
+  workbook keeps loading its CCI columns untouched; disagreement is a finding
+  *about the workbook*. `disa_only` is computed per control against the union
+  of that control's rows, because workbook rows are per statement-item and
+  each legitimately carries only its own slice.
+- **The `CatalogSource` row for DISA ships disabled.** cyber.mil refuses
+  non-browser fetches, so an enabled source could only ever record an error,
+  and a permanently failing source in the alert digest trains people to ignore
+  it. Enabling it is a one-field change where egress allows; `auto_ingest`
+  stays false regardless.
+
+### Changed — Assessment objective labels now come from the catalog row's own identifier
+- **`objectives_for` labels an objective from `Control.identifier`**, falling
+  back to `ap_acronym` and then to the ordinal derivation. In the real catalog
+  the identifier *is* the item path (`AC-02a.[01]`, `AC-02b.`) and is UNIQUE in
+  the schema, so it is unique by construction — the property the module's
+  duplicate-label defence exists to provide. `ap_acronym` is populated on 4 of
+  5,435 catalog rows, so the ordinal derivation had been carrying nearly every
+  label.
+- **OPERATORS: expect a one-time staleness sweep.** `check_staleness` treats a
+  stored label absent from the live label set as structural drift, by design.
+  Because this change renames labels wholesale, the first staleness check after
+  upgrade marks every stored `AssessmentObjectiveProposal` **stale**, and
+  `accept_control_proposal` will refuse those proposals until they are
+  re-evaluated. Stored rows are not migrated or rewritten — they remain
+  accurate records of what was proposed. Deployments holding evaluated but
+  unaccepted proposals should plan a re-evaluation pass.
+- **Generated SAR and SSP output renders the label as `Part [<label>]`**, so
+  real identifiers now appear as `Part [AC-02a.[01]]`. More precisely
+  traceable to the catalog item, and visibly different from the previous
+  `Part [AC-2a]`.
+- No migration, no backfill, and both duplicate-label fallbacks retained.
+
 ### Added — Worker-path tenant scoping for the prep and assessment-engine job queues
 - **Once a job is claimed, its processing now runs scoped to that job's own
   tenant.** `ccf.prep.jobs.run_once` and `ccf.assessment.engine.jobs.run_once`
