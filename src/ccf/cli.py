@@ -306,6 +306,31 @@ def notify_digest() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="flaw-remediation")
+def flaw_remediation(
+    system_id: int = typer.Option(..., "--system-id", help="The system to measure"),
+) -> None:
+    """Report flaw-remediation performance against the declared SI-2 window.
+
+    Read-only. Completing a patch wave is an assertion about a production
+    system that becomes SI-2 evidence, so it requires the API where an
+    authenticated identity and the role gate are attached.
+    """
+
+    async def _run() -> None:
+        from .patching.service import PatchingError, measure_system  # noqa: PLC0415
+
+        async with session_scope() as session:
+            try:
+                report = await measure_system(session, system_id=system_id)
+            except PatchingError as e:
+                console.print(f"[red]{e}[/red]")
+                raise typer.Exit(1) from e
+        console.print_json(json.dumps(report.as_dict(), default=str))
+
+    asyncio.run(_run())
+
+
 @app.command(name="enforcement-plans")
 def enforcement_plans(
     status: str = typer.Option(None, "--status", help="Filter by plan status"),
