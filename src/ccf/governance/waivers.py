@@ -170,3 +170,24 @@ async def waivers_for_test(session: AsyncSession, test: ControlTest) -> list[Wai
         )
     ).scalars().all()
     return list(rows)
+
+
+def can_approve(requested_by: str | None, approver: str | None, *, is_global: bool) -> bool:
+    """Separation of duties: the requester may not approve their own waiver.
+
+    A waiver silences a finding in a system under authorization, so the person
+    asking for it must not also be the person granting it.
+
+    Two deliberate exemptions. A **global** principal -- auth disabled, or the
+    system/scheduler -- is not a person, and enforcing the rule there would
+    make the endpoint unusable in development. An **unattributed** request
+    (``requested_by`` is NULL, as rows created before attribution existed will
+    be) must not become permanently unapprovable.
+
+    Pure, so every combination is testable without a scoped session.
+    """
+    if is_global:
+        return True
+    if not requested_by:
+        return True
+    return requested_by != approver
