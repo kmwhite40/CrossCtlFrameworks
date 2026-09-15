@@ -31,9 +31,16 @@ from ccf.models import CaptureSnapshot, Organization
 from ccf.models_grc import ConnectorConfig
 
 
-def test_registry_resolves_both_providers() -> None:
+def test_the_registry_resolves_every_declared_connector() -> None:
+    """Asserted against the registry's own keys rather than a hardcoded set.
+
+    A snapshot here needs editing every time a connector is added, and the
+    property worth holding is that list_connectors() instantiates all of them
+    -- not which three happen to exist today.
+    """
     keys = {c.key for c in list_connectors()}
-    assert keys == {"msgraph", "aws_govcloud"}
+    assert keys == set(connector_keys())
+    assert {"msgraph", "aws_govcloud", "puppetdb"} <= keys
     assert set(connector_keys()) == keys
     assert get_connector("nope") is None
 
@@ -198,7 +205,9 @@ async def test_collect_for_org_refuses_and_writes_nothing_without_credential() -
         async with session_scope() as s:
             result = await collection.collect_for_org(s, org_id)
         assert result["connectors_run"] == []
-        assert set(result["not_configured"]) == {"msgraph", "aws_govcloud"}
+        # Every connector, derived rather than snapshotted: the property is
+        # that an org with no credentials configures none of them.
+        assert set(result["not_configured"]) == set(connector_keys())
         assert result["captured"] == 0
         async with session_scope() as s:
             rows = (

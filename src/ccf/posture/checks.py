@@ -10,7 +10,7 @@ so P2b's move into ``packs/`` relocates content rather than redesigning it.
 
 from __future__ import annotations
 
-from .providers import m365
+from .providers import m365, puppetdb
 from .types import CheckOutcome, PostureCheck, ResourceFinding
 
 __all__ = [
@@ -29,6 +29,7 @@ __all__ = [
 #: testable, and so P2b has something to relocate into ``packs/``.
 CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
     "msgraph": m365.CHECKS,
+    "puppetdb": puppetdb.CHECKS,
     # Empty until P3 implements the adapter; the key exists so a check filed
     # under it is a registry edit rather than a new dict entry.
     "aws_govcloud": (),
@@ -41,6 +42,7 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
 #: endpoint cannot be scanned, and resolution refuses to return one.
 ENDPOINT_REGISTRY: dict[str, dict[str, str]] = {
     "msgraph": m365.ENDPOINTS,
+    "puppetdb": puppetdb.ENDPOINTS,
     "aws_govcloud": {},
 }
 
