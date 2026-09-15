@@ -274,3 +274,38 @@ def _observed(
     if examined is not None:
         return f"not satisfied: {spec.expected} (examined {examined})"
     return f"not satisfied: {spec.expected}"
+
+
+def validate_predicate(predicate: Any, *, where: str = "predicate") -> list[str]:
+    """Errors in a predicate as written; empty means it can be evaluated.
+
+    The mirror of :func:`evaluate_predicate`, and deliberately in the same
+    module: a validator that lives elsewhere drifts from the evaluator, and the
+    drift shows up as a pack that installs and then cannot be scanned.
+
+    Returns errors rather than raising, because ``packs.catalog.validate_manifest``
+    reports every problem in a manifest at once.
+    """
+    if not isinstance(predicate, dict):
+        return [f"{where} must be an object"]
+    op = predicate.get("op")
+    if not isinstance(op, str) or op not in OPS:
+        return [f"{where} has unknown op {op!r} (allowed: {', '.join(sorted(OPS))})"]
+
+    if op in _COMPOSITE:
+        children = predicate.get("predicates")
+        if not isinstance(children, list) or not children:
+            return [f"{where} {op!r} requires a non-empty 'predicates' list"]
+        errors: list[str] = []
+        for i, child in enumerate(children):
+            errors.extend(validate_predicate(child, where=f"{where}.predicates[{i}]"))
+        return errors
+
+    errors = []
+    if not isinstance(predicate.get("path"), str) or not predicate["path"]:
+        errors.append(f"{where} {op!r} requires a non-empty 'path'")
+    if op in ("equals", "not_equals", "contains") and "value" not in predicate:
+        errors.append(f"{where} {op!r} requires 'value'")
+    if op == "intersects" and not isinstance(predicate.get("values"), list):
+        errors.append(f"{where} 'intersects' requires 'values' to be a list")
+    return errors

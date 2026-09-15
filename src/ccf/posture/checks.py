@@ -19,6 +19,7 @@ __all__ = [
     "PostureCheck",
     "ResourceFinding",
     "checks_for",
+    "platform_check_keys",
 ]
 
 #: Provider key -> its checks. Empty per provider until P3 implements the
@@ -35,3 +36,14 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
 def checks_for(provider: str) -> tuple[PostureCheck, ...]:
     """Checks registered for one provider; empty for an unknown provider."""
     return CHECK_REGISTRY.get(provider, ())
+
+
+def platform_check_keys() -> frozenset[str]:
+    """Every key the platform itself provides, across all providers.
+
+    One authority for "is this key the platform's", used by
+    ``packs.catalog`` to refuse a pack rule that would collide with a platform
+    check. Computed rather than hardcoded so registering a check cannot leave
+    the collision test behind.
+    """
+    return frozenset(check.key for checks in CHECK_REGISTRY.values() for check in checks)
