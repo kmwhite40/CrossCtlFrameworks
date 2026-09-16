@@ -81,6 +81,7 @@ from .routes import (
     ui_grc,
     users,
     vendors,
+    waivers,
     worksheets,
 )
 from .security_headers import SecurityHeadersMiddleware
@@ -190,6 +191,7 @@ def create_app() -> FastAPI:
     app.include_router(identity.router)
     app.include_router(assurance.router)
     app.include_router(capabilities.router)
+    app.include_router(waivers.router)
     app.include_router(packages.router)
     app.include_router(packages.delta_router)
     app.include_router(packs.router)

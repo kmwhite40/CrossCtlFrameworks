@@ -1838,6 +1838,10 @@ class FedRAMP20xReadinessSnapshot(Base):
     assessor_completion: Mapped[int | None] = mapped_column(Integer)
     dependency_readiness: Mapped[int | None] = mapped_column(Integer)
     open_exceptions: Mapped[int] = mapped_column(Integer, default=0)
+    #: Waivers active at scoring time (governance.waivers.is_active) -- a
+    #: distinct quantity from open_exceptions (a KSIException disclosure);
+    #: see the field docstring on fedramp20x.readiness.Readiness.
+    active_waivers: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     high_risk_findings: Mapped[int] = mapped_column(Integer, default=0)
     expired_validations: Mapped[int] = mapped_column(Integer, default=0)
     manual_review_burden: Mapped[int] = mapped_column(Integer, default=0)
@@ -1882,8 +1886,8 @@ class CatalogIntegrityReport(Base):
 # The modules are bound to a name rather than imported bare. An unused-import
 # suppression comment is exactly what ``ruff --fix`` strips, which silently
 # reintroduced this bug once already; a real reference cannot be stripped.
-from . import models_capability, models_grc  # noqa: E402
+from . import models_capability, models_grc, models_waivers  # noqa: E402
 
 #: Sibling model modules whose tables must be in ``Base.metadata``.
-CROSS_MODULE_MODEL_MODULES = (models_capability, models_grc)
+CROSS_MODULE_MODEL_MODULES = (models_capability, models_grc, models_waivers)
 
