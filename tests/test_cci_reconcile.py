@@ -190,3 +190,54 @@ async def test_reconcile_cci_against_seeded_rows(clean_migrated_db) -> None:
                     CciItemRow.cci.in_(("CCI-990001", "CCI-990002", "CCI-990003"))
                 )
             )
+
+
+async def test_a_control_the_workbook_never_mentions_still_appears(clean_migrated_db) -> None:
+    """Finding 2 (PR #22): ``by_control`` is built only from rows with a
+    non-empty CCI cell, and the old report iterated ``by_control`` alone --
+    so a control DISA maps that the workbook has NO ROW for at all (not even
+    one with an empty cell) never got a ``by_control`` key and was invisible
+    to the whole report, not merely silent for lack of a contradicting row.
+
+    ZZ-91 has DISA mappings (CCI-990101, CCI-990102) and appears nowhere in
+    Control/FrameworkMapping at all -- no row, empty or otherwise. It must
+    still show up with the full DISA set as ``disa_only`` and no row
+    findings (the per-row silence rule has nothing to apply to: there are no
+    rows).
+    """
+    try:
+        async with session_scope() as s:
+            items = [
+                CciItemRow(
+                    cci=cci, status="draft", type="policy", definition="test item",
+                    source_version="test", source_sha256="0" * 64,
+                )
+                for cci in ("CCI-990101", "CCI-990102")
+            ]
+            s.add_all(items)
+            await s.flush()
+            s.add_all(
+                [
+                    CciControlRef(
+                        cci_id=item.id, revision="5", raw_index="ZZ-91",
+                        canonical_control="ZZ-91",
+                    )
+                    for item in items
+                ]
+            )
+
+        async with session_scope() as s:
+            findings = await reconcile_cci(s)
+
+        found = next((d for d in findings if d.control_identifier == "ZZ-91"), None)
+        assert found is not None
+        assert found.disa_only == ("CCI-990101", "CCI-990102")
+        assert found.rows == ()
+    finally:
+        async with session_scope() as s:
+            await s.execute(
+                delete(CciControlRef).where(CciControlRef.canonical_control == "ZZ-91")
+            )
+            await s.execute(
+                delete(CciItemRow).where(CciItemRow.cci.in_(("CCI-990101", "CCI-990102")))
+            )

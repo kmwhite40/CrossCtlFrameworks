@@ -102,9 +102,19 @@ async def load_cci_list(
             # empty set for every other revision guarantees oscal_part_id
             # comes back null by construction (not a failed lookup) without
             # spending a real catalog membership check on a result that
-            # would be discarded anyway. canonical_control / oscal_control_id
-            # are unaffected: both are derived from control_ids alone, which
-            # every revision still receives.
+            # would be discarded anyway.
+            #
+            # canonical_control / oscal_control_id are NOT unaffected: they
+            # are matched against control_ids, which is always Rev. 5's set
+            # regardless of ref.revision. For a Rev. 5 reference that is
+            # verified; for any other revision it is the only catalog this
+            # platform holds, so it is a best-effort cross-revision estimate
+            # that can silently report a base control when the reference
+            # names an enhancement, or null when the control was withdrawn
+            # since the cited revision. `resolved.status` records which case
+            # applied -- see `ccf.cci.resolve.ResolutionStatus` -- and is
+            # persisted below so a caller can tell a verified Rev. 5 answer
+            # apart from an unverified older-revision guess.
             resolved = resolve_reference(
                 ref.raw_index,
                 control_ids=control_ids,
@@ -120,6 +130,7 @@ async def load_cci_list(
                     canonical_control=resolved.canonical_control,
                     oscal_control_id=resolved.oscal_control_id,
                     oscal_part_id=resolved.oscal_part_id,
+                    resolution_status=resolved.status.value,
                 )
             )
             refs += 1
@@ -236,6 +247,18 @@ async def controls_for_cci(
     Returns canonical control ids, de-duplicated and ordered. Empty for an
     unknown CCI -- an unrecognised identifier in a scan file is data, not an
     error.
+
+    ``revision="5"`` answers are verified against the platform's own OSCAL
+    catalog. Any other revision is answered against that same Rev. 5
+    catalog, because it is the only one the platform holds -- a control
+    whose id is unchanged since the cited revision still resolves correctly,
+    but a control renamed, merged, or withdrawn since then resolves to
+    nothing, and a reference naming an enhancement this parser could not
+    confirm reports the base control instead (see
+    ``CciControlRef.resolution_status`` / ``ccf.cci.resolve.ResolutionStatus``
+    for the row-level detail this function does not surface). Callers that
+    need the trustworthy answer should pass ``revision="5"``; callers that
+    accept a best-effort cross-revision estimate may pass another revision.
     """
     rows = (
         await session.execute(

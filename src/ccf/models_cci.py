@@ -58,6 +58,16 @@ class CciControlRef(Base):
     the current catalog no longer has (CCI-005020 -> SI-18 b 1). Dropping such
     a reference would make a real STIG finding unroutable, so the control is
     kept and the part is left null.
+
+    ``resolution_status`` records how much to trust ``canonical_control`` /
+    ``oscal_control_id``: the platform holds exactly one OSCAL catalog (Rev.
+    5), so a reference naming any other revision is matched against a
+    catalog that isn't its own. ``"resolved"`` is verified for a Rev. 5
+    reference and a best-effort cross-revision match for any other;
+    ``"base_control_fallback"`` means the reference named an enhancement the
+    absorption loop could not confirm, so only the base control is recorded;
+    ``"withdrawn"``/``"unparseable"`` are the two ways ``canonical_control``
+    ends up null. See ``ccf.cci.resolve.ResolutionStatus``.
     """
 
     __tablename__ = "cci_control_refs"
@@ -71,6 +81,7 @@ class CciControlRef(Base):
     canonical_control: Mapped[str | None] = mapped_column(String(32))
     oscal_control_id: Mapped[str | None] = mapped_column(String(32))
     oscal_part_id: Mapped[str | None] = mapped_column(String(64))
+    resolution_status: Mapped[str] = mapped_column(String(32), default="resolved")
 
     item: Mapped[CciItemRow] = relationship(back_populates="references")
 

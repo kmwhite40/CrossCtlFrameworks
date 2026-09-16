@@ -5,7 +5,7 @@ The one rule worth a test of its own: a leading "(n)" is a control
 """
 from ccf.catalog.oscal import load_oscal_catalog
 from ccf.cci.reader import DEFAULT_CCI_HTML, read_cci_html
-from ccf.cci.resolve import catalog_index, resolve_reference
+from ccf.cci.resolve import ResolutionStatus, catalog_index, resolve_reference
 
 CONTROLS, PARTS = catalog_index(load_oscal_catalog())
 
@@ -81,3 +81,57 @@ def test_every_rev5_reference_but_one_resolves_to_a_part() -> None:
         (cci, raw) for cci, raw in rev5 if _r(raw).oscal_part_id is None
     ]
     assert unresolved == [("CCI-005020", "SI-18 b 1")]
+
+
+# --- Finding 1 (PR #22): non-Rev-5 references silently resolved against
+# the Rev. 5 catalog. `control_ids`/`part_ids` here are always Rev. 5's, so
+# these tests exercise exactly what the real loader does for a non-Rev-5
+# reference -- see ccf.cci.service.load_cci_list.
+
+
+def test_800_53a_glued_enhancement_falls_back_to_base_but_is_flagged() -> None:
+    # 800-53A glues the enhancement to the item with a dot ("(1).1") instead
+    # of DISA's usual space-separated tokens ("(1) a"). `_ENH_TOKEN` never
+    # matches that shape, so absorption stops at the base control -- measured
+    # over the real list, 825 of 1,683 800-53A references do this. The base
+    # control (AC-2) is real; what the fix adds is a status that says so
+    # instead of looking identical to a genuine base-only reference.
+    r = _r("AC-2 (1).1")
+    assert r.canonical_control == "AC-2"
+    assert r.status is ResolutionStatus.BASE_CONTROL_FALLBACK
+
+    plain = _r("AC-2")
+    assert plain.canonical_control == "AC-2"
+    assert plain.status is ResolutionStatus.RESOLVED
+    # Before the fix, `AC-2 (1).1` and `AC-2` were indistinguishable at the
+    # canonical_control level -- exactly what `controls_for_cci` exposes.
+    assert r.canonical_control == plain.canonical_control
+    assert r.status != plain.status
+
+
+def test_v3_enhancement_missing_from_rev5_falls_back_to_base_and_is_flagged() -> None:
+    # SA-6 was withdrawn from Rev. 5 (folded into SA-4), so SA-6(1) is not in
+    # the held catalog even though bare SA-6 still resolves as a base id.
+    # The absorption loop breaks on a token that DOES match `_ENH_TOKEN`
+    # syntactically -- the failure is the catalog, not the tokenizer -- and
+    # that must be flagged exactly like the tokenizer failure above.
+    r = _r("SA-6 (1) (a)")
+    assert r.canonical_control == "SA-6"
+    assert r.status is ResolutionStatus.BASE_CONTROL_FALLBACK
+
+
+def test_rev4_reference_to_a_control_withdrawn_in_rev5_is_flagged_not_silent() -> None:
+    # AP-1 (Appendix J) is one of the 207 Rev. 4 base controls with no Rev. 5
+    # counterpart. Before the fix this was indistinguishable from a
+    # reference that never parsed as a control at all.
+    r = _r("AP-1")
+    assert r.canonical_control is None
+    assert r.oscal_control_id is None
+    assert r.status is ResolutionStatus.WITHDRAWN
+
+
+def test_unparseable_reference_is_flagged_distinctly_from_withdrawn() -> None:
+    r = _r("AC-1.1 (iii)")
+    assert r.canonical_control is None
+    assert r.status is ResolutionStatus.UNPARSEABLE
+    assert r.status != ResolutionStatus.WITHDRAWN

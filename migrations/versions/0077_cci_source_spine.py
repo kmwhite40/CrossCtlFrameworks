@@ -9,6 +9,11 @@ join ``EXPECTED_TENANT_ISOLATION_TABLES`` and its hardcoded count does not move.
 ``cci_control_refs.oscal_part_id`` is nullable because DISA's reference may name
 an item the current Rev. 5 catalog does not define.
 
+``cci_control_refs.resolution_status`` records how much to trust
+``canonical_control``/``oscal_control_id`` -- the platform holds only the
+Rev. 5 catalog, so a non-Rev-5 reference is matched against a catalog that
+isn't its own. See ``ccf.cci.resolve.ResolutionStatus``.
+
 Revision ID: 0077_cci_source_spine
 Revises: 0076_flaw_remediation
 Create Date: 2026-09-15
@@ -60,6 +65,12 @@ def upgrade() -> None:
         sa.Column("canonical_control", sa.String(length=32), nullable=True),
         sa.Column("oscal_control_id", sa.String(length=32), nullable=True),
         sa.Column("oscal_part_id", sa.String(length=64), nullable=True),
+        sa.Column(
+            "resolution_status",
+            sa.String(length=32),
+            nullable=False,
+            server_default="resolved",
+        ),
         sa.UniqueConstraint("cci_id", "revision", "raw_index", name="uq_cci_ref"),
         schema=_SCHEMA,
     )

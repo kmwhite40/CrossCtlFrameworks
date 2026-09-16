@@ -184,8 +184,18 @@ async def reconcile_cci(session: AsyncSession) -> list[Disagreement]:
             continue
         by_control.setdefault(canonical.value, []).append((str(identifier), workbook))
 
+    # Iterate the UNION of every control the workbook mentions and every
+    # control DISA maps -- not `by_control` alone. A control DISA maps that
+    # the workbook never mentions at all (no row, or every row's cell empty)
+    # never gets a `by_control` key, since that dict is only populated from
+    # rows with a non-empty CCI cell; iterating it alone made such a control
+    # invisible to the whole report, not merely silent for lack of a
+    # contradicting row. `row_values` defaults to `()` for a control with no
+    # workbook rows, which keeps the per-row silence rule intact: no row
+    # means no RowFinding, only the control-level `disa_only` comparison.
     out: list[Disagreement] = []
-    for control, row_values in by_control.items():
+    for control in set(by_control) | set(disa):
+        row_values = by_control.get(control, [])
         disa_set = disa.get(control, set())
         union_workbook: set[str] = set().union(*(wb for _, wb in row_values))
         disa_only = tuple(sorted(disa_set - union_workbook))

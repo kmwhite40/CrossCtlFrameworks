@@ -85,3 +85,15 @@ async def test_revision_scopes_the_answer() -> None:
 async def test_an_unknown_cci_returns_empty_rather_than_raising() -> None:
     async with session_scope() as s:
         assert await controls_for_cci(s, "CCI-999999") == []
+
+
+async def test_rev4_reference_to_a_withdrawn_control_resolves_to_nothing() -> None:
+    # CCI-003392's only reference is Rev. 4's "AP-1" (Appendix J), one of
+    # the 207 Rev. 4 base controls with no Rev. 5 counterpart -- withdrawn,
+    # not a parse failure. controls_for_cci has nothing to report for it in
+    # any revision except "5" (the one catalog the platform actually holds),
+    # and must say so by returning empty rather than a name that happens to
+    # still exist in a catalog this reference was never checked against.
+    async with session_scope() as s:
+        assert await controls_for_cci(s, "CCI-003392", revision="4") == []
+        assert await controls_for_cci(s, "CCI-003392", revision="5") == []
