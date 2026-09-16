@@ -5,7 +5,13 @@ history is only useful if something reads it *as* history. This module is that
 read: given the findings of two results, it says which resources got worse, got
 better, arrived, left, or changed their reason.
 
-Two of the five kinds do not exist anywhere else in the platform, and they are
+``recovered`` is reserved for a move to a genuinely clean verdict (``pass``).
+A move between two verdicts that both still need cover -- ``fail`` to
+``warn``, say -- is less bad, but the resource is still uncovered, so it is
+``improved`` rather than ``recovered``: an assessor reading "recovered" must
+be able to trust nothing is still wrong.
+
+Two of the six kinds do not exist anywhere else in the platform, and they are
 the reason this module does:
 
 * **appeared** -- a resource entering scope already failing is a different fact
@@ -39,6 +45,7 @@ from .types import ResourceFinding
 TRANSITION_KINDS: tuple[str, ...] = (
     "regressed",
     "recovered",
+    "improved",
     "appeared",
     "disappeared",
     "changed",
@@ -87,10 +94,13 @@ def _classify(before: ResourceFinding, after: ResourceFinding) -> str | None:
         # the weakness.
         return "recovered" if after.verdict == "pass" else "changed"
     if was_problem and is_problem:
-        # Both are problems. A different verdict means the posture moved; the
-        # same verdict with different wording means it broke for a new reason.
+        # Both are still problems -- ``after.verdict`` is still in
+        # REQUIRES_COVER -- so this can never be "recovered": only a move to a
+        # genuinely clean verdict earns that word. A different verdict means
+        # the posture moved (worse, or less bad but still uncovered); the same
+        # verdict with different wording means it broke for a new reason.
         if before.verdict != after.verdict:
-            return "regressed" if _worse(before.verdict, after.verdict) else "recovered"
+            return "regressed" if _worse(before.verdict, after.verdict) else "improved"
         return "changed" if before.observed != after.observed else None
     # Neither is a problem: still worth reporting a verdict or wording change,
     # because leaving scope is a fact an assessor may need.
@@ -101,14 +111,24 @@ def _classify(before: ResourceFinding, after: ResourceFinding) -> str | None:
 
 #: Severity among the verdicts that need cover, worst last. Used only to decide
 #: the direction of a move between two problem verdicts.
+#:
+#: This is a hardcoded triple where ``REQUIRES_COVER`` is *derived* from
+#: ``VALIDATION_STATUSES``. Left unchecked, adding a fourth problem status to
+#: the vocabulary would grow ``REQUIRES_COVER`` automatically while this tuple
+#: stayed frozen -- ``_worse`` would then raise on the new status, the
+#: ``except ValueError`` would swallow it, and every transition into that
+#: status would be silently misclassified as ``improved``. The assertion below
+#: turns that into a loud import-time failure instead.
 _PROBLEM_SEVERITY = ("manual_review_required", "warn", "fail")
+
+assert set(_PROBLEM_SEVERITY) == REQUIRES_COVER, (
+    "_PROBLEM_SEVERITY has drifted from REQUIRES_COVER -- add the new "
+    "status to _PROBLEM_SEVERITY in its correct severity order"
+)
 
 
 def _worse(before: str, after: str) -> bool:
-    try:
-        return _PROBLEM_SEVERITY.index(after) > _PROBLEM_SEVERITY.index(before)
-    except ValueError:  # pragma: no cover - both sides come from REQUIRES_COVER
-        return False
+    return _PROBLEM_SEVERITY.index(after) > _PROBLEM_SEVERITY.index(before)
 
 
 def diff_resources(
