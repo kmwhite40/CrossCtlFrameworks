@@ -43,6 +43,13 @@ async def _fixture(session, *, check_key: str = "m365.identity.mfa_registered"):
         name="MFA registered",
         method="connector",
         check_key=check_key,
+        # A posture-scan-generated test, which is what a waiver suppresses the
+        # consequence of. effective_verdict is deliberately restricted to
+        # source == "generated" (a human-run manual test is not a
+        # deterministic check), so the fixture must be one for the invariant
+        # "a waiver never changes what effective_verdict reports" to be
+        # exercised at all rather than vacuously passing on a None verdict.
+        source="generated",
     )
     session.add(test)
     await session.flush()

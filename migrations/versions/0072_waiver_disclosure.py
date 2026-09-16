@@ -17,7 +17,7 @@ before waivers existed, correctly show zero) without requiring a data
 migration.
 
 Revision ID: 0071_waiver_disclosure
-Revises: 0070_waivers
+Revises: 0071_waivers
 Create Date: 2026-09-16
 """
 
@@ -26,8 +26,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0071_waiver_disclosure"
-down_revision = "0070_waivers"
+revision = "0072_waiver_disclosure"
+down_revision = "0071_waivers"
 branch_labels = None
 depends_on = None
 
