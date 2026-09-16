@@ -29,6 +29,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..api.audit import record_event
+from ..db import session_scope
 from ..etl.sources import parse_oscal_catalog
 from ..logging import get_logger
 from ..models import CatalogRevision, CatalogSource
@@ -307,6 +308,15 @@ async def adopt_revision(
     the report as reviewed is stored on the row -- so the record shows what was
     actually approved, not merely that someone approved something.
 
+    The impact is deliberately computed on a separate, *unscoped* session
+    rather than ``session`` (which, called from the API, is scoped to the
+    caller's org for row-level security). Adoption moves ``catalog_revisions``
+    -- global reference data, no ``organization_id``, no RLS -- for the whole
+    platform, not just the calling org. Gating the 409 and the persisted
+    ``adoption_impact`` on only the caller's tenant would let an org with no
+    content of its own adopt straight past a revision that guts another org's
+    authored SSP content, since their own (empty) slice would show no impact.
+
     Rolling back is adopting an earlier revision, through this same gate.
     """
     row = await session.get(CatalogRevision, revision_id)
@@ -317,8 +327,9 @@ async def adopt_revision(
     if row.status == "adopted":
         return row
 
-    diff = await compute_revision_diff(session, revision=row)
-    impact = await build_adoption_impact(session, diff=diff, candidate=_catalog_for(row))
+    async with session_scope() as unscoped:
+        diff = await compute_revision_diff(unscoped, revision=row)
+        impact = await build_adoption_impact(unscoped, diff=diff, candidate=_catalog_for(row))
     if not impact.is_empty() and not acknowledge_impact:
         raise AdoptionRefusedError(impact)
 

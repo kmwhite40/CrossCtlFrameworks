@@ -13,6 +13,8 @@ the canonical form (``AC-2``) -- a raw string compare would match nothing.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -97,27 +99,87 @@ async def capabilities_for_control(
     return out
 
 
+async def capabilities_for_controls(
+    session: AsyncSession, *, control_ids: Iterable[str], org_id: int | None
+) -> dict[str, list[Capability]]:
+    """Capabilities claiming any of ``control_ids``, keyed by canonical id.
+
+    One query for however many controls are asked about, instead of the
+    ``capabilities_for_control`` -- full ``Capability`` x ``CapabilityControl``
+    scan, once per control -- pattern a caller resolving many controls at once
+    (e.g. a diff touching dozens of them) would otherwise fall into.
+
+    Same canonicalization contract as :func:`capabilities_for_control`: both
+    ``control_ids`` and the stored ``CapabilityControl.control_id`` are
+    canonicalized before comparison, since the catalog is zero-padded
+    (``AC-01``) while a capability stores the canonical form (``AC-2``).
+
+    ``org_id=None`` means unscoped -- every organization's capabilities, the
+    same convention :class:`ccf.auth.Principal` documents for an unscoped
+    principal -- filtered in SQL rather than in Python so the query itself
+    stays bounded to what the caller can actually see.
+    """
+    targets = {c.value for cid in control_ids if (c := canonicalize(cid)) is not None}
+    if not targets:
+        return {}
+    stmt = select(Capability, CapabilityControl.control_id).join(
+        CapabilityControl, CapabilityControl.capability_id == Capability.id
+    )
+    if org_id is not None:
+        stmt = stmt.where(Capability.organization_id == org_id)
+    rows = (await session.execute(stmt)).all()
+    out: dict[str, list[Capability]] = {}
+    for cap, raw in rows:
+        c = canonicalize(raw)
+        if c is not None and c.value in targets:
+            out.setdefault(c.value, []).append(cap)
+    return out
+
+
 async def capability_statements_by_control(
     session: AsyncSession, *, system_id: int
-) -> dict[str, list[str]]:
+) -> dict[str, list[tuple[str, str, str]]]:
     """Authored capability statements for one system, by canonical control id.
 
     Loaded as one query so a caller rendering 400 controls does not make 400
     round trips -- ``governance.automation.generate_statements`` pre-loads this
     beside the maps it already builds for captures, vendors, and policies.
 
-    Three exclusions, each deliberate. A capability with no statement has
-    nothing to contribute. A ``not_applicable`` capability does not describe
-    this system's implementation, so its text must not claim to. And an edge
-    whose control id does not canonicalize is skipped rather than keyed under
-    a value nothing will look up.
+    Each value is a list of ``(capability_key, statement, status)`` triples --
+    key so a caller can render deterministically ordered by the capability's
+    stable identity rather than by statement text (editing a statement must
+    not reorder the clause on every other control the capability shares), and
+    status so a caller can distinguish a genuinely complete implementation
+    from a partial one instead of narrating both identically.
+
+    Filtered to an allow-list, not a block-list: a capability's statement
+    describes this system's *implementation* only when its status actually
+    says something has been done. ``implemented`` and ``inherited`` clearly
+    qualify. ``partial`` also qualifies -- a partial implementation is real
+    and belongs in the narrative -- but the caller renders it under a
+    distinct "Partial implementation:" lead so the SSP does not overstate it
+    as complete. ``not_implemented`` -- the column's default, so it is the
+    status of every capability an author has created but not yet acted on --
+    and ``planned`` describe work that has not happened, not this system's
+    current implementation, and rendering their text as a present-tense
+    implementation claim would be a false statement in an authorization
+    package. ``not_applicable`` does not describe this system's
+    implementation at all. An empty or ``None`` statement has nothing to
+    contribute regardless of status. And an edge whose control id does not
+    canonicalize is skipped rather than keyed under a value nothing will
+    look up.
 
     The map has exactly one key space -- canonical ids. Reconciling the two id
     forms an ``SSPControlEntry`` may carry is the caller's job.
     """
     rows = (
         await session.execute(
-            select(CapabilityControl.control_id, Capability.statement)
+            select(
+                CapabilityControl.control_id,
+                Capability.key,
+                Capability.statement,
+                Capability.status,
+            )
             .join(Capability, Capability.id == CapabilityControl.capability_id)
             .join(
                 CapabilityComponent,
@@ -129,22 +191,24 @@ async def capability_statements_by_control(
             )
             .where(
                 SystemComponent.system_id == system_id,
-                Capability.status != "not_applicable",
+                Capability.status.in_(("implemented", "inherited", "partial")),
             )
         )
     ).all()
 
-    out: dict[str, list[str]] = {}
-    for raw_control, statement in rows:
+    out: dict[str, list[tuple[str, str, str]]] = {}
+    seen: dict[str, set[str]] = {}
+    for raw_control, key, statement, status in rows:
         if not statement or not statement.strip():
             continue
         c = canonicalize(raw_control)
         if c is None:
             continue
-        bucket = out.setdefault(c.value, [])
-        text = statement.strip()
         # A capability bound through two components would otherwise appear
         # twice for the same control.
-        if text not in bucket:
-            bucket.append(text)
+        dedup = seen.setdefault(c.value, set())
+        if key in dedup:
+            continue
+        dedup.add(key)
+        out.setdefault(c.value, []).append((key, statement.strip(), status))
     return out

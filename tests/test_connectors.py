@@ -41,7 +41,6 @@ def test_the_registry_resolves_every_declared_connector() -> None:
     keys = {c.key for c in list_connectors()}
     assert keys == set(connector_keys())
     assert {"msgraph", "aws_govcloud", "puppetdb"} <= keys
-    assert set(connector_keys()) == keys
     assert get_connector("nope") is None
 
 

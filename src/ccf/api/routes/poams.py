@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from ...assessment.engine import jobs as engine_jobs
 from ...auth import Principal
 from ...config import get_settings
-from ...constants import POAM_STATUSES
+from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...logging import get_logger
@@ -456,6 +456,17 @@ async def update_poam(
         )
     for k, v in data.items():
         setattr(obj, k, v)
+    if (
+        "status" in data
+        and data["status"] not in POAM_CLOSED_STATUSES
+        and "closed_on" not in data
+    ):
+        # Reopening (status moved to a non-closed value) without the caller
+        # explicitly supplying a new closed_on: clear the stale one so a
+        # reopened POA&M cannot still read as closed-on-time. Mirrors
+        # ingest/scanners.py, which clears closed_on when a scan finds a
+        # "resolved" flaw's vulnerability still present.
+        obj.closed_on = None
     await bus.emit(
         session,
         verb="updated",

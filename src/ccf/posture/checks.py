@@ -21,6 +21,7 @@ __all__ = [
     "ResourceFinding",
     "checks_for",
     "endpoint_for",
+    "known_providers",
     "platform_check_keys",
 ]
 
@@ -55,6 +56,18 @@ def endpoint_for(provider: str, check_key: str) -> str | None:
 def checks_for(provider: str) -> tuple[PostureCheck, ...]:
     """Checks registered for one provider; empty for an unknown provider."""
     return CHECK_REGISTRY.get(provider, ())
+
+
+def known_providers() -> frozenset[str]:
+    """Every registered provider key.
+
+    A Form B rule names its provider explicitly, and a typo (``"msgrap"``) is
+    otherwise silent: it never matches any real connector's key, so the rule
+    is accepted at install and then never resolves for any scan, forever
+    (``posture.resolve._targets`` just returns ``False``). Validating against
+    this set at install turns that into an install-time error instead.
+    """
+    return frozenset(CHECK_REGISTRY)
 
 
 def platform_check_keys() -> frozenset[str]:

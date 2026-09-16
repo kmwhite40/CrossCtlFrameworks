@@ -15,6 +15,7 @@ from ccf.catalog.revisions import AdoptionRefusedError, adopt_revision, material
 from ccf.db import session_scope
 from ccf.models import (
     AuditLog,
+    CatalogRevision,
     CatalogSource,
     Organization,
     SSPControlEntry,
@@ -86,23 +87,32 @@ async def test_refuses_non_empty_impact_without_acknowledgement(tmp_path: Path) 
         session.add(proj)
         await session.flush()
         session.add(SSPControlEntry(project_id=proj.id, control_id="AC-1", nist_id="AC-1"))
-        await session.flush()
 
         docs = _documents()
         docs["NIST_SP-800-53_rev5_catalog.json"] = _EMPTY_CATALOG
         second = await materialize_revision(
             session, source=src, documents=docs, upstream_commit_sha="b" * 40, data_root=tmp_path
         )
+        await session.commit()
+        second_id = second.id
 
+    # adopt_revision's impact gate now runs on a separate, unscoped session
+    # (CRITICAL 2: the gate must be platform-wide, not the caller's tenant
+    # slice), so the content above must be committed -- not merely flushed on
+    # this session -- before that gate can see it.
+    async with session_scope() as session:
         with pytest.raises(AdoptionRefusedError) as exc:
-            await adopt_revision(session, revision_id=second.id, actor="kevin")
+            await adopt_revision(session, revision_id=second_id, actor="kevin")
         assert not exc.value.impact.is_empty()
+
+    async with session_scope() as session:
+        row = await session.get(CatalogRevision, second_id)
+        assert row is not None
         # Refusal must not have adopted anything.
-        await session.refresh(second)
-        assert second.status == "available"
+        assert row.status == "available"
 
         adopted = await adopt_revision(
-            session, revision_id=second.id, actor="kevin", acknowledge_impact=True
+            session, revision_id=second_id, actor="kevin", acknowledge_impact=True
         )
         assert adopted.status == "adopted"
         assert adopted.adoption_impact["empty"] is False

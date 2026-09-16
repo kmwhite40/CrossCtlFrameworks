@@ -337,7 +337,7 @@ async def test_completing_the_last_wave_completes_the_campaign() -> None:
             window_end=TODAY, actor="isso@acme.gov", wave_size=5,
         )
         for w in await waves_for(session, campaign.id):
-            await complete_wave(session, w, actor="ao@acme.gov")
+            await complete_wave(session, w, actor="ao@acme.gov", evidence_ref="CHG-9")
         assert campaign.status == "completed"
         assert campaign.completed_at is not None
 
@@ -351,9 +351,9 @@ async def test_completing_a_wave_twice_is_refused() -> None:
             window_end=TODAY, actor="isso@acme.gov", wave_size=5,
         )
         wave = (await waves_for(session, campaign.id))[0]
-        await complete_wave(session, wave, actor="ao@acme.gov")
+        await complete_wave(session, wave, actor="ao@acme.gov", evidence_ref="CHG-1")
         with pytest.raises(PatchingError, match="already completed"):
-            await complete_wave(session, wave, actor="ao@acme.gov")
+            await complete_wave(session, wave, actor="ao@acme.gov", evidence_ref="CHG-1")
 
 
 async def test_completing_out_of_order_is_refused() -> None:
@@ -397,6 +397,226 @@ async def test_a_wave_may_reference_an_enforcement_plan() -> None:
         assert wave.remediation_plan_id == plan.id
 
 
+# ── CRITICAL 2: a wave may only cite an applied plan for its own tenant/system ─
+
+
+async def test_a_wave_citing_an_unapplied_plan_is_refused() -> None:
+    """A ``refused``/``draft``/``failed``/``reversed``/``rejected`` plan never
+    applied; citing it would read to an assessor as "applied by enforcement
+    plan N" when it never ran."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await _flaws(session, sys_, 2)
+        plan = RemediationPlan(
+            organization_id=sys_.organization_id,
+            system_id=sys_.id,
+            check_key="demo.check",
+            provider_key="demo",
+            status="refused",
+        )
+        session.add(plan)
+        await session.flush()
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        wave = (await waves_for(session, campaign.id))[0]
+        with pytest.raises(PatchingError, match="not an applied plan"):
+            await complete_wave(
+                session, wave, actor="ao@acme.gov", remediation_plan_id=plan.id
+            )
+        assert wave.status == "pending"
+
+
+async def test_a_wave_citing_another_organizations_plan_is_refused() -> None:
+    """FK enforcement alone would let this through -- it bypasses RLS and does
+    not know about tenancy."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        other = await _system(session)
+        await _flaws(session, sys_, 2)
+        plan = RemediationPlan(
+            organization_id=other.organization_id,
+            system_id=other.id,
+            check_key="demo.check",
+            provider_key="demo",
+            status="applied",
+        )
+        session.add(plan)
+        await session.flush()
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        wave = (await waves_for(session, campaign.id))[0]
+        with pytest.raises(PatchingError, match="not an applied plan"):
+            await complete_wave(
+                session, wave, actor="ao@acme.gov", remediation_plan_id=plan.id
+            )
+
+
+async def test_a_wave_citing_a_plan_for_a_different_system_is_refused() -> None:
+    """Same organization, wrong system: the plan applied somewhere, just not
+    to what this campaign is patching."""
+    async with session_scope() as session:
+        org_sys = await _system(session)
+        sibling = System(
+            organization_id=org_sys.organization_id, name=f"PatchSvcSibling-{next(_SEQ)}"
+        )
+        session.add(sibling)
+        await session.flush()
+        await _flaws(session, org_sys, 2)
+        plan = RemediationPlan(
+            organization_id=org_sys.organization_id,
+            system_id=sibling.id,
+            check_key="demo.check",
+            provider_key="demo",
+            status="applied",
+        )
+        session.add(plan)
+        await session.flush()
+        campaign = await create_campaign(
+            session, system_id=org_sys.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        wave = (await waves_for(session, campaign.id))[0]
+        with pytest.raises(PatchingError, match="not an applied plan"):
+            await complete_wave(
+                session, wave, actor="ao@acme.gov", remediation_plan_id=plan.id
+            )
+
+
+# ── CRITICAL 3: no evidence, no completion ──────────────────────────────────
+
+
+async def test_completing_a_wave_with_no_evidence_at_all_is_refused() -> None:
+    """The PR's own summary says a wave records completion "with evidence" --
+    an empty body must not be able to complete one."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await _flaws(session, sys_, 2)
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        wave = (await waves_for(session, campaign.id))[0]
+        with pytest.raises(PatchingError, match="requires evidence_ref"):
+            await complete_wave(session, wave, actor="ao@acme.gov")
+        assert wave.status == "pending"
+
+
+async def test_a_blank_evidence_ref_is_the_same_as_none() -> None:
+    """Whitespace is not evidence."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await _flaws(session, sys_, 2)
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        wave = (await waves_for(session, campaign.id))[0]
+        with pytest.raises(PatchingError, match="requires evidence_ref"):
+            await complete_wave(session, wave, actor="ao@acme.gov", evidence_ref="   ")
+
+
+# ── IMPORTANT 6: a decided campaign cannot be resurrected ──────────────────
+
+
+async def test_completing_a_wave_on_a_cancelled_campaign_is_refused() -> None:
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await _flaws(session, sys_, 2)
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        campaign.status = "cancelled"
+        await session.flush()
+        wave = (await waves_for(session, campaign.id))[0]
+        with pytest.raises(PatchingError, match="cancelled"):
+            await complete_wave(session, wave, actor="ao@acme.gov", evidence_ref="CHG-1")
+        assert wave.status == "pending"
+        assert campaign.status == "cancelled"
+
+
+async def test_completing_a_leftover_wave_on_a_completed_campaign_is_refused() -> None:
+    """A campaign already marked completed must not be flipped back to
+    in_progress by a leftover pending wave."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await _flaws(session, sys_, 2)
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=5,
+        )
+        wave = (await waves_for(session, campaign.id))[0]
+        campaign.status = "completed"
+        await session.flush()
+        with pytest.raises(PatchingError, match="completed"):
+            await complete_wave(session, wave, actor="ao@acme.gov", evidence_ref="CHG-1")
+
+
+# ── IMPORTANT 7: skipped waves are named, not implied ───────────────────────
+
+
+async def test_a_skipped_wave_does_not_block_the_campaign_from_completing() -> None:
+    """Nothing can set ``skipped`` yet -- the DB constraint merely permits it
+    -- but the rollup must treat it as a named terminal state rather than
+    relying on "anything but pending"."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await _flaws(session, sys_, 5)
+        campaign = await create_campaign(
+            session, system_id=sys_.id, name="c", window_start=TODAY,
+            window_end=TODAY, actor="isso@acme.gov", wave_size=2,
+        )
+        waves = await waves_for(session, campaign.id)
+        waves[1].status = "skipped"
+        await session.flush()
+        await complete_wave(
+            session, waves[0], actor="ao@acme.gov", evidence_ref="CHG-1"
+        )
+        await complete_wave(
+            session, waves[2], actor="ao@acme.gov", evidence_ref="CHG-2"
+        )
+        assert campaign.status == "completed"
+        assert campaign.completed_at is not None
+
+
+# ── Minor: resolve_window degrades like get_policy/set_policy, not a 500 ────
+
+
+async def test_two_unscoped_policy_rows_do_not_crash_resolve_window() -> None:
+    """``organization_id`` is nullable and Postgres treats NULLs as distinct
+    under the unique constraint, so two unscoped rows are possible.
+    ``resolve_window`` must degrade the same way api/routes/patching.py's
+    ``get_policy``/``set_policy`` do (``.first()``), not 500 on
+    ``scalar_one_or_none()``'s "more than one row" error.
+
+    ``organization_id=None`` is the same row shape the "default policy"
+    tests in test_patching_api.py depend on being absent, and
+    ``session_scope`` commits -- so this cleans up its own two rows rather
+    than leaving them behind for the rest of the suite to trip over.
+    """
+    ids: list[int] = []
+    try:
+        async with session_scope() as session:
+            a = RemediationPolicy(organization_id=None, critical_days=3)
+            b = RemediationPolicy(organization_id=None, critical_days=5)
+            session.add_all([a, b])
+            await session.flush()
+            ids = [a.id, b.id]
+        async with session_scope() as session:
+            window = await resolve_window(session, None)
+            assert window.days_for("critical") in (3, 5)
+    finally:
+        async with session_scope() as session:
+            for pid in ids:
+                row = await session.get(RemediationPolicy, pid)
+                if row is not None:
+                    await session.delete(row)
+
+
 async def test_every_transition_is_audited() -> None:
     async with session_scope() as session:
         sys_ = await _system(session)
@@ -417,7 +637,7 @@ async def test_every_transition_is_audited() -> None:
         assert all(r.row_hash for r in rows)
 
         wave = (await waves_for(session, campaign.id))[0]
-        await complete_wave(session, wave, actor="ao@acme.gov")
+        await complete_wave(session, wave, actor="ao@acme.gov", evidence_ref="CHG-1")
         wave_rows = (
             await session.execute(
                 select(AuditLog).where(

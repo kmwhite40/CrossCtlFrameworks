@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
-from ccf.api.routes.enforcement import _require_plan
+from ccf.api.routes.enforcement import ENFORCER_ROLES, _require_plan
 from ccf.auth import Principal
 from ccf.db import session_scope
 from ccf.enforcement.types import PROVIDER_REGISTRY, RemediationStep, StepOutcome, register
@@ -343,21 +343,47 @@ async def test_a_scoped_principal_cannot_reach_another_tenants_plan() -> None:
         assert (await _require_plan(session, plan_id, owner)).id == plan_id
 
 
-@pytest.mark.asyncio
-async def test_apply_is_role_gated() -> None:
-    """A scoped principal without an enforcer role cannot apply.
+def test_enforcer_roles_is_pinned_to_admin_only() -> None:
+    """Regression pin for ``ENFORCER_ROLES`` itself.
 
-    The default test principal is global, and ``is_global`` bypasses
-    ``require_role`` by design -- so the gate is unreachable through the usual
-    client and went untested until mutation testing said so. This drives it
-    with a scoped, non-enforcer identity.
+    Every positive test in this module runs as a global principal (the
+    default ``_client()``/unscoped ``_Session``), and ``is_global`` bypasses
+    ``require_role`` by design -- so mutating the tuple to ``()`` (or widening
+    it back to a role that cannot exist) passes every other test in this file.
+    Equality, not a subset check, so both directions fail this test.
+    """
+    assert ENFORCER_ROLES == ("admin",)
+
+
+@pytest.mark.asyncio
+async def test_enforcement_actions_are_role_gated() -> None:
+    """A scoped principal without an enforcer role cannot create, approve,
+    apply, or reverse a plan.
+
+    Rebuilt on ``admin``/``viewer`` -- real ``user_role`` enum values -- after
+    mutation testing found the previous version built its author with
+    ``role="isso"``, a value the database enum cannot store: it demonstrated a
+    principal that cannot exist rather than the gate. The default test
+    principal is global, and ``is_global`` bypasses ``require_role`` by
+    design, so the gate is unreachable through the usual client; this drives
+    it with scoped identities instead. Creation is included because it is now
+    role-gated too (Important 4): an ungated create would let a ``viewer``
+    make the platform authenticate to the tenant before any blast-radius
+    check runs.
     """
     system_id = await _scanned_system()
     async with session_scope() as db:
         sys_row = (await db.execute(select(System).where(System.id == system_id))).scalar_one()
         org_id = sys_row.organization_id
 
-    author = _Session(org_id=org_id, role="isso").as_("isso@acme.gov")
+    viewer = _Session(org_id=org_id, role="viewer").as_("viewer@acme.gov")
+    async with viewer.client() as client:
+        blocked = await client.post(
+            f"/api/systems/{system_id}/remediation-plans", json={"check_key": CHECK}
+        )
+        assert blocked.status_code == 403, blocked.text
+
+    author = _Session(org_id=org_id, role="admin").as_("author@acme.gov")
     async with author.client() as client:
         created = await client.post(
             f"/api/systems/{system_id}/remediation-plans", json={"check_key": CHECK}
@@ -365,7 +391,6 @@ async def test_apply_is_role_gated() -> None:
         assert created.status_code == 201, created.text
         plan_id = created.json()["id"]
 
-    viewer = _Session(org_id=org_id, role="viewer").as_("viewer@acme.gov")
     async with viewer.client() as client:
         for suffix in ("approve", "apply", "reverse"):
             resp = await client.post(f"/api/remediation-plans/{plan_id}/{suffix}")

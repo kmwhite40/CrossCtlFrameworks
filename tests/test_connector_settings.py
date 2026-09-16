@@ -168,6 +168,52 @@ async def test_bind_rejects_unknown_connector_type() -> None:
         assert r.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_a_write_credential_can_be_bound_listed_and_revoked() -> None:
+    """IMPORTANT 3: ``_require_known_connector`` used to 422 anything outside
+    ``connector_keys()`` (read connectors only), so ``ccf.enforcement``'s
+    ``msgraph_write`` credential could never be stored, listed, or DELETEd
+    through this API -- enforcement dead in any real deployment, and
+    apply/reverse's revoke re-check with no revoke path to actually exercise.
+    """
+    _org_id, token = await _org_admin("ConnSettings Write Cred Org")
+    async with _client() as c:
+        bound = await c.post(
+            "/api/connector-settings/credentials/msgraph_write",
+            json={
+                "secret": {
+                    "tenant_id": "wt-1",
+                    "client_id": "wc-1",
+                    "client_secret": "writesecret1234",
+                }
+            },
+            headers=_auth(token),
+        )
+        assert bound.status_code == 200, bound.text
+        assert bound.json()["connector_type"] == "msgraph_write"
+        assert bound.json()["has_credential"] is True
+        assert "writesecret1234" not in bound.text
+
+        listed = await c.get("/api/connector-settings/credentials", headers=_auth(token))
+        assert listed.status_code == 200
+        types = {row["connector_type"] for row in listed.json()}
+        assert "msgraph_write" in types
+
+        removed = await c.delete(
+            "/api/connector-settings/credentials/msgraph_write", headers=_auth(token)
+        )
+        assert removed.status_code == 200
+        assert removed.json()["has_credential"] is False
+
+        listed_after = await c.get(
+            "/api/connector-settings/credentials", headers=_auth(token)
+        )
+        row = next(
+            r for r in listed_after.json() if r["connector_type"] == "msgraph_write"
+        )
+        assert row["has_credential"] is False
+
+
 # --- org isolation -------------------------------------------------------------
 
 

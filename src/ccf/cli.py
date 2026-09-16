@@ -399,7 +399,7 @@ def packs_sync(
 
 @app.command(name="posture-prune")
 def posture_prune(
-    retain_days: int = typer.Option(
+    retain_days: int | None = typer.Option(
         None, "--retain-days", help="Keep per-resource detail this many days (default: setting)"
     ),
     dry_run: bool = typer.Option(
@@ -419,7 +419,7 @@ def posture_prune(
 
         async with session_scope() as session:
             out = await prune_resource_detail(
-                session, retain_days=retain_days, dry_run=dry_run
+                session, retain_days=retain_days, dry_run=dry_run, actor="cli"
             )
         verb = "Would delete" if out["dry_run"] else "Deleted"
         console.print(

@@ -3,16 +3,23 @@
 Read the refusals first; they are the design. Nothing is written without:
 
 * a **write credential** the operator deliberately created (checked at plan
-  time *and again* at apply time, because approval may be hours old and a
-  revoked credential must not be honoured on a stale authorisation);
+  time *and again* at apply time **and at reverse time**, because approval may
+  be hours old and a revoked credential must not be honoured on a stale
+  authorisation -- reverse is a second write path to the tenant and gets
+  exactly the same re-checks apply does, not a weaker version of them);
 * a **persisted plan**, built from a recorded observation rather than a guess,
   whose steps are stored so the plan that was approved is the plan that is
   applied;
 * an **approval from someone other than the requester**, reusing
   :func:`ccf.governance.waivers.can_approve`;
-* a resource count inside the **blast radius**, re-checked at apply;
+* a resource count inside the **blast radius**, re-checked at apply and at
+  reverse;
 * **reversal data** captured before the change, without which a step is never
-  planned.
+  planned;
+* an **approval that has not gone stale**: an ``approved`` plan older than
+  :attr:`ccf.config.Settings.enforcement_approval_max_age_hours` refuses at
+  apply, because the resource set it was reviewed against may no longer
+  reflect the tenant.
 
 Every transition is audited through the tamper-evident chain, and an applied
 plan emits an ``enforced`` event -- the seam a significant-change process reads.
@@ -22,7 +29,7 @@ SCN itself is deliberately not built here (spec §7).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -269,14 +276,35 @@ async def apply_plan(
 ) -> RemediationPlan:
     """Apply an approved plan, re-checking every precondition first.
 
-    Approval may be hours old. The write credential may have been revoked and
-    the blast radius may have been tightened since, so both are re-checked --
-    cheap, where honouring a stale authorisation is not. A refusal here leaves
-    the plan ``approved`` rather than consuming it: nothing was done, so
-    nothing changes.
+    Approval may be hours old. The write credential may have been revoked, the
+    blast radius may have been tightened, and the approval itself may have
+    gone stale since, so all three are re-checked -- cheap, where honouring a
+    stale authorisation is not. A refusal here leaves the plan ``approved``
+    rather than consuming it: nothing was done, so nothing changes.
+
+    Locks the plan row (``SELECT ... FOR UPDATE``) before checking its status:
+    two concurrent ``POST /apply`` calls both reading ``approved`` would
+    otherwise both run every step, with the second UPDATE silently overwriting
+    the first's recorded ``outcomes`` -- harmless for an idempotent
+    ``accountEnabled=false``, not for a future destructive action. The lock
+    forces the second call to wait, then see ``applied`` and refuse cleanly.
     """
+    plan = (
+        await session.execute(
+            select(RemediationPlan).where(RemediationPlan.id == plan.id).with_for_update()
+        )
+    ).scalar_one()
     if plan.status != "approved":
         raise EnforcementError(f"plan is not approved (status={plan.status})")
+    if plan.approved_at is not None:
+        max_age_hours = get_settings().enforcement_approval_max_age_hours
+        if max_age_hours and datetime.now(UTC) - plan.approved_at > timedelta(
+            hours=max_age_hours
+        ):
+            raise EnforcementError(
+                f"approval is more than {max_age_hours}h old; the resource set it "
+                "was reviewed against may be stale -- create and approve a new plan"
+            )
     chosen = provider or await _bind_provider(
         session, plan.check_key, plan.organization_id
     )
@@ -316,6 +344,16 @@ async def apply_plan(
     # The seam a significant-change process reads: an applied configuration
     # change on a system under authorization is a candidate SCN. SCN proper is
     # its own capability; stubbing it would produce a record nobody sends.
+    #
+    # ``outcomes`` (and so each changed resource's identifier, e.g. an Entra
+    # UPN) goes out to every webhook subscribed to this org's events. That is
+    # intentional, not an oversight: an SCN/ticketing integration receiving
+    # "a remediation applied" with no record of *which* resources changed
+    # would be useless for the review it exists to trigger. Delivery is HMAC
+    # -signed and follows this bus's existing org-scoping rule (a hook bound
+    # to this organization, or a deployment-registered ``organization_id is
+    # None`` hook that receives every org's events -- unchanged here, and the
+    # same rule every other entity this bus fans out already follows).
     await bus.emit(
         session,
         verb="enforced",
@@ -342,15 +380,37 @@ async def reverse_plan(
     plan: RemediationPlan,
     *,
     actor: str,
+    max_resources: int | None = None,
     provider: RemediationProvider | None = None,
 ) -> RemediationPlan:
     """Undo an applied plan, restoring each step's captured ``current_state``.
 
-    Only steps that actually applied are reversed -- undoing a change that was
-    never made would itself be a change. Best-effort by nature: the world may
-    have moved since. What matters is that the information needed to undo was
-    captured before the change, so a human has it even if this fails.
+    A second write path to the tenant, so it re-checks exactly what
+    :func:`apply_plan` re-checks and for the same reason: the apply may have
+    happened hours ago, the write credential may since have been revoked, and
+    the blast radius may since have been tightened. Without these, revoking a
+    write credential after a bad apply would not stop the reverse -- the
+    refusal would live only in whichever provider happens to check for a
+    missing credential itself (today m365's ``_patch`` does, by returning
+    ``skipped``; a future provider that omits that guard would have a
+    completely unguarded write path). Locks the plan row for the same
+    concurrent-write reason :func:`apply_plan` does.
+
+    Steps whose outcome is ``applied`` *or* ``uncertain`` are reversed --
+    ``uncertain`` covers a write whose result is unknown (e.g. a timeout that
+    arrived after the far end actually applied the change): the capture is
+    exactly the same "did we maybe change this?" case ``applied`` is, and
+    replaying it is safe by construction -- reversal restores the step's
+    captured *prior* state, which is a no-op if the write never actually
+    landed. Only a step recorded ``failed`` (the provider knows it did not
+    happen) or ``skipped`` is excluded: undoing a change that was never made
+    would itself be a change.
     """
+    plan = (
+        await session.execute(
+            select(RemediationPlan).where(RemediationPlan.id == plan.id).with_for_update()
+        )
+    ).scalar_one()
     if plan.status != "applied":
         raise EnforcementError(f"plan is not applied (status={plan.status})")
     chosen = provider or await _bind_provider(
@@ -358,16 +418,25 @@ async def reverse_plan(
     )
     if chosen is None:
         raise EnforcementError(f"no remediation provider handles check {plan.check_key!r}")
+    if not await chosen.is_write_configured():
+        raise EnforcementError(
+            f"no write credential configured for {chosen.write_credential_type!r}"
+        )
+    limit = _limit(max_resources)
+    if plan.resource_count > limit:
+        raise EnforcementError(
+            f"{plan.resource_count} resources exceeds the enforcement limit of {limit}"
+        )
 
-    applied = {
+    reversible = {
         o.get("resource_id")
         for o in (plan.outcomes or [])
-        if o.get("status") == "applied"
+        if o.get("status") in ("applied", "uncertain")
     }
     steps = [
         RemediationStep.from_dict(s)
         for s in (plan.steps or [])
-        if s.get("resource_id") in applied
+        if s.get("resource_id") in reversible
     ]
     outcomes = await _run_steps(plan, steps, chosen.reverse, verb="reverse")
     plan.outcomes = [*(plan.outcomes or []), *[o.to_dict() for o in outcomes]]

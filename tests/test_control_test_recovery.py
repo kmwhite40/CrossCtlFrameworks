@@ -146,6 +146,75 @@ async def test_recovery_surfaces_the_poam_without_closing_it() -> None:
             "_alert_on_failure/conmon.scan already use for 'needs a human's attention'"
 
 
+async def test_recovery_survives_an_intervening_not_applicable() -> None:
+    """fail -> not_applicable -> pass must still resolve the Task/POA&M the
+    fail opened. The widened verdict vocabulary put a new intermediate state
+    between fail and a later pass: a scan can fail, then find zero resources
+    in scope (not_applicable) on the next run, then pass on the run after
+    that. Recovery is keyed off whether the Task/POA&M fail opened is still
+    open, not off the immediately preceding status -- so the intervening
+    not_applicable (which itself must fire no recovery, asserted below) must
+    not permanently block the later pass from resolving them.
+    """
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Recovery NotApplicable Org")
+        test = await _make_test(s, org_id, sys_id, "AC-RECOVER-NA")
+        test_id = test.id
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="fail", detail="broken"
+        )
+
+    dedupe = f"ctltest-fix:{test_id}"
+    source_ref = f"control_test:{test_id}"
+    async with session_scope() as s:
+        task = (await s.execute(select(Task).where(Task.dedupe_key == dedupe))).scalar_one()
+        assert task.status == "open"
+        poam = (
+            await s.execute(
+                select(POAM).where(POAM.system_id == sys_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert poam.status == "open"
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="not_applicable", detail="nothing in scope"
+        )
+
+    async with session_scope() as s:
+        # The intervening not_applicable must itself fire no recovery.
+        task = (await s.execute(select(Task).where(Task.dedupe_key == dedupe))).scalar_one()
+        assert task.status == "open"
+        poam = (
+            await s.execute(
+                select(POAM).where(POAM.system_id == sys_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert poam.remediation_plan is None
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, test_id), status="pass", detail="fixed"
+        )
+
+    async with session_scope() as s:
+        task = (await s.execute(select(Task).where(Task.dedupe_key == dedupe))).scalar_one()
+        assert task.status == "done", (
+            "the later pass must still resolve the Task, despite the intervening "
+            "not_applicable"
+        )
+        poam = (
+            await s.execute(
+                select(POAM).where(POAM.system_id == sys_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert poam.status == "open", "recovery still never auto-closes the POA&M"
+        assert poam.remediation_plan is not None
+        assert "now passes" in poam.remediation_plan
+
+
 @pytest.mark.parametrize("status", ["fail", "warn"])
 async def test_no_transition_when_status_repeats(
     status: str, monkeypatch: pytest.MonkeyPatch

@@ -366,3 +366,46 @@ async def test_record_result_rejects_bad_status() -> None:
         await s.flush()
         with pytest.raises(ValueError):
             await control_tests.record_result(s, test, status="green")
+
+
+def test_control_test_metrics_bucket_the_full_vocabulary_and_sum_to_total() -> None:
+    """The /control-tests page's KPI buckets must cover every
+    fedramp20x.VALIDATION_STATUSES value, not just pass/fail -- a test whose
+    last result was not_applicable or manual_review_required was tested, and
+    must not be silently folded into "untested". Whatever the bucketing, the
+    buckets must always sum to "total".
+    """
+    from ccf.api.routes.ui_grc import _control_test_metrics  # noqa: PLC0415
+
+    def _row(last_status: str | None) -> ControlTest:
+        return ControlTest(
+            control_id="AC-1", name="x", method="manual", last_status=last_status
+        )
+
+    rows = [
+        _row("pass"),
+        _row("pass"),
+        _row("warn"),
+        _row("fail"),
+        _row("not_applicable"),
+        _row("manual_review_required"),
+        _row("not_tested"),
+        _row(None),
+    ]
+    metrics = _control_test_metrics(rows)
+    assert metrics["total"] == len(rows) == 8
+    assert metrics["passing"] == 2
+    assert metrics["warn"] == 1
+    assert metrics["failing"] == 1
+    assert metrics["not_applicable"] == 1
+    assert metrics["manual_review_required"] == 1
+    assert metrics["untested"] == 2  # "not_tested" status + no result at all
+    summed = (
+        metrics["passing"]
+        + metrics["warn"]
+        + metrics["failing"]
+        + metrics["not_applicable"]
+        + metrics["manual_review_required"]
+        + metrics["untested"]
+    )
+    assert summed == metrics["total"]
