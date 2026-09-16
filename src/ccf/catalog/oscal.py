@@ -104,6 +104,40 @@ def _verify(d: Path) -> dict[str, Any]:
     return manifest
 
 
+_MANIFEST_NAME = "MANIFEST.json"
+
+
+def generate_manifest(
+    d: Path,
+    *,
+    oscal_version: str,
+    source_url: str,
+    upstream_commit_sha: str | None,
+    retrieved_at: str,
+) -> dict[str, Any]:
+    """Write ``MANIFEST.json`` into ``d`` describing every JSON file beside it.
+
+    The shape is exactly what :func:`_verify` consumes -- ``files`` maps filename
+    to sha256 -- so a materialized revision directory is loadable without any
+    hand-editing. ``MANIFEST.json`` is never hashed into itself, since its own
+    content depends on the result.
+    """
+    files = {
+        p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+        for p in sorted(d.glob("*.json"))
+        if p.name != _MANIFEST_NAME
+    }
+    manifest: dict[str, Any] = {
+        "oscal_version": oscal_version,
+        "source_url": source_url,
+        "upstream_commit_sha": upstream_commit_sha,
+        "retrieved_at": retrieved_at,
+        "files": files,
+    }
+    (d / _MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
 def _iter_controls(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
     for c in node.get("controls", []):
         yield c

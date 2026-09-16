@@ -43,7 +43,12 @@ from .pipeline import ingest_workbook
 log = get_logger(__name__)
 
 _UA = "ConcordCatalogPoller/0.1 (+compliance-controls-platform)"
+# Two distinct NIST authorities, deliberately not conflated:
+#   * usnistgov/oscal-content -- the CONTENT (catalogs, baseline profiles).
+#   * usnistgov/OSCAL         -- the SPECIFICATION (the JSON schemas we validate
+#     exports against, bundled under ccf/oscal/schemas).
 _NIST_RAW = "https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov"
+_OSCAL_SPEC_RAW = "https://raw.githubusercontent.com/usnistgov/OSCAL/main"
 
 # Seeded on `ccf sources-seed`. Authoritative, machine-readable upstreams.
 DEFAULT_SOURCES: list[dict[str, Any]] = [
@@ -75,6 +80,65 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         "enabled": True,
     },
     {
+        "key": "nist_800_53_r5_low_baseline",
+        "name": "NIST SP 800-53B Rev. 5 - LOW baseline (OSCAL profile)",
+        "authority": "NIST",
+        # A profile is not a catalog: content-hash only, like the HIGH baseline.
+        "kind": "generic",
+        "url": f"{_NIST_RAW}/SP800-53/rev5/json/NIST_SP-800-53_rev5_LOW-baseline_profile.json",
+        "framework_code": "NIST_800_53_R5",
+        "enabled": True,
+    },
+    {
+        "key": "nist_800_53_r5_moderate_baseline",
+        "name": "NIST SP 800-53B Rev. 5 - MODERATE baseline (OSCAL profile)",
+        "authority": "NIST",
+        # A profile is not a catalog: content-hash only, like the HIGH baseline.
+        "kind": "generic",
+        "url": (
+            f"{_NIST_RAW}/SP800-53/rev5/json/"
+            "NIST_SP-800-53_rev5_MODERATE-baseline_profile.json"
+        ),
+        "framework_code": "NIST_800_53_R5",
+        "enabled": True,
+    },
+    {
+        "key": "nist_csf_2_0_catalog",
+        "name": "NIST CSF 2.0 - framework catalog (OSCAL)",
+        "authority": "NIST",
+        "kind": "oscal_catalog",
+        "url": f"{_NIST_RAW}/CSF/v2.0/json/NIST_CSF_v2.0_catalog.json",
+        "framework_code": "NIST_CSF_2_0",
+        "enabled": True,
+    },
+    {
+        # Filename confirmed against usnistgov/oscal-content: 800-171 uses
+        # "NIST_SP800-171" (no hyphen after SP), unlike 800-53's "NIST_SP-800-53".
+        "key": "nist_800_171_r3_catalog",
+        "name": "NIST SP 800-171 Rev. 3 - CUI requirements catalog (OSCAL)",
+        "authority": "NIST",
+        "kind": "oscal_catalog",
+        "url": f"{_NIST_RAW}/SP800-171/rev3/json/NIST_SP800-171_rev3_catalog.json",
+        "framework_code": "NIST_800_171_R3",
+        "enabled": True,
+    },
+    {
+        # The OSCAL specification itself, not catalog content. ccf/oscal/schemas
+        # pins these by sha256 in a hand-maintained manifest (v1.1.2, retrieved
+        # 2026-07-28), which has the same drift blindness the catalog had: a new
+        # OSCAL release goes unnoticed until someone looks. Registering it here
+        # means drift is at least detected and recorded for a human to act on.
+        # Consumed by ccf.oscal.validation, not by the catalog loader, so the
+        # kind is content-hash only.
+        "key": "nist_oscal_schema_ssp",
+        "name": "NIST OSCAL - SSP JSON schema (specification)",
+        "authority": "NIST",
+        "kind": "generic",
+        "url": f"{_OSCAL_SPEC_RAW}/json/schema/oscal_ssp_schema.json",
+        "framework_code": None,
+        "enabled": True,
+    },
+    {
         "key": "cross_mappings_workbook",
         "name": "Concord cross-mapping workbook (curated)",
         "authority": "Concord",
@@ -89,8 +153,49 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
 ]
 
 
+# materialize_revision's parse-check (ccf.catalog.oscal._verify) is hard-wired
+# to exactly these four 800-53 filenames -- the catalog plus its three baseline
+# profiles. Only this source can ever be materialized into an adoptable
+# revision today; the sibling baseline URLs are looked up from DEFAULT_SOURCES
+# (rather than hardcoded here) so they can't drift out of sync with the
+# registered rows.
+_800_53_CATALOG_KEY = "nist_800_53_r5_catalog"
+_800_53_BASELINE_KEYS = (
+    "nist_800_53_r5_low_baseline",
+    "nist_800_53_r5_moderate_baseline",
+    "nist_800_53_r5_high_baseline",
+)
+
+
 def _sha256_bytes(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
+
+
+def _default_source_url(key: str) -> str:
+    for spec in DEFAULT_SOURCES:
+        if spec["key"] == key:
+            return str(spec["url"])
+    raise KeyError(f"no DEFAULT_SOURCES entry for {key!r}")
+
+
+async def _fetch_800_53_baselines() -> dict[str, bytes]:
+    """Fetch the three baseline profiles that must accompany the 800-53 catalog.
+
+    Keyed by exact filename (matching each URL's own basename, which is the
+    same filename ``ccf.catalog.oscal._BASELINE_FILES`` requires) so the result
+    merges straight into :func:`~ccf.catalog.revisions.materialize_revision`'s
+    ``documents``. Always fetched fresh (no ETag) since these are small,
+    infrequently-changing profiles and correctness here matters more than
+    saving a request.
+    """
+    docs: dict[str, bytes] = {}
+    for key in _800_53_BASELINE_KEYS:
+        url = _default_source_url(key)
+        _, body, _ = await _fetch(url, None)
+        if body is None:  # pragma: no cover — no ETag sent, so never a 304
+            raise RuntimeError(f"unexpected 304 fetching {url}")
+        docs[Path(url).name] = body
+    return docs
 
 
 async def _fetch(url: str, etag: str | None) -> tuple[int, bytes | None, str | None]:
@@ -163,12 +268,73 @@ def parse_oscal_catalog(body: bytes) -> tuple[str | None, dict[str, str]]:
     return revision, index
 
 
-def _diff_index(old: dict[str, str], new: dict[str, str]) -> dict[str, list[str]]:
+def diff_content_index(old: dict[str, str], new: dict[str, str]) -> dict[str, list[str]]:
+    """Added / modified / removed control ids between two content indexes.
+
+    Public because :mod:`ccf.catalog.diff` reuses it for the control-set half of
+    a revision diff rather than recomputing the same set arithmetic -- so the
+    poller and the revision differ can never disagree about what "added" means.
+    """
     old_keys, new_keys = set(old), set(new)
     added = sorted(new_keys - old_keys)
     removed = sorted(old_keys - new_keys)
     modified = sorted(k for k in old_keys & new_keys if old[k] != new[k])
     return {"added": added, "modified": modified, "removed": removed}
+
+
+# Retained for existing callers/tests that import the private name.
+_diff_index = diff_content_index
+
+
+_GH_RAW_PREFIX = "https://raw.githubusercontent.com/"
+_GH_API = "https://api.github.com"
+
+
+def parse_commit_url(url: str) -> tuple[str | None, str | None, str | None]:
+    """Split a raw.githubusercontent URL into ``(repo, ref, path)``.
+
+    Returns ``(None, None, None)`` for anything that is not a GitHub raw URL --
+    ``file://`` sources and other hosts simply have no commit concept, and the
+    caller falls back to a content-addressed revision label.
+    """
+    if not url.startswith(_GH_RAW_PREFIX):
+        return None, None, None
+    parts = url[len(_GH_RAW_PREFIX) :].split("/")
+    if len(parts) < 4:
+        return None, None, None
+    owner, repo, ref = parts[0], parts[1], parts[2]
+    return f"{owner}/{repo}", ref, "/".join(parts[3:])
+
+
+async def _get_json(url: str) -> Any:
+    async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": _UA}) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def resolve_commit_sha(url: str) -> str | None:
+    """The commit that last touched ``url``'s path, for reproducible pinning.
+
+    Best-effort by design. Sources poll a moving ref (``main``) because that is
+    what detects drift; the pin is recorded per *revision*, which is where
+    reproducibility actually matters. Any failure returns ``None`` and the
+    revision falls back to a content-addressed label rather than failing the
+    poll -- pinning is a provenance nicety, not a precondition.
+    """
+    repo, ref, path = parse_commit_url(url)
+    if not (repo and ref and path):
+        return None
+    try:
+        payload = await _get_json(
+            f"{_GH_API}/repos/{repo}/commits?path={path}&sha={ref}&per_page=1"
+        )
+        if isinstance(payload, list) and payload:
+            sha = payload[0].get("sha")
+            return str(sha) if sha else None
+    except Exception as exc:  # pinning must never break a poll
+        log.debug("catalog.commit_resolution_failed", url=url, error=str(exc)[:200])
+    return None
 
 
 # --- per-source check -------------------------------------------------------
@@ -179,8 +345,16 @@ async def check_source(
     source: CatalogSource,
     *,
     data_dir: Path | None = None,
+    revision_data_root: Path | None = None,
 ) -> CatalogCheck:
-    """Fetch one source, detect drift, and persist a :class:`CatalogCheck`."""
+    """Fetch one source, detect drift, and persist a :class:`CatalogCheck`.
+
+    When ``revision_data_root`` is given and the source is an OSCAL catalog,
+    changed content is additionally captured as a retained
+    :class:`~ccf.models.CatalogRevision` so a human can diff and adopt it.
+    Capture never adopts. Omitting the argument -- which every pre-existing
+    caller does -- leaves behaviour exactly as it was.
+    """
     started = time.monotonic()
     now = datetime.now(UTC)
     check = CatalogCheck(source_id=source.id)
@@ -201,6 +375,7 @@ async def check_source(
 
         sha = _sha256_bytes(body)
         check.sha256 = sha
+        previous_etag = source.etag
         if etag:
             source.etag = etag
 
@@ -245,9 +420,62 @@ async def check_source(
             check.detail = detail
             return _finish(session, source, check, started)
 
+        capture_rejected = False
+        if revision_data_root is not None and source.kind == "oscal_catalog":
+            if source.key == _800_53_CATALOG_KEY:
+                # Capture the changed content as a retained revision. Never
+                # adopts -- a human does that after reading the impact report.
+                # Lazy import: catalog.revisions imports this module for its parser.
+                from ..catalog.revisions import materialize_revision  # noqa: PLC0415
+
+                try:
+                    sibling_docs = await _fetch_800_53_baselines()
+                except Exception as exc:
+                    # Without the baseline profiles, materialize_revision's
+                    # parse-check would reject this anyway -- treat it the same
+                    # way (don't advance last_sha256 below) so a transient
+                    # network hiccup doesn't permanently lose this drift.
+                    detail["capture_status"] = "failed"
+                    detail["capture_error"] = str(exc)[:500]
+                    capture_rejected = True
+                else:
+                    documents = {Path(source.url).name: body, **sibling_docs}
+                    captured = await materialize_revision(
+                        session,
+                        source=source,
+                        documents=documents,
+                        upstream_commit_sha=await resolve_commit_sha(source.url),
+                        data_root=revision_data_root,
+                        retrieved_by="poller",
+                    )
+                    detail["captured_revision"] = captured.revision
+                    detail["captured_status"] = captured.status
+                    if captured.status == "rejected":
+                        detail["capture_rejected_reason"] = captured.notes
+                        capture_rejected = True
+            else:
+                # materialize_revision only knows the 800-53 catalog + baseline
+                # filenames (ccf.catalog.oscal._verify). CSF 2.0 and 800-171 are
+                # also "oscal_catalog" sources but would be rejected for an
+                # entirely different reason (the wrong files present), which
+                # would destroy their drift for nothing -- so skip capture for
+                # them rather than manufacture a rejected row.
+                detail["capture_skipped"] = (
+                    "revision capture is only implemented for the NIST 800-53 "
+                    f"catalog; {source.key} is not materializable"
+                )
+
         check.status = "changed"
         source.last_status = "changed"
-        source.last_sha256 = sha
+        if capture_rejected:
+            # Losing the only copy of drifted content is worse than re-fetching
+            # it next poll: leave last_sha256 AND etag exactly as they were, so
+            # the next poll's fetch is a genuine 200 (not a 304 against the new
+            # etag, which would silently report "unchanged" forever) and this
+            # same drift is seen -- and capture retried -- again.
+            source.etag = previous_etag
+        else:
+            source.last_sha256 = sha
         check.detail = detail
         log.info(
             "catalog.drift",
@@ -324,8 +552,16 @@ async def poll(
         stmt = stmt.where(CatalogSource.enabled.is_(True))
 
     sources = (await session.execute(stmt)).scalars().all()
+    # Revision capture is opt-in: it writes files, so it needs a durable volume.
+    revision_root = (
+        settings.data_dir / "oscal" if settings.catalog_capture_revisions else None
+    )
     checks: list[CatalogCheck] = []
     for src in sources:
-        checks.append(await check_source(session, src, data_dir=settings.data_dir))
+        checks.append(
+            await check_source(
+                session, src, data_dir=settings.data_dir, revision_data_root=revision_root
+            )
+        )
         await session.flush()
     return checks

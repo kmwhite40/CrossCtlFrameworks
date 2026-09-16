@@ -772,17 +772,67 @@ async def _check_catalog_integrity(session: AsyncSession) -> Check:
     except OscalManifestError as exc:
         return Check("catalog_integrity", WARN, f"OSCAL catalog unreadable: {exc}")
     version = catalog.version
+
+    # Which retained revision the platform is actually serving. The adoption
+    # pointer and the filesystem can drift apart (a lost volume, a hand-edited
+    # directory), and this is where that shows up.
+    revision_note, revision_status = await _adopted_revision_note(session)
+
     report = await latest_report(session)
     if report is None:
         return Check(
-            "catalog_integrity", PASS, f"OSCAL {version} loaded; no reconciliation run yet."
+            "catalog_integrity",
+            revision_status,
+            f"OSCAL {version} loaded ({revision_note}); no reconciliation run yet.",
         )
     return Check(
         "catalog_integrity",
-        PASS,
-        f"OSCAL {version}; last run {report.controls_checked} checked, "
+        revision_status,
+        f"OSCAL {version} ({revision_note}); last run {report.controls_checked} checked, "
         f"{report.findings_total} findings {report.findings_by_severity}.",
     )
+
+
+async def _adopted_revision_note(session: AsyncSession) -> tuple[str, str]:
+    """Describe the adopted catalog revision and whether its content verifies.
+
+    Returns ``(message_fragment, status)``. A deployment predating the revision
+    table, or one that has simply never adopted anything, is reported rather
+    than failed -- the packaged catalog still loads, which is why the check
+    above already succeeded.
+    """
+    from pathlib import Path as _Path  # noqa: PLC0415
+
+    from sqlalchemy import select  # noqa: PLC0415
+
+    from ..catalog.oscal import OscalManifestError as _ManifestError  # noqa: PLC0415
+    from ..catalog.oscal import _verify  # noqa: PLC0415
+    from ..models import CatalogRevision  # noqa: PLC0415
+
+    try:
+        row = (
+            await session.execute(
+                select(CatalogRevision).where(CatalogRevision.status == "adopted")
+            )
+        ).scalars().first()
+    except Exception:  # table absent on an un-migrated deployment
+        return "no adopted revision recorded", PASS
+    if row is None:
+        return "no adopted revision recorded", PASS
+    if not row.content_dir:
+        return f"revision {row.revision} (packaged)", PASS
+
+    d = _Path(row.content_dir)
+    try:
+        manifest = _verify(d)
+    except _ManifestError as exc:
+        return f"revision {row.revision} FAILS verification: {exc}", WARN
+    if manifest.get("files") != row.files:
+        return (
+            f"revision {row.revision} manifest on disk differs from the recorded hashes",
+            WARN,
+        )
+    return f"revision {row.revision} verified", PASS
 
 
 async def _check_query_templates_health(session: AsyncSession) -> Check:

@@ -60,6 +60,12 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         "ingestion_runs",
         "catalog_sources",
         "catalog_checks",
+        # Retained upstream OSCAL revisions. Catalogs are authority-published
+        # reference data adopted platform-wide: per-tenant catalog divergence
+        # would make cross-tenant mappings and the reconciliation engine
+        # incoherent, so there is deliberately no tenant dimension. Writes are
+        # gated by admin RBAC at the API layer instead.
+        "catalog_revisions",
         "catalog_integrity_reports",
         "scoring_controls",
         "statement_templates",
