@@ -23,8 +23,8 @@ same parent-chain shape ``control_test_resource_results`` uses. All three join
 ``EXPECTED_TENANT_ISOLATION_TABLES`` (count 134 -> 137); none is added to
 ``GLOBAL_TABLES``.
 
-Revision ID: 0073_flaw_remediation
-Revises: 0072_remediation_plans
+Revision ID: 0076_flaw_remediation
+Revises: 0075_remediation_plans
 Create Date: 2026-09-15
 """
 
@@ -34,8 +34,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0073_flaw_remediation"
-down_revision = "0072_remediation_plans"
+revision = "0076_flaw_remediation"
+down_revision = "0075_remediation_plans"
 branch_labels = None
 depends_on = None
 

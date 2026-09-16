@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..constants import POAM_ACTIVE_STATUSES
 from ..logging import get_logger
 from ..models import POAM, System
+from ..models_enforcement import RemediationPlan
 from ..models_patching import PatchCampaign, PatchWave, RemediationPolicy
 from .sla import FLAW_SOURCES, RemediationWindow, SlaReport, measure
 
@@ -58,11 +59,16 @@ async def resolve_window(
     flaw as compliant, which is worse than measuring against the numbers an
     assessor would apply anyway.
     """
+    # ``.first()``, matching ``get_policy``/``set_policy`` in api/routes/patching.py:
+    # ``organization_id`` is nullable and Postgres treats NULLs as distinct under
+    # the unique constraint, so two unscoped rows are (barely) possible, and this
+    # must degrade the same way that endpoint does rather than 500 on
+    # ``scalar_one_or_none()``'s "more than one row" error.
     policy = (
         await session.execute(
             select(RemediationPolicy).where(RemediationPolicy.organization_id == org_id)
         )
-    ).scalar_one_or_none()
+    ).scalars().first()
     if policy is None:
         return RemediationWindow()
     return RemediationWindow(
@@ -239,12 +245,24 @@ async def complete_wave(
 ) -> PatchWave:
     """Record that a wave's work was done.
 
-    Refuses a wave already decided, and refuses one whose predecessors are
-    still pending: sequencing is the control, so completing wave 3 before wave
-    1 would claim the canary protected a batch it never preceded.
+    Refuses a wave already decided, one whose predecessors are still pending
+    (sequencing is the control, so completing wave 3 before wave 1 would claim
+    the canary protected a batch it never preceded), one on a campaign that is
+    already cancelled or completed, one whose cited remediation plan is not an
+    applied plan for this same campaign's tenant and system, and one asserted
+    with no evidence at all.
     """
     if wave.status != "pending":
         raise PatchingError(f"wave {wave.sequence} is already {wave.status}")
+
+    campaign = await session.get(PatchCampaign, wave.campaign_id)
+    if campaign is None:
+        raise PatchingError(f"wave {wave.id} has no campaign")
+    if campaign.status in ("cancelled", "completed"):
+        raise PatchingError(
+            f"campaign {campaign.id} is {campaign.status}; its waves can no "
+            "longer be completed"
+        )
 
     earlier = [
         w
@@ -256,22 +274,62 @@ async def complete_wave(
             f"wave {earlier[0].sequence} is still pending; complete waves in order"
         )
 
+    # A cited plan must actually have applied, to this campaign's own tenant
+    # and system -- otherwise this row would read to an assessor as "applied
+    # by enforcement plan N" when the plan never ran, was refused, or belongs
+    # to a different organization entirely. FK enforcement alone does not
+    # catch this: it bypasses RLS and does not know about ``status``.
+    if remediation_plan_id is not None:
+        plan = await session.get(RemediationPlan, remediation_plan_id)
+        if (
+            plan is None
+            or plan.organization_id != campaign.organization_id
+            or plan.system_id != campaign.system_id
+            or plan.status != "applied"
+        ):
+            raise PatchingError(
+                f"remediation plan {remediation_plan_id} is not an applied plan "
+                "for this campaign's system"
+            )
+
+    # ``evidence_ref`` stays free text (a change ticket, a screenshot
+    # reference, an Intune report id -- see models_patching.py) rather than a
+    # foreign key into Evidence: Concord has no endpoint-management provider,
+    # so what proves a wave ran often lives outside this system entirely, and
+    # forcing it through the Evidence table would either reject legitimate
+    # proof or require uploading a document for a pointer. But *something*
+    # must be supplied -- a blank string is the same as nothing -- or an
+    # applied plan; a wave with neither is a claim with no way to check it.
+    evidence_ref = (evidence_ref or "").strip() or None
+    if evidence_ref is None and remediation_plan_id is None:
+        raise PatchingError(
+            "completing a wave requires evidence_ref or an applied remediation_plan_id"
+        )
+
     wave.status = "completed"
     wave.completed_at = datetime.now(UTC)
     wave.completed_by = actor
     wave.evidence_ref = evidence_ref
     wave.remediation_plan_id = remediation_plan_id
 
-    campaign = await session.get(PatchCampaign, wave.campaign_id)
-    if campaign is not None:
-        remaining = [
-            w
-            for w in await waves_for(session, wave.campaign_id)
-            if w.status == "pending"
-        ]
-        campaign.status = "completed" if not remaining else "in_progress"
-        if not remaining:
-            campaign.completed_at = datetime.now(UTC)
+    waves = await waves_for(session, wave.campaign_id)
+    remaining = [w for w in waves if w.status == "pending"]
+    skipped = [w for w in waves if w.status == "skipped"]
+    # Explicit rather than "not remaining": a campaign is only genuinely
+    # finished once every wave has reached a terminal state, and naming
+    # ``skipped`` here (even though nothing can set it yet -- the DB
+    # constraint permits it) keeps this rollup's vocabulary matching
+    # ``WAVE_STATUSES`` instead of an implicit "anything but pending".
+    finished = not remaining
+    campaign.status = "completed" if finished else "in_progress"
+    if finished:
+        campaign.completed_at = datetime.now(UTC)
+        if skipped:
+            log.info(
+                "campaign %s completed with %d skipped wave(s)",
+                campaign.id,
+                len(skipped),
+            )
     await session.flush()
     await _audit(
         session,

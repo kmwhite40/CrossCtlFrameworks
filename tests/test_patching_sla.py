@@ -108,6 +108,26 @@ def test_a_closed_poam_with_no_closure_date_is_unknown() -> None:
     assert classify(p, allowed_days=30, today=TODAY) == "unknown"
 
 
+def test_a_reopened_poam_with_a_stale_closed_on_is_unknown_not_on_time() -> None:
+    """CRITICAL 1 (PR #20 review): a POA&M closed fast and then reopened (status
+    back to "open") must not still classify as closed_on_time just because a
+    stale closed_on was left behind. Before the fix, ``classify`` branched on
+    ``closed_on is not None`` before consulting status, so this exact case --
+    identified 404 days ago, "closed" in 4 days, still open today -- returned
+    "closed_on_time" and vanished from both breaching_ids and the numerator's
+    denominator scrutiny, overstating SI-2 compliance for a flaw 374 days
+    overdue. It must land in the same ``unknown`` bucket as a closed POA&M
+    with no closure date at all -- not a free pass back to within_sla either.
+    """
+    identified = TODAY - timedelta(days=404)
+    p = _Poam(
+        status="open",
+        identified_on=identified,
+        closed_on=identified + timedelta(days=4),
+    )
+    assert classify(p, allowed_days=30, today=TODAY) == "unknown"
+
+
 def test_a_closure_before_identification_is_unknown_not_instant() -> None:
     """Negative latency is corrupt data, not perfect performance."""
     identified = TODAY - timedelta(days=5)

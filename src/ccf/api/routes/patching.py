@@ -1,8 +1,10 @@
 """Flaw-remediation endpoints: the SLA report, the policy, and campaigns.
 
-Completing a wave is an assertion that work was done on a production system,
-so it is role-gated like a waiver approval. Everything else is a read or a
-plan, and plans change nothing outside this database.
+Two role gates, not one: declaring the remediation window (``POLICY_ROLES``)
+is a risk-posture decision, gated like a waiver approval; creating a campaign
+or completing a wave (``PATCHER_ROLES``) is an operational assertion that work
+was scheduled or done on a production system, and admits ``control_owner`` as
+the operator who would actually do it. Reading a report is unrestricted.
 """
 
 from __future__ import annotations
@@ -33,9 +35,36 @@ from ..deps import get_session
 
 router = APIRouter(prefix="/api", tags=["patching"])
 
-#: The roles that may assert a wave was completed -- the same set that approves
-#: a waiver or applies a remediation plan.
-PATCHER_ROLES = ("admin", "issm", "isso")
+#: The roles that may declare the organization's flaw-remediation window.
+#:
+#: Deliberately ``admin`` only, matching ``api/routes/waivers.py``'s
+#: ``APPROVER_ROLES`` and ``api/routes/enforcement.py``'s ``ENFORCER_ROLES``.
+#: This is a risk-posture decision, not an operational one: it sets the
+#: numbers a flaw is measured against, and a report that reads compliant only
+#: because the window was quietly widened (see Important 5) is the same kind
+#: of false claim as a risk acceptance nobody with authority signed off on.
+#: ``models.py``'s ``user_role`` enum is exactly
+#: ``admin | control_owner | assessor | viewer`` -- the previous value here
+#: (``"admin", "issm", "isso"``) named two roles the database cannot store,
+#: so the effective gate was already ``admin`` only; this makes that explicit.
+POLICY_ROLES = ("admin",)
+
+#: The roles that may create a campaign or assert one of its waves was
+#: completed.
+#:
+#: ``admin`` plus ``control_owner``, unlike ``POLICY_ROLES`` above --
+#: scheduling and running a patch wave is an operational action on a system,
+#: not a risk-posture decision, and ``control_owner`` is precisely the
+#: operator who would do it: the party responsible for the system being
+#: patched. Excluding it (the earlier ``"admin", "issm", "isso"`` named no
+#: role the database can store, so it silently locked control_owner out) left
+#: only admins able to run the one workflow this feature exists for.
+#: ``assessor`` and ``viewer`` stay out for the same reasons ``waivers.py``
+#: and ``enforcement.py`` give: an assessor's independence is compromised by
+#: also being able to assert the finding it evaluates was fixed, and a viewer
+#: is read-only by definition -- see Important 8, which closed the campaign
+#: creation endpoint that used to let a viewer write these rows at all.
+PATCHER_ROLES = ("admin", "control_owner")
 
 
 class PolicyIn(BaseModel):
@@ -162,10 +191,18 @@ async def get_policy(
 async def set_policy(
     body: PolicyIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*PATCHER_ROLES)),
+    principal: Principal = Depends(require_role(*POLICY_ROLES)),
 ) -> dict[str, Any]:
-    """Declare the organization's flaw-remediation window."""
-    values = body.model_dump()
+    """Declare the organization's flaw-remediation window.
+
+    ``exclude_unset`` rather than a full ``model_dump()``: ``PolicyIn``
+    defaults every ``*_days`` field to the FedRAMP value, so a full dump would
+    make a partial PUT -- an org sending only ``{"moderate_days": 45}`` to
+    adjust one window -- silently reset the three fields it did not mention
+    back to the FedRAMP defaults, potentially *widening* them and moving
+    already-breached flaws back to within_sla on the next report.
+    """
+    values = body.model_dump(exclude_unset=True)
     days = {k: v for k, v in values.items() if k.endswith("_days")}
     if any(v < 1 for v in days.values()):
         raise HTTPException(400, "every window must be at least one day")
@@ -188,7 +225,7 @@ async def set_policy(
         action="update",
         entity_type="remediation_policy",
         entity_id=str(row.id),
-        diff={"event": "declared", **days, "source": body.source},
+        diff={"event": "declared", **days, "source": values.get("source", row.source)},
     )
     await session.commit()
     await session.refresh(row)
@@ -201,9 +238,15 @@ async def create(
     system_id: int,
     body: CampaignIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*PATCHER_ROLES)),
 ) -> dict[str, Any]:
-    """Plan a campaign of ordered waves over the system's open flaws."""
+    """Plan a campaign of ordered waves over the system's open flaws.
+
+    Role-gated like completing a wave (``PATCHER_ROLES``): an ungated POST let
+    a ``viewer`` write campaign and wave rows and, through the overlapping-
+    window refusal, block a legitimate maintenance window on any system in
+    their org.
+    """
     await _owned_system(session, system_id, principal)
     try:
         campaign = await create_campaign(
