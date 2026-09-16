@@ -29,7 +29,9 @@ from ..models import System
 from ..models_capability import Capability
 from ..models_grc import ControlTest, ControlTestResult
 from .checks import CheckOutcome, platform_check_keys
+from .drift import latest_drift
 from .resolve import ResolvedCheck, resolve_checks
+from .telemetry import observe
 
 log = get_logger(__name__)
 
@@ -173,6 +175,7 @@ async def scan_for_system(
     outcomes: list[CheckOutcome] = await conn.scan(checks=resolved)
 
     recorded: list[dict[str, Any]] = []
+    failing_total = 0
     for outcome in outcomes:
         rc = by_key.get(outcome.check_key)
         if rc is None:
@@ -245,6 +248,41 @@ async def scan_for_system(
                 "failing": outcome.failing,
             }
         )
+        failing_total += outcome.failing
+
+        # Counted here, at write time, and never in the drift endpoint: a
+        # counter incremented by a read double-counts every dashboard refresh
+        # and reports activity that did not happen. Three extra queries per
+        # check per scan (latest_drift's own lookup plus a findings read for
+        # each side of the comparison) is the correct trade.
+        from ..api.metrics import (  # noqa: PLC0415 - avoids an import cycle
+            POSTURE_CHECK_RESULTS,
+            POSTURE_DRIFT_TRANSITIONS,
+        )
+
+        def _count_verdict(verdict: str = outcome.verdict) -> None:
+            POSTURE_CHECK_RESULTS.labels(verdict).inc()
+
+        observe("check_results", _count_verdict)
+        for transition in await latest_drift(session, test_id=test.id):
+
+            def _count_transition(kind: str = transition.kind) -> None:
+                POSTURE_DRIFT_TRANSITIONS.labels(kind).inc()
+
+            observe("drift_transitions", _count_transition)
+
+    from ..api.metrics import POSTURE_FAILING_RESOURCES  # noqa: PLC0415
+
+    # Labelled by connector as well as system: `scan_for_system` runs once per
+    # connector, so a system with both an msgraph and an AWS connector would
+    # otherwise have each scan overwrite the other's count on the same series
+    # -- the gauge oscillating between two connectors' numbers even though its
+    # help string says "per system". The connector registry is a handful of
+    # entries (see ``connectors._REGISTRY``), so this stays bounded.
+    def _set_failing_gauge() -> None:
+        POSTURE_FAILING_RESOURCES.labels(str(system_id), connector_key).set(failing_total)
+
+    observe("failing_resources", _set_failing_gauge)
 
     return {
         "system_id": system_id,

@@ -631,6 +631,35 @@ Revised matrix rows: **#2 EXISTING**; **#5 (configuration timeline) satisfied
 for observed state** by `resource_timeline`, alongside P2b's `packs/diff.py`
 for desired state.
 
+## 6.2e Status — #6 and #11 are built (2026-09-15)
+
+Both **implemented and verified**.
+
+**#6 change impact** (`packs/impact.py`, `GET /api/packs/{key}/impact`) answers
+what adopting a desired-state change would affect here, in the shape
+`catalog/impact.py` established for catalog revisions. Two of its four findings
+are consequences nobody would think to look for: a removed rule leaves a
+generated `ControlTest` to retire — reported with its *current* status, since
+retiring a failing check is a different decision from retiring a passing one —
+and it leaves any waiver keyed on that check **orphaned**, a formal acceptance
+of a finding that can no longer be produced.
+
+**#11 telemetry** adds five posture metrics. One constraint shaped every label:
+bound the cardinality. No resource or check label anywhere — a fleet of 10,000
+users would otherwise put 10,000 series into Prometheus from one check — and
+the rule is enforced by a structural test over `POSTURE_METRICS` rather than by
+reviewer memory. Drift is counted during a scan, never in the drift endpoint,
+because a counter incremented by a read double-counts dashboard refreshes.
+
+Spec `docs/superpowers/specs/2026-09-15-config-change-impact-and-telemetry-design.md`,
+plan `docs/superpowers/plans/2026-09-15-config-impact-and-telemetry.md`.
+
+Revised matrix rows: **#6 EXISTING**, **#11 EXISTING**.
+
+**Remaining CC&E work:** #10 GitOps (needs desired state in git, now that it is
+data), #4 enforcement behind the §6.4 gate, then #7 patch orchestration and
+#9 PuppetDB — both optional and downstream of #4.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem

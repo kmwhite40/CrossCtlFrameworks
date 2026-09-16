@@ -491,6 +491,14 @@ async def record_result(
     if status in ("fail", "warn"):
         if coverage is None or not coverage.suppress:
             await _alert_on_failure(session, test, status, detail or "")
+        else:
+            # How often the platform declines to act on a finding is the
+            # question an assessor asks; counting it at the moment of
+            # suppression is what makes it answerable.
+            from ..api.metrics import WAIVER_SUPPRESSIONS  # noqa: PLC0415
+            from ..posture.telemetry import observe  # noqa: PLC0415
+
+            observe("waiver_suppressions", WAIVER_SUPPRESSIONS.inc)
     elif status == "pass" and previous_status != "pass":
         await _resolve_on_recovery(session, test, result_id=res.id)
     await bus.emit(

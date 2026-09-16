@@ -13,6 +13,8 @@ the canonical form (``AC-2``) -- a raw string compare would match nothing.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -94,6 +96,43 @@ async def capabilities_for_control(
         c = canonicalize(raw)
         if c is not None and c.value == target.value:
             out.append(cap)
+    return out
+
+
+async def capabilities_for_controls(
+    session: AsyncSession, *, control_ids: Iterable[str], org_id: int | None
+) -> dict[str, list[Capability]]:
+    """Capabilities claiming any of ``control_ids``, keyed by canonical id.
+
+    One query for however many controls are asked about, instead of the
+    ``capabilities_for_control`` -- full ``Capability`` x ``CapabilityControl``
+    scan, once per control -- pattern a caller resolving many controls at once
+    (e.g. a diff touching dozens of them) would otherwise fall into.
+
+    Same canonicalization contract as :func:`capabilities_for_control`: both
+    ``control_ids`` and the stored ``CapabilityControl.control_id`` are
+    canonicalized before comparison, since the catalog is zero-padded
+    (``AC-01``) while a capability stores the canonical form (``AC-2``).
+
+    ``org_id=None`` means unscoped -- every organization's capabilities, the
+    same convention :class:`ccf.auth.Principal` documents for an unscoped
+    principal -- filtered in SQL rather than in Python so the query itself
+    stays bounded to what the caller can actually see.
+    """
+    targets = {c.value for cid in control_ids if (c := canonicalize(cid)) is not None}
+    if not targets:
+        return {}
+    stmt = select(Capability, CapabilityControl.control_id).join(
+        CapabilityControl, CapabilityControl.capability_id == Capability.id
+    )
+    if org_id is not None:
+        stmt = stmt.where(Capability.organization_id == org_id)
+    rows = (await session.execute(stmt)).all()
+    out: dict[str, list[Capability]] = {}
+    for cap, raw in rows:
+        c = canonicalize(raw)
+        if c is not None and c.value in targets:
+            out.setdefault(c.value, []).append(cap)
     return out
 
 

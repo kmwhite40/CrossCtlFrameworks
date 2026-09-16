@@ -72,6 +72,21 @@ def test_changed_carries_both_definitions() -> None:
     assert after["parameters"]["threshold_days"] == 60
 
 
+def test_definitions_cover_added_and_removed_rules_too() -> None:
+    """A diff that names a rule without its definition cannot be acted on.
+
+    An added rule has {} before and a removed one {} after, so one uniform
+    mapping serves every consumer instead of three parallel dicts.
+    """
+    d = diff_posture_rules(_manifest(_rule("gone", 90)), _manifest(_rule("new", 60)))
+    before_gone, after_gone = d.definitions["gone"]
+    assert before_gone["parameters"]["threshold_days"] == 90
+    assert after_gone == {}
+    before_new, after_new = d.definitions["new"]
+    assert before_new == {}
+    assert after_new["parameters"]["threshold_days"] == 60
+
+
 def test_non_posture_rules_are_ignored() -> None:
     other = {"key": "m", "kind": "assert", "definition": {"metric": "x"}}
     d = diff_posture_rules(_manifest(), _manifest(other))

@@ -178,6 +178,15 @@ async def prune_resource_detail(
         },
     )
     await session.commit()
+    # Real deletions only: a dry run returns above, because reporting
+    # deletions that did not happen would be a lie in a graph.
+    from ..api.metrics import POSTURE_DETAIL_PRUNED  # noqa: PLC0415
+    from .telemetry import observe  # noqa: PLC0415
+
+    def _count_pruned() -> None:
+        POSTURE_DETAIL_PRUNED.inc(deleted)
+
+    observe("detail_pruned", _count_pruned)
     log.info(
         "posture.retention.pruned",
         deleted=deleted,
