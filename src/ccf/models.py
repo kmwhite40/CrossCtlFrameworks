@@ -1890,6 +1890,7 @@ from . import (  # noqa: E402
     models_capability,
     models_enforcement,
     models_grc,
+    models_patching,
     models_waivers,
 )
 
@@ -1898,6 +1899,7 @@ CROSS_MODULE_MODEL_MODULES = (
     models_capability,
     models_enforcement,
     models_grc,
+    models_patching,
     models_waivers,
 )
 
