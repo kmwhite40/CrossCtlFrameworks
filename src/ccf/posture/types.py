@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..fedramp20x import VALIDATION_STATUSES
-from .rollup import roll_up_findings
+from .rollup import EXCLUDED_FROM_ROLLUP, roll_up_findings
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,19 @@ class CheckOutcome:
     @property
     def evaluated(self) -> int:
         return len(self.findings)
+
+    @property
+    def considered(self) -> int:
+        """Findings that actually entered the rollup verdict.
+
+        ``evaluated`` counts every row fetched, including the ones excluded
+        from the rollup (``not_applicable``/``not_tested``). An unlicensed
+        tenant makes every user's staleness finding ``not_applicable``, so a
+        detail string built from ``evaluated`` would read "0 of 500 failing"
+        -- a clean 500-user fleet -- when in truth zero users were actually
+        assessed. ``considered`` is honest about what informed the verdict.
+        """
+        return sum(1 for f in self.findings if f.verdict not in EXCLUDED_FROM_ROLLUP)
 
     @property
     def failing(self) -> int:

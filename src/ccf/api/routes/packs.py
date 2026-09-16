@@ -16,7 +16,7 @@ from ...packs import catalog
 from ...packs import service as pack_service
 from ...packs.diff import diff_posture_rules
 from ...packs.impact import build_config_change_impact
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/packs", tags=["packs"])
@@ -71,7 +71,14 @@ async def validate(
 async def install(
     body: InstallIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    # A pack's rules become executable posture checks -- their verdicts feed
+    # directly into control tests and, per CRITICAL 2/3 above, into what an
+    # assessor sees for a control. That is administrative write access, the
+    # same tier as connector credential config (api.routes.connector_settings)
+    # and catalog admin actions (api.routes.catalog): "admin" is the role this
+    # repo already uses for those, not the broader "admin"+"assessor" pairing
+    # used for read/assess-oriented writes elsewhere (e.g. boundary, audit).
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     if body.manifest is not None:
         manifest = body.manifest

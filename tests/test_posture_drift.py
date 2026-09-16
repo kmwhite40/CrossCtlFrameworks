@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
+
+import pytest
+
+from ccf.governance import waivers
+from ccf.posture import drift
 from ccf.posture.drift import TRANSITION_KINDS, diff_resources
 from ccf.posture.types import ResourceFinding
 
@@ -16,7 +22,7 @@ def _kinds(before: list, after: list) -> dict[str, str]:
     return {t.resource_id: t.kind for t in diff_resources(before, after)}
 
 
-# ── the five kinds ───────────────────────────────────────────────────────────
+# ── the six kinds ────────────────────────────────────────────────────────────
 
 
 def test_a_pass_to_fail_is_a_regression() -> None:
@@ -70,9 +76,14 @@ def test_warn_to_fail_is_a_regression_not_unchanged() -> None:
     assert _kinds([_f("r", "warn")], [_f("r", "fail")]) == {"r": "regressed"}
 
 
-def test_fail_to_warn_is_reported_not_silent() -> None:
+def test_fail_to_warn_is_improved_not_recovered() -> None:
+    """``warn`` still needs cover -- REQUIRES_COVER says so four lines up the
+    module. Only a move to a genuinely clean verdict is a recovery; this is a
+    less-bad move between two problem verdicts, so it must not read as
+    "nothing is wrong anymore"."""
     kinds = _kinds([_f("r", "fail")], [_f("r", "warn")])
-    assert kinds["r"] == "recovered"
+    assert kinds["r"] != "recovered"
+    assert kinds["r"] == "improved"
 
 
 def test_manual_review_to_pass_is_a_recovery() -> None:
@@ -121,16 +132,19 @@ def test_both_sides_empty_yields_nothing() -> None:
 
 
 def test_every_produced_kind_is_declared() -> None:
-    """A kind absent from TRANSITION_KINDS is one no consumer can interpret."""
+    """Every kind TRANSITION_KINDS declares is reachable, and nothing else is
+    producible -- the ``<=`` half alone is nearly tautological (diff_resources
+    can only return literals it and TRANSITION_KINDS both hardcode); only the
+    ``==`` half actually verifies TRANSITION_KINDS is complete."""
     cases = [
         ([_f("a", "pass")], [_f("a", "fail")]),
         ([_f("b", "fail")], [_f("b", "pass")]),
+        ([_f("f", "fail")], [_f("f", "warn")]),
         ([], [_f("c", "fail")]),
         ([_f("d", "fail")], []),
         ([_f("e", "fail", "x")], [_f("e", "fail", "y")]),
     ]
     produced = {t.kind for before, after in cases for t in diff_resources(before, after)}
-    assert produced <= set(TRANSITION_KINDS)
     assert produced == set(TRANSITION_KINDS)
 
 
@@ -140,3 +154,22 @@ def test_a_duplicated_resource_id_takes_the_last_occurrence() -> None:
     before = [_f("r", "pass")]
     after = [_f("r", "pass"), _f("r", "fail")]
     assert _kinds(before, after) == {"r": "regressed"}
+
+
+# ── the vocabulary/severity guard ────────────────────────────────────────────
+
+
+def test_a_vocabulary_severity_mismatch_is_caught_at_import() -> None:
+    """``_PROBLEM_SEVERITY`` is a hardcoded triple; ``REQUIRES_COVER`` is
+    derived from ``VALIDATION_STATUSES``. If a new problem status is added to
+    the vocabulary without updating ``_PROBLEM_SEVERITY``, the module must
+    refuse to import rather than let ``_worse`` silently misclassify every
+    transition into the new status as ``improved``."""
+    original = waivers.REQUIRES_COVER
+    try:
+        waivers.REQUIRES_COVER = original | {"needs_attention"}
+        with pytest.raises(AssertionError):
+            importlib.reload(drift)
+    finally:
+        waivers.REQUIRES_COVER = original
+        importlib.reload(drift)
