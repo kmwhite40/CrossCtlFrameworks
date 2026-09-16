@@ -113,7 +113,7 @@ async def get_ksi(
 @router.post("/ksis/seed")
 async def seed_ksis(
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin", "platform_admin")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, int]:
     result = await catalog.seed_ksis(session)
     await bus.emit(
@@ -477,7 +477,7 @@ async def _maybe_open_finding_poam(
 async def create_review(
     body: AssessorReviewIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin", "platform_admin", "assessor")),
+    principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
     rv = KSIAssessorReview(**body.model_dump())
@@ -513,7 +513,7 @@ async def update_review(
     review_id: int,
     body: AssessorReviewPatch,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin", "platform_admin", "assessor")),
+    principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> dict[str, Any]:
     rv = (
         await session.execute(select(KSIAssessorReview).where(KSIAssessorReview.id == review_id))
@@ -625,7 +625,7 @@ async def list_exceptions(
 async def create_exception(
     body: ExceptionIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin", "platform_admin", "isso")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
     exc = KSIException(
@@ -656,7 +656,7 @@ async def update_exception(
     exception_id: int,
     body: ExceptionPatch,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin", "platform_admin", "isso")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     exc = (
         await session.execute(select(KSIException).where(KSIException.id == exception_id))

@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 @router.get("/reliability")
 async def reliability(
     session: AsyncSession = Depends(get_session),
-    _p: Principal = Depends(require_role("admin", "platform_admin")),
+    _p: Principal = Depends(require_role("admin")),
 ) -> Any:
     checks = await run_checks(session)
     summary = summarize(checks)
