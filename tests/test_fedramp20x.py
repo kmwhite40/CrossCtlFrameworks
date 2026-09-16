@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from datetime import date
+from datetime import UTC, date, datetime
 from types import SimpleNamespace as N
 
 import pytest
@@ -34,11 +34,13 @@ from ccf.models import (
     Control,
     ControlImplementation,
     Event,
+    FedRAMP20xReadinessSnapshot,
     FedRAMPDependency,
     KSIState,
     Organization,
     System,
 )
+from ccf.models_waivers import Waiver
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -146,6 +148,115 @@ def test_readiness_not_started_when_empty() -> None:
     )
     assert r.status == "not_started"
     assert r.readiness_pct == 0
+
+
+def test_active_waivers_is_reported_distinct_from_open_exceptions() -> None:
+    """CRITICAL 1: a KSIException (disclosure, suppresses nothing) and a
+    Waiver (suppresses a consequence, discloses nothing on its own) are
+    opposites and must never collapse into one number."""
+    r = compute_readiness(
+        ksis=[],
+        states=[],
+        dependencies=[],
+        reviews=[],
+        open_exceptions=2,
+        today=date(2026, 7, 2),
+        active_waivers=5,
+    )
+    assert r.open_exceptions == 2
+    assert r.active_waivers == 5
+    # Neither weighted into the score -- both are reported detractors, like
+    # high_risk_findings/expired_validations/manual_review_burden already are.
+    assert "active_waivers" not in readiness._WEIGHTS
+
+
+@pytest.mark.asyncio
+async def test_a_waiver_approved_before_first_failure_is_disclosed_in_readiness() -> None:
+    """CRITICAL 1 regression: control_tests._alert_on_failure is the only
+    caller of _upsert_poam, and it never runs for a check that has not yet
+    failed. An ISSO who approves a waiver before the control's first scan
+    therefore leaves no POA&M behind -- ever, for as long as the waiver
+    covers every future failure. Before this fix nothing else disclosed the
+    acceptance either: the finding could vanish from the authorization
+    package entirely. score_system (and the snapshot it persists) must count
+    it regardless of whether any ControlTestResult exists yet."""
+    sid = await _fresh_system("WaiverDisclosureCso")
+    async with session_scope() as s:
+        sys_row = (await s.execute(select(System).where(System.id == sid))).scalar_one()
+        s.add(
+            Waiver(
+                organization_id=sys_row.organization_id,
+                system_id=sid,
+                control_id="AC-2",
+                rationale="Approved ahead of the control's first scheduled scan.",
+                status="approved",
+                requested_by="isso@example.gov",
+                approved_by="admin@example.gov",
+                approved_at=datetime.now(UTC),
+            )
+        )
+        await s.flush()
+
+        score = await readiness.score_system(s, system_id=sid, persist=True)
+        assert score["active_waivers"] == 1
+        # Distinct quantity: no KSIException exists for this system.
+        assert score["open_exceptions"] == 0
+
+    # And durably, in the artifact an assessor actually reads later -- not
+    # just the ephemeral in-request payload.
+    async with session_scope() as s:
+        snap = (
+            (
+                await s.execute(
+                    select(FedRAMP20xReadinessSnapshot)
+                    .where(FedRAMP20xReadinessSnapshot.system_id == sid)
+                    .order_by(FedRAMP20xReadinessSnapshot.id.desc())
+                )
+            )
+            .scalars()
+            .first()
+        )
+        assert snap is not None
+        assert snap.active_waivers == 1
+
+
+@pytest.mark.asyncio
+async def test_an_expired_or_revoked_waiver_is_not_counted_active() -> None:
+    """Only genuinely active waivers count -- reuses is_active rather than a
+    second, potentially-drifting definition of "in force"."""
+    sid = await _fresh_system("WaiverDisclosureExpiredCso")
+    async with session_scope() as s:
+        sys_row = (await s.execute(select(System).where(System.id == sid))).scalar_one()
+        s.add_all(
+            [
+                Waiver(
+                    organization_id=sys_row.organization_id,
+                    system_id=sid,
+                    control_id="AC-3",
+                    rationale="Expired last year.",
+                    status="approved",
+                    expires_on=date(2020, 1, 1),
+                ),
+                Waiver(
+                    organization_id=sys_row.organization_id,
+                    system_id=sid,
+                    control_id="AC-4",
+                    rationale="Withdrawn.",
+                    status="revoked",
+                ),
+                Waiver(
+                    organization_id=sys_row.organization_id,
+                    system_id=sid,
+                    control_id="AC-5",
+                    rationale="Only asked for, never granted.",
+                    status="requested",
+                ),
+            ]
+        )
+        await s.flush()
+
+        score = await readiness.score_system(s, system_id=sid, persist=False)
+        assert score["active_waivers"] == 0
 
 
 def test_docx_and_bundle_render() -> None:

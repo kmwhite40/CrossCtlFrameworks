@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 from ccf.api.main import create_app
 from ccf.db import session_scope
 from ccf.models import Organization, System
+from ccf.models_grc import ControlTest
 from ccf.models_waivers import Waiver
 from ccf.packs.service import install_pack
 from ccf.posture.providers import m365
@@ -101,6 +102,21 @@ async def test_an_orphaned_waiver_is_reported_through_the_endpoint() -> None:
     pack_id = f"impact-api-{next(_SEQ)}"
     org_id, system_id = await _install_two_versions(pack_id)
     async with session_scope() as session:
+        # A waiver is joined to the ControlTest it accepts (system_id,
+        # check_key) to inherit that test's check_source scoping -- see
+        # IMPORTANT 3 -- so the retiring check itself must exist too.
+        session.add(
+            ControlTest(
+                organization_id=org_id,
+                system_id=system_id,
+                control_id="AC-2",
+                name="Stale accounts",
+                method="connector",
+                source="generated",
+                check_key=RULE["key"],
+                check_source=f"pack:{pack_id}",
+            )
+        )
         session.add(
             Waiver(
                 organization_id=org_id,
@@ -114,6 +130,61 @@ async def test_an_orphaned_waiver_is_reported_through_the_endpoint() -> None:
         resp = await client.get(f"/api/packs/{pack_id}/impact")
         orphaned = resp.json()["impact"]["waivers_orphaned"]
         assert [w["check_key"] for w in orphaned] == [RULE["key"]]
+
+
+@pytest.mark.asyncio
+async def test_an_org_less_pack_reports_real_org_retirement_and_orphans() -> None:
+    """CRITICAL 1: an org-less pack (installed by an unscoped/global principal,
+    or with auth disabled) must not silently under-report what a real
+    tenant's checks and waivers would lose. Before the fix,
+    ``ControlTest.organization_id == None`` and ``Waiver.organization_id ==
+    None`` matched nothing -- the report said "nothing retires, nothing
+    orphaned" while every tenant's check was in fact about to be retired.
+    """
+    pack_id = f"impact-api-global-{next(_SEQ)}"
+    async with session_scope() as session:
+        await install_pack(
+            session, org_id=None, manifest=_manifest(RULE, pack_id=pack_id, version="1.0.0")
+        )
+        await install_pack(
+            session, org_id=None, manifest=_manifest(pack_id=pack_id, version="2.0.0")
+        )
+        org = Organization(name=f"ImpactApiOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"ImpactApiSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        session.add(
+            ControlTest(
+                organization_id=org.id,
+                system_id=sys_.id,
+                control_id="AC-2",
+                name="Stale accounts",
+                method="connector",
+                source="generated",
+                check_key=RULE["key"],
+                check_source=f"pack:{pack_id}",
+                last_status="fail",
+            )
+        )
+        session.add(
+            Waiver(
+                organization_id=org.id,
+                system_id=sys_.id,
+                check_key=RULE["key"],
+                rationale="accepted",
+                status="approved",
+            )
+        )
+        await session.flush()
+
+    async with _client() as client:
+        resp = await client.get(f"/api/packs/{pack_id}/impact")
+        assert resp.status_code == 200, resp.text
+        impact = resp.json()["impact"]
+        assert [c["check_key"] for c in impact["checks_retired"]] == [RULE["key"]]
+        assert [w["check_key"] for w in impact["waivers_orphaned"]] == [RULE["key"]]
 
 
 @pytest.mark.asyncio

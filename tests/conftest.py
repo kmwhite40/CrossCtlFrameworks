@@ -63,6 +63,44 @@ async def fresh_engine() -> AsyncIterator[None]:
     ccf_db._session_factory = None
 
 
+def pack_source_url(path: Path) -> str:
+    """An ``https://`` URL for a pack-source test fixture file.
+
+    ``ccf.packs.sync.validate_pack_source_url`` (PR #17 security review,
+    CRITICAL 1) now requires every ``PackSource.url`` to be ``https://`` --
+    ``file://`` and bare local paths, which every pack-source test used
+    before that fix, are rejected as SSRF/local-file-read vectors. Pair this
+    with the :func:`local_pack_source_fetch` fixture, which maps a URL built
+    this way back to the real file on disk, so tests keep exercising the
+    poll/adopt/divergence flow against a local fixture without a real network
+    endpoint while the stored URL still passes validation exactly as
+    production requires.
+    """
+    return f"https://pack-source.test{path}"
+
+
+@pytest.fixture
+def local_pack_source_fetch(monkeypatch: pytest.MonkeyPatch):
+    """Patch ``ccf.packs.sync.fetch_conditional`` to read the local file a
+    :func:`pack_source_url` URL points at, instead of making a real request.
+
+    Returns the stub so a test can further wrap or replace it (e.g. to
+    simulate a 304, a redirect, or a transport failure).
+    """
+    import ccf.packs.sync as sync_mod
+    from ccf.etl.sources import _read_file
+
+    async def _fetch(
+        url: str, etag: str | None, **_kwargs: object
+    ) -> tuple[int, bytes | None, str | None]:
+        local = Path(url.removeprefix("https://pack-source.test"))
+        data = await _read_file(local)
+        return 200, data, None
+
+    monkeypatch.setattr(sync_mod, "fetch_conditional", _fetch)
+    return _fetch
+
+
 @pytest.fixture(scope="session")
 def mini_workbook(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A 10-row fixture workbook with the assessment sheet and one generic tab."""

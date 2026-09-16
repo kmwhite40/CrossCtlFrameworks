@@ -30,6 +30,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select
@@ -158,19 +159,86 @@ def sha256_bytes(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
+# materialize_revision's parse-check (ccf.catalog.oscal._verify) is hard-wired
+# to exactly these four 800-53 filenames -- the catalog plus its three baseline
+# profiles. Only this source can ever be materialized into an adoptable
+# revision today; the sibling baseline URLs are looked up from DEFAULT_SOURCES
+# (rather than hardcoded here) so they can't drift out of sync with the
+# registered rows.
+_800_53_CATALOG_KEY = "nist_800_53_r5_catalog"
+_800_53_BASELINE_KEYS = (
+    "nist_800_53_r5_low_baseline",
+    "nist_800_53_r5_moderate_baseline",
+    "nist_800_53_r5_high_baseline",
+)
+
+
+def _default_source_url(key: str) -> str:
+    for spec in DEFAULT_SOURCES:
+        if spec["key"] == key:
+            return str(spec["url"])
+    raise KeyError(f"no DEFAULT_SOURCES entry for {key!r}")
+
+
+async def _fetch_800_53_baselines() -> dict[str, bytes]:
+    """Fetch the three baseline profiles that must accompany the 800-53 catalog.
+
+    Keyed by exact filename (matching each URL's own basename, which is the
+    same filename ``ccf.catalog.oscal._BASELINE_FILES`` requires) so the result
+    merges straight into :func:`~ccf.catalog.revisions.materialize_revision`'s
+    ``documents``. Always fetched fresh (no ETag) since these are small,
+    infrequently-changing profiles and correctness here matters more than
+    saving a request.
+    """
+    docs: dict[str, bytes] = {}
+    for key in _800_53_BASELINE_KEYS:
+        url = _default_source_url(key)
+        _, body, _ = await _fetch(url, None)
+        if body is None:  # pragma: no cover — no ETag sent, so never a 304
+            raise RuntimeError(f"unexpected 304 fetching {url}")
+        docs[Path(url).name] = body
+    return docs
+
+
+class FetchTooLarge(RuntimeError):
+    """Raised when a response body exceeds a caller-supplied ``max_bytes`` cap.
+
+    Only :mod:`ccf.packs.sync` passes ``max_bytes`` -- a tenant-supplied,
+    unattended, per-cycle poll target that must not be allowed to buffer an
+    unbounded body in the scheduler process (PR #17 review, CRITICAL 3). The
+    catalog poller's NIST OSCAL sources are trusted and legitimately larger,
+    and continue to fetch uncapped exactly as before.
+    """
+
+
 async def fetch_conditional(
-    url: str, etag: str | None
+    url: str,
+    etag: str | None,
+    *,
+    follow_redirects: bool = True,
+    max_bytes: int | None = None,
 ) -> tuple[int, bytes | None, str | None]:
     """Return ``(http_status, body_or_None, etag)``.
 
     ``body`` is ``None`` on a 304 (not modified). Supports ``file://`` and bare
-    local paths so the curated workbook can be polled from disk.
+    local paths so the curated workbook can be polled from disk -- callers that
+    accept a tenant-supplied URL (:mod:`ccf.packs.sync`) MUST reject those
+    shapes, and any non-``https`` scheme, before ever calling this function;
+    this function itself stays permissive because it is shared with the
+    catalog poller, where a local path is a legitimate, trusted source.
 
     Public because :mod:`ccf.packs.sync` polls a tenant's desired-state
     repository the same way. A second conditional-fetch implementation would
     drift from this one -- and the ETag-plus-sha belt and braces here (a server
     that ignores ``If-None-Match`` must not produce a false "changed") is
     exactly the subtlety that would be lost in a reimplementation.
+
+    ``follow_redirects=False`` (pack sources) treats any 3xx as a fetch
+    failure rather than following it -- a URL validated safe at registration
+    must not be able to redirect its way to an unvalidated one at fetch time.
+    ``max_bytes`` (pack sources only) streams the response and raises
+    :class:`FetchTooLarge` the moment the cap is crossed, instead of buffering
+    an unbounded body via ``.content``.
     """
     if url.startswith("file://") or url.startswith("/"):
         path = Path(url.removeprefix("file://"))
@@ -180,12 +248,29 @@ async def fetch_conditional(
     headers = {"User-Agent": _UA, "Accept": "application/json, */*"}
     if etag:
         headers["If-None-Match"] = etag
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        resp = await client.get(url, headers=headers)
-    if resp.status_code == 304:
-        return 304, None, etag
-    resp.raise_for_status()
-    return resp.status_code, resp.content, resp.headers.get("ETag")
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=follow_redirects) as client:
+        async with client.stream("GET", url, headers=headers) as resp:
+            if resp.status_code == 304:
+                return 304, None, etag
+            if not follow_redirects and 300 <= resp.status_code < 400:
+                location = resp.headers.get("location", "<none>")
+                raise ValueError(
+                    f"refusing redirect ({resp.status_code} to {location!r}); "
+                    "this source must not follow redirects"
+                )
+            resp.raise_for_status()
+            if max_bytes is None:
+                body = await resp.aread()
+            else:
+                chunks = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    chunks.extend(chunk)
+                    if len(chunks) > max_bytes:
+                        raise FetchTooLarge(
+                            f"response body exceeded {max_bytes} byte cap fetching {url!r}"
+                        )
+                body = bytes(chunks)
+            return resp.status_code, body, resp.headers.get("ETag")
 
 
 #: Private aliases kept so existing call sites -- and any test reaching for the
@@ -300,8 +385,13 @@ async def resolve_commit_sha(url: str) -> str | None:
     if not (repo and ref and path):
         return None
     try:
+        # `path` and `ref` are attacker-influenced (they come from a
+        # tenant-registered pack source URL) -- quote them so neither can
+        # inject extra query parameters or path segments into the GitHub API
+        # call.
         payload = await _get_json(
-            f"{_GH_API}/repos/{repo}/commits?path={path}&sha={ref}&per_page=1"
+            f"{_GH_API}/repos/{repo}/commits"
+            f"?path={quote(path, safe='')}&sha={quote(ref, safe='')}&per_page=1"
         )
         if isinstance(payload, list) and payload:
             sha = payload[0].get("sha")
@@ -349,6 +439,7 @@ async def check_source(
 
         sha = _sha256_bytes(body)
         check.sha256 = sha
+        previous_etag = source.etag
         if etag:
             source.etag = etag
 
@@ -393,26 +484,62 @@ async def check_source(
             check.detail = detail
             return _finish(session, source, check, started)
 
+        capture_rejected = False
         if revision_data_root is not None and source.kind == "oscal_catalog":
-            # Capture the changed content as a retained revision. Never adopts --
-            # a human does that after reading the impact report.
-            # Lazy import: catalog.revisions imports this module for its parser.
-            from ..catalog.revisions import materialize_revision  # noqa: PLC0415
+            if source.key == _800_53_CATALOG_KEY:
+                # Capture the changed content as a retained revision. Never
+                # adopts -- a human does that after reading the impact report.
+                # Lazy import: catalog.revisions imports this module for its parser.
+                from ..catalog.revisions import materialize_revision  # noqa: PLC0415
 
-            captured = await materialize_revision(
-                session,
-                source=source,
-                documents={Path(source.url).name: body},
-                upstream_commit_sha=await resolve_commit_sha(source.url),
-                data_root=revision_data_root,
-                retrieved_by="poller",
-            )
-            detail["captured_revision"] = captured.revision
-            detail["captured_status"] = captured.status
+                try:
+                    sibling_docs = await _fetch_800_53_baselines()
+                except Exception as exc:
+                    # Without the baseline profiles, materialize_revision's
+                    # parse-check would reject this anyway -- treat it the same
+                    # way (don't advance last_sha256 below) so a transient
+                    # network hiccup doesn't permanently lose this drift.
+                    detail["capture_status"] = "failed"
+                    detail["capture_error"] = str(exc)[:500]
+                    capture_rejected = True
+                else:
+                    documents = {Path(source.url).name: body, **sibling_docs}
+                    captured = await materialize_revision(
+                        session,
+                        source=source,
+                        documents=documents,
+                        upstream_commit_sha=await resolve_commit_sha(source.url),
+                        data_root=revision_data_root,
+                        retrieved_by="poller",
+                    )
+                    detail["captured_revision"] = captured.revision
+                    detail["captured_status"] = captured.status
+                    if captured.status == "rejected":
+                        detail["capture_rejected_reason"] = captured.notes
+                        capture_rejected = True
+            else:
+                # materialize_revision only knows the 800-53 catalog + baseline
+                # filenames (ccf.catalog.oscal._verify). CSF 2.0 and 800-171 are
+                # also "oscal_catalog" sources but would be rejected for an
+                # entirely different reason (the wrong files present), which
+                # would destroy their drift for nothing -- so skip capture for
+                # them rather than manufacture a rejected row.
+                detail["capture_skipped"] = (
+                    "revision capture is only implemented for the NIST 800-53 "
+                    f"catalog; {source.key} is not materializable"
+                )
 
         check.status = "changed"
         source.last_status = "changed"
-        source.last_sha256 = sha
+        if capture_rejected:
+            # Losing the only copy of drifted content is worse than re-fetching
+            # it next poll: leave last_sha256 AND etag exactly as they were, so
+            # the next poll's fetch is a genuine 200 (not a 304 against the new
+            # etag, which would silently report "unchanged" forever) and this
+            # same drift is seen -- and capture retried -- again.
+            source.etag = previous_etag
+        else:
+            source.last_sha256 = sha
         check.detail = detail
         log.info(
             "catalog.drift",

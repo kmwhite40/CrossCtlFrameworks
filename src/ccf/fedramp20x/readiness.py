@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..governance.waivers import is_active
 from ..models import (
     KSI,
     FedRAMP20xProfile,
@@ -24,6 +25,7 @@ from ..models import (
     KSIException,
     KSIState,
 )
+from ..models_waivers import Waiver
 
 # Sub-score weights for the overall readiness percentage. Pass-rate dominates;
 # the rest are supporting signals. Weights sum to 1.0.
@@ -50,6 +52,18 @@ class Readiness:
     assessor_completion: int | None
     dependency_readiness: int | None
     open_exceptions: int
+    #: Waivers currently in force (``governance.waivers.is_active``) anywhere
+    #: on this system -- a distinct quantity from ``open_exceptions``, not a
+    #: variant of it. A ``KSIException`` is a disclosure that suppresses
+    #: nothing; a waiver suppresses a failing control test's consequence
+    #: (alert, remediation task, POA&M) while leaving the recorded finding
+    #: untouched. Reported, never blended into ``readiness_pct`` -- like
+    #: ``open_exceptions`` and ``high_risk_findings``, it is a detractor an
+    #: assessor reads, not a score input. See
+    #: docs/superpowers/specs/2026-09-15-waivers-design.md sections 5-7: an
+    #: unbounded, indefinitely-lived waiver is permitted only because it is
+    #: "counted and reported" -- this field is that count.
+    active_waivers: int
     high_risk_findings: int
     expired_validations: int
     manual_review_burden: int
@@ -88,6 +102,7 @@ def compute_readiness(
     today: date,
     has_profile: bool = False,
     submitted_status: str | None = None,
+    active_waivers: int = 0,
 ) -> Readiness:
     """Pure readiness computation from already-loaded aggregates."""
     total = len(ksis)
@@ -139,6 +154,7 @@ def compute_readiness(
         assessor_completion=_pct(accepted, total),
         dependency_readiness=_pct(dep_ok, dep_total),
         open_exceptions=open_exceptions,
+        active_waivers=active_waivers,
         high_risk_findings=failed + dep_high_risk,
         expired_validations=expired,
         manual_review_burden=manual,
@@ -200,6 +216,17 @@ async def score_system(
             select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
         )
     ).scalar_one_or_none()
+    today = datetime.now(UTC).date()
+    # Active waivers, not open exceptions: counted separately (see the
+    # ``active_waivers`` field docstring on ``Readiness``) using the one
+    # definition of "in force" (``is_active``) rather than a status filter
+    # re-implemented here.
+    waiver_rows = (
+        (await session.execute(select(Waiver).where(Waiver.system_id == system_id)))
+        .scalars()
+        .all()
+    )
+    active_waiver_count = sum(1 for w in waiver_rows if is_active(w, today=today))
 
     r = compute_readiness(
         ksis=ksis,
@@ -207,9 +234,10 @@ async def score_system(
         dependencies=deps,
         reviews=reviews,
         open_exceptions=open_exc,
-        today=datetime.now(UTC).date(),
+        today=today,
         has_profile=profile is not None,
         submitted_status=profile.readiness_status if profile else None,
+        active_waivers=active_waiver_count,
     )
     payload = r.as_dict()
     if persist:
@@ -225,6 +253,7 @@ async def score_system(
                 assessor_completion=r.assessor_completion,
                 dependency_readiness=r.dependency_readiness,
                 open_exceptions=r.open_exceptions,
+                active_waivers=r.active_waivers,
                 high_risk_findings=r.high_risk_findings,
                 expired_validations=r.expired_validations,
                 manual_review_burden=r.manual_review_burden,

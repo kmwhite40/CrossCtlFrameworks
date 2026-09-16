@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..catalog.canonical import canonicalize
 from ..logging import get_logger
-from ..models import Control, ControlImplementation, SystemComponent
+from ..models import Control, ControlImplementation, System, SystemComponent
 from ..models_capability import Capability, CapabilityComponent, CapabilityControl
 from .rollup import roll_up
 
@@ -44,14 +44,26 @@ async def _capabilities_for_system(
     Binding runs capability -> component -> system, which is also how a
     policy- or process-backed capability attaches: ``SystemComponent.type``
     already includes ``policy`` and ``process``.
+
+    Joined to ``System`` and filtered on ``Capability.organization_id ==
+    System.organization_id`` -- an edge's FK check does not consult RLS, so
+    without this predicate a capability from one tenant bound (by id, e.g.
+    ``set_components``) to another tenant's component would fold into that
+    other tenant's derived control status. This is the only defense for the
+    CLI/scheduler paths that call this through ``session_scope()``, which runs
+    unscoped (RLS bypass) by design.
     """
     rows = (
         await session.execute(
             select(Capability, CapabilityControl.control_id)
             .join(CapabilityComponent, CapabilityComponent.capability_id == Capability.id)
             .join(SystemComponent, SystemComponent.id == CapabilityComponent.component_id)
+            .join(System, System.id == SystemComponent.system_id)
             .join(CapabilityControl, CapabilityControl.capability_id == Capability.id)
-            .where(SystemComponent.system_id == system_id)
+            .where(
+                SystemComponent.system_id == system_id,
+                Capability.organization_id == System.organization_id,
+            )
         )
     ).all()
     return [(r[0], r[1]) for r in rows]
@@ -85,8 +97,6 @@ async def derive_for_system(session: AsyncSession, *, system_id: int) -> int:
     idempotent re-run reports zero.
     """
     pairs = await _capabilities_for_system(session, system_id=system_id)
-    if not pairs:
-        return 0
 
     # canonical control id -> the capabilities claiming it
     grouped: dict[str, list[Capability]] = {}
@@ -99,6 +109,34 @@ async def derive_for_system(session: AsyncSession, *, system_id: int) -> int:
     control_ids = await _control_rows_by_canonical(session, set(grouped))
     now = datetime.now(UTC)
     touched = 0
+
+    # Controls this system's capabilities currently cover with a real rollup
+    # (not None, i.e. not just not_applicable contributors). Anything else
+    # that still carries a derived_status is stale: the capability was
+    # deleted, its component/control edge removed, or its status flipped to
+    # not_applicable -- and the loop below only ever visits *current*
+    # coverage, so a row it no longer reaches would otherwise keep naming a
+    # capability that may no longer back it. Clear those first.
+    covered_ctl_ids = {
+        control_ids[canonical_id]
+        for canonical_id, caps in grouped.items()
+        if control_ids.get(canonical_id) is not None
+        and roll_up([c.status for c in caps]) is not None
+    }
+    stale = (
+        await session.execute(
+            select(ControlImplementation).where(
+                ControlImplementation.system_id == system_id,
+                ControlImplementation.derived_status.is_not(None),
+                ControlImplementation.control_id.not_in(covered_ctl_ids),
+            )
+        )
+    ).scalars().all()
+    for row in stale:
+        row.derived_status = None
+        row.derived_at = None
+        row.derived_from = {}
+        touched += 1
 
     for canonical_id, caps in grouped.items():
         ctl_row_id = control_ids.get(canonical_id)

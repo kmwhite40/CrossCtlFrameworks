@@ -22,5 +22,5 @@ def observe(what: str, fn: Callable[[], None]) -> None:
     """Run a metric update, swallowing and logging any failure."""
     try:
         fn()
-    except Exception as e:  # pragma: no cover - defensive by design
+    except Exception as e:
         log.warning("posture.metrics_failed", metric=what, error=str(e)[:200])
