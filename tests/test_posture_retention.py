@@ -11,9 +11,10 @@ from sqlalchemy import func, select, update
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.governance.control_tests import record_result
-from ccf.models import Organization, System
+from ccf.models import AuditLog, Organization, System
 from ccf.models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
 from ccf.models_waivers import Waiver
+from ccf.posture import retention as retention_module
 from ccf.posture.retention import prune_resource_detail
 from ccf.posture.types import ResourceFinding
 
@@ -217,7 +218,15 @@ async def test_the_aggregate_counts_survive_the_prune() -> None:
 
 @pytest.mark.asyncio
 async def test_dry_run_deletes_nothing_and_reports_the_same_count() -> None:
-    """An operator must be able to see the blast radius before committing."""
+    """An operator must be able to see the blast radius before committing.
+
+    ``deleted`` is a deployment-wide figure in a shared database, so this does
+    not assert it equals this test's own two aged rows -- another test's
+    leftover data could inflate it. Instead it scopes to this test's own rows
+    for the "nothing/two rows" claims, and lets the deployment-wide dry vs wet
+    comparison prove the report is trustworthy regardless of what else is in
+    the database.
+    """
     async with session_scope() as session:
         test = await _test_on_new_system(session)
         old = await record_result(
@@ -229,13 +238,15 @@ async def test_dry_run_deletes_nothing_and_reports_the_same_count() -> None:
             session, test, status="fail", detail="2", evaluated=1, failing=1,
             resources=[_f("a@acme.gov")],
         )
+        before = len(await _resource_rows(session, test.id))
+        assert before == 3
         dry = await prune_resource_detail(session, retain_days=30, dry_run=True)
-        assert dry["deleted"] == 2
         assert dry["dry_run"] is True
-        assert len(await _resource_rows(session, test.id)) == 3, "nothing was deleted"
+        assert len(await _resource_rows(session, test.id)) == before, "nothing was deleted"
         wet = await prune_resource_detail(session, retain_days=30)
-        assert wet["deleted"] == dry["deleted"]
-        assert len(await _resource_rows(session, test.id)) == 1
+        assert wet["deleted"] == dry["deleted"], "dry run must predict the real delete exactly"
+        after = len(await _resource_rows(session, test.id))
+        assert before - after == 2, "this test's own two aged rows were pruned"
 
 
 @pytest.mark.asyncio
@@ -272,9 +283,17 @@ async def test_the_retain_days_default_comes_from_settings() -> None:
             session, test, status="fail", detail="2", evaluated=1, failing=1,
             resources=[_f("a@acme.gov")],
         )
-        out = await prune_resource_detail(session)
-        assert out["retain_days"] == get_settings().posture_resource_retention_days
-        assert len(await _resource_rows(session, test.id)) == 2
+        try:
+            out = await prune_resource_detail(session)
+            assert out["retain_days"] == get_settings().posture_resource_retention_days
+            assert len(await _resource_rows(session, test.id)) == 2
+        finally:
+            # The aged row sits inside the default window but would be
+            # prunable under the fixed 30-day window most other tests use --
+            # clean it up on every exit path (assertion failure included) so
+            # a later test, or a reordered/-k run, never inherits it. 1 day
+            # guarantees it is caught regardless of the configured default.
+            await prune_resource_detail(session, retain_days=1)
 
 
 @pytest.mark.asyncio
@@ -319,3 +338,137 @@ async def test_the_prune_is_deployment_wide_not_per_tenant() -> None:
             remaining = {r.result_id for r in await _resource_rows(session, test.id)}
             assert aged not in remaining, "both organizations' aged detail is pruned"
             assert len(remaining) == 1, "each keeps only its latest result's detail"
+
+
+# ── audit trail ───────────────────────────────────────────────────────────────
+
+
+async def _audit_count(session) -> int:
+    return int(
+        (await session.execute(select(func.count()).select_from(AuditLog))).scalar_one()
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_real_prune_writes_an_audit_record() -> None:
+    """Deleting assessment detail across every tenant with no persistent,
+    queryable record of who/when/how-much is not defensible in an
+    authorization package -- so a real prune must write one via
+    ``record_event``, never a hand-built ``AuditLog`` row."""
+    async with session_scope() as session:
+        test = await _test_on_new_system(session)
+        old = await record_result(
+            session, test, status="fail", detail="1", evaluated=1, failing=1,
+            resources=[_f("a@acme.gov")],
+        )
+        await _age(session, old.id, 500)
+        await record_result(
+            session, test, status="fail", detail="2", evaluated=1, failing=1,
+            resources=[_f("a@acme.gov")],
+        )
+        before = await _audit_count(session)
+        out = await prune_resource_detail(session, retain_days=30, actor="test-operator")
+        after = await _audit_count(session)
+        assert after == before + 1, "exactly one audit record for the whole prune"
+
+        row = (
+            await session.execute(
+                select(AuditLog).where(AuditLog.entity_type == "posture_resource_detail")
+                .order_by(AuditLog.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+        assert row.actor == "test-operator"
+        assert row.action == "delete"
+        assert row.diff["retain_days"] == 30
+        assert row.diff["deleted"] == out["deleted"]
+        assert row.diff["cutoff"] == out["cutoff"]
+        # A hand-built row would break the tamper-evident chain by carrying no
+        # hash at all; record_event must always populate both.
+        assert row.row_hash is not None
+        assert row.prev_hash is not None
+
+
+@pytest.mark.asyncio
+async def test_a_dry_run_writes_no_audit_record() -> None:
+    """A dry run deletes nothing, so it has nothing to account for."""
+    async with session_scope() as session:
+        test = await _test_on_new_system(session)
+        old = await record_result(
+            session, test, status="fail", detail="1", evaluated=1, failing=1,
+            resources=[_f("a@acme.gov")],
+        )
+        await _age(session, old.id, 500)
+        await record_result(
+            session, test, status="fail", detail="2", evaluated=1, failing=1,
+            resources=[_f("a@acme.gov")],
+        )
+        try:
+            before = await _audit_count(session)
+            await prune_resource_detail(session, retain_days=30, dry_run=True)
+            after = await _audit_count(session)
+            assert after == before
+        finally:
+            # Clean up on every exit path so the aged row doesn't leak into
+            # the deployment-wide assertions in
+            # test_the_prune_is_deployment_wide_not_per_tenant and friends.
+            await prune_resource_detail(session, retain_days=30)
+
+
+# ── batching ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_delete_is_batched_and_still_gets_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The module's own premise is ~3.65M rows/year/check -- one unbatched
+    DELETE is a multi-million-row, single transaction on a real deployment.
+    Force a tiny batch size and confirm a doomed set spanning several batches
+    is still deleted in full, with the reported count matching."""
+    monkeypatch.setattr(retention_module, "_BATCH_SIZE", 3)
+    async with session_scope() as session:
+        test = await _test_on_new_system(session)
+        old = await record_result(
+            session, test, status="fail", detail="1", evaluated=8, failing=8,
+            resources=[_f(f"batch{i}@acme.gov") for i in range(8)],
+        )
+        await _age(session, old.id, 500)
+        await record_result(
+            session, test, status="fail", detail="2", evaluated=1, failing=1,
+            resources=[_f("a@acme.gov")],
+        )
+        assert len(await _resource_rows(session, test.id)) == 9
+        out = await prune_resource_detail(session, retain_days=30)
+        assert out["deleted"] == 8, "all eight aged rows, across >2 batches of 3, were counted"
+        rows = await _resource_rows(session, test.id)
+        assert len(rows) == 1, "only the latest result's row remains"
+
+
+# ── the evaluated == 0 exemption ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_zero_finding_result_does_not_displace_the_prior_latest() -> None:
+    """A connector outcome with zero findings (a permissions error, an empty
+    page) records a result with no resource rows. That must not become
+    "latest" for retention's exemption either -- otherwise the last
+    *informative* result's detail would become prunable at any age, even
+    though it is the only result that can currently say which resources were
+    failing. The informative result stays protected regardless of how many
+    empty scans have run since."""
+    async with session_scope() as session:
+        test = await _test_on_new_system(session)
+        old = await record_result(
+            session, test, status="fail", detail="informative", evaluated=1, failing=1,
+            resources=[_f("a@acme.gov")],
+        )
+        await _age(session, old.id, 500)
+        await record_result(
+            session, test, status="fail", detail="empty scan", evaluated=0, failing=0,
+            resources=[],
+        )
+        await prune_resource_detail(session, retain_days=30)
+        rows = await _resource_rows(session, test.id)
+        assert len(rows) == 1, "the informative result stayed 'latest' and was protected"
+        assert rows[0].result_id == old.id
