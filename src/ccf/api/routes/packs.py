@@ -223,7 +223,7 @@ async def pack_impact(
 
     diff = diff_posture_rules(older.manifest, newer.manifest)
     impact = await build_config_change_impact(
-        session, org_id=pack.organization_id, diff=diff
+        session, org_id=pack.organization_id, pack_key=pack.pack_key, diff=diff
     )
     return {
         "pack_key": pack.pack_key,

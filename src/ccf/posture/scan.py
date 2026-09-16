@@ -252,8 +252,9 @@ async def scan_for_system(
 
         # Counted here, at write time, and never in the drift endpoint: a
         # counter incremented by a read double-counts every dashboard refresh
-        # and reports activity that did not happen. One extra query per check
-        # per scan is the correct trade.
+        # and reports activity that did not happen. Three extra queries per
+        # check per scan (latest_drift's own lookup plus a findings read for
+        # each side of the comparison) is the correct trade.
         from ..api.metrics import (  # noqa: PLC0415 - avoids an import cycle
             POSTURE_CHECK_RESULTS,
             POSTURE_DRIFT_TRANSITIONS,
@@ -272,8 +273,14 @@ async def scan_for_system(
 
     from ..api.metrics import POSTURE_FAILING_RESOURCES  # noqa: PLC0415
 
+    # Labelled by connector as well as system: `scan_for_system` runs once per
+    # connector, so a system with both an msgraph and an AWS connector would
+    # otherwise have each scan overwrite the other's count on the same series
+    # -- the gauge oscillating between two connectors' numbers even though its
+    # help string says "per system". The connector registry is a handful of
+    # entries (see ``connectors._REGISTRY``), so this stays bounded.
     def _set_failing_gauge() -> None:
-        POSTURE_FAILING_RESOURCES.labels(str(system_id)).set(failing_total)
+        POSTURE_FAILING_RESOURCES.labels(str(system_id), connector_key).set(failing_total)
 
     observe("failing_resources", _set_failing_gauge)
 
