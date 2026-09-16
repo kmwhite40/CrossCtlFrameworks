@@ -82,9 +82,25 @@ async def failing_resources(
 ) -> list[dict[str, Any]]:
     """Every resource currently failing a control test, newest first.
 
-    The org-wide question resource granularity exists to answer. Indexed on
-    ``verdict`` so this is a lookup rather than a table scan.
+    The org-wide question resource granularity exists to answer. "Currently"
+    means restricted to each test's *latest* ``ControlTestResult`` -- the
+    child rows are append-only, so a resource that failed a stale run and has
+    since passed a newer one must not still show up here. That restriction is
+    done via a correlated subquery (one per ``ControlTest``, picking its most
+    recent result by ``run_at``/``id``) rather than a window function, which
+    keeps this a plain ``SELECT`` the existing indexes can serve directly:
+    ``ix_control_test_results_test_run`` (control_test_id, run_at) drives the
+    subquery, and ``ix_ctrr_verdict``/``ix_ctrr_result`` still serve the outer
+    filter/join on ``control_test_resource_results``.
     """
+    latest_result_id = (
+        select(ControlTestResult.id)
+        .where(ControlTestResult.control_test_id == ControlTest.id)
+        .order_by(ControlTestResult.run_at.desc(), ControlTestResult.id.desc())
+        .limit(1)
+        .correlate(ControlTest)
+        .scalar_subquery()
+    )
     stmt = (
         select(
             ControlTestResourceResult,
@@ -97,7 +113,10 @@ async def failing_resources(
             ControlTestResult.id == ControlTestResourceResult.result_id,
         )
         .join(ControlTest, ControlTest.id == ControlTestResult.control_test_id)
-        .where(ControlTestResourceResult.verdict == "fail")
+        .where(
+            ControlTestResourceResult.verdict == "fail",
+            ControlTestResourceResult.result_id == latest_result_id,
+        )
         .order_by(ControlTestResourceResult.created_at.desc())
         .limit(min(max(limit, 1), 1000))
     )
