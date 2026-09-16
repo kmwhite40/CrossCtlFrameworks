@@ -23,11 +23,27 @@ from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
 from ...connectors import connector_keys
 from ...connectors import credentials as connector_credentials
+from ...enforcement.registry import write_credential_keys
 from ...models_grc import ConnectorConfig
 from ..auth_deps import require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/connector-settings", tags=["connector-settings"])
+
+
+def _known_connectors() -> tuple[str, ...]:
+    """Read connectors plus every registered provider's write credential type.
+
+    Enforcement (``ccf.enforcement``) writes through a credential with its own
+    ``connector_type`` (e.g. ``msgraph_write``), deliberately distinct from the
+    read connector's, so a deployment that never created one cannot write. That
+    separation only works if the write credential can actually be *created* --
+    ``connector_keys()`` alone lists read connectors only, which made
+    ``msgraph_write`` unstorable, unlistable, and unrevokable through this API:
+    enforcement dead in any real deployment, and apply-time's revoke re-check
+    with nothing to check against.
+    """
+    return connector_keys() + write_credential_keys()
 
 
 def _org_id(principal: Principal) -> int:
@@ -38,10 +54,9 @@ def _org_id(principal: Principal) -> int:
 
 
 def _require_known_connector(connector_type: str) -> None:
-    if connector_type not in connector_keys():
-        raise HTTPException(
-            422, f"connector_type must be one of {', '.join(connector_keys())}"
-        )
+    known = _known_connectors()
+    if connector_type not in known:
+        raise HTTPException(422, f"connector_type must be one of {', '.join(known)}")
 
 
 class ConnectorCredentialIn(BaseModel):
@@ -60,7 +75,7 @@ async def list_credentials(
         select(ConnectorConfig)
         .where(
             ConnectorConfig.organization_id == org_id,
-            ConnectorConfig.connector_type.in_(connector_keys()),
+            ConnectorConfig.connector_type.in_(_known_connectors()),
         )
         .order_by(ConnectorConfig.connector_type)
     )

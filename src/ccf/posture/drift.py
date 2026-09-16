@@ -211,10 +211,6 @@ async def findings_for_result(
     ]
 
 
-#: Private alias kept so nothing internal breaks on the promotion.
-_findings_for_result = findings_for_result
-
-
 async def latest_drift(session: AsyncSession, *, test_id: int) -> list[ResourceTransition]:
     """What changed between this check's two most recent results.
 
