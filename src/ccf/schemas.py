@@ -138,7 +138,10 @@ class ImplementationUpdate(BaseModel):
 
 class EvidenceOut(ORMModel):
     id: int
-    implementation_id: int
+    # Nullable since 0067: evidence may hang off a capability instead of a
+    # control implementation (CHECK requires at least one of the two).
+    implementation_id: int | None = None
+    capability_id: int | None = None
     kind: str
     title: str
     uri: str | None = None

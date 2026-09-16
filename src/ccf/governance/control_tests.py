@@ -470,18 +470,28 @@ async def record_result(
                 error=str(exc)[:200],
             )
 
-    # The recovery condition is deliberately unchanged by the widened
-    # vocabulary: only `pass` from fail/warn clears a failure. Neither
-    # not_applicable nor manual_review_required asserts the weakness cleared.
-    #
     # A fully waived failure takes NEITHER branch. It must not alert, and it
     # must not be mistaken for a recovery -- nothing was fixed, the finding was
     # accepted, and treating it as recovery would resolve the remediation task
     # a human still owns.
+    #
+    # Only `pass` clears a failure: reaching `not_applicable` or
+    # `manual_review_required` never itself asserts the weakness cleared, and
+    # the recovery branch only runs for `status == "pass"`.
+    #
+    # The gate is `previous_status != "pass"` rather than
+    # `previous_status in ("fail", "warn")`: a fail -> not_applicable -> pass
+    # sequence must still resolve the remediation opened by the fail, even
+    # though the immediately preceding status is `not_applicable`. Whether
+    # anything actually happens is keyed off there being an open Task/POA&M to
+    # resolve -- checked inside _resolve_on_recovery itself -- not off this
+    # outer comparison, which exists only to skip the no-op pass -> pass case.
+    # previous_status must still be captured before the reassignment above, or
+    # it would always equal status ("pass") and recovery would never fire.
     if status in ("fail", "warn"):
         if coverage is None or not coverage.suppress:
             await _alert_on_failure(session, test, status, detail or "")
-    elif status == "pass" and previous_status in ("fail", "warn"):
+    elif status == "pass" and previous_status != "pass":
         await _resolve_on_recovery(session, test, result_id=res.id)
     await bus.emit(
         session,
@@ -507,7 +517,17 @@ async def run_due(
     """
     today = today or datetime.now(UTC).date()
     stmt = select(ControlTest).where(
-        ControlTest.active.is_(True), ControlTest.method == "connector"
+        ControlTest.active.is_(True),
+        ControlTest.method == "connector",
+        # Posture-scan-generated tests are driven by an explicit scan
+        # (scan_for_system -> record_result), not the scheduler. Without this
+        # exclusion, a human setting a frequency on a generated test (a
+        # supported edit -- see test_human_edits_survive_a_rescan) makes the
+        # scheduler auto-run it through _evaluate, which has nothing
+        # connector-freshness-shaped to say about a posture check and would
+        # bury the real posture verdict under a "No <connector> connector
+        # registered to collect evidence." warn alert.
+        ControlTest.source != "generated",
     )
     if org_id is not None:
         stmt = stmt.where(ControlTest.organization_id == org_id)

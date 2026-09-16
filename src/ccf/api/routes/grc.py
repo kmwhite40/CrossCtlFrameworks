@@ -788,6 +788,12 @@ def _test_out(t: ControlTest) -> dict[str, Any]:
         "active": t.active,
         "last_status": t.last_status,
         "last_tested_at": t.last_tested_at,
+        # Provenance (CRITICAL 3, PR #13 review): 'source' is generated vs.
+        # human-authored; 'check_source' is platform vs. which installed pack,
+        # for a generated test. Both null for a manually authored test.
+        "source": t.source,
+        "check_key": t.check_key,
+        "check_source": t.check_source,
     }
 
 
