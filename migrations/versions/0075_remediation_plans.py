@@ -17,8 +17,8 @@ Tenancy: ``remediation_plans`` carries ``organization_id`` and gets the direct
 ``EXPECTED_TENANT_ISOLATION_TABLES`` (count 133 -> 134) and is NOT added to
 ``GLOBAL_TABLES``.
 
-Revision ID: 0072_remediation_plans
-Revises: 0071_pack_sources
+Revision ID: 0075_remediation_plans
+Revises: 0074_pack_source_backoff
 Create Date: 2026-09-15
 """
 
@@ -28,8 +28,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0072_remediation_plans"
-down_revision = "0071_pack_sources"
+revision = "0075_remediation_plans"
+down_revision = "0074_pack_source_backoff"
 branch_labels = None
 depends_on = None
 

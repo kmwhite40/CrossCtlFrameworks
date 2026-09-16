@@ -16,6 +16,17 @@ from ..governance.waivers import REQUIRES_COVER
 from ..posture.types import ResourceFinding
 
 
+class ProviderUnavailableError(RuntimeError):
+    """A provider could not evaluate remediation candidates at all.
+
+    Distinct from an empty plan: an empty plan means the tenant was checked
+    and found clean. This means the check itself could not be made -- a token
+    or network failure -- and :func:`build_steps` turns it into its own
+    refusal, worded differently from "no resources to remediate", so an
+    operator does not read "clean" when the truth is "unreachable".
+    """
+
+
 @dataclass(frozen=True)
 class RemediationStep:
     """One resource's change, with the information needed to undo it.
@@ -57,10 +68,21 @@ class RemediationStep:
 
 @dataclass(frozen=True)
 class StepOutcome:
-    """What happened to one resource. ``failed`` is a result, never an exception."""
+    """What happened to one resource. ``failed`` is a result, never an exception.
+
+    ``uncertain`` is distinct from ``failed``: ``failed`` means the provider
+    knows the write did not happen (Graph responded with an error status, which
+    for a single atomic PATCH means nothing changed). ``uncertain`` means the
+    provider does not know -- a timeout or connection error can arrive *after*
+    the far end already applied the change. Reversal treats the two
+    differently: only ``applied`` and ``uncertain`` steps are replayed, because
+    replaying a step that never actually landed is safe (it restores the
+    captured prior state, which is a no-op if nothing changed) where silently
+    leaving a possibly-applied change unreversed is not.
+    """
 
     resource_id: str
-    status: str  # applied | failed | skipped
+    status: str  # applied | failed | skipped | uncertain
     detail: str
     at: str | None = None
 
@@ -74,7 +96,7 @@ class StepOutcome:
 
 
 #: Statuses a step outcome may carry.
-OUTCOME_STATUSES = ("applied", "failed", "skipped")
+OUTCOME_STATUSES = ("applied", "failed", "skipped", "uncertain")
 
 
 @runtime_checkable
@@ -104,7 +126,11 @@ class RemediationProvider(Protocol):
     def __init__(self, credential: dict[str, Any] | None = None) -> None: ...
 
     async def is_write_configured(self) -> bool: ...
-    async def plan(self, findings: Sequence[ResourceFinding]) -> list[RemediationStep]: ...
+    async def plan(self, findings: Sequence[ResourceFinding]) -> list[RemediationStep]:
+        """May raise :class:`ProviderUnavailableError` if candidates could not be
+        evaluated at all (e.g. a token or network failure) -- distinct from
+        returning ``[]``, which means the tenant was checked and is clean."""
+        ...
     async def apply(self, step: RemediationStep) -> StepOutcome: ...
     async def reverse(self, step: RemediationStep) -> StepOutcome: ...
 
@@ -151,6 +177,21 @@ def provider_for(check_key: str) -> type[RemediationProvider] | None:
     return None
 
 
+def write_credential_keys() -> tuple[str, ...]:
+    """Distinct ``write_credential_type`` values every registered provider needs.
+
+    Used to extend the connector-settings allow-list (``connector_keys()``
+    covers read connectors only) so a write credential can actually be
+    created, listed, and revoked -- without which enforcement is dead in any
+    real deployment and apply-time re-checking has no revoke path to check
+    against.
+    """
+    seen: dict[str, None] = {}
+    for provider in PROVIDER_REGISTRY:
+        seen.setdefault(provider.write_credential_type, None)
+    return tuple(seen)
+
+
 @dataclass
 class PlanRefusal:
     """Why no plan was produced. Carried so the reason reaches the operator."""
@@ -171,26 +212,42 @@ async def build_steps(
     Refusals are decided **here**, at plan time, so an operator never holds an
     approvable plan that will be rejected when applied.
 
-    Three filters, in order:
+    Filters, in order:
 
     1. Only findings needing cover are remediable. A passing resource has
        nothing to remediate, and planning one would mean writing to something
        that was already correct.
     2. ``only`` narrows to named resources -- the intended path for "just this
        one account".
-    3. A step whose ``current_state`` is empty is dropped, because it could not
-       be undone.
+    3. The blast radius, checked against the **candidate count** -- before
+       ``provider.plan()`` runs. ``plan()`` is what actually reaches the
+       tenant (one Graph call per candidate for the m365 provider); refusing
+       first means an over-broad request is refused without making a single
+       call, not after issuing thousands of them and refusing on the result.
+    4. A step whose ``current_state`` is empty is dropped, because it could not
+       be undone. The blast radius is re-checked against what ``plan()``
+       actually returned too -- defensive, since nothing requires a provider to
+       return at most one step per candidate, and the tenant has already been
+       touched by this point regardless.
 
-    Then the blast radius. An empty result is a **refusal**, not an empty plan:
-    an approvable plan that would do nothing invites an approval that means
-    nothing.
+    An empty result is a **refusal**, not an empty plan: an approvable plan
+    that would do nothing invites an approval that means nothing.
     """
     remediable = [f for f in findings if f.verdict in REQUIRES_COVER]
     if only is not None:
         wanted = set(only)
         remediable = [f for f in remediable if f.resource_id in wanted]
 
-    steps = [s for s in await provider.plan(remediable) if s.current_state]
+    if len(remediable) > max_resources:
+        return [], (
+            f"{len(remediable)} resources exceeds the enforcement limit of {max_resources}"
+        )
+
+    try:
+        planned = await provider.plan(remediable)
+    except ProviderUnavailableError as e:
+        return [], f"could not evaluate remediation candidates: {e}"
+    steps = [s for s in planned if s.current_state]
     if not steps:
         return [], "no resources to remediate"
     if len(steps) > max_resources:

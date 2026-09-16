@@ -33,6 +33,7 @@ from ..models_grc import ConnectorConfig
 # reflects whichever field happens to sort last and isn't a secret at all).
 _SECRET_FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     "msgraph": ("client_secret",),
+    "msgraph_write": ("client_secret",),  # ccf.enforcement's write credential
     "aws_govcloud": ("secret_access_key", "profile"),
 }
 

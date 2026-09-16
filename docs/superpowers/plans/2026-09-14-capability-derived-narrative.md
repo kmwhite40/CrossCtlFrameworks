@@ -1028,6 +1028,72 @@ does reject it (`Argument "system_id" ... has incompatible type "int | None";
 expected "int"`), and mypy is part of the gate, so the guard cannot be
 removed silently. No test was contrived to cover it.
 
+### Deviations from review/05-ssp-narrative's fix pass
+
+An independent review of this sub-project (PR #12) found one Critical and
+three Important defects; all four are fixed on `review/05-ssp-narrative`,
+deviating from this plan as follows.
+
+**The status filter is now an allow-list, not a block-list (CRITICAL).**
+`Capability.status != "not_applicable"` (line 1016 above) let a capability's
+default status, `not_implemented`, render its statement as a present-tense
+implementation claim -- an engineer authoring a capability and leaving its
+status untouched (the default) got that text rendered into every control it
+maps to, `[DRAFT]` marker notwithstanding (a draft marker means "unreviewed,"
+not "this claim is false," and the same text renders identically once a
+human clears it). The filter is now `Capability.status.in_(("implemented",
+"inherited", "partial"))`. `partial` is included deliberately: a partial
+implementation is real and belongs in the narrative, but
+`ssp/statements.py::capability_clause` now renders it under its own "Partial
+implementation:" lead, in a clause kept separate from the "Implementation:"
+clause, so the SSP cannot read a partial rollout as complete. `not_implemented`
+and `planned` are excluded for the same reason `not_applicable` always was:
+they do not describe this system's current implementation.
+
+**Ordering is now by capability key, not statement text (IMPORTANT).**
+`_usable_statements` used to `sorted()` the statement strings themselves,
+so editing capability A's wording could reorder the clause on every other
+control A shares with B -- a one-word edit producing a multi-control
+narrative reordering in a future redline. `capability_statements_by_control`
+now returns `(capability_key, statement, status)` triples, and
+`compose()`/`capability_clause()` take `Sequence[tuple[str, str]]` pairs and
+sort by key. Determinism is unaffected; stability across edits is the point.
+
+**Punctuation beyond a bare trailing period (IMPORTANT).** A statement
+ending `?`, `!`, or an ellipsis rendered a doubled mark (`...blocked?.`).
+`_strip_trailing_sentence_end` now strips `.?!…`. Separately, a statement
+that is itself more than one sentence (internal sentence-ending punctuation)
+used to get folded into the `"; "`-joined list, splicing a sentence break
+into what reads as one list item; when any statement in a clause still
+carries internal sentence-ending punctuation after its trailing mark is
+stripped, the whole clause renders as separate sentences instead.
+
+**The AI path now appends the capability clause instead of discarding it
+(IMPORTANT).** This plan's own constraint said "Do not touch the AI path" on
+the premise that `ai.draft_narrative` was out of scope for a narrative-
+composition change. The review found the consequence: `generate_statements`'s
+`ai_ready` branch replaced the whole composed statement (capability clause
+included) with `DRAFT_PREFIX + ai_text`, so a project with AI drafting
+enabled silently stopped honoring "edit one capability, re-render every
+control it maps to" -- for every `customer`/`shared`/`unknown` control, with
+nothing documenting the gap. Chosen fix: append, not document-and-exclude.
+Excluding capability narrative from AI-drafted statements would leave the
+sub-project's headline promise false for an entire deployment mode, and
+"append" is mechanically identical to what the deterministic path already
+does (`capability_clause()` is appended, never spliced, specifically because
+capability statements are whole sentences of unknown grammatical shape --
+the same reasoning applies to AI-drafted prose). `DRAFT_PREFIX` handling is
+unchanged: still unconditional on AI text, still gated by `mark_draft` on
+the deterministic path only.
+
+A previously-vacuous test (`test_ordering_is_stable_regardless_of_input_order`
+in `tests/test_statements_capability.py`) compared two calls given the same
+three strings -- Python set-iteration order depends on element hashes, not
+insertion order, so it passed whether or not `sorted()` was present. It has
+been replaced with a test that varies the actual call-argument order of
+`(key, statement)` pairs, which is meaningful now that ordering is an
+explicit `sorted()` over those pairs rather than an artifact of a `set`.
+
 **Three guards escaped on the first pass and the tests were strengthened
 until they were caught** -- the escapes were the useful part of the exercise:
 

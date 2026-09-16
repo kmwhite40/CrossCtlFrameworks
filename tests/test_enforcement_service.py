@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import itertools
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
 
+from ccf.config import get_settings
+from ccf.connectors import credentials as connector_credentials
 from ccf.db import session_scope
 from ccf.enforcement.service import (
     EnforcementError,
@@ -26,6 +29,20 @@ _SEQ = itertools.count()
 CHECK = "m365.identity.stale_accounts"
 
 
+@pytest.fixture(autouse=True)
+def _master_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Needed only by ``test_bind_provider_resolves_the_write_credential_not_the_read_one``,
+    which binds a real credential through ``connectors.credentials`` -- but set
+    for the whole module (like ``test_connectors.py`` does) rather than one
+    test, so it is trivially visible that no other test in this file depends
+    on credential storage being configured.
+    """
+    monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "unit-test-master-key-32-chars-xx")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 class _Provider:
     """Records every call, so "did not write" is observed rather than assumed."""
 
@@ -34,9 +51,16 @@ class _Provider:
     required_permissions = ("Fake.ReadWrite.All",)
     handled_checks = (CHECK,)
 
-    def __init__(self, *, write_ok: bool = True, fail: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        write_ok: bool = True,
+        fail: set[str] | None = None,
+        uncertain: set[str] | None = None,
+    ) -> None:
         self.write_ok = write_ok
         self.fail = fail or set()
+        self.uncertain = uncertain or set()
         self.applied: list[str] = []
         self.reversed: list[str] = []
 
@@ -62,6 +86,8 @@ class _Provider:
     async def apply(self, step: RemediationStep) -> StepOutcome:
         if step.resource_id in self.fail:
             return StepOutcome(step.resource_id, "failed", "403 forbidden")
+        if step.resource_id in self.uncertain:
+            return StepOutcome(step.resource_id, "uncertain", "timeout after the write")
         self.applied.append(step.resource_id)
         return StepOutcome(step.resource_id, "applied", "disabled")
 
@@ -107,6 +133,55 @@ async def _plan(session, sys_, provider, **kw) -> RemediationPlan:
         provider=provider,
         **kw,
     )
+
+
+# ── credential separation, exercised for real ───────────────────────────────
+#
+# Every test above and below this section passes ``provider=`` into
+# ``create_plan``/``apply_plan``/``reverse_plan``, which means ``_bind_provider``
+# (service.py, the function that actually resolves an organization's write
+# credential) never runs in any of them. Rewriting its body from
+# ``resolve_credential(session, org_id, cls.write_credential_type)`` to
+# ``resolve_credential(session, org_id, "msgraph")`` -- the exact silent
+# fallback to the *read* credential this PR exists to prevent -- passes the
+# whole rest of this file. This test is the one that does not inject a
+# provider, so it is the one that actually calls ``_bind_provider`` and would
+# catch that regression.
+
+
+@pytest.mark.asyncio
+async def test_bind_provider_resolves_the_write_credential_not_the_read_one() -> None:
+    """No ``provider=`` is injected here -- ``create_plan`` runs the real
+    ``_bind_provider``, which resolves the real, registered ``M365AccountProvider``
+    for ``CHECK`` and asks for its ``write_credential_type`` ("msgraph_write").
+
+    The organization has a *read* ``msgraph`` credential bound -- deliberately,
+    not the ``msgraph_write`` one -- so a correct ``_bind_provider`` must still
+    refuse: the write credential does not exist for this org, and nothing
+    resolves it by falling back to the read connector's.
+
+    If ``_bind_provider`` were rewritten to resolve ``"msgraph"`` instead of
+    ``cls.write_credential_type``, this read credential would satisfy
+    ``is_write_configured()`` (same bundle shape: tenant_id/client_id/
+    client_secret) and the plan would come back ``pending_approval`` instead of
+    ``refused`` -- failing the assertion below.
+    """
+    async with session_scope() as session:
+        sys_, _ = await _scanned(session)
+        await connector_credentials.set_credential(
+            session,
+            sys_.organization_id,
+            "msgraph",
+            {"tenant_id": "t-1", "client_id": "c-1", "client_secret": "s-1"},
+        )
+        await session.flush()
+        plan = await create_plan(
+            session, system_id=sys_.id, check_key=CHECK, actor="isso@acme.gov"
+        )  # no provider= -- _bind_provider runs for real
+        assert plan.status == "refused"
+        assert "no write credential configured for 'msgraph_write'" in (
+            plan.refusal_reason or ""
+        )
 
 
 # ── plan-time refusals ───────────────────────────────────────────────────────
@@ -285,6 +360,29 @@ async def test_a_blast_radius_tightened_after_approval_refuses_at_apply() -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_stale_approval_refuses_at_apply() -> None:
+    """An approval does not stay valid indefinitely: the resource set it was
+    reviewed against was observed at plan time, and apply never re-plans (that
+    would silently approve a different change than the one someone reviewed).
+    Bounding the age instead forces a fresh plan + review once it is old
+    enough that the observation it rests on cannot be trusted.
+    """
+    async with session_scope() as session:
+        sys_, _ = await _scanned(session)
+        provider = _Provider()
+        plan = await _plan(session, sys_, provider)
+        await approve_plan(session, plan, approver="ao@acme.gov")
+        plan.approved_at = plan.approved_at - timedelta(
+            hours=get_settings().enforcement_approval_max_age_hours + 1
+        )
+        await session.flush()
+        with pytest.raises(EnforcementError, match="approval is more than"):
+            await apply_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        assert provider.applied == []
+        assert plan.status == "approved", "the plan is not consumed by a refusal"
+
+
+@pytest.mark.asyncio
 async def test_one_failing_step_does_not_abandon_the_others() -> None:
     async with session_scope() as session:
         sys_, _ = await _scanned(session)
@@ -363,6 +461,26 @@ async def test_reverse_skips_a_step_that_never_applied() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reverse_also_restores_an_uncertain_step() -> None:
+    """A write whose result is unknown (e.g. a timeout that arrives after
+    Graph already applied the change -- ``m365.py``'s exact failure mode) must
+    not be silently left unreversed. Replaying it is safe regardless of
+    whether the write actually landed: reversal restores the *captured prior
+    state*, which is a no-op if nothing changed.
+    """
+    async with session_scope() as session:
+        sys_, _ = await _scanned(session, failing=2)
+        provider = _Provider(uncertain={"user-0@acme.gov"})
+        plan = await _plan(session, sys_, provider)
+        await approve_plan(session, plan, approver="ao@acme.gov")
+        await apply_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        by_resource = {o["resource_id"]: o["status"] for o in plan.outcomes}
+        assert by_resource["user-0@acme.gov"] == "uncertain"
+        await reverse_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        assert "user-0@acme.gov" in provider.reversed
+
+
+@pytest.mark.asyncio
 async def test_reversing_an_unapplied_plan_is_refused() -> None:
     async with session_scope() as session:
         sys_, _ = await _scanned(session)
@@ -370,6 +488,43 @@ async def test_reversing_an_unapplied_plan_is_refused() -> None:
         plan = await _plan(session, sys_, provider)
         with pytest.raises(EnforcementError, match="not applied"):
             await reverse_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        assert provider.reversed == []
+
+
+@pytest.mark.asyncio
+async def test_a_credential_revoked_before_reverse_refuses() -> None:
+    """CRITICAL 1: ``reverse_plan`` is a second write path to the tenant and
+    must get the exact refusals ``apply_plan`` gets, not weaker ones. Before
+    this fix, ``reverse_plan`` checked neither ``is_write_configured()`` nor
+    the blast radius -- an operator revoking ``msgraph_write`` after a bad
+    apply would not stop a reverse; the only thing standing in the way was
+    whichever provider happened to check for a missing credential itself.
+    """
+    async with session_scope() as session:
+        sys_, _ = await _scanned(session)
+        provider = _Provider()
+        plan = await _plan(session, sys_, provider)
+        await approve_plan(session, plan, approver="ao@acme.gov")
+        await apply_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        provider.write_ok = False  # revoked after the apply
+        with pytest.raises(EnforcementError, match="write credential"):
+            await reverse_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        assert provider.reversed == [], "nothing was written by the refused reverse"
+        assert plan.status == "applied", "the plan is not consumed by a refusal"
+
+
+@pytest.mark.asyncio
+async def test_a_blast_radius_tightened_after_apply_refuses_at_reverse() -> None:
+    async with session_scope() as session:
+        sys_, _ = await _scanned(session, failing=3)
+        provider = _Provider()
+        plan = await _plan(session, sys_, provider)
+        await approve_plan(session, plan, approver="ao@acme.gov")
+        await apply_plan(session, plan, actor="ao@acme.gov", provider=provider)
+        with pytest.raises(EnforcementError, match="exceeds the enforcement limit"):
+            await reverse_plan(
+                session, plan, actor="ao@acme.gov", provider=provider, max_resources=1
+            )
         assert provider.reversed == []
 
 

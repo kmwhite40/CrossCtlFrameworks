@@ -20,13 +20,14 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...capability.derive import derive_for_system
 from ...capability.service import capabilities_for_control, framework_reach
 from ...catalog.canonical import canonicalize
+from ...models import Risk, System, SystemComponent
 from ...models_capability import (
     Capability,
     CapabilityComponent,
@@ -240,6 +241,50 @@ async def delete_capability(
     await session.commit()
 
 
+async def _components_in_org(
+    session: AsyncSession, component_ids: list[int], org_id: int | None
+) -> None:
+    """Reject any id that isn't a ``system_component`` this capability's own
+    organization owns.
+
+    The edge insert's FK check only proves the id exists *somewhere* -- it
+    does not consult RLS -- so without this, tenant A could bind its
+    capability to tenant B's component. ``org_id`` is the capability's own
+    (already principal-checked by ``_get_or_404``) organization_id; ``None``
+    means an unscoped/global capability, which -- like every other unscoped
+    read in this API -- skips the tenant check rather than reject everything.
+    """
+    if not component_ids or org_id is None:
+        return
+    unique = set(component_ids)
+    found = (
+        await session.execute(
+            select(func.count(SystemComponent.id)).where(
+                SystemComponent.id.in_(unique), SystemComponent.organization_id == org_id
+            )
+        )
+    ).scalar_one()
+    if found != len(unique):
+        raise HTTPException(status_code=404, detail="component not found")
+
+
+async def _risks_in_org(session: AsyncSession, risk_ids: list[int], org_id: int | None) -> None:
+    """Same check as ``_components_in_org``, for ``risks`` -- scoped via its
+    owning system (``Risk`` carries no ``organization_id`` of its own)."""
+    if not risk_ids or org_id is None:
+        return
+    unique = set(risk_ids)
+    found = (
+        await session.execute(
+            select(func.count(Risk.id))
+            .join(System, System.id == Risk.system_id)
+            .where(Risk.id.in_(unique), System.organization_id == org_id)
+        )
+    ).scalar_one()
+    if found != len(unique):
+        raise HTTPException(status_code=404, detail="risk not found")
+
+
 async def _replace_edges(
     session: AsyncSession,
     *,
@@ -304,6 +349,7 @@ async def set_components(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     cap = await _get_or_404(session, capability_id, principal)
+    await _components_in_org(session, body.component_ids, cap.organization_id)
     stored = await _replace_edges(
         session,
         model=CapabilityComponent,
@@ -323,6 +369,7 @@ async def set_risks(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     cap = await _get_or_404(session, capability_id, principal)
+    await _risks_in_org(session, body.risk_ids, cap.organization_id)
     stored = await _replace_edges(
         session,
         model=CapabilityRisk,

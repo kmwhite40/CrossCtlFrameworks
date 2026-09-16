@@ -46,12 +46,11 @@ def _f(rid: str, verdict: str, observed: str = "o") -> ResourceFinding:
 
 def _counter(metric, **labels) -> float:
     """The current value of one counter/gauge sample, or 0.0 if not yet set."""
+    exact_name = metric._name if metric._type == "gauge" else f"{metric._name}_total"
     for sample in metric.collect()[0].samples:
-        if sample.name.endswith(("_total", "")) and all(
+        if sample.name == exact_name and all(
             sample.labels.get(k) == v for k, v in labels.items()
         ):
-            if sample.name.endswith("_created"):
-                continue
             return float(sample.value)
     return 0.0
 
@@ -177,12 +176,46 @@ async def test_the_failing_gauge_reflects_the_latest_scan(
         await scan_mod.scan_for_system(
             session, system_id=sys_.id, connector_key="demo_provider"
         )
-        assert _counter(POSTURE_FAILING_RESOURCES, system_id=str(sys_.id)) == 2.0
+        assert (
+            _counter(POSTURE_FAILING_RESOURCES, system_id=str(sys_.id), connector="demo_provider")
+            == 2.0
+        )
         _patch(monkeypatch, [_outcome("pass", "pass", "pass")])
         await scan_mod.scan_for_system(
             session, system_id=sys_.id, connector_key="demo_provider"
         )
-        assert _counter(POSTURE_FAILING_RESOURCES, system_id=str(sys_.id)) == 0.0
+        assert (
+            _counter(POSTURE_FAILING_RESOURCES, system_id=str(sys_.id), connector="demo_provider")
+            == 0.0
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_failing_gauge_is_scoped_per_connector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A system with two connectors must not have one connector's scan
+    overwrite the other's count on the same series (IMPORTANT 4)."""
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        _patch(monkeypatch, [_outcome("fail", "fail")])
+        await scan_mod.scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+        _patch(monkeypatch, [_outcome("fail")])
+        await scan_mod.scan_for_system(
+            session, system_id=sys_.id, connector_key="other_provider"
+        )
+        assert (
+            _counter(POSTURE_FAILING_RESOURCES, system_id=str(sys_.id), connector="demo_provider")
+            == 2.0
+        )
+        assert (
+            _counter(
+                POSTURE_FAILING_RESOURCES, system_id=str(sys_.id), connector="other_provider"
+            )
+            == 1.0
+        )
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,13 @@ from ...packs import catalog
 from ...packs import service as pack_service
 from ...packs.diff import diff_posture_rules
 from ...packs.impact import build_config_change_impact
-from ...packs.sync import adopt_pending, check_pack_source, divergence
+from ...packs.sync import (
+    PackSourceRejectedError,
+    adopt_pending,
+    check_pack_source,
+    divergence,
+    validate_pack_source_url,
+)
 from ..audit import record_event
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
@@ -73,7 +79,14 @@ async def validate(
 async def install(
     body: InstallIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    # A pack's rules become executable posture checks -- their verdicts feed
+    # directly into control tests and, per CRITICAL 2/3 above, into what an
+    # assessor sees for a control. That is administrative write access, the
+    # same tier as connector credential config (api.routes.connector_settings)
+    # and catalog admin actions (api.routes.catalog): "admin" is the role this
+    # repo already uses for those, not the broader "admin"+"assessor" pairing
+    # used for read/assess-oriented writes elsewhere (e.g. boundary, audit).
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     if body.manifest is not None:
         manifest = body.manifest
@@ -218,7 +231,7 @@ async def pack_impact(
 
     diff = diff_posture_rules(older.manifest, newer.manifest)
     impact = await build_config_change_impact(
-        session, org_id=pack.organization_id, diff=diff
+        session, org_id=pack.organization_id, pack_key=pack.pack_key, diff=diff
     )
     return {
         "pack_key": pack.pack_key,
@@ -245,6 +258,28 @@ ADOPTER_ROLES = ("admin", "issm", "isso")
 source_router = APIRouter(prefix="/api/pack-sources", tags=["packs"])
 
 
+def _public_error(status: str | None, error: str | None) -> str | None:
+    """``last_error``, scrubbed of anything usable as a file-existence or
+    internal-port oracle.
+
+    A transport failure's exception text differs by what sits on the other
+    end of a poll -- ``FileNotFoundError`` vs. ``PermissionError`` vs.
+    connection-refused vs. timeout -- which is exactly the signal CRITICAL 1
+    (PR #17 security review) warned turns ``/sync`` and this endpoint into an
+    oracle for probing the filesystem and internal network. Only ``error``
+    (a transport failure) is scrubbed; ``invalid`` (a bad URL shape, an
+    oversized body, or a manifest that fails validation) describes a content
+    or config problem in the source itself, not what the fetch touched, so it
+    stays verbatim -- an operator needs it to fix their repository. The
+    unscrubbed detail is still in ``source.last_error`` and the server log.
+    """
+    if error is None:
+        return None
+    if status == "error":
+        return "fetch failed; see server logs for detail"
+    return error
+
+
 def _source_out(s: PackSource) -> dict[str, Any]:
     return {
         "id": s.id,
@@ -254,9 +289,10 @@ def _source_out(s: PackSource) -> dict[str, Any]:
         "enabled": s.enabled,
         "auto_install": s.auto_install,
         "last_status": s.last_status,
-        "last_error": s.last_error,
+        "last_error": _public_error(s.last_status, s.last_error),
         "last_checked_at": s.last_checked_at,
         "last_commit_sha": s.last_commit_sha,
+        "consecutive_failures": s.consecutive_failures,
         "pending": bool(s.pending_manifest),
         "pending_version": str(s.pending_manifest.get("version", "")) or None,
         "pending_commit_sha": s.pending_commit_sha,
@@ -290,15 +326,33 @@ async def register_source(
     """Register a repository that declares this pack's desired state.
 
     Polling it is automatic from here; installing what it declares is not,
-    unless ``auto_install`` is set.
+    unless ``auto_install`` is set -- and setting it requires an adopter role
+    (:data:`ADOPTER_ROLES`). Without that gate, any authenticated principal
+    could create a source the scheduler then installs from with no approver,
+    routing around the same check ``/adopt`` enforces (PR #17 security
+    review, IMPORTANT 5) and breaking this feature's own stated property:
+    detection is automatic, adoption is not.
     """
     if not body.url.strip():
         raise HTTPException(400, "url is required")
+    url = body.url.strip()
+    try:
+        validate_pack_source_url(url)
+    except PackSourceRejectedError as e:
+        raise HTTPException(400, str(e)) from e
+    if principal.org_id is None:
+        # organization_id=NULL is never polled -- the scheduler and the CLI
+        # both iterate real Organization.id (IMPORTANT 6) -- so a source
+        # registered by a global principal would sit at "unknown" forever,
+        # polled by nothing. Reject rather than silently create dead state.
+        raise HTTPException(400, "pack sources require an organization-scoped principal")
+    if body.auto_install and not (principal.is_global or principal.role in ADOPTER_ROLES):
+        raise HTTPException(403, f"auto_install requires role: {', '.join(ADOPTER_ROLES)}")
     src = PackSource(
         # From the principal, never the body.
         organization_id=principal.org_id,
         pack_key=pack_key,
-        url=body.url.strip(),
+        url=url,
         ref=body.ref,
         auto_install=body.auto_install,
     )
@@ -345,6 +399,10 @@ async def sync_source(
     src = await _require_source(session, source_id, principal)
     out = await check_pack_source(session, src, actor=principal.email)
     await session.commit()
+    if "reason" in out:
+        # Same oracle concern as _source_out's last_error -- a transport
+        # failure's exception text must not leak through the response.
+        out = {**out, "reason": _public_error(out.get("status"), out.get("reason"))}
     return out
 
 

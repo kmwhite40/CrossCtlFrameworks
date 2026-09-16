@@ -18,7 +18,7 @@ therefore added to ``EXPECTED_TENANT_ISOLATION_TABLES`` in
 through its parent chain, as its model docstring explains.
 
 Revision ID: 0070_waivers
-Revises: 0069_pack_version_manifest
+Revises: 0070_control_test_check_source
 Create Date: 2026-09-15
 """
 
@@ -27,8 +27,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0070_waivers"
-down_revision = "0069_pack_version_manifest"
+revision = "0071_waivers"
+down_revision = "0070_control_test_check_source"
 branch_labels = None
 depends_on = None
 

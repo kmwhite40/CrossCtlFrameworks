@@ -27,7 +27,7 @@ from ...config import get_settings
 from ...logging import get_logger
 from ...posture.providers import m365 as m365_checks
 from ...posture.types import ResourceFinding
-from ..types import RemediationStep, StepOutcome, register
+from ..types import ProviderUnavailableError, RemediationStep, StepOutcome, register
 
 log = get_logger(__name__)
 
@@ -83,6 +83,13 @@ class M365AccountProvider:
         actually departing from. An account whose current state cannot be read
         gets no step -- ``build_steps`` then drops it, because a change that
         cannot be undone is not one to offer.
+
+        A token or network failure raises :class:`ProviderUnavailableError` rather
+        than returning ``[]``. An empty return here reads as "the tenant is
+        clean" (``build_steps`` reports "no resources to remediate"); an
+        operator must not read that when the truth is "Graph was unreachable
+        and nothing was checked". ``build_steps`` turns the exception into its
+        own, distinctly worded refusal.
         """
         if not findings or not await self.is_write_configured():
             return []
@@ -92,7 +99,7 @@ class M365AccountProvider:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 token = await self._token(client)
                 if not token:
-                    return []
+                    raise ProviderUnavailableError("Graph did not return an access token")
                 headers = {"Authorization": f"Bearer {token}"}
                 for finding in findings:
                     current = await self._read_state(
@@ -113,9 +120,11 @@ class M365AccountProvider:
                             target_state={self.FIELD: False},
                         )
                     )
-        except Exception as e:  # planning must never raise into the caller
+        except ProviderUnavailableError:
+            raise
+        except Exception as e:
             log.warning("enforcement.m365.plan_failed", error=str(e)[:200])
-            return []
+            raise ProviderUnavailableError(str(e)[:300]) from e
         return steps
 
     async def _read_state(
@@ -159,33 +168,56 @@ class M365AccountProvider:
         A 403 here almost always means the app registration lacks
         ``User.ReadWrite.All``, so the permission is named in the detail: an
         operator reading a failed step should not have to infer it.
+
+        The token fetch and the PATCH are handled in **separate** try/excepts,
+        deliberately: a token-fetch failure means the PATCH was never sent, so
+        it is unambiguously ``failed``. Only a failure while the PATCH itself
+        is in flight is ``uncertain`` -- the request may have reached Graph and
+        been applied before the failure arrived (a timeout, a connection
+        reset). Collapsing the two into one try/except would report a token
+        failure as ``uncertain`` too, and ``reverse_plan`` replays ``uncertain``
+        steps -- an unnecessary (if harmless) reversal PATCH for a write that
+        provably never happened.
         """
         if not await self.is_write_configured():
             return StepOutcome(
                 step.resource_id, "skipped", "no write credential configured"
             )
         s = get_settings()
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
                 token = await self._token(client)
-                if not token:
-                    return StepOutcome(
-                        step.resource_id, "failed", "could not obtain a Graph token"
-                    )
+            except Exception as e:
+                return StepOutcome(
+                    step.resource_id, "failed", f"could not obtain a Graph token: {str(e)[:250]}"
+                )
+            if not token:
+                return StepOutcome(
+                    step.resource_id, "failed", "could not obtain a Graph token"
+                )
+            try:
                 resp = await client.patch(
                     f"{s.graph_base_url}/v1.0/users/{step.resource_id}",
                     headers={"Authorization": f"Bearer {token}"},
                     json=body,
                 )
                 resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            needed = ", ".join(self.required_permissions)
-            return StepOutcome(
-                step.resource_id,
-                "failed",
-                f"{status} from Graph; requires {needed}",
-            )
-        except Exception as e:
-            return StepOutcome(step.resource_id, "failed", str(e)[:300])
+            except httpx.HTTPStatusError as e:
+                # Graph responded with an error status. A single PATCH is
+                # atomic -- an error response means the field did not change --
+                # so this is a genuine, known failure, not a maybe.
+                status = e.response.status_code
+                needed = ", ".join(self.required_permissions)
+                return StepOutcome(
+                    step.resource_id,
+                    "failed",
+                    f"{status} from Graph; requires {needed}",
+                )
+            except Exception as e:
+                # A timeout, a connection reset, a malformed response: the
+                # request's fate is unknown, so ``reverse_plan`` replays it
+                # rather than silently leaving a possibly-applied change
+                # unreversed. Safe either way -- reversal restores the
+                # captured prior state, a no-op if nothing actually changed.
+                return StepOutcome(step.resource_id, "uncertain", str(e)[:300])
         return StepOutcome(step.resource_id, "applied", f"{self.FIELD} {verb}")

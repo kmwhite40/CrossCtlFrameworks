@@ -17,8 +17,8 @@ Tenancy: ``pack_sources`` carries ``organization_id`` and gets the direct
 ``EXPECTED_TENANT_ISOLATION_TABLES`` in ``tests/test_rls_coverage.py``
 (count 132 -> 133) and is NOT added to ``GLOBAL_TABLES``.
 
-Revision ID: 0071_pack_sources
-Revises: 0070_waivers
+Revision ID: 0073_pack_sources
+Revises: 0072_waiver_disclosure
 Create Date: 2026-09-15
 """
 
@@ -28,8 +28,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "0071_pack_sources"
-down_revision = "0070_waivers"
+revision = "0073_pack_sources"
+down_revision = "0072_waiver_disclosure"
 branch_labels = None
 depends_on = None
 
