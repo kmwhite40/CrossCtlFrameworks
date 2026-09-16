@@ -28,7 +28,14 @@ from ccf.models import POAM, Organization, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
-TODAY = date(2026, 7, 21)
+# The real today, deliberately, not a fixed date. Every fixture date below is
+# relative to this, and most tests inject it back as ``today=TODAY`` -- but
+# ``overview.dashboard_overview`` takes no ``today`` parameter and compares
+# against the real calendar, so a pinned constant made the "on track" POA&M
+# drift past its due date and the overdue count rot from 3 to 4. A fixed date
+# here is a test that passes on the day it is written and fails later for no
+# reason anyone changed.
+TODAY = date.today()
 
 
 @pytest.fixture(scope="module", autouse=True)
