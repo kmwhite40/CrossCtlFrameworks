@@ -425,36 +425,73 @@ async def record_result(
     if resources:
         await session.flush()
 
-    # Waivers are consulted only here -- after every observation is persisted,
-    # so no bug in waiver logic can cost a recorded finding. A waiver
-    # suppresses the *consequence* and never the evidence: the status stays
-    # `fail`, the resource rows stay, last_status stays, and effective_verdict
-    # still reports the failure. See
+    # Waivers are consulted only here -- after every observation is persisted.
+    # A waiver suppresses the *consequence* and never the evidence: the status
+    # stays `fail`, the resource rows stay, last_status stays, and
+    # effective_verdict still reports the failure. See
     # docs/superpowers/specs/2026-09-15-waivers-design.md section 2.
+    #
+    # The whole block runs in its own SAVEPOINT and is wrapped in try/except:
+    # a bug anywhere in it (a bad query, a shape ``cover()`` doesn't expect, a
+    # flush-time constraint violation) must never cost the result recorded
+    # above. ``session.flush()`` is not a commit -- this function never
+    # commits, the caller owns the transaction -- so an *unguarded* exception
+    # here would propagate out of record_result and the caller would roll
+    # back everything, including the already-flushed resource rows. A bare
+    # try/except around the flush alone would not be enough either:
+    # AsyncSession.rollback() is not savepoint-scoped (see
+    # _resolve_on_recovery above), so a flush-time DB error would leave the
+    # *outer* transaction aborted and take the recorded result down anyway on
+    # the caller's eventual commit. The SAVEPOINT is what makes "no bug in
+    # waiver logic can cost a recorded finding" actually true rather than
+    # merely true for bugs that happen not to touch the database.
+    #
+    # On failure, coverage stays None and the alert fires below as if no
+    # waiver existed -- failing closed is the safe direction: a spurious
+    # alert is a nuisance, a silently suppressed one is a hidden risk.
     coverage = None
     if status in ("fail", "warn"):
-        candidates = await waivers_for_test(session, test)
-        if candidates:
-            coverage = cover(resources, candidates, today=datetime.now(UTC).date())
-            res.waived = coverage.waived
-            for row, f in zip(resource_rows, resources, strict=True):
-                waiver_id = coverage.by_resource.get(f.resource_id)
-                if waiver_id is not None:
-                    row.waiver_id = waiver_id
-            await session.flush()
+        try:
+            async with session.begin_nested():
+                candidates = await waivers_for_test(session, test)
+                if candidates:
+                    coverage = cover(resources, candidates, today=datetime.now(UTC).date())
+                    res.waived = coverage.waived
+                    for row, f in zip(resource_rows, resources, strict=True):
+                        waiver_id = coverage.by_resource.get(f.resource_id)
+                        if waiver_id is not None:
+                            row.waiver_id = waiver_id
+                    await session.flush()
+        except Exception as exc:
+            coverage = None
+            log.warning(
+                "control_tests.waiver_lookup_failed",
+                control_test_id=test.id,
+                error=str(exc)[:200],
+            )
 
-    # The recovery condition is deliberately unchanged by the widened
-    # vocabulary: only `pass` from fail/warn clears a failure. Neither
-    # not_applicable nor manual_review_required asserts the weakness cleared.
-    #
     # A fully waived failure takes NEITHER branch. It must not alert, and it
     # must not be mistaken for a recovery -- nothing was fixed, the finding was
     # accepted, and treating it as recovery would resolve the remediation task
     # a human still owns.
+    #
+    # Only `pass` clears a failure: reaching `not_applicable` or
+    # `manual_review_required` never itself asserts the weakness cleared, and
+    # the recovery branch only runs for `status == "pass"`.
+    #
+    # The gate is `previous_status != "pass"` rather than
+    # `previous_status in ("fail", "warn")`: a fail -> not_applicable -> pass
+    # sequence must still resolve the remediation opened by the fail, even
+    # though the immediately preceding status is `not_applicable`. Whether
+    # anything actually happens is keyed off there being an open Task/POA&M to
+    # resolve -- checked inside _resolve_on_recovery itself -- not off this
+    # outer comparison, which exists only to skip the no-op pass -> pass case.
+    # previous_status must still be captured before the reassignment above, or
+    # it would always equal status ("pass") and recovery would never fire.
     if status in ("fail", "warn"):
         if coverage is None or not coverage.suppress:
             await _alert_on_failure(session, test, status, detail or "")
-    elif status == "pass" and previous_status in ("fail", "warn"):
+    elif status == "pass" and previous_status != "pass":
         await _resolve_on_recovery(session, test, result_id=res.id)
     await bus.emit(
         session,
@@ -480,7 +517,17 @@ async def run_due(
     """
     today = today or datetime.now(UTC).date()
     stmt = select(ControlTest).where(
-        ControlTest.active.is_(True), ControlTest.method == "connector"
+        ControlTest.active.is_(True),
+        ControlTest.method == "connector",
+        # Posture-scan-generated tests are driven by an explicit scan
+        # (scan_for_system -> record_result), not the scheduler. Without this
+        # exclusion, a human setting a frequency on a generated test (a
+        # supported edit -- see test_human_edits_survive_a_rescan) makes the
+        # scheduler auto-run it through _evaluate, which has nothing
+        # connector-freshness-shaped to say about a posture check and would
+        # bury the real posture verdict under a "No <connector> connector
+        # registered to collect evidence." warn alert.
+        ControlTest.source != "generated",
     )
     if org_id is not None:
         stmt = stmt.where(ControlTest.organization_id == org_id)

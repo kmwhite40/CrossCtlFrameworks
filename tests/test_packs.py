@@ -141,3 +141,89 @@ async def test_pack_install_is_tenant_scoped() -> None:
             for p in (await s.execute(select(CompliancePack))).scalars().all()
         }
         assert orgs == {org_a}  # tenant A cannot see B's installed packs
+
+
+# --- cross-pack posture rule key collisions -----------------------------------
+# catalog.validate_manifest's `seen_keys` only catches a duplicate *within* one
+# manifest. Two separately installed packs declaring the same key would
+# otherwise collapse to one ControlTest (unique on system_id, check_key),
+# silently discarding whichever pack's verdict did not run last.
+
+
+def _posture_manifest(pack_id: str, rule_key: str) -> dict:
+    return {
+        "id": pack_id,
+        "name": pack_id,
+        "version": "1.0.0",
+        "schema_version": "1",
+        "controls": [{"control_id": "AC-2", "title": "Account Management"}],
+        "rules": [
+            {
+                "key": rule_key,
+                "kind": "posture",
+                "definition": {
+                    "provider": "msgraph",
+                    "resource_type": "entra_user",
+                    "endpoint": "/v1.0/users?$select=id,userPrincipalName,userType",
+                    "expected": "no guest account exists",
+                    "control_ids": ["AC-2"],
+                    "predicate": {"op": "not_equals", "path": "userType", "value": "Guest"},
+                },
+            }
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_second_pack_cannot_claim_another_installed_packs_rule_key() -> None:
+    async with session_scope() as s:
+        org = Organization(name="PackKeyCollisionOrg")
+        s.add(org)
+        await s.flush()
+        org_id = org.id
+    async with session_scope() as s:
+        await service.install_pack(
+            s, org_id=org_id, manifest=_posture_manifest("pack-one", "org.shared_key"), actor="t"
+        )
+    async with session_scope() as s:
+        with pytest.raises(service.PackError, match=r"org\.shared_key"):
+            await service.install_pack(
+                s,
+                org_id=org_id,
+                manifest=_posture_manifest("pack-two", "org.shared_key"),
+                actor="t",
+            )
+
+
+@pytest.mark.asyncio
+async def test_reinstalling_the_same_pack_does_not_collide_with_its_own_key() -> None:
+    async with session_scope() as s:
+        org = Organization(name="PackKeySelfOrg")
+        s.add(org)
+        await s.flush()
+        org_id = org.id
+    manifest = _posture_manifest("pack-self", "org.self_key")
+    async with session_scope() as s:
+        await service.install_pack(s, org_id=org_id, manifest=manifest, actor="t")
+    async with session_scope() as s:
+        # A reinstall/upgrade of the SAME pack must not conflict with its own
+        # previously-installed rule key.
+        await service.install_pack(s, org_id=org_id, manifest=manifest, actor="t")
+
+
+@pytest.mark.asyncio
+async def test_the_same_rule_key_is_fine_across_different_organizations() -> None:
+    async with session_scope() as s:
+        a = Organization(name="PackKeyOrgA")
+        b = Organization(name="PackKeyOrgB")
+        s.add_all([a, b])
+        await s.flush()
+        org_a, org_b = a.id, b.id
+    async with session_scope() as s:
+        await service.install_pack(
+            s, org_id=org_a, manifest=_posture_manifest("pack-a", "org.same_key"), actor="t"
+        )
+    async with session_scope() as s:
+        await service.install_pack(
+            s, org_id=org_b, manifest=_posture_manifest("pack-b", "org.same_key"), actor="t"
+        )

@@ -93,6 +93,61 @@ async def test_failing_resources_returns_only_failures() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failing_resources_excludes_a_remediated_resource() -> None:
+    """A resource that failed an older run and passed a newer run of the same
+    test must not show up as "currently failing" -- the endpoint's docstring
+    promise. Two results on one control test: an older fail, then a newer
+    pass for the same resource.
+    """
+    async with session_scope() as session:
+        org = Organization(name=f"ApiPostRecoverOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"ApiPostRecoverSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        t = ControlTest(
+            organization_id=org.id, system_id=sys_.id, control_id="AC-3", name="demo"
+        )
+        session.add(t)
+        await session.flush()
+
+        old = ControlTestResult(control_test_id=t.id, status="fail", evaluated=1, failing=1)
+        session.add(old)
+        await session.flush()
+        session.add(
+            ControlTestResourceResult(
+                result_id=old.id,
+                resource_id="bucket-x",
+                resource_type="s3_bucket",
+                verdict="fail",
+                observed="public",
+            )
+        )
+        await session.flush()
+
+        new = ControlTestResult(control_test_id=t.id, status="pass", evaluated=1, failing=0)
+        session.add(new)
+        await session.flush()
+        session.add(
+            ControlTestResourceResult(
+                result_id=new.id,
+                resource_id="bucket-x",
+                resource_type="s3_bucket",
+                verdict="pass",
+                observed="blocked",
+            )
+        )
+        await session.flush()
+
+    async with _client() as client:
+        failing = await client.get("/api/posture/failing-resources")
+        assert failing.status_code == 200
+        ids = [row["resource_id"] for row in failing.json()]
+        assert "bucket-x" not in ids
+
+
+@pytest.mark.asyncio
 async def test_failing_resources_filters_by_resource_type() -> None:
     async with _client() as client:
         r = await client.get("/api/posture/failing-resources?resource_type=no_such_type")

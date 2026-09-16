@@ -28,11 +28,11 @@ def _iso(days_ago: int) -> str:
 def test_mfa_mixed_fleet_names_the_failures() -> None:
     rows = [
         {"id": "u1", "userPrincipalName": "a@x.gov", "isMfaRegistered": True,
-         "userType": "member", "isAdmin": False},
+         "isMfaCapable": True, "userType": "member", "isAdmin": False},
         {"id": "u2", "userPrincipalName": "b@x.gov", "isMfaRegistered": False,
-         "userType": "member", "isAdmin": False},
+         "isMfaCapable": False, "userType": "member", "isAdmin": False},
         {"id": "u3", "userPrincipalName": "c@x.gov", "isMfaRegistered": True,
-         "userType": "guest", "isAdmin": False},
+         "isMfaCapable": True, "userType": "guest", "isAdmin": False},
     ]
     findings = evaluate_mfa_registered(rows)
     assert len(findings) == 3
@@ -41,13 +41,29 @@ def test_mfa_mixed_fleet_names_the_failures() -> None:
     assert CheckOutcome.from_findings(MFA_REGISTERED, tuple(findings)).verdict == "fail"
 
 
-def test_mfa_all_registered_passes() -> None:
+def test_mfa_all_capable_passes() -> None:
     rows = [
-        {"id": "u1", "userPrincipalName": "a@x.gov", "isMfaRegistered": True},
-        {"id": "u2", "userPrincipalName": "b@x.gov", "isMfaRegistered": True},
+        {"id": "u1", "userPrincipalName": "a@x.gov", "isMfaRegistered": True, "isMfaCapable": True},
+        {"id": "u2", "userPrincipalName": "b@x.gov", "isMfaRegistered": True, "isMfaCapable": True},
     ]
     findings = evaluate_mfa_registered(rows)
     assert CheckOutcome.from_findings(MFA_REGISTERED, tuple(findings)).verdict == "pass"
+
+
+def test_mfa_registered_but_not_capable_fails() -> None:
+    """The motivating case: a user registered a strong-auth method (e.g. SMS)
+    that the tenant's authentication methods policy has since disallowed.
+    ``isMfaRegistered`` is still True, but the user cannot actually complete
+    MFA with an allowed method, so the check must fail them -- counting
+    ``isMfaRegistered`` alone would be a false ``pass`` on a control that
+    asserts MFA."""
+    rows = [
+        {"id": "u1", "userPrincipalName": "sms-only@x.gov", "isMfaRegistered": True,
+         "isMfaCapable": False, "userType": "member", "isAdmin": False}
+    ]
+    (f,) = evaluate_mfa_registered(rows)
+    assert f.verdict == "fail"
+    assert f.detail["isMfaRegistered"] is True
 
 
 def test_mfa_empty_fleet_is_not_applicable() -> None:
@@ -60,15 +76,16 @@ def test_mfa_records_what_was_counted() -> None:
     user type that was included."""
     rows = [
         {"id": "u1", "userPrincipalName": "g@x.gov", "isMfaRegistered": False,
-         "userType": "guest", "isAdmin": True}
+         "isMfaCapable": False, "userType": "guest", "isAdmin": True}
     ]
     (f,) = evaluate_mfa_registered(rows)
     assert f.detail["userType"] == "guest"
     assert f.detail["isAdmin"] is True
+    assert f.detail["isMfaRegistered"] is False
 
 
 def test_mfa_falls_back_to_id_when_upn_missing() -> None:
-    (f,) = evaluate_mfa_registered([{"id": "u9", "isMfaRegistered": False}])
+    (f,) = evaluate_mfa_registered([{"id": "u9", "isMfaRegistered": False, "isMfaCapable": False}])
     assert f.resource_id == "u9"
 
 
@@ -133,6 +150,25 @@ def test_stale_account_fails_past_the_threshold() -> None:
     rows = [
         {"id": "u1", "userPrincipalName": "old@x.gov", "accountEnabled": True,
          "signInActivity": {"lastSignInDateTime": _iso(STALE_ACCOUNT_DAYS + 10)}}
+    ]
+    (f,) = evaluate_stale_accounts(rows, now=NOW)
+    assert f.verdict == "fail"
+
+
+def test_stale_account_fails_on_a_fractional_day_past_the_threshold() -> None:
+    """``.days`` truncates: 90.9 days inactive must still fail a 90-day
+    threshold, not be rounded down to an effective threshold of 91."""
+    rows = [
+        {
+            "id": "u1",
+            "userPrincipalName": "old@x.gov",
+            "accountEnabled": True,
+            "signInActivity": {
+                "lastSignInDateTime": (
+                    NOW - timedelta(days=STALE_ACCOUNT_DAYS, hours=22)
+                ).isoformat().replace("+00:00", "Z")
+            },
+        }
     ]
     (f,) = evaluate_stale_accounts(rows, now=NOW)
     assert f.verdict == "fail"
@@ -220,13 +256,17 @@ def test_all_three_checks_are_registered_under_msgraph() -> None:
 
 
 def test_every_check_declares_controls_and_permissions() -> None:
-    for c in checks_for("msgraph"):
+    checks = checks_for("msgraph")
+    assert checks
+    for c in checks:
         assert c.control_ids, c.key
         assert c.required_permissions, c.key
         assert c.provider == "msgraph"
 
 
 def test_control_ids_are_canonical_not_zero_padded() -> None:
-    for c in checks_for("msgraph"):
+    checks = checks_for("msgraph")
+    assert checks
+    for c in checks:
         for cid in c.control_ids:
             assert "-0" not in cid, f"{c.key} uses a zero-padded id: {cid}"
