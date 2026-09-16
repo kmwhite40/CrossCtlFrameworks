@@ -10,7 +10,7 @@ import pytest
 from ccf.connectors.msgraph import MsGraphConnector
 from ccf.enforcement.providers import m365 as m365_provider
 from ccf.enforcement.providers.m365 import M365AccountProvider
-from ccf.enforcement.types import RemediationStep, provider_for
+from ccf.enforcement.types import ProviderUnavailableError, RemediationStep, provider_for
 from ccf.posture.providers import m365 as m365_checks
 from ccf.posture.types import ResourceFinding
 
@@ -223,3 +223,59 @@ async def test_apply_without_a_write_credential_is_skipped_not_attempted() -> No
     outcome = await M365AccountProvider().apply(_step())
     assert outcome.status == "skipped"
     assert "write credential" in outcome.detail
+
+
+class _TimeoutOnPatchRecorder(_Recorder):
+    """The PATCH is sent but the response never comes back -- e.g. Graph
+    applied the change and the response was lost in transit."""
+
+    async def patch(
+        self, url: str, headers: dict[str, str], json: dict[str, Any]
+    ) -> httpx.Response:
+        self.patches.append((url, json))
+        raise httpx.ReadTimeout("timed out", request=httpx.Request("PATCH", url))
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_after_the_patch_is_sent_is_uncertain_not_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """IMPORTANT 2: a non-HTTPStatusError exception means the request's fate
+    is unknown -- it may have reached Graph and been applied before the
+    failure occurred -- so it must not be reported ``failed`` (which
+    ``reverse_plan`` excludes from replay). ``failed`` is reserved for a case
+    the provider actually knows: an HTTP error status, which for one atomic
+    PATCH means the field did not change.
+    """
+    recorder = _TimeoutOnPatchRecorder()
+    _patch_client(monkeypatch, recorder)
+    provider = M365AccountProvider(credential=WRITE_CRED)
+    outcome = await provider.apply(_step())
+    assert outcome.status == "uncertain"
+    assert len(recorder.patches) == 1, "the PATCH really was sent"
+
+
+class _TokenFailureRecorder(_Recorder):
+    """The credential-exchange call itself fails -- a network error, not an
+    HTTP error status."""
+
+    async def post(self, url: str, data: dict[str, Any]) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=httpx.Request("POST", url))
+
+
+@pytest.mark.asyncio
+async def test_plan_raises_provider_unavailable_on_a_token_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token or network failure during planning must not be swallowed to
+    ``[]``: that reads as "the tenant is clean" (``build_steps`` says "no
+    resources to remediate"), when the truth is "Graph was unreachable and
+    nothing was actually checked".
+    """
+    recorder = _TokenFailureRecorder()
+    _patch_client(monkeypatch, recorder)
+    provider = M365AccountProvider(credential=WRITE_CRED)
+    with pytest.raises(ProviderUnavailableError):
+        await provider.plan(
+            [ResourceFinding("a@acme.gov", "entra_user", "fail", "idle")]
+        )

@@ -24,6 +24,8 @@ from datetime import date
 from statistics import median
 from typing import Any
 
+from ..constants import POAM_CLOSED_STATUSES
+
 #: FedRAMP's flaw-remediation timeframes, in days. Adopted rather than invented:
 #: different numbers in a federal product would be worse than the ones
 #: assessors already expect. A test pins them so a change is deliberate.
@@ -128,13 +130,19 @@ def classify(poam: Any, *, allowed_days: int, today: date) -> str:
     """
     if poam.identified_on is None:
         return "unknown"
-    if poam.closed_on is not None:
+    closed = str(poam.status) in POAM_CLOSED_STATUSES
+    if closed:
         latency = _latency(poam)
         if latency is None:
+            # Closed without a (usable) closure date: a data-quality signal,
+            # never on-time.
             return "unknown"
         return "closed_on_time" if latency <= allowed_days else "closed_late"
-    if str(poam.status) in ("completed", "closed"):
-        # Closed without a closure date: a data-quality signal, never on-time.
+    if poam.closed_on is not None:
+        # Reopened after being closed: a stale closed_on left behind by a
+        # status change (e.g. PATCH /api/poams/{id} setting status="open"
+        # without clearing closed_on). It is neither honestly "closed" nor
+        # cleanly "open" -- unknown, not a free pass back to within_sla.
         return "unknown"
     age = (today - poam.identified_on).days
     return "within_sla" if age <= allowed_days else "breached"

@@ -226,8 +226,13 @@ class PackSource(Base):
     )
     #: Which pack this source provides. Matches ``CompliancePack.pack_key``.
     pack_key: Mapped[str] = mapped_column(String(64), index=True)
-    #: Raw manifest URL. A ``file://`` path is supported, which is what the
-    #: tests and an air-gapped deployment use.
+    #: Raw manifest URL. Tenant-supplied, polled unattended -- ``https://``
+    #: only. ``ccf.packs.sync.validate_pack_source_url`` enforces this both at
+    #: registration (``api/routes/packs.py``) and again at every fetch, so a
+    #: row written before that validation existed can never be fetched either.
+    #: This is deliberately stricter than ``etl.sources.CatalogSource.url``,
+    #: which legitimately accepts ``file://`` for a trusted, operator-curated
+    #: local source (see PR #17 security review, CRITICAL 1).
     url: Mapped[str] = mapped_column(String(1024))
     #: The branch or tag being polled, for display. The authoritative identity
     #: is the resolved commit sha, not this.
@@ -251,6 +256,16 @@ class PackSource(Base):
     last_status: Mapped[str | None] = mapped_column(String(16))
     last_error: Mapped[str | None] = mapped_column(Text)
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Consecutive ``invalid``/``error`` polls since the last success. Backs
+    #: the bounded backoff in ``ccf.packs.sync.check_pack_source`` -- without
+    #: it, a source that will never succeed (a typo'd URL, a repo gone
+    #: private) gets its full body re-fetched and re-parsed every scheduler
+    #: cycle forever, which is a third-party DoS amplifier driven entirely by
+    #: tenant config (PR #17 security review, IMPORTANT 8). Reset to 0 on any
+    #: successful poll.
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     #: A fetched, validated manifest awaiting review. Empty when nothing is
     #: pending.

@@ -6,6 +6,7 @@ import pytest
 
 from ccf.enforcement.types import (
     PROVIDER_REGISTRY,
+    ProviderUnavailableError,
     RemediationStep,
     StepOutcome,
     build_steps,
@@ -90,6 +91,22 @@ async def test_a_plan_exceeding_the_blast_radius_is_refused_with_the_numbers() -
 
 
 @pytest.mark.asyncio
+async def test_the_blast_radius_is_checked_before_the_provider_runs() -> None:
+    """IMPORTANT 4: the refusal happens on the *candidate* count, before
+    ``provider.plan()`` ever runs. For the m365 provider ``plan()`` is one
+    Graph GET per candidate -- so without this ordering, an over-broad request
+    (e.g. 10,000 failing resources in a large tenant) would make the platform
+    authenticate to the customer's tenant and issue one call per candidate
+    before the blast radius ever gets a chance to refuse.
+    """
+    provider = _Provider()
+    steps, refusal = await build_steps(_findings(11), provider, max_resources=10)
+    assert steps == []
+    assert refusal == "11 resources exceeds the enforcement limit of 10"
+    assert provider.planned == [], "the provider must never be called over the limit"
+
+
+@pytest.mark.asyncio
 async def test_the_boundary_is_inclusive() -> None:
     provider = _Provider()
     _steps, refusal = await build_steps(_findings(10), provider, max_resources=10)
@@ -124,6 +141,23 @@ async def test_a_step_without_reversal_data_is_excluded() -> None:
     steps, refusal = await build_steps(_findings(3), provider, max_resources=10)
     assert steps == []
     assert refusal == "no resources to remediate"
+
+
+@pytest.mark.asyncio
+async def test_a_provider_that_cannot_evaluate_candidates_is_a_distinct_refusal() -> None:
+    """Distinct from "no resources to remediate": that means the tenant was
+    checked and is clean. A provider raising ``ProviderUnavailableError`` (a token
+    or network failure) means the check could not be made at all, and an
+    operator must not read "clean" when the truth is "unreachable".
+    """
+
+    class _Unavailable(_Provider):
+        async def plan(self, findings):
+            raise ProviderUnavailableError("token request failed")
+
+    steps, refusal = await build_steps(_findings(1), _Unavailable(), max_resources=10)
+    assert steps == []
+    assert refusal == "could not evaluate remediation candidates: token request failed"
 
 
 @pytest.mark.asyncio

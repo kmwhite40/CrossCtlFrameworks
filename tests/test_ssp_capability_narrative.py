@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import itertools
 
+import pytest
 from sqlalchemy import select
 
+from ccf.config import get_settings
 from ccf.db import session_scope
+from ccf.governance import ai as ai_module
 from ccf.governance.automation import generate_statements
 from ccf.models import (
     Organization,
@@ -22,7 +25,9 @@ _SEQ = itertools.count()
 CAP_TEXT = "Entra ID Conditional Access enforces MFA on all interactive sign-ins"
 
 
-async def _project_with_capability(session, *, control_ids: list[str]):
+async def _project_with_capability(
+    session, *, control_ids: list[str], status: str = "implemented", statement: str = CAP_TEXT
+):
     """A project whose system has one capability covering several controls."""
     org = Organization(name=f"E2EOrg-{next(_SEQ)}")
     session.add(org)
@@ -44,8 +49,8 @@ async def _project_with_capability(session, *, control_ids: list[str]):
         organization_id=org.id,
         key=f"cap-{next(_SEQ)}",
         title="MFA",
-        statement=CAP_TEXT,
-        status="implemented",
+        statement=statement,
+        status=status,
     )
     session.add(cap)
     await session.flush()
@@ -188,3 +193,95 @@ async def test_a_project_with_no_system_still_generates() -> None:
         assert out is not None
         narratives = await _narratives(session, project.id)
         assert narratives["IA-2"], "composed without capability narrative"
+
+
+# --- CRITICAL 1: not_implemented/planned must never reach the SSP -----------
+
+
+async def test_not_implemented_capability_never_reaches_the_narrative() -> None:
+    """The status every newly-authored capability starts in (the column
+    default) must not render a present-tense implementation claim."""
+    async with session_scope() as session:
+        project, profile, _ = await _project_with_capability(
+            session,
+            control_ids=["IA-2"],
+            status="not_implemented",
+            statement="FIDO2 security keys are required for all privileged roles",
+        )
+        await generate_statements(session, project=project, profile=profile)
+        narratives = await _narratives(session, project.id)
+        assert "FIDO2 security keys" not in narratives["IA-2"]
+
+
+# --- IMPORTANT 1 / CRITICAL 1: partial renders, but distinctly ---------------
+
+
+async def test_partial_capability_reaches_the_narrative_under_its_own_lead() -> None:
+    async with session_scope() as session:
+        project, profile, _ = await _project_with_capability(
+            session,
+            control_ids=["IA-2"],
+            status="partial",
+            statement="MFA enrollment covers half of privileged roles",
+        )
+        await generate_statements(session, project=project, profile=profile)
+        narratives = await _narratives(session, project.id)
+        assert "Partial implementation: MFA enrollment covers half" in narratives["IA-2"]
+
+
+# --- IMPORTANT 2: the AI path must not discard the capability clause --------
+
+
+async def test_ai_path_still_appends_the_capability_clause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before the fix, ``automation.py``'s ai_ready branch replaced the whole
+    composed statement (capability clause included) with ``DRAFT_PREFIX +
+    ai_text``, so a project with AI drafting enabled silently stopped
+    re-rendering capability narrative even though the deterministic path
+    still did -- the PR's headline promise ("edit one capability, re-render
+    every control it maps to") did not hold for AI-enabled projects. The
+    capability clause must now be appended to the AI-drafted text."""
+    monkeypatch.setenv("CCF_ANTHROPIC_API_KEY", "sk-ant-fake-key-for-test")
+    get_settings.cache_clear()
+
+    ai_text = "AI-DRAFTED-NARRATIVE-CAP-CLAUSE-TEST"
+
+    class _FakeResponse:
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return {"content": [{"type": "text", "text": ai_text}]}
+
+    class _FakeAsyncClient:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            pass
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *_a: object) -> bool:
+            return False
+
+        async def post(self, *_a: object, **_k: object) -> _FakeResponse:
+            return _FakeResponse()
+
+    monkeypatch.setattr(ai_module.httpx, "AsyncClient", _FakeAsyncClient)
+
+    try:
+        async with session_scope() as session:
+            project, profile, _ = await _project_with_capability(
+                session, control_ids=["IA-2"]
+            )
+            out = await generate_statements(
+                session, project=project, profile=profile, use_ai=True
+            )
+            assert out["ai_used"] >= 1
+            narratives = await _narratives(session, project.id)
+            assert ai_text in narratives["IA-2"]
+            assert CAP_TEXT in narratives["IA-2"], (
+                "capability clause was discarded by the AI path"
+            )
+    finally:
+        get_settings.cache_clear()

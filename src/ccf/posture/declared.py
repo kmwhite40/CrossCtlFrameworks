@@ -48,6 +48,16 @@ MODES: frozenset[str] = frozenset({"per_resource", "any_row"})
 _COMPOSITE = ("all_of", "any_of")
 _MEMBERSHIP = ("contains", "intersects")
 
+#: Cap on ``all_of``/``any_of`` nesting. Both the recursive validator and the
+#: recursive evaluator need it: a manifest nested deeper than this would
+#: otherwise raise ``RecursionError`` out of ``validate_manifest`` (whose
+#: docstring promises it never raises -- so this would be a 500 on
+#: ``/api/packs/validate``) or, for a row that predates validation, out of
+#: ``evaluate_predicate`` during a scan. Eight is far past any predicate a
+#: human would hand-author (the two platform checks that motivated Form B
+#: need zero nesting) and comfortably bounds the recursion either way.
+_MAX_PREDICATE_DEPTH = 8
+
 
 class PredicateError(ValueError):
     """A predicate or spec that cannot be evaluated as written."""
@@ -94,7 +104,9 @@ def _require(predicate: dict[str, Any], key: str) -> Any:
     return predicate[key]
 
 
-def _evaluate_composite(op: str, predicate: dict[str, Any], row: dict[str, Any]) -> bool | None:
+def _evaluate_composite(
+    op: str, predicate: dict[str, Any], row: dict[str, Any], depth: int
+) -> bool | None:
     """``all_of`` / ``any_of`` over child predicates."""
     children = predicate.get("predicates")
     if not isinstance(children, list) or not children:
@@ -102,7 +114,7 @@ def _evaluate_composite(op: str, predicate: dict[str, Any], row: dict[str, Any])
         # an empty any_of is vacuously false. Neither is ever what an author
         # meant, so both are errors rather than verdicts.
         raise PredicateError(f"{op!r} requires a non-empty 'predicates' list")
-    results = [evaluate_predicate(child, row) for child in children]
+    results = [evaluate_predicate(child, row, _depth=depth + 1) for child in children]
     if op == "all_of":
         # A definite failure outranks an undeterminable sibling: the row is
         # non-compliant whatever the missing field would have said.
@@ -150,18 +162,26 @@ def _evaluate_value(op: str, predicate: dict[str, Any], observed: Any) -> bool |
     return equal if op == "equals" else not equal
 
 
-def evaluate_predicate(predicate: Any, row: dict[str, Any]) -> bool | None:
+def evaluate_predicate(predicate: Any, row: dict[str, Any], *, _depth: int = 0) -> bool | None:
     """Three-valued evaluation: satisfied, violated, or undeterminable.
 
     ``None`` means *this row cannot answer the question* -- never "no".
+
+    ``_depth`` is internal (recursive composite calls only): it caps
+    ``all_of``/``any_of`` nesting at :data:`_MAX_PREDICATE_DEPTH` so a
+    pathologically nested spec that predates install-time validation cannot
+    blow the stack mid-scan -- it fails closed as an unrunnable check instead
+    (the same path a mistyped op already takes).
     """
+    if _depth > _MAX_PREDICATE_DEPTH:
+        raise PredicateError(f"predicate nesting exceeds max depth of {_MAX_PREDICATE_DEPTH}")
     if not isinstance(predicate, dict):
         raise PredicateError(f"predicate must be an object, got {type(predicate).__name__}")
     op = predicate.get("op")
     if not isinstance(op, str) or op not in OPS:
         raise PredicateError(f"unknown predicate op: {op!r}")
     if op in _COMPOSITE:
-        return _evaluate_composite(op, predicate, row)
+        return _evaluate_composite(op, predicate, row, _depth)
     observed = resolve_path(row, str(_require(predicate, "path")))
     if op in _MEMBERSHIP:
         return _evaluate_membership(op, predicate, observed)
@@ -276,7 +296,9 @@ def _observed(
     return f"not satisfied: {spec.expected}"
 
 
-def validate_predicate(predicate: Any, *, where: str = "predicate") -> list[str]:
+def validate_predicate(
+    predicate: Any, *, where: str = "predicate", _depth: int = 0
+) -> list[str]:
     """Errors in a predicate as written; empty means it can be evaluated.
 
     The mirror of :func:`evaluate_predicate`, and deliberately in the same
@@ -285,7 +307,14 @@ def validate_predicate(predicate: Any, *, where: str = "predicate") -> list[str]
 
     Returns errors rather than raising, because ``packs.catalog.validate_manifest``
     reports every problem in a manifest at once.
+
+    ``_depth`` is internal (recursive composite calls only): see
+    :data:`_MAX_PREDICATE_DEPTH`. Without it, a deeply nested ``all_of``/
+    ``any_of`` manifest raises ``RecursionError`` out of this function --
+    and out of ``validate_manifest``, whose docstring says it never raises.
     """
+    if _depth > _MAX_PREDICATE_DEPTH:
+        return [f"{where} exceeds max nesting depth of {_MAX_PREDICATE_DEPTH}"]
     if not isinstance(predicate, dict):
         return [f"{where} must be an object"]
     op = predicate.get("op")
@@ -298,7 +327,11 @@ def validate_predicate(predicate: Any, *, where: str = "predicate") -> list[str]
             return [f"{where} {op!r} requires a non-empty 'predicates' list"]
         errors: list[str] = []
         for i, child in enumerate(children):
-            errors.extend(validate_predicate(child, where=f"{where}.predicates[{i}]"))
+            errors.extend(
+                validate_predicate(
+                    child, where=f"{where}.predicates[{i}]", _depth=_depth + 1
+                )
+            )
         return errors
 
     errors = []

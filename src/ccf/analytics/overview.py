@@ -181,14 +181,34 @@ async def _mttr_trend(
 
 
 async def _control_tests(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
+    """Bucket every ``ControlTest`` by its last result.
+
+    Buckets cover the full ``fedramp20x.VALIDATION_STATUSES`` vocabulary, not
+    just pass/warn/fail: ``not_applicable`` (evaluated, nothing was in scope)
+    and ``manual_review_required`` (evaluated, needs a human) each get their
+    own bucket rather than being folded into ``untested`` -- a test that ran
+    and produced one of those verdicts was, precisely, tested. ``untested``
+    is reserved for what the name says: no result recorded yet
+    (``last_status is None``) or the explicit ``not_tested`` status. Every
+    row lands in exactly one bucket, so the buckets always sum to ``total``.
+    """
     stmt = select(ControlTest.last_status, func.count()).group_by(ControlTest.last_status)
     if org_id is not None:
         stmt = stmt.where(ControlTest.organization_id == org_id)
     rows = (await session.execute(stmt)).all()
-    out = {"pass": 0, "warn": 0, "fail": 0, "untested": 0, "total": 0}
+    out = {
+        "pass": 0,
+        "warn": 0,
+        "fail": 0,
+        "not_applicable": 0,
+        "manual_review_required": 0,
+        "untested": 0,
+        "total": 0,
+    }
+    own_bucket = ("pass", "warn", "fail", "not_applicable", "manual_review_required")
     for status, n in rows:
         out["total"] += n
-        out[status if status in ("pass", "warn", "fail") else "untested"] += n
+        out[status if status in own_bucket else "untested"] += n
     return out
 
 

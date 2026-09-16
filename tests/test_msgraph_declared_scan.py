@@ -196,3 +196,130 @@ async def test_an_empty_checks_tuple_scans_nothing(monkeypatch: pytest.MonkeyPat
     fall back to the platform registry."""
     monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
     assert await MsGraphConnector(credential=CRED).scan(checks=()) == []
+
+
+# ── host safety: a hostile endpoint must never leave the process off-host ────
+# CRITICAL 1, PR #13 review, layer 3 of 3: even if packs.catalog (install) and
+# posture.resolve (resolve) were both bypassed, the connector itself must
+# never send the org's bearer token to a host other than the configured
+# graph_base_url. Unlike layers 1/2 (which reject these two payloads on
+# format alone), this layer's mechanism is httpx.URL(base).join(path), which
+# resolves both documented tricks as harmless *same-host* paths rather than
+# raising -- see the report for the verified httpx.URL behaviour this rests
+# on. The invariant under test is therefore "no request ever reaches a
+# non-graph.microsoft.us host", which is the property that actually matters,
+# checked directly against what the mock transport received.
+
+HOSTILE_ENDPOINTS = [".attacker.example/v1.0/users", "@attacker.example/x"]
+
+
+@pytest.mark.parametrize(
+    "hostile_endpoint",
+    HOSTILE_ENDPOINTS,
+    ids=["no-trailing-slash-host-suffix", "userinfo"],
+)
+async def test_scan_never_sends_a_hostile_endpoints_request_off_host(
+    monkeypatch: pytest.MonkeyPatch, hostile_endpoint: str
+) -> None:
+    """End to end through scan() -> _get_all, with the real (unmocked)
+    connector code and only the HTTP transport swapped out -- so this proves
+    what actually would have left the process, not just what a helper
+    function returns in isolation. This is the exact vulnerable path
+    described in the PR #13 review: a Form A/B pack rule's ``endpoint``
+    reaching a scheduled scan. Run against the pre-fix connector (raw string
+    concatenation), this fails and the recorded host is the attacker's; see
+    the report for that output.
+    """
+    seen_hosts: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_hosts.append(request.url.host)
+        return httpx.Response(404, json={"error": "not a real Graph route"})
+
+    class _MockedAsyncClient(httpx.AsyncClient):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            kw["transport"] = httpx.MockTransport(handler)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _MockedAsyncClient)
+    monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
+
+    hostile = ResolvedCheck(
+        check=GUEST_CHECK,
+        endpoint=hostile_endpoint,
+        source="pack:test",
+        spec=GUEST_RESOLVED.spec,
+    )
+    await MsGraphConnector(credential=CRED).scan(checks=(hostile,))
+
+    assert seen_hosts, "expected the request to at least be attempted"
+    assert all(h == "graph.microsoft.us" for h in seen_hosts), (
+        f"a request reached an off-host target for {hostile_endpoint!r}: {seen_hosts!r}"
+    )
+
+
+async def test_an_absolute_off_host_target_is_refused_not_sent() -> None:
+    """The case _safe_url's explicit host check exists for: a target that IS
+    absolute (unlike the two tricks above, which a relative-reference join
+    defangs by construction) -- e.g. what a compromised or hostile
+    ``@odata.nextLink`` could contain. This must raise before any request is
+    attempted, not merely resolve somewhere unexpected."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(200, json={"value": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="off-host"):
+            await MsGraphConnector()._get_all(
+                client, "https://attacker.example/v1.0/users", {}
+            )
+    assert calls == [], f"a request reached the transport: {calls!r}"
+
+
+async def test_a_hostile_next_link_does_not_pull_page_two_off_host() -> None:
+    """@odata.nextLink comes from the response body -- a hostile or
+    compromised page one must not be able to redirect page two's
+    token-bearing request off-host."""
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "value": [{"id": "a"}],
+                "@odata.nextLink": "https://attacker.example/v1.0/users?page=2",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(ValueError, match="off-host"):
+            await MsGraphConnector()._get_all(
+                client, "https://graph.microsoft.us/v1.0/users", {}
+            )
+    assert len(calls) == 1, "page one is legitimate and must have been requested"
+    assert calls[0].startswith("https://graph.microsoft.us/"), calls[0]
+
+
+@pytest.mark.parametrize("hostile_endpoint", HOSTILE_ENDPOINTS)
+async def test_scan_reports_a_hostile_endpoint_as_unrunnable(
+    monkeypatch: pytest.MonkeyPatch, hostile_endpoint: str
+) -> None:
+    """A ResolvedCheck built by hand (bypassing install and resolve entirely,
+    the way a defect elsewhere in the pipeline might) must still come back as
+    an ordinary manual_review_required outcome through scan()'s existing
+    per-check isolation -- not raise out of scan(), and not report a clean
+    fleet. No mock transport is needed: the host check raises before any
+    request is attempted."""
+    hostile = ResolvedCheck(
+        check=GUEST_CHECK,
+        endpoint=hostile_endpoint,
+        source="pack:test",
+        spec=GUEST_RESOLVED.spec,
+    )
+    monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
+    outcomes = await MsGraphConnector(credential=CRED).scan(checks=(hostile,))
+    assert len(outcomes) == 1
+    assert outcomes[0].verdict == "manual_review_required"

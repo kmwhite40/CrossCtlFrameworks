@@ -22,6 +22,7 @@ from ...catalog.revisions import (
     adopt_revision,
     compute_revision_diff,
 )
+from ...db import session_scope
 from ...etl.sources import check_source
 from ...models import CatalogCheck, CatalogRevision, CatalogSource
 from ..auth_deps import require_role
@@ -166,7 +167,12 @@ async def revision_diff(
     revision_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """Diff one revision against its source's currently adopted revision."""
+    """Diff one revision against its source's currently adopted revision.
+
+    ``catalog_revisions`` is global reference data with no ``organization_id``
+    and no RLS, so this is unaffected by the caller's tenant scope -- unlike
+    ``/impact`` below, there is no per-org slice to compute against.
+    """
     row = await _revision_or_404(session, revision_id)
     diff = await compute_revision_diff(session, revision=row)
     return {"revision": _revision_out(row), "diff": diff.to_dict()}
@@ -177,10 +183,17 @@ async def revision_impact(
     revision_id: int,
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    """What adopting this revision would do to this deployment's content."""
+    """What adopting this revision would do to this deployment's content.
+
+    Computed on a separate, unscoped session -- not the caller's tenant-scoped
+    ``session`` -- for the same reason ``adopt_revision``'s gate is: adopting
+    a revision is a platform-wide change, so the impact must reflect every
+    organization's content, not just the org the caller happens to belong to.
+    """
     row = await _revision_or_404(session, revision_id)
-    diff = await compute_revision_diff(session, revision=row)
-    impact = await build_adoption_impact(session, diff=diff, candidate=_catalog_for(row))
+    async with session_scope() as unscoped:
+        diff = await compute_revision_diff(unscoped, revision=row)
+        impact = await build_adoption_impact(unscoped, diff=diff, candidate=_catalog_for(row))
     return {"revision": _revision_out(row), "impact": impact.to_dict()}
 
 
@@ -195,7 +208,13 @@ async def adopt(
 
     Returns **409** with the impact report when adoption would affect existing
     content and ``acknowledge_impact`` was not set, so a client cannot adopt
-    past consequences it has not seen.
+    past consequences it has not seen. Adoption stays available to any org
+    admin (``require_role("admin")``), but the impact behind that 409 is
+    computed platform-wide, not scoped to the calling admin's own org: a
+    catalog revision is a single global pointer, so an org with no SSP content
+    of its own must not be able to adopt straight past a revision that guts
+    another org's authored content just because its own (empty) slice showed
+    no impact. See :func:`ccf.catalog.revisions.adopt_revision`.
     """
     acknowledge = bool(body and body.acknowledge_impact)
     try:
