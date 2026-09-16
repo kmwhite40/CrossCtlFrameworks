@@ -10,5 +10,12 @@ per-resource findings, and the results land in the existing
 from __future__ import annotations
 
 from .rollup import EXCLUDED_FROM_ROLLUP, roll_up_findings
+from .types import CheckOutcome, PostureCheck, ResourceFinding
 
-__all__ = ["EXCLUDED_FROM_ROLLUP", "roll_up_findings"]
+__all__ = [
+    "EXCLUDED_FROM_ROLLUP",
+    "CheckOutcome",
+    "PostureCheck",
+    "ResourceFinding",
+    "roll_up_findings",
+]

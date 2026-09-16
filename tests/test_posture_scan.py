@@ -100,6 +100,33 @@ async def test_scan_creates_a_generated_test_and_a_result(
         assert r.expected == "public access blocked"
 
 
+async def test_all_not_applicable_detail_does_not_read_as_a_clean_fleet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unlicensed tenant makes every finding not_applicable. The recorded
+    detail must not say "0 of 500 failing" -- that reads as a fully assessed,
+    clean 500-user fleet when in truth nothing was actually evaluated."""
+    _patch(monkeypatch, [_outcome(*(["not_applicable"] * 500))])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+
+        t = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().one()
+        r = (
+            await session.execute(
+                select(ControlTestResult).where(ControlTestResult.control_test_id == t.id)
+            )
+        ).scalars().one()
+        assert r.status == "not_applicable"
+        assert r.evaluated == 500  # the raw fetch count is still preserved
+        assert r.detail == "no resources in scope"
+        assert "500" not in (r.detail or "")
+
+
 async def test_rescanning_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch(monkeypatch, [_outcome("pass")])
     async with session_scope() as session:
