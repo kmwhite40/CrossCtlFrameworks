@@ -83,6 +83,7 @@ async def _upsert_generated_test(
     control_id: str,
     title: str,
     capability_id: int | None,
+    connector_key: str,
 ) -> ControlTest:
     """Find or create the generated test for one check on one system.
 
@@ -96,6 +97,12 @@ async def _upsert_generated_test(
     from a tenant's self-attested pack verdict (CRITICAL 3), and it is what
     ``effective_verdict`` uses to keep a pack from outranking the platform
     for the same control (CRITICAL 2).
+
+    ``connector_type`` IS machine-owned (it names which connector this check
+    runs against, not something a human chooses) and is written on both
+    create and update -- backfilling it here rather than only at creation
+    means an already-generated row from before this field existed also picks
+    it up on its next scan.
     """
     test = (
         await session.execute(
@@ -118,6 +125,7 @@ async def _upsert_generated_test(
             check_source=check_source,
             capability_id=capability_id,
             description=description,
+            connector_type=connector_key,
         )
         session.add(test)
         await session.flush()
@@ -127,6 +135,7 @@ async def _upsert_generated_test(
     test.check_source = check_source
     test.capability_id = capability_id
     test.description = description
+    test.connector_type = connector_key
     return test
 
 
@@ -193,10 +202,28 @@ async def scan_for_system(
             control_id=check.control_ids[0],
             title=check.title,
             capability_id=capability_id,
+            connector_key=connector_key,
         )
+        if not test.active:
+            # A human deactivated this generated test (a supported edit --
+            # see test_human_edits_survive_a_rescan). Deactivation must
+            # actually stop validation, not just be a preserved-but-ignored
+            # field: recording a result here would still write a
+            # ControlTestResult, alert, and open a POA&M through a test the
+            # human turned off.
+            log.info(
+                "posture.skipped_inactive_test",
+                check_key=outcome.check_key,
+                control_test_id=test.id,
+            )
+            continue
+        # `considered` (not `evaluated`) so an unlicensed tenant -- where
+        # Graph omits signInActivity and every finding is not_applicable --
+        # reads as "no resources in scope" rather than "0 of 500 failing",
+        # which a reader parses as a clean, fully-assessed 500-user fleet.
         detail = (
-            f"{outcome.failing} of {outcome.evaluated} {check.resource_type}(s) failing"
-            if outcome.evaluated
+            f"{outcome.failing} of {outcome.considered} {check.resource_type}(s) failing"
+            if outcome.considered
             else "no resources in scope"
         )
         await record_result(
@@ -268,6 +295,12 @@ async def effective_verdict(
     need a cross-check severity ordering this module has no basis to invent,
     where "the platform's own check outranks a tenant's" needs none.
 
+    Restricted to ``source == "generated"`` tests -- the ones an actual
+    posture scan produced. A human-run manual test (``source == "authored"``,
+    e.g. via ``POST /api/grc/control-tests/{id}/run``) is not a check that
+    read the environment, so its result must never be reported here as
+    ``"deterministic"``.
+
     This is a read-side helper. It deliberately does not rewire the assessment
     engine, which keeps recording its own verdicts.
     """
@@ -279,6 +312,7 @@ async def effective_verdict(
             .where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id == control_id,
+                ControlTest.source == "generated",
                 ControlTestResult.run_at >= cutoff,
             )
             .order_by(ControlTestResult.run_at.desc())

@@ -84,14 +84,66 @@ async def test_existing_connectors_still_capture_nothing_unconfigured() -> None:
         assert await conn.capture() == []
 
 
-def test_registry_is_keyed_by_provider_and_unique() -> None:
+def _validate_registry(registry: dict[str, tuple[PostureCheck, ...]]) -> None:
+    """The invariant CHECK_REGISTRY must hold: every check is filed under its
+    own provider, no check key repeats, and every check evidences at least
+    one control."""
     seen: set[str] = set()
-    for provider, checks in CHECK_REGISTRY.items():
+    for provider, checks in registry.items():
         for c in checks:
             assert c.provider == provider, f"{c.key} filed under {provider}"
             assert c.key not in seen, f"duplicate check key {c.key}"
             seen.add(c.key)
             assert c.control_ids, f"{c.key} evidences no control"
+
+
+def _demo_check(key: str, provider: str, control_ids: tuple[str, ...] = ("AC-3",)) -> PostureCheck:
+    return PostureCheck(
+        key=key,
+        title=key,
+        provider=provider,
+        resource_type="bucket",
+        expected="x",
+        control_ids=control_ids,
+    )
+
+
+def test_registry_is_keyed_by_provider_and_unique() -> None:
+    """CHECK_REGISTRY ships empty until P3 adds real checks (see checks.py's
+    docstring), so a loop over it -- as this test originally was -- never
+    executes its body: every assertion inside is unreachable, and the test
+    passes no matter what the invariant-checking code says. Exercised here
+    against synthetic data shaped like a populated registry instead, so the
+    invariant itself is actually tested; each individual assertion is proven
+    capable of failing, not merely of holding by default.
+    """
+    _validate_registry(CHECK_REGISTRY)  # holds trivially today: nothing to iterate.
+
+    good = {
+        "demo_a": (
+            _demo_check("demo.a.one", "demo_a"),
+            _demo_check("demo.a.two", "demo_a", ("AC-4",)),
+        ),
+        "demo_b": (_demo_check("demo.b.one", "demo_b", ("AC-5",)),),
+    }
+    _validate_registry(good)  # the loop body actually runs this time.
+
+    mismatched_provider = {"demo_a": (_demo_check("demo.a.one", "demo_b"),)}
+    with pytest.raises(AssertionError, match="filed under"):
+        _validate_registry(mismatched_provider)
+
+    duplicate_key = {
+        "demo_a": (
+            _demo_check("demo.a.one", "demo_a"),
+            _demo_check("demo.a.one", "demo_a", ("AC-4",)),
+        )
+    }
+    with pytest.raises(AssertionError, match="duplicate check key"):
+        _validate_registry(duplicate_key)
+
+    no_controls = {"demo_a": (_demo_check("demo.a.one", "demo_a", ()),)}
+    with pytest.raises(AssertionError, match="evidences no control"):
+        _validate_registry(no_controls)
 
 
 def test_checks_for_unknown_provider_is_empty() -> None:
