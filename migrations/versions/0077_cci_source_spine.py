@@ -9,8 +9,8 @@ join ``EXPECTED_TENANT_ISOLATION_TABLES`` and its hardcoded count does not move.
 ``cci_control_refs.oscal_part_id`` is nullable because DISA's reference may name
 an item the current Rev. 5 catalog does not define.
 
-Revision ID: 0074_cci_source_spine
-Revises: 0073_flaw_remediation
+Revision ID: 0077_cci_source_spine
+Revises: 0076_flaw_remediation
 Create Date: 2026-09-15
 """
 
@@ -19,8 +19,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0074_cci_source_spine"
-down_revision = "0073_flaw_remediation"
+revision = "0077_cci_source_spine"
+down_revision = "0076_flaw_remediation"
 branch_labels = None
 depends_on = None
 
