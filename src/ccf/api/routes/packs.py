@@ -17,7 +17,7 @@ from ...packs import service as pack_service
 from ...packs.diff import diff_posture_rules
 from ...packs.impact import build_config_change_impact
 from ...packs.sync import (
-    PackSourceRejected,
+    PackSourceRejectedError,
     adopt_pending,
     check_pack_source,
     divergence,
@@ -338,7 +338,7 @@ async def register_source(
     url = body.url.strip()
     try:
         validate_pack_source_url(url)
-    except PackSourceRejected as e:
+    except PackSourceRejectedError as e:
         raise HTTPException(400, str(e)) from e
     if principal.org_id is None:
         # organization_id=NULL is never polled -- the scheduler and the CLI

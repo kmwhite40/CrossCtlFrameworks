@@ -13,6 +13,8 @@ from alembic.config import Config
 
 from ccf import db as ccf_db
 from ccf.config import get_settings
+from ccf.etl.sources import _read_file
+from ccf.packs import sync as _pack_sync_mod
 
 # Run against a real Postgres — CI service container; locally, docker compose.
 os.environ.setdefault(
@@ -87,8 +89,6 @@ def local_pack_source_fetch(monkeypatch: pytest.MonkeyPatch):
     Returns the stub so a test can further wrap or replace it (e.g. to
     simulate a 304, a redirect, or a transport failure).
     """
-    import ccf.packs.sync as sync_mod
-    from ccf.etl.sources import _read_file
 
     async def _fetch(
         url: str, etag: str | None, **_kwargs: object
@@ -97,7 +97,7 @@ def local_pack_source_fetch(monkeypatch: pytest.MonkeyPatch):
         data = await _read_file(local)
         return 200, data, None
 
-    monkeypatch.setattr(sync_mod, "fetch_conditional", _fetch)
+    monkeypatch.setattr(_pack_sync_mod, "fetch_conditional", _fetch)
     return _fetch
 
 

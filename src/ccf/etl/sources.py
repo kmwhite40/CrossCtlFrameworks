@@ -200,7 +200,7 @@ async def _fetch_800_53_baselines() -> dict[str, bytes]:
     return docs
 
 
-class FetchTooLarge(RuntimeError):
+class FetchTooLargeError(RuntimeError):
     """Raised when a response body exceeds a caller-supplied ``max_bytes`` cap.
 
     Only :mod:`ccf.packs.sync` passes ``max_bytes`` -- a tenant-supplied,
@@ -237,7 +237,7 @@ async def fetch_conditional(
     failure rather than following it -- a URL validated safe at registration
     must not be able to redirect its way to an unvalidated one at fetch time.
     ``max_bytes`` (pack sources only) streams the response and raises
-    :class:`FetchTooLarge` the moment the cap is crossed, instead of buffering
+    :class:`FetchTooLargeError` the moment the cap is crossed, instead of buffering
     an unbounded body via ``.content``.
     """
     if url.startswith("file://") or url.startswith("/"):
@@ -248,29 +248,31 @@ async def fetch_conditional(
     headers = {"User-Agent": _UA, "Accept": "application/json, */*"}
     if etag:
         headers["If-None-Match"] = etag
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=follow_redirects) as client:
-        async with client.stream("GET", url, headers=headers) as resp:
-            if resp.status_code == 304:
-                return 304, None, etag
-            if not follow_redirects and 300 <= resp.status_code < 400:
-                location = resp.headers.get("location", "<none>")
-                raise ValueError(
-                    f"refusing redirect ({resp.status_code} to {location!r}); "
-                    "this source must not follow redirects"
-                )
-            resp.raise_for_status()
-            if max_bytes is None:
-                body = await resp.aread()
-            else:
-                chunks = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    chunks.extend(chunk)
-                    if len(chunks) > max_bytes:
-                        raise FetchTooLarge(
-                            f"response body exceeded {max_bytes} byte cap fetching {url!r}"
-                        )
-                body = bytes(chunks)
-            return resp.status_code, body, resp.headers.get("ETag")
+    async with (
+        httpx.AsyncClient(timeout=30.0, follow_redirects=follow_redirects) as client,
+        client.stream("GET", url, headers=headers) as resp,
+    ):
+        if resp.status_code == 304:
+            return 304, None, etag
+        if not follow_redirects and 300 <= resp.status_code < 400:
+            location = resp.headers.get("location", "<none>")
+            raise ValueError(
+                f"refusing redirect ({resp.status_code} to {location!r}); "
+                "this source must not follow redirects"
+            )
+        resp.raise_for_status()
+        if max_bytes is None:
+            body = await resp.aread()
+        else:
+            chunks = bytearray()
+            async for chunk in resp.aiter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > max_bytes:
+                    raise FetchTooLargeError(
+                        f"response body exceeded {max_bytes} byte cap fetching {url!r}"
+                    )
+            body = bytes(chunks)
+        return resp.status_code, body, resp.headers.get("ETag")
 
 
 #: Private aliases kept so existing call sites -- and any test reaching for the
