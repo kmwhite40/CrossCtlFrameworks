@@ -19,6 +19,7 @@ coverage for the UI, not asserted.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -33,6 +34,15 @@ from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
 log = get_logger(__name__)
+
+
+class GraphPaginationTruncatedError(RuntimeError):
+    """Raised when ``_get_all`` hits the page cap with a page still pending.
+
+    A fleet check evaluated on a partial page set is worse than one that did
+    not run at all -- it can roll up to ``pass`` while the unread pages hide
+    the non-compliant rows. This is never swallowed silently.
+    """
 
 
 class MsGraphConnector(ConfigConnector):
@@ -74,6 +84,42 @@ class MsGraphConnector(ConfigConnector):
         token = resp.json().get("access_token")
         return token if isinstance(token, str) else None
 
+    def _safe_url(self, base: httpx.URL, target: str) -> httpx.URL:
+        """Resolve ``target`` against ``base`` and refuse anything off-host.
+
+        This is the last of three defensive layers against a tenant-declared
+        (Form B pack) ``endpoint`` -- or a hostile/compromised
+        ``@odata.nextLink`` -- redirecting the org's Graph bearer token to an
+        attacker's host (``packs.catalog`` validates at install,
+        ``posture.resolve`` re-validates at resolve; this is the layer that
+        must hold even if both are bypassed, because it runs immediately
+        before the token-bearing request is sent).
+
+        ``httpx.URL(base).join(target)`` resolves ``target`` as an RFC 3986
+        relative reference rather than by string concatenation, which is what
+        makes it safe: naive concatenation of ``graph_base_url`` (no trailing
+        slash) with a tenant-supplied ``".attacker.example/v1.0/users"``
+        produces the single string
+        ``"https://graph.microsoft.us.attacker.example/v1.0/users"`` --
+        a different, attacker-owned host -- and with
+        ``"@attacker.example/x"`` produces
+        ``"https://graph.microsoft.us@attacker.example/x"``, where the
+        pre-``@`` text becomes URL userinfo and ``attacker.example`` becomes
+        the actual host. A proper relative-reference join treats both as
+        plain path segments under ``base``'s own host. The explicit host
+        check below is still required on top of that: it is what rejects a
+        ``target`` that is itself absolute (a scheme-relative or fully
+        qualified URL) -- including one supplied via a hostile
+        ``@odata.nextLink`` response body.
+        """
+        resolved = base.join(target)
+        if resolved.host != base.host:
+            raise ValueError(
+                f"refusing off-host Graph request: {target!r} resolved to "
+                f"host {resolved.host!r}, expected {base.host!r}"
+            )
+        return resolved
+
     async def _get_all(
         self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -84,19 +130,75 @@ class MsGraphConnector(ConfigConnector):
         check that stopped at page one would report ``pass`` while three
         non-compliant users sat on page four. Raises on a non-2xx status so
         :meth:`scan` can tell "could not look" from "nothing to see".
+
+        Every page -- the first (``url``, a caller-supplied path or absolute
+        URL that may originate from a tenant's declared check) and every
+        subsequent one (``@odata.nextLink``, which comes from the response
+        body a Graph call returned) -- is resolved through :meth:`_safe_url`
+        against the deployment's *configured* ``graph_base_url`` before the
+        request goes out. A hostile or compromised response could otherwise
+        redirect a paginated, token-bearing fetch off-host on page two just
+        as easily as a malicious ``endpoint`` could on page one.
+
+        Hitting :attr:`_MAX_PAGES` with a ``nextLink`` still outstanding is
+        the same danger relocated to page 51: it raises
+        :class:`GraphPaginationTruncatedError` rather than returning a partial
+        fleet that would roll up to a false ``pass``.
         """
+        s = get_settings()
+        base = httpx.URL(s.graph_base_url)
         rows: list[dict[str, Any]] = []
-        next_url: str | None = url
+        next_target: str | None = url
         for _ in range(self._MAX_PAGES):
-            if not next_url:
-                break
-            resp = await client.get(next_url, headers=headers)
+            if not next_target:
+                return rows
+            resp = await self._get_with_retry(
+                client, self._safe_url(base, next_target), headers
+            )
             resp.raise_for_status()
             payload = resp.json()
             rows.extend(payload.get("value") or [])
             nxt = payload.get("@odata.nextLink")
-            next_url = nxt if isinstance(nxt, str) else None
+            next_target = nxt if isinstance(nxt, str) else None
+        if next_target:
+            raise GraphPaginationTruncatedError(
+                f"stopped after {self._MAX_PAGES} pages with more pages remaining "
+                "-- refusing to evaluate a partial fleet"
+            )
         return rows
+
+    async def _get_with_retry(
+        self, client: httpx.AsyncClient, url: httpx.URL | str, headers: dict[str, Any]
+    ) -> httpx.Response:
+        """One bounded retry on HTTP 429, honoring ``Retry-After``.
+
+        Graph throttles ``/users`` and the reports endpoints hard, so a
+        multi-page fleet scan of a real tenant will hit it. A single retry
+        keeps the check usable without turning this into an unbounded
+        backoff loop -- a second consecutive 429 is surfaced like any other
+        transport failure.
+        """
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 429:
+            await asyncio.sleep(self._retry_after_seconds(resp.headers.get("Retry-After")))
+            resp = await client.get(url, headers=headers)
+        return resp
+
+    @staticmethod
+    def _retry_after_seconds(value: str | None) -> float:
+        """Seconds to wait, from a ``Retry-After`` header. Bounded and safe.
+
+        Graph sends a plain integer-seconds value here (never the HTTP-date
+        form), but a missing or unparseable header must not raise, and a
+        pathological value must not stall the scan.
+        """
+        if value is None:
+            return 1.0
+        try:
+            seconds = float(value)
+        except ValueError:
+            return 1.0
+        return min(max(seconds, 0.0), 30.0)
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can obtain a Graph token for this org's Gov tenant."""
@@ -161,7 +263,6 @@ class MsGraphConnector(ConfigConnector):
         resolved = resolve_checks_from_registry(self.key) if checks is None else checks
         if not resolved:
             return []
-        s = get_settings()
         tenant_id = str((self.credential or {}).get("tenant_id") or "unknown")
         outcomes: list[CheckOutcome] = []
         try:
@@ -172,14 +273,22 @@ class MsGraphConnector(ConfigConnector):
                 headers = {"Authorization": f"Bearer {token}"}
                 now = datetime.now(UTC)
                 for rc in resolved:
-                    # Per-check isolation: one permission gap -- or one pack's
-                    # malformed rule -- must not discard the checks that did
-                    # run, matching capture()'s per-sub-capture try and the
-                    # scheduler's per-tenant savepoint.
+                    # Per-check isolation: one permission gap -- or one
+                    # pack's malformed rule, or an evaluator failure on an
+                    # unexpected Graph shape -- must not discard the checks
+                    # that did run, matching capture()'s per-sub-capture try
+                    # and the scheduler's per-tenant savepoint. Fetch and
+                    # evaluation each have their own try below, so an
+                    # exception from either (e.g. a naive datetime from a
+                    # timestamp Graph returned without an offset) produces
+                    # _unrunnable for THIS check, not escape to the outer
+                    # except and discard every outcome collected so far.
                     try:
-                        rows = await self._get_all(
-                            client, f"{s.graph_base_url}{rc.endpoint}", headers
-                        )
+                        # rc.endpoint may be tenant-declared (a Form B pack
+                        # rule); it is passed through as-is and resolved
+                        # safely inside _get_all rather than concatenated
+                        # onto the host here -- see _safe_url.
+                        rows = await self._get_all(client, rc.endpoint, headers)
                     except Exception as e:
                         outcomes.append(self._unrunnable(rc.check, e))
                         continue
@@ -238,14 +347,15 @@ class MsGraphConnector(ConfigConnector):
         P2a's rollup maps zero findings to ``not_applicable``, so returning
         nothing here would hide a missing app permission behind a
         benign-looking verdict. Instead one finding carries
-        ``manual_review_required`` and names the status and the permission the
-        check needs, which puts the reason in the resource list where an
-        operator looks.
+        ``manual_review_required`` and names the reason, which puts it in the
+        resource list where an operator looks. The verdict is the same in
+        every case; only the message differs, and only a 401/403 blames a
+        missing permission -- a 429, a 500, a timeout, a truncated fleet, or a
+        malformed payload are described by what they actually are, so an
+        operator is never told to grant a permission that was never the
+        problem.
         """
-        status = ""
-        if isinstance(error, httpx.HTTPStatusError):
-            status = f"{error.response.status_code} "
-        needed = ", ".join(check.required_permissions) or "unknown permissions"
+        observed = self._describe_failure(check, error)
         log.warning(
             "connector.msgraph.check_unrunnable", check=check.key, error=str(error)[:200]
         )
@@ -256,11 +366,34 @@ class MsGraphConnector(ConfigConnector):
                     resource_id=(self.credential or {}).get("tenant_id") or "unknown",
                     resource_type=check.resource_type,
                     verdict="manual_review_required",
-                    observed=f"{status}could not read Graph; requires {needed}",
+                    observed=observed,
                     detail={"error": str(error)[:300]},
                 ),
             ),
         )
+
+    @staticmethod
+    def _describe_failure(check: PostureCheck, error: Exception) -> str:
+        """A human-readable reason a check could not run.
+
+        Only 401/403 name the required permission -- every other failure
+        class (throttling, a server error, a timeout, a dropped connection, a
+        truncated fleet, an unparseable payload) is described by what it
+        actually is instead.
+        """
+        if isinstance(error, httpx.HTTPStatusError):
+            code = error.response.status_code
+            if code in (401, 403):
+                needed = ", ".join(check.required_permissions) or "unknown permissions"
+                return f"{code} could not read Graph; requires {needed}"
+            return f"Graph returned {code}; could not evaluate this check"
+        if isinstance(error, GraphPaginationTruncatedError):
+            return f"could not evaluate this check: {error}"
+        if isinstance(error, httpx.TimeoutException):
+            return "Graph request timed out; could not evaluate this check"
+        if isinstance(error, httpx.RequestError):
+            return f"could not reach Graph ({type(error).__name__}); could not evaluate this check"
+        return f"could not evaluate this check ({type(error).__name__})"
 
     def _map_mfa(self, payload: dict[str, Any]) -> list[CapturedParameter]:
         """Detect an enabled Conditional Access policy that grants/requires MFA."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 
 from ccf.db import session_scope
+from ccf.governance.control_tests import record_result
 from ccf.models import Organization, System, SystemComponent
 from ccf.models_capability import Capability, CapabilityComponent, CapabilityControl
 from ccf.models_grc import ControlTest
@@ -14,6 +15,10 @@ from ccf.packs.impact import build_config_change_impact
 from ccf.posture.providers import m365
 
 _SEQ = itertools.count()
+
+#: Matches ``_manifest``'s ``"id"`` field below -- the check_source scoping
+#: (IMPORTANT 3) keys retirement/waiver fixtures off ``f"pack:{PACK_KEY}"``.
+PACK_KEY = "impact-pack"
 
 FORM_B = {
     "key": "org.no_guest_accounts",
@@ -71,7 +76,9 @@ async def test_an_added_rule_reports_the_controls_it_would_evidence() -> None:
     async with session_scope() as session:
         org = await _org(session)
         diff = diff_posture_rules(_manifest(), _manifest(FORM_B))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert {c["control_id"] for c in impact.controls_affected} == {"AC-2", "AC-6"}
         assert {c["change"] for c in impact.controls_affected} == {"added"}
 
@@ -80,7 +87,9 @@ async def test_a_removed_rule_reports_its_controls_as_removed() -> None:
     async with session_scope() as session:
         org = await _org(session)
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert {c["change"] for c in impact.controls_affected} == {"removed"}
 
 
@@ -92,7 +101,9 @@ async def test_a_changed_rule_reports_its_controls_as_changed() -> None:
             "definition": {**FORM_A["definition"], "parameters": {"threshold_days": 30}},
         }
         diff = diff_posture_rules(_manifest(FORM_A), _manifest(tightened))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert {c["change"] for c in impact.controls_affected} == {"changed"}
 
 
@@ -101,7 +112,9 @@ async def test_a_form_a_rule_inherits_the_platform_checks_controls() -> None:
     async with session_scope() as session:
         org = await _org(session)
         diff = diff_posture_rules(_manifest(), _manifest(FORM_A))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert {c["control_id"] for c in impact.controls_affected} == set(
             m365.STALE_ACCOUNTS.control_ids
         )
@@ -168,7 +181,9 @@ async def test_capabilities_covering_an_affected_control_are_reported() -> None:
         await session.flush()
 
         diff = diff_posture_rules(_manifest(), _manifest(FORM_B))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         reported = {c["capability_key"]: c for c in impact.capabilities_affected}
         assert cap.key in reported
         assert "AC-2" in reported[cap.key]["controls"]
@@ -193,7 +208,9 @@ async def test_a_control_touched_by_two_kinds_of_change_reports_both() -> None:
         diff = diff_posture_rules(
             _manifest(FORM_A, FORM_B), _manifest(tightened)
         )
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         ac2 = [r for r in impact.controls_affected if r["control_id"] == "AC-2"]
         assert {r["change"] for r in ac2} == {"changed", "removed"}
         removed_row = next(r for r in ac2 if r["change"] == "removed")
@@ -207,7 +224,9 @@ async def test_controls_affected_is_sorted_by_control_then_change() -> None:
     async with session_scope() as session:
         org = await _org(session)
         diff = diff_posture_rules(_manifest(FORM_A, FORM_B), _manifest(FORM_A))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         keys = [(r["control_id"], r["change"]) for r in impact.controls_affected]
         assert keys == sorted(keys)
 
@@ -229,18 +248,63 @@ async def test_a_removed_rule_reports_the_check_it_would_retire() -> None:
             method="connector",
             source="generated",
             check_key=FORM_B["key"],
+            check_source=f"pack:{PACK_KEY}",
             last_status="fail",
         )
         session.add(test)
         await session.flush()
 
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert len(impact.checks_retired) == 1
         row = impact.checks_retired[0]
         assert row["check_key"] == FORM_B["key"]
         assert row["last_status"] == "fail"
         assert row["system_id"] == sys_.id
+
+
+async def test_a_platform_checks_key_is_not_reported_as_a_pack_retiring_it() -> None:
+    """IMPORTANT 3: a platform check (or a different pack's check) sharing a
+    check_key with the removed rule must not be reported as this pack
+    retiring it -- retirement is scoped by check_source, not check_key alone.
+    """
+    async with session_scope() as session:
+        org = await _org(session)
+        sys_a = await _system(session, org)
+        sys_b = await _system(session, org)
+        session.add(
+            ControlTest(
+                organization_id=org.id,
+                system_id=sys_a.id,
+                control_id="AC-2",
+                name="No guests (platform)",
+                method="connector",
+                source="generated",
+                check_key=FORM_B["key"],
+                check_source="platform",
+            )
+        )
+        session.add(
+            ControlTest(
+                organization_id=org.id,
+                system_id=sys_b.id,
+                control_id="AC-2",
+                name="No guests (other pack)",
+                method="connector",
+                source="generated",
+                check_key=FORM_B["key"],
+                check_source="pack:some-other-pack",
+            )
+        )
+        await session.flush()
+
+        diff = diff_posture_rules(_manifest(FORM_B), _manifest())
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
+        assert impact.checks_retired == []
 
 
 async def test_only_the_removed_rules_check_is_reported_as_retiring() -> None:
@@ -258,12 +322,15 @@ async def test_only_the_removed_rules_check_is_reported_as_retiring() -> None:
                 ControlTest(
                     organization_id=org.id, system_id=sys_.id, control_id="AC-2",
                     name=key, method="connector", check_key=key,
+                    check_source=f"pack:{PACK_KEY}",
                 )
             )
         await session.flush()
 
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert [r["check_key"] for r in impact.checks_retired] == [FORM_B["key"]]
 
 
@@ -275,6 +342,7 @@ async def test_a_changed_rule_does_not_retire_its_check() -> None:
             ControlTest(
                 organization_id=org.id, system_id=sys_.id, control_id="AC-2",
                 name="Stale", method="connector", check_key=FORM_A["key"],
+                check_source=f"pack:{PACK_KEY}",
             )
         )
         await session.flush()
@@ -283,7 +351,9 @@ async def test_a_changed_rule_does_not_retire_its_check() -> None:
             "definition": {**FORM_A["definition"], "parameters": {"threshold_days": 30}},
         }
         diff = diff_posture_rules(_manifest(FORM_A), _manifest(tightened))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.checks_retired == []
 
 
@@ -293,6 +363,15 @@ async def test_a_removed_rule_reports_a_waiver_left_orphaned() -> None:
     async with session_scope() as session:
         org = await _org(session)
         sys_ = await _system(session, org)
+        # The waiver is joined to the ControlTest it accepts (system_id,
+        # check_key) to inherit its check_source scoping -- see IMPORTANT 3.
+        session.add(
+            ControlTest(
+                organization_id=org.id, system_id=sys_.id, control_id="AC-2",
+                name="No guests", method="connector", source="generated",
+                check_key=FORM_B["key"], check_source=f"pack:{PACK_KEY}",
+            )
+        )
         w = Waiver(
             organization_id=org.id,
             system_id=sys_.id,
@@ -304,7 +383,9 @@ async def test_a_removed_rule_reports_a_waiver_left_orphaned() -> None:
         await session.flush()
 
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert [x["waiver_id"] for x in impact.waivers_orphaned] == [w.id]
         assert impact.waivers_orphaned[0]["status"] == "approved"
 
@@ -321,6 +402,13 @@ async def test_only_the_removed_rules_waiver_is_reported_as_orphaned() -> None:
         sys_ = await _system(session, org)
         for key in (FORM_B["key"], "org.unrelated_check"):
             session.add(
+                ControlTest(
+                    organization_id=org.id, system_id=sys_.id, control_id="AC-2",
+                    name=key, method="connector", source="generated",
+                    check_key=key, check_source=f"pack:{PACK_KEY}",
+                )
+            )
+            session.add(
                 Waiver(
                     organization_id=org.id, system_id=sys_.id, check_key=key,
                     rationale="accepted", status="approved",
@@ -329,7 +417,9 @@ async def test_only_the_removed_rules_waiver_is_reported_as_orphaned() -> None:
         await session.flush()
 
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert [w["check_key"] for w in impact.waivers_orphaned] == [FORM_B["key"]]
 
 
@@ -345,8 +435,87 @@ async def test_an_added_rule_orphans_no_waiver() -> None:
         )
         await session.flush()
         diff = diff_posture_rules(_manifest(), _manifest(FORM_B))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.waivers_orphaned == []
+
+
+# ── orphaned remediation (IMPORTANT 2) ───────────────────────────────────────
+
+
+async def test_a_removed_rule_reports_the_task_and_poam_it_would_orphan() -> None:
+    """A failing test's remediation Task and POA&M close only on a future
+    `pass` on that same test -- impossible once the test is retired. Both
+    must be surfaced, not just the check and the waiver."""
+    async with session_scope() as session:
+        org = await _org(session)
+        sys_ = await _system(session, org)
+        test = ControlTest(
+            organization_id=org.id,
+            system_id=sys_.id,
+            control_id="AC-2",
+            name="No guests",
+            method="connector",
+            source="generated",
+            check_key=FORM_B["key"],
+            check_source=f"pack:{PACK_KEY}",
+        )
+        session.add(test)
+        await session.flush()
+        # Opens the Task (ctltest-fix:{test.id}) and POA&M
+        # (control_test:{test.id}) the same way a real scan failure would.
+        await record_result(
+            session, test, status="fail", detail="guest accounts present",
+            evaluated=1, failing=1,
+        )
+        await session.flush()
+
+        diff = diff_posture_rules(_manifest(FORM_B), _manifest())
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
+        assert len(impact.tasks_orphaned) == 1
+        assert impact.tasks_orphaned[0]["control_test_id"] == test.id
+        assert len(impact.poams_orphaned) == 1
+        assert impact.poams_orphaned[0]["control_test_id"] == test.id
+        assert impact.poams_orphaned[0]["status"] == "open"
+
+
+async def test_a_resolved_task_and_poam_are_not_reported_as_orphaned() -> None:
+    """A Task/POA&M already closed (by any means) has nothing left to orphan
+    -- reporting it would tell an operator to worry about a finding that is
+    already resolved."""
+    async with session_scope() as session:
+        org = await _org(session)
+        sys_ = await _system(session, org)
+        test = ControlTest(
+            organization_id=org.id,
+            system_id=sys_.id,
+            control_id="AC-2",
+            name="No guests",
+            method="connector",
+            source="generated",
+            check_key=FORM_B["key"],
+            check_source=f"pack:{PACK_KEY}",
+        )
+        session.add(test)
+        await session.flush()
+        await record_result(
+            session, test, status="fail", detail="guest accounts present",
+            evaluated=1, failing=1,
+        )
+        await session.flush()
+        # Recovers: fail -> pass closes the Task and annotates the POA&M
+        # (which record_result never auto-closes -- see _resolve_on_recovery).
+        await record_result(session, test, status="pass", detail="clean")
+        await session.flush()
+
+        diff = diff_posture_rules(_manifest(FORM_B), _manifest())
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
+        assert impact.tasks_orphaned == []
 
 
 # ── scoping and refusals ─────────────────────────────────────────────────────
@@ -360,12 +529,15 @@ async def test_another_tenants_check_is_not_reported_as_retiring() -> None:
         session.add(
             ControlTest(
                 organization_id=theirs.id, system_id=their_sys.id, control_id="AC-2",
-                name="Theirs", method="connector", check_key=FORM_B["key"],
+                name="Theirs", method="connector", source="generated",
+                check_key=FORM_B["key"], check_source=f"pack:{PACK_KEY}",
             )
         )
         await session.flush()
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=mine.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=mine.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.checks_retired == []
 
 
@@ -375,6 +547,13 @@ async def test_another_tenants_waiver_is_not_reported_as_orphaned() -> None:
         theirs = await _org(session)
         their_sys = await _system(session, theirs)
         session.add(
+            ControlTest(
+                organization_id=theirs.id, system_id=their_sys.id, control_id="AC-2",
+                name="Theirs", method="connector", source="generated",
+                check_key=FORM_B["key"], check_source=f"pack:{PACK_KEY}",
+            )
+        )
+        session.add(
             Waiver(
                 organization_id=theirs.id, system_id=their_sys.id, check_key=FORM_B["key"],
                 rationale="r", status="approved",
@@ -382,7 +561,9 @@ async def test_another_tenants_waiver_is_not_reported_as_orphaned() -> None:
         )
         await session.flush()
         diff = diff_posture_rules(_manifest(FORM_B), _manifest())
-        impact = await build_config_change_impact(session, org_id=mine.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=mine.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.waivers_orphaned == []
 
 
@@ -392,7 +573,9 @@ async def test_an_unknown_baseline_yields_an_empty_impact_with_a_reason() -> Non
     async with session_scope() as session:
         org = await _org(session)
         diff = diff_posture_rules({}, _manifest(FORM_B))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.is_empty()
         assert impact.reason == "no retained manifest to compare"
 
@@ -401,7 +584,9 @@ async def test_an_empty_diff_is_an_empty_impact() -> None:
     async with session_scope() as session:
         org = await _org(session)
         diff = diff_posture_rules(_manifest(FORM_B), _manifest(FORM_B))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.is_empty()
         assert impact.reason is None
 
@@ -417,6 +602,8 @@ async def test_an_unresolvable_form_a_evaluator_reports_no_controls_not_a_crash(
             "definition": {"evaluator": "m365.identity.invented_later"},
         }
         diff = diff_posture_rules(_manifest(), _manifest(bogus))
-        impact = await build_config_change_impact(session, org_id=org.id, diff=diff)
+        impact = await build_config_change_impact(
+            session, org_id=org.id, pack_key=PACK_KEY, diff=diff
+        )
         assert impact.controls_affected == []
         assert impact.unresolved == ["org.from_the_future"]

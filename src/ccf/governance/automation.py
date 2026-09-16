@@ -540,7 +540,7 @@ async def generate_statements(
     # entries, and a per-control lookup would be 400 round trips. Empty when
     # the project is not bound to a system (SSPProject.system_id is nullable),
     # in which case every statement composes exactly as it did before P4a.
-    caps_by_control: dict[str, list[str]] = {}
+    caps_by_control: dict[str, list[tuple[str, str, str]]] = {}
     if project.system_id is not None:
         caps_by_control = await capability_statements_by_control(
             session, system_id=project.system_id
@@ -563,7 +563,13 @@ async def generate_statements(
         services = services_for(ssp_plat, e.domain)
         captured = caps_by_nist.get(e.nist_id or "", [])
         cap_key = _cap_key(e)
-        cap_statements = caps_by_control.get(cap_key, []) if cap_key else []
+        cap_rows = caps_by_control.get(cap_key, []) if cap_key else []
+        # Split by status here, not in the resolution layer: capability/service.py
+        # stays a plain "what maps to this control, allow-listed to statuses that
+        # describe a live implementation" query, and only this call site needs to
+        # know that "partial" renders under its own distinct clause (Finding 1).
+        cap_statements = [(k, s) for k, s, status in cap_rows if status != "partial"]
+        partial_cap_statements = [(k, s) for k, s, status in cap_rows if status == "partial"]
         source = row.get("source")
         policy = policy_by_control.get(e.control_id)
         # A vendor-inherited control's real authorization reference/review
@@ -598,6 +604,7 @@ async def generate_statements(
             policy_ref=policy.name if policy else None,
             crm_ref=crm_ref,
             capability_statements=cap_statements,
+            partial_capability_statements=partial_cap_statements,
         )
         if ai_ready and responsibility in ("customer", "shared", "unknown"):
             ai_text = await ai.draft_narrative(
@@ -619,7 +626,18 @@ async def generate_statements(
                 # this prefix an AI-authored statement is indistinguishable
                 # from human-authored prose, and invisible to the reports/UI
                 # that key off is_draft_narrative to flag AI-sourced entries.
+                #
+                # The AI drafts the mechanism sentence, but it is not handed
+                # the capability graph, so it cannot know about capabilities
+                # mapped to this control -- without appending the same clause
+                # the deterministic path renders, "edit one capability,
+                # re-render every control it maps to" would silently stop
+                # holding the moment a project turns AI drafting on. Appended
+                # rather than interpolated for the same reason `compose()`
+                # appends it: capability statements are whole sentences that
+                # cannot be safely spliced into prose of unknown shape.
                 text = stmt.DRAFT_PREFIX + ai_text
+                text += stmt.capability_clause(cap_statements, partial_cap_statements)
                 ai_used += 1
         if not connector_backed:
             # Nothing about this platform has been technically verified by any

@@ -13,7 +13,7 @@ no live tenant is reachable from the build environment.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..types import PostureCheck, ResourceFinding
@@ -66,10 +66,26 @@ STALE_ACCOUNTS = PostureCheck(
 CHECKS: tuple[PostureCheck, ...] = (MFA_REGISTERED, LEGACY_AUTH_BLOCKED, STALE_ACCOUNTS)
 
 #: Graph collection each check reads, relative to the Graph base URL.
+#:
+#: STALE_ACCOUNTS carries ``$top=500``: with ``signInActivity`` selected,
+#: Graph documents 500 (not the usual 999) as the maximum page size for
+#: ``/users`` -- a higher ``$top`` is not rejected, it is just silently
+#: clamped back down to 500, so asking for the true maximum is what actually
+#: raises the ceiling. At ``_MAX_PAGES`` (50) that is ~25,000 users instead
+#: of the ~5,000 the previous unpaged default page size (100) capped out at.
+#: The other two endpoints are deliberately left without a ``$top``:
+#: ``userRegistrationDetails`` documents only ``$filter`` as a supported
+#: query parameter, no ``$top`` at all, so adding one would be a guess against
+#: an endpoint that has never demonstrated it honors one. ``conditionalAccess/policies``
+#: does document ``$top``, but a tenant's Conditional Access policy count is
+#: nowhere near the page sizes that risk truncation here, so there is no
+#: truncation this check is actually exposed to -- nothing to fix by adding one.
 ENDPOINTS: dict[str, str] = {
     MFA_REGISTERED.key: "/v1.0/reports/authenticationMethods/userRegistrationDetails",
     LEGACY_AUTH_BLOCKED.key: "/v1.0/identity/conditionalAccess/policies",
-    STALE_ACCOUNTS.key: "/v1.0/users?$select=id,userPrincipalName,accountEnabled,signInActivity",
+    STALE_ACCOUNTS.key: (
+        "/v1.0/users?$select=id,userPrincipalName,accountEnabled,signInActivity&$top=500"
+    ),
 }
 
 
@@ -82,7 +98,7 @@ def _user_ref(row: dict[str, Any]) -> str:
 
 
 def evaluate_mfa_registered(rows: list[dict[str, Any]]) -> list[ResourceFinding]:
-    """One finding per user: is an MFA method registered?
+    """One finding per user: can the user actually complete MFA?
 
     Known limitation: ``userRegistrationDetails`` does not expose
     ``accountEnabled``, so every user Graph returns is assessed, disabled
@@ -93,14 +109,36 @@ def evaluate_mfa_registered(rows: list[dict[str, Any]]) -> list[ResourceFinding]
     """
     findings: list[ResourceFinding] = []
     for row in rows:
+        # isMfaCapable, not isMfaRegistered, decides the verdict.
+        # isMfaRegistered is true whenever the user registered *some* strong
+        # auth method, even one the tenant's authentication methods policy no
+        # longer allows (e.g. SMS after it was disallowed) -- that user is
+        # registered but cannot actually complete MFA with an allowed method.
+        # isMfaCapable is true only when the registered method is one the
+        # policy currently allows, so it already implies registration; a
+        # control asserting MFA must not count the former as compliant.
+        capable = bool(row.get("isMfaCapable"))
         registered = bool(row.get("isMfaRegistered"))
+        if capable:
+            observed = "MFA-capable: a policy-allowed method is registered"
+        elif registered:
+            observed = (
+                "not MFA-capable: a method is registered but not allowed by "
+                "the current authentication methods policy"
+            )
+        else:
+            observed = "not MFA-capable: no MFA method registered"
         findings.append(
             ResourceFinding(
                 resource_id=_user_ref(row),
                 resource_type="entra_user",
-                verdict="pass" if registered else "fail",
-                observed=("MFA method registered" if registered else "no MFA method registered"),
-                detail={"userType": row.get("userType"), "isAdmin": row.get("isAdmin")},
+                verdict="pass" if capable else "fail",
+                observed=observed,
+                detail={
+                    "userType": row.get("userType"),
+                    "isAdmin": row.get("isAdmin"),
+                    "isMfaRegistered": registered,
+                },
             )
         )
     return findings
@@ -213,13 +251,17 @@ def evaluate_stale_accounts(
                 )
             )
             continue
-        days = (now - last).days
+        elapsed = now - last
+        # Compare the full-precision delta against the threshold, not
+        # `elapsed.days`: `.days` truncates, so 90.9 days inactive would
+        # report `90` and pass a 90-day threshold -- an effective threshold
+        # of 91, not 90.
         findings.append(
             ResourceFinding(
                 resource_id=ref,
                 resource_type="entra_user",
-                verdict="fail" if days > threshold_days else "pass",
-                observed=f"last interactive sign-in {days} day(s) ago",
+                verdict="fail" if elapsed > timedelta(days=threshold_days) else "pass",
+                observed=f"last interactive sign-in {elapsed.days} day(s) ago",
                 detail={"last_sign_in": activity.get("lastSignInDateTime")},
             )
         )

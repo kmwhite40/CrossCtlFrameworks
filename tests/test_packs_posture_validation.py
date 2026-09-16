@@ -243,3 +243,91 @@ def test_a_cmmc_style_control_id_is_rejected_with_guidance() -> None:
     would never match, so it is refused rather than stored unmatched."""
     errors = validate_manifest(_manifest(_form_b(definition={"control_ids": ["AC.L2-3.1.1"]})))
     assert errors
+
+
+# ── endpoint safety: credential exfiltration via a tenant-supplied endpoint ──
+# CRITICAL 1, PR #13 review. connectors.msgraph builds the Graph request URL
+# from this value and sends the org's bearer token to wherever it resolves,
+# so a malformed endpoint is a security bug, not a format nicety.
+
+
+def test_a_host_suffix_trick_endpoint_is_rejected() -> None:
+    """``graph_base_url`` has no trailing slash (config.py default), so naive
+    string concatenation of this value would produce
+    "https://graph.microsoft.us.attacker.example/v1.0/users" -- a host
+    "graph.microsoft.us.attacker.example" the attacker owns, not Microsoft's."""
+    rule = _form_b(definition={"endpoint": ".attacker.example/v1.0/users"})
+    errors = validate_manifest(_manifest(rule))
+    assert errors and "endpoint" in " ".join(errors).lower()
+
+
+def test_a_userinfo_trick_endpoint_is_rejected() -> None:
+    """Naive concatenation of this value produces
+    "https://graph.microsoft.us@attacker.example/x": "graph.microsoft.us"
+    becomes URL userinfo and "attacker.example" becomes the actual host."""
+    rule = _form_b(definition={"endpoint": "@attacker.example/x"})
+    errors = validate_manifest(_manifest(rule))
+    assert errors and "endpoint" in " ".join(errors).lower()
+
+
+def test_an_endpoint_not_under_a_known_graph_version_is_rejected() -> None:
+    rule = _form_b(definition={"endpoint": "/v2.0/users"})
+    assert validate_manifest(_manifest(rule))
+
+
+def test_an_endpoint_with_a_double_slash_is_rejected() -> None:
+    rule = _form_b(definition={"endpoint": "/v1.0//attacker.example/users"})
+    assert validate_manifest(_manifest(rule))
+
+
+def test_an_endpoint_with_dot_dot_is_rejected() -> None:
+    rule = _form_b(definition={"endpoint": "/v1.0/../beta/users"})
+    assert validate_manifest(_manifest(rule))
+
+
+def test_an_overlong_endpoint_is_rejected() -> None:
+    rule = _form_b(definition={"endpoint": "/v1.0/" + ("a" * 2000)})
+    assert validate_manifest(_manifest(rule))
+
+
+def test_a_well_formed_endpoint_is_still_accepted() -> None:
+    """The change is additive: a normal declared endpoint keeps validating."""
+    assert validate_manifest(_manifest(_form_b())) == []
+
+
+# ── provider validity: a mistyped provider must not silently never run ──────
+
+
+def test_an_unknown_provider_is_rejected() -> None:
+    rule = _form_b(definition={"provider": "msgrap"})
+    errors = validate_manifest(_manifest(rule))
+    assert errors and "msgrap" in " ".join(errors)
+
+
+def test_a_known_provider_is_accepted() -> None:
+    assert validate_manifest(_manifest(_form_b(definition={"provider": "aws_govcloud"}))) == []
+
+
+# ── predicate nesting depth: must not RecursionError out of validate_manifest ─
+
+
+def _nested_all_of(depth: int) -> dict:
+    predicate: dict = {"op": "truthy", "path": "x"}
+    for _ in range(depth):
+        predicate = {"op": "all_of", "predicates": [predicate]}
+    return predicate
+
+
+def test_a_pathologically_nested_predicate_is_a_validation_error_not_a_crash() -> None:
+    """validate_manifest's docstring says it never raises -- an uncapped
+    recursion would turn a deeply nested manifest into a 500 on
+    /api/packs/validate instead of the clean 'errors' response every other
+    invalid manifest gets."""
+    rule = _form_b(definition={"predicate": _nested_all_of(3000)})
+    errors = validate_manifest(_manifest(rule))  # must return, not raise
+    assert errors and "depth" in " ".join(errors).lower()
+
+
+def test_a_moderately_nested_predicate_still_validates() -> None:
+    rule = _form_b(definition={"predicate": _nested_all_of(3)})
+    assert validate_manifest(_manifest(rule)) == []

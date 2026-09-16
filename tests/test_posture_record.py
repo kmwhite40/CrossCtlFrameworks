@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from ccf.db import session_scope
 from ccf.governance.control_tests import record_result
-from ccf.models import Organization, System
+from ccf.models import POAM, Organization, System, Task
 from ccf.models_grc import ControlTest, ControlTestResourceResult
 from ccf.posture.checks import ResourceFinding
 
@@ -102,24 +102,64 @@ async def test_legacy_call_without_resources_is_unchanged() -> None:
 
 
 async def test_recovery_still_fires_on_fail_then_pass() -> None:
-    """The existing recovery loop must keep working through the widened writer."""
+    """The existing recovery loop must keep working through the widened
+    writer -- proven by the actual POA&M/Task transition record_result's
+    recovery branch makes, not merely by ``last_status`` (which record_result
+    sets unconditionally, before the recovery branch even runs, so it can
+    never distinguish "recovery fired" from "recovery was skipped/deleted").
+    """
     async with session_scope() as session:
         t = await _test_row(session)
         await record_result(session, t, status="fail", detail="broken")
         assert t.last_status == "fail"
+
+        dedupe = f"ctltest-fix:{t.id}"
+        source_ref = f"control_test:{t.id}"
+        task = (
+            await session.execute(select(Task).where(Task.dedupe_key == dedupe))
+        ).scalar_one()
+        assert task.status == "open"
+        poam = (
+            await session.execute(
+                select(POAM).where(POAM.system_id == t.system_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert poam.status == "open"
+
         await record_result(session, t, status="pass", detail="fixed")
         assert t.last_status == "pass"
+
+        await session.refresh(task)
+        assert task.status == "done", "recovery must resolve the remediation Task"
+        await session.refresh(poam)
+        assert poam.status == "open", "recovery surfaces, never auto-closes, the POA&M"
+        assert poam.remediation_plan is not None and "now passes" in poam.remediation_plan
 
 
 async def test_not_applicable_is_not_treated_as_a_recovery() -> None:
     """Only `pass` clears a failure. not_applicable asserts nothing was in
-    scope, which is not evidence the weakness cleared."""
+    scope, which is not evidence the weakness cleared -- proven by asserting
+    recovery did NOT run (the Task/POA&M opened by the fail stay open),
+    not merely by ``last_status``."""
     async with session_scope() as session:
         t = await _test_row(session)
         await record_result(session, t, status="fail", detail="broken")
         res = await record_result(session, t, status="not_applicable", detail="none in scope")
         assert res.status == "not_applicable"
         assert t.last_status == "not_applicable"
+
+        dedupe = f"ctltest-fix:{t.id}"
+        source_ref = f"control_test:{t.id}"
+        task = (
+            await session.execute(select(Task).where(Task.dedupe_key == dedupe))
+        ).scalar_one()
+        assert task.status == "open", "not_applicable must not resolve the remediation Task"
+        poam = (
+            await session.execute(
+                select(POAM).where(POAM.system_id == t.system_id, POAM.source_ref == source_ref)
+            )
+        ).scalar_one()
+        assert poam.remediation_plan is None, "not_applicable must not annotate the POA&M"
 
 
 async def test_long_resource_ids_are_truncated_not_rejected() -> None:

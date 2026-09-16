@@ -23,9 +23,10 @@ from typing import Any
 
 from ..catalog.canonical import canonicalize
 from ..config import get_settings
-from ..posture.checks import platform_check_keys
+from ..posture.checks import known_providers, platform_check_keys
 from ..posture.declared import MODES, validate_predicate
 from ..posture.parameters import validate_parameters
+from ..posture.resolve import validate_endpoint
 
 BUNDLED_DIR = Path(__file__).parent / "bundled"
 
@@ -174,6 +175,20 @@ def validate_posture_rule(
     for field in _FORM_B_REQUIRED:
         if field not in definition:
             errors.append(f"{where} requires {field!r}")
+    if "endpoint" in definition:
+        # Presence alone (the loop above) is not enough: the connector builds
+        # the request URL by concatenating this value onto the org's Graph
+        # host and sends the org's bearer token to whatever host results, so
+        # an unvalidated endpoint is a credential-exfiltration vector, not
+        # just a bad format. See ``posture.resolve.validate_endpoint``.
+        errors.extend(f"{where}: {e}" for e in validate_endpoint(definition["endpoint"]))
+    if "provider" in definition:
+        provider = definition["provider"]
+        if provider not in known_providers():
+            errors.append(
+                f"{where} has unknown provider {provider!r} "
+                f"(allowed: {', '.join(sorted(known_providers()))})"
+            )
     mode = definition.get("mode", "per_resource")
     if mode not in MODES:
         errors.append(f"{where} has unknown mode {mode!r} (allowed: {', '.join(sorted(MODES))})")

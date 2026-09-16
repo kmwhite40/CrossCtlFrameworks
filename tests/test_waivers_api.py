@@ -12,7 +12,6 @@ from ccf.api.main import create_app
 from ccf.db import session_scope
 from ccf.governance.waivers import can_approve
 from ccf.models import AuditLog, Organization, System
-from ccf.models_waivers import Waiver
 
 _SEQ = itertools.count()
 
@@ -99,6 +98,26 @@ async def test_a_revoked_waiver_cannot_be_re_approved() -> None:
 
 
 @pytest.mark.asyncio
+async def test_an_already_approved_waiver_cannot_be_re_approved() -> None:
+    """Re-approving must not silently rewrite approved_by/approved_at -- it
+    would discard the record of who actually made the decision and when."""
+    system_id = await _system()
+    async with _client() as client:
+        wid = (await client.post("/api/waivers", json=_body(system_id))).json()["id"]
+        first = await client.post(f"/api/waivers/{wid}/approve")
+        assert first.status_code == 200, first.text
+        approved_by, approved_at = first.json()["approved_by"], first.json()["approved_at"]
+
+        again = await client.post(f"/api/waivers/{wid}/approve")
+        assert again.status_code == 409, again.text
+
+        unchanged = await client.get("/api/waivers", params={"system_id": system_id})
+        row = next(w for w in unchanged.json() if w["id"] == wid)
+        assert row["approved_by"] == approved_by
+        assert row["approved_at"] == approved_at
+
+
+@pytest.mark.asyncio
 async def test_listing_filters_by_system_and_check() -> None:
     system_id = await _system()
     other_system = await _system()
@@ -156,6 +175,59 @@ async def test_exactly_one_target_is_required() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_blank_check_key_alongside_a_control_id_is_rejected() -> None:
+    """check_key="" is falsy but not None: bool("") == bool(control_id) used
+    to compare False == True -> False, sailing past the one-target check and
+    then tripping ck_waiver_one_target as an unhandled 500 (both columns
+    non-NULL: "" and the control id). An explicitly blank field is now its
+    own 400 rather than being silently treated as absent -- sending an empty
+    string is almost always a client bug worth surfacing, not a considered
+    choice to omit the field."""
+    system_id = await _system()
+    async with _client() as client:
+        blank_check_key = await client.post(
+            "/api/waivers",
+            json=_body(system_id, check_key="", control_id="AC-2"),
+        )
+        assert blank_check_key.status_code == 400, blank_check_key.text
+        blank_control_id = await client.post(
+            "/api/waivers",
+            json=_body(system_id, check_key="m365.identity.mfa_registered", control_id="  "),
+        )
+        assert blank_control_id.status_code == 400, blank_control_id.text
+
+
+@pytest.mark.asyncio
+async def test_control_id_is_canonicalized_on_write() -> None:
+    """A waiver written "AC-02" must match a test stored "AC-2" -- otherwise
+    it silently never matches (fails safe, but the requester is told the
+    waiver was created)."""
+    system_id = await _system()
+    async with _client() as client:
+        created = await client.post(
+            "/api/waivers", json=_body(system_id, control_id="AC-02", check_key=None)
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["control_id"] == "AC-2"
+
+
+@pytest.mark.asyncio
+async def test_control_id_that_is_not_a_recognizable_800_53_id_is_kept_as_is() -> None:
+    """ControlTest.control_id can be non-NIST free text (e.g. a CMMC practice
+    id) -- canonicalize() correctly declines to touch those, and the waiver
+    must keep the exact string the caller supplied rather than being
+    rejected or mangled."""
+    system_id = await _system()
+    async with _client() as client:
+        created = await client.post(
+            "/api/waivers",
+            json=_body(system_id, control_id="AC.L2-3.1.1", check_key=None),
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["control_id"] == "AC.L2-3.1.1"
+
+
+@pytest.mark.asyncio
 async def test_a_blank_rationale_is_rejected() -> None:
     """An acceptance with no stated reason is not reviewable."""
     system_id = await _system()
@@ -172,21 +244,23 @@ async def test_an_unknown_system_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_organization_id_in_the_body_is_ignored() -> None:
-    """Tenancy comes from the principal, never from the request."""
+async def test_an_organization_id_in_the_body_is_rejected() -> None:
+    """Tenancy comes from the principal, never from the request -- enforced by
+    ``WaiverIn``'s ``extra="forbid"`` rather than merely being silently
+    dropped: a caller trying to set it gets a 422, not a request that quietly
+    succeeds with a different org than the one it asked for.
+
+    (Previously this test asserted 201 and that the stored org differed from
+    the smuggled value -- but WaiverIn had no ``extra="forbid"``, so pydantic
+    dropped the unknown key before the route ever saw it and the "ignored"
+    branch this test named could not execute or fail. Mutation testing this
+    guard by deleting it exposed that it couldn't fail.)"""
     system_id = await _system()
     async with _client() as client:
-        created = await client.post(
+        rejected = await client.post(
             "/api/waivers", json=_body(system_id, organization_id=424_242)
         )
-        assert created.status_code == 201
-        async with session_scope() as session:
-            w = (
-                await session.execute(
-                    select(Waiver).where(Waiver.id == created.json()["id"])
-                )
-            ).scalar_one()
-            assert w.organization_id != 424_242
+        assert rejected.status_code == 422, rejected.text
 
 
 @pytest.mark.asyncio

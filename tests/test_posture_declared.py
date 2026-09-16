@@ -303,10 +303,14 @@ MFA_AS_DECLARED = DeclaredSpec(
     mode="per_resource",
     resource_type="entra_user",
     resource_id_field="userPrincipalName",
-    predicate={"op": "truthy", "path": "isMfaRegistered"},
+    # isMfaCapable, not isMfaRegistered: the platform evaluator decides the
+    # verdict on whether the registered method is one the tenant's current
+    # authentication methods policy actually allows -- see
+    # m365.evaluate_mfa_registered.
+    predicate={"op": "truthy", "path": "isMfaCapable"},
     expected="every user has a multi-factor authentication method registered",
-    pass_observed="MFA method registered",
-    fail_observed="no MFA method registered",
+    pass_observed="MFA-capable: a policy-allowed method is registered",
+    fail_observed="not MFA-capable: no MFA method registered",
 )
 
 LEGACY_AUTH_AS_DECLARED = DeclaredSpec(
@@ -331,9 +335,11 @@ def test_declared_form_reproduces_the_platform_mfa_check() -> None:
     isAdmin, which no predicate declares -- so equivalence is asserted on
     (resource_id, verdict, observed)."""
     rows = [
-        {"userPrincipalName": "a@x.gov", "isMfaRegistered": True, "userType": "Member"},
-        {"userPrincipalName": "b@x.gov", "isMfaRegistered": False, "userType": "Guest"},
-        {"id": "no-upn-object-id", "isMfaRegistered": False},
+        {"userPrincipalName": "a@x.gov", "isMfaCapable": True, "isMfaRegistered": True,
+         "userType": "Member"},
+        {"userPrincipalName": "b@x.gov", "isMfaCapable": False, "isMfaRegistered": False,
+         "userType": "Guest"},
+        {"id": "no-upn-object-id", "isMfaCapable": False, "isMfaRegistered": False},
     ]
     hand = m365.evaluate_mfa_registered(rows)
     declared = evaluate_declared(MFA_AS_DECLARED, rows)

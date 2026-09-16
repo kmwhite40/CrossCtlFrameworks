@@ -285,6 +285,7 @@ def render_markdown(pkg: dict[str, Any]) -> str:
         f"- **Assessor completion:** {pct('assessor_completion')}  ·  "
         f"**Dependency readiness:** {pct('dependency_readiness')}",
         f"- **Open exceptions:** {r['open_exceptions']}  ·  "
+        f"**Active waivers:** {r.get('active_waivers', 0)}  ·  "
         f"**High-risk findings:** {r['high_risk_findings']}  ·  "
         f"**Manual-review burden:** {r['manual_review_burden']}",
         "",
@@ -370,6 +371,10 @@ def to_oscal_shaped(pkg: dict[str, Any]) -> dict[str, Any]:
                     "props": [
                         {"name": "readiness-pct", "value": str(pkg["readiness"]["readiness_pct"])},
                         {"name": "readiness-status", "value": pkg["readiness"]["status"]},
+                        {
+                            "name": "active-waivers",
+                            "value": str(pkg["readiness"].get("active_waivers", 0)),
+                        },
                     ],
                     "observations": observations,
                     "findings": findings,
@@ -483,6 +488,8 @@ def to_docx(pkg: dict[str, Any]) -> bytes:
         ("Evidence completeness", "evidence_completeness"),
         ("Assessor completion", "assessor_completion"),
         ("Dependency readiness", "dependency_readiness"),
+        ("Open exceptions", "open_exceptions"),
+        ("Active waivers", "active_waivers"),
         ("High-risk findings", "high_risk_findings"),
         ("Manual-review burden", "manual_review_burden"),
     ):

@@ -13,8 +13,11 @@ from ccf.models import Organization
 from ccf.models_packs import PackSource
 from ccf.packs.service import install_pack
 from ccf.packs.sync import DIVERGENCE_STATES, adopt_pending, check_pack_source, divergence
+from tests.conftest import pack_source_url
 
 _SEQ = itertools.count()
+
+pytestmark = pytest.mark.usefixtures("local_pack_source_fetch")
 
 
 def _manifest(*, pack_id: str, version: str = "1.0.0", control: str = "AC-2") -> dict:
@@ -36,7 +39,7 @@ async def _org(session) -> Organization:
 
 async def _source(session, org, path: Path) -> PackSource:
     src = PackSource(
-        organization_id=org.id, pack_key=path.stem, url=f"file://{path}", ref="main"
+        organization_id=org.id, pack_key=path.stem, url=pack_source_url(path), ref="main"
     )
     session.add(src)
     await session.flush()
@@ -56,7 +59,31 @@ async def test_a_source_never_polled_is_unknown(tmp_path: Path) -> None:
         src = await _source(session, org, path)
         out = await divergence(session, src)
         assert out["state"] == "unknown"
+        assert out["reason"] == "source has never been polled"
         assert out["source_sha"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_only_ever_failed_is_unknown_with_a_distinct_reason(
+    tmp_path: Path,
+) -> None:
+    """IMPORTANT 7: ``last_manifest_sha is None`` alone was used to mean
+    "never polled", which is also true for a source that HAS been polled --
+    repeatedly, possibly for weeks -- and every time came back ``invalid`` or
+    ``error``. That text can reach an authorization artifact, so the two
+    situations get different reasons, keyed on ``last_checked_at``."""
+    path = tmp_path / f"failing-{next(_SEQ)}.json"  # never written -- every poll fails
+    async with session_scope() as session:
+        org = await _org(session)
+        src = await _source(session, org, path)
+        await check_pack_source(session, src)
+        assert src.last_checked_at is not None
+        assert src.last_manifest_sha is None
+        out = await divergence(session, src)
+        assert out["state"] == "unknown"
+        assert out["reason"] != "source has never been polled"
+        assert "last poll did not succeed" in out["reason"]
+        assert src.last_status in out["reason"]
 
 
 @pytest.mark.asyncio

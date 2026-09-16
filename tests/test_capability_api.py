@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import itertools
+
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.main import create_app
+from ccf.api.routes.capabilities import ComponentEdgesIn, RiskEdgesIn, set_components, set_risks
+from ccf.auth import Principal
 from ccf.db import session_scope
-from ccf.models import Organization, System
+from ccf.models import Organization, Risk, System, SystemComponent
+from ccf.models_capability import Capability
+
+_SEQ = itertools.count()
 
 
 def _client() -> AsyncClient:
@@ -182,3 +190,91 @@ async def test_derive_status_endpoint_reports_a_count() -> None:
         r = await client.post(f"/api/systems/{sid}/derive-status")
         assert r.status_code == 200
         assert r.json() == {"system_id": sid, "rows_annotated": 0}
+
+
+# --- edge-target ownership -------------------------------------------------
+#
+# The FK check on a component/risk id proves the row exists *somewhere*, not
+# that it belongs to the calling capability's organization -- and it does not
+# consult RLS. Called directly with a synthetic scoped Principal against a
+# session_scope() (RLS-bypass) session, so this isolates the app-layer
+# ownership check itself rather than the DB's RLS enforcement.
+
+
+@pytest.mark.asyncio
+async def test_set_components_rejects_a_component_owned_by_another_org() -> None:
+    async with session_scope() as session:
+        org_a = Organization(name=f"CompOwnOrgA-{next(_SEQ)}")
+        org_b = Organization(name=f"CompOwnOrgB-{next(_SEQ)}")
+        session.add_all([org_a, org_b])
+        await session.flush()
+        sys_b = System(organization_id=org_b.id, name=f"CompOwnSysB-{next(_SEQ)}")
+        session.add(sys_b)
+        await session.flush()
+        comp_b = SystemComponent(
+            organization_id=org_b.id, system_id=sys_b.id, type="service", title="B Comp"
+        )
+        session.add(comp_b)
+        cap_a = Capability(organization_id=org_a.id, key=f"comp-own-a-{next(_SEQ)}", title="Cap A")
+        session.add(cap_a)
+        await session.flush()
+
+        principal_a = Principal(user_id=None, email="compowna@t", org_id=org_a.id, role="admin")
+        with pytest.raises(HTTPException) as exc:
+            await set_components(
+                cap_a.id,
+                ComponentEdgesIn(component_ids=[comp_b.id]),
+                session=session,
+                principal=principal_a,
+            )
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_set_components_rejects_a_nonexistent_component_id() -> None:
+    async with session_scope() as session:
+        org_a = Organization(name=f"CompMissingOrgA-{next(_SEQ)}")
+        session.add(org_a)
+        await session.flush()
+        cap_a = Capability(
+            organization_id=org_a.id, key=f"comp-missing-a-{next(_SEQ)}", title="Cap A"
+        )
+        session.add(cap_a)
+        await session.flush()
+
+        principal_a = Principal(user_id=None, email="compmissa@t", org_id=org_a.id, role="admin")
+        with pytest.raises(HTTPException) as exc:
+            await set_components(
+                cap_a.id,
+                ComponentEdgesIn(component_ids=[999_999_999]),
+                session=session,
+                principal=principal_a,
+            )
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_set_risks_rejects_a_risk_owned_by_another_org() -> None:
+    async with session_scope() as session:
+        org_a = Organization(name=f"RiskOwnOrgA-{next(_SEQ)}")
+        org_b = Organization(name=f"RiskOwnOrgB-{next(_SEQ)}")
+        session.add_all([org_a, org_b])
+        await session.flush()
+        sys_b = System(organization_id=org_b.id, name=f"RiskOwnSysB-{next(_SEQ)}")
+        session.add(sys_b)
+        await session.flush()
+        risk_b = Risk(system_id=sys_b.id, title="B Risk")
+        session.add(risk_b)
+        cap_a = Capability(organization_id=org_a.id, key=f"risk-own-a-{next(_SEQ)}", title="Cap A")
+        session.add(cap_a)
+        await session.flush()
+
+        principal_a = Principal(user_id=None, email="riskowna@t", org_id=org_a.id, role="admin")
+        with pytest.raises(HTTPException) as exc:
+            await set_risks(
+                cap_a.id,
+                RiskEdgesIn(risk_ids=[risk_b.id]),
+                session=session,
+                principal=principal_a,
+            )
+        assert exc.value.status_code == 404

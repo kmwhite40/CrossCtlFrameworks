@@ -37,6 +37,46 @@ async def _audit(session: AsyncSession, **kw: Any) -> None:
     await record_event(session, **kw)
 
 
+def _posture_rule_keys(manifest: dict[str, Any]) -> set[str]:
+    return {
+        str(r["key"])
+        for r in manifest.get("rules", [])
+        if isinstance(r, dict) and r.get("kind") == "posture" and r.get("key")
+    }
+
+
+async def _rule_key_collisions(
+    session: AsyncSession, *, org_id: int | None, pack_key: str, rule_keys: set[str]
+) -> list[str]:
+    """Posture rule keys already claimed by a *different* installed pack.
+
+    ``packs.catalog.validate_manifest`` only checks uniqueness within one
+    manifest (its ``seen_keys`` is per-call and has no database). Two
+    separately installed packs declaring the same key would otherwise
+    collapse to one ``ControlTest`` row (unique on ``system_id, check_key``)
+    with whichever pack's verdict happened to run last -- silently discarding
+    the other pack's finding. Excludes this pack's own key so a reinstall or
+    upgrade of the same pack never conflicts with itself.
+    """
+    if not rule_keys:
+        return []
+    rows = (
+        await session.execute(
+            select(PackRule.rule_key, CompliancePack.pack_key)
+            .join(CompliancePack, CompliancePack.id == PackRule.pack_id)
+            .where(
+                CompliancePack.organization_id == org_id,
+                CompliancePack.pack_key != pack_key,
+                PackRule.rule_key.in_(rule_keys),
+            )
+        )
+    ).all()
+    return [
+        f"posture rule key {rule_key!r} is already claimed by installed pack {other!r}"
+        for rule_key, other in rows
+    ]
+
+
 async def install_pack(
     session: AsyncSession,
     *,
@@ -51,6 +91,11 @@ async def install_pack(
         raise PackError("; ".join(errors))
 
     key = str(manifest["id"])
+    collisions = await _rule_key_collisions(
+        session, org_id=org_id, pack_key=key, rule_keys=_posture_rule_keys(manifest)
+    )
+    if collisions:
+        raise PackError("; ".join(collisions))
     sha = manifest_sha(manifest)
     existing = (
         await session.execute(
