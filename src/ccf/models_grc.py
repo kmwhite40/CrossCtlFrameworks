@@ -255,6 +255,13 @@ class ControlTest(Base):
     )
     #: The PostureCheck this test was generated from; null for authored tests.
     check_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    #: Which expectation produced this test's checks: ``"platform"`` for the
+    #: built-in registry, ``"pack:<pack_key>"`` for a tenant-installed pack
+    #: (mirrors ``posture.resolve.ResolvedCheck.source``). Null for a manually
+    #: authored test (``source == "authored"``), which has no check behind it.
+    #: Without this, a self-attested tenant verdict and a platform assessment
+    #: are indistinguishable in the record -- see CRITICAL 3, PR #13 review.
+    check_source: Mapped[str | None] = mapped_column(String(64))
     #: Optional: this test evidences a capability directly (P1 ontology).
     #: SET NULL on delete -- removing a capability must not destroy validation
     #: history.

@@ -74,6 +74,42 @@ class MsGraphConnector(ConfigConnector):
         token = resp.json().get("access_token")
         return token if isinstance(token, str) else None
 
+    def _safe_url(self, base: httpx.URL, target: str) -> httpx.URL:
+        """Resolve ``target`` against ``base`` and refuse anything off-host.
+
+        This is the last of three defensive layers against a tenant-declared
+        (Form B pack) ``endpoint`` -- or a hostile/compromised
+        ``@odata.nextLink`` -- redirecting the org's Graph bearer token to an
+        attacker's host (``packs.catalog`` validates at install,
+        ``posture.resolve`` re-validates at resolve; this is the layer that
+        must hold even if both are bypassed, because it runs immediately
+        before the token-bearing request is sent).
+
+        ``httpx.URL(base).join(target)`` resolves ``target`` as an RFC 3986
+        relative reference rather than by string concatenation, which is what
+        makes it safe: naive concatenation of ``graph_base_url`` (no trailing
+        slash) with a tenant-supplied ``".attacker.example/v1.0/users"``
+        produces the single string
+        ``"https://graph.microsoft.us.attacker.example/v1.0/users"`` --
+        a different, attacker-owned host -- and with
+        ``"@attacker.example/x"`` produces
+        ``"https://graph.microsoft.us@attacker.example/x"``, where the
+        pre-``@`` text becomes URL userinfo and ``attacker.example`` becomes
+        the actual host. A proper relative-reference join treats both as
+        plain path segments under ``base``'s own host. The explicit host
+        check below is still required on top of that: it is what rejects a
+        ``target`` that is itself absolute (a scheme-relative or fully
+        qualified URL) -- including one supplied via a hostile
+        ``@odata.nextLink`` response body.
+        """
+        resolved = base.join(target)
+        if resolved.host != base.host:
+            raise ValueError(
+                f"refusing off-host Graph request: {target!r} resolved to "
+                f"host {resolved.host!r}, expected {base.host!r}"
+            )
+        return resolved
+
     async def _get_all(
         self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -84,18 +120,29 @@ class MsGraphConnector(ConfigConnector):
         check that stopped at page one would report ``pass`` while three
         non-compliant users sat on page four. Raises on a non-2xx status so
         :meth:`scan` can tell "could not look" from "nothing to see".
+
+        Every page -- the first (``url``, a caller-supplied path or absolute
+        URL that may originate from a tenant's declared check) and every
+        subsequent one (``@odata.nextLink``, which comes from the response
+        body a Graph call returned) -- is resolved through :meth:`_safe_url`
+        against the deployment's *configured* ``graph_base_url`` before the
+        request goes out. A hostile or compromised response could otherwise
+        redirect a paginated, token-bearing fetch off-host on page two just
+        as easily as a malicious ``endpoint`` could on page one.
         """
+        s = get_settings()
+        base = httpx.URL(s.graph_base_url)
         rows: list[dict[str, Any]] = []
-        next_url: str | None = url
+        next_target: str | None = url
         for _ in range(self._MAX_PAGES):
-            if not next_url:
+            if not next_target:
                 break
-            resp = await client.get(next_url, headers=headers)
+            resp = await client.get(self._safe_url(base, next_target), headers=headers)
             resp.raise_for_status()
             payload = resp.json()
             rows.extend(payload.get("value") or [])
             nxt = payload.get("@odata.nextLink")
-            next_url = nxt if isinstance(nxt, str) else None
+            next_target = nxt if isinstance(nxt, str) else None
         return rows
 
     async def verify(self) -> dict[str, Any]:
@@ -161,7 +208,6 @@ class MsGraphConnector(ConfigConnector):
         resolved = resolve_checks_from_registry(self.key) if checks is None else checks
         if not resolved:
             return []
-        s = get_settings()
         tenant_id = str((self.credential or {}).get("tenant_id") or "unknown")
         outcomes: list[CheckOutcome] = []
         try:
@@ -177,9 +223,11 @@ class MsGraphConnector(ConfigConnector):
                     # run, matching capture()'s per-sub-capture try and the
                     # scheduler's per-tenant savepoint.
                     try:
-                        rows = await self._get_all(
-                            client, f"{s.graph_base_url}{rc.endpoint}", headers
-                        )
+                        # rc.endpoint may be tenant-declared (a Form B pack
+                        # rule); it is passed through as-is and resolved
+                        # safely inside _get_all rather than concatenated
+                        # onto the host here -- see _safe_url.
+                        rows = await self._get_all(client, rc.endpoint, headers)
                     except Exception as e:
                         outcomes.append(self._unrunnable(rc.check, e))
                         continue

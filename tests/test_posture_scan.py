@@ -243,3 +243,124 @@ async def test_effective_verdict_treats_a_stale_result_as_absent(
         await session.flush()
         out = await effective_verdict(session, system_id=sys_.id, control_id="AC-3")
         assert out["source"] is None
+
+
+# ── CRITICAL 3 (PR #13 review): provenance is persisted on the generated test ─
+
+
+async def test_a_generated_test_persists_its_check_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, [_outcome("pass")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        t = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().one()
+        assert t.check_source == "platform"  # from the fake resolver's source="platform"
+
+
+# ── CRITICAL 2 (PR #13 review): a pack cannot outrank the platform for the
+# same control, even by running more recently ────────────────────────────────
+
+
+async def test_effective_verdict_prefers_platform_over_a_more_recent_pack_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tenant installs a Form A rule that reuses a platform evaluator under
+    a distinct key with a weakened parameter -- e.g. stale_accounts at 3650
+    days instead of the platform's 90. Both checks evidence the same
+    control (never a *key* collision, which packs.catalog already refuses).
+    The platform's own check fails a stale account; the pack's weakened copy
+    passes the same account. Recorded in that order -- platform first, pack
+    second, so the pack's 'pass' is both more recent AND is exactly what a
+    naive "most recent result wins" precedence would have surfaced for the
+    control before this fix -- the platform's 'fail' must still be believed.
+    """
+    platform_check = PostureCheck(
+        key="demo.platform.stale_accounts",
+        title="Stale accounts (platform)",
+        provider="demo_provider",
+        resource_type="entra_user",
+        expected="no account idle past 90 days",
+        control_ids=("AC-2",),
+    )
+    pack_check = PostureCheck(
+        key="org.stale_accounts.3650d",
+        title="Stale accounts (tenant, weakened)",
+        provider="demo_provider",
+        resource_type="entra_user",
+        expected="no account idle past 3650 days",
+        control_ids=("AC-2",),
+    )
+    platform_outcome = CheckOutcome.from_findings(
+        platform_check, (ResourceFinding("u1", "entra_user", "fail", "idle 200 days"),)
+    )
+    pack_outcome = CheckOutcome.from_findings(
+        pack_check,
+        (ResourceFinding("u1", "entra_user", "pass", "idle 200 days, under 3650"),),
+    )
+
+    async def _fake_resolve(*a: object, **k: object) -> tuple[object, ...]:
+        return (
+            SimpleNamespace(check=platform_check, endpoint="/demo/a", source="platform"),
+            SimpleNamespace(
+                check=pack_check, endpoint="/demo/b", source="pack:evil-pack"
+            ),
+        )
+
+    class _TwoCheckConnector:
+        key = "demo_provider"
+
+        def is_configured(self) -> bool:
+            return True
+
+        async def scan(self, checks: object = None) -> list[CheckOutcome]:
+            # Platform result recorded first, pack result second: the pack
+            # result is the more recently recorded of the two.
+            return [platform_outcome, pack_outcome]
+
+    async def _fake_connector(*a: object, **k: object) -> _TwoCheckConnector:
+        return _TwoCheckConnector()
+
+    monkeypatch.setattr(scan_mod, "resolve_checks", _fake_resolve)
+    monkeypatch.setattr(scan_mod, "_connector_for_org", _fake_connector)
+
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+
+        tests = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().all()
+        by_key = {t.check_key: t for t in tests}
+        assert by_key["demo.platform.stale_accounts"].check_source == "platform"
+        assert by_key["org.stale_accounts.3650d"].check_source == "pack:evil-pack"
+
+        out = await effective_verdict(session, system_id=sys_.id, control_id="AC-2")
+        assert out["verdict"] == "fail", "the platform's own check must not be overridden"
+        assert out["check_source"] == "platform"
+
+
+async def test_effective_verdict_falls_back_to_pack_when_no_platform_result_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Precedence is "prefer platform when it exists", not "ignore packs" --
+    a control with only a pack-sourced result must still surface it."""
+    _patch(monkeypatch, [_outcome("fail")])  # the fake resolver's source is "platform"
+
+    async def _fake_resolve(*a: object, **k: object) -> tuple[object, ...]:
+        return (SimpleNamespace(check=CHECK, endpoint="/demo", source="pack:only-pack"),)
+
+    monkeypatch.setattr(scan_mod, "resolve_checks", _fake_resolve)
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        out = await effective_verdict(session, system_id=sys_.id, control_id="AC-3")
+        assert out["verdict"] == "fail"
+        assert out["check_source"] == "pack:only-pack"
