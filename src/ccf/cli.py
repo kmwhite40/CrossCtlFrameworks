@@ -1879,6 +1879,99 @@ def catalog_adopt(
     console.print(f"[green]Adopted revision {rev}[/green]")
 
 
+cci_app = typer.Typer(help="DISA CCIs — load, look up, reconcile.", no_args_is_help=True)
+app.add_typer(cci_app, name="cci")
+
+
+@cci_app.command("load")
+def cci_load(
+    path: Path = typer.Option(None, help="CCI List HTML (defaults to data/cci/)."),
+    overlay: bool = typer.Option(True, help="Also load the derived Rev. 5 overlay."),
+) -> None:
+    """Load DISA's CCI list. Re-running on unchanged content writes nothing."""
+
+    async def _run() -> None:
+        from .cci.service import load_cci_list, load_cci_overlay  # noqa: PLC0415
+
+        async with session_scope() as s:
+            result = await load_cci_list(s, path=path)
+            written = await load_cci_overlay(s) if overlay and not result.skipped_unchanged else 0
+        if result.skipped_unchanged:
+            console.print(f"[dim]unchanged[/dim] version {result.version} — nothing written")
+            return
+        console.print(
+            f"version {result.version}: {result.items_created} created, "
+            f"{result.items_updated} updated, {result.refs_written} references "
+            f"({result.refs_unresolved} unresolved), {written} overlay rows"
+        )
+
+    asyncio.run(_run())
+
+
+@cci_app.command("show")
+def cci_show(cci: str) -> None:
+    """Show one CCI and the controls it decomposes."""
+
+    async def _run() -> None:
+        from .cci.service import controls_for_cci  # noqa: PLC0415
+
+        async with session_scope() as s:
+            controls = await controls_for_cci(s, cci)
+        if not controls:
+            console.print(f"[yellow]{cci}: no Rev. 5 control reference[/yellow]")
+            return
+        console.print(f"{cci}: {', '.join(controls)}")
+
+    asyncio.run(_run())
+
+
+@cci_app.command("control")
+def cci_control(control: str) -> None:
+    """List the CCIs covering a control."""
+
+    async def _run() -> None:
+        from .cci.service import ccis_for_control  # noqa: PLC0415
+
+        async with session_scope() as s:
+            rows = await ccis_for_control(s, control)
+        table = Table(title=f"CCIs covering {control} (Rev. 5)")
+        table.add_column("CCI")
+        table.add_column("Type")
+        table.add_column("Index")
+        table.add_column("OSCAL part")
+        for r in rows:
+            table.add_row(r.cci, r.type, r.raw_index, r.oscal_part_id or "—")
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@cci_app.command("reconcile")
+def cci_reconcile() -> None:
+    """Report where the workbook's CCI column and DISA disagree. Advisory."""
+
+    async def _run() -> None:
+        from .cci.reconcile import reconcile_cci  # noqa: PLC0415
+
+        async with session_scope() as s:
+            findings = await reconcile_cci(s)
+        row_total = sum(len(d.rows) for d in findings)
+        console.print(
+            f"{len(findings)} controls disagree ({row_total} rows carry a "
+            "workbook-only CCI)"
+        )
+        for d in findings[:50]:
+            if d.disa_only:
+                console.print(f"  {d.control_identifier}: disa-only={list(d.disa_only)}")
+            for row in d.rows:
+                console.print(
+                    f"  {d.control_identifier} {row.row_identifier}: "
+                    f"workbook-only={list(row.workbook_only)}"
+                )
+
+    asyncio.run(_run())
+
+
 posture_app = typer.Typer(
     help="Live security posture — scan an environment and record findings.",
     no_args_is_help=True,

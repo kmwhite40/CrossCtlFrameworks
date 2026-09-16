@@ -114,7 +114,12 @@ async def _catalog_rows() -> Any:
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao1",
+                # Task 10: identifier is the label source, and identifier IS the
+                # item path in the real workbook (AC-02a.[01], AC-02b.) -- so this
+                # fixture's identifier carries the item-path suffix itself, rather
+                # than an arbitrary "-ao1" tag, matching this module's own
+                # f"{_SEQ}a"/f"{_SEQ}b" expectations below.
+                identifier=f"{_SEQ}a",
                 sequence_control=_SEQ,
                 assessment_objective=(
                     "multifactor authentication is implemented for network access to "
@@ -125,7 +130,7 @@ async def _catalog_rows() -> Any:
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao2",
+                identifier=f"{_SEQ}b",
                 sequence_control=_SEQ,
                 assessment_objective=(
                     "multifactor authentication is implemented for network access to "

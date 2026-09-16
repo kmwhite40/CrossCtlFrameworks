@@ -224,7 +224,9 @@ class AssessmentObjectiveProposal(Base):
         ForeignKey("ccf.assessment_control_proposals.id", ondelete="CASCADE"), index=True
     )
 
-    #: e.g. "AC-02a" from ap_acronym, or an ordinal-derived label when sparse.
+    #: e.g. "AC-02a.[01]" from the objective row's own Control.identifier,
+    #: falling back to ap_acronym and then an ordinal-derived label when
+    #: both are absent.
     label: Mapped[str] = mapped_column(String(64))
     objective_text: Mapped[str] = mapped_column(Text)
     #: Detects a catalog re-ingest that reworded the objective under a stored verdict.

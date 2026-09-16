@@ -54,7 +54,11 @@ async def _catalog_rows():
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao1",
+                # Task 10: identifier is the label source, and identifier IS the
+                # item path in the real workbook (AC-02a.[01], AC-02b.) -- so this
+                # fixture's identifier carries the item-path suffix itself, rather
+                # than an arbitrary "-ao1" tag distinct from the ap_acronym.
+                identifier="ZQ-90a",
                 sequence_control=_SEQ,
                 ap_acronym="ZQ-90a",
                 assessment_objective="personnel to whom the policy is disseminated are defined;",
@@ -63,7 +67,7 @@ async def _catalog_rows():
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao2",
+                identifier="ZQ-90b",
                 sequence_control=_SEQ,
                 ap_acronym="ZQ-90b",
                 assessment_objective="an official to manage the policy is defined;",
@@ -72,7 +76,7 @@ async def _catalog_rows():
         )
         s.add(
             Control(
-                identifier=f"{_SEQ}-ao3",
+                identifier="ZQ-90c",
                 sequence_control=_SEQ,
                 ap_acronym="ZQ-90c",
                 assessment_objective="the review frequency is defined;",
@@ -142,7 +146,7 @@ async def _second_catalog_rows():
         )
         s.add(
             Control(
-                identifier=f"{_SEQ2}-ao1",
+                identifier="ZQ-91a",
                 sequence_control=_SEQ2,
                 ap_acronym="ZQ-91a",
                 assessment_objective="a second control's objective is defined;",
@@ -340,7 +344,7 @@ async def test_a_stale_proposal_cannot_be_accepted(monkeypatch: pytest.MonkeyPat
 
     async with session_scope() as s:
         control = (
-            await s.execute(select(Control).where(Control.identifier == f"{_SEQ}-ao1"))
+            await s.execute(select(Control).where(Control.identifier == "ZQ-90a"))
         ).scalar_one()
         control.assessment_objective = "a completely reworded objective statement;"
 
@@ -386,7 +390,7 @@ async def test_accept_refuses_a_reworded_objective_without_a_manual_staleness_ch
 
     async with session_scope() as s:
         control = (
-            await s.execute(select(Control).where(Control.identifier == f"{_SEQ}-ao1"))
+            await s.execute(select(Control).where(Control.identifier == "ZQ-90a"))
         ).scalar_one()
         control.assessment_objective = "a completely reworded objective statement;"
 

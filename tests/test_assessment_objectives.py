@@ -7,6 +7,7 @@ from sqlalchemy import delete
 
 from ccf.assessment.engine.objectives import (
     ObjectiveExtractionError,
+    _ordinal_label,
     objective_sha256,
     objectives_for,
 )
@@ -86,12 +87,25 @@ async def test_the_parent_control_row_is_not_an_objective() -> None:
     assert all(not o.text.startswith("Determine if:") for o in objectives)
 
 
-async def test_label_prefers_ap_acronym_then_falls_back_to_ordinal() -> None:
+async def test_default_fixture_labels_are_each_rows_own_identifier() -> None:
+    """Task 10: identifier now wins over both ap_acronym and the ordinal
+    fallback.
+
+    Before Task 10 this test was named
+    ``test_label_prefers_ap_acronym_then_falls_back_to_ordinal`` and asserted
+    ``objectives[0].label == "ZQ-01a"`` (from ``ap_acronym``, present only on
+    the first sub-clause row), then ``"ZQ-01b"`` and ``"ZQ-01c"`` (both
+    derived by ``_ordinal_label`` since the other two rows carry no
+    ``ap_acronym``). ``identifier`` is populated on every row in this fixture
+    -- as it is NOT NULL on every real catalog row -- so it is now the label
+    on all three, and ``ap_acronym``/the ordinal derivation are never
+    consulted even though the first row still carries an ``ap_acronym``.
+    """
     async with session_scope() as s:
         objectives = await objectives_for(s, _SEQ)
-    assert objectives[0].label == "ZQ-01a"
-    assert objectives[1].label == "ZQ-01b"
-    assert objectives[2].label == "ZQ-01c"
+    assert objectives[0].label == f"{_SEQ}-ao1"
+    assert objectives[1].label == f"{_SEQ}-ao2"
+    assert objectives[2].label == f"{_SEQ}-ao3"
 
 
 async def test_text_hash_is_stable_and_detects_a_reword() -> None:
@@ -130,28 +144,49 @@ async def test_labels_are_identical_regardless_of_caller_spelling() -> None:
     assert [o.label for o in padded] == [o.label for o in unpadded]
 
 
-async def test_no_control_yields_a_mixed_label_set() -> None:
-    """Every derived (ordinal) label must share the prefix of the
-
-    ap_acronym-supplied label in the same group -- otherwise a catalog-supplied
-    label like ``ZQ-01a`` sits next to a derived ``ZQ-1b``, a silent mismatch
-    that only shows up later as objective rows disagreeing with the catalog's
-    own labelling convention.
+async def test_ap_acronym_no_longer_surfaces_as_a_label_even_when_present() -> None:
+    """Before Task 10 this test was named ``test_no_control_yields_a_mixed_label_set``
+    and asserted every ordinal-derived label in a group shared the
+    ap_acronym-supplied label's prefix -- guarding against a caller-spelling
+    bug in the ordinal derivation (``_ordinal_label`` must use the row's own
+    stored ``sequence_control``, not the caller's query spelling). identifier
+    is now the label source on every row (it is NOT NULL), so no label in
+    this fixture is ever ap_acronym- or ordinal-derived any more; the mixed
+    ordinal/ap_acronym label set this test used to guard against cannot occur
+    through any real Control row. What remains true, and worth asserting: the
+    row carrying ``ap_acronym="ZQ-01a"`` does not surface it as a label, and
+    every label in the group is still that row's own identifier.
     """
     async with session_scope() as s:
         objectives = await objectives_for(s, "ZQ-1")
-    catalog_supplied = [o for o in objectives if o.label == "ZQ-01a"]
-    assert catalog_supplied, "fixture must include the ap_acronym-supplied row"
-    prefix = catalog_supplied[0].label[:-1]
-    assert all(o.label.startswith(prefix) for o in objectives)
+    assert not any(o.label == "ZQ-01a" for o in objectives)
+    assert [o.label for o in objectives] == [f"{_SEQ}-ao1", f"{_SEQ}-ao2", f"{_SEQ}-ao3"]
 
 
-async def test_a_repeated_ap_acronym_within_a_group_does_not_produce_duplicate_labels() -> None:
+async def test_a_repeated_ap_acronym_within_a_group_produces_distinct_identifier_labels() -> None:
     """CRITICAL 3: confirmed live on AC-1, which carries two sub-clause rows
-    both stamped ap_acronym "AC-01a". Two catalog rows sharing a label would
-    violate uq_objective_proposal_label the moment both are persisted as
-    AssessmentObjectiveProposal rows for the same control proposal -- this
-    must never reach that point at all.
+    both stamped ap_acronym "AC-01a" -- but with distinct identifiers
+    ("AC-01_ODP[01]" and "AC-01a.[01]"; see
+    tests/test_assessment_engine_real_catalog.py).
+
+    Before Task 10, this test asserted ``objectives[0].label == "ZQ-11a"``
+    (the shared ap_acronym) and ``objectives[1].label != "ZQ-11a"`` (the
+    dedup fallback's ordinal derivation kicking in for the second row) --
+    that was CRITICAL 3's actual fix: two rows sharing an ap_acronym would
+    otherwise violate uq_objective_proposal_label the moment both were
+    persisted as AssessmentObjectiveProposal rows for the same control
+    proposal.
+
+    Task 10 makes label selection prefer each row's own identifier, which is
+    UNIQUE at the database level -- so two rows sharing an ap_acronym can no
+    longer collide on label at all; there is nothing left for the dedup
+    fallback to catch here. The fallback lower in objectives_for is retained
+    as defense-in-depth regardless (uniqueness by construction is a property
+    of the current schema, not a promise), but it is no longer reachable
+    through this scenario, or through any real Control row: identifier is
+    UNIQUE, so two rows can never insert with the same identifier in the
+    first place, and label = row.identifier when identifier is present (which
+    it always is).
     """
     async with session_scope() as s:
         await s.execute(delete(Control).where(Control.sequence_control == "ZQ-11"))
@@ -171,12 +206,30 @@ async def test_a_repeated_ap_acronym_within_a_group_does_not_produce_duplicate_l
     assert len(objectives) == 2
     labels = [o.label for o in objectives]
     assert len(labels) == len(set(labels)), f"duplicate labels survived: {labels}"
-    # The first occurrence keeps the catalog-supplied label; the duplicate
-    # falls back to its own ordinal derivation rather than being dropped or
-    # silently overwriting the first.
-    assert objectives[0].label == "ZQ-11a"
-    assert objectives[1].label != "ZQ-11a"
+    assert objectives[0].label == "ZQ-11-ao1"
+    assert objectives[1].label == "ZQ-11-ao2"
     assert objectives[1].text == "the second colliding objective is met;"
+
+
+def test_ordinal_label_derives_letter_suffixes_from_position() -> None:
+    """``_ordinal_label`` itself, called directly rather than through
+    ``objectives_for``.
+
+    Task 10's brief requires ``_ordinal_label`` to "remain reachable and
+    tested." But identifier is NOT NULL and UNIQUE on every Control row, and
+    label selection now tries identifier first -- so no real Control row can
+    ever reach this function through ``objectives_for`` (see this module's
+    other Task-10-updated tests, and
+    ``test_a_row_deduplicated_identifier_is_used_verbatim_as_the_label``'s
+    docstring, which documents the same gap for the dedup fallback). Direct
+    coverage keeps the function honestly tested rather than silently
+    unreachable.
+    """
+    assert _ordinal_label("AC-02", 0) == "AC-02a"
+    assert _ordinal_label("AC-02", 1) == "AC-02b"
+    assert _ordinal_label("AC-02", 25) == "AC-02z"
+    assert _ordinal_label("AC-02", 26) == "AC-02aa"
+    assert _ordinal_label("AC-02", 27) == "AC-02ab"
 
 
 async def test_a_control_with_no_sub_clauses_yields_none() -> None:
@@ -211,3 +264,107 @@ async def test_absurd_objective_count_raises_rather_than_fanning_out() -> None:
             await objectives_for(s, "ZQ-08")
         await s.execute(delete(Control).where(Control.sequence_control == "ZQ-08"))
     assert str(row_count) in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_label_prefers_the_rows_own_identifier(clean_migrated_db) -> None:
+    """The workbook's identifier IS the item path (AC-02a.[01]) and is UNIQUE,
+    so it beats both the near-empty ap_acronym column (4 populated rows in
+    5,435) and an ordinal derived from position."""
+    try:
+        async with session_scope() as s:
+            s.add_all(
+                [
+                    Control(
+                        identifier="ZZ-01a.[01]", sequence_control="ZZ-01",
+                        control_name=None, assessment_objective="first objective",
+                        source_row=1,
+                    ),
+                    Control(
+                        identifier="ZZ-01b.", sequence_control="ZZ-01",
+                        control_name=None, assessment_objective="second objective",
+                        source_row=2,
+                    ),
+                ]
+            )
+        async with session_scope() as s:
+            got = await objectives_for(s, "ZZ-01")
+        assert [o.label for o in got] == ["ZZ-01a.[01]", "ZZ-01b."]
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Control).where(Control.sequence_control == "ZZ-01"))
+
+
+@pytest.mark.asyncio
+async def test_identifier_wins_even_when_ap_acronym_is_also_populated(
+    clean_migrated_db,
+) -> None:
+    """identifier must be tried BEFORE ap_acronym, not merely be present in the
+    fallback chain: a row with both populated must still label from identifier.
+    ``test_label_prefers_the_rows_own_identifier`` leaves ap_acronym unset on
+    both rows, so it can't tell ``identifier or ap_acronym`` apart from
+    ``ap_acronym or identifier`` -- this uses two different, both-truthy values."""
+    try:
+        async with session_scope() as s:
+            s.add(
+                Control(
+                    identifier="ZZ-02a.[01]", sequence_control="ZZ-02",
+                    ap_acronym="ZZ-02-WRONG", control_name=None,
+                    assessment_objective="an objective", source_row=1,
+                )
+            )
+        async with session_scope() as s:
+            got = await objectives_for(s, "ZZ-02")
+        assert [o.label for o in got] == ["ZZ-02a.[01]"]
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Control).where(Control.sequence_control == "ZZ-02"))
+
+
+@pytest.mark.asyncio
+async def test_a_row_deduplicated_identifier_is_not_used_as_the_label(
+    clean_migrated_db,
+) -> None:
+    """A "#rowN" identifier -- the loader's own de-duplication scheme (see
+    ``ccf.etl.pipeline``, which renames a repeated workbook identifier to
+    ``f"{identifier}#row{row_idx}"`` with ``row_idx`` the physical
+    spreadsheet row number) must NOT be used verbatim as the objective
+    label. That suffix is an ETL artifact, not part of the catalog's item-
+    path vocabulary: it is unstable (inserting one row upstream shifts every
+    later index) and, used as a label, would land an internal loader detail
+    in a federal authorization artifact (SAR/SSP part labels).
+
+    A row carrying that shape must fall through to ``ap_acronym`` (absent
+    here) and then ``_ordinal_label``, exactly as if ``identifier`` were
+    absent -- so this also confirms ``_ordinal_label`` is reachable through
+    the database again, which the previous (buggy) behaviour prevented.
+
+    A second row in the same control carries an ordinary, non-suffixed
+    identifier and must still be labelled from it verbatim: the fallback
+    only engages for the ``#rowN`` shape, and normal identifiers are not
+    regressed by this change. (``test_label_prefers_the_rows_own_identifier``
+    covers that behaviour on its own in more detail.)"""
+    try:
+        async with session_scope() as s:
+            s.add_all(
+                [
+                    Control(
+                        identifier="ZZ-02#row9", sequence_control="ZZ-02",
+                        control_name=None, assessment_objective="first objective",
+                        source_row=1,
+                    ),
+                    Control(
+                        identifier="ZZ-02b.[01]", sequence_control="ZZ-02",
+                        control_name=None, assessment_objective="second objective",
+                        source_row=2,
+                    ),
+                ]
+            )
+        async with session_scope() as s:
+            got = await objectives_for(s, "ZZ-02")
+        assert got[0].label != "ZZ-02#row9"
+        assert got[0].label == "ZZ-02a"
+        assert got[1].label == "ZZ-02b.[01]"
+    finally:
+        async with session_scope() as s:
+            await s.execute(delete(Control).where(Control.sequence_control == "ZZ-02"))

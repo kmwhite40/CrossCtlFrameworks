@@ -13,6 +13,12 @@ data/*
 # works on any clone without a network fetch at runtime.
 !data/oscal/
 !data/oscal/*
+# Ship the DISA CCI list and the Rev. 5 CCI mapping workbook so the CCI
+# ingest works on any clone. The HTML is DISA's published CCI List (the
+# authority); the .ods is a derived Rev. 5 mapping carrying AP acronyms and
+# eMASS identifiers.
+!data/cci/
+!data/cci/*
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
