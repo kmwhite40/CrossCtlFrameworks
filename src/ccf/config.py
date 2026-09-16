@@ -77,6 +77,23 @@ class Settings(BaseSettings):
     # deletes assessment detail on its own.
     posture_resource_retention_days: int = Field(default=400)
 
+    # Closed-loop enforcement blast radius: a remediation plan touching more
+    # resources than this is refused at plan time. Deliberately small -- the
+    # first enforcement action a deployment takes should be too small to be a
+    # disaster, and raising it should be a conscious act by someone who has
+    # watched it work. Zero disables enforcement entirely.
+    enforcement_max_resources: int = Field(default=10)
+
+    # An approval does not stay valid forever: the resource set it was
+    # reviewed against was observed at plan time, and apply re-checks the
+    # write credential and blast radius but never re-plans (deliberately --
+    # re-planning would silently approve a different change than the one
+    # someone reviewed). Bounding the age instead means a sufficiently stale
+    # approval is refused and must go through a fresh plan + review cycle
+    # rather than being honoured indefinitely against a tenant that has since
+    # moved on. Zero disables the check.
+    enforcement_approval_max_age_hours: int = Field(default=24)
+
     # Outbound notification delivery (best-effort). Set a Slack/Teams incoming
     # webhook to fan critical alerts out of the app.
     notify_webhook_url: str | None = Field(default=None)

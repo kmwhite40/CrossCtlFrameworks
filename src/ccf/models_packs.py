@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -193,3 +194,92 @@ class PackTestResult(Base):
     status: Mapped[str] = mapped_column(String(8))  # pass|fail
     detail: Mapped[str | None] = mapped_column(Text)
     run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PackSource(Base):
+    """A git-backed location a tenant's desired state is declared in.
+
+    GitOps for desired state (CC&E #10). The repository holds the pack
+    manifest, changes arrive as reviewed commits, and the commit sha is the
+    version identity.
+
+    Deliberately **not** ``CatalogSource``, even though the polling mechanics
+    are shared. That table is global reference data -- NIST's catalog is the
+    same for every tenant -- while a desired-state repository belongs to one
+    organization. The *functions* in ``etl/sources.py`` are reused; the table
+    is not.
+
+    ``auto_install`` defaults to False for the reason ``CatalogSource``'s
+    ``auto_ingest`` does, and with more force: a pack rule executes against a
+    customer tenant, so a changed manifest is stored as ``pending_manifest``
+    and reviewed -- with the change-impact report -- before it takes effect. A
+    platform that silently changes what it asserts about a system because
+    someone merged a PR is one whose SSP no longer describes a reviewed
+    decision.
+    """
+
+    __tablename__ = "pack_sources"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    #: Which pack this source provides. Matches ``CompliancePack.pack_key``.
+    pack_key: Mapped[str] = mapped_column(String(64), index=True)
+    #: Raw manifest URL. Tenant-supplied, polled unattended -- ``https://``
+    #: only. ``ccf.packs.sync.validate_pack_source_url`` enforces this both at
+    #: registration (``api/routes/packs.py``) and again at every fetch, so a
+    #: row written before that validation existed can never be fetched either.
+    #: This is deliberately stricter than ``etl.sources.CatalogSource.url``,
+    #: which legitimately accepts ``file://`` for a trusted, operator-curated
+    #: local source (see PR #17 security review, CRITICAL 1).
+    url: Mapped[str] = mapped_column(String(1024))
+    #: The branch or tag being polled, for display. The authoritative identity
+    #: is the resolved commit sha, not this.
+    ref: Mapped[str | None] = mapped_column(String(128))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_install: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    etag: Mapped[str | None] = mapped_column(String(255))
+    #: SHA-256 of the raw bytes at the URL. Answers "did the file change",
+    #: which is what change detection needs.
+    last_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: Canonical SHA of the parsed manifest, the same digest
+    #: ``install_pack`` stores on ``CompliancePack.manifest_sha``. Answers "is
+    #: the installed manifest the one this source provided", which is a
+    #: different question -- whitespace and key order change the raw bytes
+    #: without changing the manifest, so comparing the raw sha to an installed
+    #: pack would never match.
+    last_manifest_sha: Mapped[str | None] = mapped_column(String(64))
+    last_commit_sha: Mapped[str | None] = mapped_column(String(64))
+    #: unchanged | pending | installed | invalid | error
+    last_status: Mapped[str | None] = mapped_column(String(16))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Consecutive ``invalid``/``error`` polls since the last success. Backs
+    #: the bounded backoff in ``ccf.packs.sync.check_pack_source`` -- without
+    #: it, a source that will never succeed (a typo'd URL, a repo gone
+    #: private) gets its full body re-fetched and re-parsed every scheduler
+    #: cycle forever, which is a third-party DoS amplifier driven entirely by
+    #: tenant config (PR #17 security review, IMPORTANT 8). Reset to 0 on any
+    #: successful poll.
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    #: A fetched, validated manifest awaiting review. Empty when nothing is
+    #: pending.
+    pending_manifest: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    pending_sha256: Mapped[str | None] = mapped_column(String(64))
+    pending_manifest_sha: Mapped[str | None] = mapped_column(String(64))
+    pending_commit_sha: Mapped[str | None] = mapped_column(String(64))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "pack_key", "url", name="uq_pack_source_org_key_url"
+        ),
+    )

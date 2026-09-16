@@ -11,11 +11,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...models import System
-from ...models_packs import CompliancePack, CompliancePackVersion
+from ...models_packs import CompliancePack, CompliancePackVersion, PackSource
 from ...packs import catalog
 from ...packs import service as pack_service
 from ...packs.diff import diff_posture_rules
 from ...packs.impact import build_config_change_impact
+from ...packs.sync import (
+    PackSourceRejectedError,
+    adopt_pending,
+    check_pack_source,
+    divergence,
+    validate_pack_source_url,
+)
+from ..audit import record_event
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -232,3 +240,198 @@ async def pack_impact(
         "diff": diff.as_dict(),
         "impact": impact.to_dict(),
     }
+
+
+class PackSourceIn(BaseModel):
+    url: str
+    ref: str | None = None
+    auto_install: bool = False
+
+
+#: Roles that may adopt a fetched change. The same gate waivers use, for the
+#: same reason: this is the act that changes what the platform asserts.
+ADOPTER_ROLES = ("admin", "issm", "isso")
+
+#: Its own router: these paths are addressed by source id, not pack key, so
+#: they do not sit under the /api/packs/{pack_key} prefix. Two routers in one
+#: module follows the precedent in api/routes/posture.py.
+source_router = APIRouter(prefix="/api/pack-sources", tags=["packs"])
+
+
+def _public_error(status: str | None, error: str | None) -> str | None:
+    """``last_error``, scrubbed of anything usable as a file-existence or
+    internal-port oracle.
+
+    A transport failure's exception text differs by what sits on the other
+    end of a poll -- ``FileNotFoundError`` vs. ``PermissionError`` vs.
+    connection-refused vs. timeout -- which is exactly the signal CRITICAL 1
+    (PR #17 security review) warned turns ``/sync`` and this endpoint into an
+    oracle for probing the filesystem and internal network. Only ``error``
+    (a transport failure) is scrubbed; ``invalid`` (a bad URL shape, an
+    oversized body, or a manifest that fails validation) describes a content
+    or config problem in the source itself, not what the fetch touched, so it
+    stays verbatim -- an operator needs it to fix their repository. The
+    unscrubbed detail is still in ``source.last_error`` and the server log.
+    """
+    if error is None:
+        return None
+    if status == "error":
+        return "fetch failed; see server logs for detail"
+    return error
+
+
+def _source_out(s: PackSource) -> dict[str, Any]:
+    return {
+        "id": s.id,
+        "pack_key": s.pack_key,
+        "url": s.url,
+        "ref": s.ref,
+        "enabled": s.enabled,
+        "auto_install": s.auto_install,
+        "last_status": s.last_status,
+        "last_error": _public_error(s.last_status, s.last_error),
+        "last_checked_at": s.last_checked_at,
+        "last_commit_sha": s.last_commit_sha,
+        "consecutive_failures": s.consecutive_failures,
+        "pending": bool(s.pending_manifest),
+        "pending_version": str(s.pending_manifest.get("version", "")) or None,
+        "pending_commit_sha": s.pending_commit_sha,
+    }
+
+
+async def _require_source(
+    session: AsyncSession, source_id: int, principal: Principal
+) -> PackSource:
+    """One source, or 404 -- including another tenant's.
+
+    404 rather than 403: confirming an id exists is itself a disclosure.
+    """
+    s = (
+        await session.execute(select(PackSource).where(PackSource.id == source_id))
+    ).scalars().first()
+    if s is None or (
+        principal.org_id is not None and s.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "pack source not found")
+    return s
+
+
+@router.post("/{pack_key}/sources", status_code=201)
+async def register_source(
+    pack_key: str,
+    body: PackSourceIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Register a repository that declares this pack's desired state.
+
+    Polling it is automatic from here; installing what it declares is not,
+    unless ``auto_install`` is set -- and setting it requires an adopter role
+    (:data:`ADOPTER_ROLES`). Without that gate, any authenticated principal
+    could create a source the scheduler then installs from with no approver,
+    routing around the same check ``/adopt`` enforces (PR #17 security
+    review, IMPORTANT 5) and breaking this feature's own stated property:
+    detection is automatic, adoption is not.
+    """
+    if not body.url.strip():
+        raise HTTPException(400, "url is required")
+    url = body.url.strip()
+    try:
+        validate_pack_source_url(url)
+    except PackSourceRejectedError as e:
+        raise HTTPException(400, str(e)) from e
+    if principal.org_id is None:
+        # organization_id=NULL is never polled -- the scheduler and the CLI
+        # both iterate real Organization.id (IMPORTANT 6) -- so a source
+        # registered by a global principal would sit at "unknown" forever,
+        # polled by nothing. Reject rather than silently create dead state.
+        raise HTTPException(400, "pack sources require an organization-scoped principal")
+    if body.auto_install and not (principal.is_global or principal.role in ADOPTER_ROLES):
+        raise HTTPException(403, f"auto_install requires role: {', '.join(ADOPTER_ROLES)}")
+    src = PackSource(
+        # From the principal, never the body.
+        organization_id=principal.org_id,
+        pack_key=pack_key,
+        url=url,
+        ref=body.ref,
+        auto_install=body.auto_install,
+    )
+    session.add(src)
+    await session.flush()
+    await record_event(
+        session,
+        actor=principal.email,
+        action="create",
+        entity_type="pack_source",
+        entity_id=str(src.id),
+        diff={
+            "event": "registered",
+            "pack_key": pack_key,
+            "url": src.url,
+            "ref": src.ref,
+            "auto_install": src.auto_install,
+        },
+    )
+    await session.commit()
+    await session.refresh(src)
+    return _source_out(src)
+
+
+@router.get("/{pack_key}/sources")
+async def list_sources(
+    pack_key: str,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    stmt = select(PackSource).where(PackSource.pack_key == pack_key).order_by(PackSource.id)
+    if principal.org_id is not None:
+        stmt = stmt.where(PackSource.organization_id == principal.org_id)
+    return [_source_out(s) for s in (await session.execute(stmt)).scalars().all()]
+
+
+@source_router.post("/{source_id}/sync")
+async def sync_source(
+    source_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Poll now. Read-only unless the source opted into auto-install."""
+    src = await _require_source(session, source_id, principal)
+    out = await check_pack_source(session, src, actor=principal.email)
+    await session.commit()
+    if "reason" in out:
+        # Same oracle concern as _source_out's last_error -- a transport
+        # failure's exception text must not leak through the response.
+        out = {**out, "reason": _public_error(out.get("status"), out.get("reason"))}
+    return out
+
+
+@source_router.post("/{source_id}/adopt")
+async def adopt_source(
+    source_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ADOPTER_ROLES)),
+) -> dict[str, Any]:
+    """Install the manifest a poll stored as pending.
+
+    Role-gated like a waiver approval: this is the act that changes what the
+    platform asserts about a system.
+    """
+    src = await _require_source(session, source_id, principal)
+    try:
+        pack = await adopt_pending(session, src, actor=principal.email)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    await session.commit()
+    return {"pack_key": pack.pack_key, "version": pack.version, "status": "installed"}
+
+
+@source_router.get("/{source_id}/divergence")
+async def source_divergence(
+    source_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Is what is running what the repository declares?"""
+    src = await _require_source(session, source_id, principal)
+    return await divergence(session, src)

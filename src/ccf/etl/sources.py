@@ -30,6 +30,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from sqlalchemy import select
@@ -153,6 +154,11 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
 ]
 
 
+def sha256_bytes(body: bytes) -> str:
+    """Content digest. Shared with :mod:`ccf.packs.sync`."""
+    return hashlib.sha256(body).hexdigest()
+
+
 # materialize_revision's parse-check (ccf.catalog.oscal._verify) is hard-wired
 # to exactly these four 800-53 filenames -- the catalog plus its three baseline
 # profiles. Only this source can ever be materialized into an adoptable
@@ -165,10 +171,6 @@ _800_53_BASELINE_KEYS = (
     "nist_800_53_r5_moderate_baseline",
     "nist_800_53_r5_high_baseline",
 )
-
-
-def _sha256_bytes(body: bytes) -> str:
-    return hashlib.sha256(body).hexdigest()
 
 
 def _default_source_url(key: str) -> str:
@@ -198,11 +200,45 @@ async def _fetch_800_53_baselines() -> dict[str, bytes]:
     return docs
 
 
-async def _fetch(url: str, etag: str | None) -> tuple[int, bytes | None, str | None]:
+class FetchTooLargeError(RuntimeError):
+    """Raised when a response body exceeds a caller-supplied ``max_bytes`` cap.
+
+    Only :mod:`ccf.packs.sync` passes ``max_bytes`` -- a tenant-supplied,
+    unattended, per-cycle poll target that must not be allowed to buffer an
+    unbounded body in the scheduler process (PR #17 review, CRITICAL 3). The
+    catalog poller's NIST OSCAL sources are trusted and legitimately larger,
+    and continue to fetch uncapped exactly as before.
+    """
+
+
+async def fetch_conditional(
+    url: str,
+    etag: str | None,
+    *,
+    follow_redirects: bool = True,
+    max_bytes: int | None = None,
+) -> tuple[int, bytes | None, str | None]:
     """Return ``(http_status, body_or_None, etag)``.
 
     ``body`` is ``None`` on a 304 (not modified). Supports ``file://`` and bare
-    local paths so the curated workbook can be polled from disk.
+    local paths so the curated workbook can be polled from disk -- callers that
+    accept a tenant-supplied URL (:mod:`ccf.packs.sync`) MUST reject those
+    shapes, and any non-``https`` scheme, before ever calling this function;
+    this function itself stays permissive because it is shared with the
+    catalog poller, where a local path is a legitimate, trusted source.
+
+    Public because :mod:`ccf.packs.sync` polls a tenant's desired-state
+    repository the same way. A second conditional-fetch implementation would
+    drift from this one -- and the ETag-plus-sha belt and braces here (a server
+    that ignores ``If-None-Match`` must not produce a false "changed") is
+    exactly the subtlety that would be lost in a reimplementation.
+
+    ``follow_redirects=False`` (pack sources) treats any 3xx as a fetch
+    failure rather than following it -- a URL validated safe at registration
+    must not be able to redirect its way to an unvalidated one at fetch time.
+    ``max_bytes`` (pack sources only) streams the response and raises
+    :class:`FetchTooLargeError` the moment the cap is crossed, instead of buffering
+    an unbounded body via ``.content``.
     """
     if url.startswith("file://") or url.startswith("/"):
         path = Path(url.removeprefix("file://"))
@@ -212,12 +248,37 @@ async def _fetch(url: str, etag: str | None) -> tuple[int, bytes | None, str | N
     headers = {"User-Agent": _UA, "Accept": "application/json, */*"}
     if etag:
         headers["If-None-Match"] = etag
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        resp = await client.get(url, headers=headers)
-    if resp.status_code == 304:
-        return 304, None, etag
-    resp.raise_for_status()
-    return resp.status_code, resp.content, resp.headers.get("ETag")
+    async with (
+        httpx.AsyncClient(timeout=30.0, follow_redirects=follow_redirects) as client,
+        client.stream("GET", url, headers=headers) as resp,
+    ):
+        if resp.status_code == 304:
+            return 304, None, etag
+        if not follow_redirects and 300 <= resp.status_code < 400:
+            location = resp.headers.get("location", "<none>")
+            raise ValueError(
+                f"refusing redirect ({resp.status_code} to {location!r}); "
+                "this source must not follow redirects"
+            )
+        resp.raise_for_status()
+        if max_bytes is None:
+            body = await resp.aread()
+        else:
+            chunks = bytearray()
+            async for chunk in resp.aiter_bytes():
+                chunks.extend(chunk)
+                if len(chunks) > max_bytes:
+                    raise FetchTooLargeError(
+                        f"response body exceeded {max_bytes} byte cap fetching {url!r}"
+                    )
+            body = bytes(chunks)
+        return resp.status_code, body, resp.headers.get("ETag")
+
+
+#: Private aliases kept so existing call sites -- and any test reaching for the
+#: old names -- keep working after the promotion.
+_sha256_bytes = sha256_bytes
+_fetch = fetch_conditional
 
 
 async def _read_file(path: Path) -> bytes:
@@ -326,8 +387,13 @@ async def resolve_commit_sha(url: str) -> str | None:
     if not (repo and ref and path):
         return None
     try:
+        # `path` and `ref` are attacker-influenced (they come from a
+        # tenant-registered pack source URL) -- quote them so neither can
+        # inject extra query parameters or path segments into the GitHub API
+        # call.
         payload = await _get_json(
-            f"{_GH_API}/repos/{repo}/commits?path={path}&sha={ref}&per_page=1"
+            f"{_GH_API}/repos/{repo}/commits"
+            f"?path={quote(path, safe='')}&sha={quote(ref, safe='')}&per_page=1"
         )
         if isinstance(payload, list) and payload:
             sha = payload[0].get("sha")

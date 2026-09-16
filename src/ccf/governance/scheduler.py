@@ -38,6 +38,7 @@ from ..db import get_engine, session_scope, set_session_tenant
 from ..etl.sources import poll as poll_sources
 from ..logging import get_logger
 from ..models import Organization
+from ..packs import sync as pack_sync
 from . import collection, conmon, control_tests, digest
 
 log = get_logger(__name__)
@@ -76,6 +77,7 @@ async def _run_per_tenant_cycle(
     the abort, leaving the session fully usable for the next step/org.
     """
     collection_results: list[dict[str, Any]] = []
+    pack_sync_results: list[dict[str, Any]] = []
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
@@ -90,6 +92,19 @@ async def _run_per_tenant_cycle(
                 "scheduler.per_tenant_step_failed",
                 org_id=org_id,
                 step="collection",
+                error=str(e)[:200],
+            )
+        try:
+            # Read-only: fetch, hash, validate and record. Installing is never
+            # automatic unless a source opts in (auto_install), because a pack
+            # rule executes against this tenant.
+            async with session.begin_nested():
+                pack_sync_results.append(await pack_sync.sync_for_org(session, org_id))
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="pack_sync",
                 error=str(e)[:200],
             )
         try:
@@ -144,6 +159,12 @@ async def _run_per_tenant_cycle(
             ],
             "captured": sum(r["captured"] for r in collection_results),
             "drift": sum(r["drift"] for r in collection_results),
+        },
+        "pack_sync": {
+            "organizations_processed": [r["organization_id"] for r in pack_sync_results],
+            "sources": sum(r["sources"] for r in pack_sync_results),
+            "pending": sum(r["pending"] for r in pack_sync_results),
+            "installed": sum(r["installed"] for r in pack_sync_results),
         },
         "conmon": conmon_results,
         "control_tests": control_test_results,
