@@ -9,6 +9,8 @@ generic template sentence. Pure and side-effect-free; the orchestration
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from .constants import DRAFT_PREFIX as DRAFT_PREFIX  # noqa: PLC0414 — explicit re-export
 from .constants import responsible_role_for
 
@@ -122,6 +124,122 @@ def _inherited_evidence_clause(provider: str, crm_ref: str | None) -> tuple[str,
     )
 
 
+# Sentence-ending punctuation a statement may arrive with: a period, question
+# mark, exclamation point, or the Unicode ellipsis. All four are stripped from
+# the end the same way a bare trailing period always was, so "Is legacy auth
+# blocked?" does not render "Is legacy auth blocked?." once the clause's own
+# terminal period is appended.
+_SENTENCE_END_CHARS = ".?!…"
+
+
+def _strip_trailing_sentence_end(text: str) -> str:
+    return text.rstrip(_SENTENCE_END_CHARS)
+
+
+def _join_statements(cleaned: Sequence[str]) -> str:
+    """Join already-normalized statements into one clause body (no lead/colon).
+
+    Authors write whole sentences (the design premise), so a statement often
+    already contains its own internal sentence-ending punctuation once its
+    single *trailing* mark has been stripped -- e.g. "MFA is enforced. Legacy
+    auth is blocked." normalizes to "MFA is enforced. Legacy auth is blocked".
+    Folding that into a ``"; "``-joined list would splice a sentence break
+    into what reads as one list item ("Disk encryption is on; MFA is
+    enforced. Legacy auth is blocked."). So when *any* statement in the group
+    still carries internal sentence-ending punctuation, the whole group
+    renders as separate sentences instead of a semicolon list; otherwise the
+    semicolon-joined form is used, unchanged from before.
+    """
+    if any(ch in _SENTENCE_END_CHARS for s in cleaned for ch in s):
+        return " ".join(f"{s}." for s in cleaned)
+    return "; ".join(cleaned) + "."
+
+
+def _usable_statements(capability_statements: Sequence[tuple[str, str]]) -> list[str]:
+    """Non-empty capability statements, normalized, sorted by capability key.
+
+    ``capability_statements`` is a sequence of ``(capability_key, statement)``
+    pairs, sorted here by the *key* -- not the statement text. Editing a
+    capability's wording must not reorder the clause on every other control
+    that capability shares with others; only adding, removing, or renaming a
+    capability changes order. (Tuple comparison falls back to statement text
+    only to break a tie between two distinct capabilities that share a key,
+    which the caller's unique-key constraint should already prevent -- this
+    is belt-and-suspenders determinism, not a real ordering signal.)
+    Reproducibility -- regenerating an SSP without edits produces identical
+    prose -- and this ordering is a precondition for narrative redline later.
+
+    Empty and whitespace-only entries are dropped: an empty clause would
+    render "Implementation: ." . A trailing sentence-ending mark is stripped,
+    because :func:`capability_clause` (via :func:`_join_statements`) supplies
+    the terminal punctuation and authors write whole sentences -- without this
+    every statement rendered "...no legacy-auth exclusions..". Normalizing
+    before de-duplication also means the same statement with and without its
+    trailing period is one statement, not two.
+    """
+    # ``if s`` is the None guard: ``Capability.statement`` is a nullable
+    # column, and a caller that forgets to filter should get dropped entries
+    # rather than an AttributeError from deep inside the SSP generator.
+    # Whitespace- and punctuation-only entries are caught after stripping.
+    ordered = sorted(
+        (key, s.strip()) for key, s in capability_statements if s and s.strip()
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for _key, s in ordered:
+        cleaned = _strip_trailing_sentence_end(s).strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        out.append(cleaned)
+    return out
+
+
+def capability_clause(
+    capability_statements: Sequence[tuple[str, str]],
+    partial_capability_statements: Sequence[tuple[str, str]] = (),
+    *,
+    residual: bool = False,
+) -> str:
+    """An implementation sentence naming the capabilities that cover a control.
+
+    Appended rather than spliced into the body sentence. Capability statements
+    are whole sentences, and the ``customer`` and ``shared`` branches need
+    different grammatical forms ("by configuring X" versus "configures X"), so
+    interpolating one string into both would either break the grammar or force
+    rewording the existing prose -- and rewording it would break the
+    byte-identical guarantee for controls no capability covers.
+
+    ``capability_statements`` covers capabilities whose status is genuinely a
+    live implementation (``implemented`` / ``inherited``); a capability with
+    ``status == "partial"`` belongs in ``partial_capability_statements``
+    instead and renders under its own "Partial implementation:" lead so the
+    SSP narrates real partial work without overstating it as complete. Each is
+    a sequence of ``(capability_key, statement)`` pairs -- see
+    :func:`_usable_statements` for why key, not text, drives order.
+
+    ``residual`` frames it for an inherited control, where the provider
+    implements the control and the organization's capability covers only what
+    is left.
+    """
+    full = _usable_statements(capability_statements)
+    partial = _usable_statements(partial_capability_statements)
+    if not full and not partial:
+        return ""
+    full_lead = "The organization's residual implementation" if residual else "Implementation"
+    partial_lead = (
+        "The organization's partial residual implementation"
+        if residual
+        else "Partial implementation"
+    )
+    clause = ""
+    if full:
+        clause += f" {full_lead}: {_join_statements(full)}"
+    if partial:
+        clause += f" {partial_lead}: {_join_statements(partial)}"
+    return clause
+
+
 def compose(
     *,
     control_id: str,
@@ -139,6 +257,8 @@ def compose(
     frequency: str | None = None,
     policy_ref: str | None = None,
     crm_ref: str | None = None,
+    capability_statements: Sequence[tuple[str, str]] = (),
+    partial_capability_statements: Sequence[tuple[str, str]] = (),
 ) -> tuple[str, bool]:
     """Return ``(statement_text, needs_review)`` tailored to the derivation.
 
@@ -154,7 +274,15 @@ def compose(
     governing policy/procedure when one is available. ``crm_ref`` is a real
     leveraged-authorization / customer-responsibility-matrix reference for an
     *inherited* control — required for the statement to be auto-accepted
-    (FR-11).
+    (FR-11). ``capability_statements`` are the ``(capability_key, statement)``
+    pairs of capabilities that genuinely describe a live implementation of
+    this control (P1); when present, an implementation sentence naming them
+    is appended to the body, so one capability edited once re-renders every
+    control it maps to. ``partial_capability_statements`` are the same shape
+    for capabilities whose status is ``partial`` -- real work, but rendered
+    under a distinct "Partial implementation:" lead so the SSP does not
+    overstate it as complete. Both empty by default, which makes every
+    existing call byte-identical.
     """
     obj = (requirement or "the control requirement").strip().rstrip(".")
     caps = captured if include_captured else []
@@ -190,7 +318,7 @@ def compose(
             f" Customer responsibility: {role} monitors {provider}'s continued authorization "
             f"and performs any residual configuration or hybrid actions needed to {obj} that "
             f"{provider} does not fully cover."
-        )
+        ) + capability_clause(capability_statements, partial_capability_statements, residual=True)
         text = (
             f"Control {control_id} is inherited from {provider}. The organization relies on "
             f"the provider's authorized implementation to {obj}." + customer_line
@@ -201,7 +329,7 @@ def compose(
         return _finish(
             f"Control {control_id} is a shared responsibility on {environment}. The platform "
             f"provides the underlying capability, and the organization configures {services} "
-            f"to {obj}.",
+            f"to {obj}." + capability_clause(capability_statements, partial_capability_statements),
             True,
             evidence=_evidence_clause("shared"),
         )
@@ -210,13 +338,15 @@ def compose(
     evidence = _evidence_clause("customer")
     if style == "concise":
         return _finish(
-            f"The organization configures {services} on {environment} to {obj}.",
+            f"The organization configures {services} on {environment} to {obj}."
+            + capability_clause(capability_statements, partial_capability_statements),
             True,
             evidence=evidence,
         )
     return _finish(
         f"The organization implements Control {control_id} on {environment} by configuring "
-        f"{services} to {obj}.",
+        f"{services} to {obj}."
+        + capability_clause(capability_statements, partial_capability_statements),
         True,
         evidence=evidence,
     )

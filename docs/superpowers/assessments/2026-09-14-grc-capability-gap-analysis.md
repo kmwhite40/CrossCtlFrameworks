@@ -359,6 +359,36 @@ CCI is the DoD join key: STIG and SCAP results reference CCIs, CCIs map to
 800-53. Without it there is no path from technical scan output to control
 status, and no alignment with eMASS, which assesses at CCI granularity.
 
+**Source material reviewed 2026-09-14, and one finding changes the design.**
+Two sources were supplied: the DISA CCI list in flattened CSV form, and
+`commoncriteria.github.io/pp/references/nistvscci.html`.
+
+- **The CCI list tops out at 800-53 rev 4. There is no rev 5.** The CSV carries
+  repeating `(revision, control)` pairs for revisions **4, 3, and 1**, and the
+  second source is explicitly "NIST SP 800-53 **Revision 4** and the DISA FSO
+  CCI List". Concord's catalog is **rev 5**, so CCI cannot be joined to the
+  adopted catalog directly — it needs a rev4 → rev5 bridge, which NIST
+  publishes separately. Mapping CCI straight onto rev 5 would silently
+  mis-attribute controls, which is the failure mode this programme exists to
+  avoid.
+- **References are at control-*item* granularity** — `AC-1 b 1`,
+  `AC-2 (7) (a)`, `AC-19 (4) (b) (4)`. A CCI maps to a sentence of a control,
+  not a control, and that is finer than `catalog/canonical.py` parses today.
+- **The mapping is sparse per revision.** Rows with empty rev-4 columns
+  (`CCI-000062`) have no rev-4 home at all, so a parser must treat an empty
+  pair as absent rather than as a blank control.
+- **`type` is `policy` or `technical`**, and the distinction is load-bearing:
+  *technical* CCIs are what a STIG or SCAP result can satisfy, *policy* CCIs
+  are documentation obligations. That maps directly onto the
+  deterministic-check-wins principle — a technical CCI is a candidate for a
+  posture check, a policy CCI is not.
+- The second source is **HTML only** and is a coordination page rather than an
+  authority; DISA's `U_CCI_List.xml` remains the artifact to pin. Useful for
+  cross-checking a parser, not as a system of record.
+- The supplied CSV arrived **truncated** by message size, so it is a sample
+  (roughly the AC family) of a ~2,000-entry list — fixture-grade material, not
+  the full source.
+
 ### G5 — STIG/SCAP ingestion missing
 
 `ingest/scanners.py` parses Nessus/Tenable XML, AWS Inspector JSON, and
@@ -367,17 +397,39 @@ and idempotently — good framework, wrong format family. No STIG checklist
 (`.ckl`) parser and no XCCDF/SCAP ARF parser. These carry the CCI references,
 so G5 is what makes G4 pay off.
 
-### G6 — SSP generator is a per-control editor, not an engine
+### G6 — SSP narrative is derived per control, not authored once
+
+**Corrected 2026-09-14.** The original framing ("a per-control editor")
+understated what exists. `ssp/statements.compose` is a real composer: it
+tailors a statement from responsibility, inheritance source, environment,
+services, ODP values, live captures, responsible role, review frequency,
+policy reference, and CRM reference, in three style variants, returning a
+`needs_review` flag and marking drafts with `DRAFT_PREFIX`.
+
+The actual gap is narrower and sharper: **`compose` derives narrative from a
+control's derivation inputs, not from a capability's authored text.** So one
+MFA decision is still *re-derived* for every dependent control rather than
+*written once and reused* — edit-once-propagate does not exist. That is P4's
+core, and it is additive to a composer that works rather than a replacement
+for one.
 
 Beyond the re-parenting in G1:
 
 1. **OSCAL SSP is export-only.** No import/round-trip, so a CSP's OSCAL SSP or
    a prior authorization package cannot be ingested. (Paramify sells this as a
    service — "SSP ingestion and digitalization.")
-2. **No inheritance / shared responsibility in statements.**
-   `FedRAMPDependency` exists for 20x but is not wired into SSP narrative, so
-   "inherited from AWS GovCloud" and the customer/provider responsibility split
-   cannot be expressed. No CRM (Customer Responsibility Matrix) generation.
+2. **Inheritance in statements — CORRECTED 2026-09-14.** This previously said
+   inheritance and shared responsibility were absent from SSP narrative. They
+   are not. `ssp/statements.compose` handles `not_applicable`, `inherited`,
+   `shared`, and `customer` responsibility; `_inherited_evidence_clause`
+   names the provider and a CRM reference and **deliberately refuses to claim
+   evidence is retained without one** (FR-11), returning `needs_review`
+   instead. `governance/automation.py:545` feeds `crm_ref` from
+   `vendor.authorization` and `policy_ref` from a real `Policy` matched by
+   control id. Statements also carry the responsible role, review frequency,
+   ODP values, and live connector captures.
+   **What is genuinely missing is CRM *document* generation** — `crm_ref` is a
+   reference string, not a produced Customer Responsibility Matrix.
 3. **No evidence or posture citation in statements.**
 4. **No narrative diff/redline between SSP revisions.** `packages/` has diff;
    SSP prose does not.
