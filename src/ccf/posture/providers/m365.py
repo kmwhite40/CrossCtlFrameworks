@@ -13,7 +13,7 @@ no live tenant is reachable from the build environment.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from ..types import PostureCheck, ResourceFinding
@@ -205,13 +205,17 @@ def evaluate_stale_accounts(
                 )
             )
             continue
-        days = (now - last).days
+        elapsed = now - last
+        # Compare the full-precision delta against the threshold, not
+        # `elapsed.days`: `.days` truncates, so 90.9 days inactive would
+        # report `90` and pass a 90-day threshold -- an effective threshold
+        # of 91, not 90.
         findings.append(
             ResourceFinding(
                 resource_id=ref,
                 resource_type="entra_user",
-                verdict="fail" if days > STALE_ACCOUNT_DAYS else "pass",
-                observed=f"last interactive sign-in {days} day(s) ago",
+                verdict="fail" if elapsed > timedelta(days=STALE_ACCOUNT_DAYS) else "pass",
+                observed=f"last interactive sign-in {elapsed.days} day(s) ago",
                 detail={"last_sign_in": activity.get("lastSignInDateTime")},
             )
         )

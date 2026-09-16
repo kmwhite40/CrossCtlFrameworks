@@ -175,9 +175,13 @@ async def scan_for_system(
             title=check.title,
             capability_id=capability_id,
         )
+        # `considered` (not `evaluated`) so an unlicensed tenant -- where
+        # Graph omits signInActivity and every finding is not_applicable --
+        # reads as "no resources in scope" rather than "0 of 500 failing",
+        # which a reader parses as a clean, fully-assessed 500-user fleet.
         detail = (
-            f"{outcome.failing} of {outcome.evaluated} {check.resource_type}(s) failing"
-            if outcome.evaluated
+            f"{outcome.failing} of {outcome.considered} {check.resource_type}(s) failing"
+            if outcome.considered
             else "no resources in scope"
         )
         await record_result(

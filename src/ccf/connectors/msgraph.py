@@ -19,6 +19,7 @@ coverage for the UI, not asserted.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -31,6 +32,15 @@ from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
 log = get_logger(__name__)
+
+
+class GraphPaginationTruncatedError(RuntimeError):
+    """Raised when ``_get_all`` hits the page cap with a page still pending.
+
+    A fleet check evaluated on a partial page set is worse than one that did
+    not run at all -- it can roll up to ``pass`` while the unread pages hide
+    the non-compliant rows. This is never swallowed silently.
+    """
 
 
 class MsGraphConnector(ConfigConnector):
@@ -82,19 +92,62 @@ class MsGraphConnector(ConfigConnector):
         check that stopped at page one would report ``pass`` while three
         non-compliant users sat on page four. Raises on a non-2xx status so
         :meth:`scan` can tell "could not look" from "nothing to see".
+
+        Hitting :attr:`_MAX_PAGES` with a ``nextLink`` still outstanding is
+        the same danger relocated to page 51: it raises
+        :class:`GraphPaginationTruncatedError` rather than returning a partial
+        fleet that would roll up to a false ``pass``.
         """
         rows: list[dict[str, Any]] = []
         next_url: str | None = url
         for _ in range(self._MAX_PAGES):
             if not next_url:
-                break
-            resp = await client.get(next_url, headers=headers)
+                return rows
+            resp = await self._get_with_retry(client, next_url, headers)
             resp.raise_for_status()
             payload = resp.json()
             rows.extend(payload.get("value") or [])
             nxt = payload.get("@odata.nextLink")
             next_url = nxt if isinstance(nxt, str) else None
+        if next_url:
+            raise GraphPaginationTruncatedError(
+                f"stopped after {self._MAX_PAGES} pages with more pages remaining "
+                "-- refusing to evaluate a partial fleet"
+            )
         return rows
+
+    async def _get_with_retry(
+        self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
+    ) -> httpx.Response:
+        """One bounded retry on HTTP 429, honoring ``Retry-After``.
+
+        Graph throttles ``/users`` and the reports endpoints hard, so a
+        multi-page fleet scan of a real tenant will hit it. A single retry
+        keeps the check usable without turning this into an unbounded
+        backoff loop -- a second consecutive 429 is surfaced like any other
+        transport failure.
+        """
+        resp = await client.get(url, headers=headers)
+        if resp.status_code == 429:
+            await asyncio.sleep(self._retry_after_seconds(resp.headers.get("Retry-After")))
+            resp = await client.get(url, headers=headers)
+        return resp
+
+    @staticmethod
+    def _retry_after_seconds(value: str | None) -> float:
+        """Seconds to wait, from a ``Retry-After`` header. Bounded and safe.
+
+        Graph sends a plain integer-seconds value here (never the HTTP-date
+        form), but a missing or unparseable header must not raise, and a
+        pathological value must not stall the scan.
+        """
+        if value is None:
+            return 1.0
+        try:
+            seconds = float(value)
+        except ValueError:
+            return 1.0
+        return min(max(seconds, 0.0), 30.0)
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can obtain a Graph token for this org's Gov tenant."""
@@ -161,18 +214,25 @@ class MsGraphConnector(ConfigConnector):
                 headers = {"Authorization": f"Bearer {token}"}
                 now = datetime.now(UTC)
                 for check in m365.CHECKS:
-                    # Per-check isolation: one permission gap must not discard
-                    # the checks that did run, matching capture()'s
-                    # per-sub-capture try and the scheduler's per-tenant
-                    # savepoint.
+                    # Per-check isolation: one permission gap -- or one
+                    # evaluator failure on an unexpected Graph shape -- must
+                    # not discard the checks that did run, matching
+                    # capture()'s per-sub-capture try and the scheduler's
+                    # per-tenant savepoint. _evaluate is inside this same try:
+                    # an evaluator exception (e.g. a naive datetime from a
+                    # timestamp Graph returned without an offset) must
+                    # produce _unrunnable for THIS check, not escape to the
+                    # outer except and discard every outcome collected so far.
                     try:
                         rows = await self._get_all(
                             client, f"{s.graph_base_url}{m365.ENDPOINTS[check.key]}", headers
                         )
+                        outcomes.append(
+                            self._evaluate(check, rows, tenant_id=tenant_id, now=now)
+                        )
                     except Exception as e:
                         outcomes.append(self._unrunnable(check, e))
                         continue
-                    outcomes.append(self._evaluate(check, rows, tenant_id=tenant_id, now=now))
         except Exception as e:  # token/transport failure -- nothing to report
             log.warning("connector.msgraph.scan_failed", error=str(e)[:200])
             return []
@@ -208,14 +268,15 @@ class MsGraphConnector(ConfigConnector):
         P2a's rollup maps zero findings to ``not_applicable``, so returning
         nothing here would hide a missing app permission behind a
         benign-looking verdict. Instead one finding carries
-        ``manual_review_required`` and names the status and the permission the
-        check needs, which puts the reason in the resource list where an
-        operator looks.
+        ``manual_review_required`` and names the reason, which puts it in the
+        resource list where an operator looks. The verdict is the same in
+        every case; only the message differs, and only a 401/403 blames a
+        missing permission -- a 429, a 500, a timeout, a truncated fleet, or a
+        malformed payload are described by what they actually are, so an
+        operator is never told to grant a permission that was never the
+        problem.
         """
-        status = ""
-        if isinstance(error, httpx.HTTPStatusError):
-            status = f"{error.response.status_code} "
-        needed = ", ".join(check.required_permissions) or "unknown permissions"
+        observed = self._describe_failure(check, error)
         log.warning(
             "connector.msgraph.check_unrunnable", check=check.key, error=str(error)[:200]
         )
@@ -226,11 +287,34 @@ class MsGraphConnector(ConfigConnector):
                     resource_id=(self.credential or {}).get("tenant_id") or "unknown",
                     resource_type=check.resource_type,
                     verdict="manual_review_required",
-                    observed=f"{status}could not read Graph; requires {needed}",
+                    observed=observed,
                     detail={"error": str(error)[:300]},
                 ),
             ),
         )
+
+    @staticmethod
+    def _describe_failure(check: PostureCheck, error: Exception) -> str:
+        """A human-readable reason a check could not run.
+
+        Only 401/403 name the required permission -- every other failure
+        class (throttling, a server error, a timeout, a dropped connection, a
+        truncated fleet, an unparseable payload) is described by what it
+        actually is instead.
+        """
+        if isinstance(error, httpx.HTTPStatusError):
+            code = error.response.status_code
+            if code in (401, 403):
+                needed = ", ".join(check.required_permissions) or "unknown permissions"
+                return f"{code} could not read Graph; requires {needed}"
+            return f"Graph returned {code}; could not evaluate this check"
+        if isinstance(error, GraphPaginationTruncatedError):
+            return f"could not evaluate this check: {error}"
+        if isinstance(error, httpx.TimeoutException):
+            return "Graph request timed out; could not evaluate this check"
+        if isinstance(error, httpx.RequestError):
+            return f"could not reach Graph ({type(error).__name__}); could not evaluate this check"
+        return f"could not evaluate this check ({type(error).__name__})"
 
     def _map_mfa(self, payload: dict[str, Any]) -> list[CapturedParameter]:
         """Detect an enabled Conditional Access policy that grants/requires MFA."""

@@ -138,6 +138,25 @@ def test_stale_account_fails_past_the_threshold() -> None:
     assert f.verdict == "fail"
 
 
+def test_stale_account_fails_on_a_fractional_day_past_the_threshold() -> None:
+    """``.days`` truncates: 90.9 days inactive must still fail a 90-day
+    threshold, not be rounded down to an effective threshold of 91."""
+    rows = [
+        {
+            "id": "u1",
+            "userPrincipalName": "old@x.gov",
+            "accountEnabled": True,
+            "signInActivity": {
+                "lastSignInDateTime": (
+                    NOW - timedelta(days=STALE_ACCOUNT_DAYS, hours=22)
+                ).isoformat().replace("+00:00", "Z")
+            },
+        }
+    ]
+    (f,) = evaluate_stale_accounts(rows, now=NOW)
+    assert f.verdict == "fail"
+
+
 def test_recent_account_passes() -> None:
     rows = [
         {"id": "u1", "userPrincipalName": "new@x.gov", "accountEnabled": True,
@@ -220,13 +239,17 @@ def test_all_three_checks_are_registered_under_msgraph() -> None:
 
 
 def test_every_check_declares_controls_and_permissions() -> None:
-    for c in checks_for("msgraph"):
+    checks = checks_for("msgraph")
+    assert checks
+    for c in checks:
         assert c.control_ids, c.key
         assert c.required_permissions, c.key
         assert c.provider == "msgraph"
 
 
 def test_control_ids_are_canonical_not_zero_padded() -> None:
-    for c in checks_for("msgraph"):
+    checks = checks_for("msgraph")
+    assert checks
+    for c in checks:
         for cid in c.control_ids:
             assert "-0" not in cid, f"{c.key} uses a zero-padded id: {cid}"

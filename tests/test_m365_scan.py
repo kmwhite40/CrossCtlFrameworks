@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from ccf.connectors.msgraph import MsGraphConnector
+from ccf.posture.providers import m365 as m365_provider
 from ccf.posture.providers.m365 import LEGACY_AUTH_BLOCKED, MFA_REGISTERED, STALE_ACCOUNTS
 
 CRED = {"tenant_id": "t-1", "client_id": "c-1", "client_secret": "s-1"}
@@ -92,6 +93,44 @@ async def test_one_check_failing_does_not_lose_the_others(
     assert mfa.verdict == "manual_review_required"
     legacy = next(o for o in outcomes if o.check_key == LEGACY_AUTH_BLOCKED.key)
     assert legacy.verdict == "fail"  # unaffected by its neighbour
+
+
+async def test_evaluator_failure_does_not_discard_the_whole_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception inside one check's evaluator -- e.g. a naive datetime from
+    a timestamp Graph returned without an offset -- must not escape scan()'s
+    outer try/except and turn into a bare ``[]``. That would leave the stale
+    previous scan's ``pass`` standing as the system's current recorded
+    posture, and it would silently drop the other two checks that did run."""
+
+    async def fake_get_all(
+        self: Any, client: Any, url: str, headers: Any
+    ) -> list[dict[str, Any]]:
+        return []
+
+    def exploding_evaluator(*a: Any, **k: Any) -> Any:
+        raise TypeError("can't subtract offset-naive and offset-aware datetimes")
+
+    monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
+    monkeypatch.setattr(MsGraphConnector, "_get_all", fake_get_all)
+    monkeypatch.setitem(
+        m365_provider.EVALUATORS, MFA_REGISTERED.key, exploding_evaluator
+    )
+
+    outcomes = await MsGraphConnector(credential=CRED).scan()
+    assert outcomes, "an evaluator exception must not discard the whole scan"
+    keys = {o.check_key for o in outcomes}
+    assert keys == {MFA_REGISTERED.key, LEGACY_AUTH_BLOCKED.key, STALE_ACCOUNTS.key}
+
+    mfa = next(o for o in outcomes if o.check_key == MFA_REGISTERED.key)
+    assert mfa.verdict == "manual_review_required"
+
+    # The checks that did not raise must report normally, unaffected.
+    legacy = next(o for o in outcomes if o.check_key == LEGACY_AUTH_BLOCKED.key)
+    assert legacy.verdict == "fail"  # no policy blocks legacy auth
+    stale = next(o for o in outcomes if o.check_key == STALE_ACCOUNTS.key)
+    assert stale.verdict == "not_applicable"  # no rows
 
 
 async def test_scan_never_raises_when_the_token_fails(
