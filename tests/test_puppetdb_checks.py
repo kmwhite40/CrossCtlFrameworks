@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from ccf.posture.checks import checks_for, endpoint_for, platform_check_keys
 from ccf.posture.providers import puppetdb
+from ccf.posture.rollup import roll_up_findings
 
 NOW = datetime(2026, 9, 15, 12, 0, tzinfo=UTC)
 
@@ -66,6 +67,18 @@ def test_an_unparseable_timestamp_is_manual_review_not_pass() -> None:
     assert _verdicts(findings) == {"odd01": "manual_review_required"}
 
 
+def test_an_offset_less_timestamp_is_manual_review_not_a_crash() -> None:
+    """IMPORTANT 4: `datetime.fromisoformat` accepts an offset-less string and
+    returns a naive datetime rather than raising. Subtracting that from the
+    timezone-aware `now` below used to raise TypeError and take down the
+    whole fleet's verdict for this one node -- confirmed by evaluating a
+    mixed batch: a good node's finding must still come back."""
+    findings = puppetdb.evaluate_node_reporting(
+        [_node("naive01", timestamp="2026-09-15T11:30:00"), _node("web01")], now=NOW
+    )
+    assert _verdicts(findings) == {"naive01": "manual_review_required", "web01": "pass"}
+
+
 def test_a_custom_threshold_is_honoured() -> None:
     findings = puppetdb.evaluate_node_reporting(
         [_node("web01", hours_ago=5)], now=NOW, threshold_hours=2
@@ -109,10 +122,11 @@ def test_a_missing_run_status_is_manual_review_not_pass() -> None:
 
 
 def test_no_nodes_yields_no_findings() -> None:
-    """roll_up_findings maps that to not_applicable, which is right: an empty
-    PuppetDB is not a healthy fleet."""
+    """roll_up_findings maps zero findings to not_applicable, which is right:
+    an empty PuppetDB is not a healthy fleet."""
     assert puppetdb.evaluate_node_reporting([], now=NOW) == []
     assert puppetdb.evaluate_last_run_ok([]) == []
+    assert roll_up_findings([]) == "not_applicable"
 
 
 def test_a_node_with_no_certname_is_still_reported() -> None:

@@ -80,13 +80,25 @@ def _node_ref(node: dict[str, Any]) -> str:
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
-    """PuppetDB timestamps are ISO-8601 with a ``Z``; anything else is unusable."""
+    """PuppetDB timestamps are ISO-8601 with a ``Z``; anything else is unusable.
+
+    ``datetime.fromisoformat`` happily accepts an offset-less string and
+    returns a **naive** datetime rather than raising -- and subtracting that
+    from the timezone-aware ``now`` in :func:`evaluate_node_reporting` raises
+    ``TypeError``, which previously escaped this function and took down the
+    whole fleet's verdict for one bad node. A parsed-but-naive result is
+    exactly as unusable as one that failed to parse, so both return ``None``
+    and let the node fall back to ``manual_review_required``.
+    """
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def evaluate_node_reporting(
