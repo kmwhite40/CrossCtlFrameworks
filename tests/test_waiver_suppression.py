@@ -5,12 +5,15 @@ from __future__ import annotations
 import itertools
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
 
+import ccf.governance.control_tests as ct
 from ccf.db import session_scope
 from ccf.governance.control_tests import record_result
+from ccf.governance.waivers import Coverage
 from ccf.models import POAM, Notification, Organization, System, Task
-from ccf.models_grc import ControlTest, ControlTestResourceResult
+from ccf.models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
 from ccf.models_waivers import Waiver
 from ccf.posture.scan import effective_verdict
 from ccf.posture.types import ResourceFinding
@@ -329,6 +332,109 @@ async def test_an_unwaived_result_records_waived_zero() -> None:
             )
         ).scalars().all()
         assert [r.waiver_id for r in rows] == [None]
+
+
+# ── IMPORTANT 2: a bug in waiver logic must not cost the recorded finding ────
+
+
+async def test_a_bug_in_waiver_lookup_does_not_cost_the_recorded_finding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """record_result never commits -- the caller owns the transaction -- so an
+    unguarded exception from the waiver block would propagate out and the
+    caller would roll back everything, including the already-flushed result
+    and resource rows. Simulate a bug in waivers_for_test and confirm three
+    things: (1) record_result does not raise, (2) it fails closed -- nothing
+    is suppressed, the alert fires as if no waiver existed, and (3) the
+    result actually survives the caller's eventual commit (session_scope's
+    own commit on exit) rather than the transaction being left aborted by a
+    flush-time failure the try/except alone wouldn't have caught."""
+    monkeypatch.setattr(ct, "waivers_for_test", _boom)
+
+    async with session_scope() as session:
+        org, sys_, test = await _fixture(session)
+        await _waive(session, org, sys_)  # would have suppressed, had it been reached
+        res = await record_result(
+            session, test, status="fail", detail="2 failing",
+            evaluated=2, failing=2, resources=_findings("res-0", "res-1"),
+        )
+        assert res.waived == 0, "failed closed: nothing was suppressed"
+        notifications, tasks, poams = await _counts(session, org, sys_)
+        assert (notifications, tasks, poams) == (1, 1, 1), "the alert fired normally"
+        result_id = res.id
+
+    # session_scope committed without raising on the way out of the block
+    # above -- if the waiver block's failure had left the transaction
+    # aborted, that commit (or a query afterward) would have raised instead.
+    async with session_scope() as session:
+        reloaded = (
+            await session.execute(
+                select(ControlTestResult).where(ControlTestResult.id == result_id)
+            )
+        ).scalar_one()
+        assert reloaded.status == "fail"
+        assert reloaded.failing == 2
+        rows = (
+            await session.execute(
+                select(ControlTestResourceResult).where(
+                    ControlTestResourceResult.result_id == result_id
+                )
+            )
+        ).scalars().all()
+        assert {r.resource_id for r in rows} == {"res-0", "res-1"}
+
+
+async def _boom(*_args: object, **_kwargs: object) -> list[Waiver]:
+    raise RuntimeError("simulated bug in waiver logic")
+
+
+async def test_a_flush_time_bug_in_waiver_logic_does_not_poison_the_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike the lookup-time bug above, this fails INSIDE the flush itself:
+    ``cover()`` is made to attribute a finding to a waiver id that does not
+    exist, which raises an IntegrityError (FK violation) when
+    ``row.waiver_id`` is flushed. A bare try/except around a bare flush would
+    not be enough to satisfy the "no bug costs the recorded finding"
+    guarantee here: ``AsyncSession.rollback()`` is not savepoint-scoped, so
+    an aborted flush would leave the *outer* Postgres transaction aborted and
+    the caller's eventual commit would fail anyway -- still costing the
+    finding despite record_result itself not raising. The SAVEPOINT
+    (``session.begin_nested()``) is what actually prevents that."""
+
+    def _bad_cover(*_a: object, **_kw: object) -> Coverage:
+        return Coverage(suppress=True, waived=1, by_resource={"res-0": 999_999_999})
+
+    monkeypatch.setattr(ct, "cover", _bad_cover)
+
+    async with session_scope() as session:
+        org, sys_, test = await _fixture(session)
+        await _waive(session, org, sys_)
+        res = await record_result(
+            session, test, status="fail", detail="1 failing",
+            evaluated=1, failing=1, resources=_findings("res-0"),
+        )
+        # The SAVEPOINT rollback expires res's attributes touched inside it
+        # (waived was set there before the flush failed) -- refresh to read
+        # them back rather than asserting on stale in-Python state.
+        await session.refresh(res)
+        assert res.waived == 0, "failed closed despite the bad waiver id"
+        notifications, tasks, poams = await _counts(session, org, sys_)
+        assert (notifications, tasks, poams) == (1, 1, 1)
+        result_id = res.id
+
+    # As above: this commit (session_scope's, on exit of the block above)
+    # having already succeeded is half the proof; re-reading confirms the
+    # result really is there, not just that no exception happened to surface.
+    async with session_scope() as session:
+        reloaded = (
+            await session.execute(
+                select(ControlTestResult).where(ControlTestResult.id == result_id)
+            )
+        ).scalar_one()
+        assert reloaded.status == "fail"
+        assert reloaded.failing == 1
+        assert reloaded.waived == 0
 
 
 async def test_a_passing_result_is_unaffected_by_a_waiver() -> None:

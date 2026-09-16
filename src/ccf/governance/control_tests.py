@@ -425,23 +425,50 @@ async def record_result(
     if resources:
         await session.flush()
 
-    # Waivers are consulted only here -- after every observation is persisted,
-    # so no bug in waiver logic can cost a recorded finding. A waiver
-    # suppresses the *consequence* and never the evidence: the status stays
-    # `fail`, the resource rows stay, last_status stays, and effective_verdict
-    # still reports the failure. See
+    # Waivers are consulted only here -- after every observation is persisted.
+    # A waiver suppresses the *consequence* and never the evidence: the status
+    # stays `fail`, the resource rows stay, last_status stays, and
+    # effective_verdict still reports the failure. See
     # docs/superpowers/specs/2026-09-15-waivers-design.md section 2.
+    #
+    # The whole block runs in its own SAVEPOINT and is wrapped in try/except:
+    # a bug anywhere in it (a bad query, a shape ``cover()`` doesn't expect, a
+    # flush-time constraint violation) must never cost the result recorded
+    # above. ``session.flush()`` is not a commit -- this function never
+    # commits, the caller owns the transaction -- so an *unguarded* exception
+    # here would propagate out of record_result and the caller would roll
+    # back everything, including the already-flushed resource rows. A bare
+    # try/except around the flush alone would not be enough either:
+    # AsyncSession.rollback() is not savepoint-scoped (see
+    # _resolve_on_recovery above), so a flush-time DB error would leave the
+    # *outer* transaction aborted and take the recorded result down anyway on
+    # the caller's eventual commit. The SAVEPOINT is what makes "no bug in
+    # waiver logic can cost a recorded finding" actually true rather than
+    # merely true for bugs that happen not to touch the database.
+    #
+    # On failure, coverage stays None and the alert fires below as if no
+    # waiver existed -- failing closed is the safe direction: a spurious
+    # alert is a nuisance, a silently suppressed one is a hidden risk.
     coverage = None
     if status in ("fail", "warn"):
-        candidates = await waivers_for_test(session, test)
-        if candidates:
-            coverage = cover(resources, candidates, today=datetime.now(UTC).date())
-            res.waived = coverage.waived
-            for row, f in zip(resource_rows, resources, strict=True):
-                waiver_id = coverage.by_resource.get(f.resource_id)
-                if waiver_id is not None:
-                    row.waiver_id = waiver_id
-            await session.flush()
+        try:
+            async with session.begin_nested():
+                candidates = await waivers_for_test(session, test)
+                if candidates:
+                    coverage = cover(resources, candidates, today=datetime.now(UTC).date())
+                    res.waived = coverage.waived
+                    for row, f in zip(resource_rows, resources, strict=True):
+                        waiver_id = coverage.by_resource.get(f.resource_id)
+                        if waiver_id is not None:
+                            row.waiver_id = waiver_id
+                    await session.flush()
+        except Exception as exc:
+            coverage = None
+            log.warning(
+                "control_tests.waiver_lookup_failed",
+                control_test_id=test.id,
+                error=str(exc)[:200],
+            )
 
     # The recovery condition is deliberately unchanged by the widened
     # vocabulary: only `pass` from fail/warn clears a failure. Neither
