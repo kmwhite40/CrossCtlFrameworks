@@ -29,7 +29,10 @@ async def test_scan_returns_one_outcome_per_check(monkeypatch: pytest.MonkeyPatc
         self: Any, client: Any, url: str, headers: Any
     ) -> list[dict[str, Any]]:
         if "userRegistrationDetails" in url:
-            return [{"id": "u1", "userPrincipalName": "a@x.gov", "isMfaRegistered": True}]
+            return [
+                {"id": "u1", "userPrincipalName": "a@x.gov", "isMfaRegistered": True,
+                 "isMfaCapable": True}
+            ]
         return []
 
     monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
@@ -177,3 +180,27 @@ async def test_stale_check_receives_a_clock(monkeypatch: pytest.MonkeyPatch) -> 
     stale = next(o for o in outcomes if o.check_key == STALE_ACCOUNTS.key)
     assert stale.verdict == "fail"
     assert stale.failing == 1
+
+
+async def test_stale_accounts_requests_the_largest_supported_page_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a raised ``$top``, Graph's default 100-per-page on ``/users``
+    caps a fleet scan at ``_MAX_PAGES * 100`` (~5,000 users) before
+    :class:`GraphPaginationTruncatedError` permanently blocks a verdict for
+    any larger tenant. ``$top=500`` is the actual ceiling here -- Graph caps
+    ``/users`` at 500, not the usual 999, once ``signInActivity`` is
+    selected -- so a future edit that drops it must fail this test."""
+    urls: list[str] = []
+
+    async def record_url(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+        urls.append(url)
+        return []
+
+    monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
+    monkeypatch.setattr(MsGraphConnector, "_get_all", record_url)
+
+    await MsGraphConnector(credential=CRED).scan()
+
+    fleet_url = next(u for u in urls if "/v1.0/users?" in u)
+    assert "$top=500" in fleet_url
