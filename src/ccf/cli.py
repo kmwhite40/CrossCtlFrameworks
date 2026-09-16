@@ -1755,6 +1755,34 @@ def catalog_adopt(
     console.print(f"[green]Adopted revision {rev}[/green]")
 
 
+capability_app = typer.Typer(
+    help="Assurance capabilities — the reusable unit of implementation.",
+    no_args_is_help=True,
+)
+app.add_typer(capability_app, name="capability")
+
+
+@capability_app.command("derive")
+def capability_derive(
+    system: int = typer.Option(..., "--system", help="System id to derive status for."),
+) -> None:
+    """Annotate a system's control implementations from capability coverage.
+
+    Never writes the authored status and never creates a row — it only
+    annotates what the platform already tracks.
+    """
+    from .capability.derive import derive_for_system  # noqa: PLC0415
+
+    async def _run() -> Any:
+        async with session_scope() as session:
+            n = await derive_for_system(session, system_id=system)
+            await session.commit()
+            return n
+
+    n = asyncio.run(_run())
+    console.print(f"Annotated [green]{n}[/green] control implementation(s).")
+
+
 oscal_app = typer.Typer(help="OSCAL — validate exports against official or structural schema")
 app.add_typer(oscal_app, name="oscal")
 

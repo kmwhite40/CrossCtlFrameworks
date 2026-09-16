@@ -410,10 +410,13 @@ Paramify already advertises MCP, so this is table stakes.
 calculation from exploitability, internet reachability, and data impact —
 and no VDR/VER support (LEV/IRV/PAIN) anywhere in `fedramp20x/`.
 
-**Known open defect, material here:** auto-opened Tasks/POA&Ms never close when
-a control test later passes, and no test covers the fail->pass transition. The
-posture spine multiplies auto-opened volume, so this must be fixed as
-resolve-or-propose (never auto-close) within that work rather than deferred.
+**Corrected 2026-09-14:** this section previously called the closure loop an
+open defect. It is implemented and tested -- `_resolve_on_recovery`
+(`control_tests.py:270`) resolves the Task on fail->pass and deliberately
+leaves the POA&M open with a dated observation note for the ISSM-08/09 gate,
+covered by `tests/test_control_test_recovery.py`. See
+`docs/architecture/forge-capability-inventory.md` §2.6, which supersedes this
+document wherever they disagree.
 
 ### G9 — "True sources of value": provenance is partial
 
@@ -436,9 +439,15 @@ Against Paramify's four pillars:
 | **Gap Assessment** | `ssp/completeness.py`, `scoring/`, `fedramp20x/readiness.py`, `catalog/reconcile.py` | Components exist but no single "pick a framework, see gaps, get a living roadmap" surface; no CMMC SPRS score tracking |
 
 Additional field gaps: **eMASS interop** (no import/export — table stakes for
-DoD), **SSO/SCIM** (session-cookie + bearer only; no OIDC/SAML or SCIM),
-**ticketing/notification integrations** (internal `Task` only; no Jira,
-ServiceNow, or Slack).
+DoD) and **ticketing integrations** (no Jira or ServiceNow adapter, though
+`ConnectorConfig.connector_type` already enumerates both).
+
+**Corrected 2026-09-14:** this row previously claimed SSO/SCIM and Slack
+notifications were missing. Both exist — `identity/` and
+`api/routes/identity.py` implement **OIDC SSO and SCIM v2**, and
+`governance/delivery.py` posts severity-gated alerts to a Slack/Teams webhook.
+See `docs/architecture/forge-capability-inventory.md`, which supersedes this
+document wherever they disagree.
 
 ### G11 — Significant Change Notification engine absent
 
