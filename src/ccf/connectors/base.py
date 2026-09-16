@@ -17,7 +17,10 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from ..posture.checks import CheckOutcome
 
 
 @dataclass
@@ -81,3 +84,18 @@ class ConfigConnector(abc.ABC):
         ``reason`` when it cannot connect. Never raises.
         """
         return {"connected": False, "reason": "verification not implemented"}
+
+    async def scan(self) -> list[CheckOutcome]:
+        """Assess live configuration against this provider's posture checks.
+
+        Where :meth:`capture` reads a single value to fill an ODP blank, this
+        assesses a fleet: each returned ``CheckOutcome`` carries per-resource
+        findings with expected-versus-observed detail.
+
+        Defaults to ``[]`` so a connector that has not implemented posture
+        scanning is unaffected -- the same courtesy :meth:`verify` extends by
+        returning a not-implemented result. Implementations MUST NOT raise;
+        return ``[]`` when unconfigured or on a transient provider error, as
+        :meth:`capture` does.
+        """
+        return []

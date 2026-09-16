@@ -11,6 +11,7 @@ remediation task the manual run endpoint creates.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -18,9 +19,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
+from ..fedramp20x import VALIDATION_STATUSES
 from ..logging import get_logger
 from ..models import POAM, CaptureSnapshot, Control, PoamMilestone, Task
-from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
+from ..models_grc import (
+    ConnectorConfig,
+    ControlTest,
+    ControlTestResourceResult,
+    ControlTestResult,
+)
+from ..posture.checks import ResourceFinding
 from . import bus
 
 log = get_logger(__name__)
@@ -363,30 +371,77 @@ async def record_result(
     detail: str | None = None,
     evidence_ref: str | None = None,
     actor: str = "user",
+    evaluated: int = 0,
+    failing: int = 0,
+    expected: str | None = None,
+    resources: Sequence[ResourceFinding] = (),
 ) -> ControlTestResult:
     """Persist one test result, update the test, and alert on fail/warn.
 
-    Shared by the manual UI run action and the scheduler auto-run (run_due
-    delegates here) so the alert + remediation-task + recovery behaviour is
-    identical regardless of trigger.
+    Shared by the manual UI run action, the scheduler auto-run (run_due
+    delegates here), and posture scans -- so the alert + remediation-task +
+    recovery behaviour is identical regardless of trigger. This is
+    deliberately the only writer of results.
+
+    ``evaluated``/``failing``/``expected``/``resources`` are the posture
+    additions (0068) and all default to empty, so every pre-existing caller
+    behaves exactly as before.
     """
-    if status not in ("pass", "warn", "fail"):
-        raise ValueError("status must be pass|warn|fail")
+    if status not in VALIDATION_STATUSES:
+        raise ValueError(f"status must be one of {VALIDATION_STATUSES}")
     # Must be captured before the reassignment two lines below -- if this
     # instead read test.last_status after the assignment, it would always
     # equal `status` and the fail/warn -> pass transition would be
     # permanently undetectable.
     previous_status = test.last_status
     res = ControlTestResult(
-        control_test_id=test.id, status=status, detail=detail, evidence_ref=evidence_ref
+        control_test_id=test.id,
+        status=status,
+        detail=detail,
+        evidence_ref=evidence_ref,
+        evaluated=evaluated,
+        failing=failing,
+        expected=expected,
     )
     session.add(res)
     test.last_status = status
     test.last_tested_at = datetime.now(UTC)
     await session.flush()
+    for f in resources:
+        # Truncated rather than rejected: an over-long resource id must not
+        # cost the whole run its recorded result.
+        session.add(
+            ControlTestResourceResult(
+                result_id=res.id,
+                resource_id=f.resource_id[:512],
+                resource_type=f.resource_type[:64],
+                verdict=f.verdict,
+                observed=f.observed,
+                detail=f.detail,
+            )
+        )
+    if resources:
+        await session.flush()
+    # Only `pass` clears a failure -- reaching `not_applicable` or
+    # `manual_review_required` never itself asserts the weakness cleared, and
+    # this branch only runs for `status == "pass"` so neither can trigger
+    # recovery on their own.
+    #
+    # The gate is `previous_status != "pass"` rather than
+    # `previous_status in ("fail", "warn")`: a fail -> not_applicable -> pass
+    # sequence must still resolve the remediation fail opened, even though the
+    # immediately preceding status at that point is `not_applicable`, not
+    # `fail`/`warn`. Whether anything actually happens is keyed off there
+    # being an open Task/POA&M to resolve -- checked inside
+    # _resolve_on_recovery itself (Task.status == "open";
+    # POAM.status in _OPEN_POAM) -- not off this outer status comparison,
+    # which exists only to skip the no-op pass -> pass case. previous_status
+    # must still be captured before the reassignment above: if it were
+    # captured after, previous_status would always equal status ("pass") and
+    # this gate would never pass, permanently disabling recovery.
     if status in ("fail", "warn"):
         await _alert_on_failure(session, test, status, detail or "")
-    elif status == "pass" and previous_status in ("fail", "warn"):
+    elif status == "pass" and previous_status != "pass":
         await _resolve_on_recovery(session, test, result_id=res.id)
     await bus.emit(
         session,
@@ -412,7 +467,17 @@ async def run_due(
     """
     today = today or datetime.now(UTC).date()
     stmt = select(ControlTest).where(
-        ControlTest.active.is_(True), ControlTest.method == "connector"
+        ControlTest.active.is_(True),
+        ControlTest.method == "connector",
+        # Posture-scan-generated tests are driven by an explicit scan
+        # (scan_for_system -> record_result), not the scheduler. Without this
+        # exclusion, a human setting a frequency on a generated test (a
+        # supported edit -- see test_human_edits_survive_a_rescan) makes the
+        # scheduler auto-run it through _evaluate, which has nothing
+        # connector-freshness-shaped to say about a posture check and would
+        # bury the real posture verdict under a "No <connector> connector
+        # registered to collect evidence." warn alert.
+        ControlTest.source != "generated",
     )
     if org_id is not None:
         stmt = stmt.where(ControlTest.organization_id == org_id)

@@ -219,6 +219,7 @@ def create_app() -> FastAPI:
     app.include_router(ssp.router)
     app.include_router(assessments.router)
     app.include_router(posture.router)
+    app.include_router(posture.scan_router)
     app.include_router(audit.router)
     app.include_router(evidence.router)
     app.include_router(evidence_repo.router)

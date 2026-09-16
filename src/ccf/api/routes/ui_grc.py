@@ -8,6 +8,7 @@ environment (same base.html + light theme, asset-version cache-busting).
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -42,6 +43,46 @@ from .grc import _MOCK_DISCOVERY, CONNECTOR_TYPES
 from .ui import _principal_org, templates
 
 router = APIRouter(include_in_schema=False)
+
+#: last_status -> KPI bucket key, for every value with its own bucket.
+#: Everything else (None, or the explicit "not_tested" status) is "untested".
+_CONTROL_TEST_BUCKET_BY_STATUS = {
+    "pass": "passing",
+    "warn": "warn",
+    "fail": "failing",
+    "not_applicable": "not_applicable",
+    "manual_review_required": "manual_review_required",
+}
+
+
+def _control_test_metrics(rows: Sequence[ControlTest]) -> dict[str, int]:
+    """KPI buckets for the control-tests page, covering the full
+    ``fedramp20x.VALIDATION_STATUSES`` vocabulary.
+
+    Previously only pass/fail had their own bucket and everything else
+    (including warn, not_applicable, and manual_review_required) fell into
+    "untested" -- so "passing + failing + untested" no longer summed to
+    "total" once any of those other statuses appeared, and a test that had
+    actually run reported as never tested. not_applicable and
+    manual_review_required now each get their own bucket -- a test that ran
+    and produced one of those verdicts was tested, just not pass/warn/fail.
+    Only a missing result (``last_status is None``) or the explicit
+    ``not_tested`` status counts as "untested". Every row lands in exactly
+    one bucket, so the buckets always sum to "total".
+    """
+    metrics = {
+        "total": len(rows),
+        "passing": 0,
+        "warn": 0,
+        "failing": 0,
+        "not_applicable": 0,
+        "manual_review_required": 0,
+        "untested": 0,
+    }
+    for r in rows:
+        key = _CONTROL_TEST_BUCKET_BY_STATUS.get(r.last_status or "", "untested")
+        metrics[key] += 1
+    return metrics
 
 
 def _now() -> datetime:
@@ -310,12 +351,7 @@ async def control_tests_page(
     if org is not None:
         stmt = stmt.where(ControlTest.organization_id == org)
     rows = (await session.execute(stmt)).scalars().all()
-    metrics = {
-        "total": len(rows),
-        "passing": sum(1 for r in rows if r.last_status == "pass"),
-        "failing": sum(1 for r in rows if r.last_status == "fail"),
-        "untested": sum(1 for r in rows if not r.last_status),
-    }
+    metrics = _control_test_metrics(rows)
     return templates.TemplateResponse(
         request,
         "control_tests.html",

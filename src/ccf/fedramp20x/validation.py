@@ -39,7 +39,12 @@ from ..models import (
 )
 
 # Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
-_VERDICT_RANK = {
+# Public because ccf.posture.rollup shares it -- but note the two uses select
+# OPPOSITE ends: ``any_of`` takes the best sub-result with ``max``, where
+# posture rollup takes the worst. ``not_applicable`` and ``not_tested`` sit at
+# 0, *below* ``fail``, which is correct for "best wins" and actively wrong for
+# "worst wins" -- so the posture rollup excludes them rather than ranking them.
+VERDICT_RANK = {
     "pass": 4,
     "warn": 3,
     "manual_review_required": 2,
@@ -47,6 +52,9 @@ _VERDICT_RANK = {
     "not_applicable": 0,
     "not_tested": 0,
 }
+
+# Retained for existing references to the private name.
+_VERDICT_RANK = VERDICT_RANK
 
 log = get_logger(__name__)
 
