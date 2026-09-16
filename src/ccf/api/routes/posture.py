@@ -25,6 +25,8 @@ from ...analytics import (
 )
 from ...auth import Principal
 from ...models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
+from ...posture.drift import latest_drift, resource_timeline
+from ...posture.latest import latest_result_ids
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -80,27 +82,19 @@ async def failing_resources(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
-    """Every resource currently failing a control test, newest first.
+    """Every resource failing a control test *as of its latest run*, newest first.
 
-    The org-wide question resource granularity exists to answer. "Currently"
-    means restricted to each test's *latest* ``ControlTestResult`` -- the
-    child rows are append-only, so a resource that failed a stale run and has
-    since passed a newer one must not still show up here. That restriction is
-    done via a correlated subquery (one per ``ControlTest``, picking its most
-    recent result by ``run_at``/``id``) rather than a window function, which
-    keeps this a plain ``SELECT`` the existing indexes can serve directly:
-    ``ix_control_test_results_test_run`` (control_test_id, run_at) drives the
-    subquery, and ``ix_ctrr_verdict``/``ix_ctrr_result`` still serve the outer
-    filter/join on ``control_test_resource_results``.
+    The org-wide question resource granularity exists to answer.
+
+    Restricted to each test's most recent result. Without that restriction this
+    read the append-only resource history as though it were current state and
+    reported resources fixed weeks earlier, carrying the stale ``observed``
+    text from the scan that found them broken -- so an operator's queue named
+    work that no longer existed. "Latest" comes from
+    :func:`ccf.posture.latest.latest_result_ids`, which is the one definition
+    every current-state read shares.
     """
-    latest_result_id = (
-        select(ControlTestResult.id)
-        .where(ControlTestResult.control_test_id == ControlTest.id)
-        .order_by(ControlTestResult.run_at.desc(), ControlTestResult.id.desc())
-        .limit(1)
-        .correlate(ControlTest)
-        .scalar_subquery()
-    )
+    latest = latest_result_ids()
     stmt = (
         select(
             ControlTestResourceResult,
@@ -113,10 +107,8 @@ async def failing_resources(
             ControlTestResult.id == ControlTestResourceResult.result_id,
         )
         .join(ControlTest, ControlTest.id == ControlTestResult.control_test_id)
-        .where(
-            ControlTestResourceResult.verdict == "fail",
-            ControlTestResourceResult.result_id == latest_result_id,
-        )
+        .join(latest, latest.c.result_id == ControlTestResult.id)
+        .where(ControlTestResourceResult.verdict == "fail")
         .order_by(ControlTestResourceResult.created_at.desc())
         .limit(min(max(limit, 1), 1000))
     )
@@ -220,3 +212,60 @@ async def control_effective_verdict(
     from ...posture.scan import effective_verdict  # noqa: PLC0415
 
     return await effective_verdict(session, system_id=system_id, control_id=control_id)
+
+
+async def _owned_test(
+    session: AsyncSession, test_id: int, principal: Principal
+) -> ControlTest:
+    """One control test, or 404 -- including when it belongs to another tenant.
+
+    404 rather than 403, matching ``result_resources``: confirming an id exists
+    is itself a disclosure.
+    """
+    test = (
+        await session.execute(select(ControlTest).where(ControlTest.id == test_id))
+    ).scalars().first()
+    if test is None or (
+        principal.org_id is not None and test.organization_id != principal.org_id
+    ):
+        raise HTTPException(status_code=404, detail="Unknown control test")
+    return test
+
+
+@scan_router.get("/control-tests/{test_id}/drift")
+async def control_test_drift(
+    test_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """What changed between this check's two most recent runs.
+
+    Empty for a check with fewer than two results: there is no baseline, and a
+    first scan is not wholesale change.
+    """
+    await _owned_test(session, test_id, principal)
+    return [
+        {
+            "resource_id": t.resource_id,
+            "kind": t.kind,
+            "before": t.before,
+            "after": t.after,
+            "observed": t.observed,
+        }
+        for t in await latest_drift(session, test_id=test_id)
+    ]
+
+
+@scan_router.get("/control-tests/{test_id}/resources/{resource_id}/timeline")
+async def control_test_resource_timeline(
+    test_id: int,
+    resource_id: str,
+    limit: int = 50,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """One resource's verdict history for this check, newest first."""
+    await _owned_test(session, test_id, principal)
+    return await resource_timeline(
+        session, test_id=test_id, resource_id=resource_id, limit=limit
+    )

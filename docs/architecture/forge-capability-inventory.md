@@ -601,6 +601,36 @@ checks can now cover one control and disagree — a waiver is how one of them is
 accepted, though *which* verdict wins for a control remains open (see the P2b
 plan's results).
 
+## 6.2d Status — #2 is built, and it found a shipped bug (2026-09-15)
+
+Capability #2 (drift detection at resource level) is **implemented and
+verified**, which also completes programme item P2c.
+
+Designing it surfaced a defect in shipped, operator-facing code:
+`GET /api/posture/failing-resources` documented itself as returning resources
+*currently* failing but returned every resource that had ever failed, with the
+stale `observed` text from the scan that found it broken. The cause is the gap
+#2 exists to close — `0068` made the resource table append-only history, which
+was right, but nothing since gave the platform a notion of *latest*, and read
+as current state an append-only table answers a different question. Fixed with
+one shared definition (`posture/latest.py`) that every current-state read
+joins.
+
+Drift itself has five kinds, two of which existed nowhere before: **appeared**
+separates a resource entering scope already failing from one that regressed,
+and **disappeared** catches a resource that was deleted, left scope, *or whose
+collection silently truncated* — which until now read as an improvement.
+Retention keeps every `ControlTestResult` forever and windows only the
+per-resource detail, exempting the latest result at any age and any row a
+waiver covered.
+
+Spec `docs/superpowers/specs/2026-09-15-resource-drift-design.md`, plan
+`docs/superpowers/plans/2026-09-15-resource-drift.md`.
+
+Revised matrix rows: **#2 EXISTING**; **#5 (configuration timeline) satisfied
+for observed state** by `resource_timeline`, alongside P2b's `packs/diff.py`
+for desired state.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem
