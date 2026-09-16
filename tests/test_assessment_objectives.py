@@ -322,32 +322,49 @@ async def test_identifier_wins_even_when_ap_acronym_is_also_populated(
 
 
 @pytest.mark.asyncio
-async def test_a_row_deduplicated_identifier_is_used_verbatim_as_the_label(
+async def test_a_row_deduplicated_identifier_is_not_used_as_the_label(
     clean_migrated_db,
 ) -> None:
-    """Confirms a "#rowN" identifier -- the loader's own scheme (see
-    ``reader/ingest.py`` and ``etl/pipeline.py``) for de-duplicating an
-    otherwise-repeated item path -- is used verbatim as the label, same as
-    any other identifier. This is a variant of
-    ``test_label_prefers_the_rows_own_identifier``, not a test of the
-    ordinal fallback: ``Control.identifier`` is NOT NULL, so the
-    absent-identifier case this test was previously named for cannot be
-    built through the database at all -- deleting
-    ``or row.ap_acronym or _ordinal_label(...)`` from ``objectives.py``
-    fails no test here. The ordinal fallback itself is unreachable via the
-    database and is covered directly, with no database involved, by
-    ``test_ordinal_label_derives_letter_suffixes_from_position`` below."""
+    """A "#rowN" identifier -- the loader's own de-duplication scheme (see
+    ``ccf.etl.pipeline``, which renames a repeated workbook identifier to
+    ``f"{identifier}#row{row_idx}"`` with ``row_idx`` the physical
+    spreadsheet row number) must NOT be used verbatim as the objective
+    label. That suffix is an ETL artifact, not part of the catalog's item-
+    path vocabulary: it is unstable (inserting one row upstream shifts every
+    later index) and, used as a label, would land an internal loader detail
+    in a federal authorization artifact (SAR/SSP part labels).
+
+    A row carrying that shape must fall through to ``ap_acronym`` (absent
+    here) and then ``_ordinal_label``, exactly as if ``identifier`` were
+    absent -- so this also confirms ``_ordinal_label`` is reachable through
+    the database again, which the previous (buggy) behaviour prevented.
+
+    A second row in the same control carries an ordinary, non-suffixed
+    identifier and must still be labelled from it verbatim: the fallback
+    only engages for the ``#rowN`` shape, and normal identifiers are not
+    regressed by this change. (``test_label_prefers_the_rows_own_identifier``
+    covers that behaviour on its own in more detail.)"""
     try:
         async with session_scope() as s:
-            s.add(
-                Control(
-                    identifier="ZZ-02#row9", sequence_control="ZZ-02",
-                    control_name=None, assessment_objective="only objective", source_row=1,
-                )
+            s.add_all(
+                [
+                    Control(
+                        identifier="ZZ-02#row9", sequence_control="ZZ-02",
+                        control_name=None, assessment_objective="first objective",
+                        source_row=1,
+                    ),
+                    Control(
+                        identifier="ZZ-02b.[01]", sequence_control="ZZ-02",
+                        control_name=None, assessment_objective="second objective",
+                        source_row=2,
+                    ),
+                ]
             )
         async with session_scope() as s:
             got = await objectives_for(s, "ZZ-02")
-        assert got[0].label == "ZZ-02#row9"
+        assert got[0].label != "ZZ-02#row9"
+        assert got[0].label == "ZZ-02a"
+        assert got[1].label == "ZZ-02b.[01]"
     finally:
         async with session_scope() as s:
             await s.execute(delete(Control).where(Control.sequence_control == "ZZ-02"))

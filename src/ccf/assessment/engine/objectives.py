@@ -17,11 +17,25 @@ as a fallback but is populated on 4 of 5,435 catalog rows, and the ordinal
 derivation below is the last resort. The duplicate handling further down stays
 regardless: uniqueness by construction is a property of the current schema,
 not a promise, and ``uq_objective_proposal_label`` is what actually enforces it.
+
+One identifier shape is deliberately excluded from that preference: when
+``ccf.etl.pipeline`` sees a workbook identifier repeated across rows, it
+renames the later occurrence to ``f"{identifier}#row{row_idx}"`` where
+``row_idx`` is the *physical spreadsheet row number* -- an internal
+de-duplication artifact, not part of the catalog's item-path vocabulary, and
+unstable across re-ingests because inserting a row upstream shifts every
+later index. Using it verbatim as a label would put an ETL implementation
+detail into a federal authorization artifact (SAR/SSP part labels) and would
+make ``check_staleness`` flag those proposals on every workbook re-ingest
+that shifts rows. ``_DEDUPED_IDENTIFIER_RE`` detects that shape so those rows
+fall through to ``ap_acronym`` then ``_ordinal_label``, exactly as they would
+if ``identifier`` were absent.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 import string
 from dataclasses import dataclass
 
@@ -35,6 +49,26 @@ from ...prep.screen import normalize_control_identifier
 
 class ObjectiveExtractionError(RuntimeError):
     """The catalog rows for a control are not a plausible objective set."""
+
+
+# Matches the exact shape ``ccf.etl.pipeline`` produces for a de-duplicated
+# workbook identifier: ``f"{identifier}#row{row_idx}"`` with ``row_idx`` an
+# int (the physical spreadsheet row number). Anchored to the end of the
+# string so a legitimate identifier that merely contains "#row" elsewhere
+# would not be misclassified (not observed in the real catalog, but the
+# anchor costs nothing).
+_DEDUPED_IDENTIFIER_RE = re.compile(r"#row\d+$")
+
+
+def _is_deduplicated_identifier(identifier: str) -> bool:
+    """True when ``identifier`` carries the loader's ``#rowN`` de-dup suffix.
+
+    That suffix is an ETL artifact -- it encodes a physical spreadsheet row
+    number, not part of the catalog's item-path vocabulary -- so it must
+    never be used verbatim as a human-facing objective label. See the
+    module docstring and ``ccf.etl.pipeline`` for where it is produced.
+    """
+    return bool(_DEDUPED_IDENTIFIER_RE.search(identifier))
 
 
 @dataclass(slots=True)
@@ -118,7 +152,10 @@ async def objectives_for(session: AsyncSession, control_identifier: str) -> list
         text = (row.assessment_objective or "").strip()
         if not text:
             continue
-        label = row.identifier or row.ap_acronym or _ordinal_label(
+        identifier: str | None = row.identifier
+        if _is_deduplicated_identifier(row.identifier):
+            identifier = None
+        label = identifier or row.ap_acronym or _ordinal_label(
             row.sequence_control or canonical, index
         )
         if label in seen_labels:

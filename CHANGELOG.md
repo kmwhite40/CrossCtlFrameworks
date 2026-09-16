@@ -53,14 +53,34 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   duplicate-label defence exists to provide. `ap_acronym` is populated on 4 of
   5,435 catalog rows, so the ordinal derivation had been carrying nearly every
   label.
-- **OPERATORS: expect a one-time staleness sweep.** `check_staleness` treats a
-  stored label absent from the live label set as structural drift, by design.
-  Because this change renames labels wholesale, the first staleness check after
-  upgrade marks every stored `AssessmentObjectiveProposal` **stale**, and
-  `accept_control_proposal` will refuse those proposals until they are
-  re-evaluated. Stored rows are not migrated or rewritten — they remain
-  accurate records of what was proposed. Deployments holding evaluated but
-  unaccepted proposals should plan a re-evaluation pass.
+- **One identifier shape is deliberately excluded from that preference.**
+  When the loader (`ccf.etl.pipeline`, `ccf.reader.ingest`) sees a workbook
+  identifier repeated across rows, it renames the later occurrence to
+  `f"{identifier}#row{row_idx}"`, where `row_idx` is the *physical spreadsheet
+  row number* — an internal de-duplication artifact, not part of the
+  catalog's item-path vocabulary, and unstable across re-ingests (inserting
+  one row upstream shifts every later index). `objectives_for` detects that
+  `#rowN` shape and falls through to `ap_acronym` then the ordinal
+  derivation instead, exactly as it would if `identifier` were absent. 538
+  rows in the shipped workbook carry this shape — every one of them a
+  sub-clause objective row — so all 538 are labelled ordinally
+  (`AC-02(02)a`-style), not `AC-02(02)#row70`-style. This keeps an ETL
+  loader detail out of generated SAR/SSP `Part [<label>]` text and out of the
+  stored label `check_staleness` compares against.
+- **OPERATORS: expect a one-time staleness sweep, not a recurring one.**
+  `check_staleness` treats a stored label absent from the live label set as
+  structural drift, by design. Because this change renames labels wholesale,
+  the first staleness check after upgrade marks every stored
+  `AssessmentObjectiveProposal` **stale**, and `accept_control_proposal` will
+  refuse those proposals until they are re-evaluated. Stored rows are not
+  migrated or rewritten — they remain accurate records of what was proposed.
+  Deployments holding evaluated but unaccepted proposals should plan a
+  re-evaluation pass. Because the `#rowN` shape is now excluded from the
+  label, that pass is genuinely one-time: a later workbook re-ingest that
+  shifts physical row numbers no longer renames labels for those 538 rows
+  (their labels are ordinal, derived from catalog grouping order, not from
+  row position), so it no longer forces another sweep. Ordinary identifiers
+  are unaffected either way — they were never row-position-derived.
 - **Generated SAR and SSP output renders the label as `Part [<label>]`**, so
   real identifiers now appear as `Part [AC-02a.[01]]`. More precisely
   traceable to the catalog item, and visibly different from the previous
