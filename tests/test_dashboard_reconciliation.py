@@ -303,3 +303,66 @@ def test_severity_breakdown_sums_correctly_for_known_vocabulary_only() -> None:
     result = _severity_breakdown(by_sev)
     assert sum(seg["count"] for seg in result) == 10
     assert {seg["key"] for seg in result} == {"critical", "high", "moderate", "low"}
+
+
+@pytest.mark.asyncio
+async def test_control_tests_block_buckets_the_full_vocabulary_and_sums_to_total() -> None:
+    """dashboard_overview()["control_tests"] must cover every
+    fedramp20x.VALIDATION_STATUSES value. Before the fix, anything outside
+    pass/warn/fail (not_applicable, manual_review_required, and the explicit
+    not_tested status) was folded into "untested" -- a scanned test with a
+    not_applicable or manual_review_required verdict reported as never
+    tested. Whatever the bucketing, the buckets must sum to "total".
+    """
+    org_id, sys_id = await _org_and_system("ControlTestBucketOrg")
+    async with session_scope() as s:
+        s.add_all(
+            [
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-1", name="t-pass", last_status="pass",
+                ),
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-2", name="t-warn", last_status="warn",
+                ),
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-3", name="t-fail", last_status="fail",
+                ),
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-4", name="t-na", last_status="not_applicable",
+                ),
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-5", name="t-mrr",
+                    last_status="manual_review_required",
+                ),
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-6", name="t-nt", last_status="not_tested",
+                ),
+                ControlTest(
+                    organization_id=org_id, system_id=sys_id,
+                    control_id="AC-7", name="t-never-run",  # last_status stays None
+                ),
+            ]
+        )
+
+    async with session_scope() as s:
+        buckets = await overview._control_tests(s, org_id=org_id)
+
+    assert buckets["total"] == 7
+    assert buckets["pass"] == 1
+    assert buckets["warn"] == 1
+    assert buckets["fail"] == 1
+    assert buckets["not_applicable"] == 1
+    assert buckets["manual_review_required"] == 1
+    assert buckets["untested"] == 2  # "not_tested" status + no result at all
+    summed = (
+        buckets["pass"] + buckets["warn"] + buckets["fail"]
+        + buckets["not_applicable"] + buckets["manual_review_required"]
+        + buckets["untested"]
+    )
+    assert summed == buckets["total"]

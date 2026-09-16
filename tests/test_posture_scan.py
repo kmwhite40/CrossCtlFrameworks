@@ -9,7 +9,8 @@ import pytest
 from sqlalchemy import select
 
 from ccf.db import session_scope
-from ccf.models import Organization, System
+from ccf.governance.control_tests import record_result
+from ccf.models import POAM, Organization, System, Task
 from ccf.models_grc import ControlTest, ControlTestResult
 from ccf.posture import scan as scan_mod
 from ccf.posture.checks import CheckOutcome, PostureCheck, ResourceFinding
@@ -170,6 +171,105 @@ async def test_human_edits_survive_a_rescan(monkeypatch: pytest.MonkeyPatch) -> 
         assert t.active is False
 
 
+async def test_generated_test_is_written_with_its_connector_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, [_outcome("pass")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        t = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().one()
+        assert t.connector_type == "demo_provider"
+
+
+async def test_generated_test_with_a_frequency_is_not_picked_up_by_run_due(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A human setting a frequency on a generated test (a supported edit --
+    see test_human_edits_survive_a_rescan) must not hand it to the scheduler.
+    Posture-scan-generated tests are only evaluated by an explicit scan;
+    run_due picking one up would evaluate it via the generic
+    connector-freshness heuristic, which has nothing to say about a posture
+    check and would bury the real posture verdict under an irrelevant warn.
+    """
+    from ccf.governance.control_tests import run_due  # noqa: PLC0415
+
+    _patch(monkeypatch, [_outcome("pass")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        t = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().one()
+        t.frequency = "quarterly"
+        t.last_status = "pass"
+        t.last_tested_at = datetime.now(UTC) - timedelta(days=200)  # long overdue
+        await session.flush()
+
+        counts = await run_due(session, today=datetime.now(UTC).date())
+        assert counts["evaluated"] == 0
+
+        await session.refresh(t)
+        assert t.last_status == "pass"  # untouched by the scheduler
+
+
+async def test_scan_skips_an_inactive_generated_test(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A deactivated generated test (active=False, a supported human edit --
+    see test_human_edits_survive_a_rescan) must not still be scanned: no new
+    result, no alert, no POA&M through a test the human turned off.
+    """
+    _patch(monkeypatch, [_outcome("pass")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        t = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().one()
+        t.active = False
+        await session.flush()
+        test_id = t.id
+
+    # Re-scan with an outcome that would otherwise alert and open a POA&M.
+    _patch(monkeypatch, [_outcome("fail")])
+    async with session_scope() as session:
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+        assert out["checks_run"] == 0
+
+        results = (
+            await session.execute(
+                select(ControlTestResult).where(ControlTestResult.control_test_id == test_id)
+            )
+        ).scalars().all()
+        assert len(results) == 1  # only the original pass; nothing new recorded
+
+        t = await session.get(ControlTest, test_id)
+        assert t.last_status == "pass"  # untouched by the skipped scan
+
+        task = (
+            await session.execute(
+                select(Task).where(Task.dedupe_key == f"ctltest-fix:{test_id}")
+            )
+        ).scalar_one_or_none()
+        assert task is None
+
+        poam = (
+            await session.execute(
+                select(POAM).where(POAM.source_ref == f"control_test:{test_id}")
+            )
+        ).scalar_one_or_none()
+        assert poam is None
+
+
 async def test_empty_fleet_is_not_applicable(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch(monkeypatch, [_outcome()])
     async with session_scope() as session:
@@ -264,3 +364,30 @@ async def test_effective_verdict_treats_a_stale_result_as_absent(
         await session.flush()
         out = await effective_verdict(session, system_id=sys_.id, control_id="AC-3")
         assert out["source"] is None
+
+
+async def test_effective_verdict_ignores_a_manually_run_test() -> None:
+    """A human clicking run-test on an authored ControlTest is not a
+    deterministic check that read the environment. effective_verdict must not
+    report that result as {"source": "deterministic", ...} -- that claim is
+    reserved for posture-scan-generated tests.
+    """
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        t = ControlTest(
+            organization_id=sys_.organization_id,
+            system_id=sys_.id,
+            control_id="AC-3",
+            name="Manually run test",
+            method="manual",
+            # source defaults to "authored" -- a human-defined test, not a
+            # posture-scan-generated one.
+        )
+        session.add(t)
+        await session.flush()
+        await record_result(session, t, status="fail", detail="a human ran this")
+
+        out = await effective_verdict(session, system_id=sys_.id, control_id="AC-3")
+        assert out["source"] is None
+        assert out["verdict"] is None
+        assert out["reason"] == "no fresh deterministic result"
