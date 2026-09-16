@@ -27,7 +27,9 @@ import httpx
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture.declared import evaluate_declared
 from ..posture.providers import m365
+from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
 from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
@@ -82,6 +84,42 @@ class MsGraphConnector(ConfigConnector):
         token = resp.json().get("access_token")
         return token if isinstance(token, str) else None
 
+    def _safe_url(self, base: httpx.URL, target: str) -> httpx.URL:
+        """Resolve ``target`` against ``base`` and refuse anything off-host.
+
+        This is the last of three defensive layers against a tenant-declared
+        (Form B pack) ``endpoint`` -- or a hostile/compromised
+        ``@odata.nextLink`` -- redirecting the org's Graph bearer token to an
+        attacker's host (``packs.catalog`` validates at install,
+        ``posture.resolve`` re-validates at resolve; this is the layer that
+        must hold even if both are bypassed, because it runs immediately
+        before the token-bearing request is sent).
+
+        ``httpx.URL(base).join(target)`` resolves ``target`` as an RFC 3986
+        relative reference rather than by string concatenation, which is what
+        makes it safe: naive concatenation of ``graph_base_url`` (no trailing
+        slash) with a tenant-supplied ``".attacker.example/v1.0/users"``
+        produces the single string
+        ``"https://graph.microsoft.us.attacker.example/v1.0/users"`` --
+        a different, attacker-owned host -- and with
+        ``"@attacker.example/x"`` produces
+        ``"https://graph.microsoft.us@attacker.example/x"``, where the
+        pre-``@`` text becomes URL userinfo and ``attacker.example`` becomes
+        the actual host. A proper relative-reference join treats both as
+        plain path segments under ``base``'s own host. The explicit host
+        check below is still required on top of that: it is what rejects a
+        ``target`` that is itself absolute (a scheme-relative or fully
+        qualified URL) -- including one supplied via a hostile
+        ``@odata.nextLink`` response body.
+        """
+        resolved = base.join(target)
+        if resolved.host != base.host:
+            raise ValueError(
+                f"refusing off-host Graph request: {target!r} resolved to "
+                f"host {resolved.host!r}, expected {base.host!r}"
+            )
+        return resolved
+
     async def _get_all(
         self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
     ) -> list[dict[str, Any]]:
@@ -93,23 +131,36 @@ class MsGraphConnector(ConfigConnector):
         non-compliant users sat on page four. Raises on a non-2xx status so
         :meth:`scan` can tell "could not look" from "nothing to see".
 
+        Every page -- the first (``url``, a caller-supplied path or absolute
+        URL that may originate from a tenant's declared check) and every
+        subsequent one (``@odata.nextLink``, which comes from the response
+        body a Graph call returned) -- is resolved through :meth:`_safe_url`
+        against the deployment's *configured* ``graph_base_url`` before the
+        request goes out. A hostile or compromised response could otherwise
+        redirect a paginated, token-bearing fetch off-host on page two just
+        as easily as a malicious ``endpoint`` could on page one.
+
         Hitting :attr:`_MAX_PAGES` with a ``nextLink`` still outstanding is
         the same danger relocated to page 51: it raises
         :class:`GraphPaginationTruncatedError` rather than returning a partial
         fleet that would roll up to a false ``pass``.
         """
+        s = get_settings()
+        base = httpx.URL(s.graph_base_url)
         rows: list[dict[str, Any]] = []
-        next_url: str | None = url
+        next_target: str | None = url
         for _ in range(self._MAX_PAGES):
-            if not next_url:
+            if not next_target:
                 return rows
-            resp = await self._get_with_retry(client, next_url, headers)
+            resp = await self._get_with_retry(
+                client, self._safe_url(base, next_target), headers
+            )
             resp.raise_for_status()
             payload = resp.json()
             rows.extend(payload.get("value") or [])
             nxt = payload.get("@odata.nextLink")
-            next_url = nxt if isinstance(nxt, str) else None
-        if next_url:
+            next_target = nxt if isinstance(nxt, str) else None
+        if next_target:
             raise GraphPaginationTruncatedError(
                 f"stopped after {self._MAX_PAGES} pages with more pages remaining "
                 "-- refusing to evaluate a partial fleet"
@@ -117,7 +168,7 @@ class MsGraphConnector(ConfigConnector):
         return rows
 
     async def _get_with_retry(
-        self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
+        self, client: httpx.AsyncClient, url: httpx.URL | str, headers: dict[str, Any]
     ) -> httpx.Response:
         """One bounded retry on HTTP 429, honoring ``Retry-After``.
 
@@ -193,8 +244,14 @@ class MsGraphConnector(ConfigConnector):
             return []
         return out
 
-    async def scan(self) -> list[CheckOutcome]:
-        """Assess this tenant against the registered M365 posture checks.
+    async def scan(
+        self, checks: tuple[ResolvedCheck, ...] | None = None
+    ) -> list[CheckOutcome]:
+        """Assess this tenant against its resolved posture checks.
+
+        ``checks`` is ``None`` for a caller that predates declared checks, in
+        which case the platform registry is used and behaviour is unchanged.
+        An empty tuple scans nothing -- see ``ConfigConnector.scan``.
 
         Never raises: an unconfigured org, a failed token, or a provider error
         all produce results (or none) rather than an exception, because
@@ -203,7 +260,9 @@ class MsGraphConnector(ConfigConnector):
         """
         if not self.is_configured():
             return []
-        s = get_settings()
+        resolved = resolve_checks_from_registry(self.key) if checks is None else checks
+        if not resolved:
+            return []
         tenant_id = str((self.credential or {}).get("tenant_id") or "unknown")
         outcomes: list[CheckOutcome] = []
         try:
@@ -213,26 +272,36 @@ class MsGraphConnector(ConfigConnector):
                     return []
                 headers = {"Authorization": f"Bearer {token}"}
                 now = datetime.now(UTC)
-                for check in m365.CHECKS:
+                for rc in resolved:
                     # Per-check isolation: one permission gap -- or one
-                    # evaluator failure on an unexpected Graph shape -- must
-                    # not discard the checks that did run, matching
-                    # capture()'s per-sub-capture try and the scheduler's
-                    # per-tenant savepoint. _evaluate is inside this same try:
-                    # an evaluator exception (e.g. a naive datetime from a
-                    # timestamp Graph returned without an offset) must
-                    # produce _unrunnable for THIS check, not escape to the
-                    # outer except and discard every outcome collected so far.
+                    # pack's malformed rule, or an evaluator failure on an
+                    # unexpected Graph shape -- must not discard the checks
+                    # that did run, matching capture()'s per-sub-capture try
+                    # and the scheduler's per-tenant savepoint. Fetch and
+                    # evaluation each have their own try below, so an
+                    # exception from either (e.g. a naive datetime from a
+                    # timestamp Graph returned without an offset) produces
+                    # _unrunnable for THIS check, not escape to the outer
+                    # except and discard every outcome collected so far.
                     try:
-                        rows = await self._get_all(
-                            client, f"{s.graph_base_url}{m365.ENDPOINTS[check.key]}", headers
-                        )
+                        # rc.endpoint may be tenant-declared (a Form B pack
+                        # rule); it is passed through as-is and resolved
+                        # safely inside _get_all rather than concatenated
+                        # onto the host here -- see _safe_url.
+                        rows = await self._get_all(client, rc.endpoint, headers)
+                    except Exception as e:
+                        outcomes.append(self._unrunnable(rc.check, e))
+                        continue
+                    try:
                         outcomes.append(
-                            self._evaluate(check, rows, tenant_id=tenant_id, now=now)
+                            self._evaluate(rc, rows, tenant_id=tenant_id, now=now)
                         )
                     except Exception as e:
-                        outcomes.append(self._unrunnable(check, e))
-                        continue
+                        # Evaluation itself failed -- a declared spec that
+                        # validation would have refused. It must report rather
+                        # than vanish: a check that silently stops producing
+                        # results is indistinguishable from one that passes.
+                        outcomes.append(self._unrunnable(rc.check, e))
         except Exception as e:  # token/transport failure -- nothing to report
             log.warning("connector.msgraph.scan_failed", error=str(e)[:200])
             return []
@@ -240,27 +309,37 @@ class MsGraphConnector(ConfigConnector):
 
     def _evaluate(
         self,
-        check: PostureCheck,
+        rc: ResolvedCheck,
         rows: list[dict[str, Any]],
         *,
         tenant_id: str,
         now: datetime,
     ) -> CheckOutcome:
-        """Dispatch one check's rows to its evaluator.
+        """Judge one check's rows -- declaratively, or via its evaluator.
+
+        A declared check (Form B) carries its own predicate. A platform check,
+        or a pack that parameterized one (Form A), dispatches to the evaluator
+        by ``evaluator_key`` rather than by the check's own key, because a
+        parameterized check runs under the pack's key while still using the
+        platform's logic.
 
         The evaluators take different keyword arguments -- the tenant check
         needs the tenant id, the staleness check needs a clock -- so each is
         called with what it declares rather than forcing a uniform signature
-        that most checks would ignore.
+        that most checks would ignore. Declared parameters are merged on top.
         """
-        evaluator = m365.EVALUATORS[check.key]
-        if check.key == m365.LEGACY_AUTH_BLOCKED.key:
-            findings = evaluator(rows, tenant_id=tenant_id)
-        elif check.key == m365.STALE_ACCOUNTS.key:
-            findings = evaluator(rows, now=now)
-        else:
-            findings = evaluator(rows)
-        return CheckOutcome.from_findings(check, tuple(findings))
+        if rc.spec is not None:
+            findings = evaluate_declared(rc.spec, rows, resource_id=tenant_id)
+            return CheckOutcome.from_findings(rc.check, tuple(findings))
+
+        evaluator = m365.EVALUATORS[rc.evaluator_key or rc.check.key]
+        kwargs: dict[str, Any] = dict(rc.parameters or {})
+        if (rc.evaluator_key or rc.check.key) == m365.LEGACY_AUTH_BLOCKED.key:
+            kwargs["tenant_id"] = tenant_id
+        elif (rc.evaluator_key or rc.check.key) == m365.STALE_ACCOUNTS.key:
+            kwargs["now"] = now
+        findings = evaluator(rows, **kwargs)
+        return CheckOutcome.from_findings(rc.check, tuple(findings))
 
     def _unrunnable(self, check: PostureCheck, error: Exception) -> CheckOutcome:
         """A check that could not run -- never a clean fleet.

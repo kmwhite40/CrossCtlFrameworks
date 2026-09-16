@@ -28,7 +28,8 @@ from ..logging import get_logger
 from ..models import System
 from ..models_capability import Capability
 from ..models_grc import ControlTest, ControlTestResult
-from .checks import CheckOutcome, checks_for
+from .checks import CheckOutcome, platform_check_keys
+from .resolve import ResolvedCheck, resolve_checks
 
 log = get_logger(__name__)
 
@@ -78,6 +79,7 @@ async def _upsert_generated_test(
     organization_id: int,
     system_id: int,
     check_key: str,
+    check_source: str,
     control_id: str,
     title: str,
     capability_id: int | None,
@@ -88,6 +90,13 @@ async def _upsert_generated_test(
     Writes **machine-owned fields only**. A human's ``name``, ``frequency``,
     and ``active`` survive a re-scan -- the same discipline
     ``_resolve_on_recovery`` applies to human-edited Task and POA&M fields.
+
+    ``check_source`` (``"platform"`` or ``"pack:<pack_key>"``, from
+    ``ResolvedCheck.source``) is refreshed on every scan just like
+    ``control_id``: it is what an assessor uses to tell a platform assessment
+    from a tenant's self-attested pack verdict (CRITICAL 3), and it is what
+    ``effective_verdict`` uses to keep a pack from outranking the platform
+    for the same control (CRITICAL 2).
 
     ``connector_type`` IS machine-owned (it names which connector this check
     runs against, not something a human chooses) and is written on both
@@ -113,6 +122,7 @@ async def _upsert_generated_test(
             method="connector",
             source="generated",
             check_key=check_key,
+            check_source=check_source,
             capability_id=capability_id,
             description=description,
             connector_type=connector_key,
@@ -122,6 +132,7 @@ async def _upsert_generated_test(
         return test
 
     test.control_id = control_id
+    test.check_source = check_source
     test.capability_id = capability_id
     test.description = description
     test.connector_type = connector_key
@@ -152,13 +163,19 @@ async def scan_for_system(
             "reason": "connector not configured for this organization",
         }
 
-    by_key = {c.key: c for c in checks_for(connector_key)}
-    outcomes: list[CheckOutcome] = await conn.scan()
+    # Resolved once: the platform's checks plus anything this tenant's packs
+    # declared. The same sequence drives execution and attribution, so a
+    # declared check cannot be scanned and then discarded below as unknown.
+    resolved = await resolve_checks(
+        session, provider=connector_key, org_id=system.organization_id
+    )
+    by_key: dict[str, ResolvedCheck] = {r.check.key: r for r in resolved}
+    outcomes: list[CheckOutcome] = await conn.scan(checks=resolved)
 
     recorded: list[dict[str, Any]] = []
     for outcome in outcomes:
-        check = by_key.get(outcome.check_key)
-        if check is None:
+        rc = by_key.get(outcome.check_key)
+        if rc is None:
             # A connector returned an outcome for a check this build does not
             # know. Skipped rather than guessed at: without the definition
             # there is no control to attribute it to.
@@ -168,6 +185,7 @@ async def scan_for_system(
                 provider=connector_key,
             )
             continue
+        check = rc.check
         capability_id = await _capability_id_for(
             session,
             organization_id=system.organization_id,
@@ -180,6 +198,7 @@ async def scan_for_system(
             organization_id=system.organization_id,
             system_id=system_id,
             check_key=outcome.check_key,
+            check_source=rc.source,
             control_id=check.control_ids[0],
             title=check.title,
             capability_id=capability_id,
@@ -235,6 +254,21 @@ async def scan_for_system(
     }
 
 
+def _is_platform_sourced(test: ControlTest) -> bool:
+    """Is this test's check the platform's own, rather than a tenant's pack?
+
+    Prefers the stored ``check_source`` (set on every scan -- see
+    ``_upsert_generated_test``). Falls back, only for a 'generated' row
+    written before that column existed (migration 0070 adds it with no
+    backfill), to checking whether its ``check_key`` is still a registered
+    platform check: a live-data inference, not a migration-time guess, and
+    the row self-heals to a real ``check_source`` on its next scan.
+    """
+    if test.check_source is not None:
+        return test.check_source == "platform"
+    return test.source == "generated" and test.check_key in platform_check_keys()
+
+
 async def effective_verdict(
     session: AsyncSession, *, system_id: int, control_id: str
 ) -> dict[str, Any]:
@@ -243,6 +277,23 @@ async def effective_verdict(
     A fresh deterministic result outranks a model verdict: a check that
     actually read the environment is stronger evidence than a model reasoning
     over documents. The model covers what no check reaches.
+
+    PRECEDENCE (CRITICAL 2, PR #13 review): among fresh deterministic
+    results, a platform-sourced one always outranks a pack-sourced one,
+    regardless of which ran more recently. Without this, a tenant could
+    install a Form A pack rule reusing a platform evaluator under a distinct
+    key (never a *key* collision -- packs.catalog already refuses that) with
+    a weaker parameter, e.g. m365.identity.stale_accounts at
+    threshold_days=3650 instead of the platform's 90, and its 'pass' -- by
+    virtue of simply running after the platform's own 'fail' -- would become
+    the believed verdict for the control. "Most recent wins" is kept *within*
+    a trust tier (it is still the right way to combine several platform
+    results, or several pack results with none of the platform's), just not
+    *across* tiers. The alternative -- "strictest verdict wins" -- was
+    considered and rejected: verdicts from different checks carry different
+    ``expected`` text and are not one linear scale, so "strictest" would
+    need a cross-check severity ordering this module has no basis to invent,
+    where "the platform's own check outranks a tenant's" needs none.
 
     Restricted to ``source == "generated"`` tests -- the ones an actual
     posture scan produced. A human-run manual test (``source == "authored"``,
@@ -254,7 +305,7 @@ async def effective_verdict(
     engine, which keeps recording its own verdicts.
     """
     cutoff = datetime.now(UTC) - timedelta(days=STALE_AFTER_DAYS)
-    row = (
+    rows = (
         await session.execute(
             select(ControlTestResult, ControlTest)
             .join(ControlTest, ControlTest.id == ControlTestResult.control_test_id)
@@ -265,10 +316,9 @@ async def effective_verdict(
                 ControlTestResult.run_at >= cutoff,
             )
             .order_by(ControlTestResult.run_at.desc())
-            .limit(1)
         )
-    ).first()
-    if row is None:
+    ).all()
+    if not rows:
         return {
             "system_id": system_id,
             "control_id": control_id,
@@ -276,7 +326,11 @@ async def effective_verdict(
             "verdict": None,
             "reason": "no fresh deterministic result",
         }
-    result, test = row[0], row[1]
+    platform_rows = [r for r in rows if _is_platform_sourced(r[1])]
+    result, test = (platform_rows or rows)[0]
+    reason = "a deterministic check outranks a model verdict"
+    if not platform_rows:
+        reason += " (no fresh platform-sourced result; most recent pack-sourced result used)"
     return {
         "system_id": system_id,
         "control_id": control_id,
@@ -286,5 +340,6 @@ async def effective_verdict(
         "evaluated": result.evaluated,
         "failing": result.failing,
         "test_id": test.id,
-        "reason": "a deterministic check outranks a model verdict",
+        "check_source": test.check_source,
+        "reason": reason,
     }

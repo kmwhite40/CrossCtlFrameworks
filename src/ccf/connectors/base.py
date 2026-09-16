@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..posture.checks import CheckOutcome
+    from ..posture.resolve import ResolvedCheck
 
 
 @dataclass
@@ -85,12 +86,22 @@ class ConfigConnector(abc.ABC):
         """
         return {"connected": False, "reason": "verification not implemented"}
 
-    async def scan(self) -> list[CheckOutcome]:
-        """Assess live configuration against this provider's posture checks.
+    async def scan(
+        self, checks: tuple[ResolvedCheck, ...] | None = None
+    ) -> list[CheckOutcome]:
+        """Assess live configuration against posture checks.
 
         Where :meth:`capture` reads a single value to fill an ODP blank, this
         assesses a fleet: each returned ``CheckOutcome`` carries per-resource
         findings with expected-versus-observed detail.
+
+        ``checks`` are the tenant's resolved checks -- the platform registry
+        plus anything its installed packs declared (see
+        :func:`ccf.posture.resolve.resolve_checks`). ``None`` means "whatever
+        this connector ships with", so a caller written before declared checks
+        existed behaves exactly as it did. An **empty tuple is not the same as
+        ``None``**: it means this tenant has nothing to scan, and must not
+        fall back to the platform registry.
 
         Defaults to ``[]`` so a connector that has not implemented posture
         scanning is unaffected -- the same courtesy :meth:`verify` extends by

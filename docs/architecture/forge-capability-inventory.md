@@ -468,3 +468,160 @@ STIG/SCAP parallel, then Trust Center + scoring, MCP, and the CR26/SCN work.
 
 Phases 6 and beyond of the brief were truncated in transmission and are not
 covered here.
+
+---
+
+# 6. Continuous Configuration & Enforcement (CC&E) — Phase 1 discovery
+
+Added 2026-09-14, answering the Principal Cloud Architect directive's Phase 1
+(repository discovery + capability matrix) for the Puppet-*inspired* continuous
+configuration capability. It is a section of this document rather than a second
+inventory, because a parallel capability matrix is precisely the duplication the
+directive's own rule forbids — sections 1–5 above already classify 19
+capabilities, several of which CC&E is asking about under different names.
+
+**Scope discipline, stated once.** The directive says Puppet-inspired, not
+Puppet. Concord is not becoming a configuration-management agent: no node
+catalog compiler, no agent/daemon on managed hosts, no resource DSL, no MCollective
+equivalent. What is architecturally borrowed is the *loop* — declare desired
+state, observe actual state, compute drift, converge, record what happened —
+applied to **cloud control-plane configuration assessed against a compliance
+baseline**, which is a different problem than converging a Linux host.
+
+## 6.1 What already exists (and must not be rebuilt)
+
+| CC&E ask | Status | Where it already lives |
+|---|---|---|
+| Continuous execution loop | **EXISTING** | `governance/scheduler.py` — an asyncio cycle running catalog drift poll, ConMon scan, digest, and connector collection; GLOBAL vs PER-TENANT jobs with the tenant clamped per iteration so RLS backstops app-layer scoping |
+| Provider abstraction | **EXISTING** | `connectors/base.py:ConfigConnector` — `capture()` / `verify()` / `scan()`, per-org credentials, `PARAMETER_MAP` advertising intended coverage |
+| Policy-as-code packaging | **EXISTING (format only — see correction below)** | `packs/` — JSON manifests, validate/install/coverage/`run_tests`, written only under the installing tenant |
+| Check registry (the rules themselves) | **EXISTING** | `posture/checks.py:CHECK_REGISTRY` + `posture/providers/m365.py` — declarative checks with `required_permissions`, per-resource findings |
+| Assessment result spine | **EXISTING** | `ControlTestResult` via `governance/control_tests.py:record_result` — append-only time series, and the **only** writer (alerting, POA&M, recovery, events all hang off it) |
+| Findings → remediation workflow | **EXISTING** | `governance/reactions.py` + POA&M auto-close; §2.6, §2.7 above |
+| Config-drift baseline (parameter level) | **EXISTING** | `CaptureSnapshot` (`models.py:1555`) — "the config-drift baseline" for ODP values |
+| Evidence binding + replay drift | **EXISTING** | `evidence/`, `evidence/confidence.py`, `models_packages.py` (`reproducible\|drifted\|missing`) |
+| Audit trail | **EXISTING** | `ccf.api.audit.record_event` — SHA-256 `prev_hash`/`row_hash` chain; a hand-built row silently breaks tamper-evidence |
+| RBAC | **EXISTING** | `api/auth_deps.py:require_role` |
+| Telemetry export | **EXISTING** | `api/metrics.py` (Prometheus) |
+| OSCAL integration | **EXISTING** | `catalog/`, `oscal/`, `ssp/` — and P0′ adds live revisions with baseline diff/adopt |
+| Change-impact analysis | **EXISTING, different subject** | `catalog/impact.py:build_adoption_impact` (catalog revision → affected mappings), `governance/automation.control_impact` (control → score delta) |
+| Compliance graph | **EXISTING** | P1 capability ontology + `framework_mappings` crosswalk; `capability/service.framework_reach` traverses it |
+
+## 6.2 Capability matrix — the CC&E-specific asks
+
+| # | Capability | Verdict | Reasoning |
+|---|---|---|---|
+| 1 | **Desired-state declaration** | **NEEDS EXTENSION** | Expectation today is encoded *in check code* (`evaluate_mfa_registered`), not declared per organization as versioned data. CC&E needs a first-class, org-owned, diffable target state. The extension point is `packs/` (already a validated manifest format) plus `posture/checks.py` parameterization — not a new format. |
+| 2 | **Drift detection at resource level** | **NEEDS EXTENSION** | Three drift notions exist (catalog source, evidence replay, captured parameter). Missing: *this resource's observed configuration versus its declared desired state, over time*. `ResourceFinding` already carries expected-vs-observed per resource; what is missing is retention and comparison across scans (the pending P2c snapshots/retention work). |
+| 3 | **Closed-loop remediation — decide** | **EXISTING / WIRE** | `ai_actions/` already implements typed actions, citation requirements, human approval, and a declared `allowed_mutation` applied only after approval. CC&E's decision loop should be an action type here. |
+| 4 | **Closed-loop remediation — enforce** | **MISSING, and gated** | Every connector is **read-only**. Writing into a customer's GCC High / Azure Gov tenant is a different risk class than anything Concord does today, and it is the one CC&E capability that can cause an outage in a system under authorization. See §6.4 — this must not be built as a side effect of the loop. |
+| 5 | **Configuration timeline** | **NEEDS EXTENSION** | `ControlTestResult` is already append-only and time-series (this is why P2 shrank from five pieces to three), and `AuditLog` is hash-chained. Extend retention/query, do not add a second history table. |
+| 6 | **Change-impact analysis for config changes** | **NEEDS EXTENSION** | `catalog/impact.py` answers this shape of question for catalog revisions. The same pattern — enumerate affected endpoints, refuse when impact is unresolvable — applied to a proposed configuration change. Reuse `check_mapping_endpoints`, `roll_up`, and `capability/service` rather than a new traversal. |
+| 7 | **Patch orchestration** | **MISSING** | No patch/update orchestration anywhere (every `patch` hit is HTTP PATCH or a parser). Genuinely new, and it depends on #4's write path, so it inherits that gate. |
+| 8 | **Exception / waiver management** | **NEEDS EXTENSION** | `KSIException` (`models.py:1775`) already models a documented deviation with rationale, status, linked risk, and `expires_on` — but **only for a KSI**. CC&E needs the same object against a check, a control, or a resource. Generalize that table; do not create a parallel waiver. A waiver must also suppress **one** thing — the finding — without suppressing the evidence that the drift occurred. |
+| 9 | **PuppetDB / CMDB connector** | **MISSING (optional)** | A read-only inventory source implementing `ConfigConnector`. Cheap once #1–#2 exist; no reason to build first. Explicitly optional in the directive. |
+| 10 | **GitOps flow** | **MISSING** | Packs load from disk or a path, not from a git-backed desired-state repo with PR review. Depends entirely on #1 — there is nothing to put in git until desired state is declarative data. |
+| 11 | **Telemetry for drift/convergence** | **NEEDS EXTENSION** | `api/metrics.py` exports app metrics; per-check drift and convergence counters are additions to it. |
+| 12 | **AI assistant extension** | **EXISTING / WIRE** | `ai_actions/` + the planned MCP gateway (§2.8). Nothing new. |
+
+**Count: 2 EXISTING/WIRE, 6 NEEDS EXTENSION, 4 MISSING** — of which one (#4) is
+gated and two (#7, #10) depend on a gated or unbuilt prerequisite.
+
+## 6.2a Correction — the declaration format has no reader
+
+Found while designing #1: **`PackRule` is written by `packs/service.install_pack`,
+deleted on upgrade, and never read by anything.** Three bundled packs declare
+`rules` entries that no code evaluates. Searching `src/ccf` for `PackRule` or
+`pack_rules` returns only the install path.
+
+So §6.1's "policy-as-code packaging — EXISTING" is true of the *packaging*
+(validated, versioned, tenant-scoped, audit-logged, atomically replaced on
+upgrade) and false of the *runtime*. Symmetrically, `posture/checks.py` has a
+working runtime whose rules are hardcoded Python, so declaring a new expectation
+needs a code release and every tenant gets the same thresholds.
+
+This makes #1 smaller and better-shaped than first classified: not "design a
+desired-state subsystem" but **bridge a validated declaration format to a
+working evaluation runtime**. Spec:
+`docs/superpowers/specs/2026-09-14-declared-posture-checks-design.md`. It is
+also exactly programme item P2b, and `posture/checks.py`'s own docstring already
+anticipated it — *"the registry is deliberately the same shape as
+`etl.sources.DEFAULT_SOURCES` so P2b's move into `packs/` relocates content
+rather than redesigning it."* Building CC&E #1 as a new subsystem would have
+forked P2b.
+
+## 6.2b Status — #1 is built (2026-09-14)
+
+Capability #1 (desired-state declaration) is **implemented and verified**, which
+also completes programme item P2b. `PackRule` has a reader.
+
+A tenant declares a posture check in a pack manifest in one of two forms: **Form
+A** parameterizes a platform evaluator (the platform keeps logic that needs a
+clock or real arithmetic; the tenant supplies the threshold), and **Form B**
+supplies a closed, fail-closed predicate for the genuinely declarative shapes.
+Validation refuses anything unevaluable at install, so a pack that installs can
+be scanned. Each pack version's manifest is now retained, so a desired-state
+change is diffable — which is what #6 (change impact) and the
+configuration-timeline ask needed for *desired* state.
+
+Spec `docs/superpowers/specs/2026-09-14-declared-posture-checks-design.md`,
+plan `docs/superpowers/plans/2026-09-14-declared-posture-checks.md` (results
+section carries the mutation-testing outcome and one deferred finding).
+
+Revised matrix rows: **#1 EXISTING**; **#6 partially satisfied** for desired
+state (observed-state change impact still open); **#11** unchanged.
+
+## 6.3 DUPLICATIVE — asks that must be refused as specified
+
+Recording these explicitly, because each is a plausible-sounding new subsystem
+that would fork something load-bearing:
+
+- **A CC&E-specific findings table.** `record_result` is the only writer of
+  `ControlTestResult`, and alerting, POA&M creation, recovery-resolution and
+  event emission all hang off it. A second finding path would produce drift
+  that never becomes a POA&M and recoveries that never close one.
+- **A CC&E scheduler.** `governance/scheduler.py` already has the tenant-clamping
+  and global-versus-per-tenant distinction that took real care to get right.
+- **A CC&E evidence store, audit log, RBAC layer, or connector base class.**
+  All four exist; a second audit log in particular breaks the hash chain's
+  meaning.
+- **A second desired-state/policy format alongside `packs/`.** One manifest
+  format, extended.
+- **An LLM that decides compliance verdicts.** Deterministic-check-wins is
+  already the platform's rule; CC&E does not get an exception to it.
+
+## 6.4 The one architectural gate: enforcement is not just another connector method
+
+Read and write are not symmetric here. A read-path bug produces a wrong
+verdict, which review catches. A write-path bug reconfigures a production
+federal system — potentially one mid-authorization, where an unplanned
+configuration change is itself a reportable significant change (the SCN
+problem §2.19 exists to model).
+
+So enforcement must not arrive as `ConfigConnector.enforce()`. It needs, at
+minimum: separate write-scoped credentials that an org opts into per provider;
+plan-then-apply with the plan persisted and diffable before anything executes;
+human approval reusing `ai_actions`' approval path rather than a new one;
+blast-radius limits (a change touching N resources refuses rather than
+proceeds); full reversal data captured before mutation; and every applied
+change recorded through `record_event` **and** as a candidate significant
+change. That is a sub-project with its own spec, not a task inside the drift
+loop.
+
+## 6.5 Recommended sequencing
+
+1. **#1 desired state** (extends `packs/`) — nothing else is coherent without it.
+2. **#2 resource drift over time** — merges with the already-planned P2c
+   snapshots/retention rather than competing with it.
+3. **#8 generalized waivers** — needed before drift reporting is usable, or
+   every accepted risk reads as an open finding forever.
+4. **#6 change impact** + **#11 telemetry** — cheap, on existing rails.
+5. **#10 GitOps** — only once #1 is data.
+6. **#4 enforcement** — its own spec, its own gate, after everything above has
+   been operating read-only long enough to trust the drift signal.
+7. **#7 patch orchestration** and **#9 PuppetDB** — last; both are optional and
+   downstream.
+
+This ordering deliberately puts the capability the directive emphasizes most
+(closed-loop enforcement) late, because acting on a drift signal that has never
+been validated read-only is how a compliance tool causes an incident.
