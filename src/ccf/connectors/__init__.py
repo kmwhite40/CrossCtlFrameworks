@@ -11,10 +11,12 @@ from typing import Any
 from .aws import AwsGovCloudConnector
 from .base import CapturedParameter, ConfigConnector
 from .msgraph import MsGraphConnector
+from .puppetdb import PuppetDbConnector
 
 _REGISTRY: dict[str, type[ConfigConnector]] = {
     MsGraphConnector.key: MsGraphConnector,
     AwsGovCloudConnector.key: AwsGovCloudConnector,
+    PuppetDbConnector.key: PuppetDbConnector,
 }
 
 
@@ -44,6 +46,7 @@ __all__ = [
     "CapturedParameter",
     "ConfigConnector",
     "MsGraphConnector",
+    "PuppetDbConnector",
     "connector_keys",
     "get_connector",
     "list_connectors",
