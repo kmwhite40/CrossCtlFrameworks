@@ -153,8 +153,49 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
 ]
 
 
+# materialize_revision's parse-check (ccf.catalog.oscal._verify) is hard-wired
+# to exactly these four 800-53 filenames -- the catalog plus its three baseline
+# profiles. Only this source can ever be materialized into an adoptable
+# revision today; the sibling baseline URLs are looked up from DEFAULT_SOURCES
+# (rather than hardcoded here) so they can't drift out of sync with the
+# registered rows.
+_800_53_CATALOG_KEY = "nist_800_53_r5_catalog"
+_800_53_BASELINE_KEYS = (
+    "nist_800_53_r5_low_baseline",
+    "nist_800_53_r5_moderate_baseline",
+    "nist_800_53_r5_high_baseline",
+)
+
+
 def _sha256_bytes(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
+
+
+def _default_source_url(key: str) -> str:
+    for spec in DEFAULT_SOURCES:
+        if spec["key"] == key:
+            return str(spec["url"])
+    raise KeyError(f"no DEFAULT_SOURCES entry for {key!r}")
+
+
+async def _fetch_800_53_baselines() -> dict[str, bytes]:
+    """Fetch the three baseline profiles that must accompany the 800-53 catalog.
+
+    Keyed by exact filename (matching each URL's own basename, which is the
+    same filename ``ccf.catalog.oscal._BASELINE_FILES`` requires) so the result
+    merges straight into :func:`~ccf.catalog.revisions.materialize_revision`'s
+    ``documents``. Always fetched fresh (no ETag) since these are small,
+    infrequently-changing profiles and correctness here matters more than
+    saving a request.
+    """
+    docs: dict[str, bytes] = {}
+    for key in _800_53_BASELINE_KEYS:
+        url = _default_source_url(key)
+        _, body, _ = await _fetch(url, None)
+        if body is None:  # pragma: no cover — no ETag sent, so never a 304
+            raise RuntimeError(f"unexpected 304 fetching {url}")
+        docs[Path(url).name] = body
+    return docs
 
 
 async def _fetch(url: str, etag: str | None) -> tuple[int, bytes | None, str | None]:
@@ -334,6 +375,7 @@ async def check_source(
 
         sha = _sha256_bytes(body)
         check.sha256 = sha
+        previous_etag = source.etag
         if etag:
             source.etag = etag
 
@@ -378,26 +420,62 @@ async def check_source(
             check.detail = detail
             return _finish(session, source, check, started)
 
+        capture_rejected = False
         if revision_data_root is not None and source.kind == "oscal_catalog":
-            # Capture the changed content as a retained revision. Never adopts --
-            # a human does that after reading the impact report.
-            # Lazy import: catalog.revisions imports this module for its parser.
-            from ..catalog.revisions import materialize_revision  # noqa: PLC0415
+            if source.key == _800_53_CATALOG_KEY:
+                # Capture the changed content as a retained revision. Never
+                # adopts -- a human does that after reading the impact report.
+                # Lazy import: catalog.revisions imports this module for its parser.
+                from ..catalog.revisions import materialize_revision  # noqa: PLC0415
 
-            captured = await materialize_revision(
-                session,
-                source=source,
-                documents={Path(source.url).name: body},
-                upstream_commit_sha=await resolve_commit_sha(source.url),
-                data_root=revision_data_root,
-                retrieved_by="poller",
-            )
-            detail["captured_revision"] = captured.revision
-            detail["captured_status"] = captured.status
+                try:
+                    sibling_docs = await _fetch_800_53_baselines()
+                except Exception as exc:
+                    # Without the baseline profiles, materialize_revision's
+                    # parse-check would reject this anyway -- treat it the same
+                    # way (don't advance last_sha256 below) so a transient
+                    # network hiccup doesn't permanently lose this drift.
+                    detail["capture_status"] = "failed"
+                    detail["capture_error"] = str(exc)[:500]
+                    capture_rejected = True
+                else:
+                    documents = {Path(source.url).name: body, **sibling_docs}
+                    captured = await materialize_revision(
+                        session,
+                        source=source,
+                        documents=documents,
+                        upstream_commit_sha=await resolve_commit_sha(source.url),
+                        data_root=revision_data_root,
+                        retrieved_by="poller",
+                    )
+                    detail["captured_revision"] = captured.revision
+                    detail["captured_status"] = captured.status
+                    if captured.status == "rejected":
+                        detail["capture_rejected_reason"] = captured.notes
+                        capture_rejected = True
+            else:
+                # materialize_revision only knows the 800-53 catalog + baseline
+                # filenames (ccf.catalog.oscal._verify). CSF 2.0 and 800-171 are
+                # also "oscal_catalog" sources but would be rejected for an
+                # entirely different reason (the wrong files present), which
+                # would destroy their drift for nothing -- so skip capture for
+                # them rather than manufacture a rejected row.
+                detail["capture_skipped"] = (
+                    "revision capture is only implemented for the NIST 800-53 "
+                    f"catalog; {source.key} is not materializable"
+                )
 
         check.status = "changed"
         source.last_status = "changed"
-        source.last_sha256 = sha
+        if capture_rejected:
+            # Losing the only copy of drifted content is worse than re-fetching
+            # it next poll: leave last_sha256 AND etag exactly as they were, so
+            # the next poll's fetch is a genuine 200 (not a 304 against the new
+            # etag, which would silently report "unchanged" forever) and this
+            # same drift is seen -- and capture retried -- again.
+            source.etag = previous_etag
+        else:
+            source.last_sha256 = sha
         check.detail = detail
         log.info(
             "catalog.drift",

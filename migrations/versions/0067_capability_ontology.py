@@ -54,6 +54,36 @@ TENANT_TABLES: tuple[str, ...] = (
 # Verbatim from migration 0064 -- the repo standard.
 _PREDICATE = "(ccf.current_tenant() IS NULL OR organization_id = ccf.current_tenant())"
 
+# The `evidence` policy from 0010, unchanged.
+_EVIDENCE_PREDICATE_ORIGINAL = (
+    "(ccf.current_tenant() IS NULL OR "
+    "implementation_id IN (SELECT ci.id FROM ccf.control_implementations ci "
+    "JOIN ccf.systems s ON s.id = ci.system_id "
+    "WHERE s.organization_id = ccf.current_tenant()))"
+)
+
+# Extended to also admit rows parented to a capability instead of a control
+# implementation. `implementation_id` becomes nullable below (evidence may
+# hang off a capability, see module docstring), so the original 0010
+# predicate -- `implementation_id IN (...)` -- evaluates to UNKNOWN for a
+# capability-parented row (implementation_id IS NULL), which hides it from,
+# and rejects inserts from, every real scoped tenant. FORCE ROW LEVEL
+# SECURITY still lets an unscoped principal write such a row, so this fails
+# closed rather than leaking -- but it makes the very feature this migration
+# exists for inert in production. Extended here, in 0067 itself, rather than
+# via a new migration, because 0068-0074 already chain their down_revision
+# off 0067 in this stacked review; inserting a migration between them would
+# fork that chain. Nothing is merged to main yet, so editing 0067 in place is
+# safe, and this is where the capability tables' own policies already live.
+_EVIDENCE_PREDICATE_EXTENDED = (
+    "(ccf.current_tenant() IS NULL OR "
+    "implementation_id IN (SELECT ci.id FROM ccf.control_implementations ci "
+    "JOIN ccf.systems s ON s.id = ci.system_id "
+    "WHERE s.organization_id = ccf.current_tenant()) OR "
+    "capability_id IN (SELECT id FROM ccf.capabilities "
+    "WHERE organization_id = ccf.current_tenant()))"
+)
+
 _IMPL_STATUS = postgresql.ENUM(
     "not_implemented",
     "planned",
@@ -247,8 +277,27 @@ def upgrade() -> None:
             f"FOR ALL USING {_PREDICATE} WITH CHECK {_PREDICATE}"
         )
 
+    # --- extend the pre-existing evidence policy for capability parentage ---
+    op.execute("DROP POLICY IF EXISTS tenant_isolation ON ccf.evidence")
+    op.execute(
+        f"CREATE POLICY tenant_isolation ON ccf.evidence "
+        f"FOR ALL USING {_EVIDENCE_PREDICATE_EXTENDED} "
+        f"WITH CHECK {_EVIDENCE_PREDICATE_EXTENDED}"
+    )
+
 
 def downgrade() -> None:
+    # Restore the original (0010) implementation-only predicate first: it
+    # must happen before capability_id is dropped from evidence and before
+    # the capabilities table is dropped, since the extended policy
+    # references both.
+    op.execute("DROP POLICY IF EXISTS tenant_isolation ON ccf.evidence")
+    op.execute(
+        f"CREATE POLICY tenant_isolation ON ccf.evidence "
+        f"FOR ALL USING {_EVIDENCE_PREDICATE_ORIGINAL} "
+        f"WITH CHECK {_EVIDENCE_PREDICATE_ORIGINAL}"
+    )
+
     op.drop_constraint(
         "ck_evidence_has_parent", "evidence", schema=_SCHEMA, type_="check"
     )

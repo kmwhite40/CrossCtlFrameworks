@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import itertools
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from ccf.capability.derive import derive_for_system
 from ccf.db import session_scope
@@ -191,6 +191,63 @@ async def test_mixed_statuses_derive_partial() -> None:
         assert len(impl.derived_from["capabilities"]) == 2
 
 
+async def test_removed_control_edge_clears_stale_derived_status() -> None:
+    """The loop only ever visits *current* coverage, so a row it no longer
+    reaches (the capability's control edge was removed) would otherwise keep
+    naming a capability that no longer backs it."""
+    async with session_scope() as session:
+        _, sys_, ctl, cap = await _fixture(
+            session, cap_status="implemented", control_identifier="ZH-02", canonical="ZH-2"
+        )
+        impl = ControlImplementation(system_id=sys_.id, control_id=ctl.id, status="planned")
+        session.add(impl)
+        await session.flush()
+
+        touched = await derive_for_system(session, system_id=sys_.id)
+        assert touched == 1
+        await session.refresh(impl)
+        assert impl.derived_status == "implemented"
+
+        await session.execute(
+            delete(CapabilityControl).where(CapabilityControl.capability_id == cap.id)
+        )
+        await session.flush()
+
+        touched_again = await derive_for_system(session, system_id=sys_.id)
+        await session.refresh(impl)
+        assert touched_again == 1
+        assert impl.derived_status is None
+        assert impl.derived_at is None
+        assert impl.derived_from == {}
+        assert impl.status == "planned"  # authored value still untouched
+
+
+async def test_capability_turned_not_applicable_clears_stale_derived_status() -> None:
+    """roll_up([...]) -> None for an all-not_applicable contributor set, which
+    the annotate loop treats as "nothing to write" (continue) -- the stale
+    clear must still run for a control that previously had a real status."""
+    async with session_scope() as session:
+        _, sys_, ctl, cap = await _fixture(
+            session, cap_status="implemented", control_identifier="ZI-02", canonical="ZI-2"
+        )
+        impl = ControlImplementation(system_id=sys_.id, control_id=ctl.id, status="planned")
+        session.add(impl)
+        await session.flush()
+        await derive_for_system(session, system_id=sys_.id)
+        await session.refresh(impl)
+        assert impl.derived_status == "implemented"
+
+        cap.status = "not_applicable"
+        await session.flush()
+
+        touched = await derive_for_system(session, system_id=sys_.id)
+        await session.refresh(impl)
+        assert touched == 1
+        assert impl.derived_status is None
+        assert impl.derived_at is None
+        assert impl.derived_from == {}
+
+
 async def test_system_with_no_capabilities_is_a_noop() -> None:
     async with session_scope() as session:
         org = Organization(name=f"EmptyOrg-{next(_SEQ)}")
@@ -200,3 +257,54 @@ async def test_system_with_no_capabilities_is_a_noop() -> None:
         session.add(sys_)
         await session.flush()
         assert await derive_for_system(session, system_id=sys_.id) == 0
+
+
+async def test_cross_tenant_capability_component_binding_is_not_folded_in() -> None:
+    """A capability bound, by id, to a component owned by a *different*
+    organization -- e.g. pre-existing bad data, or a binding made through the
+    session_scope()-run CLI, which is unscoped (RLS bypass) by design -- must
+    not fold into that other organization's derived control status. This is
+    the only defense on that path; the FK check on the edge does not consult
+    RLS and the API's own-org validation does not run here."""
+    async with session_scope() as session:
+        org_a = Organization(name=f"XTenOrgA-{next(_SEQ)}")
+        org_b = Organization(name=f"XTenOrgB-{next(_SEQ)}")
+        session.add_all([org_a, org_b])
+        await session.flush()
+        sys_b = System(organization_id=org_b.id, name=f"XTenSysB-{next(_SEQ)}")
+        session.add(sys_b)
+        await session.flush()
+        comp_b = SystemComponent(
+            organization_id=org_b.id, system_id=sys_b.id, type="service", title="B Comp"
+        )
+        session.add(comp_b)
+        ctl = Control(identifier="ZJ-02")
+        session.add(ctl)
+        await session.flush()
+        cap_a = Capability(
+            organization_id=org_a.id,
+            key=f"xten-cap-a-{next(_SEQ)}",
+            title="A Cap",
+            status="implemented",
+        )
+        session.add(cap_a)
+        await session.flush()
+        # Cross-tenant edges, inserted directly (bypassing the API's own-org
+        # validation) to simulate exactly the attack the org predicate in
+        # `_capabilities_for_system` defends against.
+        session.add(
+            CapabilityComponent(
+                organization_id=org_a.id, capability_id=cap_a.id, component_id=comp_b.id
+            )
+        )
+        session.add(
+            CapabilityControl(organization_id=org_a.id, capability_id=cap_a.id, control_id="ZJ-2")
+        )
+        impl_b = ControlImplementation(system_id=sys_b.id, control_id=ctl.id, status="planned")
+        session.add(impl_b)
+        await session.flush()
+
+        touched = await derive_for_system(session, system_id=sys_b.id)
+        await session.refresh(impl_b)
+        assert touched == 0
+        assert impl_b.derived_status is None

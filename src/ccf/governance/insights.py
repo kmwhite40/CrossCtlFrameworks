@@ -71,11 +71,23 @@ async def data_quality(session: AsyncSession, *, org_id: int | None = None) -> d
         }
     )
     # Implemented/inherited controls with no evidence attached.
+    #
+    # `Evidence.implementation_id` is nullable since 0067 (evidence may hang
+    # off a capability instead) -- `x NOT IN (subquery containing NULL)` is
+    # UNKNOWN, never TRUE, for every row in SQL. Left unguarded, a single
+    # capability-parented evidence row anywhere would silently zero out this
+    # check for every tenant. Filter the NULLs out of the subquery first.
     impl_no_ev = (
         select(func.count(ControlImplementation.id))
         .where(ControlImplementation.system_id.in_(sys_ids))
         .where(ControlImplementation.status.in_(("implemented", "inherited")))
-        .where(~ControlImplementation.id.in_(select(Evidence.implementation_id)))
+        .where(
+            ~ControlImplementation.id.in_(
+                select(Evidence.implementation_id).where(
+                    Evidence.implementation_id.is_not(None)
+                )
+            )
+        )
     )
     findings.append(
         {

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
@@ -77,7 +77,11 @@ async def _evidence_in_scope(
 
 
 class EvidenceCreate(BaseModel):
-    implementation_id: int
+    # Optional since 0067: evidence may hang off a capability instead of a
+    # control implementation. create_evidence enforces the same at-least-one
+    # rule the DB CHECK enforces, as a 422 rather than a raised IntegrityError.
+    implementation_id: int | None = None
+    capability_id: int | None = None
     kind: str = Field(
         ...,
         pattern=r"^(document|screenshot|config_export|attestation|scan_result|ticket|link|other)$",
@@ -98,9 +102,23 @@ async def list_evidence(
 ) -> list[EvidenceOut]:
     stmt = select(Evidence).order_by(Evidence.created_at.desc())
     if principal.org_id is not None:
-        stmt = stmt.join(
-            ControlImplementation, ControlImplementation.id == Evidence.implementation_id
-        ).where(ControlImplementation.system_id.in_(org_systems_subq(principal)))
+        # Outer joins: a row may be parented to a control implementation, a
+        # capability, or (pre-0067) always the former — an inner join on
+        # implementation_id alone would drop capability-parented rows the
+        # tenant authored. See _evidence_in_scope for the same either-parent
+        # scoping used by delete.
+        stmt = (
+            stmt.outerjoin(
+                ControlImplementation, ControlImplementation.id == Evidence.implementation_id
+            )
+            .outerjoin(Capability, Capability.id == Evidence.capability_id)
+            .where(
+                or_(
+                    ControlImplementation.system_id.in_(org_systems_subq(principal)),
+                    Capability.organization_id == principal.org_id,
+                )
+            )
+        )
     if implementation_id is not None:
         stmt = stmt.where(Evidence.implementation_id == implementation_id)
     rows = (await session.execute(stmt)).scalars().all()
@@ -113,8 +131,16 @@ async def create_evidence(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> EvidenceOut:
-    if not await _impl_in_scope(session, body.implementation_id, principal):
+    if body.implementation_id is None and body.capability_id is None:
+        raise HTTPException(422, "evidence requires implementation_id or capability_id")
+    if body.implementation_id is not None and not await _impl_in_scope(
+        session, body.implementation_id, principal
+    ):
         raise HTTPException(404, "control implementation not found")
+    if body.capability_id is not None and not await _cap_in_scope(
+        session, body.capability_id, principal
+    ):
+        raise HTTPException(404, "capability not found")
     obj = Evidence(**body.model_dump(exclude_none=False))
     session.add(obj)
     await session.commit()
