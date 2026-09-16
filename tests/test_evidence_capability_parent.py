@@ -12,15 +12,16 @@ at all.
 The scoped-principal cases below call ``list_evidence``/``create_evidence``
 directly against a ``session_scope()`` (RLS-bypass) session with a synthetic
 ``Principal``, rather than through a real authenticated HTTP request. That
-isolates exactly the app-layer query/validation logic this fix touches. It is
-a deliberate choice, not an oversight: driving these same cases through a real
-scoped (``ccf_app``-role, RLS-enforced) request surfaces a *separate*,
-pre-existing gap -- the ``evidence`` table's ``tenant_isolation`` policy
-(migration 0010) predicates solely on ``implementation_id IN (...)`` and was
-never updated for the capability parent 0067 added, so it blocks (both
-``INSERT`` and ``SELECT``) a capability-parented row for every scoped tenant
-regardless of this fix. That RLS predicate is not one of the four assigned
-findings and touching it is out of this task's scope; see the fix report.
+isolates exactly the app-layer query/validation logic this fix touches, as a
+deliberate choice: the *separate*, RLS-layer gap this docstring used to
+describe here -- the ``evidence`` table's ``tenant_isolation`` policy
+(migration 0010) predicating solely on ``implementation_id IN (...)``, never
+updated for the capability parent 0067 added, and so blocking both ``INSERT``
+and ``SELECT`` of a capability-parented row for every real scoped tenant --
+has since been fixed in 0067 itself (0067's ``upgrade()`` now recreates the
+``evidence`` policy with an added ``capability_id`` branch). See
+``tests/test_rls_evidence_capability_parent.py`` for the RLS-enforced,
+real-tenant coverage of that fix.
 """
 
 from __future__ import annotations
