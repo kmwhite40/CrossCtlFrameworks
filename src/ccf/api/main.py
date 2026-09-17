@@ -42,6 +42,7 @@ from .routes import (
     connector_settings,
     controls,
     coverage,
+    cr26,
     diagrams,
     diff,
     enforcement,
@@ -194,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(assurance.router)
     app.include_router(capabilities.router)
     app.include_router(enforcement.router)
+    app.include_router(cr26.router)
     app.include_router(patching.router)
     app.include_router(waivers.router)
     app.include_router(packages.router)
