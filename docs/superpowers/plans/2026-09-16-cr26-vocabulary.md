@@ -14,7 +14,7 @@
 
 - **Nothing may derive `certification_class` from `baseline`, or `baseline` from `certification_class`.** FedRAMP states Classes are not one-for-one replacements for impact levels, and the published adequacy ranges overlap, so any derivation is wrong in both directions.
 - **No new table, no second writer.** `POAM` stays the single record of a provider-side weakness. Accepted Weakness is a classification of that row.
-- **The two halves of the union are disjoint:** declared is `status == "risk_accepted"` at any age; elapsed is `status in POAM_ACTIVE_STATUSES` past 192 days. `POAM_ACTIVE_STATUSES` excludes `risk_accepted` by design — see the comment block at `src/ccf/constants.py:90-113`, which explains why the two "open" sets must not be collapsed.
+- **The two halves of the union are disjoint:** declared is `status == "risk_accepted"` at any age; elapsed is `status in POAM_ACTIVE_STATUSES` past 192 days. `POAM_ACTIVE_STATUSES` excludes `risk_accepted` by design — see the comment block at `src/ccf/constants.py:91-110`, which explains why the two "open" sets must not be collapsed.
 - **Reuse `sla.py`'s boundary semantics exactly.** Inclusive at the limit — "an organization that says 30 days means 30, not 29", so 192 means 192. `unknown` for a missing `identified_on`. **A reopened POA&M carrying a stale `closed_on` is never treated as resolved** — shipping that backwards was a Critical in the flaw-remediation work.
 - **`ACCEPTED_WEAKNESS_DAYS = 192`**, a module constant, never a literal at a call site.
 - **The 192 days run from *evaluation*; the code keys to `identified_on`.** That substitution is an explicit assumption to record in the docstring and confirm against the VER ruleset when it publishes — never a silent equivalence. If they differ, only the key changes.
@@ -55,6 +55,8 @@ export CCF_DATABASE_URL_SYNC=postgresql+psycopg://ccf:ccf@localhost:5434/ccf_tes
 ---
 
 ### Task 1: Accepted Weakness classification
+
+> **Amended by the final whole-branch review (see `.superpowers/sdd/2026-09-16-cr26-vocabulary/final-fix-report.md`).** As planned and first implemented, this task produced `is_accepted_weakness(poam, *, today) -> bool`. The spec's §4 scenario table asks the projection for five outcomes, two of which are `unknown`, and a boolean has no room for the third state — so an unmeasurable row (no `identified_on`; a reopened row carrying a stale `closed_on`) received the *favourable* answer under a rule that obliges providers to report accepted weaknesses. The shipped function is `accepted_weakness_state(poam, *, today) -> str`, returning one of `ACCEPTED_WEAKNESS_STATES = ("accepted", "not_accepted", "unknown")`, with a branch order mirroring `classify` step for step. `is_accepted_weakness` was removed outright, with no deprecated alias. The code listings below are the plan as written, not the code as shipped; `src/ccf/patching/sla.py` is authoritative.
 
 The deadline-bound piece (VER mandatory 7 December 2026), and pure — no database, no migration.
 
@@ -277,7 +279,7 @@ A correctness fix the CR26 semantics force, and a divergence from a convention t
 - Consumes: nothing from Task 1 — `classify` stays a pure bucket function and does NOT call `is_accepted_weakness`. The two answer different questions: `classify` buckets against an org's own remediation window, `is_accepted_weakness` applies FedRAMP's fixed 192 days. Wiring one through the other would silently bind an org's window to the federal one.
 - Produces: `SLA_BUCKETS` gains `"accepted"`. **No `SlaReport` change is needed** — `buckets` is a `dict[str, int]` built with `dict.fromkeys(SLA_BUCKETS, 0)`, and `by_severity` likewise, so a new bucket propagates everywhere by itself, `as_dict()` included.
 
-**Why:** `classify` currently returns `breached` for a `risk_accepted` row past its window and adds it to `breaching_ids`; a *young* accepted row returns `within_sla` and counts as compliant. `src/ccf/constants.py:90-113` states the convention plainly — `POAM_ACTIVE_STATUSES` is the remediation backlog and excludes `risk_accepted` because it is risk leadership has formally accepted rather than work still to do — and `analytics/posture.py` already buckets it separately. `sla.py` diverged. Under CR26 the divergence is not cosmetic: an accepted weakness is the outcome the rule defines, not an SLA failure.
+**Why:** `classify` currently returns `breached` for a `risk_accepted` row past its window and adds it to `breaching_ids`; a *young* accepted row returns `within_sla` and counts as compliant. `src/ccf/constants.py:91-110` states the convention plainly — `POAM_ACTIVE_STATUSES` is the remediation backlog and excludes `risk_accepted` because it is risk leadership has formally accepted rather than work still to do — and `analytics/posture.py` already buckets it separately. `sla.py` diverged. Under CR26 the divergence is not cosmetic: an accepted weakness is the outcome the rule defines, not an SLA failure.
 
 **Two judgements to implement exactly as written, not re-decided:**
 
@@ -827,7 +829,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ## Notes for the executor
 
 - **Do not add a table for Accepted Weakness.** It is a classification of a `POAM` row. Two records of one fact is the defect this design exists to avoid.
-- **Do not collapse `POAM_ACTIVE_STATUSES` and `POAM_UNRESOLVED_STATUSES`.** `constants.py:90-113` explains why they answer different questions; unifying them would either hide accepted risk from the AO or count it as outstanding work.
+- **Do not collapse `POAM_ACTIVE_STATUSES` and `POAM_UNRESOLVED_STATUSES`.** `constants.py:91-110` explains why they answer different questions; unifying them would either hide accepted risk from the AO or count it as outstanding work.
 - **Do not wire `classify` through `is_accepted_weakness`.** One measures an org's declared window, the other FedRAMP's fixed 192 days. They agree on which rows are accepted and must not be made to share a threshold.
 - **Do not model `certification_status`.** The vocabulary is unpublished.
 - **Do not backfill either new column.** Null is the correct value for every existing row.

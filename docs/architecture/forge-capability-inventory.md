@@ -885,12 +885,34 @@ CR26 eliminates the provider-side POA&M and replaces it with **Accepted
 Weaknesses**. §2.7 named this as the gap; what closes it is smaller than a
 migration. `POAM` already modelled the weakness — status, identification
 date, closure date, severity — so nothing about *what is stored* changes.
-What changes is a read: `ccf.patching.sla.is_accepted_weakness(poam, *,
-today)` classifies an existing row as accepted or not, exactly the way
-`classify` already turns the same row into an SLA bucket. **No second table.**
-Two records of one fact — a POA&M row and a separate Accepted-Weakness row
-disagreeing about the same weakness — is the defect this design avoids, not
-a feature it was missing.
+What changes is a read: `ccf.patching.sla.accepted_weakness_state(poam, *,
+today)` classifies an existing row as `accepted`, `not_accepted` or `unknown`.
+**No second table.** Two records of one fact — a POA&M row and a separate
+Accepted-Weakness row disagreeing about the same weakness — is the defect
+this design avoids, not a feature it was missing.
+
+It is **three** states, not a boolean, for the reason `sla.py`'s own header
+gives for its `unknown` bucket: a row with no `identified_on`, or a closure
+dated before its identification, cannot be *shown* to fall outside the window,
+and under a rule obliging a provider to report its accepted weaknesses
+"not accepted" is the *favourable* answer. A boolean had to hand that
+favourable answer to every unmeasurable row — an undated three-year-old open
+weakness returned `False`, which is not "we cannot tell" but the affirmative
+claim that it is not an Accepted Weakness. `ACCEPTED_WEAKNESS_STATES` is a
+closed tuple, parallel to `SLA_BUCKETS`.
+
+Its branch order mirrors `classify` step for step — declared status first,
+then a missing `identified_on`, then a closed status judged on its closure
+latency, then a leftover `closed_on` on a row whose status is *not* closed
+(a reopened weakness: `unknown`, never resolved), then the elapsed-time
+arithmetic. So the two functions cannot disagree about which rows are
+unmeasurable, and `tests/test_accepted_weakness.py` walks a table of rows
+through both and asserts exactly that. **They do not share a threshold, and
+that is deliberate:** `classify` measures against an organization's own
+declared remediation window, which varies by severity and is configurable;
+`accepted_weakness_state` applies FedRAMP's fixed 192 days. An open row 258
+days old is `breached` in one and `accepted` in the other against a 90-day
+window, and a test pins that asymmetry so nobody wires one through the other.
 
 The classification is a union of two disjoint halves, **declared ∪ elapsed**,
 because CR26's own text requires it: a weakness a provider "is not, **or
@@ -903,7 +925,7 @@ half is `POAM_ACTIVE_STATUSES` rows more than `ACCEPTED_WEAKNESS_DAYS`
 weakness a provider accepted on day one reports as open remediation work
 for up to 191 days — the exact gap between "the AO knows this is accepted"
 and "the dashboard agrees." The two halves cannot overlap by construction:
-`POAM_ACTIVE_STATUSES` excludes `risk_accepted` (`constants.py:90-113`), so
+`POAM_ACTIVE_STATUSES` excludes `risk_accepted` (`constants.py:91-110`), so
 a row is reached by exactly one half, never both and never neither once it
 is old enough.
 
@@ -913,10 +935,11 @@ aged past their severity's timeframe, which is wrong on its own terms — a
 formally accepted risk is not a missed SLA — independent of anything CR26
 asks for. `classify` now short-circuits `risk_accepted` to its own
 `accepted` bucket before the breach/within-SLA arithmetic runs. This bucket
-and `is_accepted_weakness` are deliberately **not** wired together: one
+and `accepted_weakness_state` are deliberately **not** wired together: one
 measures an org's own declared SLA window (which varies by severity), the
 other FedRAMP's fixed 192-day rule, and they must stay free to disagree on
-*when* without disagreeing on *which* rows are accepted.
+*when* without disagreeing on *which* rows are declared-accepted or
+unmeasurable.
 
 **Certification Class and Path are independent axes of `System`, not a
 derivation of `baseline`.** This is the load-bearing judgement of the whole
@@ -934,21 +957,35 @@ enums `CERTIFICATION_CLASSES = ("A", "B", "C", "D")` and
 `CERTIFICATION_PATHS = ("program", "agency")`), with no read or write path
 anywhere that takes `baseline` as an input and produces a Class, or the
 reverse. `tests/test_certification_class_is_independent.py` makes that a
-standing property of the source tree rather than a one-time review finding:
-an AST walk over every module under `src/ccf` fails the build if an
-assignment — attribute, name, tuple/list-unpacking, or augmented — ever
-names one vocabulary on its target and the other in its value, **or** a
-constructor call's keyword argument names one vocabulary and its own value
-mentions the other, in either direction. The keyword-argument case was added
-after a review caught the first pass missing it: `System` rows in this
-codebase are built with keywords, not attribute assignment (see
+standing property of the Python source — both application code and
+migrations — rather than a one-time review finding: an AST walk over every
+module under `src/ccf` **and** every file in `migrations/versions/` fails
+the build if an assignment — attribute, name, tuple/list-unpacking, or
+augmented — ever names one vocabulary on its target and the other in its
+value, **or** a constructor call's keyword argument names one vocabulary and
+its own value mentions the other, in either direction. The keyword-argument
+case was added after a review caught the first pass missing it: `System`
+rows in this codebase are built with keywords, not attribute assignment (see
 `api/routes/ui.py`'s `System(organization_id=org.id, name=sys_name,
 baseline=(baseline or None))`), and a guard blind to that shape would have
-missed the exact edit it exists to catch. This is a source-shaped guard, not
-a data-flow one: it does not follow a value through an intermediate
-variable, a function's return, or `setattr`, so those remain places a
-derivation could still slip past review undetected. It catches the direct,
-textually-adjacent form the mapping's temptation actually takes.
+missed the exact edit it exists to catch. The migrations root was added for
+the same reason: a backfill is the likeliest way this derivation would
+actually arrive, because "populate the new column from the impact level we
+already hold" reads like housekeeping rather than like the mapping FedRAMP
+forbids.
+
+**Three known blind spots, disclosed rather than implied away.** This is a
+source-shaped guard, not a data-flow one, so it does not follow a value
+through an intermediate variable, a function's return, or `setattr`. And the
+widening to `migrations/versions/` does **not** close the case that motivated
+it: a backfill written as raw SQL inside `op.execute("UPDATE ccf.systems SET
+certification_class = CASE baseline WHEN 'high' THEN 'B' … END")` is a string
+literal to an AST assignment walker, invisible however wide the glob is
+thrown. No walker can fix that one, and a substring scan that could would
+fire on prose, so it is recorded here as a place review — not the test suite
+— has to hold the line. What the guard does catch is the direct,
+textually-adjacent Python form the mapping's temptation actually takes, in
+both roots.
 
 **`certification_status` is deliberately not modelled**, for the same reason
 the Class↔impact mapping is not encoded: it is not published in any source
@@ -962,7 +999,7 @@ one unvalidated mapping for one unvalidated vocabulary.
 runs from *evaluation* under CR26's Vulnerability Evaluation and Reporting
 (VER) rules, and `POAM.identified_on` is the closest existing field, not a
 confirmed match — VER has not published the definition of "evaluation" as
-of this writing. `is_accepted_weakness`'s docstring states the substitution
+of this writing. `accepted_weakness_state`'s docstring states the substitution
 explicitly so it reads as a flagged assumption to confirm against the
 published VER ruleset, not a hidden equivalence. If the two dates prove
 different, only the key changes; the declared/elapsed shape does not.
@@ -971,7 +1008,7 @@ different, only the key changes; the declared/elapsed shape does not.
 mandatory Certification. Nothing in this change depends on that date passing;
 `certification_class`/`certification_path` are null for every existing row
 (no backfill — null is correct for every Rev5-lane system today) and
-`is_accepted_weakness` is additive, called by nothing yet. The date matters
+`accepted_weakness_state` is additive, called by nothing yet. The date matters
 for sequencing what comes next, not for anything landed here.
 
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
