@@ -7,12 +7,18 @@ this module resolves every reference through the vendored copies under
 ``schemas/`` and never reaches the network.
 
 That is not a preference. Ten of the eleven schemas reference
-``common-definitions`` by absolute URL, and ``jsonschema`` 4.26 raises
-``Unresolvable`` rather than fetching, so without a registry built from the
-vendored files every *complete* document fails. Note "complete": ``$ref``
-resolution is lazy, so a document that fails an earlier ``required`` check
-never descends into the reference and appears to validate fine. That asymmetry
-is why the tests here use documents complete enough to reach a ``$ref``.
+``common-definitions`` by absolute URL. ``jsonschema`` resolves a ``$ref``
+through whatever ``referencing.Registry`` it is given: pass none, and it falls
+back to fetching the reference over the network (and warns that doing so is a
+security vulnerability); pass one, and anything absent from it raises
+``Unresolvable`` with zero sockets attempted. So ``registry=`` is not a
+convenience -- it is the entire network barrier, and building it from the
+vendored files here is what keeps every reference resolved locally, never
+remotely. Note "complete": ``$ref`` resolution is lazy, so a document that
+fails an earlier ``required`` check -- or simply never includes the property
+carrying the reference -- never descends into it and appears to validate fine
+regardless of whether the registry is present. That asymmetry is why the
+tests here use documents complete enough to reach a ``$ref``.
 
 Unlike :mod:`ccf.oscal.validation` this module has no ``detect_kind`` (CR26
 documents do not self-identify by root key), no structural fallback (the schema
@@ -91,18 +97,40 @@ def _registry() -> Any:
 
     This is what keeps validation offline: references resolve here or not at
     all. Built once -- the files cannot change under a running process.
+
+    Driven by ``MANIFEST.json`` -- Task 1's single source of truth for which
+    files are vendored -- rather than by :data:`CR26_KINDS`, so the registry
+    can never silently end up smaller than what was actually pinned. Raises
+    loudly, naming what is missing, if any manifest-listed file cannot be read
+    or lacks an ``$id``: a registry that is quietly missing one schema is
+    exactly how most of the other ten kinds would start failing resolution in
+    production, since all of them point at the one schema most likely to be
+    the casualty (``common-definitions``).
     """
     from referencing import Registry, Resource  # noqa: PLC0415
 
+    manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    filenames = sorted(manifest["files"])
+
     resources = []
-    for name, _rule in CR26_KINDS.values():
+    unusable = []
+    for name in filenames:
         path = _SCHEMA_DIR / name
         if not path.is_file():
+            unusable.append(name)
             continue
         doc = json.loads(path.read_text(encoding="utf-8"))
         uri = doc.get("$id")
-        if uri:
-            resources.append((uri, Resource.from_contents(doc)))
+        if not uri:
+            unusable.append(name)
+            continue
+        resources.append((uri, Resource.from_contents(doc)))
+
+    if unusable:
+        raise RuntimeError(
+            "CR26 schema registry is incomplete -- manifest-listed file(s) "
+            f"missing or without an $id: {unusable!r}"
+        )
     return Registry().with_resources(resources)
 
 
@@ -121,17 +149,22 @@ def enforced_formats() -> tuple[str, ...]:
     not a property of the schemas. Reported rather than assumed: a caller that
     needs ``uri`` or ``date-time`` enforced must install
     ``rfc3986-validator`` / ``rfc3339-validator`` and can check here.
+
+    Only a missing ``jsonschema`` yields the empty tuple -- matching the rest
+    of this module's ``mode="none"`` degradation. Anything else (a broken
+    ``jsonschema`` install, say) propagates rather than being reported as the
+    legitimate-looking, and false, answer "this environment enforces nothing".
     """
     try:
         return tuple(sorted(_format_checker().checkers))
-    except Exception:
+    except ImportError:
         return ()
 
 
 def _jsonschema_available() -> bool:
     try:
         import jsonschema  # noqa: F401,PLC0415
-    except Exception:
+    except ImportError:
         return False
     return True
 
@@ -140,7 +173,12 @@ def validate_document(doc: Any, kind: str) -> ValidationReport:
     """Validate ``doc`` against the vendored CR26 schema for ``kind``.
 
     Returns a report rather than raising: an unknown kind, a non-object
-    document, or a missing backend yields a report, never a crash.
+    document, a missing backend, or any unexpected failure building or running
+    the validator yields a report, never a crash. That last case is deliberate
+    defense in depth -- ``_registry()`` already raises loudly if it is ever
+    built incomplete, and this catches that (or any other surprise, such as
+    ``referencing`` itself being uninstalled, or a vendored file becoming
+    corrupt on disk) before it can reach a caller as a traceback.
     """
     if kind not in CR26_KINDS:
         return ValidationReport(
@@ -159,14 +197,19 @@ def validate_document(doc: Any, kind: str) -> ValidationReport:
             kind, "none", ok=False, errors=["jsonschema is not installed"]
         )
 
-    from jsonschema.validators import validator_for  # noqa: PLC0415
+    try:
+        from jsonschema.validators import validator_for  # noqa: PLC0415
 
-    schema = json.loads(path.read_text(encoding="utf-8"))
-    # Dialect from the schema itself, never hardcoded.
-    cls = validator_for(schema)
-    validator = cls(schema, registry=_registry(), format_checker=_format_checker())
-    errors = [
-        f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}"
-        for e in sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
-    ]
+        schema = json.loads(path.read_text(encoding="utf-8"))
+        # Dialect from the schema itself, never hardcoded.
+        cls = validator_for(schema)
+        validator = cls(schema, registry=_registry(), format_checker=_format_checker())
+        errors = [
+            f"{'/'.join(str(p) for p in e.absolute_path) or '<root>'}: {e.message}"
+            for e in sorted(validator.iter_errors(doc), key=lambda e: list(e.absolute_path))
+        ]
+    except Exception as exc:
+        return ValidationReport(
+            kind, "none", ok=False, errors=[f"validation failed unexpectedly: {exc}"]
+        )
     return ValidationReport(kind, "official", ok=not errors, errors=errors)
