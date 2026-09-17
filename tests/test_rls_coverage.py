@@ -107,7 +107,7 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         # 0068 posture spine -- policied through the two-hop parent chain
         # (resource result -> result -> test), like poam_milestones, so it has
         # no organization_id of its own.
-        "control_test_resource_results", "control_tests", "events", "evidence",
+        "control_test_resource_results", "control_tests", "cr26_documents", "events", "evidence",
         "evidence_access_events", "evidence_confidence_scores", "evidence_objects",
         "evidence_replay_runs", "evidence_reproducibility_checks", "evidence_retention_policies",
         "evidence_reviews", "evidence_source_trust_policies", "evidence_versions",
@@ -182,7 +182,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 137
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 138
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
