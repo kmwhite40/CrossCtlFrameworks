@@ -564,10 +564,40 @@ Accepted Weaknesses in place of POA&Ms, and Ongoing Certification vocabulary all
 have no representation. `System.fedramp_baseline` is a low/moderate/high enum
 (`models.py:355`) with ~83 impact-level references across source.
 
-**Unresolved and deliberately not invented here:** the Certification Class
-A/B/C/D to impact-level mapping. The 2026-07-21 review flagged it as needing
-primary-source validation and this analysis did not resolve it. It must be
-confirmed against FedRAMP source before any schema change depends on it.
+**RESOLVED 2026-09-16 at FedRAMP source — and the answer is that there is no
+mapping to build.** fedramp.gov/2026/agencies/use/classes/ states plainly:
+
+> "Agencies should not treat Certification Classes as one-for-one replacements
+> for Low, Moderate, or High impact levels."
+
+and, more bluntly:
+
+> "FedRAMP Certification Classes are not aligned to how secure a cloud service
+> offering is!"
+
+A Class describes the **depth, frequency and quality of assurance data a
+provider commits to supplying**, not the sensitivity of the information a system
+holds. The published definitions are adequacy *ranges*, deliberately
+overlapping, never equivalences:
+
+| Class | FedRAMP's own wording |
+|---|---|
+| A | adequate for pilots, configuration and testing, or extremely low / negligible risk |
+| B | adequate for most **Low**, and some **Moderate or High**, impact systems |
+| C | adequate for most **Low or Moderate**, and some **High**, impact systems |
+| D | adequate for most systems **regardless of impact level** |
+
+**Design consequence:** Certification Class is an independent axis alongside
+impact level, never derived from it. A `Class -> baseline` column, lookup or
+enum would encode a relationship FedRAMP explicitly disclaims, and would be
+wrong in both directions — a Class B offering may serve a High system, and a
+High system may be served by Class B, C or D.
+
+Note secondary sources actively contradict each other on this (one FedRAMP blog
+summary renders it "Class B (Low), Class C (Moderate)" while another says Class
+B *replaces* Moderate). That disagreement is itself the reason the primary
+source is the only acceptable authority here, and why `System.fedramp_baseline`
+must stay as it is.
 
 Also folded in from the VDR work (G8): findings need CVE/CVSS/**EPSS**/**CISA
 KEV** enrichment and asset-owner attribution, none of which exist today.
@@ -687,9 +717,11 @@ to end — trading known rework for a visible result in roughly a fifth of the t
    existing approval gate from the start?
 6. **Sequencing adjustment (needs confirmation).** Narrow P0's first pass to
    source machinery and defer FedRAMP Rev5 baselines + CCI, per section 8?
-7. **Certification Class mapping.** The A/B/C/D to impact-level mapping is
-   unresolved and must be validated at FedRAMP source before any schema depends
-   on it. Who confirms it?
+7. ~~**Certification Class mapping.**~~ **CLOSED 2026-09-16.** Validated at
+   FedRAMP source: there is no A/B/C/D-to-impact-level mapping, and FedRAMP
+   explicitly warns against treating one as a replacement for the other. Class
+   becomes an independent axis; `System.fedramp_baseline` is unchanged. See G15.
+   This unblocks P9a without the schema change it was waiting on.
 8. **Two lanes, one platform.** Confirm the section 4 shape — shared services
    with two deliverable profiles — rather than a separately built continuous-
    assurance application.
