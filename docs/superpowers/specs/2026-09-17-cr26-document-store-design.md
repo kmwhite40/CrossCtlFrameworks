@@ -129,22 +129,31 @@ Two guards must be updated together, and they are opposites:
 - `GLOBAL_TABLES` in `tests/test_rls_registry_no_gap.py` is for
   authority-published reference data and **must not** gain this table.
 
-**`organization_id` is `NOT NULL`, and is taken from the system rather than
-from the principal.** There is a folk rule in this programme that new tenant
-tables should copy `vendors`' nullable `organization_id`, because an unscoped
-principal writes a null-org row that the RLS predicate then hides from scoped
-tenants. Checked rather than assumed, that rule does not generalise:
-`Vendor.organization_id` is indeed nullable, but `System.organization_id` is
-`NOT NULL`. (A second part of the same folk rule — that `people` is a sibling
-example — is simply wrong: **there is no `people` table**.)
+**`organization_id` is nullable, following `0075_remediation_plans`.** There is
+a folk rule in this programme that new tenant tables copy `vendors`' nullable
+`organization_id`, because an unscoped principal writes a null-org row that the
+RLS predicate then hides from scoped tenants. Two things about that rule were
+checked rather than assumed:
 
-The nullable trick exists for tables written straight from a principal, where
-auth-disabled tests leave `org_id is None`. It is unnecessary here, because
-every `cr26_documents` row already has a `system_id`, and `System` carries a
-non-null `organization_id`. Deriving the tenant from the system is both
-stricter and simpler than admitting null-org rows, and it removes the failure
-mode where a row is written with no tenant and silently becomes invisible to
-everyone.
+- It does **not** generalise as stated. `Vendor.organization_id` is nullable,
+  but `System.organization_id` is `NOT NULL`.
+- A second part of it is simply wrong: **there is no `people` table.**
+
+But the closest precedent settles it the other way from where that correction
+first pointed. `0075_remediation_plans` is this table's shape almost exactly —
+`organization_id` plus a `NOT NULL` `system_id`, a JSONB payload and a status —
+and it makes `organization_id` **nullable** with `ondelete="CASCADE"`. That is
+recent and deliberate, so this table follows it rather than diverging on
+reasoning derived from two data points.
+
+The policy is the direct shape, copied verbatim from that migration:
+
+```
+(ccf.current_tenant() IS NULL OR organization_id = ccf.current_tenant())
+```
+
+applied `FOR ALL` as both `USING` and `WITH CHECK`, with `ENABLE` **and**
+`FORCE ROW LEVEL SECURITY`.
 
 ## 6. What this deliberately does NOT do
 
