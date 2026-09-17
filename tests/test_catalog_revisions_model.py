@@ -9,6 +9,10 @@ from sqlalchemy.exc import IntegrityError
 from ccf.db import session_scope
 from ccf.models import CatalogRevision, CatalogSource
 
+# Rows in catalog_sources / pack_sources are polled by scheduler.run_cycle(),
+# so they must not outlive the test that made them -- see the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_source_rows")
+
 
 async def _source(session, key: str) -> CatalogSource:
     s = CatalogSource(key=key, name=key, url="https://example.test/x.json")

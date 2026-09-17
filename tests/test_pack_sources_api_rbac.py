@@ -37,7 +37,9 @@ from ccf.models_packs import PackSource
 from ccf.packs.sync import check_pack_source
 from tests.conftest import pack_source_url
 
-pytestmark = pytest.mark.usefixtures("fresh_engine", "local_pack_source_fetch")
+pytestmark = pytest.mark.usefixtures(
+    "isolate_source_rows", "fresh_engine", "local_pack_source_fetch"
+)
 
 _SEQ = itertools.count()
 

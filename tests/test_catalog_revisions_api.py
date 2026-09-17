@@ -25,6 +25,10 @@ from ccf.models import (
 )
 from tests.test_catalog_materialize import _documents
 
+# Rows in catalog_sources / pack_sources are polled by scheduler.run_cycle(),
+# so they must not outlive the test that made them -- see the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_source_rows")
+
 _ORG_SEQ = itertools.count()
 _EMPTY_CATALOG = json.dumps({"catalog": {"metadata": {"version": "5.3.0"}, "groups": []}}).encode()
 

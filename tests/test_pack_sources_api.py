@@ -32,7 +32,9 @@ from ccf.models import AuditLog, Organization, User
 from ccf.models_packs import CompliancePack, PackSource
 from tests.conftest import pack_source_url
 
-pytestmark = [pytest.mark.usefixtures("fresh_engine", "local_pack_source_fetch")]
+pytestmark = [
+    pytest.mark.usefixtures("fresh_engine", "local_pack_source_fetch", "isolate_source_rows")
+]
 
 _SEQ = itertools.count()
 

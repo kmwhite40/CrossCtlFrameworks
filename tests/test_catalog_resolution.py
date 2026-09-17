@@ -5,10 +5,16 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+import pytest
+
 from ccf.catalog import oscal as oscal_mod
 from ccf.catalog.revisions import resolve_adopted_dir
 from ccf.db import session_scope
 from ccf.models import CatalogRevision, CatalogSource
+
+# Rows in catalog_sources / pack_sources are polled by scheduler.run_cycle(),
+# so they must not outlive the test that made them -- see the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_source_rows")
 
 
 async def _source_with_adopted(session, key: str, content_dir: str | None) -> CatalogSource:

@@ -14,6 +14,10 @@ from ccf.catalog.revisions import import_revision, materialize_revision, revisio
 from ccf.db import session_scope
 from ccf.models import CatalogRevision, CatalogSource
 
+# Rows in catalog_sources / pack_sources are polled by scheduler.run_cycle(),
+# so they must not outlive the test that made them -- see the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_source_rows")
+
 CATALOG = {
     "catalog": {
         "metadata": {"version": "5.2.0"},

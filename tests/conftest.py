@@ -11,10 +11,14 @@ import openpyxl
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import delete, select
 
 from ccf import db as ccf_db
 from ccf.config import get_settings
+from ccf.db import session_scope
 from ccf.etl.sources import _read_file
+from ccf.models import CatalogSource
+from ccf.models_packs import PackSource
 from ccf.packs import sync as _pack_sync_mod
 
 # Run against a real Postgres — CI service container; locally, docker compose.
@@ -45,6 +49,54 @@ def clean_migrated_db() -> None:
     cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
+
+
+#: Tables whose rows are polled by the scheduler, and which therefore must not
+#: survive the test that created them. Both are org-scoped working data, not
+#: reference data, so nothing legitimately expects a row to outlive its test.
+_POLLED_SOURCE_MODELS = (CatalogSource, PackSource)
+
+
+async def _source_row_ids() -> dict[object, set[int]]:
+    async with session_scope() as session:
+        return {
+            model: set((await session.execute(select(model.id))).scalars().all())
+            for model in _POLLED_SOURCE_MODELS
+        }
+
+
+@pytest.fixture
+async def isolate_source_rows() -> AsyncIterator[None]:
+    """Delete the ``CatalogSource`` / ``PackSource`` rows this test created.
+
+    ``clean_migrated_db`` resets the schema once per *session*, so a row a test
+    leaves behind is visible to every later module. Ten modules leaked 73 such
+    rows between them, and they are not inert: ``scheduler.run_cycle()`` polls
+    every enabled row of both tables, so a leaked row is extra work at best and
+    a live network fetch at worst — ``tests/test_pack_source_models.py`` leaves
+    one carrying a real ``raw.githubusercontent.com`` URL, which is why a
+    scheduler test that passed in isolation reached the internet in a full
+    suite.
+
+    Opt in with ``pytest.mark.usefixtures("isolate_source_rows")`` rather than
+    autouse: autouse would force a database round trip for all ~2500 tests,
+    including the many that touch no database at all.
+
+    Deletes by *id difference* rather than by a key prefix or a blanket
+    ``DELETE``, so a module that legitimately relies on the migration-seeded
+    row keeps it, and a future table row added by some other fixture is left
+    alone.
+    """
+    before = await _source_row_ids()
+    yield
+    after = await _source_row_ids()
+    created = {model: after[model] - before[model] for model in _POLLED_SOURCE_MODELS}
+    if not any(created.values()):
+        return
+    async with session_scope() as session:
+        for model, ids in created.items():
+            if ids:
+                await session.execute(delete(model).where(model.id.in_(ids)))
 
 
 #: Ports that mean "this is a real call to the internet". The test database

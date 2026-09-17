@@ -34,7 +34,7 @@ _SEQ = itertools.count()
 #: further (304, redirect, oversized-body, backoff) where they need a
 #: different fake -- monkeypatch's stack makes a second setattr in the same
 #: test safe.
-pytestmark = pytest.mark.usefixtures("local_pack_source_fetch")
+pytestmark = pytest.mark.usefixtures("local_pack_source_fetch", "isolate_source_rows")
 
 
 def _manifest(version: str = "1.0.0", *, pack_id: str) -> dict:

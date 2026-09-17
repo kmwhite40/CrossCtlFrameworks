@@ -17,7 +17,7 @@ from tests.conftest import pack_source_url
 
 _SEQ = itertools.count()
 
-pytestmark = pytest.mark.usefixtures("local_pack_source_fetch")
+pytestmark = pytest.mark.usefixtures("local_pack_source_fetch", "isolate_source_rows")
 
 
 def _manifest(*, pack_id: str, version: str = "1.0.0", control: str = "AC-2") -> dict:
