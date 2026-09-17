@@ -16,8 +16,8 @@
 - **All eleven schemas**, ruleset revision **`2026-06-24`**, fetched from `https://fedramp.gov/schemas/fedramp-<name>-schema-2026-06-24.json`.
 - **Two-level versioning.** The `2026-06-24` in every filename is the *ruleset* revision; each schema separately carries its own `$schemaVersion` (semver), and the spread is live — `certification-package-overview` is 0.1.4 while `assessor-information` is 1.0.1. The manifest records the ruleset date once and `$schemaVersion` per file.
 - **`kind="generic"`, `auto_ingest=False`.** Content-hash only: nothing parses a schema into tables. Drift is detected and surfaced for a human, never adopted silently — the same call `etl/sources.py` already records for baseline profiles ("a profile is not a catalog"; a schema is not one either).
-- **Offline validation is non-negotiable.** Verified behaviour of `jsonschema` 4.26.0: an unresolvable `$ref` raises `Unresolvable`; it does **not** fetch. Ten of the eleven schemas carry absolute `$ref`s (1–3 each), every one targeting `common-definitions`. Validation must resolve entirely through a `referencing.Registry` built from the vendored files.
-- **`$ref` resolution is LAZY, and that is the trap this plan exists to avoid.** A reference resolves only when validation descends into the property carrying it, so a document that fails an earlier `required` check never reaches it. An empty document against the CPO schema returns 12 ordinary errors and never raises. **A "minimal invalid document" fixture passes with no registry at all.** Every reference-resolution test must use a document complete enough to actually reach a `$ref`.
+- **Offline validation is non-negotiable.** Measured behaviour of `jsonschema` 4.26.0, by counting socket constructions — **see spec §4, which gives the measurement method and why no other method answers this correctly**: with **no registry it FETCHES the reference over the network** (1 socket); with a registry it never falls back to the network, and anything absent from the registry raises `Unresolvable` with **zero** sockets attempted. Blocking sockets and observing `Unresolvable` is *not* evidence that no fetch was attempted — the block causes the retrieval to fail and `referencing` converts that into `Unresolvable`. This plan asserted the opposite ("it does **not** fetch") at four sites and the spec was corrected before it was; the spec outranks the plan. Ten of the eleven schemas carry absolute `$ref`s (1–3 each), every one targeting `common-definitions`. Validation must resolve entirely through a `referencing.Registry` built from the vendored files — `registry=` is the entire network barrier, not a convenience.
+- **`$ref` resolution is LAZY, and that is the trap this plan exists to avoid.** A reference resolves only when validation descends into the property carrying it, so a document that fails an earlier `required` check never reaches it. An empty document against the CPO schema returns 3 ordinary errors (`serviceIdentification`, `serviceProperties`, `contactInformation`) and never raises — measured; earlier drafts said 12. **A "minimal invalid document" fixture passes with no registry at all.** Every reference-resolution test must use a document complete enough to actually reach a `$ref`.
 - **Do not copy `_translate_ecma_pattern` from `oscal/validation.py`.** It exists because OSCAL uses ECMA regex constructs Python's `re` rejects. The eleven CR26 schemas contain four patterns (`^CVE-[0-9]{4}-[0-9]{4,}$`, `^\d{6}$`, `^[0-9]{3}-[0-9]{3}-[0-9]{4}$`, and an image-extension pattern), all plain and Python-compatible.
 - **Format checking: pass a `FormatChecker`, add no dependency, pin the live set in a test.** Measured on this environment: `date` and `email` are enforced; `date-time` and `uri` are **not** (their optional validators `rfc3339-validator` and `rfc3986-validator` are absent), and a malformed value silently passes. The test records which formats are actually live so the gap is a fact rather than an assumption.
 - **Every new test must be able to fail.** This programme has shipped at least seven that could not. Where a task says to prove a guard bites, break it, watch the failure, and revert.
@@ -278,9 +278,13 @@ The heart of the spine, and where the trap lives.
 """CR26 document validation: resolves offline, or not at all.
 
 The load-bearing property is that $ref resolution never touches the network.
-Ten of the eleven schemas reference common-definitions by absolute URL, and
-jsonschema 4.26 raises Unresolvable rather than fetching -- so without a
-registry built from the vendored files, every complete document fails.
+Ten of the eleven schemas reference common-definitions by absolute URL.
+jsonschema resolves a $ref through whatever registry it is given: with none at
+all it falls back to fetching over the network; with a registry, anything
+absent from it raises Unresolvable -- with zero sockets attempted. So the
+registry built from the vendored files is the entire network barrier, not a
+convenience, and every test below that claims something about reference
+resolution runs with sockets blocked to prove it.
 
 The trap this file is shaped around: resolution is LAZY. A document that fails
 an earlier `required` check never descends into the $ref, so a "minimal invalid
@@ -431,12 +435,17 @@ this module resolves every reference through the vendored copies under
 ``schemas/`` and never reaches the network.
 
 That is not a preference. Ten of the eleven schemas reference
-``common-definitions`` by absolute URL, and ``jsonschema`` 4.26 raises
-``Unresolvable`` rather than fetching, so without a registry built from the
-vendored files every *complete* document fails. Note "complete": ``$ref``
-resolution is lazy, so a document that fails an earlier ``required`` check
-never descends into the reference and appears to validate fine. That asymmetry
-is why the tests here use documents complete enough to reach a ``$ref``.
+``common-definitions`` by absolute URL. ``jsonschema`` resolves a ``$ref``
+through whatever ``referencing.Registry`` it is given: pass none, and it falls
+back to fetching the reference over the network; pass one, and anything absent
+from it raises ``Unresolvable`` with zero sockets attempted. So ``registry=``
+is not a convenience -- it is the entire network barrier, and building it from
+the vendored files here is what keeps every reference resolved locally, never
+remotely. Note "complete": ``$ref`` resolution is lazy, so a document that
+fails an earlier ``required`` check -- or simply never includes the property
+carrying the reference -- never descends into it and appears to validate fine
+regardless of whether the registry is present. That asymmetry is why the
+tests here use documents complete enough to reach a ``$ref``.
 
 Unlike :mod:`ccf.oscal.validation` this module has no ``detect_kind`` (CR26
 documents do not self-identify by root key), no structural fallback (the schema
@@ -641,9 +650,9 @@ git add src/ccf/cr26 tests/test_cr26_validation.py
 git commit -m "feat(cr26): validate CR26 documents against the vendored schemas, offline
 
 Ten of the eleven schemas reference common-definitions by absolute URL, and
-jsonschema 4.26 raises Unresolvable rather than fetching, so validation
-resolves every reference through a referencing.Registry built from the
-vendored files. Sockets are blocked in the tests that assert this: 'it worked
+with no registry jsonschema fetches those references over the network, so
+validation resolves every reference through a referencing.Registry built from
+the vendored files -- which is the entire network barrier, not a convenience. Sockets are blocked in the tests that assert this: 'it worked
 on my machine' is not the claim.
 
 $ref resolution is lazy, which makes the obvious test useless: a document that
@@ -767,6 +776,8 @@ DEFAULT_SOURCES += [
 ```
 
 Import the mapping at the top of `sources.py` as `from ..cr26.validation import CR26_KINDS as _CR26_KINDS_FOR_SOURCES`. **If that import creates a cycle** — `cr26.validation` imports nothing from `etl`, so it should not — stop and report rather than duplicating the table. A circular import bit this project once before, in `posture/types.py`.
+
+**Seed `last_sha256` from the manifest, inside `seed_sources`.** `check_source` compares a fetched body's sha256 against `source.last_sha256`, which is NULL on a freshly seeded row — so without this every one of the eleven rows reports `last_status="changed"` on its first poll (eleven meaningless drift warnings in the digest) and, worse, then tracks upstream against upstream: a schema that moved between the vendoring and that first poll is adopted as the new baseline and never reported. `MANIFEST.json` already records the exact digest and the pinned URL serves those exact bytes, so the row's baseline is the digest of what Concord actually validates with. Do the manifest read **at seed time, not import time** — `etl/sources.py` performs no file I/O at module import and that property is worth keeping.
 
 `CatalogSource.auto_ingest` is a real column (`models.py:1172`, `Boolean, default=False`), so passing it explicitly is redundant but deliberate — it states the intent at the row rather than relying on a default a future change could flip.
 

@@ -9,11 +9,10 @@ this module resolves every reference through the vendored copies under
 That is not a preference. Ten of the eleven schemas reference
 ``common-definitions`` by absolute URL. ``jsonschema`` resolves a ``$ref``
 through whatever ``referencing.Registry`` it is given: pass none, and it falls
-back to fetching the reference over the network (and warns that doing so is a
-security vulnerability); pass one, and anything absent from it raises
-``Unresolvable`` with zero sockets attempted. So ``registry=`` is not a
-convenience -- it is the entire network barrier, and building it from the
-vendored files here is what keeps every reference resolved locally, never
+back to fetching the reference over the network; pass one, and anything absent
+from it raises ``Unresolvable`` with zero sockets attempted. So ``registry=``
+is not a convenience -- it is the entire network barrier, and building it from
+the vendored files here is what keeps every reference resolved locally, never
 remotely. Note "complete": ``$ref`` resolution is lazy, so a document that
 fails an earlier ``required`` check -- or simply never includes the property
 carrying the reference -- never descends into it and appears to validate fine

@@ -81,7 +81,12 @@ precedent for a specification we validate against rather than ingest.
 - **Eleven `CatalogSource` rows** (`models.py:1152`) seeded through
   `DEFAULT_SOURCES`: `kind="generic"`, `authority="FedRAMP"`,
   `framework_code="FEDRAMP"` (the code already exists in
-  `etl/frameworks.py`), `auto_ingest=False`.
+  `etl/frameworks.py`), `auto_ingest=False`. Each row is seeded with
+  `last_sha256` already set to the digest `MANIFEST.json` pins, so the first
+  poll compares upstream against **what we actually vendored**. Left NULL it
+  would compare against nothing — eleven "changed" events on day one — and
+  thereafter only upstream against upstream, silently adopting a schema that
+  moved between the vendoring and the first poll.
 
 `kind="generic"` is content-hash-only, and that is the correct call for the
 same reason `etl/sources.py` already records for baseline profiles: *a profile
@@ -115,7 +120,7 @@ correctly** — see the warning below about why:
 
 | validator | sockets attempted | outcome |
 |---|---|---|
-| no registry | **1** | fetches; `jsonschema` itself warns that "automatically retrieving remote references can be a security vulnerability" |
+| no registry | **1** | fetches the reference over the network |
 | vendored registry | **0** | resolves locally and validates |
 
 **With no registry, `jsonschema` fetches the schema over the network.** With a
@@ -131,6 +136,14 @@ convenience — it is the entire network barrier.
 > attempted. Only counting socket constructions distinguishes the two. Anyone
 > revisiting this must measure the same way.
 
+An earlier draft of the table above also claimed `jsonschema` *warns* that
+"automatically retrieving remote references can be a security vulnerability".
+Do not lean on that. The warning lives in `_warn_for_remote_retrieve`
+(`jsonschema/validators.py`), which issues it as a `DeprecationWarning` only
+*after* the retrieval succeeds — and `DeprecationWarning` is suppressed by
+default anyway. Warnings captured during the socket count showed none on this
+path in 4.26.0. **The socket count is the claim that carries the argument.**
+
 Left alone, this fails two ways and the second is the dangerous one: it fails
 closed wherever there is no network — including CI — and where there *is*
 network it silently validates against whatever upstream serves that day,
@@ -139,8 +152,11 @@ defeating the pin entirely and leaking the fact that validation is happening.
 **The second trap is that resolution is lazy.** A `$ref` resolves only when
 validation actually descends into the property carrying it. A document that
 fails an earlier `required` check never gets there. Measured on the CPO schema:
-an empty document returns 12 ordinary validation errors and never raises — and
-CPO's only absolute `$ref` sits at `serviceIdentification.properties.logo`,
+an empty document returns **3** ordinary validation errors
+(`serviceIdentification`, `serviceProperties`, `contactInformation`) and never
+raises — earlier drafts of this spec said 12, which was wrong; the surrounding
+argument is unaffected. CPO's only absolute `$ref` sits at
+`serviceIdentification.properties.logo`,
 several levels below a `required` check an empty document already fails. So a
 test fixture built as "a minimal invalid document" — the natural thing to write
 first — **passes with or without a registry**, and the failure appears only for
