@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..cr26.validation import CR26_KINDS as _CR26_KINDS_FOR_SOURCES
 from ..logging import get_logger
 from ..models import CatalogCheck, CatalogSource
 from .pipeline import ingest_workbook
@@ -167,6 +168,30 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         # way, so a detected change is still reviewed by a human.
         "enabled": False,
     },
+]
+
+# --- FedRAMP CR26 deliverable schemas ---------------------------------------
+# Watched, not ingested. ``kind="generic"`` is content-hash only, the same call
+# already recorded above for baseline profiles: a profile is not a catalog, and
+# a schema is not one either -- nothing here parses a schema into tables.
+# ``auto_ingest=False`` because a schema that changed under us is exactly the
+# event a person needs to see, never something to adopt silently. The vendored
+# copies under ``ccf/cr26/schemas/`` are what validation actually reads; these
+# rows exist so upstream drift is detected.
+_CR26_SCHEMA_BASE = "https://fedramp.gov/schemas"
+
+DEFAULT_SOURCES += [
+    {
+        "key": f"cr26_schema_{_kind}",
+        "name": f"FedRAMP CR26 — {_rule if _rule != '-' else _kind} schema (2026-06-24)",
+        "authority": "FedRAMP",
+        "kind": "generic",
+        "url": f"{_CR26_SCHEMA_BASE}/{_filename}",
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": False,
+    }
+    for _kind, (_filename, _rule) in _CR26_KINDS_FOR_SOURCES.items()
 ]
 
 
