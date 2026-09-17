@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..cr26.validation import CR26_KINDS as _CR26_KINDS_FOR_SOURCES
+from ..cr26.validation import vendored_digests as _cr26_vendored_digests
 from ..logging import get_logger
 from ..models import CatalogCheck, CatalogSource
 from .pipeline import ingest_workbook
@@ -179,10 +180,11 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
 # copies under ``ccf/cr26/schemas/`` are what validation actually reads; these
 # rows exist so upstream drift is detected.
 _CR26_SCHEMA_BASE = "https://fedramp.gov/schemas"
+_CR26_KEY_PREFIX = "cr26_schema_"
 
 DEFAULT_SOURCES += [
     {
-        "key": f"cr26_schema_{_kind}",
+        "key": f"{_CR26_KEY_PREFIX}{_kind}",
         "name": f"FedRAMP CR26 — {_rule if _rule != '-' else _kind} schema (2026-06-24)",
         "authority": "FedRAMP",
         "kind": "generic",
@@ -631,14 +633,39 @@ async def _write_file(path: Path, body: bytes) -> None:
 # --- orchestration ----------------------------------------------------------
 
 
+def _cr26_seed_digests() -> dict[str, str]:
+    """``cr26_schema_<kind>`` -> the sha256 the vendored manifest pins.
+
+    Called from :func:`seed_sources`, never at import: this module reads no
+    file at import time and keeping it that way is deliberate.
+    """
+    return {f"{_CR26_KEY_PREFIX}{kind}": sha for kind, sha in _cr26_vendored_digests().items()}
+
+
 async def seed_sources(session: AsyncSession) -> int:
-    """Upsert :data:`DEFAULT_SOURCES` by ``key``. Returns rows created."""
+    """Upsert :data:`DEFAULT_SOURCES` by ``key``. Returns rows created.
+
+    CR26 schema rows are seeded with ``last_sha256`` already set to the digest
+    the vendored ``MANIFEST.json`` pins, because :func:`check_source` compares
+    a fetched body against ``source.last_sha256``. Left NULL, the first poll
+    of every one of those rows reports "changed" against nothing (eleven
+    meaningless drift warnings), and worse, silently adopts whatever upstream
+    served that day as the baseline -- so a schema that moved between the
+    vendoring and the first poll would never be reported at all. Seeded, the
+    first comparison is upstream against exactly what Concord validates with.
+    """
     existing = {s.key for s in (await session.execute(select(CatalogSource))).scalars().all()}
     created = 0
+    cr26_digests: dict[str, str] | None = None
     for spec in DEFAULT_SOURCES:
         if spec["key"] in existing:
             continue
-        session.add(CatalogSource(**spec))
+        row = dict(spec)  # never mutate the module-level spec
+        if row["key"].startswith(_CR26_KEY_PREFIX):
+            if cr26_digests is None:  # read the manifest once, and only if needed
+                cr26_digests = _cr26_seed_digests()
+            row["last_sha256"] = cr26_digests[row["key"]]
+        session.add(CatalogSource(**row))
         created += 1
     await session.flush()
     return created

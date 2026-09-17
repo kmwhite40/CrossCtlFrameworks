@@ -91,6 +91,32 @@ def schema_path(kind: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def vendored_digests() -> dict[str, str]:
+    """Kind -> the sha256 ``MANIFEST.json`` pins for that kind's vendored file.
+
+    The digest of what we actually vendored, which is the only baseline a
+    drift check can usefully start from: a freshly seeded ``CatalogSource``
+    with a NULL ``last_sha256`` reports "changed" on its very first poll and
+    then tracks upstream against upstream, so a schema that moved between the
+    vendoring and that first poll would be adopted as the new baseline and
+    never reported. Seeding this digest makes the first comparison
+    upstream-against-what-we-vendored, which is what the rows claim to watch.
+
+    Read on demand rather than at import: :mod:`ccf.etl.sources` does no file
+    I/O at module import and that property is worth keeping. Raises
+    ``KeyError`` naming the file if a :data:`CR26_KINDS` entry is absent from
+    the manifest -- a packaging failure, and one that must be loud rather than
+    silently yield a row with no baseline. Returns a fresh dict each call, so
+    no caller can corrupt a shared one.
+    """
+    manifest: dict[str, Any] = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    files: dict[str, Any] = manifest["files"]
+    return {
+        kind: str(files[filename]["sha256"])
+        for kind, (filename, _rule) in CR26_KINDS.items()
+    }
+
+
 @lru_cache(maxsize=1)
 def _registry() -> Any:
     """Every vendored schema, keyed by its own ``$id``.

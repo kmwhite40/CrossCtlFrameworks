@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from sqlalchemy import delete, select
 
-from ccf.cr26.validation import CR26_KINDS
+from ccf.cr26.validation import CR26_KINDS, vendored_digests
 from ccf.db import session_scope
 from ccf.etl.sources import DEFAULT_SOURCES, seed_sources
 from ccf.models import CatalogSource
@@ -58,11 +58,18 @@ async def test_seed_sources_round_trips_the_cr26_rows_through_the_database() -> 
     """seed_sources actually constructs and upserts ``CatalogSource(**spec)``
     for these eleven rows -- the one thing the dict-only tests above cannot
     show. Asserts against what was read back from the database, not against
-    the spec dicts, and cleans up after itself: the test database is shared
-    for the whole pytest session and other modules assert on it, so nothing
-    with a ``cr26_schema_`` key may be left behind, pass or fail.
+    the spec dicts.
+
+    Cleanup is exact, not key-shaped: ``seed_sources`` upserts ALL of
+    DEFAULT_SOURCES, not only the CR26 rows, so deleting ``cr26_schema_%``
+    left the other nine behind. conftest resets the schema once per SESSION,
+    so those rows survived into every later module -- and the scheduler tests,
+    which stub digest and monitoring but not poll_sources, would then fetch
+    each of them for real. So: snapshot the keys present before seeding and
+    delete exactly the keys this test brought into existence.
     """
     async with session_scope() as session:
+        before = set((await session.execute(select(CatalogSource.key))).scalars().all())
         try:
             await seed_sources(session)
 
@@ -71,13 +78,24 @@ async def test_seed_sources_round_trips_the_cr26_rows_through_the_database() -> 
                     select(CatalogSource).where(CatalogSource.key.like("cr26_schema_%"))
                 )
             ).scalars().all()
-            by_key = {row.key: row for row in rows}
-            assert set(by_key) == {f"cr26_schema_{k}" for k in CR26_KINDS}
+            assert {row.key for row in rows} == {f"cr26_schema_{k}" for k in CR26_KINDS}
             for row in rows:
                 assert row.kind == "generic", row.key
                 assert row.authority == "FedRAMP", row.key
                 assert row.auto_ingest is False, row.key
                 assert row.enabled is True, row.key
+
+            # The seeded drift baseline is the digest of what was actually
+            # vendored. NULL here would make the first poll report "changed"
+            # against nothing and then silently adopt whatever upstream served
+            # that day -- so a schema that moved between the 2026-09-17
+            # vendoring and the first poll would never be reported at all.
+            # check_source returns "unchanged" iff the fetched sha equals this.
+            digests = vendored_digests()
+            assert len(digests) == 11
+            for row in rows:
+                kind = row.key.removeprefix("cr26_schema_")
+                assert row.last_sha256 == digests[kind], row.key
 
             # Idempotency is the property seed_sources actually promises:
             # a second call must upsert-skip every one of these keys, not
@@ -96,7 +114,9 @@ async def test_seed_sources_round_trips_the_cr26_rows_through_the_database() -> 
             # cleanup survives even when an assertion above fails: a failure
             # propagates through session_scope's own rollback, which would
             # otherwise undo an uncommitted delete along with everything else.
-            await session.execute(
-                delete(CatalogSource).where(CatalogSource.key.like("cr26_schema_%"))
-            )
+            created_keys = {s["key"] for s in DEFAULT_SOURCES} - before
+            if created_keys:  # SQLAlchemy warns on in_([])
+                await session.execute(
+                    delete(CatalogSource).where(CatalogSource.key.in_(created_keys))
+                )
             await session.commit()
