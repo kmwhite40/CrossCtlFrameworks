@@ -290,6 +290,86 @@ def test_every_kind_with_an_absolute_ref_actually_resolves_it(
         list(stripped.iter_errors(doc))
 
 
+def _all_refs(schema: Any) -> list[str]:
+    """Every ``$ref`` string anywhere in ``schema``, absolute or local."""
+    found: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                found.append(ref)
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(schema)
+    return found
+
+
+# Floors, not equalities: measured against the 2026-06-24 ruleset as vendored
+# (40 $refs across the eleven schemas, 19 of them absolute, one distinct target
+# document, 7 distinct fragment pointers). They exist so the walk below cannot
+# pass by examining nothing -- an empty walk satisfies "every ref resolves"
+# perfectly. A revision that ADDS refs passes untouched; one that legitimately
+# REMOVES some is adopted by lowering a number here, deliberately, which is the
+# point: the closure property is asserted strictly, the census loosely.
+_MIN_REFS_WALKED = 40
+_MIN_ABSOLUTE_REFS = 19
+_MIN_DISTINCT_POINTERS = 7
+
+
+def test_every_absolute_ref_in_every_schema_resolves_through_the_registry(
+    no_network: None,
+) -> None:
+    """The closure of the whole ref graph, which is the single most load-bearing
+    invariant in the module.
+
+    The parametrized sweep above exercises only the FIRST absolute $ref per
+    schema. The closure is true today, but nothing pinned it: a future revision
+    adding a second absolute $ref, or a fragment pointer into common-definitions
+    that no longer exists, would resolve to Unresolvable, get swallowed by
+    validate_document's blanket except, and surface as mode="none" at the first
+    real deliverable -- with the entire suite green. So walk every $ref in all
+    eleven vendored schemas and assert both halves: the target document is a key
+    of the registry, and the fragment pointer actually resolves inside it.
+    """
+    registry = _cr26_validation._registry()
+    resolver = registry.resolver()
+
+    walked = 0
+    absolute: list[tuple[str, str]] = []
+    for kind in CR26_KINDS:
+        path = schema_path(kind)
+        assert path is not None
+        refs = _all_refs(json.loads(path.read_text(encoding="utf-8")))
+        walked += len(refs)
+        absolute += [(kind, ref) for ref in refs if ref.startswith("https://")]
+
+    pointers = {ref.partition("#")[2] for _kind, ref in absolute}
+    assert walked >= _MIN_REFS_WALKED, f"only {walked} $refs walked"
+    assert len(absolute) >= _MIN_ABSOLUTE_REFS, f"only {len(absolute)} absolute $refs found"
+    assert len(pointers) >= _MIN_DISTINCT_POINTERS, sorted(pointers)
+
+    unregistered: list[str] = []
+    unresolvable: list[str] = []
+    for kind, ref in absolute:
+        base = ref.partition("#")[0]
+        if base not in registry:
+            unregistered.append(f"{kind}: {ref} (target document not in the registry)")
+            continue
+        try:
+            resolver.lookup(ref)
+        except Exception as exc:  # referencing.exceptions.Unresolvable and kin
+            # The ref already names the pointer; PointerToNowhere's own str()
+            # dumps the entire target document, so only its type is kept.
+            unresolvable.append(f"{kind}: {ref} -> {type(exc).__name__}")
+    assert unregistered == [], unregistered
+    assert unresolvable == [], unresolvable
+
+
 def test_validate_document_reports_rather_than_raises_on_an_incomplete_registry(
     monkeypatch: pytest.MonkeyPatch, no_network: None
 ) -> None:
