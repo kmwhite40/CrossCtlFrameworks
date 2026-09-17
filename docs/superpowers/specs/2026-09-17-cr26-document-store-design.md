@@ -31,7 +31,9 @@ the schema, the CPO has ten required fields and this platform can supply
 | `certificationType` | **nowhere** (and deliberately not derived — §4) |
 | `serviceType` (SaaS/PaaS/IaaS) | **nowhere** |
 | `deploymentModel` | **nowhere** |
-| `contactInformation` | **nowhere** — `Vendor` is third-party supply chain, and there is no party or contact table at all |
+| `contactInformation` *(a required root **block**, not one of the ten leaf fields)* | **nowhere** — `Vendor` is third-party supply chain, and `people` (`src/ccf/models_people.py`) models the **workforce** security lifecycle (PS-2 risk designation, PS-3 screening, AT training, AC-2 access), not the published CSP contacts this array needs |
+
+**The table has eleven rows but the count of ten is right.** The ten required *leaf* fields are the eight `serviceIdentification` requires — `providerName`, `serviceName`, `serviceAcronym`, `serviceDescription`, `certificationType`, `fedRampPackageId`, `website`, `logo` — plus `serviceProperties`' `serviceType` and `deploymentModel`. `contactInformation` is the third required block at the document root: an array whose items must include one with `contactType` `const: "Security"` and one `const: "Sales"`. That is why `people` cannot source it — `Person` carries `position` and `department`, but has no concept of a published contact type. `src/ccf/cr26/cpo.py` draws the same distinction.
 
 The gap analysis predicted the CR26 deliverables would be "a second deliverable
 profile over content the SSP generator already produces". That is true of the
@@ -77,6 +79,14 @@ last-updated and update-source — so a second history mechanism here would be a
 second record of one fact. Change history is `AuditLog`'s job, and it already
 carries a `prev_hash`/`row_hash` chain (**never construct `AuditLog` directly —
 use `ccf.api.audit.record_event`, or the chain silently breaks**).
+
+That makes the audit event a **compensating control, not decoration**: because a
+second write overwrites the first in place, the audit chain is the only record
+that the previous document existed. `put_document` therefore records one event
+per write — `entity_type` `cr26_document`, `action` `create` on the first write
+and `update` on an overwrite, carrying `system_id`, `kind`, `is_valid` and
+`updated_by` — via `record_event`, following `ccf.packs.service`,
+`ccf.portal.service` and `ccf.self_assurance.service`.
 
 ## 3. Validate on write; refuse at submit, not at save
 
@@ -137,7 +147,7 @@ checked rather than assumed:
 
 - It does **not** generalise as stated. `Vendor.organization_id` is nullable,
   but `System.organization_id` is `NOT NULL`.
-- A second part of it is simply wrong: **there is no `people` table.**
+- The `people` half of it was "checked" against `Base.metadata.tables`, which **cannot see** `src/ccf/models_people.py` — that module is not in `models.py`'s import block — so the check was structurally incapable of answering the question. There **is** a `people` table (`Person`, `src/ccf/models_people.py`), and its `organization_id` is nullable, so that data point stands. What does not stand is the generalisation above.
 
 But the closest precedent settles it the other way from where that correction
 first pointed. `0075_remediation_plans` is this table's shape almost exactly —
@@ -166,6 +176,7 @@ applied `FOR ALL` as both `USING` and `WITH CHECK`, with `ENABLE` **and**
 - **No CR26 rule table.** FedRAMP publishes no machine-readable ruleset; the
   rule ids exist only in README prose. Unchanged from the spine's spec.
 - **No history table.** See §2.
+- **No entry point.** Nothing outside tests calls `seed_cpo` or `put_document` — there is no route, CLI command or scheduler job. §3's "first production consumer" is true at module level (the validator now has a caller that is not its own test) but not at application level: no user action reaches this store yet, and that wiring is still owed by a later branch.
 - **No promoted columns.** Nothing in the platform queries `serviceAcronym` or
   `deploymentModel` today. If a query need appears, the cheap move is a column
   generated *from* the document, not a second hand-maintained copy of it —
@@ -179,10 +190,17 @@ applied `FOR ALL` as both `USING` and `WITH CHECK`, with `ENABLE` **and**
 - A document that validates and one that does not, asserting `is_valid`,
   `validation_errors` and both version fields are recorded in each case —
   including that an invalid document is still **stored**.
+- Every write records an audit event, and an overwrite is distinguishable from
+  a create — the compensating control §2 leans on for having no history table.
+- A soft-deleted system is refused by both `put_document` and `seed_cpo`: the FK
+  is `ON DELETE CASCADE` on a row DATA-04 never hard-deletes, so a document
+  written against one would be unreachable and permanent.
 - The seeder supplies exactly the three fields §1 lists, and leaves
   `certificationType` unset. A test asserts the seeded document is **invalid**,
   which is the honest expectation and prevents a future change quietly
-  inventing values for the missing seven.
+  inventing values for the missing seven. A field with no source is **omitted**,
+  and a test asserts the key's absence — no CPO field carries a `minLength`, so
+  a seeded `""` would validate and look filled-in.
 - A guard that nothing derives `certificationType` from `certification_class`
   or `baseline`, in the shape of
   `tests/test_certification_class_is_independent.py`.
