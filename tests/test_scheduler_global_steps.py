@@ -36,8 +36,34 @@ from ccf.fedramp20x import monitoring as monitoring_mod
 from ccf.governance import digest as digest_mod
 from ccf.governance import scheduler
 from ccf.models import MonitoringRun, Organization
+from ccf.packs import sync as pack_sync_mod
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pack_sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep ``run_cycle()``'s per-tenant pack_sync step off the network.
+
+    Both tests here drive the real ``run_cycle()``, whose pack_sync step polls
+    every enabled ``PackSource`` row for every org. Other test modules leave
+    such rows behind in the shared database and one of them carries a real
+    ``raw.githubusercontent.com`` URL, so these tests reached the internet --
+    but only when those modules ran first, which is why they passed in
+    isolation and failed in a full suite.
+
+    pack_sync is not what either test asserts on (they are about SAVEPOINT
+    containment across the GLOBAL steps), so stubbing it costs no coverage and
+    makes them hermetic regardless of what else is in the table. The stub still
+    does a real DB round trip, so the step continues to prove the session is
+    usable rather than merely that control flow reached it.
+    """
+
+    async def stub_sync_for_org(session: object, org_id: int | None) -> dict[str, object]:
+        await session.execute(text("SELECT 1"))  # type: ignore[attr-defined]
+        return {"organization_id": org_id, "sources": 0, "pending": 0, "installed": 0}
+
+    monkeypatch.setattr(pack_sync_mod, "sync_for_org", stub_sync_for_org)
 
 
 async def _org(name: str) -> int:
@@ -133,6 +159,18 @@ async def test_digest_db_failure_does_not_take_out_monitoring_scan(
         return sentinel
 
     monkeypatch.setattr(monitoring_mod, "scan", stub_monitoring_scan)
+
+    # poll_sources is not what this test is about, but run_cycle() calls it
+    # first and the real one fetches every enabled catalog_sources row over
+    # the network -- which meant this test made a live HTTPS request to GitHub
+    # on every run of the suite, and would fail on an egress-restricted
+    # runner. Stub it the way the sibling test above already does, keeping a
+    # real DB round trip so the step still proves the session is usable.
+    async def stub_poll_sources(session: object, **_: object) -> list[object]:
+        await session.execute(text("SELECT 1"))  # type: ignore[attr-defined]
+        return []
+
+    monkeypatch.setattr(scheduler, "poll_sources", stub_poll_sources)
 
     try:
         with structlog.testing.capture_logs() as cap_logs:

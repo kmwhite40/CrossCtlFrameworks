@@ -131,4 +131,5 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers -m 'not e2e'"
 markers = [
     "e2e: browser end-to-end tests (live server + Playwright; run with -m e2e)",
+    "allows_network: test may open a real connection to the internet (see the no_outbound_network fixture)",
 ]
