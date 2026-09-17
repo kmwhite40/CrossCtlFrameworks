@@ -59,7 +59,7 @@ async def seed_cpo(session: AsyncSession, *, system_id: int) -> Cr26Document:
         seeded["serviceDescription"] = system.description
 
     existing = await _current(session, system_id)
-    document: dict[str, Any] = dict(existing) if existing else {}
+    document: dict[str, Any] = existing if existing is not None else {}
     identification = dict(document.get("serviceIdentification") or {})
     # Seeded values fill gaps; anything a human authored wins. Re-seeding must
     # never destroy the seven fields only a human can supply.

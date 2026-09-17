@@ -61,17 +61,53 @@ async def test_certification_type_is_not_seeded() -> None:
         assert "certificationType" not in ident
 
 
-async def test_seeding_does_not_clobber_an_authored_document() -> None:
-    """Re-seeding must not wipe fields a human supplied -- otherwise the first
-    accidental re-seed destroys the seven fields only a human can provide."""
+async def test_reseeding_preserves_an_authored_override_of_a_seeded_field() -> None:
+    """Re-seeding must not wipe a value a human wrote over a seeded field --
+    otherwise the first accidental re-seed silently reverts an authored
+    correction back to the platform's guess.
+
+    ``providerName`` is exercised deliberately: it is one of the three fields
+    ``seed_cpo``'s loop actually writes (via ``setdefault``), so overwriting it
+    and re-seeding is a test the loop's assignment form could fail --
+    `identification[field] = value` would overwrite it back to
+    ``Organization.name`` on the second seed, while `setdefault` leaves it
+    alone. A field the loop never touches (``serviceAcronym``,
+    ``certificationType``) would pass under both forms, proving nothing about
+    which one is used -- see the copy-forward test below for what those do
+    prove.
+    """
     system_id = await _system("Delta")
+    async with session_scope() as s:
+        row = await seed_cpo(s, system_id=system_id)
+        assert row.document["serviceIdentification"]["providerName"] == "Delta Provider"
+        row.document = {
+            **row.document,
+            "serviceIdentification": {
+                **row.document["serviceIdentification"],
+                "providerName": "Authored Provider Name",
+            },
+        }
+        await s.flush()
+
+    async with session_scope() as s:
+        again = await seed_cpo(s, system_id=system_id)
+        ident = again.document["serviceIdentification"]
+        assert ident["providerName"] == "Authored Provider Name"
+
+
+async def test_reseeding_copies_forward_fields_the_seeder_never_touches() -> None:
+    """Fields the seeder has no source for at all (serviceAcronym,
+    certificationType) must survive a re-seed too -- proven separately from the
+    setdefault behaviour above, since an unconditional copy-forward would carry
+    these regardless of whether the loop uses setdefault or plain assignment."""
+    system_id = await _system("Epsilon")
     async with session_scope() as s:
         row = await seed_cpo(s, system_id=system_id)
         row.document = {
             **row.document,
             "serviceIdentification": {
                 **row.document["serviceIdentification"],
-                "serviceAcronym": "DELTA",
+                "serviceAcronym": "EPS",
                 "certificationType": "20x",
             },
         }
@@ -80,5 +116,5 @@ async def test_seeding_does_not_clobber_an_authored_document() -> None:
     async with session_scope() as s:
         again = await seed_cpo(s, system_id=system_id)
         ident = again.document["serviceIdentification"]
-        assert ident["serviceAcronym"] == "DELTA"
+        assert ident["serviceAcronym"] == "EPS"
         assert ident["certificationType"] == "20x"
