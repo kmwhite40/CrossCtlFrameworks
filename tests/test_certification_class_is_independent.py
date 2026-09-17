@@ -18,6 +18,17 @@ baseline=...)``) -- a constructor call's own keyword argument. A keyword is
 checked against only its own value, never merely for co-occurring with the
 other vocabulary's keyword on the same call: ``System(certification_class=x,
 baseline=y)`` from two unrelated sources must not fire.
+
+It walks ``migrations/versions/`` as well as ``src/ccf``. A backfill is the most
+realistic way this derivation would actually arrive -- nobody writes
+``CLASS_FOR[baseline]`` in a route by accident, but "populate the new column
+from the impact level we already have" reads like housekeeping. A **known blind
+spot** survives that widening and cannot be closed by an AST walk: the same
+backfill written as raw SQL inside ``op.execute("UPDATE ccf.systems SET
+certification_class = CASE baseline ...")`` is a string literal to this walker.
+It is disclosed in ``docs/architecture/forge-capability-inventory.md`` §6.2k
+alongside the intermediate-variable, function-return and ``setattr`` gaps rather
+than papered over with a substring scan that would fire on prose.
 """
 
 from __future__ import annotations
@@ -25,9 +36,24 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parents[1] / "src" / "ccf"
+_ROOT = Path(__file__).resolve().parents[1]
+_SRC = _ROOT / "src" / "ccf"
+_MIGRATIONS = _ROOT / "migrations" / "versions"
 _BASELINE = ("baseline", "fedramp_baseline")
 _CERT = {"certification_class", "certification_path"}
+
+
+def _guarded_files() -> list[tuple[Path, str]]:
+    """Every Python file the guard walks, with the label a hit is reported under.
+
+    Application code *and* migrations: a data migration is source too, and it is
+    the likelier home for a Class-from-baseline backfill than any route.
+    """
+    files = [(p, str(p.relative_to(_SRC))) for p in sorted(_SRC.rglob("*.py"))]
+    files += [
+        (p, f"migrations/versions/{p.name}") for p in sorted(_MIGRATIONS.glob("*.py"))
+    ]
+    return files
 
 
 def _target_names(target: ast.expr) -> set[str]:
@@ -95,9 +121,9 @@ def _derivations(tree: ast.AST, label: str) -> list[str]:
 
 def test_no_code_derives_a_class_from_a_baseline_or_the_reverse() -> None:
     hits: list[str] = []
-    for path in sorted(_SRC.rglob("*.py")):
+    for path, label in _guarded_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        hits += _derivations(tree, str(path.relative_to(_SRC)))
+        hits += _derivations(tree, label)
     assert not hits, (
         "FedRAMP states Certification Classes are NOT one-for-one replacements "
         f"for impact levels, and the adequacy ranges overlap. Found: {hits}"
@@ -167,5 +193,13 @@ def test_the_guard_catches_augmented_assignment() -> None:
 
 
 def test_the_guard_actually_reads_the_source_tree() -> None:
-    """A walker pointed at an empty directory passes vacuously forever."""
-    assert len(list(_SRC.rglob("*.py"))) > 50
+    """A walker pointed at an empty directory passes vacuously forever.
+
+    A floor on each root separately, not on the total: a combined count would
+    stay comfortably above any threshold if the migrations glob silently
+    resolved to nothing, which is exactly the regression this exists to catch.
+    """
+    walked = _guarded_files()
+    assert len([p for p, _ in walked if _SRC in p.parents]) > 50
+    assert len([p for p, _ in walked if p.parent == _MIGRATIONS]) > 50
+    assert any(label.startswith("migrations/") for _, label in walked)

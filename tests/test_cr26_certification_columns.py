@@ -42,9 +42,47 @@ async def test_a_system_may_hold_a_class_and_a_path() -> None:
         got = (await s.execute(select(System).where(System.id == sid))).scalar_one()
         assert got.certification_class == "B"
         assert got.certification_path == "program"
-        # The independence that matters: Class B on a moderate baseline is
-        # legal, and so is Class B on high. Neither column constrains the other.
-        assert got.baseline == "moderate"
+
+
+async def test_one_class_rides_on_two_different_baselines() -> None:
+    """The independence that matters, asserted on something that varies.
+
+    Class B is adequate for most Low and SOME Moderate or High, so B against a
+    ``high`` baseline and B against a ``low`` one must both round-trip: neither
+    column constrains the other, in either direction. Asserting the baseline of
+    a single row would only re-read a value passed in on the line above -- an
+    assertion on a field set before the branch under test, the recurring defect
+    the spec names for this programme.
+    """
+    async with session_scope() as s:
+        org = Organization(name="cr26-one-class-two-baselines-org")
+        s.add(org)
+        await s.flush()
+        for baseline in ("high", "low"):
+            s.add(
+                System(
+                    organization_id=org.id,
+                    name=f"cr26-class-b-on-{baseline}",
+                    baseline=baseline,
+                    certification_class="B",
+                )
+            )
+        await s.flush()
+        oid = org.id
+
+    async with session_scope() as s:
+        rows = (
+            (
+                await s.execute(
+                    select(System.baseline, System.certification_class)
+                    .where(System.organization_id == oid)
+                    .order_by(System.name)
+                )
+            )
+            .tuples()
+            .all()
+        )
+        assert rows == [("high", "B"), ("low", "B")]
 
 
 async def test_both_columns_default_to_null() -> None:
@@ -66,7 +104,13 @@ async def test_both_columns_default_to_null() -> None:
 
 
 async def test_every_class_in_the_vocabulary_is_storable() -> None:
-    """A tuple the database rejects is a vocabulary in name only."""
+    """A tuple the database rejects is a vocabulary in name only.
+
+    This loop is the only thing checking the migration's hardcoded enum members
+    against ``constants.py``: ``migrations/versions/0078_cr26_certification.py``
+    spells ``"A", "B", "C", "D"`` out independently of the constant, so a typo
+    in either would ship unnoticed without an INSERT of every member.
+    """
     async with session_scope() as s:
         org = Organization(name="cr26-all-classes-org")
         s.add(org)
@@ -77,6 +121,28 @@ async def test_every_class_in_the_vocabulary_is_storable() -> None:
                     organization_id=org.id,
                     name=f"cr26-class-{cls}",
                     certification_class=cls,
+                )
+            )
+        await s.flush()
+
+
+async def test_every_path_in_the_vocabulary_is_storable() -> None:
+    """The same check for the other enum, which had none.
+
+    ``0078_cr26_certification`` hardcodes ``"program", "agency"`` beside
+    ``CERTIFICATION_PATHS`` without reading it; until this loop existed, a
+    misspelled member on either side would have been caught by nothing.
+    """
+    async with session_scope() as s:
+        org = Organization(name="cr26-all-paths-org")
+        s.add(org)
+        await s.flush()
+        for path in CERTIFICATION_PATHS:
+            s.add(
+                System(
+                    organization_id=org.id,
+                    name=f"cr26-path-{path}",
+                    certification_path=path,
                 )
             )
         await s.flush()
