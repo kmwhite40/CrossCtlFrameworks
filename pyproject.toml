@@ -32,6 +32,7 @@ dependencies = [
     "slowapi>=0.1.9,<1",
     "aiosqlite>=0.20,<1",
     "jsonschema>=4.20,<5",
+    "referencing>=0.30,<1",
     "cryptography>=46,<51",
     "pgvector>=0.3,<1",
     "pymupdf>=1.24,<2",
@@ -74,6 +75,7 @@ where = ["src"]
 "ccf.packs" = ["bundled/*/pack.json"]
 "ccf.catalog" = ["oscal_data/*.json"]
 "ccf.oscal" = ["schemas/*.json"]
+"ccf.cr26" = ["schemas/*.json"]
 
 [tool.ruff]
 line-length = 100
