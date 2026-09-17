@@ -8,8 +8,18 @@ instead. An unknown *kind* is different: there is no vendored schema to judge
 it against, so storing it would mean storing something that can never be
 validated at all.
 
-What must hold on every path: no document is stored without a recorded
-verdict. There is no way to write ``document`` and leave ``is_valid`` stale.
+``common`` is excluded from :data:`DELIVERABLE_KINDS`: it is the shared
+``$defs`` target the other ten schemas ``$ref``, not a document any system
+files, and it has no top-level required fields of its own -- so *any*
+document would validate against it, making it a kind whose verdict could
+never mean anything. :mod:`ccf.cr26.validation`'s registry still needs
+``common`` in :data:`ccf.cr26.validation.CR26_KINDS` to resolve those
+``$ref``s; this store does not treat it as filable.
+
+What must hold on every path through this module: no document is stored
+without a recorded verdict. There is no way for a call to
+:func:`put_document` to write ``document`` and leave ``is_valid`` or
+``validation_errors`` stale.
 """
 
 from __future__ import annotations
@@ -25,6 +35,11 @@ from ..models import System
 from ..models_cr26 import Cr26Document
 from .validation import CR26_KINDS, schema_path, validate_document
 
+#: The kinds a system can actually file a document as: every vendored kind
+#: except ``common``, which is FedRAMP's shared ``$defs`` target rather than a
+#: deliverable a system produces (see module docstring).
+DELIVERABLE_KINDS: tuple[str, ...] = tuple(k for k in CR26_KINDS if k != "common")
+
 
 def _manifest() -> dict[str, Any]:
     path = Path(__file__).with_name("schemas") / "MANIFEST.json"
@@ -32,10 +47,17 @@ def _manifest() -> dict[str, Any]:
 
 
 def _versions(kind: str) -> tuple[str, str | None]:
-    """The ruleset revision and this schema's own semver, from the manifest."""
+    """The ruleset revision and this schema's own semver, from the manifest.
+
+    Indexes ``manifest["files"]`` directly rather than falling back to ``{}``
+    for a missing filename: a vendored file absent from the manifest is a
+    packaging failure, not a caller error, and should raise loudly here just
+    as :func:`ccf.cr26.validation.vendored_digests` does for the identical
+    lookup -- not be swallowed into a quiet ``schema_version=None``.
+    """
     manifest = _manifest()
     filename = CR26_KINDS[kind][0]
-    entry = manifest["files"].get(filename, {})
+    entry = manifest["files"][filename]
     return str(manifest["ruleset_version"]), entry.get("schema_version")
 
 
@@ -48,8 +70,20 @@ async def put_document(
     updated_by: str | None = None,
 ) -> Cr26Document:
     """Create or replace this system's document of ``kind``, judged on write."""
-    if kind not in CR26_KINDS or schema_path(kind) is None:
+    if kind not in DELIVERABLE_KINDS:
+        if kind in CR26_KINDS:
+            raise ValueError(
+                f"kind {kind!r} is not a filable CR26 deliverable -- it is the "
+                "shared common-definitions schema that the other ten schemas "
+                "$ref, not a document any system files"
+            )
         raise ValueError(f"unknown CR26 document kind: {kind!r}")
+    if schema_path(kind) is None:
+        # A known, filable kind with no file on disk is a packaging failure,
+        # not a caller mistake -- distinct from the guard above.
+        raise RuntimeError(
+            f"CR26 schema packaging error: vendored schema missing for kind {kind!r}"
+        )
 
     system = await session.get(System, system_id)
     if system is None:
@@ -76,7 +110,9 @@ async def put_document(
     row.schema_version = schema_version
     row.is_valid = report.ok
     row.validation_errors = list(report.errors)
-    if updated_by is not None:
-        row.updated_by = updated_by
+    # Unconditional, like every field above: a write that omits updated_by is
+    # honestly attributed to no one, rather than silently kept attributed to
+    # whoever wrote the row last.
+    row.updated_by = updated_by
     await session.flush()
     return row
