@@ -1899,6 +1899,7 @@ class CatalogIntegrityReport(Base):
 from . import (  # noqa: E402
     models_capability,
     models_cci,
+    models_cr26,
     models_enforcement,
     models_grc,
     models_patching,
@@ -1909,6 +1910,7 @@ from . import (  # noqa: E402
 CROSS_MODULE_MODEL_MODULES = (
     models_capability,
     models_cci,
+    models_cr26,
     models_enforcement,
     models_grc,
     models_patching,
