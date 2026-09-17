@@ -9,7 +9,11 @@ platform, and inventing them would be worse than leaving them out.
 
 from __future__ import annotations
 
-from ccf.cr26.cpo import SEEDED_FIELDS, seed_cpo
+from datetime import UTC, datetime
+
+import pytest
+
+from ccf.cr26.cpo import SEEDED_FIELDS, _seed_values, seed_cpo
 from ccf.db import session_scope
 from ccf.models import Organization, System
 
@@ -118,3 +122,56 @@ async def test_reseeding_copies_forward_fields_the_seeder_never_touches() -> Non
         ident = again.document["serviceIdentification"]
         assert ident["serviceAcronym"] == "EPS"
         assert ident["certificationType"] == "20x"
+
+
+async def test_a_system_without_a_description_omits_the_field_rather_than_seeding_empty() -> None:
+    """The schema puts no ``minLength`` on ``serviceDescription``, so seeding
+    ``""`` would satisfy ``required`` and make the document *look* filled-in --
+    the exact gap this seeder exists to leave visible. Omission is the only
+    honest option, and this is the assertion that can tell the two apart:
+    ``seeded["serviceDescription"] = system.description or ""`` passes every
+    other test in this file and fails here.
+    """
+    system_id = await _system("Zeta")  # description is NULL
+    async with session_scope() as s:
+        row = await seed_cpo(s, system_id=system_id)
+        ident = row.document["serviceIdentification"]
+        assert "serviceDescription" not in ident
+        assert sorted(ident) == ["providerName", "serviceName"]
+        assert row.is_valid is False
+
+
+async def test_a_description_authored_as_empty_string_is_left_alone() -> None:
+    """Only a NULL column -- nothing recorded at all -- counts as absent. A
+    human who deliberately stored "" gets it back, which is why the seeder
+    filters on ``is not None`` rather than on truthiness."""
+    system_id = await _system("Eta", description="")
+    async with session_scope() as s:
+        row = await seed_cpo(s, system_id=system_id)
+        ident = row.document["serviceIdentification"]
+        assert ident["serviceDescription"] == ""
+        assert sorted(ident) == sorted(SEEDED_FIELDS)
+
+
+def test_an_unsourced_field_is_omitted_never_seeded_as_an_empty_string() -> None:
+    """``System.organization_id`` is NOT NULL behind an FK, so a system with no
+    organization row is unreachable today -- but if it ever happened, seeding
+    ``providerName=""`` would produce exactly the validates-and-is-wrong
+    document this module forbids. It is omitted for the same reason
+    ``serviceDescription`` is."""
+    system = System(organization_id=1, name="Orphan Service")
+    assert _seed_values(system, None) == {"serviceName": "Orphan Service"}
+
+
+async def test_a_soft_deleted_system_is_refused() -> None:
+    """DATA-04 soft-deletes systems so the CASCADE never fires; a CPO seeded
+    against one would be unreachable and permanent."""
+    system_id = await _system("Theta", description="A Theta service.")
+    async with session_scope() as s:
+        system = await s.get(System, system_id)
+        assert system is not None
+        system.deleted_at = datetime.now(UTC)
+
+    async with session_scope() as s:
+        with pytest.raises(ValueError, match="system"):
+            await seed_cpo(s, system_id=system_id)

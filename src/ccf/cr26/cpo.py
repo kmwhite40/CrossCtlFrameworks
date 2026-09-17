@@ -12,9 +12,15 @@ required fields. Three have a source here:
 The rest -- ``serviceAcronym``, ``fedRampPackageId``, ``website``, ``logo``,
 ``certificationType``, ``serviceType`` and ``deploymentModel``, plus
 ``contactInformation`` -- are facts about the business that exist nowhere in
-this platform. ``Vendor`` is third-party supply chain, and there is no party or
-contact table at all. Inventing plausible values would produce a document that
-validates and is wrong, which is worse than one that visibly does not validate.
+this platform. ``Vendor`` is third-party supply chain. There *is* a ``people``
+table (:mod:`ccf.models_people`), but it models the **workforce** security
+lifecycle -- PS-2 risk designation, PS-3 screening, AT training, AC-2 access --
+while ``contactInformation`` is an array of *published CSP contacts* whose
+items must include one with ``contactType`` ``const: "Security"`` and one
+``const: "Sales"``. ``Person`` has ``position`` and ``department``; it has no
+concept of a published contact type, so it cannot source this field.
+Inventing plausible values would produce a document that validates and is
+wrong, which is worse than one that visibly does not validate.
 
 So the seeded document is **invalid by design**, and a test asserts that. The
 value this module adds is a starting point and a verdict, not a deliverable.
@@ -27,6 +33,7 @@ makes, not a fact the platform can compute. Inferring it from
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,28 +42,47 @@ from ..models import Organization, System
 from ..models_cr26 import Cr26Document
 from .store import put_document
 
-#: The only ``serviceIdentification`` fields the platform can fill.
-SEEDED_FIELDS: tuple[str, ...] = ("providerName", "serviceName", "serviceDescription")
+#: How each seedable ``serviceIdentification`` field is sourced. A source that
+#: yields ``None`` -- no organization row, or a description never recorded --
+#: means the field is **omitted**, never seeded as ``""``: the schema puts no
+#: ``minLength`` on any of them, so an empty string satisfies ``required`` and
+#: looks filled-in, hiding exactly the kind of gap this module exists to
+#: surface honestly. A value explicitly authored as ``""`` is left alone --
+#: only ``None`` (nothing recorded at all) is treated as absent.
+_SOURCES: dict[str, Callable[[System, Organization | None], str | None]] = {
+    "providerName": lambda system, org: org.name if org is not None else None,
+    "serviceName": lambda system, org: system.name,
+    "serviceDescription": lambda system, org: system.description,
+}
+
+#: The only ``serviceIdentification`` fields the platform can fill. Derived
+#: from :data:`_SOURCES` rather than restated, so the declaration and the code
+#: that builds the document cannot drift apart.
+SEEDED_FIELDS: tuple[str, ...] = tuple(_SOURCES)
+
+
+def _seed_values(system: System, org: Organization | None) -> dict[str, Any]:
+    """Every :data:`SEEDED_FIELDS` entry this system can actually fill.
+
+    An unsourced field is absent from the result, never present as ``""`` --
+    see :data:`_SOURCES`.
+    """
+    return {
+        field: value
+        for field, source in _SOURCES.items()
+        if (value := source(system, org)) is not None
+    }
 
 
 async def seed_cpo(session: AsyncSession, *, system_id: int) -> Cr26Document:
     """Create or refresh this system's CPO skeleton, preserving authored fields."""
     system = await session.get(System, system_id)
-    if system is None:
+    # A soft-deleted system is not a writable system -- see ccf.cr26.store.
+    if system is None or system.deleted_at is not None:
         raise ValueError(f"unknown system: {system_id!r}")
     org = await session.get(Organization, system.organization_id)
 
-    seeded: dict[str, Any] = {
-        "providerName": org.name if org is not None else "",
-        "serviceName": system.name,
-    }
-    # Omit rather than seed "" when there is no description: an empty string
-    # would satisfy the schema's `required` check and look filled-in, hiding
-    # exactly the kind of gap this module exists to surface honestly. A
-    # description explicitly authored as "" is left alone -- only a NULL
-    # column (nothing recorded at all) is treated as absent.
-    if system.description is not None:
-        seeded["serviceDescription"] = system.description
+    seeded = _seed_values(system, org)
 
     existing = await _current(session, system_id)
     document: dict[str, Any] = existing if existing is not None else {}
