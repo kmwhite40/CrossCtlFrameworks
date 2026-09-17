@@ -838,37 +838,39 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 All four tasks landed on this branch. Final state, verified independently by
 the Task 4 executor rather than copied from earlier reports.
 
-### `alembic heads` (after Task 3, re-confirmed after Task 4)
+### `alembic heads` (after Task 3, re-confirmed after Task 4 and again after its fix round)
 
 ```
 $ .venv/bin/alembic heads
 0078_cr26_certification (head)
 ```
 
-Exactly one head, both times.
+Exactly one head, every time.
 
 ### Suite counts as each task landed
 
 | Task | Result |
 |---|---|
-| Task 1 (Accepted Weakness classification) | 2474 passed |
+| Task 1 (Accepted Weakness classification) | 2474 passed, 1 skipped |
 | Task 2 (`risk_accepted` its own SLA bucket) | 2482 passed, 1 skipped |
 | Task 3 (Certification Class / Path columns) | 2486 passed, 1 skipped |
-| Task 4 (no-derivation guard) | 2489 passed, 1 skipped |
+| Task 4, first pass (no-derivation guard) | 2489 passed, 1 skipped |
+| Task 4, after fix round 1 (guard now also covers constructor keywords, tuple targets, `AugAssign`) | 2493 passed, 1 skipped |
 
 The single skip (`tests/test_fedramp20x_e2e.py:30`, missing `playwright`) is
-pre-existing and unrelated to this plan. Task 4 added exactly the 3 tests in
-`tests/test_certification_class_is_independent.py`, accounting for the
-2486 → 2489 delta.
+pre-existing and unrelated to this plan. Task 4's first pass added exactly
+the 3 tests in `tests/test_certification_class_is_independent.py` (2486 →
+2489); fix round 1 added 4 more to close the constructor-keyword-argument
+and tuple/`AugAssign` gaps a review found in the guard (2489 → 2493).
 
-Task 4's own full-suite run, immediately before committing:
+Task 4's full-suite run after the fix round, immediately before re-committing:
 
 ```
 $ export CCF_DATABASE_URL=postgresql+asyncpg://ccf:ccf@localhost:5434/ccf_test
 $ export CCF_DATABASE_URL_SYNC=postgresql+psycopg://ccf:ccf@localhost:5434/ccf_test
 $ .venv/bin/python3 -m pytest -q
 ...
-2489 passed, 1 skipped, 5 warnings in 207.44s (0:03:27)
+2493 passed, 1 skipped, 5 warnings in 207.89s (0:03:27)
 ```
 
 The 5 warnings are the same pre-existing `DeprecationWarning: builtin type
@@ -944,6 +946,60 @@ $ .venv/bin/python3 -m pytest tests/test_certification_class_is_independent.py -
 
 `git diff HEAD` and `git status --porcelain` after the Task 4 commit confirm
 no trace of the mutation reached the commit or the working tree.
+
+### Forced-failure evidence — Task 4 fix round 1 (constructor-keyword shape)
+
+Review found the first-pass guard blind to the codebase's actual `System`
+construction idiom — a keyword argument, not an attribute assignment (see
+`src/ccf/api/routes/ui.py`'s `System(organization_id=org.id, name=sys_name,
+baseline=(baseline or None))`). Fixed by extending `_derivations` to walk
+every `Call` node's keyword arguments as targets in their own right, judged
+independently of any other keyword on the same call. Proved the fix bites
+against real source the same way as before: appended a second throwaway
+function to `src/ccf/models.py`,
+
+```python
+def _scratch_mutation_for_guard_proof_kwarg() -> None:
+    _sysm = System(certification_class=_CLASS_FOR[System.baseline], baseline=None)
+```
+
+re-ran the guard test:
+
+```
+$ .venv/bin/python3 -m pytest tests/test_certification_class_is_independent.py -q
+F......                                                                  [100%]
+=================================== FAILURES ===================================
+_________ test_no_code_derives_a_class_from_a_baseline_or_the_reverse __________
+
+    def test_no_code_derives_a_class_from_a_baseline_or_the_reverse() -> None:
+        hits: list[str] = []
+        for path in sorted(_SRC.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            hits += _derivations(tree, str(path.relative_to(_SRC)))
+>       assert not hits, (
+            "FedRAMP states Certification Classes are NOT one-for-one replacements "
+            f"for impact levels, and the adequacy ranges overlap. Found: {hits}"
+        )
+E       AssertionError: FedRAMP states Certification Classes are NOT one-for-one replacements for impact levels, and the adequacy ranges overlap. Found: ['models.py:1921 derives a Class from a baseline']
+E       assert not ['models.py:1921 derives a Class from a baseline']
+=========================== short test summary info ============================
+FAILED tests/test_certification_class_is_independent.py::test_no_code_derives_a_class_from_a_baseline_or_the_reverse
+1 failed, 6 passed in 2.43s
+```
+
+Then reverted (`git checkout -- src/ccf/models.py`) and re-ran:
+
+```
+$ .venv/bin/python3 -m pytest tests/test_certification_class_is_independent.py -q
+.......                                                                  [100%]
+7 passed in 2.49s
+```
+
+`git diff HEAD` and `git status --porcelain` after re-committing confirm no
+trace of this second mutation reached the commit or the working tree
+either. **No genuine pre-existing derivation was found in `src/ccf/` by the
+extended guard** — its only hit throughout both mutation proofs was the
+deliberate, reverted line.
 
 ### Task 2 Step 5 — the warned-about pre-existing test did not need to change
 

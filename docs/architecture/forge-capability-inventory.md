@@ -936,10 +936,19 @@ anywhere that takes `baseline` as an input and produces a Class, or the
 reverse. `tests/test_certification_class_is_independent.py` makes that a
 standing property of the source tree rather than a one-time review finding:
 an AST walk over every module under `src/ccf` fails the build if an
-assignment ever names one vocabulary on its target and the other in its
-value, in either direction — a guard shaped for the mapping's specific
-temptation, not exercised through any particular route the way a unit test
-of one call site would be.
+assignment — attribute, name, tuple/list-unpacking, or augmented — ever
+names one vocabulary on its target and the other in its value, **or** a
+constructor call's keyword argument names one vocabulary and its own value
+mentions the other, in either direction. The keyword-argument case was added
+after a review caught the first pass missing it: `System` rows in this
+codebase are built with keywords, not attribute assignment (see
+`api/routes/ui.py`'s `System(organization_id=org.id, name=sys_name,
+baseline=(baseline or None))`), and a guard blind to that shape would have
+missed the exact edit it exists to catch. This is a source-shaped guard, not
+a data-flow one: it does not follow a value through an intermediate
+variable, a function's return, or `setattr`, so those remain places a
+derivation could still slip past review undetected. It catches the direct,
+textually-adjacent form the mapping's temptation actually takes.
 
 **`certification_status` is deliberately not modelled**, for the same reason
 the Class↔impact mapping is not encoded: it is not published in any source
