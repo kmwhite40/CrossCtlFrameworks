@@ -44,9 +44,11 @@ class Cr26Document(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    #: Nullable and CASCADE, following 0075_remediation_plans -- an unscoped
-    #: principal writes a null-org row that the RLS predicate hides from every
-    #: scoped tenant.
+    #: Nullable and CASCADE, following 0075_remediation_plans, which is this
+    #: table's shape almost exactly. Nullable for consistency with that
+    #: precedent only: no current writer can produce a NULL, because
+    #: :func:`ccf.cr26.store.put_document` always sets it from
+    #: ``System.organization_id``, which is itself ``NOT NULL``.
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
