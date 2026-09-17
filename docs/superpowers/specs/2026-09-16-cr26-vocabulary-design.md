@@ -55,8 +55,13 @@ and `constants.py` already draws the distinction CR26 needs:
 
 So:
 
-> **Accepted Weakness = `status == "risk_accepted"` (declared)
-> ∪ (unresolved ∧ elapsed > 192 days) (elapsed)**
+> **Accepted Weakness = `status == "risk_accepted"` (declared, any age)
+> ∪ (`status in POAM_ACTIVE_STATUSES` ∧ elapsed > 192 days) (elapsed)**
+
+The elapsed half is scoped to `POAM_ACTIVE_STATUSES` — the remediation backlog,
+which *excludes* `risk_accepted` — so the two halves are **disjoint** and a row
+is counted once. Scoping it to `POAM_UNRESOLVED_STATUSES` instead would overlap,
+because that set includes `risk_accepted` by design.
 
 **No table, no migration, no second writer.** `POAM` stays the single record of
 a provider-side weakness; an Accepted Weakness is a classification of that row.
