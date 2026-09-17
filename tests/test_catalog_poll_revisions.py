@@ -14,6 +14,10 @@ from ccf.etl.sources import check_source, parse_commit_url, resolve_commit_sha
 from ccf.models import CatalogRevision, CatalogSource
 from tests.test_catalog_materialize import CATALOG, PROFILE
 
+# Rows in catalog_sources / pack_sources are polled by scheduler.run_cycle(),
+# so they must not outlive the test that made them -- see the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_source_rows")
+
 _BODY = json.dumps(CATALOG).encode()
 _PROFILE_BODY = json.dumps(PROFILE).encode()
 

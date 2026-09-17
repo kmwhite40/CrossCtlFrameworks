@@ -12,6 +12,10 @@ from ccf.db import session_scope
 from ccf.models import Organization
 from ccf.models_packs import PackSource
 
+# Rows in catalog_sources / pack_sources are polled by scheduler.run_cycle(),
+# so they must not outlive the test that made them -- see the fixture.
+pytestmark = pytest.mark.usefixtures("isolate_source_rows")
+
 _SEQ = itertools.count()
 
 
