@@ -198,15 +198,14 @@ def _kinds_with_absolute_ref() -> list[str]:
     absolute URL -- ten of eleven, found programmatically rather than by
     reading the spec's survey and hand-copying the list.
 
-    Asserts the discovered set against :data:`_KINDS_WITH_ABSOLUTE_REF` rather
-    than just returning it. That assertion is the floor against
-    ``pytest.mark.parametrize``'s default ``empty_parameter_set_mark=skip``:
-    an empty (or short) result does not fail a parametrized test, it silently
-    skips the single generated case -- so if discovery ever regressed (e.g. a
-    future schema revision uses ``http://`` or a relative ``$id`` base, which
-    :func:`_find_first_absolute_ref_path`'s ``ref.startswith("https://")``
-    would no longer match), this whole resolution-sweep guarantee would
-    evaporate green with nothing to show for it.
+    Deliberately non-asserting: @pytest.mark.parametrize below calls this
+    eagerly at module-import/collection time, so an assertion in here would
+    fire (if it ever fired) as a whole-module collection error -- no test in
+    this file would even be collected, including the one whose entire job is
+    to name a discovery regression cleanly. See
+    test_the_kind_sweep_discovers_exactly_the_expected_kinds, which is the one
+    and only place this module's discovery is checked against what it is
+    supposed to find.
     """
     kinds = []
     for kind in CR26_KINDS:
@@ -215,24 +214,30 @@ def _kinds_with_absolute_ref() -> list[str]:
         schema = json.loads(path.read_text(encoding="utf-8"))
         if _find_first_absolute_ref_path(schema) is not None:
             kinds.append(kind)
-    assert frozenset(kinds) == _KINDS_WITH_ABSOLUTE_REF, (
-        f"kinds with an absolute $ref changed: found {sorted(kinds)}, "
-        f"expected {sorted(_KINDS_WITH_ABSOLUTE_REF)}"
-    )
     return kinds
 
 
 def test_the_kind_sweep_discovers_exactly_the_expected_kinds() -> None:
-    """Pin _kinds_with_absolute_ref()'s result independently of the
-    @pytest.mark.parametrize call below that consumes it.
+    """The single point that pins _kinds_with_absolute_ref()'s result.
 
-    That decorator evaluates the function at collection time, so if its
-    internal assertion ever fired there, the failure would surface as a
-    collection error for the whole module -- a far worse diagnostic than a
-    single plain failing test. This test exists so the same regression also
-    shows up the normal way.
+    _kinds_with_absolute_ref() itself asserts nothing -- @pytest.mark.
+    parametrize below consumes its result eagerly at collection time, and an
+    assertion living there would, if it ever fired, abort importing the whole
+    module rather than fail as an ordinary test (confirmed: that shape was
+    tried and reproducibly turns a discovery regression into a whole-module
+    collection error that never even collects this test). So this is the one
+    place discovery is checked: if a future schema revision changes which
+    kinds carry an absolute $ref (or drops the count to zero),
+    test_every_kind_with_an_absolute_ref_actually_resolves_it below silently
+    shrinks or empties -- pytest's default empty_parameter_set_mark=skip does
+    not fail an empty parametrize -- but THIS test fails here, cleanly, naming
+    exactly which kinds appeared or vanished.
     """
-    assert frozenset(_kinds_with_absolute_ref()) == _KINDS_WITH_ABSOLUTE_REF
+    discovered = _kinds_with_absolute_ref()
+    assert frozenset(discovered) == _KINDS_WITH_ABSOLUTE_REF, (
+        f"kinds with an absolute $ref changed: found {sorted(discovered)}, "
+        f"expected {sorted(_KINDS_WITH_ABSOLUTE_REF)}"
+    )
 
 
 def _registry_missing_common_definitions() -> Any:
