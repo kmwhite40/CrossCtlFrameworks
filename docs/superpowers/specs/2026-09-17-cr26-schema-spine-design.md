@@ -92,7 +92,7 @@ changed and surfaces it for a human, exactly as `auto_ingest=False` intends.
 precisely the event a person needs to see.
 
 No migration is expected: `catalog_sources`, the `generic` kind, `CatalogCheck`
-and `seed_default_sources`'s upsert-by-key all exist. The implementation plan
+and `seed_sources`' upsert-by-key all exist. The implementation plan
 confirms this rather than assuming it.
 
 ## 4. Offline validation, and the one absolute `$ref`
@@ -109,19 +109,43 @@ definitions by *absolute URL*:
 "$ref": "https://fedramp.gov/schemas/fedramp-common-definitions-schema-2026-06-24.json#/$defs/certificationPackageOverviewUri"
 ```
 
-Under `jsonschema` 4.x that resolves through `referencing`, which will attempt
-a **network fetch at validation time**. Left alone this fails two ways, and the
-second is worse than the first: it fails closed wherever there is no network —
-including CI and the build environment — and where there *is* network it
-silently validates against whatever upstream serves that day, defeating the
-pin entirely.
+Under `jsonschema` 4.x that resolves through `referencing`. **Measured, not
+assumed** (`jsonschema` 4.26.0, sockets blocked at the layer below):
+
+```
+jsonschema.exceptions._WrappedReferencingError: Unresolvable:
+  https://fedramp.gov/schemas/fedramp-common-definitions-schema-2026-06-24.json#/$defs/certificationPackageOverviewUri
+```
+
+It does **not** fetch over the network — it fails closed. An earlier draft of
+this spec claimed it would silently validate against whatever upstream served
+that day; that was wrong, and the real behaviour is better in one way and
+considerably more dangerous in another.
+
+**The danger is that resolution is lazy.** A `$ref` is resolved only when
+validation actually descends into the property carrying it. A document that
+fails an earlier `required` check never gets there. Measured on the CPO schema:
+an empty document returns 12 ordinary validation errors and never raises. So a
+test fixture built as "a minimal invalid document" — the natural thing to
+write first — **passes without a registry**, and the failure appears only for
+documents that are complete and valid. That is precisely inverted: the spine
+would look correct in tests and break on the first real deliverable.
 
 So the module builds a `referencing.Registry` mapping each vendored schema's
-`$id` to its on-disk copy, and validation resolves only through it.
-**A test must assert that validation succeeds with no network access**, not
-merely that it succeeds. Surveying the set: there is exactly **one** absolute
-`$ref` target (common-definitions), so the registry is small — but it is not
-optional.
+`$id` to its on-disk copy, and validation resolves only through it. Two
+requirements follow, and neither is optional:
+
+1. **A test must validate a document complete enough to descend into a `$ref`**
+   and assert it resolves. A test that only exercises invalid documents proves
+   nothing about reference resolution.
+2. **A test must assert validation succeeds with no network access** — sockets
+   blocked, not merely "it worked on my machine".
+
+Surveying the set, **ten of the eleven schemas carry absolute `$ref`s**, one to
+three each, and every one targets the same file (common-definitions). Only
+`common-definitions` itself has none. So the registry is small — one resource
+satisfies every reference — but it is needed by almost every schema, not just
+CPO and SDR.
 
 Two smaller findings from the same survey, recorded so they are not
 rediscovered:
