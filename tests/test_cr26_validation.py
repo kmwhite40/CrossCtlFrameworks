@@ -23,7 +23,10 @@ sweep proves this for every one of the ten kinds that carries an absolute ref
 from __future__ import annotations
 
 import json
+import shutil
 import socket
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -171,10 +174,40 @@ def _instance_reaching(path: tuple[Any, ...], leaf: Any) -> Any:
     return _instance_reaching(tuple(rest), leaf)
 
 
+#: The exact kinds :func:`_kinds_with_absolute_ref` is expected to discover --
+#: named, not merely counted, so a $ref moving from one kind to another (which
+#: would leave a bare count unchanged) is also caught.
+_KINDS_WITH_ABSOLUTE_REF = frozenset(
+    {
+        "advisor",
+        "assessor",
+        "avi",
+        "cpo",
+        "incident",
+        "ocr",
+        "scn",
+        "sdr",
+        "vdr",
+        "ver_history",
+    }
+)
+
+
 def _kinds_with_absolute_ref() -> list[str]:
     """Every CR26 kind whose vendored schema references another document by
     absolute URL -- ten of eleven, found programmatically rather than by
-    reading the spec's survey and hand-copying the list."""
+    reading the spec's survey and hand-copying the list.
+
+    Asserts the discovered set against :data:`_KINDS_WITH_ABSOLUTE_REF` rather
+    than just returning it. That assertion is the floor against
+    ``pytest.mark.parametrize``'s default ``empty_parameter_set_mark=skip``:
+    an empty (or short) result does not fail a parametrized test, it silently
+    skips the single generated case -- so if discovery ever regressed (e.g. a
+    future schema revision uses ``http://`` or a relative ``$id`` base, which
+    :func:`_find_first_absolute_ref_path`'s ``ref.startswith("https://")``
+    would no longer match), this whole resolution-sweep guarantee would
+    evaporate green with nothing to show for it.
+    """
     kinds = []
     for kind in CR26_KINDS:
         path = schema_path(kind)
@@ -182,7 +215,24 @@ def _kinds_with_absolute_ref() -> list[str]:
         schema = json.loads(path.read_text(encoding="utf-8"))
         if _find_first_absolute_ref_path(schema) is not None:
             kinds.append(kind)
+    assert frozenset(kinds) == _KINDS_WITH_ABSOLUTE_REF, (
+        f"kinds with an absolute $ref changed: found {sorted(kinds)}, "
+        f"expected {sorted(_KINDS_WITH_ABSOLUTE_REF)}"
+    )
     return kinds
+
+
+def test_the_kind_sweep_discovers_exactly_the_expected_kinds() -> None:
+    """Pin _kinds_with_absolute_ref()'s result independently of the
+    @pytest.mark.parametrize call below that consumes it.
+
+    That decorator evaluates the function at collection time, so if its
+    internal assertion ever fired there, the failure would surface as a
+    collection error for the whole module -- a far worse diagnostic than a
+    single plain failing test. This test exists so the same regression also
+    shows up the normal way.
+    """
+    assert frozenset(_kinds_with_absolute_ref()) == _KINDS_WITH_ABSOLUTE_REF
 
 
 def _registry_missing_common_definitions() -> Any:
@@ -243,12 +293,51 @@ def test_validate_document_reports_rather_than_raises_on_an_incomplete_registry(
     of it should be able to surface to a caller as an unhandled traceback.
     Force validate_document down exactly that path: swap in a registry that is
     missing common-definitions and confirm a ValidationReport comes back.
+
+    This monkeypatches _registry() itself wholesale, so it does not exercise
+    _registry()'s own ``if unusable: raise`` body -- see
+    test_registry_raises_loudly_when_a_manifest_listed_file_is_missing below
+    for that.
     """
     monkeypatch.setattr(_cr26_validation, "_registry", _registry_missing_common_definitions)
     report = validate_document(_valid_sdr(), "sdr")
     assert isinstance(report, ValidationReport)
     assert report.ok is False
     assert report.mode == "none"
+
+
+@pytest.fixture
+def cleared_registry_cache() -> Iterator[None]:
+    """_registry() is ``lru_cache(maxsize=1)``: clear it before and after so a
+    deliberately-incomplete registry built by one test can never leak its
+    cached result into a later test in the same session."""
+    _cr26_validation._registry.cache_clear()
+    yield
+    _cr26_validation._registry.cache_clear()
+
+
+def test_registry_raises_loudly_when_a_manifest_listed_file_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cleared_registry_cache: None
+) -> None:
+    """Exercise _registry()'s own ``if unusable: raise`` directly -- not by
+    monkeypatching _registry() away (the test above), which bypasses that
+    body entirely. Coverage confirmed this was previously untested: deleting
+    the whole ``if unusable: raise`` block left every test in this file green.
+
+    Copies the real schema directory to a scratch location and deletes one
+    file from the COPY -- src/ccf/cr26/schemas/ itself is never touched, per
+    the project's standing rule against hand-editing a vendored schema.
+    """
+    scratch = tmp_path / "schemas"
+    shutil.copytree(_cr26_validation._SCHEMA_DIR, scratch)
+    victim = "fedramp-common-definitions-schema-2026-06-24.json"
+    (scratch / victim).unlink()
+
+    monkeypatch.setattr(_cr26_validation, "_SCHEMA_DIR", scratch)
+    monkeypatch.setattr(_cr26_validation, "_MANIFEST", scratch / "MANIFEST.json")
+
+    with pytest.raises(RuntimeError, match=victim):
+        _cr26_validation._registry()
 
 
 def test_the_enforced_format_set_is_what_this_environment_actually_checks() -> None:
