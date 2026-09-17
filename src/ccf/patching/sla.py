@@ -24,7 +24,7 @@ from datetime import date
 from statistics import median
 from typing import Any
 
-from ..constants import POAM_CLOSED_STATUSES
+from ..constants import POAM_ACTIVE_STATUSES, POAM_CLOSED_STATUSES
 
 #: FedRAMP's flaw-remediation timeframes, in days. Adopted rather than invented:
 #: different numbers in a federal product would be worse than the ones
@@ -35,6 +35,12 @@ FEDRAMP_TIMEFRAMES: dict[str, int] = {
     "moderate": 90,
     "low": 180,
 }
+
+#: CR26 (Vulnerability Evaluation and Reporting): a provider MUST categorize any
+#: vulnerability not -- or that will not be -- fully mitigated or remediated
+#: within this many days of evaluation as an accepted vulnerability. Mandatory
+#: for offerings obtaining or maintaining FedRAMP Certification from 2026-12-07.
+ACCEPTED_WEAKNESS_DAYS = 192
 
 #: Every bucket a measured POA&M lands in. Closed, because the sum invariant
 #: depends on it.
@@ -146,6 +152,49 @@ def classify(poam: Any, *, allowed_days: int, today: date) -> str:
         return "unknown"
     age = (today - poam.identified_on).days
     return "within_sla" if age <= allowed_days else "breached"
+
+
+def is_accepted_weakness(poam: Any, *, today: date) -> bool:
+    """Is this weakness an Accepted Weakness under CR26?
+
+    Two disjoint halves, because the rule says "is not **or will not be**"
+    remediated within the window:
+
+    - **declared** -- ``status == "risk_accepted"``, at any age, dated or not.
+      This is the forward-looking half: a provider may accept a weakness on day
+      3, and no elapsed-time arithmetic can represent a decision not yet made.
+      A projection keyed only to age would report it as open remediation work
+      for up to 191 days.
+    - **elapsed** -- still in the remediation backlog past the window.
+
+    The elapsed half is scoped to ``POAM_ACTIVE_STATUSES``, which *excludes*
+    ``risk_accepted`` by design (see :mod:`ccf.constants`), so the halves cannot
+    overlap and a row is reached by exactly one.
+
+    Status is consulted before any closure date, matching :func:`classify`: a
+    reopened weakness carrying a stale ``closed_on`` must not read as resolved.
+    An unknown ``identified_on`` is never accepted by elapsed time -- this never
+    invents a date.
+
+    **Stated assumption:** the 192 days run from *evaluation*, and ``POAM``
+    records ``identified_on``. These may not be the same act -- evaluation is
+    VER-defined. ``identified_on`` is the closest existing field, and that
+    substitution is an explicit assumption to confirm against the VER ruleset
+    when it publishes, not a silent equivalence. If they differ, only the key
+    changes; the shape of the rule does not.
+
+    ``today`` is injected so the rule is testable at both boundaries, as
+    everything else in this module is.
+    """
+    status = str(poam.status)
+    if status == "risk_accepted":
+        return True
+    if status not in POAM_ACTIVE_STATUSES:
+        return False
+    if poam.identified_on is None:
+        return False
+    # Inclusive at the limit, like classify: 192 days means 192, not 191.
+    return bool((today - poam.identified_on).days > ACCEPTED_WEAKNESS_DAYS)
 
 
 def measure(
