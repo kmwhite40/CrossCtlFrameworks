@@ -303,7 +303,11 @@ async def test_a_hostile_next_link_does_not_pull_page_two_off_host() -> None:
     assert calls[0].startswith("https://graph.microsoft.us/"), calls[0]
 
 
-@pytest.mark.parametrize("hostile_endpoint", HOSTILE_ENDPOINTS)
+@pytest.mark.parametrize(
+    "hostile_endpoint",
+    HOSTILE_ENDPOINTS,
+    ids=["no-trailing-slash-host-suffix", "userinfo"],
+)
 async def test_scan_reports_a_hostile_endpoint_as_unrunnable(
     monkeypatch: pytest.MonkeyPatch, hostile_endpoint: str
 ) -> None:
@@ -311,15 +315,54 @@ async def test_scan_reports_a_hostile_endpoint_as_unrunnable(
     the way a defect elsewhere in the pipeline might) must still come back as
     an ordinary manual_review_required outcome through scan()'s existing
     per-check isolation -- not raise out of scan(), and not report a clean
-    fleet. No mock transport is needed: the host check raises before any
-    request is attempted."""
+    fleet.
+
+    A mock transport IS needed, contrary to what this test asserted until
+    2026-09-17 ("the host check raises before any request is attempted").
+    These two payloads are precisely the ones ``_safe_url`` defangs by
+    *resolving* them -- ``httpx.URL(base).join(target)`` turns them into
+    harmless same-host paths -- rather than by raising; see
+    ``test_scan_never_sends_a_hostile_endpoints_request_off_host`` above, whose
+    whole point is that a request IS attempted for these two. Without a
+    transport the request therefore went to the live ``graph.microsoft.us`` on
+    every run of the suite.
+
+    It also passed for the wrong reason. ``_unrunnable`` returns
+    ``manual_review_required`` for *any* exception -- a 404, a timeout, a
+    refused connection, or a genuine host-check refusal are indistinguishable
+    in the verdict -- so asserting the verdict alone could not tell a working
+    safety check apart from an unreachable network. Asserting which host was
+    actually contacted is what makes the outcome mean something.
+    """
+    requested_hosts: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host)
+        return httpx.Response(404, json={"error": "not a real Graph route"})
+
+    class _MockedAsyncClient(httpx.AsyncClient):
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            kw["transport"] = httpx.MockTransport(handler)
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(httpx, "AsyncClient", _MockedAsyncClient)
+    monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
+
     hostile = ResolvedCheck(
         check=GUEST_CHECK,
         endpoint=hostile_endpoint,
         source="pack:test",
         spec=GUEST_RESOLVED.spec,
     )
-    monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
     outcomes = await MsGraphConnector(credential=CRED).scan(checks=(hostile,))
+
     assert len(outcomes) == 1
     assert outcomes[0].verdict == "manual_review_required"
+    assert requested_hosts, (
+        "these payloads resolve to same-host paths, so a request must have "
+        "been attempted -- if none was, _safe_url's behaviour changed and this "
+        "test no longer covers what it claims"
+    )
+    assert all(h == "graph.microsoft.us" for h in requested_hosts), (
+        f"a request reached an off-host target for {hostile_endpoint!r}: {requested_hosts!r}"
+    )

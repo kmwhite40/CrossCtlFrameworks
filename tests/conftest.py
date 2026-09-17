@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+import socket
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import openpyxl
@@ -44,6 +45,65 @@ def clean_migrated_db() -> None:
     cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
+
+
+#: Ports that mean "this is a real call to the internet". The test database
+#: lives on 5434 and local fixture servers pick ephemeral ports, so neither is
+#: caught here.
+_NETWORK_PORTS = frozenset({80, 443})
+
+
+@pytest.fixture(autouse=True)
+def no_outbound_network(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Fail any test that opens a real connection to the internet.
+
+    The suite is meant to be hermetic, and on 2026-09-17 it was not: three
+    tests made four live HTTPS calls on every run -- two to graph.microsoft.us
+    and two to GitHub. That is slow, it makes the suite fail on an
+    egress-restricted runner, and it silently made CI depend on third parties
+    being up.
+
+    Worse, it let a test pass for the wrong reason. The msgraph
+    hostile-endpoint test asserted only that a check came back
+    ``manual_review_required`` -- which ``_unrunnable`` returns for *any*
+    exception, so a refused connection and a working host check were
+    indistinguishable. It would have passed against the vulnerable connector.
+
+    **Blocking alone is not enough**, which is why this records attempts and
+    fails in teardown: code under test routinely catches connection errors and
+    converts them into an ordinary result, so a test that reaches the network
+    could otherwise still go green while the guard "worked".
+
+    A test that genuinely needs the network marks itself ``allows_network``.
+    """
+    if request.node.get_closest_marker("allows_network"):
+        yield
+        return
+
+    real_connect = socket.socket.connect
+    attempted: list[str] = []
+
+    def guarded(self: socket.socket, address: object, *a: object, **kw: object) -> object:
+        if isinstance(address, tuple) and len(address) >= 2 and address[1] in _NETWORK_PORTS:
+            attempted.append(f"{address[0]}:{address[1]}")
+            raise OSError(
+                f"outbound network blocked in tests: {address[0]}:{address[1]} "
+                "(stub the transport, or mark the test allows_network)"
+            )
+        return real_connect(self, address, *a, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(socket.socket, "connect", guarded)
+    yield
+    monkeypatch.undo()
+    if attempted:
+        pytest.fail(
+            "this test reached the internet: "
+            + ", ".join(sorted(set(attempted)))
+            + ". Stub the HTTP transport (see test_msgraph_declared_scan.py) or "
+            "the calling function, or mark the test `allows_network`."
+        )
 
 
 @pytest.fixture(autouse=True)
