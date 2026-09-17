@@ -234,3 +234,84 @@ def test_the_per_severity_breakdown_is_reported() -> None:
     )
     assert report.by_severity["critical"]["breached"] == 1
     assert report.by_severity["low"]["within_sla"] == 1
+
+
+def test_risk_accepted_is_its_own_bucket_not_a_breach() -> None:
+    """Accepted residual risk is not an SLA failure.
+
+    constants.py states the convention: POAM_ACTIVE_STATUSES excludes
+    risk_accepted because it is risk formally accepted rather than work still
+    to do, and analytics/posture.py already buckets it separately. sla.py had
+    diverged, reporting it as a breach.
+    """
+    old = _Poam(status="risk_accepted", identified_on=TODAY - timedelta(days=200))
+    assert classify(old, allowed_days=30, today=TODAY) == "accepted"
+
+
+def test_a_young_accepted_weakness_is_not_within_sla_either() -> None:
+    """The half that used to pass silently: accepted on day 3 counted as
+    compliant with a remediation timeframe it was never remediated within."""
+    young = _Poam(status="risk_accepted", identified_on=TODAY - timedelta(days=3))
+    assert classify(young, allowed_days=30, today=TODAY) == "accepted"
+
+
+def test_an_undated_accepted_weakness_is_accepted_not_unknown() -> None:
+    """The bucket does not depend on a date, and sla.is_accepted_weakness
+    agrees. Two functions disagreeing about one row is the divergence this
+    change ends."""
+    undated = _Poam(status="risk_accepted", identified_on=None)
+    assert classify(undated, allowed_days=30, today=TODAY) == "accepted"
+
+
+def test_an_accepted_weakness_is_not_listed_as_breaching() -> None:
+    accepted = _Poam(
+        id=910, status="risk_accepted", identified_on=TODAY - timedelta(days=200)
+    )
+    report = measure([accepted], window=WINDOW, today=TODAY)
+    assert report.buckets["accepted"] == 1
+    assert report.buckets["breached"] == 0
+    assert report.breaching_ids == []
+
+
+def test_accepted_stays_in_the_compliance_denominator() -> None:
+    """Out of the numerator, in the denominator: an accepted weakness was not
+    remediated in time, and excluding it would let an org improve its SI-2
+    score by accepting risk."""
+    report = measure(
+        [
+            _Poam(id=1, status="risk_accepted", identified_on=TODAY - timedelta(days=200)),
+            _open("high", 5, id=2),
+        ],
+        window=WINDOW,
+        today=TODAY,
+    )
+    assert report.measured == 2
+    assert report.compliance_pct == 50.0
+
+
+def test_a_closure_predating_identification_is_still_unknown() -> None:
+    """Unchanged by this task, asserted because the accepted branch now runs
+    ahead of every date check and must not have swallowed this case."""
+    corrupt = _Poam(
+        id=6,
+        status="completed",
+        identified_on=TODAY - timedelta(days=40),
+        closed_on=TODAY - timedelta(days=60),
+    )
+    assert classify(corrupt, allowed_days=30, today=TODAY) == "unknown"
+
+
+def test_the_buckets_still_sum_to_the_measured_count() -> None:
+    poams = [
+        _open("high", 5, id=1),                                   # within_sla
+        _open("high", 200, id=2),                                 # breached
+        _Poam(id=3, status="risk_accepted", identified_on=TODAY),  # accepted
+        _closed("high", 40, 10),                                  # closed_on_time
+        _Poam(id=5, status="open", identified_on=None),           # unknown
+    ]
+    report = measure(poams, window=WINDOW, today=TODAY)
+    assert sum(report.buckets.values()) == report.measured == len(poams)
+
+
+def test_accepted_is_declared_in_the_bucket_vocabulary() -> None:
+    assert "accepted" in SLA_BUCKETS

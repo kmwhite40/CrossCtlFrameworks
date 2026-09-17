@@ -44,7 +44,14 @@ ACCEPTED_WEAKNESS_DAYS = 192
 
 #: Every bucket a measured POA&M lands in. Closed, because the sum invariant
 #: depends on it.
-SLA_BUCKETS = ("within_sla", "breached", "closed_on_time", "closed_late", "unknown")
+SLA_BUCKETS = (
+    "within_sla",
+    "breached",
+    "accepted",
+    "closed_on_time",
+    "closed_late",
+    "unknown",
+)
 
 #: Only scanner-derived POA&Ms are flaws. An assessment finding is a control
 #: deficiency, and measuring it here would distort the SI-2 number.
@@ -133,7 +140,20 @@ def classify(poam: Any, *, allowed_days: int, today: date) -> str:
     ``allowed_days`` is passed already resolved, so this needs no policy
     lookup and stays trivially testable at both boundaries. **At** the limit is
     within SLA: an organization that says 30 days means 30, not 29.
+    ``accepted`` short-circuits ahead of every date check -- see below.
     """
+    if str(poam.status) == "risk_accepted":
+        # Residual risk formally accepted, not work outstanding. constants.py
+        # excludes it from POAM_ACTIVE_STATUSES for exactly this reason, and
+        # analytics.posture already buckets it separately; sla.py had diverged,
+        # reporting it as an SLA breach when old and as within_sla when young.
+        # Under CR26 it is the outcome the rule defines -- see
+        # is_accepted_weakness. Checked before the identified_on guard because
+        # the bucket does not depend on a date, and is_accepted_weakness agrees.
+        # It stays OUT of compliance_pct's numerator: it was not remediated in
+        # time. It stays IN the denominator: otherwise accepting risk would
+        # improve the score.
+        return "accepted"
     if poam.identified_on is None:
         return "unknown"
     closed = str(poam.status) in POAM_CLOSED_STATUSES
