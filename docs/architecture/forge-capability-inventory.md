@@ -869,6 +869,102 @@ a CCI and nothing else, and that function is the only thing that needs to
 exist for a `.ckl` or XCCDF parser to have somewhere to land. No CKL or
 XCCDF parsing was written here; that is P5's own scope.
 
+## 6.2k Status — the CR26 vocabulary is built (2026-09-16)
+
+Not a CC&E ask, and not G4 either — this lifts the deferral §2.17 recorded
+against **FR-14** and closes the unvalidated-mapping caveat §2.17 itself
+flagged: *"The Class↔impact mapping remains unvalidated at source and no
+schema change may depend on it until it is."* That validation happened at
+source (FedRAMP's own Certification Class guidance), and the answer it
+returned was *there is no mapping to encode* — recorded here in the same
+"implemented and verified" register as 6.2a–6.2j, on
+`docs/superpowers/specs/2026-09-16-cr26-vocabulary-design.md` and
+`docs/superpowers/plans/2026-09-16-cr26-vocabulary.md`.
+
+CR26 eliminates the provider-side POA&M and replaces it with **Accepted
+Weaknesses**. §2.7 named this as the gap; what closes it is smaller than a
+migration. `POAM` already modelled the weakness — status, identification
+date, closure date, severity — so nothing about *what is stored* changes.
+What changes is a read: `ccf.patching.sla.is_accepted_weakness(poam, *,
+today)` classifies an existing row as accepted or not, exactly the way
+`classify` already turns the same row into an SLA bucket. **No second table.**
+Two records of one fact — a POA&M row and a separate Accepted-Weakness row
+disagreeing about the same weakness — is the defect this design avoids, not
+a feature it was missing.
+
+The classification is a union of two disjoint halves, **declared ∪ elapsed**,
+because CR26's own text requires it: a weakness a provider "is not, **or
+will not be**, fully mitigated or remediated" within the window is accepted.
+"Will not be" is a declaration, not a measurement, and no amount of elapsed
+time proves or disproves a decision. The **declared** half is
+`status == "risk_accepted"` at any age, including day one. The **elapsed**
+half is `POAM_ACTIVE_STATUSES` rows more than `ACCEPTED_WEAKNESS_DAYS`
+(192) old. Drop the declared half and key the rule on age alone, and a
+weakness a provider accepted on day one reports as open remediation work
+for up to 191 days — the exact gap between "the AO knows this is accepted"
+and "the dashboard agrees." The two halves cannot overlap by construction:
+`POAM_ACTIVE_STATUSES` excludes `risk_accepted` (`constants.py:90-113`), so
+a row is reached by exactly one half, never both and never neither once it
+is old enough.
+
+A companion fix closes a second, narrower gap in the same area:
+`sla.classify` was folding `risk_accepted` rows into `breached` once they
+aged past their severity's timeframe, which is wrong on its own terms — a
+formally accepted risk is not a missed SLA — independent of anything CR26
+asks for. `classify` now short-circuits `risk_accepted` to its own
+`accepted` bucket before the breach/within-SLA arithmetic runs. This bucket
+and `is_accepted_weakness` are deliberately **not** wired together: one
+measures an org's own declared SLA window (which varies by severity), the
+other FedRAMP's fixed 192-day rule, and they must stay free to disagree on
+*when* without disagreeing on *which* rows are accepted.
+
+**Certification Class and Path are independent axes of `System`, not a
+derivation of `baseline`.** This is the load-bearing judgement of the whole
+task, and it inverts what §2.17 assumed was still open. FedRAMP states it
+directly — "Agencies should not treat Certification Classes as one-for-one
+replacements for Low, Moderate, or High impact levels" — and the published
+adequacy ranges are deliberately overlapping, not partitioned: Class B is
+adequate for most Low and *some* Moderate or High; C for most Low or
+Moderate and *some* High; D for most systems regardless of impact level. A
+function from one axis to the other cannot be correct in the presence of
+"some," in either direction. So the schema work this closed is smaller than
+first scoped, not larger: `certification_class` and `certification_path`
+are two new nullable columns on `System` (migration `0078_cr26_certification`,
+enums `CERTIFICATION_CLASSES = ("A", "B", "C", "D")` and
+`CERTIFICATION_PATHS = ("program", "agency")`), with no read or write path
+anywhere that takes `baseline` as an input and produces a Class, or the
+reverse. `tests/test_certification_class_is_independent.py` makes that a
+standing property of the source tree rather than a one-time review finding:
+an AST walk over every module under `src/ccf` fails the build if an
+assignment ever names one vocabulary on its target and the other in its
+value, in either direction — a guard shaped for the mapping's specific
+temptation, not exercised through any particular route the way a unit test
+of one call site would be.
+
+**`certification_status` is deliberately not modelled**, for the same reason
+the Class↔impact mapping is not encoded: it is not published in any source
+this platform treats as authoritative. Inventing a plausible-looking
+enumeration for an unpublished vocabulary is exactly what the earlier gap
+analysis correctly refused to do for Certification Classes themselves before
+FedRAMP's guidance settled the question above, and doing it here would trade
+one unvalidated mapping for one unvalidated vocabulary.
+
+**Stated, not silent, assumption:** the 192-day accepted-weakness window
+runs from *evaluation* under CR26's Vulnerability Evaluation and Reporting
+(VER) rules, and `POAM.identified_on` is the closest existing field, not a
+confirmed match — VER has not published the definition of "evaluation" as
+of this writing. `is_accepted_weakness`'s docstring states the substitution
+explicitly so it reads as a flagged assumption to confirm against the
+published VER ruleset, not a hidden equivalence. If the two dates prove
+different, only the key changes; the declared/elapsed shape does not.
+
+**Binding deadline: 7 December 2026**, for VDR/VER — the date CR26 fixes for
+mandatory Certification. Nothing in this change depends on that date passing;
+`certification_class`/`certification_path` are null for every existing row
+(no backfill — null is correct for every Rev5-lane system today) and
+`is_accepted_weakness` is additive, called by nothing yet. The date matters
+for sequencing what comes next, not for anything landed here.
+
 ## 6.3 DUPLICATIVE — asks that must be refused as specified
 
 Recording these explicitly, because each is a plausible-sounding new subsystem

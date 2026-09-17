@@ -832,3 +832,124 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - **Do not model `certification_status`.** The vocabulary is unpublished.
 - **Do not backfill either new column.** Null is the correct value for every existing row.
 - After committing a task, run `git show --stat` and confirm the intended files are in it. A green suite answers "does the tree work", not "is the tree committed".
+
+## Results
+
+All four tasks landed on this branch. Final state, verified independently by
+the Task 4 executor rather than copied from earlier reports.
+
+### `alembic heads` (after Task 3, re-confirmed after Task 4)
+
+```
+$ .venv/bin/alembic heads
+0078_cr26_certification (head)
+```
+
+Exactly one head, both times.
+
+### Suite counts as each task landed
+
+| Task | Result |
+|---|---|
+| Task 1 (Accepted Weakness classification) | 2474 passed |
+| Task 2 (`risk_accepted` its own SLA bucket) | 2482 passed, 1 skipped |
+| Task 3 (Certification Class / Path columns) | 2486 passed, 1 skipped |
+| Task 4 (no-derivation guard) | 2489 passed, 1 skipped |
+
+The single skip (`tests/test_fedramp20x_e2e.py:30`, missing `playwright`) is
+pre-existing and unrelated to this plan. Task 4 added exactly the 3 tests in
+`tests/test_certification_class_is_independent.py`, accounting for the
+2486 → 2489 delta.
+
+Task 4's own full-suite run, immediately before committing:
+
+```
+$ export CCF_DATABASE_URL=postgresql+asyncpg://ccf:ccf@localhost:5434/ccf_test
+$ export CCF_DATABASE_URL_SYNC=postgresql+psycopg://ccf:ccf@localhost:5434/ccf_test
+$ .venv/bin/python3 -m pytest -q
+...
+2489 passed, 1 skipped, 5 warnings in 207.44s (0:03:27)
+```
+
+The 5 warnings are the same pre-existing `DeprecationWarning: builtin type
+Swig...` noise from earlier tasks' runs (SWIG-wrapped C-extension modules
+lacking `__module__`), unrelated to this plan.
+
+`ruff check .` → `All checks passed!`. `mypy src` (strict) →
+`Success: no issues found in 287 source files`.
+
+### Forced-failure evidence — Task 1 Step 5
+
+The boundary test was proven to bite by changing the comparison operator
+from `>` to `>=` in `is_accepted_weakness` (`src/ccf/patching/sla.py`),
+which flips the inclusive-192-days boundary:
+
+```
+$ .venv/bin/python3 -m pytest tests/test_accepted_weakness.py -q
+...F......                                                               [100%]
+=================================== FAILURES ===================================
+_________________ test_the_boundary_is_inclusive_like_classify _________________
+
+    def test_the_boundary_is_inclusive_like_classify() -> None:
+        """192 means 192 -- sla.classify's stated convention, reused verbatim."""
+>       assert is_accepted_weakness(_aged(ACCEPTED_WEAKNESS_DAYS), today=TODAY) is False
+E       AssertionError: assert True is False
+E        +  where True = is_accepted_weakness(_Poam(status='open', identified_on=datetime.date(2026, 3, 8), closed_on=None), today=datetime.date(2026, 9, 16))
+E        +    where _Poam(status='open', identified_on=datetime.date(2026, 3, 8), closed_on=None) = _aged(192)
+
+tests/test_accepted_weakness.py:51: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_accepted_weakness.py::test_the_boundary_is_inclusive_like_classify
+1 failed, 9 passed in 2.31s
+```
+
+Only that one test failed; the operator was reverted to `>` afterward (full
+detail in `.superpowers/sdd/2026-09-16-cr26-vocabulary/task-1-report.md`).
+
+### Forced-failure evidence — Task 4 Step 2
+
+Added `self.certification_class = self.baseline` inside a throwaway function
+appended to the end of `src/ccf/models.py` (a real module in `src/ccf`, not
+the test's own literal-string fixture), re-ran the guard test:
+
+```
+$ .venv/bin/python3 -m pytest tests/test_certification_class_is_independent.py -q
+F..                                                                      [100%]
+=================================== FAILURES ===================================
+_________ test_no_code_derives_a_class_from_a_baseline_or_the_reverse __________
+
+    def test_no_code_derives_a_class_from_a_baseline_or_the_reverse() -> None:
+        hits: list[str] = []
+        for path in sorted(_SRC.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            hits += _derivations(tree, str(path.relative_to(_SRC)))
+>       assert not hits, (
+            "FedRAMP states Certification Classes are NOT one-for-one replacements "
+            f"for impact levels, and the adequacy ranges overlap. Found: {hits}"
+        )
+E       AssertionError: FedRAMP states Certification Classes are NOT one-for-one replacements for impact levels, and the adequacy ranges overlap. Found: ['models.py:1921 derives a Class from a baseline']
+E       assert not ['models.py:1921 derives a Class from a baseline']
+=========================== short test summary info ============================
+FAILED tests/test_certification_class_is_independent.py::test_no_code_derives_a_class_from_a_baseline_or_the_reverse
+1 failed, 2 passed in 2.30s
+```
+
+Then reverted (`git checkout -- src/ccf/models.py`) and re-ran:
+
+```
+$ .venv/bin/python3 -m pytest tests/test_certification_class_is_independent.py -q
+...                                                                      [100%]
+3 passed in 3.50s
+```
+
+`git diff HEAD` and `git status --porcelain` after the Task 4 commit confirm
+no trace of the mutation reached the commit or the working tree.
+
+### Task 2 Step 5 — the warned-about pre-existing test did not need to change
+
+Task 2's brief warned that `tests/test_patching_api.py` might break once
+`risk_accepted` stopped landing in `breached`. That did not happen —
+`risk_accepted` appears nowhere in that file, in
+`src/ccf/api/routes/patching.py`, or in `src/ccf/models_patching.py`
+(confirmed by `grep -n "risk_accepted"` returning nothing in any of the
+three). No pre-existing test was modified in Task 2. The warning was stale.
