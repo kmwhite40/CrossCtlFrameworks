@@ -118,3 +118,26 @@ POAM_STATUSES: tuple[str, ...] = (
 POAM_ACTIVE_STATUSES: tuple[str, ...] = ("open", "in_progress")
 POAM_UNRESOLVED_STATUSES: tuple[str, ...] = ("open", "in_progress", "risk_accepted")
 POAM_CLOSED_STATUSES: tuple[str, ...] = ("completed", "closed")
+
+# ---------------------------------------------------------------------------
+# CR26 Certification vocabulary.
+#
+# A Certification Class describes the DEPTH, FREQUENCY and QUALITY of the
+# assurance data a provider commits to supplying -- not the sensitivity of the
+# information a system holds. FedRAMP is explicit that the two are different
+# axes:
+#   "Agencies should not treat Certification Classes as one-for-one
+#    replacements for Low, Moderate, or High impact levels."
+#   "FedRAMP Certification Classes are not aligned to how secure a cloud
+#    service offering is!"
+# The published definitions are deliberately overlapping adequacy ranges: B is
+# adequate for most Low and SOME Moderate or High; C for most Low or Moderate
+# and SOME High; D for most systems regardless of impact level.
+#
+# So NOTHING may derive a Class from ``System.baseline``, or a baseline from a
+# Class. Such a derivation is wrong in both directions, and
+# tests/test_certification_class_is_independent.py enforces it.
+CERTIFICATION_CLASSES: tuple[str, ...] = ("A", "B", "C", "D")
+
+#: Program certification, or an agency-sponsored path to one.
+CERTIFICATION_PATHS: tuple[str, ...] = ("program", "agency")

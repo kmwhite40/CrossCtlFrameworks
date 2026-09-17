@@ -6,6 +6,78 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — the CR26 vocabulary: Accepted Weaknesses, and Certification Class and Path (P9a-i)
+- **CR26 eliminates the provider-side POA&M and replaces it with a list of
+  Accepted Weaknesses, and this platform already stored the weakness** —
+  status, identification date, closure date, severity — so nothing about *what
+  is stored* changes. `ccf.patching.sla.accepted_weakness_state(poam, *, today)`
+  classifies an existing `POAM` row as `accepted`, `not_accepted` or `unknown`.
+  No second table: a POA&M row and a separate Accepted-Weakness row disagreeing
+  about the same weakness is the defect this avoids, not a feature it lacked.
+  The classification is a disjoint union of **declared**
+  (`status == "risk_accepted"`, any age) and **elapsed** (still in the
+  remediation backlog more than 192 days after identification), because the rule
+  says a vulnerability that "is not **or will not be**" remediated within 192
+  days of evaluation is accepted. "Will not" is a decision a provider can make
+  on day 3, and no elapsed-time arithmetic can represent it; keyed to age alone,
+  an already-accepted weakness would report as open remediation work for up to
+  191 days.
+- **Three states, not a boolean.** A row with no `identified_on`, or a closure
+  dated before its identification, cannot be *shown* to fall outside the window,
+  and under a rule obliging providers to report their accepted weaknesses
+  "not accepted" is the favourable answer. `unknown` keeps an unmeasurable row
+  from receiving it. The branch order mirrors `sla.classify` step for step, so
+  the two functions cannot disagree about which rows are unmeasurable — a test
+  walks a table of rows through both and asserts it. They deliberately do **not**
+  share a threshold: `classify` measures an organization's own declared
+  remediation window, `accepted_weakness_state` FedRAMP's fixed 192 days.
+- **Stated, not silent, assumption.** The 192 days run from *evaluation* under
+  CR26's Vulnerability Evaluation and Reporting rules; `POAM.identified_on` is
+  the closest existing field, not a confirmed match, and the docstring says so
+  rather than implying an equivalence. If the two dates prove different, only
+  the key changes.
+- **`certification_class` (A/B/C/D) and `certification_path` (program/agency)
+  are two new nullable columns on `System` (migration `0078`), derived from
+  nothing.** FedRAMP states plainly that "Agencies should not treat
+  Certification Classes as one-for-one replacements for Low, Moderate, or High
+  impact levels," and the published adequacy ranges deliberately overlap — B is
+  adequate for most Low and *some* Moderate or High — so a mapping between a
+  Class and a baseline is wrong in both directions. Nothing derives one from the
+  other, and an AST guard over `src/ccf` and `migrations/versions/` fails the
+  build if anything starts to. Null means "not CR26-certified", which is correct
+  for every existing row and for the whole Rev5 lane, so there is no backfill:
+  through 2026–27 an offering may hold a Rev5 ATO and pursue a CR26
+  Certification at once, and no row is forced to claim a Class it lacks.
+  `baseline`, `ato_status` and the FIPS-199 triple are untouched.
+
+### Changed — `risk_accepted` POA&Ms are their own SI-2 bucket, and `compliance_pct` may fall because of it
+- **`sla.classify` no longer reports a formally accepted risk as an SLA
+  breach.** It had been folding `risk_accepted` rows into `breached` once they
+  aged past their severity's timeframe, and listing them in `breaching_ids` —
+  wrong on its own terms, independent of CR26, and a divergence from
+  `analytics.posture.poam_aging`, which has bucketed accepted risk separately
+  all along. `risk_accepted` now short-circuits to a new `accepted` bucket ahead
+  of every date check, and `SLA_BUCKETS` still sums to the measured count.
+- **OPERATORS: `compliance_pct` can decrease on the first call after upgrade,
+  and the decrease is correct.** An organization holding a *young*
+  scan-sourced `risk_accepted` POA&M previously saw that row land in
+  `within_sla` and count as compliant — accepted on day 3 and credited as
+  remediated inside a timeframe it was never remediated within. Such a row is
+  now `accepted`, which stays **out** of `compliance_pct`'s numerator and **in**
+  its denominator, so `GET /api/systems/{system_id}/flaw-remediation`, the
+  `ccf flaw-remediation` CLI report and every surface reading them will show a
+  lower number for those organizations. Nothing is
+  migrated and no POA&M changes: the same rows are being counted honestly.
+  Accepting risk must not be able to improve an SI-2 remediation score, which is
+  precisely what the old arithmetic allowed.
+- **A deliberate asymmetry, now named in the code so nobody "fixes" it.** The
+  executive overview's `sla.on_track_pct` (`analytics/overview.py`, over
+  `posture.poam_aging`) excludes accepted risk from its *denominator*, because
+  it asks how much outstanding work is on schedule and accepted risk is not
+  outstanding work. `sla.compliance_pct` keeps it in, because it asks what share
+  of flaws was remediated inside the declared timeframe. The two percentages are
+  each right for what they measure and must not be made to match.
+
 ### Added — DISA CCI list as an authoritative source, with a CCI → control reverse index (P0″a)
 - **DISA's published CCI List is now loaded as authority-published reference
   data** — 5,149 CCIs with status, type, contributor, publication date and

@@ -37,7 +37,7 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .auth import hash_token
-from .constants import POAM_STATUSES
+from .constants import CERTIFICATION_CLASSES, CERTIFICATION_PATHS, POAM_STATUSES
 
 
 class Base(DeclarativeBase):
@@ -354,6 +354,16 @@ class System(Base):
     )
     baseline: Mapped[str | None] = mapped_column(
         Enum("low", "moderate", "high", name="fedramp_baseline", schema="ccf")
+    )
+    #: CR26 Certification Class. INDEPENDENT of ``baseline`` -- see
+    #: ``ccf.constants.CERTIFICATION_CLASSES``. Never derive one from the other.
+    #: Null means "not CR26-certified", correct for every Rev5-lane row.
+    certification_class: Mapped[str | None] = mapped_column(
+        Enum(*CERTIFICATION_CLASSES, name="certification_class", schema="ccf")
+    )
+    #: Program or agency-sponsored certification path. Null when not applicable.
+    certification_path: Mapped[str | None] = mapped_column(
+        Enum(*CERTIFICATION_PATHS, name="certification_path", schema="ccf")
     )
     ato_status: Mapped[str | None] = mapped_column(
         Enum("none", "in_progress", "authorized", "expired", name="ato_status", schema="ccf"),
