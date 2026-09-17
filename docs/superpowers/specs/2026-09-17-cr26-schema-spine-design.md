@@ -109,37 +109,57 @@ definitions by *absolute URL*:
 "$ref": "https://fedramp.gov/schemas/fedramp-common-definitions-schema-2026-06-24.json#/$defs/certificationPackageOverviewUri"
 ```
 
-Under `jsonschema` 4.x that resolves through `referencing`. **Measured, not
-assumed** (`jsonschema` 4.26.0, sockets blocked at the layer below):
+Under `jsonschema` 4.x that resolves through `referencing`. **Measured by
+counting socket constructions, which is the only method that answers this
+correctly** — see the warning below about why:
 
-```
-jsonschema.exceptions._WrappedReferencingError: Unresolvable:
-  https://fedramp.gov/schemas/fedramp-common-definitions-schema-2026-06-24.json#/$defs/certificationPackageOverviewUri
-```
+| validator | sockets attempted | outcome |
+|---|---|---|
+| no registry | **1** | fetches; `jsonschema` itself warns that "automatically retrieving remote references can be a security vulnerability" |
+| vendored registry | **0** | resolves locally and validates |
 
-It does **not** fetch over the network — it fails closed. An earlier draft of
-this spec claimed it would silently validate against whatever upstream served
-that day; that was wrong, and the real behaviour is better in one way and
-considerably more dangerous in another.
+**With no registry, `jsonschema` fetches the schema over the network.** With a
+registry, it never falls back to the network: anything absent from the registry
+raises `Unresolvable` with zero sockets attempted. So `registry=` is not a
+convenience — it is the entire network barrier.
 
-**The danger is that resolution is lazy.** A `$ref` is resolved only when
+> **This claim was got wrong twice while writing this spec, and the reason is
+> instructive.** Blocking sockets and observing `Unresolvable` looks like proof
+> that the library fails closed. It is not: the block *causes* the retrieval to
+> fail, and `referencing` converts that failure into `Unresolvable`. The
+> exception is the consequence of the block, not evidence that no fetch was
+> attempted. Only counting socket constructions distinguishes the two. Anyone
+> revisiting this must measure the same way.
+
+Left alone, this fails two ways and the second is the dangerous one: it fails
+closed wherever there is no network — including CI — and where there *is*
+network it silently validates against whatever upstream serves that day,
+defeating the pin entirely and leaking the fact that validation is happening.
+
+**The second trap is that resolution is lazy.** A `$ref` resolves only when
 validation actually descends into the property carrying it. A document that
 fails an earlier `required` check never gets there. Measured on the CPO schema:
-an empty document returns 12 ordinary validation errors and never raises. So a
-test fixture built as "a minimal invalid document" — the natural thing to
-write first — **passes without a registry**, and the failure appears only for
-documents that are complete and valid. That is precisely inverted: the spine
-would look correct in tests and break on the first real deliverable.
+an empty document returns 12 ordinary validation errors and never raises — and
+CPO's only absolute `$ref` sits at `serviceIdentification.properties.logo`,
+several levels below a `required` check an empty document already fails. So a
+test fixture built as "a minimal invalid document" — the natural thing to write
+first — **passes with or without a registry**, and the failure appears only for
+documents complete and valid enough to descend. That is precisely inverted: the
+spine would look correct in tests and break on the first real deliverable.
 
 So the module builds a `referencing.Registry` mapping each vendored schema's
-`$id` to its on-disk copy, and validation resolves only through it. Two
-requirements follow, and neither is optional:
+`$id` to its on-disk copy, and validation resolves only through it. Three
+requirements follow, and none is optional:
 
-1. **A test must validate a document complete enough to descend into a `$ref`**
-   and assert it resolves. A test that only exercises invalid documents proves
-   nothing about reference resolution.
+1. **Every test asserting reference resolution must use a document complete
+   enough to descend into the `$ref` it claims to exercise** — and "complete
+   enough" is per-schema, because the refs sit at different depths. A test that
+   only exercises invalid documents proves nothing.
 2. **A test must assert validation succeeds with no network access** — sockets
    blocked, not merely "it worked on my machine".
+3. **Coverage must extend past the one schema that is easiest to test.** Eight
+   of the eleven carry absolute `$ref`s besides CPO and SDR; a suite that
+   exercises resolution for one kind leaves the rest unproven.
 
 Surveying the set, **ten of the eleven schemas carry absolute `$ref`s**, one to
 three each, and every one targets the same file (common-definitions). Only
