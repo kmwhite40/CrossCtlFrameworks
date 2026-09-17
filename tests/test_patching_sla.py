@@ -256,9 +256,10 @@ def test_a_young_accepted_weakness_is_not_within_sla_either() -> None:
 
 
 def test_an_undated_accepted_weakness_is_accepted_not_unknown() -> None:
-    """The bucket does not depend on a date, and sla.is_accepted_weakness
-    agrees. Two functions disagreeing about one row is the divergence this
-    change ends."""
+    """The bucket does not depend on a date, and sla.accepted_weakness_state's
+    first branch agrees. Two functions disagreeing about one row is the
+    divergence this change ends -- tests/test_accepted_weakness.py walks a table
+    through both and asserts they cannot."""
     undated = _Poam(status="risk_accepted", identified_on=None)
     assert classify(undated, allowed_days=30, today=TODAY) == "accepted"
 

@@ -24,7 +24,7 @@ from datetime import date
 from statistics import median
 from typing import Any
 
-from ..constants import POAM_ACTIVE_STATUSES, POAM_CLOSED_STATUSES
+from ..constants import POAM_CLOSED_STATUSES
 
 #: FedRAMP's flaw-remediation timeframes, in days. Adopted rather than invented:
 #: different numbers in a federal product would be worse than the ones
@@ -41,6 +41,11 @@ FEDRAMP_TIMEFRAMES: dict[str, int] = {
 #: within this many days of evaluation as an accepted vulnerability. Mandatory
 #: for offerings obtaining or maintaining FedRAMP Certification from 2026-12-07.
 ACCEPTED_WEAKNESS_DAYS = 192
+
+#: Every state a weakness can be in under the CR26 rule. Closed, and parallel
+#: to :data:`SLA_BUCKETS`, because a projection that cannot say "unknown" has
+#: to call an unmeasurable row something it is not.
+ACCEPTED_WEAKNESS_STATES = ("accepted", "not_accepted", "unknown")
 
 #: Every bucket a measured POA&M lands in. Closed, because the sum invariant
 #: depends on it.
@@ -148,8 +153,9 @@ def classify(poam: Any, *, allowed_days: int, today: date) -> str:
         # analytics.posture already buckets it separately; sla.py had diverged,
         # reporting it as an SLA breach when old and as within_sla when young.
         # Under CR26 it is the outcome the rule defines -- see
-        # is_accepted_weakness. Checked before the identified_on guard because
-        # the bucket does not depend on a date, and is_accepted_weakness agrees.
+        # accepted_weakness_state. Checked before the identified_on guard
+        # because the bucket does not depend on a date, and
+        # accepted_weakness_state's first branch agrees.
         # It stays OUT of compliance_pct's numerator: it was not remediated in
         # time. It stays IN the denominator: otherwise accepting risk would
         # improve the score.
@@ -174,27 +180,51 @@ def classify(poam: Any, *, allowed_days: int, today: date) -> str:
     return "within_sla" if age <= allowed_days else "breached"
 
 
-def is_accepted_weakness(poam: Any, *, today: date) -> bool:
-    """Is this weakness an Accepted Weakness under CR26?
+def accepted_weakness_state(poam: Any, *, today: date) -> str:
+    """Which CR26 state one weakness is in -- see :data:`ACCEPTED_WEAKNESS_STATES`.
 
-    Two disjoint halves, because the rule says "is not **or will not be**"
-    remediated within the window:
+    An Accepted Weakness is a union of two **disjoint** halves, because the rule
+    says "is not **or will not be**" fully mitigated or remediated within the
+    window:
 
     - **declared** -- ``status == "risk_accepted"``, at any age, dated or not.
       This is the forward-looking half: a provider may accept a weakness on day
       3, and no elapsed-time arithmetic can represent a decision not yet made.
-      A projection keyed only to age would report it as open remediation work
-      for up to 191 days.
-    - **elapsed** -- still in the remediation backlog past the window.
+      A projection keyed only to age would report an already-accepted weakness
+      as open remediation work for up to 191 days.
+    - **elapsed** -- still in the remediation backlog more than
+      :data:`ACCEPTED_WEAKNESS_DAYS` after identification. Inclusive at the
+      limit, like :func:`classify`: 192 days means 192, not 191.
 
-    The elapsed half is scoped to ``POAM_ACTIVE_STATUSES``, which *excludes*
-    ``risk_accepted`` by design (see :mod:`ccf.constants`), so the halves cannot
-    overlap and a row is reached by exactly one.
+    The elapsed branch is reached only by a row that is neither
+    ``risk_accepted`` nor in ``POAM_CLOSED_STATUSES``, which for any value the
+    ``ccf.poam_status`` enum permits is exactly ``POAM_ACTIVE_STATUSES`` -- the
+    remediation backlog, which *excludes* ``risk_accepted`` by design (see
+    :mod:`ccf.constants`). So the halves cannot overlap and a row is reached by
+    exactly one. An unrecognised status falls through to the elapsed
+    arithmetic, as it does in :func:`classify`, rather than escaping the rule.
 
-    Status is consulted before any closure date, matching :func:`classify`: a
-    reopened weakness carrying a stale ``closed_on`` must not read as resolved.
-    An unknown ``identified_on`` is never accepted by elapsed time -- this never
-    invents a date.
+    **Why three states rather than a boolean.** ``unknown`` is its own answer
+    here for the same reason it is a bucket in :func:`classify`: a row with no
+    ``identified_on``, or a closure that predates identification, cannot be
+    *shown* to fall outside the window. Under a rule that obliges a provider to
+    report its accepted weaknesses, "not accepted" is the *favourable* answer,
+    so returning it for an unmeasurable row would let poor record-keeping shrink
+    the reported list -- the inversion this module's header refuses.
+
+    The branch order mirrors :func:`classify` step for step, so the two cannot
+    disagree about which rows are unmeasurable. In particular, **status is
+    consulted before any closure date**: a closed status is judged on its
+    closure latency, and only after that does a leftover ``closed_on`` on a row
+    whose status is *not* closed -- a reopened weakness -- read as ``unknown``
+    rather than as resolved. Shipping that comparison the other way round was a
+    Critical in the flaw-remediation work.
+
+    This deliberately does **not** share a threshold with :func:`classify`.
+    ``classify`` measures an organization's own declared remediation window, per
+    severity; this applies FedRAMP's fixed 192 days. They agree on which rows are
+    declared-accepted and on which are unmeasurable, and must stay free to
+    disagree about *when* an open row crosses a line.
 
     **Stated assumption:** the 192 days run from *evaluation*, and ``POAM``
     records ``identified_on``. These may not be the same act -- evaluation is
@@ -206,15 +236,27 @@ def is_accepted_weakness(poam: Any, *, today: date) -> bool:
     ``today`` is injected so the rule is testable at both boundaries, as
     everything else in this module is.
     """
-    status = str(poam.status)
-    if status == "risk_accepted":
-        return True
-    if status not in POAM_ACTIVE_STATUSES:
-        return False
+    if str(poam.status) == "risk_accepted":
+        # The declared half. Date-independent, exactly as classify's first
+        # branch is, so an undated accepted row cannot read as unknown here and
+        # accepted there.
+        return "accepted"
     if poam.identified_on is None:
-        return False
-    # Inclusive at the limit, like classify: 192 days means 192, not 191.
-    return bool((today - poam.identified_on).days > ACCEPTED_WEAKNESS_DAYS)
+        # Never invent a date: an unknown age cannot satisfy a 192-day rule,
+        # and it cannot refute one either.
+        return "unknown"
+    if str(poam.status) in POAM_CLOSED_STATUSES:
+        # Closed without a usable closure date (missing, or before
+        # identification) is a data-quality signal, never a clean "not
+        # accepted".
+        return "unknown" if _latency(poam) is None else "not_accepted"
+    if poam.closed_on is not None:
+        # Reopened after being closed: a stale closed_on left behind by a status
+        # change. Neither honestly closed nor cleanly open, so neither half of
+        # the rule can be applied to it honestly either.
+        return "unknown"
+    age = (today - poam.identified_on).days
+    return "accepted" if age > ACCEPTED_WEAKNESS_DAYS else "not_accepted"
 
 
 def measure(
@@ -250,5 +292,17 @@ def measure(
         compliant = report.buckets["within_sla"] + report.buckets["closed_on_time"]
         # Unknowns stay in the denominator: they cannot be shown to comply, and
         # excluding them would let poor record-keeping improve the score.
+        # ``accepted`` stays in it too, for the reason the branch in classify
+        # gives. NOTE the deliberate asymmetry with the executive
+        # overview: analytics/posture.py's poam_aging excludes risk_accepted from
+        # open_total, so analytics/overview.py's sla.on_track_pct has accepted
+        # risk OUT of its denominator, while compliance_pct keeps it IN. Both are
+        # right for what they measure -- on_track_pct asks "how much outstanding
+        # work is on schedule", and accepted risk is not outstanding work;
+        # compliance_pct asks "what share of flaws was remediated inside the
+        # declared timeframe", and accepting risk must never be able to raise
+        # that number. Do NOT "fix" one to match the other: this codebase has
+        # already paid for two surfaces quantifying the same rows differently
+        # (see queries/registry.py).
         report.compliance_pct = round(100 * compliant / report.measured, 1)
     return report
