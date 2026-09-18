@@ -560,6 +560,131 @@ async def test_a_window_moved_backwards_then_forward_no_longer_destroys_the_rati
     assert (poam_id, "no acceptance rationale") not in cycle3.omitted_poam_ids
 
 
+async def test_a_document_only_rationale_is_promoted_and_then_survives_the_same_regression() -> (
+    None
+):
+    """C1 (Critical, review round 2): the §9.1 fix above only closes the gap
+    for a row the 0080 migration's backfill already reached. A rationale
+    authored into the AVI document AFTER that migration ran -- via
+    ``PUT /cr26-documents/avi``, which the risk_accepted gate does not cover
+    -- has ``POAM.acceptance_rationale`` still NULL, and measured before this
+    promotion existed, the reviewer's exact three-cycle sequence reproduced
+    spec §9.1 byte for byte for exactly this row:
+
+        CYCLE1 entries=[rationale]   CYCLE2 entries=[]   CYCLE3 entries=[]
+        omitted=[(id, "no acceptance rationale")]   column after 3 cycles = NULL
+
+    `_seed` now promotes a document-resolved rationale into the column the
+    FIRST time it is read (`AcceptedMerge.promoted` -> `_promote_rationales`),
+    so by the time CYCLE 2 excludes the row, the column already carries it --
+    the same regression as the column-backed test above, reached from the
+    document-only starting point instead.
+    """
+    _org_id, system_id = await _system("document-only-promoted")
+    # `acceptance_rationale` starts NULL: this row's rationale is authored
+    # only into the stored document below, never into the column -- exactly
+    # what the 0080 backfill cannot reach if the document did not exist yet
+    # when that migration ran.
+    poam_id = await _poam(
+        system_id, status="risk_accepted", identified_on=date(2026, 10, 1)
+    )
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.acceptance_rationale is None
+
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "reportPeriod": {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"},
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(poam_id)},
+                        "acceptanceRationale": "Authored via PUT after migration 0080.",
+                    }
+                ],
+            },
+        )
+
+    earlier_from = datetime(2026, 1, 1, tzinfo=UTC)
+    earlier_to = datetime(2026, 3, 1, tzinfo=UTC)
+
+    # CYCLE 1: resolves from the document (column still blank) AND promotes.
+    async with session_scope() as s:
+        cycle1 = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    entries1 = cycle1.document.document["acceptedVulnerabilities"]
+    assert len(entries1) == 1, entries1
+    assert entries1[0]["acceptanceRationale"] == "Authored via PUT after migration 0080."
+
+    async with session_scope() as s:
+        promoted_row = await s.get(POAM, poam_id)
+        assert promoted_row is not None
+        assert promoted_row.acceptance_rationale == "Authored via PUT after migration 0080."
+
+    # CYCLE 2: window moves BACKWARDS -- excluded, and the AVI is overwritten
+    # with an empty array, same as before. The column is untouched by this.
+    async with session_scope() as s:
+        cycle2 = await seed_avi(
+            s, system_id=system_id, period_from=earlier_from, period_to=earlier_to, today=TODAY
+        )
+    assert cycle2.document.document["acceptedVulnerabilities"] == []
+    assert cycle2.omitted_poam_ids == []
+
+    # CYCLE 3: window moves forward again. Before promotion existed, this is
+    # exactly where the reviewer measured `(id, "no acceptance rationale")`
+    # with the column still NULL. It must be back now, from the column
+    # alone -- the document the merge reads this cycle is the empty one
+    # CYCLE 2 just wrote.
+    async with session_scope() as s:
+        cycle3 = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    entries3 = cycle3.document.document["acceptedVulnerabilities"]
+    assert len(entries3) == 1, entries3
+    assert entries3[0]["acceptanceRationale"] == "Authored via PUT after migration 0080."
+    assert cycle3.omitted_poam_ids == []
+    assert (poam_id, "no acceptance rationale") not in cycle3.omitted_poam_ids
+
+
+async def test_seed_ver_history_also_promotes_a_document_only_rationale() -> None:
+    """The promotion path is shared through `merge_accepted`/`_seed`, not
+    duplicated per seeder -- proven independently on `ver_history`, which
+    reads its rationales from the `avi` document (spec §5.2) exactly as
+    `seed_avi` does.
+    """
+    _org_id, system_id = await _system("document-only-promoted-history")
+    poam_id = await _poam(system_id, status="risk_accepted")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(poam_id)},
+                        "acceptanceRationale": "Authored via PUT, never in the column.",
+                    }
+                ],
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_ver_history(s, system_id=system_id, today=TODAY)
+    entries = result.document.document["acceptedVulnerabilities"]
+    assert len(entries) == 1, entries
+    assert entries[0]["acceptanceRationale"] == "Authored via PUT, never in the column."
+
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.acceptance_rationale == "Authored via PUT, never in the column."
+
+
 async def test_a_cpo_uri_already_in_the_document_survives_a_reseed() -> None:
     """Never invented, always carried forward -- as in the SDR."""
     _org_id, system_id = await _system("uri")

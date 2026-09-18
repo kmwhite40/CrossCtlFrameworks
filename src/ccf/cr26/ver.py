@@ -230,10 +230,18 @@ def render_all(
         }
     )
     for poam in poams:
-        # Collected unconditionally, ahead of every filter below: the column
-        # is this row's own data regardless of whether it is a flaw, in
-        # period, or even accepted this cycle, and `merge_accepted` is the
-        # one that decides which ids it matters for.
+        # Collected unconditionally, ahead of every filter below -- PINNED in
+        # test_cr26_ver_walk.py (see the "column_rationale_is_collected"
+        # test), not merely commented. A row that is `risk_accepted` but fails
+        # render_vulnerability this cycle (blank title, say) lands in
+        # `unplaced`, not `accepted` -- and `merge_accepted`'s kept-verbatim
+        # path for such a row needs the FRESHEST column value, not last
+        # cycle's value trapped in the stored document, or a column edit
+        # made between two cycles would not reach a row that happens to be
+        # mid-repair on the cycle it is finally read. Moving this collection
+        # inside an `if state == "accepted"` branch would silently narrow it
+        # to rows that both are accepted AND rendered this cycle -- exactly
+        # the population `unplaced` exists to also cover.
         rationale = poam.acceptance_rationale
         if not is_blank(rationale):
             out.column_rationale[str(poam.id)] = str(rationale).strip()
@@ -357,26 +365,44 @@ class AcceptedMerge:
     #: duplicate, or kept-but-blank. Entries, not rows -- an authored id need
     #: not correspond to any POA&M row -- so this is outside the row partition.
     dropped_entries: int = 0
+    #: ``(poam_id, rationale)`` for every entry resolved from the AUTHORED
+    #: DOCUMENT because the column was blank -- a rationale authored by hand
+    #: before the column existed, or via ``PUT /cr26-documents/avi`` since.
+    #: The caller (``_seed``) writes each one back to ``POAM.acceptance_
+    #: rationale``, closing the gap for rows the 0080 backfill could not
+    #: reach (documents written after that migration ran). Always keyed on a
+    #: real POA&M id: both loops that populate this only ever resolve ids
+    #: `render_all` produced from ``str(poam.id)`` (`derived`/`unplaced`),
+    #: never an authored-only id with nothing behind it.
+    promoted: list[tuple[int, str]] = field(default_factory=list)
 
 
 def _resolve_rationale(
     tid: str,
     authored_entry: Mapping[str, Any] | None,
     column_rationale: Mapping[str, str],
-) -> str | None:
-    """The rationale for ``tid``, or ``None`` if neither source has one.
+) -> tuple[str | None, bool]:
+    """The rationale for ``tid`` and whether it came from the document, or
+    ``(None, False)`` if neither source has one.
 
     ``POAM.acceptance_rationale`` (spec §9.1) is the durable source and is
     always preferred when it carries content. The authored document is kept
     as a **fallback, never removed**: every rationale authored before this
     column existed lives only inside that stored document, and dropping the
     fallback would destroy exactly the data this column exists to protect.
+
+    The second element is ``True`` precisely when the column was blank and
+    the document supplied the value -- the caller's signal to *promote* that
+    value into the column (spec §9.1), so a row resolved this way once does
+    not need the document again next cycle.
     """
     column_value = column_rationale.get(tid)
     if not is_blank(column_value):
-        return str(column_value).strip()
+        return str(column_value).strip(), False
     authored_value = (authored_entry or {}).get("acceptanceRationale")
-    return None if is_blank(authored_value) else str(authored_value).strip()
+    if is_blank(authored_value):
+        return None, False
+    return str(authored_value).strip(), True
 
 
 def merge_accepted(
@@ -429,6 +455,7 @@ def merge_accepted(
     column_rationale = column_rationale or {}
     omitted: list[OmittedRow] = []
     rendered_rows = omitted_rows = dropped_entries = 0
+    promoted: list[tuple[int, str]] = []
     by_id: dict[str, dict[str, Any]] = {}
     for index, entry in enumerate(authored):
         tid = _tracking_id(entry)
@@ -472,15 +499,18 @@ def merge_accepted(
             continue
         tid = str(tid).strip()
         seen.add(tid)
-        rationale = _resolve_rationale(tid, by_id.get(tid), column_rationale)
+        rationale, from_document = _resolve_rationale(tid, by_id.get(tid), column_rationale)
         if rationale is None:
             omitted.append((_as_row_id(tid), "no acceptance rationale"))
             omitted_rows += 1
             continue
         rendered_rows += 1
+        row_id = _as_row_id(tid)
+        if from_document and isinstance(row_id, int):
+            promoted.append((row_id, rationale))
         merged.append(
             (
-                _as_row_id(tid),
+                row_id,
                 {
                     "vulnerabilityDetail": copy.deepcopy(detail),
                     "acceptanceRationale": rationale,
@@ -496,20 +526,23 @@ def merge_accepted(
             omitted.append((_as_row_id(tid), "no longer an accepted vulnerability"))
             dropped_entries += 1
             continue
-        rationale = _resolve_rationale(tid, entry, column_rationale)
+        rationale, from_document = _resolve_rationale(tid, entry, column_rationale)
         if rationale is None:
             # Nothing to preserve, and keeping it would emit an entry with no
             # `acceptanceRationale` -- required by the schema.
             omitted.append((_as_row_id(tid), "no acceptance rationale"))
             dropped_entries += 1
             continue
+        row_id = _as_row_id(tid)
+        if from_document and isinstance(row_id, int):
+            promoted.append((row_id, rationale))
         kept = copy.deepcopy(entry)
         # The stored `vulnerabilityDetail` is kept verbatim (stale by one
         # cycle -- see the reasons above); the rationale is the one field
         # `_resolve_rationale` may have refreshed, e.g. when the column was
         # populated after this document was last written.
         kept["acceptanceRationale"] = rationale
-        merged.append((_as_row_id(tid), kept))
+        merged.append((row_id, kept))
         omitted.extend(
             (_as_row_id(tid), f"detail not refreshed: {reason}") for reason in reasons
         )
@@ -526,6 +559,7 @@ def merge_accepted(
         rendered_rows=rendered_rows,
         omitted_rows=omitted_rows,
         dropped_entries=dropped_entries,
+        promoted=promoted,
     )
 
 
@@ -569,6 +603,10 @@ class _Built:
     merge_omitted: int = 0
     #: Authored ENTRIES dropped, which need not correspond to rows at all.
     dropped_authored: int = 0
+    #: ``(poam_id, rationale)`` pairs to write back to ``POAM.acceptance_
+    #: rationale`` -- see :attr:`AcceptedMerge.promoted`. Empty for VDR,
+    #: which never touches the accepted half.
+    promoted: list[tuple[int, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -621,6 +659,39 @@ def _carry_uri(document: dict[str, Any], current: dict[str, Any]) -> None:
         document["certificationPackageOverviewUri"] = str(uri).strip()
 
 
+def _promote_rationales(rows: Sequence[POAM], promoted: Sequence[tuple[int, str]]) -> None:
+    """Write each ``(poam_id, rationale)`` :attr:`AcceptedMerge.promoted` pair
+    back to ``POAM.acceptance_rationale`` (spec §9.1).
+
+    Migration ``0080`` backfills every rationale that was already sitting in
+    a stored ``avi`` document when it ran; this closes the gap for one
+    authored into that document AFTER -- ``PUT /cr26-documents/avi`` is not
+    gated. Resolved once via the document fallback, promoted here so the
+    NEXT cycle no longer needs the document at all -- the fix this whole
+    module exists to prove: a row must not depend forever on a document
+    ``put_document`` can silently overwrite.
+
+    Looked up in ``rows`` -- this seed's own already-loaded ``_poam_rows``
+    result -- rather than a fresh query per id: they are already in the
+    session's identity map, so mutating one here is picked up by the
+    session's own unit of work (flushed inside :func:`put_document`) with no
+    extra round trip.
+
+    Blank-checked again before writing rather than trusted blindly: two
+    entries for the same id cannot both appear in `promoted` from one merge
+    (each tid is handled by exactly one of `merge_accepted`'s two loops), but
+    a caller-supplied `rows` future refactor might not honour that, and a
+    stale value must never overwrite a value a concurrent write already set.
+    """
+    if not promoted:
+        return
+    by_id = {row.id: row for row in rows}
+    for poam_id, rationale in promoted:
+        row = by_id.get(poam_id)
+        if row is not None and is_blank(row.acceptance_rationale):
+            row.acceptance_rationale = rationale
+
+
 async def _seed(
     session: AsyncSession,
     *,
@@ -656,6 +727,7 @@ async def _seed(
         authored = entries if isinstance(entries, list) else []
     built = build(rendering, current, authored)
     _carry_uri(built.document, current)
+    _promote_rationales(rows, built.promoted)
     stored = await put_document(
         session, system_id=system_id, kind=kind, document=built.document
     )
@@ -784,6 +856,7 @@ async def seed_avi(
             rendered=merge.rendered_rows,
             merge_omitted=merge.omitted_rows,
             dropped_authored=merge.dropped_entries,
+            promoted=merge.promoted,
         )
 
     return await _seed(
@@ -842,6 +915,7 @@ async def seed_ver_history(
             rendered=len(rendering.active) + merge.rendered_rows,
             merge_omitted=merge.omitted_rows,
             dropped_authored=merge.dropped_entries,
+            promoted=merge.promoted,
         )
 
     return await _seed(
