@@ -100,6 +100,34 @@ DERIVED_INDICATOR_FIELDS: tuple[str, ...] = (
     "ksiEvidence",
 )
 
+#: Of the five, these four are ``required`` and ``type: array`` in the schema,
+#: so ``[]`` is the correct default when there is nothing to fall back to.
+#: ``ksiImplementationStatus`` is deliberately excluded: it is ``optional``
+#: and ``enum``-constrained (``Implemented`` / ``Not Implemented`` /
+#: ``Partially Implemented``), so inventing a placeholder value for it -- even
+#: ``""`` -- produces a string outside the enum and the document fails
+#: validation. Omitting the key entirely is the correct reflection of
+#: "optional", the same way ``[]`` is the correct reflection of "required,
+#: type: array".
+_REQUIRED_ARRAY_FIELDS: tuple[str, ...] = tuple(
+    field for field in DERIVED_INDICATOR_FIELDS if field != "ksiImplementationStatus"
+)
+
+
+def _has_narrative(value: Any) -> bool:
+    """True if ``value`` is a non-empty list of non-blank strings.
+
+    ``ksiImplementation`` is ``type: array``, so three shapes must all count
+    as "no narrative": not a list at all (a bare string would satisfy naive
+    truthiness while violating the schema), an empty list, and a list of only
+    blank strings (schema-valid, but says nothing about the implementation --
+    the same invisible gap the omission rule exists to prevent, one level
+    down).
+    """
+    return isinstance(value, list) and any(
+        isinstance(item, str) and item.strip() for item in value
+    )
+
 
 def merge_indicators(
     authored: Sequence[dict[str, Any]],
@@ -109,40 +137,68 @@ def merge_indicators(
 
     Returns the merged entries and the ids omitted for want of a narrative.
 
-    Three rules, each load-bearing:
+    Rules, each load-bearing:
 
     * **An indicator with no authored ``ksiImplementation`` is omitted.**
       Emitting it with an empty array would satisfy the schema while saying
       nothing about how the offering meets the indicator -- and unlike the
       CPO's gaps, the document would still validate, so the omission would be
-      invisible.
+      invisible. See :func:`_has_narrative` for what counts as "no narrative".
     * **The five derived fields are overwritten**, because they are facts about
-      the system rather than anything a human authored here.
+      the system rather than anything a human authored here. Their list values
+      are copied, not aliased, so mutating the merged document cannot reach
+      back into the caller's derived-facts mapping.
     * **An authored entry the platform no longer recognises is KEPT**, with
       whatever derived fields it last carried. A narrative is human work; a KSI
-      catalog revision must not silently delete it.
+      catalog revision must not silently delete it -- and must not blank the
+      fields it can no longer refresh. The four required array fields default
+      to ``[]`` when there is nothing to carry forward; the optional, enum-
+      constrained ``ksiImplementationStatus`` is left absent rather than
+      defaulted, because there is no valid placeholder value for it.
+    * ``keySecurityIndicators`` has no ``uniqueItems`` constraint, so
+      **duplicate authored ``ksiId``s are legal input**. A later duplicate
+      with no narrative must not evict an earlier real one -- that would both
+      destroy human work and misreport it as never having existed (the id
+      would land in ``omitted``).
     """
     by_id: dict[str, dict[str, Any]] = {}
     for authored_entry in authored:
         ksi_id = authored_entry.get("ksiId")
-        if isinstance(ksi_id, str) and ksi_id:
-            by_id[ksi_id] = dict(authored_entry)
+        if not (isinstance(ksi_id, str) and ksi_id):
+            continue
+        prior = by_id.get(ksi_id)
+        if (
+            prior is not None
+            and _has_narrative(prior.get("ksiImplementation"))
+            and not _has_narrative(authored_entry.get("ksiImplementation"))
+        ):
+            continue
+        by_id[ksi_id] = dict(authored_entry)
 
     merged: list[dict[str, Any]] = []
     omitted: list[str] = []
     for ksi_id in sorted(set(by_id) | set(derived)):
         entry = by_id.get(ksi_id)
-        narrative = (entry or {}).get("ksiImplementation") or []
-        if not narrative:
+        narrative = (entry or {}).get("ksiImplementation")
+        if not _has_narrative(narrative):
             omitted.append(ksi_id)
             continue
+        assert isinstance(narrative, list)  # _has_narrative just confirmed this
         out = dict(entry or {})
         out["ksiId"] = ksi_id
-        out["ksiImplementation"] = narrative
-        for field in DERIVED_INDICATOR_FIELDS:
-            if ksi_id in derived:
-                out[field] = derived[ksi_id][field]
-            else:
-                out.setdefault(field, [] if field != "ksiImplementationStatus" else "")
+        out["ksiImplementation"] = list(narrative)
+        if ksi_id in derived:
+            derived_facts = derived[ksi_id]
+            for field in DERIVED_INDICATOR_FIELDS:
+                if field not in derived_facts:
+                    raise KeyError(
+                        f"derived facts for {ksi_id!r} are missing required "
+                        f"field {field!r}"
+                    )
+                value = derived_facts[field]
+                out[field] = list(value) if isinstance(value, list) else value
+        else:
+            for field in _REQUIRED_ARRAY_FIELDS:
+                out.setdefault(field, [])
         merged.append(out)
     return merged, omitted
