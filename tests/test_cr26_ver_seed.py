@@ -390,14 +390,26 @@ async def test_a_non_admin_cannot_seed_a_vdr() -> None:
     assert resp.status_code == 403, resp.text
 
 
+#: One case per seed route: its `kind` (the path segment and the
+#: attribute name `cr26_routes` imports its seeder under -- they happen to
+#: coincide), and the JSON body it takes (`None` for `ver_history`, which
+#: has no request model at all).
+_ROUTE_SEED_CASES = [
+    pytest.param("vdr", PERIOD, id="vdr"),
+    pytest.param("avi", PERIOD, id="avi"),
+    pytest.param("ver_history", None, id="ver_history"),
+]
+
+
+@pytest.mark.parametrize("kind, body", _ROUTE_SEED_CASES)
 async def test_another_tenants_system_is_404_not_403(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, kind: str, body: dict[str, str] | None
 ) -> None:
     """Seeded as the owner first, so this exercises a path that would otherwise
     return 200 -- a 404 against a system that never existed proves nothing.
 
     The status code alone CANNOT prove `_owned_system` runs before the
-    seeder. If the route called `seed_vdr` first and `_owned_system` second,
+    seeder. If a route called its seeder first and `_owned_system` second,
     the response would still be 404: `_owned_system`'s `HTTPException` still
     fires before the route's `session.commit()`, and `get_session` never
     commits on its own, so whatever the seeder had written for the other
@@ -405,30 +417,89 @@ async def test_another_tenants_system_is_404_not_403(
     Rollback makes the two orderings observationally identical over HTTP --
     the spy below, not the status code, is what actually guards the
     invariant that no tenant's data is touched before ownership is checked.
+
+    Parametrized over all three routes rather than testing `vdr` alone: the
+    three handlers are hand-mirrored, not generated from one function (see
+    the module docstring in `cr26.py`), so each one's call-order can regress
+    independently of the others. An earlier version of this test covered
+    only `vdr` and a reviewer found the other two routes had this ordering
+    completely unguarded -- not even by the weak, status-code-only kind of
+    coverage.
     """
-    owner_org, system_id = await _system("route-other")
-    other_org, _ = await _system("route-intruder")
+    owner_org, system_id = await _system(f"route-other-{kind}")
+    other_org, _ = await _system(f"route-intruder-{kind}")
     async with _Session(org_id=owner_org).client() as c:
         first = await c.post(
-            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
+            f"/api/systems/{system_id}/cr26-documents/{kind}/seed", json=body
         )
-    assert first.status_code == 200, first.text
+    assert first.status_code == 200, f"{kind}: {first.text}"
 
     calls: list[None] = []
-    real_seed_vdr = cr26_routes.seed_vdr
+    # `f"seed_{kind}"` names the right attribute for all three kinds --
+    # `seed_vdr`, `seed_avi`, `seed_ver_history` -- because `cr26_routes`
+    # imports each seeder under its own name (see `cr26.py`'s import block).
+    seeder_name = f"seed_{kind}"
+    real_seeder = getattr(cr26_routes, seeder_name)
 
     async def _spy(*args: Any, **kwargs: Any) -> Any:
         calls.append(None)
-        return await real_seed_vdr(*args, **kwargs)
+        return await real_seeder(*args, **kwargs)
 
-    monkeypatch.setattr(cr26_routes, "seed_vdr", _spy)
+    monkeypatch.setattr(cr26_routes, seeder_name, _spy)
 
     async with _Session(org_id=other_org).client() as c:
         resp = await c.post(
-            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
+            f"/api/systems/{system_id}/cr26-documents/{kind}/seed", json=body
         )
-    assert resp.status_code == 404, resp.text
-    assert calls == [], "seed_vdr must never run before ownership is checked"
+    assert resp.status_code == 404, f"{kind}: {resp.text}"
+    assert calls == [], f"{kind}: {seeder_name} must never run before ownership is checked"
+
+
+async def test_the_avi_route_reports_every_result_field_to_the_caller() -> None:
+    """`/avi/seed` had ZERO HTTP coverage before this test -- it was only
+    ever exercised at the seeder level (`seed_avi` called directly). A
+    reviewer proved the gap by swapping `seed_avi` for `seed_vdr` inside
+    `seed_avi_document`: the full suite stayed green, because nothing over
+    HTTP ever posted to this route. Real content, not `[]`/`{}`, so a route
+    that hard-coded an empty result would fail this too.
+    """
+    org_id, system_id = await _system("route-avi")
+    # risk_accepted + RECENT: declared-accepted regardless of age, so this
+    # is always in scope for the AVI. No authored rationale exists yet, so
+    # `merge_accepted` omits it for exactly one reason.
+    poam_id = await _poam(system_id, status="risk_accepted", identified_on=RECENT)
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/avi/seed", json=PERIOD
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "avi"
+    assert body["omitted_poam_ids"] == [[poam_id, "no acceptance rationale"]]
+    assert body["counts"] == {"excluded_not_a_flaw": 0, "rendered": 1, "omitted": 0}
+    assert body["document"]["acceptedVulnerabilities"] == []
+
+
+async def test_a_non_admin_cannot_seed_an_avi() -> None:
+    """`/avi/seed`'s own role gate, not inferred from the VDR route's."""
+    org_id, system_id = await _system("route-avi-role")
+    async with _Session(org_id=org_id, role="control_owner").client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/avi/seed", json=PERIOD
+        )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_an_inverted_period_is_refused_for_the_avi_route() -> None:
+    """`VerPeriod` is shared with `/vdr/seed`, but this proves the AVI route
+    actually depends on it rather than merely importing the same class."""
+    org_id, system_id = await _system("route-avi-inverted")
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/avi/seed",
+            json={"from": "2026-12-01T00:00:00Z", "to": "2026-09-01T00:00:00Z"},
+        )
+    assert resp.status_code == 422, resp.text
 
 
 async def test_the_ver_history_route_takes_no_period() -> None:
@@ -436,6 +507,9 @@ async def test_the_ver_history_route_takes_no_period() -> None:
     # RECENT, same reasoning as the VDR route test above: this must stay
     # "not accepted" so it always lands in `activeVulnerabilities`.
     await _poam(system_id, status="open", identified_on=RECENT)
+    # Omitted for "no identification date" -- gives `omitted_poam_ids` real
+    # content, so a route that hard-coded `[]` for it would fail this test.
+    omitted_id = await _poam(system_id, identified_on=None)
     async with _Session(org_id=org_id).client() as c:
         resp = await c.post(
             f"/api/systems/{system_id}/cr26-documents/ver_history/seed"
@@ -445,3 +519,6 @@ async def test_the_ver_history_route_takes_no_period() -> None:
     assert "reportPeriod" not in body["document"]
     assert body["document"]["generatedAt"].endswith("Z")
     assert len(body["document"]["activeVulnerabilities"]) == 1
+    assert [omitted_id, "no identification date"] in body["omitted_poam_ids"]
+    assert body["counts"]["rendered"] == 1
+    assert body["counts"]["omitted"] == 1
