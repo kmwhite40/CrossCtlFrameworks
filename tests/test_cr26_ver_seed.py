@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from typing import Any
 
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
+from ccf.api.routes import cr26 as cr26_routes
 from ccf.auth import Principal
 from ccf.cr26.store import put_document
 from ccf.cr26.ver import seed_avi, seed_vdr, seed_ver_history
@@ -387,9 +390,22 @@ async def test_a_non_admin_cannot_seed_a_vdr() -> None:
     assert resp.status_code == 403, resp.text
 
 
-async def test_another_tenants_system_is_404_not_403() -> None:
+async def test_another_tenants_system_is_404_not_403(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Seeded as the owner first, so this exercises a path that would otherwise
-    return 200 -- a 404 against a system that never existed proves nothing."""
+    return 200 -- a 404 against a system that never existed proves nothing.
+
+    The status code alone CANNOT prove `_owned_system` runs before the
+    seeder. If the route called `seed_vdr` first and `_owned_system` second,
+    the response would still be 404: `_owned_system`'s `HTTPException` still
+    fires before the route's `session.commit()`, and `get_session` never
+    commits on its own, so whatever the seeder had written for the other
+    tenant's system is rolled back when the session closes on the way out.
+    Rollback makes the two orderings observationally identical over HTTP --
+    the spy below, not the status code, is what actually guards the
+    invariant that no tenant's data is touched before ownership is checked.
+    """
     owner_org, system_id = await _system("route-other")
     other_org, _ = await _system("route-intruder")
     async with _Session(org_id=owner_org).client() as c:
@@ -398,11 +414,21 @@ async def test_another_tenants_system_is_404_not_403() -> None:
         )
     assert first.status_code == 200, first.text
 
+    calls: list[None] = []
+    real_seed_vdr = cr26_routes.seed_vdr
+
+    async def _spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(None)
+        return await real_seed_vdr(*args, **kwargs)
+
+    monkeypatch.setattr(cr26_routes, "seed_vdr", _spy)
+
     async with _Session(org_id=other_org).client() as c:
         resp = await c.post(
             f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
         )
     assert resp.status_code == 404, resp.text
+    assert calls == [], "seed_vdr must never run before ownership is checked"
 
 
 async def test_the_ver_history_route_takes_no_period() -> None:
