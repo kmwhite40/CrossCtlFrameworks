@@ -80,6 +80,10 @@ async def test_a_vdr_records_the_period_the_caller_asked_for() -> None:
     argument. The document states the window it actually covered.
     """
     _org_id, system_id = await _system("vdr-period")
+    # A row INSIDE the window. This test previously ran against a system with
+    # no POA&Ms at all, which is why it could not notice that the period it
+    # asserts filtered nothing (spec §2.2).
+    await _poam(system_id, identified_on=date(2026, 10, 1))
     async with session_scope() as s:
         result = await seed_vdr(
             s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
@@ -88,6 +92,60 @@ async def test_a_vdr_records_the_period_the_caller_asked_for() -> None:
         "from": "2026-09-01T00:00:00Z",
         "to": "2026-12-01T00:00:00Z",
     }
+    assert len(result.document.document["vulnerabilities"]) == 1
+
+
+async def test_a_vdr_excludes_a_detection_dated_outside_the_period_it_states() -> None:
+    """The measured defect (spec §2.2): a VDR stating it covered
+    2026-09-01 -> 2026-12-01 listed a detection dated `2027-01-01`. The period
+    was decorative -- it reached `_instant` for display and nothing else.
+
+    EXCLUDED, not omitted: nothing is wrong with that row, it belongs to the
+    next report, so it must not appear in the operator's to-do list.
+    """
+    _org_id, system_id = await _system("vdr-period-filter")
+    inside = await _poam(system_id, identified_on=date(2026, 10, 1))
+    outside = await _poam(system_id, identified_on=date(2027, 1, 1))
+    async with session_scope() as s:
+        result = await seed_vdr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    body = result.document.document
+    assert [v["providerTrackingId"] for v in body["vulnerabilities"]] == [str(inside)]
+    assert result.counts["excluded_outside_period"] == 1
+    assert [oid for oid, _ in result.omitted_poam_ids] == []
+    assert outside not in [oid for oid, _ in result.omitted_poam_ids]
+
+
+async def test_an_avi_excludes_an_accepted_row_dated_outside_the_period() -> None:
+    """AVI's array carries the same "with activity in this period" wording as
+    VDR's, so it filters too -- proven on the AVI's own seeder rather than
+    inferred from the VDR's.
+    """
+    _org_id, system_id = await _system("avi-period-filter")
+    await _poam(system_id, status="risk_accepted", identified_on=date(2027, 1, 1))
+    async with session_scope() as s:
+        result = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.document.document["acceptedVulnerabilities"] == []
+    assert result.counts["excluded_outside_period"] == 1
+    assert result.omitted_poam_ids == []
+
+
+async def test_ver_history_carries_a_row_no_report_period_would_cover() -> None:
+    """`ver_history`'s arrays say "**All** non-accepted" / "**All** accepted",
+    against VDR's and AVI's "with activity in this period". The same row the
+    two tests above exclude must be PRESENT here, or that contrast means
+    nothing -- and `seed_ver_history` takes no period at all.
+    """
+    _org_id, system_id = await _system("hist-no-filter")
+    outside = await _poam(system_id, identified_on=date(2027, 1, 1))
+    async with session_scope() as s:
+        result = await seed_ver_history(s, system_id=system_id, today=TODAY)
+    body = result.document.document
+    assert [v["providerTrackingId"] for v in body["activeVulnerabilities"]] == [str(outside)]
+    assert result.counts["excluded_outside_period"] == 0
 
 
 async def test_an_accepted_weakness_leaves_the_vdr_and_enters_the_avi() -> None:
@@ -315,13 +373,18 @@ async def test_seed_combines_an_int_and_a_str_omitted_id_without_raising() -> No
 
 RECENT = date.today() - timedelta(days=5)
 
-#: The reporting window posted to the VDR/AVI routes. No assertion in the
-#: route tests below depends on its value -- only on `counts`,
-#: `omitted_poam_ids` and array lengths -- so, unlike `identified_on`, this
-#: does not need to track `date.today()`: the window is just a value the
-#: document records, never an input to `accepted_weakness_state` or
-#: `classify`.
-PERIOD = {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"}
+#: The reporting window posted to the VDR/AVI routes, dated relative to today
+#: for the same reason `RECENT` is. The window is no longer decorative: VDR and
+#: AVI now SELECT on it (spec §2.2), so a literal window would stop covering
+#: `RECENT` the moment the real clock ran past it, and every route test below
+#: would start reporting its row as excluded rather than rendered. Wide enough
+#: either side of `RECENT` that no boundary question arises here -- the
+#: boundaries are pinned in `tests/test_cr26_ver_walk.py`, where the dates can
+#: be exact.
+PERIOD = {
+    "from": f"{date.today() - timedelta(days=30)}T00:00:00Z",
+    "to": f"{date.today() + timedelta(days=30)}T00:00:00Z",
+}
 
 
 class _Session:
@@ -537,7 +600,12 @@ async def test_the_avi_route_reports_every_result_field_to_the_caller() -> None:
     body = resp.json()
     assert body["kind"] == "avi"
     assert body["omitted_poam_ids"] == [[poam_id, "no acceptance rationale"]]
-    assert body["counts"] == {"excluded_not_a_flaw": 0, "rendered": 1, "omitted": 0}
+    assert body["counts"] == {
+        "excluded_not_a_flaw": 0,
+        "excluded_outside_period": 0,
+        "rendered": 1,
+        "omitted": 0,
+    }
     assert body["document"]["acceptedVulnerabilities"] == []
 
 

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from ccf.cr26.ver import render_all
 from ccf.patching.sla import RemediationWindow
 
 TODAY = date(2026, 9, 18)
 WINDOW = RemediationWindow()
+
+#: The reporting window the boundary tests below are measured against.
+PERIOD = (datetime(2026, 9, 1, tzinfo=UTC), datetime(2026, 12, 1, tzinfo=UTC))
 
 
 class _Poam:
@@ -86,7 +89,12 @@ def test_the_counts_partition_every_row_considered() -> None:
     ]
     out = render_all(rows, today=TODAY, window=WINDOW)
     assert sum(out.counts.values()) == len(rows)
-    assert set(out.counts) == {"excluded_not_a_flaw", "rendered", "omitted"}
+    assert set(out.counts) == {
+        "excluded_not_a_flaw",
+        "excluded_outside_period",
+        "rendered",
+        "omitted",
+    }
     assert out.counts["rendered"] == len(out.active) + len(out.accepted)
 
 
@@ -105,3 +113,73 @@ def test_an_empty_input_is_an_empty_rendering() -> None:
     out = render_all([], today=TODAY, window=WINDOW)
     assert out.active == [] and out.accepted == [] and out.omitted == []
     assert sum(out.counts.values()) == 0
+
+
+def test_a_row_on_either_boundary_of_the_period_is_inside_it() -> None:
+    """Both ends INCLUSIVE (spec §2.2).
+
+    The lower edge is not a taste question: §3.3's midnight convention renders
+    a row identified on the period's first day at that day's midnight, which is
+    the window's own `from`. The upper edge is inclusive for symmetry, so a row
+    identified on the last day is covered by the report that ends that day
+    rather than falling between two reports.
+
+    Dates are the period's exact ends, so an exclusive comparison on either
+    side drops one of these rows and fails here.
+    """
+    rows = [
+        _Poam(id=1, identified_on=date(2026, 9, 1)),
+        _Poam(id=2, identified_on=date(2026, 12, 1)),
+    ]
+    out = render_all(rows, today=TODAY, window=WINDOW, period=PERIOD)
+    assert [d["providerTrackingId"] for d in out.active] == ["1", "2"]
+    assert out.counts["excluded_outside_period"] == 0
+    assert out.omitted == []
+
+
+def test_a_row_a_day_outside_the_period_is_excluded_not_omitted() -> None:
+    """One day either side of the window, so this fails if the comparison is
+    off by a day in either direction -- and both are EXCLUDED, never omitted:
+    nothing is wrong with them, they belong to another reporting period, and
+    an operator must not find them in the to-do list `omitted_poam_ids` is
+    (§2.1's reasoning, applied to the period).
+    """
+    rows = [
+        _Poam(id=1, identified_on=date(2026, 8, 31)),
+        _Poam(id=2, identified_on=date(2026, 12, 2)),
+        _Poam(id=3, identified_on=date(2026, 10, 1)),
+    ]
+    out = render_all(rows, today=TODAY, window=WINDOW, period=PERIOD)
+    assert [d["providerTrackingId"] for d in out.active] == ["3"]
+    assert out.counts["excluded_outside_period"] == 2
+    assert out.omitted == []
+    assert sum(out.counts.values()) == len(rows)
+
+
+def test_no_period_filters_nothing_because_ver_history_says_ALL() -> None:
+    """`ver_history`'s arrays are "**All** non-accepted" / "**All** accepted",
+    against VDR's and AVI's "with activity in this period". That contrast only
+    means something if one filters and the other does not, so this is the
+    deliberately-not-applied rule §9.6 requires an assertion behind.
+    """
+    rows = [
+        # A day either side of PERIOD -- the exact pair the test above sees
+        # excluded. Both stay within 192 days of TODAY so neither drifts into
+        # `accepted` by elapsed time and changes bucket for an unrelated reason.
+        _Poam(id=1, identified_on=date(2026, 8, 31)),
+        _Poam(id=2, identified_on=date(2026, 12, 2)),
+    ]
+    out = render_all(rows, today=TODAY, window=WINDOW)
+    assert [d["providerTrackingId"] for d in out.active] == ["1", "2"]
+    assert out.counts["excluded_outside_period"] == 0
+
+
+def test_a_row_with_no_date_is_omitted_and_named_rather_than_excluded() -> None:
+    """A row with no `identified_on` cannot be placed in ANY period, and the
+    honest answer is that its absence is a DEFECT, not a different report. It
+    must reach `omitted` with its reason, never `excluded_outside_period`.
+    """
+    out = render_all([_Poam(id=4, identified_on=None)], today=TODAY, window=WINDOW, period=PERIOD)
+    assert out.counts["excluded_outside_period"] == 0
+    assert out.counts["omitted"] == 1
+    assert (4, "no identification date") in out.omitted

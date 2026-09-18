@@ -65,6 +65,24 @@ def _first_written(*values: Any) -> str | None:
     return None
 
 
+def _detected_at(poam: Any) -> str | None:
+    """The rendered ``detection.detectedAt``, or ``None`` when the row carries
+    no identification date.
+
+    ONE helper with TWO callers on purpose: :func:`render_vulnerability` writes
+    this string into the document, and :func:`render_all` decides period
+    membership by comparing it (spec §2.2). The midnight-UTC convention (§3.3)
+    and the period boundary therefore agree **by construction** -- compare
+    ``poam.identified_on`` directly and the two can drift, which is precisely
+    how a row dated the period's first day could render at that day's midnight
+    and still be judged to fall outside a window starting at it.
+    """
+    value = poam.identified_on
+    # A DATE widened to a date-time: a DECLARED CONVENTION (spec §3.3), not a
+    # measured instant. Stated so no reader mistakes it.
+    return None if value is None else f"{value.isoformat()}T00:00:00Z"
+
+
 def _overdue_status(poam: Any, *, today: date, window: RemediationWindow) -> dict[str, bool] | None:
     """``{"isOverdue": ...}``, or ``None`` when the question has no answer.
 
@@ -89,7 +107,7 @@ def render_vulnerability(
     """
     reasons: list[str] = []
 
-    detected_at = poam.identified_on
+    detected_at = _detected_at(poam)
     if detected_at is None:
         reasons.append("no identification date")
 
@@ -108,9 +126,7 @@ def render_vulnerability(
         # `type: string` -- measured. An int fails validation outright.
         "providerTrackingId": str(poam.id),
         "detection": {
-            # A DATE widened to a date-time: a DECLARED CONVENTION (spec §3.3),
-            # not a measured instant. Stated so no reader mistakes it.
-            "detectedAt": f"{detected_at.isoformat()}T00:00:00Z",
+            "detectedAt": detected_at,
             "detectionSource": source,
         },
         "vulnerabilityDescription": description,
@@ -141,20 +157,62 @@ class VerRendering:
 
 
 def render_all(
-    poams: Sequence[Any], *, today: date, window: RemediationWindow
+    poams: Sequence[Any],
+    *,
+    today: date,
+    window: RemediationWindow,
+    period: tuple[datetime, datetime] | None = None,
 ) -> VerRendering:
-    """Filter to flaws, partition accepted from not-accepted, render each.
+    """Filter to flaws and to the period, partition accepted from not-accepted,
+    render each.
 
-    A row that is not scanner-derived is **out of scope**, not omitted: nothing
-    is wrong with it, it simply is not a vulnerability (spec §2.1). Collapsing
-    that into the omitted list would bury a real data gap among healthy rows.
+    Two SCOPING filters run first and **neither produces an omission** (spec
+    §7). A row they exclude is not a defect -- it belongs to a different report:
+
+    * not scanner-derived (§2.1) -- it is a control deficiency, not a
+      vulnerability. Collapsing that into the omitted list would bury a real
+      data gap among healthy rows.
+    * ``detectedAt`` outside ``period`` (§2.2) -- nothing is wrong with it; it
+      belongs to another reporting period.
+
+    ``period`` is optional because the contrast between the schemas is the
+    whole point: VDR's and AVI's arrays are *"with activity in this period"*,
+    while `ver_history`'s two are *"**All** ..."*. `ver_history` passes no
+    period and filters nothing.
+
+    Both ends are INCLUSIVE. The lower edge follows from §3.3's midnight
+    convention -- a row identified on the period's first day renders at that
+    day's midnight and must fall inside a window whose ``from`` is that same
+    midnight -- and the upper edge is inclusive for symmetry, so a row
+    identified on the last day is covered by the report ending that day rather
+    than falling between two reports.
     """
+    # Both sides are `%Y-%m-%dT%H:%M:%SZ` in UTC, produced by `_instant` and
+    # `_detected_at`, so a string comparison IS the chronological one:
+    # fixed-width, zero-padded, most-significant-first, one zone. `_instant`
+    # refuses a naive bound, so no comparison here can silently shift.
+    bounds = None if period is None else (_instant(period[0]), _instant(period[1]))
     out = VerRendering(
-        counts={"excluded_not_a_flaw": 0, "rendered": 0, "omitted": 0}
+        counts={
+            "excluded_not_a_flaw": 0,
+            "excluded_outside_period": 0,
+            "rendered": 0,
+            "omitted": 0,
+        }
     )
     for poam in poams:
         if (poam.source or "") not in FLAW_SOURCES:
             out.counts["excluded_not_a_flaw"] += 1
+            continue
+
+        detected_at = _detected_at(poam)
+        # A row with no identification date cannot be placed in any period, so
+        # it falls through to rule 1 below and is omitted and NAMED rather than
+        # quietly excluded: that absence is a defect, not a different report.
+        if bounds is not None and detected_at is not None and not (
+            bounds[0] <= detected_at <= bounds[1]
+        ):
+            out.counts["excluded_outside_period"] += 1
             continue
 
         reasons: list[str] = []
@@ -358,10 +416,13 @@ async def _seed(
     kind: str,
     build: Any,
     today: date | None = None,
+    period: tuple[datetime, datetime] | None = None,
 ) -> VerSeedResult:
     today = today or datetime.now(UTC).date()
     rows = await _poam_rows(session, system_id)
-    rendering = render_all(rows, today=today, window=RemediationWindow())
+    rendering = render_all(
+        rows, today=today, window=RemediationWindow(), period=period
+    )
     current = await _current(session, system_id, kind)
     document, extra_omitted = build(rendering, current)
     _carry_uri(document, current)
@@ -398,7 +459,14 @@ async def seed_vdr(
             "vulnerabilities": rendering.active,
         }, []
 
-    return await _seed(session, system_id=system_id, kind="vdr", build=build, today=today)
+    return await _seed(
+        session,
+        system_id=system_id,
+        kind="vdr",
+        build=build,
+        today=today,
+        period=(period_from, period_to),
+    )
 
 
 async def seed_avi(
@@ -426,7 +494,14 @@ async def seed_avi(
             "acceptedVulnerabilities": merged,
         }, omitted
 
-    return await _seed(session, system_id=system_id, kind="avi", build=build, today=today)
+    return await _seed(
+        session,
+        system_id=system_id,
+        kind="avi",
+        build=build,
+        today=today,
+        period=(period_from, period_to),
+    )
 
 
 async def seed_ver_history(
