@@ -35,6 +35,15 @@ from .store import put_document
 #: `type: string` with no numeric pattern, so int was always the narrower
 #: assumption. Reported verbatim rather than coerced: an id nobody can parse is
 #: still the id the operator has to go and look at.
+#:
+#: **A third case the name does not cover:** an authored entry so malformed it
+#: carries no usable ``providerTrackingId`` has no id at all, so its first
+#: element is a *document locator* such as ``"acceptedVulnerabilities[0]"``.
+#: That is not a POA&M id and a caller must not parse it as one. It is reported
+#: rather than dropped because an omission nobody is told about is the defect
+#: this whole module exists to remove -- but the field is named for ids, so the
+#: exception is stated here rather than left to be discovered. See spec §7
+#: rule 7.
 OmittedRow = tuple[int | str, str]
 
 #: `classify` buckets that answer the present-tense question `isOverdue` asks.
