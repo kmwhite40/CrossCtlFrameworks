@@ -70,12 +70,19 @@ def test_an_unmeasurable_row_reaches_neither_document() -> None:
 
 
 def test_the_counts_partition_every_row_considered() -> None:
-    """A partition whose parts do not add up is how a row disappears silently."""
+    """A partition whose parts do not add up is how a row disappears silently.
+
+    Row 4 is deliberately multi-fault (no identification date on top of the
+    blank title/weakness) so the sum genuinely depends on
+    ``counts["omitted"]`` counting ROWS rather than reasons -- do not
+    simplify it back to a single-fault row, or this test stops exercising the
+    invariant it is named for.
+    """
     rows = [
         _Poam(id=1, status="open"),
         _Poam(id=2, status="risk_accepted"),
         _Poam(id=3, source="assessment"),
-        _Poam(id=4, scanner=None, source="scan", title=" ", weakness=None),
+        _Poam(id=4, scanner=None, source="scan", title=" ", weakness=None, identified_on=None),
     ]
     out = render_all(rows, today=TODAY, window=WINDOW)
     assert sum(out.counts.values()) == len(rows)
