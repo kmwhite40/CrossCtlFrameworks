@@ -354,6 +354,16 @@ def test_blank_parts_never_come_back_as_a_space() -> None:
         [{"text": None}, {"text": None}],
         [{"text": " "}],
         [{"text": "\t\n"}],
+        # Whitespace-only AND multiple -- the shape this test's own docstring
+        # describes, and the only one that needs the blank test to run on the
+        # STRIPPED value. A single whitespace part is rescued by ``or None``
+        # (``" ".join([""])`` is ``""``), and empty strings are falsy raw too,
+        # so neither shape alone can tell ``if not text:`` from
+        # ``if not value:`` -- and that mutation puts ``" "`` back in a shipped
+        # description with an ``Implemented`` status and nothing in either gap
+        # list.
+        [{"text": " "}, {"text": " "}],
+        [{"text": "\t"}, {"text": "\n"}],
     ):
         entries = [_entry(part_narratives=narratives)]
         out = render_controls(entries)
@@ -397,6 +407,57 @@ def test_the_draft_marker_survives_the_strip_that_kills_the_space_defect() -> No
         out = render_controls(entries)
         assert "controlImplementationDescription" not in out[0], (text, out[0])
         assert _control_gaps(entries) == (["AC-2"], ["AC-2"]), text
+
+
+def test_the_join_cannot_manufacture_the_marker_the_parts_slipped() -> None:
+    """``DRAFT_PREFIX`` is ``"[DRAFT] "`` WITH a trailing space, so a bare
+    ``"[DRAFT]"`` part slips the per-part predicate -- and then the ``" "``
+    separator supplies the missing space, putting a literal ``"[DRAFT] "`` into
+    the SHIPPED description. Measured before the fix:
+
+        [{'text':'[DRAFT]'}, {'text':'Kept.'}] -> desc='[DRAFT] Kept.' gaps=([], [])
+
+    It reads as complete, keeps ``Implemented``, and is in neither list. The
+    same predicate returns ``True`` on the composed string, so re-running it
+    once after the join closes this here -- no change to
+    ``is_draft_or_placeholder`` and no decision about SSP completeness scoring.
+    """
+    for narratives in (
+        [{"text": "[DRAFT]"}, {"text": "Kept."}],
+        [{"text": "Accounts are managed."}, {"text": "[DRAFT]"}, {"text": "More."}],
+    ):
+        entries = [_entry(implementation_status=["Implemented"], part_narratives=narratives)]
+        out = render_controls(entries)
+        assert "controlImplementationDescription" not in out[0], (narratives, out[0])
+        # Treated exactly like a control whose parts were all scaffolding.
+        assert _control_gaps(entries) == (["AC-2"], ["AC-2"]), narratives
+
+
+def test_a_bare_draft_token_that_never_gains_a_space_is_still_shipped() -> None:
+    """The honest boundary of the fix above, stated so nobody mistakes it for
+    more than it is: the composed check catches the token only once the join
+    has supplied the space. A lone ``"[DRAFT]"`` part with nothing after it
+    composes to ``"[DRAFT]"``, which ``is_draft_or_placeholder`` does not match
+    -- that hole lives inside the shared predicate, is reachable from four call
+    sites, and widening it is a decision about SSP completeness scoring rather
+    than a CR26 cleanup.
+
+    This test exists so the gap is recorded and visible rather than assumed
+    closed. Change it deliberately, with that decision made.
+    """
+    out = render_controls([_entry(part_narratives=[{"text": "[DRAFT]"}])])
+    assert out[0]["controlImplementationDescription"] == "[DRAFT]"
+
+
+def test_a_null_element_in_the_narrative_list_lost_nothing() -> None:
+    """A literal ``null`` in the JSONB array is not a lost part -- same
+    reachability class as the legacy bare-string element, which already has a
+    test. Without the ``None`` clause in ``_is_blank`` this reports a loss and
+    sends an operator hunting for content that never existed."""
+    entries = [_entry(part_narratives=[None, {"text": "We manage accounts."}, None])]
+    out = render_controls(entries)
+    assert out[0]["controlImplementationDescription"] == "We manage accounts."
+    assert _control_gaps(entries) == ([], [])
 
 
 def test_a_non_string_text_value_is_dropped_rather_than_repr_d() -> None:

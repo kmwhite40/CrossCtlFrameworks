@@ -243,7 +243,23 @@ def _implementation_description(
             dropped = True
             continue
         written.append(text)
-    return (" ".join(written) or None), dropped
+
+    description = " ".join(written) or None
+    if description is not None and is_draft_or_placeholder(description):
+        # **The join can manufacture the token the per-part check rejected.**
+        # ``DRAFT_PREFIX`` is ``"[DRAFT] "`` with a trailing space, so a bare
+        # ``"[DRAFT]"`` part slips the per-part predicate -- and then the
+        # ``" "`` separator supplies the missing space, putting a literal
+        # ``"[DRAFT] "`` into the SHIPPED description. It would read as
+        # complete, keep its status, and appear in neither gap list.
+        #
+        # Re-running the SAME predicate on the composed string closes that
+        # without touching ``is_draft_or_placeholder`` itself: the existing
+        # membership test already returns True on the join's output. A control
+        # that trips here is treated exactly like one whose parts were all
+        # scaffolding -- no description, named in both lists.
+        return None, True
+    return description, dropped
 
 
 def _is_blank(value: Any) -> bool:

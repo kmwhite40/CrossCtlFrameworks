@@ -222,11 +222,33 @@ found on a line immediately beside one already corrected.
   control ever touched in that editor the flag gate is inert and the predicate
   is the only gate left, which is the design `ssp/statements.py:47` documents.
 
-  **Known, unclosed, and deliberately out of scope here:** a bare `"[DRAFT]"`
-  with *no* trailing space is not matched by the predicate at all. The hole is
-  pre-existing, lives inside `is_draft_or_placeholder`, and is shared by its
-  other call sites — widening it is a decision about SSP completeness scoring,
-  not a CR26 cleanup. See the evaluation in the task report.
+- **The composed description is checked once more, after the join.** The join
+  can manufacture the very token the per-part check rejected: `DRAFT_PREFIX` is
+  `"[DRAFT] "` with a trailing space, so a bare `"[DRAFT]"` part slips the
+  per-part predicate and then the `" "` separator supplies the missing space —
+  putting a literal `"[DRAFT] "` into the *shipped* description, reading as
+  complete, keeping its status, and appearing in neither gap list. Measured:
+
+  ```
+  [{'text':'[DRAFT]'}, {'text':'Kept.'}]  ->  desc='[DRAFT] Kept.'  gaps=([], [])
+  is_draft_or_placeholder('[DRAFT] Kept.') -> True
+  ```
+
+  The existing predicate already returns `True` on the composed string, so
+  re-running it once after the join closes this **inside this branch** — no
+  change to `is_draft_or_placeholder`, no decision about SSP completeness
+  scoring. A control that trips the composed check is treated exactly like one
+  whose parts were all scaffolding: description omitted, named in both lists.
+
+  **Still open, and still follow-up work elsewhere:** a bare `"[DRAFT]"` that
+  never gains a space — a lone part with nothing after it — is not matched by
+  the predicate at all, and that hole lives inside `is_draft_or_placeholder`,
+  reachable from its four call sites. Widening it would make `completeness.py`
+  flag more narratives as needing review, which is a user-visible scoring
+  decision rather than a CR26 cleanup. `tests/test_cr26_sdr_controls.py`'s
+  `test_a_bare_draft_token_that_never_gains_a_space_is_still_shipped` records
+  the gap so it stays visible rather than being assumed closed. See the
+  evaluation in the task report.
 
 ### 1.3 Two of the five derived fields are claims, not renderings
 
