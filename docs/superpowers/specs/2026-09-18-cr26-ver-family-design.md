@@ -89,6 +89,50 @@ Reuse `FLAW_SOURCES`; do not re-list `("scan",)`.
 
 ---
 
+## 2.2 Which POA&Ms fall in the reporting period
+
+**CORRECTION, 2026-09-18 — this section was missing entirely and its absence
+shipped a Critical.**
+
+The vendored schemas are explicit. VDR's `vulnerabilities` is *"Non-accepted
+vulnerabilities **with activity in this period**"*; AVI's
+`acceptedVulnerabilities` says the same. `ver_history`'s two arrays instead say
+*"**All** non-accepted"* and *"**All** accepted"* — a distinction that only
+means anything if VDR and AVI filter and `ver_history` does not.
+
+So **VDR and AVI select only rows whose `detection.detectedAt` falls within
+`[reportPeriod.from, reportPeriod.to]`, inclusive at both ends.**
+`seed_ver_history` applies no period filter and takes no period.
+
+A row outside the window is **excluded, not omitted** — the same distinction
+§2.1 draws for a control deficiency. Nothing is wrong with it; it belongs to a
+different reporting period. It is counted in
+`counts["excluded_outside_period"]` and never appears in `omitted_poam_ids`.
+
+**`from` is assumed to be that day's midnight.** Every row renders at
+`T00:00:00Z` (§3.3), so a `from` of `2026-09-01T08:00:00Z` excludes *every* row
+identified on 2026-09-01 — literally correct under this rule and almost
+certainly not what the operator meant. The route constrains the bound only to
+"aware" and "before `to`". Callers should pass midnight bounds; a future
+revision may normalise `from` down and `to` up at the route rather than leave
+this to the caller.
+
+Inclusivity at the lower edge follows from §3.3's midnight convention and is
+now load-bearing rather than incidental: a row identified on the period's first
+day renders at that day's midnight and must fall inside a window whose `from`
+is that same midnight. The upper edge is inclusive for symmetry, so a row
+identified on the last day is covered by the report that ends that day rather
+than falling between two reports.
+
+**How the defect happened, so it is not repeated.** §1 said `ver_history` is
+"VDR's array plus AVI's array with no period filter", and §3.3 spent a
+paragraph on period boundaries — but §7, the *consolidated* rule list an
+implementer actually builds from, never mentioned a filter. The consolidated
+list won. **A rule that exists only outside the consolidated list does not
+exist.**
+
+---
+
 ## 3. Field map
 
 ### 3.1 Required, and sourced
@@ -239,13 +283,86 @@ exactly as `ksiImplementation` is in the SDR. No migration.
 - **omit any entry with no rationale, and name it** — an accepted vulnerability
   with no rationale cannot validate, so emitting `""` would be the CPO's
   empty-description defect again
-- keep unrecognised entries rather than silently dropping provider content
+- **drop an authored entry the source no longer reports as accepted, and name
+  it** `"no longer an accepted vulnerability"`
 
 Read `merge_indicators` before writing this. It has been through five review
 rounds and its aliasing, self-healing and ordering behaviour are settled; do
 not rediscover them.
 
+**The last bullet is where this merge DIVERGES from `merge_indicators`, and the
+divergence is the point.** `sdr.py:462` keeps an authored entry the platform no
+longer recognises, because there the authored field is a *narrative* and
+discarding it loses human work that nothing can reconstruct. Here the authored
+field rides on a *claim*: keeping an orphaned entry tells a regulator that a
+vulnerability the scanner no longer reports is still formally accepted. A
+remediated weakness reported as accepted is a false compliance claim, which is
+worse than a lost sentence. Drop it, name it, and let the operator decide.
+
+> **Correction, 2026-09-18.** This bullet previously read "keep unrecognised
+> entries rather than silently dropping provider content" — copied verbatim
+> from `merge_indicators`' contract without asking whether its reasoning
+> transferred. It does not. A Task 3 reviewer caught that the spec's literal
+> text contradicted the implemented and tested behaviour, and would have led
+> the next reader to "fix" the code back into the defect. The code was right;
+> this section was wrong.
+
 ---
+
+### 5.1 An authored entry must not be dropped for the wrong reason
+
+**CORRECTION, 2026-09-18.** `merge_accepted` sees only that an id is absent
+from `derived` and reports `"no longer an accepted vulnerability"`. Measured:
+blanking a `risk_accepted` POA&M's `title` produced
+`[(3, "no description"), (3, "no longer an accepted vulnerability")]` — the
+second is simply false, the row is still `risk_accepted` — and `put_document`
+replaced the stored body, **irrecoverably destroying the human-written
+rationale**. Fixing the title did not bring it back.
+
+So the walk must surface the ids it **saw but could not place**, and the merge
+must distinguish:
+
+- id in `derived` → merge as now.
+- id the walk saw but could not place (rules 1–4) → the row still exists and is
+  still accepted. **Keep the authored entry verbatim** — its stored
+  `vulnerabilityDetail` and its rationale — and report it with a reason naming
+  the real cause, prefixed `"detail not refreshed: "`.
+
+  **Where that label lives, precisely.** In the seed result, and nowhere else.
+  The filed document is byte-indistinguishable from one whose detail was
+  freshly rendered, and it reports `is_valid: True` — so the validator
+  *launders* a date the platform can no longer defend (§4 warned it is not a
+  guard; here it is worse than not a guard). An operator who does not read the
+  seed response has no durable way to learn the entry is stale.
+
+  This is accepted rather than ideal, for three reasons: every alternative is
+  worse (dropping destroys human work irrecoverably); the stale claim runs in
+  the **harsher** direction, asserting a vulnerability exists and is accepted,
+  which is not the favourable answer this programme's rule forbids; and
+  `acceptedVulnerabilityInfo` requires exactly `{vulnerabilityDetail,
+  acceptanceRationale}`, so inventing a staleness key would break §3.4's own
+  rule and risk rejection at ingest. It self-heals on the next clean cycle.
+- id the walk never saw at all → genuinely gone from the accepted set. Drop it
+  and report rule 6.
+
+### 5.2 The AVI is the single authoring surface for a rationale
+
+**CORRECTION, 2026-09-18.** Each seeder read only its own kind's stored
+document, so a rationale authored in the AVI never reached `ver_history`.
+Measured on one system, seeded seconds apart: the AVI carried the entry and its
+rationale; `ver_history.acceptedVulnerabilities` was `[]` with
+`(1, "no acceptance rationale")`.
+
+`ver_history` is VER-TFR-MRH, the machine-readable record for automated
+retrieval, and its array means *"All accepted vulnerabilities."* Empty asserts
+the provider has accepted none — the favourable answer — while the AVI filed
+for the same system says otherwise. Two filed deliverables contradicting each
+other is worse than either being incomplete.
+
+**`seed_ver_history` reads the authored rationale from the stored `avi`
+document.** One authoring surface, one place to edit, no way for the two to
+disagree. An operator authoring into `ver_history` directly is not supported
+and the spec says so here.
 
 ## 6. Seeders, store and routes
 
@@ -274,10 +391,41 @@ carries `generatedAt` instead.
   force a choice about which reason to keep and hide the rest. The reason is
   what makes this actionable — `omitted_ksi_ids` carries bare ids because there
   was one possible reason, and here there are five (§7).
-- `counts: dict[str, int]` — where every candidate row went. Keys:
-  `excluded_not_a_flaw` (§2.1), `rendered`, `omitted`. These must **sum to the
-  number of POA&M rows the seeder considered**, and a test asserts that sum:
-  a partition whose parts do not add up is how a row disappears silently.
+- `counts: dict[str, int]` — where every candidate row went, **for this
+  document**, not for the walk behind it. Keys:
+
+  | key | counts |
+  |---|---|
+  | `excluded_not_a_flaw` | not scanner-derived (§2.1) |
+  | `excluded_outside_period` | `detectedAt` outside `[from, to]` (§2.2); always `0` for `ver_history` |
+  | `excluded_other_half` | a flaw rendered into the half this document does not carry — the accepted rows on a VDR, the active rows on an AVI, `0` on `ver_history` |
+  | `rendered` | entries that reached this document |
+  | `omitted` | rows omitted under §7 rules 1–4 |
+  | `dropped_authored_entries` | authored entries that did not survive the merge (§7 rules 5–8) |
+
+  **The first five sum to the number of POA&M rows the seeder considered**, and
+  a test asserts that sum: a partition whose parts do not add up is how a row
+  disappears silently. `dropped_authored_entries` is deliberately **outside**
+  that sum — it counts entries in the *previous document*, not rows in the
+  table, and adding it would make the invariant meaningless.
+
+### 6.1.1 The period must be timezone-aware
+
+`period_from` and `period_to` are **aware** datetimes. A naive one is rejected
+at the route with 422, never coerced.
+
+Measured, with the server in `America/New_York` and a naive
+`2026-09-01T00:00:00` / `2026-12-01T00:00:00` posted: the stored `reportPeriod`
+became `2026-09-01T04:00:00Z` / `2026-12-01T05:00:00Z`. `datetime.astimezone`
+assumes *local* time for a naive input, so the deliverable recorded a window
+the operator never asked for — and because the two ends straddle a DST
+boundary, **the window's length changed by an hour as well**. `ok: True`, no
+error, nothing downstream able to tell.
+
+That is this programme's signature defect applied to the one field that says
+*which activity this report covers*. Use pydantic's `AwareDatetime` on the
+route model; a mixed naive/aware pair must not reach the comparison, which
+raises `TypeError` rather than a 422.
 
 ### 6.2 Store
 
@@ -319,8 +467,12 @@ period would produce a report whose own stated window is impossible.
 
 ## 7. Omission rules, consolidated
 
-The flaw filter (§2.1) runs **first**. A row that is not scanner-derived is out
-of scope and never reaches these rules — it is counted, not omitted.
+**Two SCOPING filters run first, and neither produces an omission.** A row they
+exclude is not a defect — it belongs to a different report:
+
+- **not scanner-derived** (§2.1) → `counts["excluded_not_a_flaw"]`
+- **`detectedAt` outside `[from, to]`**, for VDR and AVI only (§2.2) →
+  `counts["excluded_outside_period"]`
 
 Of the rows that remain, one is omitted, with its id and reason, when:
 
@@ -334,13 +486,42 @@ Of the rows that remain, one is omitted, with its id and reason, when:
    says nothing about its content (§3.1).
 4. `accepted_weakness_state` returns `unknown` (§2).
 5. For AVI and `ver_history.acceptedVulnerabilities` only: no authored
-   `acceptanceRationale` (§5).
+   `acceptanceRationale` (§5) — reason `"no acceptance rationale"`.
+6. For AVI and `ver_history.acceptedVulnerabilities` only: an authored entry
+   whose POA&M **is genuinely no longer an accepted vulnerability** (§5) —
+   reason `"no longer an accepted vulnerability"`. Keyed on the *authored*
+   document rather than a POA&M row, so its id comes from stored JSON an admin
+   may have edited and is **not guaranteed numeric**.
 
-Rules 1–4 are evaluated for every document; rule 5 only for the accepted half.
+   **This reason may only be given when it is true.** An authored entry can
+   vanish from the derived set for three different causes — it stopped being
+   accepted, it could not be *rendered* (rules 1–3), or it became
+   *unmeasurable* (rule 4) — and absence alone cannot tell them apart.
+   Reporting the first for all three is the three-state collapse §2 exists to
+   forbid, one level down, and it destroys the authored rationale over a
+   blanked title. See §5.1.
+
+Rules 1–4 are evaluated for every document; rules 5 and 6 only for the accepted half.
 A row may trip more than one; report all reasons that apply, not the first —
 see `omitted_poam_ids`' shape in §6.1.
 
-Every one of these five is a **blank-or-missing** test, never a `None` test.
+7. For AVI and `ver_history.acceptedVulnerabilities` only: an authored entry
+   carrying no usable `providerTrackingId` — reason
+   `"authored entry has no providerTrackingId"`. It has no id, so it is
+   reported by **document locator** (`"acceptedVulnerabilities[0]"`). Reachable
+   by hand: `PUT /cr26-documents/avi` accepts an unvalidated `dict[str, Any]`.
+8. For AVI and `ver_history.acceptedVulnerabilities` only: a second authored
+   entry for an id already seen — reason
+   `"duplicate authored entry discarded"`. Last wins; the discarded one is
+   named rather than lost in silence.
+
+**A ninth case is reported but is NOT an omission.** An entry the walk saw and
+could not place is **kept** in the document (§5.1) and reported with
+`"detail not refreshed: <the real cause>"`. It appears in `omitted_poam_ids`
+because that list is the operator's to-do list, not a list of absences — the
+entry is present, its detail is stale, and both facts need saying.
+
+Every one of rules 1–5 is a **blank-or-missing** test, never a `None` test.
 That is one rule applied five times, and it belongs in one helper rather than
 five call sites: the SDR needed four review rounds on a loop that asked the
 same question in two different forms.
@@ -405,6 +586,35 @@ actually shipped.
    assuming.
 
 ---
+
+## 9.1 Known limitation — a window change destroys acceptance rationales
+
+**Measured, and accepted rather than solved.** `put_document` replaces the
+stored body in place with no history, and the rationale lives only inside that
+body. So moving a reporting window past an accepted entry destroys it:
+
+```
+CYCLE 1  window 2026-09-01..2026-12-01   entries=[<entry with rationale>]  omitted=[]
+CYCLE 2  window 2026-06-01..2026-08-31   entries=[]                        omitted=[]
+CYCLE 3  window 2026-09-01..2026-12-01   entries=[]   omitted=[(1, "no acceptance rationale")]
+```
+
+Cycle 2 is the damage and `omitted_poam_ids` is **empty** — the loss is
+invisible at the moment it happens, which is the one property this family's
+design exists to prevent. Cycle 3 shows it does not come back. Because §5.2
+routes `ver_history`'s rationales through the AVI, the loss reaches that
+deliverable too — named there rather than silently empty, but gone from both.
+
+Why it is not fixed here: reporting it would contradict §7's rule that a
+scoping filter produces no omission, and keeping the entry would defeat the
+period filter. **The root cause is that a human-authored rationale lives inside
+a document the seeder overwrites.** The fix is to give it a durable home —
+plausibly an `acceptance_rationale` column on `POAM`, captured when a weakness
+is marked `risk_accepted` — which is a migration and a product decision about
+where that text belongs, not a patch to this branch.
+
+Until then: **do not move a reporting window backwards past an accepted
+vulnerability without re-authoring its rationale afterwards.**
 
 ## 10. Out of scope
 

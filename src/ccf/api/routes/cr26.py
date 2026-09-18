@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from ...auth import Principal
 from ...cr26.cpo import seed_cpo
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
+from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
 from ...models import System
 from ...models_cr26 import Cr26Document
 from ..auth_deps import get_principal, require_role
@@ -243,3 +244,105 @@ async def seed_sdr_document(
         "controls_with_dropped_parts": result.controls_with_dropped_parts,
         "rendered_control_count": result.rendered_control_count,
     }
+
+
+class VerPeriod(BaseModel):
+    """The reporting window, supplied by the caller.
+
+    Nothing in the platform records what a previous report covered, so
+    VER-RPT-PER's "all activity since the previous report" is an obligation on
+    the operator. The document records the window it actually covered.
+
+    Both ends are **aware** datetimes, and a naive one is refused with 422
+    rather than coerced (spec §6.1.1). ``datetime.astimezone`` treats a naive
+    value as *local* time, so a naive pair posted to a server in
+    ``America/New_York`` was stored as ``04:00:00Z``/``05:00:00Z`` -- a window
+    the operator never asked for, and, because that pair straddles a DST
+    boundary, an hour longer than the one they posted.
+
+    ``AwareDatetime`` rather than a validator of our own for a second reason:
+    a *mixed* naive/aware pair reached ``_ordered``'s comparison and raised
+    ``TypeError``, which pydantic does not wrap into a validation error the
+    way it wraps ``ValueError``, so the caller got a 500. Rejecting at the
+    field means the comparison only ever sees two aware values.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    period_from: AwareDatetime = Field(alias="from")
+    period_to: AwareDatetime = Field(alias="to")
+
+    @model_validator(mode="after")
+    def _ordered(self) -> VerPeriod:
+        if self.period_from >= self.period_to:
+            raise ValueError("'from' must be strictly before 'to'")
+        return self
+
+
+def _ver_body(result: VerSeedResult) -> dict[str, Any]:
+    """``_full`` plus the two fields nothing in the document itself carries.
+
+    Neither ``omitted_poam_ids`` nor ``counts`` has a home inside the
+    document's own JSON: they are the only operator-facing signal that a
+    vulnerability was left out of it.
+    """
+    return {
+        **_full(result.document),
+        "omitted_poam_ids": result.omitted_poam_ids,
+        "counts": result.counts,
+    }
+
+
+@router.post("/systems/{system_id}/cr26-documents/vdr/seed")
+async def seed_vdr_document(
+    system_id: int,
+    period: VerPeriod,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed this system's Vulnerability Detail Report. Admin only."""
+    await _owned_system(session, system_id, principal)
+    result = await seed_vdr(
+        session,
+        system_id=system_id,
+        period_from=period.period_from,
+        period_to=period.period_to,
+    )
+    await session.commit()
+    await session.refresh(result.document)
+    return _ver_body(result)
+
+
+@router.post("/systems/{system_id}/cr26-documents/avi/seed")
+async def seed_avi_document(
+    system_id: int,
+    period: VerPeriod,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed this system's Accepted Vulnerability Inventory. Admin only."""
+    await _owned_system(session, system_id, principal)
+    result = await seed_avi(
+        session,
+        system_id=system_id,
+        period_from=period.period_from,
+        period_to=period.period_to,
+    )
+    await session.commit()
+    await session.refresh(result.document)
+    return _ver_body(result)
+
+
+@router.post("/systems/{system_id}/cr26-documents/ver_history/seed")
+async def seed_ver_history_document(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed this system's Historical VER Activity. Admin only. No period --
+    the schema has none; the document carries ``generatedAt`` instead."""
+    await _owned_system(session, system_id, principal)
+    result = await seed_ver_history(session, system_id=system_id)
+    await session.commit()
+    await session.refresh(result.document)
+    return _ver_body(result)
