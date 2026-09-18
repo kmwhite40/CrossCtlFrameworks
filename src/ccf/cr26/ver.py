@@ -15,6 +15,7 @@ constrains shape rather than honesty:
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -160,3 +161,66 @@ def render_all(
         out.counts["rendered"] += 1
         (out.accepted if state == "accepted" else out.active).append(detail)
     return out
+
+
+def _tracking_id(entry: Any) -> str | None:
+    """The id an entry is keyed on, or ``None`` if it has none."""
+    if not isinstance(entry, dict):
+        return None
+    detail = entry.get("vulnerabilityDetail")
+    if not isinstance(detail, dict):
+        return None
+    value = detail.get("providerTrackingId")
+    return None if is_blank(value) else str(value).strip()
+
+
+def merge_accepted(
+    authored: Sequence[dict[str, Any]], derived: Sequence[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[tuple[int, str]]]:
+    """Refresh each accepted vulnerability, keeping its authored rationale.
+
+    ``acceptanceRationale`` is the one field the platform cannot derive -- no
+    POA&M column holds it -- so an admin authors it into the stored document
+    and every re-seed preserves it, exactly as the SDR preserves
+    ``ksiImplementation``.
+
+    An entry with no rationale is **omitted and named**, never emitted with
+    ``""``: the empty string validates while asserting the provider gave a
+    blank reason for accepting a vulnerability.
+
+    Entries are ordered by numeric tracking id so a re-seed produces a
+    byte-identical document when nothing has changed.
+    """
+    by_id = {
+        tid: entry
+        for entry in authored
+        if (tid := _tracking_id(entry)) is not None
+    }
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    omitted: list[tuple[int, str]] = []
+
+    for detail in derived:
+        tid = detail.get("providerTrackingId")
+        if is_blank(tid):
+            continue
+        tid = str(tid).strip()
+        seen.add(tid)
+        rationale = (by_id.get(tid) or {}).get("acceptanceRationale")
+        if is_blank(rationale):
+            omitted.append((int(tid), "no acceptance rationale"))
+            continue
+        merged.append(
+            {
+                "vulnerabilityDetail": copy.deepcopy(detail),
+                "acceptanceRationale": str(rationale).strip(),
+            }
+        )
+
+    for tid in by_id:
+        if tid not in seen:
+            omitted.append((int(tid), "no longer an accepted vulnerability"))
+
+    merged.sort(key=lambda e: int(e["vulnerabilityDetail"]["providerTrackingId"]))
+    omitted.sort()
+    return merged, omitted
