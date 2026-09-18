@@ -26,7 +26,7 @@ from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, System, User
+from ccf.models import POAM, Organization, System, User
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -236,7 +236,81 @@ async def test_patch_poam_to_risk_accepted_with_owner_but_no_due_on_is_blocked()
 
 
 @pytest.mark.asyncio
-async def test_patch_poam_to_risk_accepted_succeeds_with_owner_and_due_on() -> None:
+async def test_patch_poam_to_risk_accepted_with_owner_and_due_on_but_no_rationale_is_blocked() -> (
+    None
+):
+    """CR26's `acceptanceRationale` requirement (spec §5, §9.1): owner and due_on alone are not
+    enough -- every accepted vulnerability needs a written rationale, and an
+    admin who forgets it must be told now rather than have `merge_accepted`
+    omit the row from the AVI later with no way to know why.
+    """
+    org_id, sys_id = await _make_system("PoamRiskAcceptOrg2b")
+    async with session_scope() as s:
+        u = User(
+            organization_id=org_id,
+            email="owner@poamriskacceptorg2b.example",
+            role="control_owner",
+            password_hash=hash_password("pw"),
+        )
+        s.add(u)
+        await s.flush()
+        owner_id = u.id
+
+    async with _client() as c:
+        created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Accepted risk"})
+        pid = created.json()["id"]
+
+        r = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+            },
+        )
+        assert r.status_code == 409, r.text
+
+        got = await c.get(f"/api/poams/{pid}")
+        assert got.json()["status"] == "open"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_patch_poam_to_risk_accepted_blank_rationale_is_blocked_too() -> None:
+    """Blank-or-missing, never a ``None`` test (mirrors ``ccf.cr26.ver.is_blank``,
+    this codebase's established rule): whitespace persists as a "cleared"
+    field with no strip, so `"   "` must be refused exactly like an absent
+    field.
+    """
+    org_id, sys_id = await _make_system("PoamRiskAcceptOrg2c")
+    async with session_scope() as s:
+        u = User(
+            organization_id=org_id,
+            email="owner@poamriskacceptorg2c.example",
+            role="control_owner",
+            password_hash=hash_password("pw"),
+        )
+        s.add(u)
+        await s.flush()
+        owner_id = u.id
+
+    async with _client() as c:
+        created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Accepted risk"})
+        pid = created.json()["id"]
+
+        r = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "   ",
+            },
+        )
+        assert r.status_code == 409, r.text
+
+
+@pytest.mark.asyncio
+async def test_patch_poam_to_risk_accepted_succeeds_with_owner_due_on_and_rationale() -> None:
     org_id, sys_id = await _make_system("PoamRiskAcceptOrg3")
     async with session_scope() as s:
         u = User(
@@ -259,10 +333,44 @@ async def test_patch_poam_to_risk_accepted_succeeds_with_owner_and_due_on() -> N
                 "status": "risk_accepted",
                 "owner_user_id": owner_id,
                 "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Compensating control: WAF rule 91234.",
             },
         )
         assert r.status_code == 200, r.text
         assert r.json()["status"] == "risk_accepted"
+        assert r.json()["acceptance_rationale"] == "Compensating control: WAF rule 91234."
+
+
+@pytest.mark.asyncio
+async def test_patch_poam_already_risk_accepted_with_no_rationale_stays_editable() -> None:
+    """Grandfathering (spec §9.1): every ``risk_accepted`` POA&M that predates
+    this column has ``acceptance_rationale IS NULL``, and the gate must not
+    brick every one of them. The gate fires on the TRANSITION into
+    `risk_accepted` -- a PATCH body that does not touch `status` at all must
+    keep working exactly as it did before this change, mirroring
+    ``test_patch_poam_non_terminal_edit_still_works_without_gate`` for the
+    closure gate.
+    """
+    _org_id, sys_id = await _make_system("PoamRiskAcceptGrandfather")
+    async with session_scope() as s:
+        row = POAM(
+            system_id=sys_id,
+            title="Pre-existing accepted risk",
+            status="risk_accepted",
+            owner_user_id=None,
+            due_on=date.today() + timedelta(days=90),
+            acceptance_rationale=None,
+        )
+        s.add(row)
+        await s.flush()
+        pid = row.id
+
+    async with _client() as c:
+        r = await c.patch(f"/api/poams/{pid}", json={"severity": "critical"})
+        assert r.status_code == 200, r.text
+        assert r.json()["severity"] == "critical"
+        assert r.json()["status"] == "risk_accepted"
+        assert r.json()["acceptance_rationale"] is None
 
 
 @pytest.mark.asyncio
@@ -318,6 +426,7 @@ async def test_patch_poam_to_risk_accepted_blocked_without_approval_when_auth_en
                     "status": "risk_accepted",
                     "owner_user_id": 1,
                     "due_on": str(date.today() + timedelta(days=90)),
+                    "acceptance_rationale": "Compensating control: WAF rule 91234.",
                 },
                 headers=headers,
             )
@@ -386,6 +495,7 @@ async def test_patch_poam_to_risk_accepted_succeeds_with_approval_when_auth_enab
                     "status": "risk_accepted",
                     "owner_user_id": owner_id,
                     "due_on": str(date.today() + timedelta(days=90)),
+                    "acceptance_rationale": "Compensating control: WAF rule 91234.",
                 },
                 headers=prep_headers,
             )

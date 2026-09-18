@@ -18,6 +18,7 @@ from ...assessment.engine import jobs as engine_jobs
 from ...auth import Principal
 from ...config import get_settings
 from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES
+from ...cr26.ver import is_blank
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...logging import get_logger
@@ -51,6 +52,7 @@ class POAMCreate(BaseModel):
     scheduled_completion: date | None = None
     risk_id: int | None = None
     vendor_id: int | None = None
+    acceptance_rationale: str | None = None
 
 
 class POAMUpdate(BaseModel):
@@ -70,6 +72,7 @@ class POAMUpdate(BaseModel):
     scheduled_completion: date | None = None
     risk_id: int | None = None
     vendor_id: int | None = None
+    acceptance_rationale: str | None = None
 
 
 class MilestoneIn(BaseModel):
@@ -136,6 +139,7 @@ def _out(p: POAM, today: date | None = None, approval_state: str | None = None) 
         "cost_estimate": p.cost_estimate,
         "risk_id": p.risk_id,
         "vendor_id": p.vendor_id,
+        "acceptance_rationale": p.acceptance_rationale,
         # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
         # (never submitted) | submitted (pending review) | approved | rejected. This
         # does NOT drive the closure gate itself — see _require_closure_gate — it
@@ -234,11 +238,22 @@ async def _require_risk_accepted_gate(
     owner_user_id: int | None,
     due_on: object,
     poam_id: int | str | None,
+    acceptance_rationale: object,
 ) -> None:
     if owner_user_id is None or due_on is None:
         raise HTTPException(
             409,
             "risk_accepted requires an owner (owner_user_id) and an expiration/due_on date",
+        )
+    # CR26 requires a written acceptance rationale (`acceptanceRationale`) on
+    # every accepted vulnerability (spec §5, §9.1) -- a blank-or-missing test, never
+    # a `None` test (`is_blank`, mirroring the same rule's other five call
+    # sites in ccf.cr26.ver), since a cleared field can persist as "" or "   "
+    # rather than NULL.
+    if is_blank(acceptance_rationale):
+        raise HTTPException(
+            409,
+            "risk_accepted requires a written acceptance rationale (acceptance_rationale)",
         )
     if get_settings().auth_enabled and (
         poam_id is None or await entity_state(session, "poam", poam_id) != "approved"
@@ -403,7 +418,11 @@ async def create_poam(
         # be created open, then moved to risk_accepted via PATCH once approved
         # (mirrors create_risk's handling of status="accepted" in risks.py).
         await _require_risk_accepted_gate(
-            session, owner_user_id=obj.owner_user_id, due_on=obj.due_on, poam_id=None
+            session,
+            owner_user_id=obj.owner_user_id,
+            due_on=obj.due_on,
+            poam_id=None,
+            acceptance_rationale=obj.acceptance_rationale,
         )
     if obj.due_on is not None and obj.original_due_on is None:
         obj.original_due_on = obj.due_on  # capture the baseline for deviation tracking
@@ -453,6 +472,7 @@ async def update_poam(
             owner_user_id=data.get("owner_user_id", obj.owner_user_id),
             due_on=data.get("due_on", obj.due_on),
             poam_id=pid,
+            acceptance_rationale=data.get("acceptance_rationale", obj.acceptance_rationale),
         )
     for k, v in data.items():
         setattr(obj, k, v)
