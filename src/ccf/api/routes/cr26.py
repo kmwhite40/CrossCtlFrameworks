@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...cr26.cpo import seed_cpo
+from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...models import System
 from ...models_cr26 import Cr26Document
@@ -192,3 +193,38 @@ async def seed_cpo_document(
     await session.commit()
     await session.refresh(row)
     return _full(row)
+
+
+@router.post("/systems/{system_id}/cr26-documents/sdr/seed")
+async def seed_sdr_document(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Render the SDR from the SSP and the KSI tables, preserving narrative.
+
+    Two things the document itself cannot say travel beside it, which is why
+    this returns more than ``_full`` alone:
+
+    * ``omitted_ksi_ids`` -- the indicators left out for want of an authored
+      ``ksiImplementation``. Emitting them with an empty array would satisfy
+      the schema while saying nothing, so the gap would be invisible; this
+      list is the deliverable's own to-do list.
+    * ``ssp_project_id`` -- which of the system's SSP projects it rendered
+      from. ``SSPProject.system_id`` has no unique constraint, so the choice
+      is real and an operator should never have to guess it.
+
+    Like the CPO seed, the result is **invalid by design**:
+    ``certificationPackageOverviewUri`` is required at the root and cannot be
+    invented, so the document stays invalid until someone publishes the CPO
+    and supplies its URI.
+    """
+    await _owned_system(session, system_id, principal)
+    result = await seed_sdr(session, system_id=system_id)
+    await session.commit()
+    await session.refresh(result.document)
+    return {
+        **_full(result.document),
+        "omitted_ksi_ids": result.omitted_ksi_ids,
+        "ssp_project_id": result.ssp_project_id,
+    }

@@ -288,3 +288,33 @@ def test_an_authored_entry_without_a_ksi_id_is_omitted_not_crashed() -> None:
     )
     assert merged == []
     assert sorted(omitted) == ["KSI-CNA-02", "KSI-IAM-01"]
+
+
+def test_derived_facts_may_omit_the_optional_status_and_a_stale_one_is_dropped() -> None:
+    """Spec 1.3: only ``pass`` and ``fail`` map to an implementation status, so
+    the producer omits the key for the four ambiguous verdicts.
+
+    The derived half is refreshed WHOLESALE, not patched -- so a status the
+    authored entry carried from an earlier seed (here a perfectly valid enum
+    member, which the self-healing guard would not touch) must be dropped
+    rather than left asserting a claim the platform no longer makes. The four
+    required array fields must still refresh in the same pass, which is what
+    the last assertion pins.
+    """
+    derived = {
+        "KSI-IAM-01": {
+            k: v
+            for k, v in _DERIVED["KSI-IAM-01"].items()
+            if k != "ksiImplementationStatus"
+        }
+    }
+    authored = [
+        {
+            "ksiId": "KSI-IAM-01",
+            "ksiImplementation": ["x"],
+            "ksiImplementationStatus": "Implemented",  # from an earlier seed
+        }
+    ]
+    merged, _omitted = merge_indicators(authored, derived)
+    assert "ksiImplementationStatus" not in merged[0], merged[0]
+    assert merged[0]["ksiValidation"] == ["passed 2026-09-17 (scan)"]
