@@ -7,11 +7,11 @@ the validator is not a backstop for any date this module writes.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
-from ccf.cr26.ver import is_blank, render_vulnerability
+from ccf.cr26.ver import _instant, is_blank, render_vulnerability
 from ccf.patching.sla import RemediationWindow
 
 TODAY = date(2026, 9, 18)
@@ -249,3 +249,26 @@ def test_reasons_are_non_empty_exactly_when_the_detail_is_none() -> None:
     for poam in cases:
         detail, reasons = render_vulnerability(poam, today=TODAY, window=WINDOW)
         assert (detail is None) is bool(reasons), (poam.id, detail, reasons)
+
+
+def test_instant_refuses_a_naive_datetime_rather_than_guessing_a_zone() -> None:
+    """A library-level guard, not a route-level one (spec §6.1.1).
+
+    ``datetime.astimezone`` reads a naive value as LOCAL time, so the old code
+    turned a naive ``2026-09-01T00:00:00`` into ``2026-09-01T04:00:00Z`` on a
+    server in ``America/New_York`` -- and across a DST boundary it changed the
+    reporting window's LENGTH as well. The route rejects a naive period with
+    422, but the one field that says which activity a report covers must not
+    depend on which caller reached this function first.
+    """
+    with pytest.raises(ValueError, match="naive"):
+        _instant(datetime(2026, 9, 1))
+    assert _instant(datetime(2026, 9, 1, tzinfo=UTC)) == "2026-09-01T00:00:00Z"
+
+
+def test_instant_converts_an_offset_to_utc_rather_than_dropping_it() -> None:
+    """An aware value in another offset is a real instant and is converted,
+    which is precisely what a naive one cannot be.
+    """
+    eastern = timezone(timedelta(hours=-4))
+    assert _instant(datetime(2026, 9, 1, tzinfo=eastern)) == "2026-09-01T04:00:00Z"

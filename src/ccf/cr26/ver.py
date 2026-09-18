@@ -283,7 +283,21 @@ def _instant(value: datetime) -> str:
 
     `format: date-time` is NOT enforced here (spec §4), so this function is the
     only thing standing between a malformed value and the deliverable.
+
+    A naive datetime is **refused, never guessed at** (spec §6.1.1).
+    ``datetime.astimezone`` reads a naive value as *local* time, so a server in
+    ``America/New_York`` silently turned a posted ``2026-09-01T00:00:00`` into
+    ``2026-09-01T04:00:00Z`` -- and, across a DST boundary, changed the
+    window's length as well. The route rejects a naive period with 422, but
+    this guard is deliberately library-level: the correctness of the one field
+    that says *which activity this report covers* must not depend on which
+    caller got there first.
     """
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(
+            "a naive datetime has no instant: supply a timezone-aware value "
+            f"(got {value!r})"
+        )
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

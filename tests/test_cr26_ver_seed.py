@@ -379,6 +379,67 @@ async def test_an_inverted_period_is_refused() -> None:
     assert resp.status_code == 422, resp.text
 
 
+@pytest.mark.parametrize(
+    "body, label",
+    [
+        ({"from": "2026-09-01T00:00:00", "to": "2026-12-01T00:00:00Z"}, "naive from"),
+        ({"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00"}, "naive to"),
+        ({"from": "2026-09-01T00:00:00", "to": "2026-12-01T00:00:00"}, "both naive"),
+    ],
+)
+async def test_a_naive_period_is_refused_rather_than_read_as_local_time(
+    body: dict[str, str], label: str
+) -> None:
+    """422, not a silently shifted window (spec §6.1.1).
+
+    Measured before the fix with the server in `America/New_York`: a naive
+    pair was stored as `2026-09-01T04:00:00Z`/`2026-12-01T05:00:00Z`, because
+    `datetime.astimezone` reads a naive value as LOCAL time -- and since that
+    pair straddles a DST boundary, the window's LENGTH changed too. `ok: True`,
+    no error, nothing downstream able to tell.
+
+    The two MIXED cases matter on their own: a mixed pair reached `_ordered`'s
+    comparison and raised `TypeError`, which pydantic does not wrap the way it
+    wraps `ValueError`, so the caller got a 500 rather than a 422.
+    """
+    org_id, system_id = await _system(f"route-naive-{label.replace(' ', '-')}")
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=body
+        )
+    assert resp.status_code == 422, f"{label}: {resp.text}"
+
+
+async def test_a_naive_period_is_refused_by_the_avi_route_too() -> None:
+    """The AVI route depends on `VerPeriod` rather than merely importing it."""
+    org_id, system_id = await _system("route-avi-naive")
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/avi/seed",
+            json={"from": "2026-09-01T00:00:00", "to": "2026-12-01T00:00:00"},
+        )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_an_aware_period_in_another_offset_is_stored_as_the_exact_instant() -> None:
+    """The other half of the naive rule: an aware value IS an instant, so it is
+    converted rather than refused, and the conversion is asserted by exact
+    string. `-04:00` rather than `Z` so a route that dropped the offset would
+    fail here -- and so this assertion does not depend on the server's zone.
+    """
+    org_id, system_id = await _system("route-aware-offset")
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed",
+            json={"from": "2026-09-01T00:00:00-04:00", "to": "2026-12-01T00:00:00-05:00"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["document"]["reportPeriod"] == {
+        "from": "2026-09-01T04:00:00Z",
+        "to": "2026-12-01T05:00:00Z",
+    }
+
+
 async def test_a_non_admin_cannot_seed_a_vdr() -> None:
     """`control_owner` rather than `viewer`, so this distinguishes the write
     gate from the read gate. Authoring a CR26 deliverable is admin only."""

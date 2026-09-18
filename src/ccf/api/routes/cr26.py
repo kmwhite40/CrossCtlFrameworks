@@ -23,11 +23,10 @@ itself a disclosure.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -253,12 +252,25 @@ class VerPeriod(BaseModel):
     Nothing in the platform records what a previous report covered, so
     VER-RPT-PER's "all activity since the previous report" is an obligation on
     the operator. The document records the window it actually covered.
+
+    Both ends are **aware** datetimes, and a naive one is refused with 422
+    rather than coerced (spec §6.1.1). ``datetime.astimezone`` treats a naive
+    value as *local* time, so a naive pair posted to a server in
+    ``America/New_York`` was stored as ``04:00:00Z``/``05:00:00Z`` -- a window
+    the operator never asked for, and, because that pair straddles a DST
+    boundary, an hour longer than the one they posted.
+
+    ``AwareDatetime`` rather than a validator of our own for a second reason:
+    a *mixed* naive/aware pair reached ``_ordered``'s comparison and raised
+    ``TypeError``, which pydantic does not wrap into a validation error the
+    way it wraps ``ValueError``, so the caller got a 500. Rejecting at the
+    field means the comparison only ever sees two aware values.
     """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    period_from: datetime = Field(alias="from")
-    period_to: datetime = Field(alias="to")
+    period_from: AwareDatetime = Field(alias="from")
+    period_to: AwareDatetime = Field(alias="to")
 
     @model_validator(mode="after")
     def _ordered(self) -> VerPeriod:
