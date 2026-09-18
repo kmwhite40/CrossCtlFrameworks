@@ -230,3 +230,23 @@ def test_a_kept_entry_is_not_aliased_to_the_caller_s_document() -> None:
     merged, _ = _merge(authored, [], unplaced={"3": ["no description"]})
     merged[0]["vulnerabilityDetail"]["detection"]["detectionSource"] = "MUTATED"
     assert authored[0]["vulnerabilityDetail"]["detection"]["detectionSource"] == "nessus"
+
+
+def test_a_non_numeric_id_that_is_still_accepted_sorts_rather_than_crashing() -> None:
+    """The ordering path was the one place left on a bare
+    `int(...["providerTrackingId"])`, so an admin-edited "POAM-42" that IS
+    still accepted -- rationale and all -- raised `ValueError` and took the
+    whole seed down, where the omission paths had used `_as_row_id` since
+    they were written. Numeric ids sort first, in numeric order.
+    """
+    ids = ("POAM-42", "30", "4")
+    authored = [
+        {"vulnerabilityDetail": _detail(p), "acceptanceRationale": f"r{p}"} for p in ids
+    ]
+    merged, omitted = _merge(authored, [_detail(p) for p in ids])
+    assert omitted == []
+    assert [e["vulnerabilityDetail"]["providerTrackingId"] for e in merged] == [
+        "4",
+        "30",
+        "POAM-42",
+    ]

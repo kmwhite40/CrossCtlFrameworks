@@ -276,6 +276,18 @@ def _as_row_id(tid: str) -> int | str:
     return int(tid) if tid.isdigit() else tid
 
 
+def _id_sort_key(row_id: int | str) -> tuple[bool, Any]:
+    """Numeric ids first in numeric order, then non-numeric ids in string
+    order. The one ordering rule for anything keyed on a row id.
+
+    ``int | str`` is not orderable against itself -- a bare ``sorted()`` raises
+    ``TypeError`` the moment one id is a POA&M primary key and another is an
+    admin-edited ``providerTrackingId`` -- so every sort in this module goes
+    through this single body rather than a hand-written copy that could drift.
+    """
+    return (isinstance(row_id, str), row_id)
+
+
 def _omitted_sort_key(row: OmittedRow) -> tuple[bool, Any]:
     """The one ordering rule for an :data:`OmittedRow` list, used everywhere
     one is sorted.
@@ -292,7 +304,7 @@ def _omitted_sort_key(row: OmittedRow) -> tuple[bool, Any]:
     exactly the "one rule expressed in two places" shape that cost the
     sibling SDR module a full review round.
     """
-    return (isinstance(row[0], str), row[0])
+    return _id_sort_key(row[0])
 
 
 @dataclass(frozen=True)
@@ -355,7 +367,11 @@ def merge_accepted(
         if (tid := _tracking_id(entry)) is not None
     }
     seen: set[str] = set()
-    merged: list[dict[str, Any]] = []
+    #: ``(row id, entry)`` rather than bare entries: the id an entry is sorted
+    #: on is the one it was KEYED on, parsed once by `_as_row_id`, so the
+    #: ordering cannot disagree with the lookup and nothing re-parses stored
+    #: JSON to sort it.
+    merged: list[tuple[int | str, dict[str, Any]]] = []
     omitted: list[OmittedRow] = []
 
     for detail in derived:
@@ -373,10 +389,13 @@ def merge_accepted(
             omitted.append((_as_row_id(tid), "no acceptance rationale"))
             continue
         merged.append(
-            {
-                "vulnerabilityDetail": copy.deepcopy(detail),
-                "acceptanceRationale": str(rationale).strip(),
-            }
+            (
+                _as_row_id(tid),
+                {
+                    "vulnerabilityDetail": copy.deepcopy(detail),
+                    "acceptanceRationale": str(rationale).strip(),
+                },
+            )
         )
 
     for tid, entry in by_id.items():
@@ -392,14 +411,18 @@ def merge_accepted(
             # `acceptanceRationale` -- required by the schema.
             omitted.append((_as_row_id(tid), "no acceptance rationale"))
             continue
-        merged.append(copy.deepcopy(entry))
+        merged.append((_as_row_id(tid), copy.deepcopy(entry)))
         omitted.extend(
             (_as_row_id(tid), f"detail not refreshed: {reason}") for reason in reasons
         )
 
-    merged.sort(key=lambda e: int(e["vulnerabilityDetail"]["providerTrackingId"]))
+    # `_as_row_id`, never a bare `int()`: `providerTrackingId` is `type:
+    # string` with no numeric pattern, and this module built `_as_row_id`
+    # precisely because an admin-edited "POAM-42" is unusual but legitimate.
+    # A bare `int()` raised `ValueError` here and took the whole seed down.
+    merged.sort(key=lambda pair: _id_sort_key(pair[0]))
     omitted.sort(key=_omitted_sort_key)
-    return AcceptedMerge(merged, omitted)
+    return AcceptedMerge([entry for _, entry in merged], omitted)
 
 
 def _instant(value: datetime) -> str:
