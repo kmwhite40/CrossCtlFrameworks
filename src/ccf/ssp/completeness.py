@@ -34,8 +34,26 @@ _ODP_PLACEHOLDER_TOKENS = ("[Assignment:", "[Selection", "[ORGANIZATION-DEFINED:
 _EVIDENCE_REQUIRED_STATUSES = {"Implemented", "Partially Implemented"}
 
 
-def _is_draft_or_placeholder(text: str) -> bool:
+def is_draft_or_placeholder(text: str) -> bool:
+    """True if ``text`` is scaffolding rather than a written statement.
+
+    Either the auto-composer's ``[DRAFT]`` marker (``ssp/nist80053.py`` writes
+    it into every part narrative of every new 800-53 project) or an unresolved
+    organization-defined-parameter placeholder (``ssp/statements.py``,
+    ``ssp/platforms.py``, ``ssp/odp.py``).
+
+    Public because :mod:`ccf.cr26.sdr` must drop exactly this text rather than
+    render it into a FedRAMP deliverable as the provider's implementation
+    description -- and a second copy of the rule is how the CR26 status enum
+    went wrong twice. This module already calls the same text "draft narrative
+    -- needs review"; one predicate, one answer.
+    """
     return DRAFT_PREFIX in text or any(tok in text for tok in _ODP_PLACEHOLDER_TOKENS)
+
+
+#: Retained for this module's existing call site; :func:`is_draft_or_placeholder`
+#: is the name to use.
+_is_draft_or_placeholder = is_draft_or_placeholder
 
 
 def _has_linked_evidence(entry: dict[str, Any]) -> bool:
