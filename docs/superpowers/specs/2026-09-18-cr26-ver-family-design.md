@@ -239,11 +239,29 @@ exactly as `ksiImplementation` is in the SDR. No migration.
 - **omit any entry with no rationale, and name it** — an accepted vulnerability
   with no rationale cannot validate, so emitting `""` would be the CPO's
   empty-description defect again
-- keep unrecognised entries rather than silently dropping provider content
+- **drop an authored entry the source no longer reports as accepted, and name
+  it** `"no longer an accepted vulnerability"`
 
 Read `merge_indicators` before writing this. It has been through five review
 rounds and its aliasing, self-healing and ordering behaviour are settled; do
 not rediscover them.
+
+**The last bullet is where this merge DIVERGES from `merge_indicators`, and the
+divergence is the point.** `sdr.py:462` keeps an authored entry the platform no
+longer recognises, because there the authored field is a *narrative* and
+discarding it loses human work that nothing can reconstruct. Here the authored
+field rides on a *claim*: keeping an orphaned entry tells a regulator that a
+vulnerability the scanner no longer reports is still formally accepted. A
+remediated weakness reported as accepted is a false compliance claim, which is
+worse than a lost sentence. Drop it, name it, and let the operator decide.
+
+> **Correction, 2026-09-18.** This bullet previously read "keep unrecognised
+> entries rather than silently dropping provider content" — copied verbatim
+> from `merge_indicators`' contract without asking whether its reasoning
+> transferred. It does not. A Task 3 reviewer caught that the spec's literal
+> text contradicted the implemented and tested behaviour, and would have led
+> the next reader to "fix" the code back into the defect. The code was right;
+> this section was wrong.
 
 ---
 
@@ -334,13 +352,18 @@ Of the rows that remain, one is omitted, with its id and reason, when:
    says nothing about its content (§3.1).
 4. `accepted_weakness_state` returns `unknown` (§2).
 5. For AVI and `ver_history.acceptedVulnerabilities` only: no authored
-   `acceptanceRationale` (§5).
+   `acceptanceRationale` (§5) — reason `"no acceptance rationale"`.
+6. For AVI and `ver_history.acceptedVulnerabilities` only: an authored entry
+   the source no longer reports as accepted (§5) — reason `"no longer an
+   accepted vulnerability"`. This one is keyed on the *authored* document
+   rather than on a POA&M row, so its id comes from stored JSON an admin may
+   have edited and is **not guaranteed numeric**.
 
-Rules 1–4 are evaluated for every document; rule 5 only for the accepted half.
+Rules 1–4 are evaluated for every document; rules 5 and 6 only for the accepted half.
 A row may trip more than one; report all reasons that apply, not the first —
 see `omitted_poam_ids`' shape in §6.1.
 
-Every one of these five is a **blank-or-missing** test, never a `None` test.
+Every one of rules 1–5 is a **blank-or-missing** test, never a `None` test.
 That is one rule applied five times, and it belongs in one helper rather than
 five call sites: the SDR needed four review rounds on a loop that asked the
 same question in two different forms.
