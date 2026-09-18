@@ -281,6 +281,13 @@ async def test_a_blanked_title_does_not_destroy_the_authored_rationale() -> None
         (poam_id, "detail not refreshed: no description"),
     ], blanked.omitted_poam_ids
     assert (poam_id, "no longer an accepted vulnerability") not in blanked.omitted_poam_ids
+    # The kept entry is NOT counted as rendered: its row is one the walk
+    # omitted, it is named in `omitted_poam_ids`, and counting it twice would
+    # break the partition. So the document holds one more entry than
+    # `rendered` -- exactly the stale entries the operator has been told about.
+    assert blanked.counts["rendered"] == 0
+    assert blanked.counts["omitted"] == 1
+    assert _partition_sum(blanked.counts) == 1
 
     # And the stale detail refreshes once the data is fixed -- "kept verbatim"
     # must mean one cycle behind, not frozen for ever.
@@ -416,17 +423,107 @@ async def test_a_cpo_uri_already_in_the_document_survives_a_reseed() -> None:
     assert result.document.is_valid is True
 
 
+#: The five keys that PARTITION the POA&M rows a seeder considered.
+#: `dropped_authored_entries` is deliberately not among them: it counts
+#: authored ENTRIES, which need not correspond to any row.
+PARTITION_KEYS = (
+    "excluded_not_a_flaw",
+    "excluded_outside_period",
+    "excluded_other_half",
+    "rendered",
+    "omitted",
+)
+
+
+def _partition_sum(counts: dict[str, int]) -> int:
+    assert set(counts) == {*PARTITION_KEYS, "dropped_authored_entries"}, counts
+    return sum(counts[k] for k in PARTITION_KEYS)
+
+
 async def test_counts_partition_every_row_the_seeder_considered() -> None:
+    """One row of every kind the VDR can see -- excluded by source, excluded by
+    period, rendered, omitted, and rendered into the OTHER half -- so the sum
+    genuinely depends on each bucket rather than on one that happens to be
+    zero.
+    """
     _org_id, system_id = await _system("counts")
     await _poam(system_id, status="open")
     await _poam(system_id, source="assessment")
     await _poam(system_id, identified_on=None)
+    await _poam(system_id, identified_on=date(2027, 1, 1))
+    await _poam(system_id, status="risk_accepted")
     async with session_scope() as s:
         result = await seed_vdr(
             s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
         )
-    assert sum(result.counts.values()) == 3
-    assert result.counts["excluded_not_a_flaw"] == 1
+    assert _partition_sum(result.counts) == 5
+    assert result.counts == {
+        "excluded_not_a_flaw": 1,
+        "excluded_outside_period": 1,
+        # The accepted row: rendered by the walk, but a VDR covers
+        # "non-accepted vulnerabilities only", so it can never appear here.
+        "excluded_other_half": 1,
+        "rendered": 1,
+        "omitted": 1,
+        "dropped_authored_entries": 0,
+    }
+
+
+async def test_an_avi_s_counts_describe_the_avi_not_the_walk() -> None:
+    """Measured: an AVI returned `omitted_poam_ids: [[id, "no acceptance
+    rationale"]]` beside `counts: {"rendered": 1, "omitted": 0}` and an empty
+    document. The merge stage's omissions never reached `counts`, and
+    `rendered` counted an ACTIVE row that can never appear in an AVI.
+    """
+    _org_id, system_id = await _system("counts-avi")
+    accepted_id = await _poam(system_id, status="risk_accepted")
+    await _poam(system_id, status="open")
+    async with session_scope() as s:
+        result = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.document.document["acceptedVulnerabilities"] == []
+    assert result.omitted_poam_ids == [(accepted_id, "no acceptance rationale")]
+    assert result.counts == {
+        "excluded_not_a_flaw": 0,
+        "excluded_outside_period": 0,
+        "excluded_other_half": 1,
+        "rendered": 0,
+        "omitted": 1,
+        "dropped_authored_entries": 0,
+    }
+    assert _partition_sum(result.counts) == 2
+
+
+async def test_a_dropped_authored_entry_is_counted_outside_the_row_partition() -> None:
+    """An authored id need not correspond to any POA&M row -- "POAM-X" here is
+    stored JSON an admin edited -- so counting it among the rows would break
+    the sum. It is reported beside the partition instead, and the partition
+    still adds up to the rows the seeder considered.
+    """
+    _org_id, system_id = await _system("counts-dropped")
+    await _poam(system_id, status="open")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": "POAM-X"},
+                        "acceptanceRationale": "Stale, admin-edited tracking id.",
+                    }
+                ],
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.omitted_poam_ids == [("POAM-X", "no longer an accepted vulnerability")]
+    assert result.counts["dropped_authored_entries"] == 1
+    assert _partition_sum(result.counts) == 1
 
 
 async def test_another_systems_poams_never_reach_this_document() -> None:
@@ -732,11 +829,17 @@ async def test_the_avi_route_reports_every_result_field_to_the_caller() -> None:
     body = resp.json()
     assert body["kind"] == "avi"
     assert body["omitted_poam_ids"] == [[poam_id, "no acceptance rationale"]]
+    # `rendered` describes THIS document: the one accepted row had no
+    # authored rationale, so nothing reached the AVI and the row is omitted.
+    # Reporting `rendered: 1, omitted: 0` beside an empty document and a
+    # populated `omitted_poam_ids` was the measured defect.
     assert body["counts"] == {
         "excluded_not_a_flaw": 0,
         "excluded_outside_period": 0,
-        "rendered": 1,
-        "omitted": 0,
+        "excluded_other_half": 0,
+        "rendered": 0,
+        "omitted": 1,
+        "dropped_authored_entries": 0,
     }
     assert body["document"]["acceptedVulnerabilities"] == []
 

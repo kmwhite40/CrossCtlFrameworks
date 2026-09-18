@@ -321,6 +321,17 @@ class AcceptedMerge:
     #: re-seed with nothing changed produces a byte-identical document.
     entries: list[dict[str, Any]]
     omitted: list[OmittedRow]
+    #: Derived ROWS whose freshly rendered detail reached ``entries``. Does not
+    #: count a kept-verbatim entry: that row is one the WALK omitted and
+    #: already counted, and counting it twice would break the seed's partition.
+    rendered_rows: int = 0
+    #: Derived ROWS this stage left out -- rule 5, no authored rationale. The
+    #: walk counted them as rendered; the seed must move them to `omitted`.
+    omitted_rows: int = 0
+    #: Authored ENTRIES dropped: no longer accepted, malformed, a discarded
+    #: duplicate, or kept-but-blank. Entries, not rows -- an authored id need
+    #: not correspond to any POA&M row -- so this is outside the row partition.
+    dropped_entries: int = 0
 
 
 def merge_accepted(
@@ -364,6 +375,7 @@ def merge_accepted(
     """
     unplaced = unplaced or {}
     omitted: list[OmittedRow] = []
+    rendered_rows = omitted_rows = dropped_entries = 0
     by_id: dict[str, dict[str, Any]] = {}
     for index, entry in enumerate(authored):
         tid = _tracking_id(entry)
@@ -380,12 +392,14 @@ def merge_accepted(
                     "authored entry has no providerTrackingId",
                 )
             )
+            dropped_entries += 1
             continue
         if tid in by_id:
             # Last wins, as it always has; what is new is saying so. Two
             # entries for one id mean one human-written rationale is being
             # discarded, and nothing said which.
             omitted.append((_as_row_id(tid), "duplicate authored entry discarded"))
+            dropped_entries += 1
         by_id[tid] = entry
 
     seen: set[str] = set()
@@ -408,7 +422,9 @@ def merge_accepted(
         rationale = (by_id.get(tid) or {}).get("acceptanceRationale")
         if is_blank(rationale):
             omitted.append((_as_row_id(tid), "no acceptance rationale"))
+            omitted_rows += 1
             continue
+        rendered_rows += 1
         merged.append(
             (
                 _as_row_id(tid),
@@ -425,12 +441,14 @@ def merge_accepted(
         reasons = list(unplaced.get(tid) or ())
         if not reasons:
             omitted.append((_as_row_id(tid), "no longer an accepted vulnerability"))
+            dropped_entries += 1
             continue
         rationale = entry.get("acceptanceRationale")
         if is_blank(rationale):
             # Nothing to preserve, and keeping it would emit an entry with no
             # `acceptanceRationale` -- required by the schema.
             omitted.append((_as_row_id(tid), "no acceptance rationale"))
+            dropped_entries += 1
             continue
         merged.append((_as_row_id(tid), copy.deepcopy(entry)))
         omitted.extend(
@@ -443,7 +461,13 @@ def merge_accepted(
     # A bare `int()` raised `ValueError` here and took the whole seed down.
     merged.sort(key=lambda pair: _id_sort_key(pair[0]))
     omitted.sort(key=_omitted_sort_key)
-    return AcceptedMerge([entry for _, entry in merged], omitted)
+    return AcceptedMerge(
+        [entry for _, entry in merged],
+        omitted,
+        rendered_rows=rendered_rows,
+        omitted_rows=omitted_rows,
+        dropped_entries=dropped_entries,
+    )
 
 
 def _instant(value: datetime) -> str:
@@ -467,6 +491,25 @@ def _instant(value: datetime) -> str:
             f"(got {value!r})"
         )
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(frozen=True)
+class _Built:
+    """One kind's document, plus the figures only its own ``build`` knows.
+
+    The walk cannot compute them: it does not know which half this document
+    carries, and the merge stage runs after it.
+    """
+
+    document: dict[str, Any]
+    omitted: list[OmittedRow] = field(default_factory=list)
+    #: POA&M rows whose freshly rendered detail reached THIS document.
+    rendered: int = 0
+    #: POA&M rows the merge stage left out (rule 5), which the walk had
+    #: counted as rendered.
+    merge_omitted: int = 0
+    #: Authored ENTRIES dropped, which need not correspond to rows at all.
+    dropped_authored: int = 0
 
 
 @dataclass(frozen=True)
@@ -552,18 +595,64 @@ async def _seed(
         # Entries that are not dicts are kept rather than filtered: a
         # malformed authored entry must be reported by name, not vanish.
         authored = entries if isinstance(entries, list) else []
-    document, extra_omitted = build(rendering, current, authored)
-    _carry_uri(document, current)
+    built = build(rendering, current, authored)
+    _carry_uri(built.document, current)
     stored = await put_document(
-        session, system_id=system_id, kind=kind, document=document
+        session, system_id=system_id, kind=kind, document=built.document
     )
-    omitted: list[OmittedRow] = [*rendering.omitted, *extra_omitted]
+    omitted: list[OmittedRow] = [*rendering.omitted, *built.omitted]
     omitted.sort(key=_omitted_sort_key)
     return VerSeedResult(
         document=stored,
         omitted_poam_ids=omitted,
-        counts=dict(rendering.counts),
+        counts=_seed_counts(rendering, built),
     )
+
+
+def _seed_counts(rendering: VerRendering, built: _Built) -> dict[str, int]:
+    """Where every POA&M row went **in this seed**, not in the walk.
+
+    The walk's own figures describe the walk: they counted an *active* row as
+    `rendered` on an AVI seed, where it can never appear, and no omission the
+    MERGE stage made ever reached them -- measured, an AVI reporting
+    ``omitted_poam_ids: [[id, "no acceptance rationale"]]`` beside
+    ``counts: {"rendered": 1, "omitted": 0}`` and an empty document.
+
+    What each key counts, for the document this seed just wrote:
+
+    * ``excluded_not_a_flaw`` -- rows that are not scanner-derived (§2.1).
+    * ``excluded_outside_period`` -- flaws whose ``detectedAt`` falls outside
+      the reporting period (§2.2). Always 0 for `ver_history`, which has none.
+    * ``excluded_other_half`` -- flaws rendered into the half this document
+      does not carry: accepted rows on a VDR seed, active rows on an AVI seed,
+      and none at all on `ver_history`, which carries both.
+    * ``rendered`` -- rows whose freshly rendered detail reached THIS document.
+      An entry kept verbatim from the stored document (§5.1) is deliberately
+      NOT counted here: its row is one the walk omitted and counted as such,
+      and it is named in ``omitted_poam_ids`` -- so the document can hold one
+      more entry than this number, and that difference is exactly the stale
+      entries an operator has been told about.
+    * ``omitted`` -- rows left out and named, by the walk (rules 1-4) or by
+      the merge (rule 5), counted once per ROW however many reasons apply.
+
+    **Those five sum to the number of POA&M rows the seeder considered.** A
+    partition that does not add up is how a row disappears silently.
+
+    * ``dropped_authored_entries`` -- authored entries that did not reach the
+      document: no longer accepted (rule 6), malformed, or a discarded
+      duplicate. Keyed on stored JSON rather than on a row -- such an id need
+      not correspond to any POA&M row at all -- so it is reported beside the
+      partition and deliberately **outside** its sum.
+    """
+    walk = rendering.counts
+    return {
+        "excluded_not_a_flaw": walk["excluded_not_a_flaw"],
+        "excluded_outside_period": walk["excluded_outside_period"],
+        "excluded_other_half": walk["rendered"] - built.rendered - built.merge_omitted,
+        "rendered": built.rendered,
+        "omitted": walk["omitted"] + built.merge_omitted,
+        "dropped_authored_entries": built.dropped_authored,
+    }
 
 
 async def seed_vdr(
@@ -580,14 +669,17 @@ async def seed_vdr(
         rendering: VerRendering,
         _current: dict[str, Any],
         _authored: list[Any],
-    ) -> tuple[dict[str, Any], list[OmittedRow]]:
-        return {
-            "reportPeriod": {
-                "from": _instant(period_from),
-                "to": _instant(period_to),
+    ) -> _Built:
+        return _Built(
+            document={
+                "reportPeriod": {
+                    "from": _instant(period_from),
+                    "to": _instant(period_to),
+                },
+                "vulnerabilities": rendering.active,
             },
-            "vulnerabilities": rendering.active,
-        }, []
+            rendered=len(rendering.active),
+        )
 
     return await _seed(
         session,
@@ -613,20 +705,26 @@ async def seed_avi(
         rendering: VerRendering,
         _current: dict[str, Any],
         authored: list[Any],
-    ) -> tuple[dict[str, Any], list[OmittedRow]]:
+    ) -> _Built:
         merge = merge_accepted(
             authored,
             rendering.accepted,
             unplaced=rendering.unplaced,
             excluded=rendering.excluded,
         )
-        return {
-            "reportPeriod": {
-                "from": _instant(period_from),
-                "to": _instant(period_to),
+        return _Built(
+            document={
+                "reportPeriod": {
+                    "from": _instant(period_from),
+                    "to": _instant(period_to),
+                },
+                "acceptedVulnerabilities": merge.entries,
             },
-            "acceptedVulnerabilities": merge.entries,
-        }, merge.omitted
+            omitted=merge.omitted,
+            rendered=merge.rendered_rows,
+            merge_omitted=merge.omitted_rows,
+            dropped_authored=merge.dropped_entries,
+        )
 
     return await _seed(
         session,
@@ -665,18 +763,25 @@ async def seed_ver_history(
         rendering: VerRendering,
         _current: dict[str, Any],
         authored: list[Any],
-    ) -> tuple[dict[str, Any], list[OmittedRow]]:
+    ) -> _Built:
         merge = merge_accepted(
             authored,
             rendering.accepted,
             unplaced=rendering.unplaced,
             excluded=rendering.excluded,
         )
-        return {
-            "generatedAt": _instant(datetime.now(UTC)),
-            "activeVulnerabilities": rendering.active,
-            "acceptedVulnerabilities": merge.entries,
-        }, merge.omitted
+        return _Built(
+            document={
+                "generatedAt": _instant(datetime.now(UTC)),
+                "activeVulnerabilities": rendering.active,
+                "acceptedVulnerabilities": merge.entries,
+            },
+            omitted=merge.omitted,
+            # BOTH halves reach this document, so both count as rendered here.
+            rendered=len(rendering.active) + merge.rendered_rows,
+            merge_omitted=merge.omitted_rows,
+            dropped_authored=merge.dropped_entries,
+        )
 
     return await _seed(
         session,
