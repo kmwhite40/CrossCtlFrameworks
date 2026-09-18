@@ -17,7 +17,13 @@ from ccf import db as ccf_db
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.etl.sources import _read_file
-from ccf.models import CatalogSource
+from ccf.models import (
+    KSI,
+    CatalogSource,
+    KSIAssessorReview,
+    KSIState,
+    KSIValidationResult,
+)
 from ccf.models_packs import PackSource
 from ccf.packs import sync as _pack_sync_mod
 
@@ -95,6 +101,61 @@ async def isolate_source_rows() -> AsyncIterator[None]:
         return
     async with session_scope() as session:
         for model, ids in created.items():
+            if ids:
+                await session.execute(delete(model).where(model.id.in_(ids)))
+
+
+#: The FedRAMP 20x KSI tables, most-dependent first so a delete never trips a
+#: foreign key. ``ksis`` is the odd one out and the reason this fixture exists
+#: separately from :func:`isolate_source_rows`: it is **global reference
+#: data** -- the seeded FedRAMP catalog, shared by every tenant -- while
+#: ``CatalogSource``/``PackSource`` are org-scoped working data. Different
+#: kind of table, different reason to clean up, so a sibling fixture says what
+#: is going on more clearly than a longer list on that one would.
+_KSI_MODELS = (KSIValidationResult, KSIAssessorReview, KSIState, KSI)
+
+
+async def _ksi_row_ids() -> dict[object, set[int]]:
+    async with session_scope() as session:
+        return {
+            model: set((await session.execute(select(model.id))).scalars().all())
+            for model in _KSI_MODELS
+        }
+
+
+@pytest.fixture
+async def isolate_ksi_rows() -> AsyncIterator[None]:
+    """Delete the ``ksis`` / per-system KSI rows this test created.
+
+    ``clean_migrated_db`` resets the schema once per *session*, so a row a
+    test leaves behind is visible to every later module -- and ``ksis`` is
+    global reference data seeded from ``fedramp20x/ksi_catalog.json``, not
+    tenant working data. ``tests/test_fedramp20x.py`` asserts an **exact row
+    count** against it, and the suite runs alphabetically, so a ``test_cr26_*``
+    module that invents a KSI poisons it: measured as ``assert 64 == 51``.
+
+    Opt the whole module in with a module-level
+    ``pytestmark = pytest.mark.usefixtures("isolate_ksi_rows")`` rather than
+    per-test, so no test added later can forget; not autouse, for the same
+    reason :func:`isolate_source_rows` is not -- it would force a database
+    round trip on every test in the suite, including those that touch no
+    database at all.
+
+    Deletes by *id difference*, never by an identifier prefix: a prefix filter
+    silently misses any row named differently, and the catalog's own rows must
+    survive untouched. The per-system tables are cleaned explicitly rather than
+    left to ``ksis``' ``ON DELETE CASCADE``, so a test that records a state or
+    a validation result against a *catalog* KSI is cleaned up too.
+    """
+    before = await _ksi_row_ids()
+    yield
+    after = await _ksi_row_ids()
+    created = {model: after[model] - before[model] for model in _KSI_MODELS}
+    if not any(created.values()):
+        return
+    async with session_scope() as session:
+        for model in _KSI_MODELS:  # most-dependent first
+            ids = created[model]
             if ids:
                 await session.execute(delete(model).where(model.id.in_(ids)))
 

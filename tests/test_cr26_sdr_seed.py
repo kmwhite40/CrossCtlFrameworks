@@ -33,6 +33,13 @@ from ccf.models import (
 
 _SEQ = itertools.count()
 
+#: ``ksis`` is global reference data -- the seeded FedRAMP 20x catalog -- and
+#: ``tests/test_fedramp20x.py`` asserts an exact row count against it. This
+#: module invents KSIs, and the suite runs alphabetically, so without this the
+#: rows it leaves behind poison that assertion (measured: ``assert 64 == 51``).
+#: Declared at module level so a test added here later cannot forget it.
+pytestmark = pytest.mark.usefixtures("isolate_ksi_rows")
+
 
 class _Fixture:
     """What a test needs to talk about one org, one system and one KSI."""
