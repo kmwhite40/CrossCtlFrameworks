@@ -483,6 +483,7 @@ async def _seed(
     build: Any,
     today: date | None = None,
     period: tuple[datetime, datetime] | None = None,
+    authored_kind: str | None = None,
 ) -> VerSeedResult:
     today = today or datetime.now(UTC).date()
     rows = await _poam_rows(session, system_id)
@@ -490,7 +491,24 @@ async def _seed(
         rows, today=today, window=RemediationWindow(), period=period
     )
     current = await _current(session, system_id, kind)
-    document, extra_omitted = build(rendering, current)
+    # `authored_kind` is the document the ACCEPTANCE RATIONALES are authored
+    # in, which is not always this one: the AVI is the family's single
+    # authoring surface, so `ver_history` reads them from the `avi` (spec
+    # §5.2). `certificationPackageOverviewUri` is still carried forward from
+    # this kind's own stored document -- it is a property of the filing, not
+    # of the rationale.
+    authored: list[Any] = []
+    if authored_kind is not None:
+        source = (
+            current
+            if authored_kind == kind
+            else await _current(session, system_id, authored_kind)
+        )
+        entries = source.get("acceptedVulnerabilities")
+        # Entries that are not dicts are kept rather than filtered: a
+        # malformed authored entry must be reported by name, not vanish.
+        authored = entries if isinstance(entries, list) else []
+    document, extra_omitted = build(rendering, current, authored)
     _carry_uri(document, current)
     stored = await put_document(
         session, system_id=system_id, kind=kind, document=document
@@ -515,7 +533,9 @@ async def seed_vdr(
     """Non-accepted vulnerabilities for the caller's reporting period."""
 
     def build(
-        rendering: VerRendering, _current: dict[str, Any]
+        rendering: VerRendering,
+        _current: dict[str, Any],
+        _authored: list[Any],
     ) -> tuple[dict[str, Any], list[OmittedRow]]:
         return {
             "reportPeriod": {
@@ -546,11 +566,12 @@ async def seed_avi(
     """Accepted vulnerabilities, keeping each authored acceptance rationale."""
 
     def build(
-        rendering: VerRendering, current: dict[str, Any]
+        rendering: VerRendering,
+        _current: dict[str, Any],
+        authored: list[Any],
     ) -> tuple[dict[str, Any], list[OmittedRow]]:
-        authored = current.get("acceptedVulnerabilities")
         merge = merge_accepted(
-            authored if isinstance(authored, list) else [],
+            authored,
             rendering.accepted,
             unplaced=rendering.unplaced,
             excluded=rendering.excluded,
@@ -570,6 +591,7 @@ async def seed_avi(
         build=build,
         today=today,
         period=(period_from, period_to),
+        authored_kind="avi",
     )
 
 
@@ -577,14 +599,31 @@ async def seed_ver_history(
     session: AsyncSession, *, system_id: int, today: date | None = None
 ) -> VerSeedResult:
     """Both halves at once. No period -- the schema has none, and carries
-    ``generatedAt`` instead."""
+    ``generatedAt`` instead.
+
+    The acceptance rationales come from the stored **`avi`** document, not from
+    this one (spec §5.2). Each seeder used to read only its own kind, so a
+    rationale authored in the AVI never reached here: measured on one system
+    seconds apart, the AVI carried the entry and its rationale while
+    `ver_history.acceptedVulnerabilities` was `[]` with
+    `(1, "no acceptance rationale")`. This array means *"All accepted
+    vulnerabilities"*, so empty asserts the provider has accepted none -- the
+    favourable answer -- while the AVI filed for the same system says
+    otherwise, and two filed deliverables contradicting each other is worse
+    than either being incomplete.
+
+    One authoring surface makes that disagreement impossible rather than
+    merely unlikely. Authoring a rationale into this document directly is not
+    supported.
+    """
 
     def build(
-        rendering: VerRendering, current: dict[str, Any]
+        rendering: VerRendering,
+        _current: dict[str, Any],
+        authored: list[Any],
     ) -> tuple[dict[str, Any], list[OmittedRow]]:
-        authored = current.get("acceptedVulnerabilities")
         merge = merge_accepted(
-            authored if isinstance(authored, list) else [],
+            authored,
             rendering.accepted,
             unplaced=rendering.unplaced,
             excluded=rendering.excluded,
@@ -595,4 +634,11 @@ async def seed_ver_history(
             "acceptedVulnerabilities": merge.entries,
         }, merge.omitted
 
-    return await _seed(session, system_id=system_id, kind="ver_history", build=build, today=today)
+    return await _seed(
+        session,
+        system_id=system_id,
+        kind="ver_history",
+        build=build,
+        today=today,
+        authored_kind="avi",
+    )

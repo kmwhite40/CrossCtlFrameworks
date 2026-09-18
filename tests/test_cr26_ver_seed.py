@@ -311,10 +311,14 @@ async def test_ver_history_carries_both_halves_and_a_generated_at() -> None:
     await _poam(system_id, status="open")
     accepted_id = await _poam(system_id, status="risk_accepted")
     async with session_scope() as s:
+        # Authored into the `avi`, which is the family's single authoring
+        # surface (spec §5.2). This test used to `put_document` the rationale
+        # straight into the `ver_history` body -- the workaround that hid the
+        # fact that a rationale authored in the AVI never reached here.
         row = await put_document(
             s,
             system_id=system_id,
-            kind="ver_history",
+            kind="avi",
             document={
                 "acceptedVulnerabilities": [
                     {
@@ -337,6 +341,53 @@ async def test_ver_history_carries_both_halves_and_a_generated_at() -> None:
     assert body["generatedAt"].endswith("Z")
     assert "reportPeriod" not in body
     assert result.document.validation_errors == ONE_ERROR
+
+
+async def test_a_rationale_authored_in_the_avi_reaches_ver_history_too() -> None:
+    """The measured defect (spec §5.2). Seeded on one system seconds apart, the
+    AVI carried the entry and its rationale while
+    `ver_history.acceptedVulnerabilities` was `[]` with
+    `(id, "no acceptance rationale")`.
+
+    `ver_history`'s array means "**All** accepted vulnerabilities", so empty
+    asserts the provider has accepted none -- the favourable answer -- while
+    the AVI filed for the same system says otherwise. Two filed deliverables
+    contradicting each other is worse than either being incomplete.
+
+    Authored ONCE, into the AVI, and asserted in both documents.
+    """
+    _org_id, system_id = await _system("one-authoring-surface")
+    poam_id = await _poam(system_id, status="risk_accepted")
+    async with session_scope() as s:
+        await seed_avi(s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY)
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "reportPeriod": {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"},
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(poam_id)},
+                        "acceptanceRationale": "Compensating control: WAF rule 91234.",
+                    }
+                ],
+            },
+        )
+    async with session_scope() as s:
+        avi = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    async with session_scope() as s:
+        hist = await seed_ver_history(s, system_id=system_id, today=TODAY)
+
+    for label, result in (("avi", avi), ("ver_history", hist)):
+        entries = result.document.document["acceptedVulnerabilities"]
+        assert len(entries) == 1, (label, entries)
+        assert entries[0]["acceptanceRationale"] == "Compensating control: WAF rule 91234."
+        assert entries[0]["vulnerabilityDetail"]["providerTrackingId"] == str(poam_id)
+        assert result.omitted_poam_ids == [], (label, result.omitted_poam_ids)
 
 
 async def test_a_cpo_uri_already_in_the_document_survives_a_reseed() -> None:
