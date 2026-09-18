@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
+from httpx import ASGITransport, AsyncClient
+
+from ccf.api.auth_deps import get_principal
+from ccf.api.main import create_app
+from ccf.auth import Principal
 from ccf.cr26.store import put_document
 from ccf.cr26.ver import seed_avi, seed_vdr, seed_ver_history
 from ccf.db import session_scope
@@ -290,3 +295,127 @@ async def test_seed_combines_an_int_and_a_str_omitted_id_without_raising() -> No
         (unmeasurable_id, "no identification date"),
         ("POAM-X", "no longer an accepted vulnerability"),
     ]
+
+
+# --- the routes --------------------------------------------------------
+#
+# The route handlers have no `today` parameter -- adding one would put
+# test-only surface into a production API -- so they always render against
+# the real clock. `_poam`'s own default `identified_on` is the fixed literal
+# `date(2026, 9, 5)`; a route test that relied on it would start failing
+# once the real clock crosses `ACCEPTED_WEAKNESS_DAYS = 192` days past that
+# date, for reasons that have nothing to do with the code under test (see
+# `accepted_weakness_state`). Every POA&M a route test creates below is
+# therefore dated relative to `date.today()` instead, recent enough that it
+# stays "not accepted" -- and so stays in the VDR/`ver_history` "active"
+# bucket -- no matter when the suite runs.
+
+RECENT = date.today() - timedelta(days=5)
+
+#: The reporting window posted to the VDR/AVI routes. No assertion in the
+#: route tests below depends on its value -- only on `counts`,
+#: `omitted_poam_ids` and array lengths -- so, unlike `identified_on`, this
+#: does not need to track `date.today()`: the window is just a value the
+#: document records, never an input to `accepted_weakness_state` or
+#: `classify`.
+PERIOD = {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"}
+
+
+class _Session:
+    """A client whose identity and role can change between calls."""
+
+    def __init__(self, *, org_id: int | None = None, role: str = "admin") -> None:
+        self.app = create_app()
+        self.org_id = org_id
+        self.role = role
+        self.app.dependency_overrides[get_principal] = self._principal
+
+    def _principal(self) -> Principal:
+        return Principal(user_id=1, email="isso@acme.gov", org_id=self.org_id, role=self.role)
+
+    def client(self) -> AsyncClient:
+        return AsyncClient(transport=ASGITransport(app=self.app), base_url="http://test")
+
+
+async def test_the_vdr_route_reports_every_result_field_to_the_caller() -> None:
+    """Both result fields must cross the HTTP boundary. They are the ENTIRE
+    operator-facing signal that a vulnerability was left out -- nothing in the
+    document says so -- and on the SDR, deleting the equivalent two lines from
+    the route left every dataclass-level assertion green.
+    """
+    org_id, system_id = await _system("route-vdr")
+    # RECENT: identified 5 days ago, status "open" -- stays "not accepted"
+    # under `accepted_weakness_state` for the next 187 days, so this always
+    # renders into `vulnerabilities` rather than drifting to the AVI.
+    await _poam(system_id, status="open", identified_on=RECENT)
+    # Excluded by source before the accepted/not-accepted question is ever
+    # asked (see `render_all`), so its date is irrelevant to its bucket --
+    # dated anyway for consistency with the rest of this test.
+    await _poam(system_id, source="assessment", identified_on=RECENT)
+    omitted_id = await _poam(system_id, identified_on=None)
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "vdr"
+    assert body["counts"]["excluded_not_a_flaw"] == 1
+    assert [omitted_id, "no identification date"] in body["omitted_poam_ids"]
+    assert len(body["document"]["vulnerabilities"]) == 1
+
+
+async def test_an_inverted_period_is_refused() -> None:
+    """A report whose window runs backwards states an impossible period."""
+    org_id, system_id = await _system("route-inverted")
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed",
+            json={"from": "2026-12-01T00:00:00Z", "to": "2026-09-01T00:00:00Z"},
+        )
+    assert resp.status_code == 422, resp.text
+
+
+async def test_a_non_admin_cannot_seed_a_vdr() -> None:
+    """`control_owner` rather than `viewer`, so this distinguishes the write
+    gate from the read gate. Authoring a CR26 deliverable is admin only."""
+    org_id, system_id = await _system("route-role")
+    async with _Session(org_id=org_id, role="control_owner").client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
+        )
+    assert resp.status_code == 403, resp.text
+
+
+async def test_another_tenants_system_is_404_not_403() -> None:
+    """Seeded as the owner first, so this exercises a path that would otherwise
+    return 200 -- a 404 against a system that never existed proves nothing."""
+    owner_org, system_id = await _system("route-other")
+    other_org, _ = await _system("route-intruder")
+    async with _Session(org_id=owner_org).client() as c:
+        first = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
+        )
+    assert first.status_code == 200, first.text
+
+    async with _Session(org_id=other_org).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/vdr/seed", json=PERIOD
+        )
+    assert resp.status_code == 404, resp.text
+
+
+async def test_the_ver_history_route_takes_no_period() -> None:
+    org_id, system_id = await _system("route-hist")
+    # RECENT, same reasoning as the VDR route test above: this must stay
+    # "not accepted" so it always lands in `activeVulnerabilities`.
+    await _poam(system_id, status="open", identified_on=RECENT)
+    async with _Session(org_id=org_id).client() as c:
+        resp = await c.post(
+            f"/api/systems/{system_id}/cr26-documents/ver_history/seed"
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "reportPeriod" not in body["document"]
+    assert body["document"]["generatedAt"].endswith("Z")
+    assert len(body["document"]["activeVulnerabilities"]) == 1
