@@ -15,10 +15,12 @@ constrains shape rather than honesty:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
-from ..patching.sla import RemediationWindow, classify
+from ..patching.sla import FLAW_SOURCES, RemediationWindow, accepted_weakness_state, classify
 
 #: `classify` buckets that answer the present-tense question `isOverdue` asks.
 #: Every other bucket omits the object rather than claiming `false`, which
@@ -102,3 +104,59 @@ def render_vulnerability(
     if overdue is not None:
         detail["overdueStatus"] = overdue
     return detail, []
+
+
+@dataclass(frozen=True)
+class VerRendering:
+    """Every candidate row's destination, produced in ONE walk.
+
+    Two passes over the same rows would let `active`, `accepted`, `omitted` and
+    `counts` drift apart; the SDR split exactly this work and spent a review
+    round merging it back. `counts` partitions the input, and its parts sum to
+    the number of rows considered -- a partition that does not add up is how a
+    row disappears without anyone noticing.
+    """
+
+    active: list[dict[str, Any]] = field(default_factory=list)
+    accepted: list[dict[str, Any]] = field(default_factory=list)
+    #: One tuple per (id, reason) pair, so a row failing three rules appears
+    #: three times. `counts["omitted"]` counts ROWS.
+    omitted: list[tuple[int, str]] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+
+
+def render_all(
+    poams: Sequence[Any], *, today: date, window: RemediationWindow
+) -> VerRendering:
+    """Filter to flaws, partition accepted from not-accepted, render each.
+
+    A row that is not scanner-derived is **out of scope**, not omitted: nothing
+    is wrong with it, it simply is not a vulnerability (spec §2.1). Collapsing
+    that into the omitted list would bury a real data gap among healthy rows.
+    """
+    out = VerRendering(
+        counts={"excluded_not_a_flaw": 0, "rendered": 0, "omitted": 0}
+    )
+    for poam in poams:
+        if (poam.source or "") not in FLAW_SOURCES:
+            out.counts["excluded_not_a_flaw"] += 1
+            continue
+
+        reasons: list[str] = []
+        state = accepted_weakness_state(poam, today=today)
+        if state == "unknown":
+            # Neither document. `active` means "not accepted", which is the
+            # favourable answer for a row nobody can measure.
+            reasons.append("not measurable as accepted or not")
+
+        detail, render_reasons = render_vulnerability(poam, today=today, window=window)
+        reasons.extend(render_reasons)
+
+        if reasons or detail is None:
+            out.counts["omitted"] += 1
+            out.omitted.extend((poam.id, reason) for reason in reasons)
+            continue
+
+        out.counts["rendered"] += 1
+        (out.accepted if state == "accepted" else out.active).append(detail)
+    return out
