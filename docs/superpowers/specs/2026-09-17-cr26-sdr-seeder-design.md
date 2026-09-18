@@ -70,6 +70,47 @@ about how the offering meets that indicator.
 The CPO's gap is visible because the document fails validation. The SDR's would
 be invisible. That asymmetry is why §2 omits rather than empties.
 
+### 1.3 Two of the five derived fields are claims, not renderings
+
+§1.2 caught that the control fields need a shape conversion rather than a copy.
+The same lens was never applied to the KSI fields, and two of them fail it —
+not on shape, but on **meaning**.
+
+| SDR field | What the platform stores | What the schema wants |
+|---|---|---|
+| `ksiImplementationStatus` | `pass \| warn \| fail \| not_tested \| manual_review_required \| not_applicable` (`fedramp20x.VALIDATION_STATUSES`; `ksi_states.status` is assigned straight from a verdict at `fedramp20x/validation.py:382`) | `Implemented \| Not Implemented \| Partially Implemented` |
+| `ksiEvidence[]` | `evidence_refs`: bare strings such as `"AC-2:implemented"` | objects whose `evidenceType` ∈ `Log, Report, Screenshot, Configuration, Policy, Procedure, Audit Record` |
+
+**A validation verdict is not an implementation status.** "This automated check
+passed" and "the provider has implemented this indicator" are different
+assertions, and `not_tested` is emphatically not "Not Implemented". Mapping the
+full vocabulary would have the platform tell FedRAMP "Not Implemented" about
+something nobody has yet examined. That is a compliance claim the platform
+cannot support, and it is the §1.1 failure — a document that validates and is
+wrong — wearing its third disguise in this one spec.
+
+**Decisions taken 2026-09-18:**
+
+- **Map only the two unambiguous verdicts.** `pass` → `Implemented`,
+  `fail` → `Not Implemented`. For `warn`, `not_tested`,
+  `manual_review_required` and `not_applicable`, **omit the field**. It is
+  optional in the schema, so omission validates, and it leaves the genuinely
+  ambiguous cases to the human who is already authoring `ksiImplementation`.
+- **Emit evidence without a type.** One object per ref carrying
+  `evidenceDescription` (the ref) and `lastUpdated` (`validated_at`), with
+  `evidenceType` omitted. Every `evidence` property is optional — measured:
+  an object of only those two fields validates `ok: True` — so the platform can
+  state what it knows and stay silent about a classification it does not hold.
+  Inferring the type from a ref's shape would present our guess to a regulator
+  as the provider's assertion.
+
+**A warning for whoever writes the derived producer:** the test fixture in
+`tests/test_cr26_sdr_indicators.py` uses `ksiImplementationStatus:
+"implemented"` (lowercase) and `evidenceType: "scan"`, **neither of which is a
+valid enum member**. It is harmless in a pure-function test and the merge does
+not own the producer — but do not read that fixture as the shape to produce.
+Read the vendored schema.
+
 ## 2. Omit, do not empty
 
 **A KSI with no authored `ksiImplementation` is left out of the document
