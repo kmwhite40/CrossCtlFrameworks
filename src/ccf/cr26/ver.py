@@ -18,10 +18,16 @@ from __future__ import annotations
 import copy
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..models import POAM
+from ..models_cr26 import Cr26Document
 from ..patching.sla import FLAW_SOURCES, RemediationWindow, accepted_weakness_state, classify
+from .store import put_document
 
 #: An omitted row: its id and one reason. The id is an int for a row read from
 #: the POA&M table, and a str for one keyed on a `providerTrackingId` that came
@@ -255,3 +261,174 @@ def merge_accepted(
     # non-numeric ids following in string order.
     omitted.sort(key=lambda row: (isinstance(row[0], str), row[0]))
     return merged, omitted
+
+
+def _omitted_sort_key(row: OmittedRow) -> tuple[bool, Any]:
+    """The same key :func:`merge_accepted` sorts its own ``omitted`` by.
+
+    ``row[0]`` is ``int | str``: a bare ``sorted()`` raises ``TypeError`` the
+    moment one omitted id is numeric (a POA&M row) and another is not (an
+    admin-edited ``providerTrackingId``). Numeric ids sort first, in numeric
+    order, with any non-numeric ids following in string order -- reusing
+    :func:`merge_accepted`'s approach rather than inventing a second one.
+    """
+    return (isinstance(row[0], str), row[0])
+
+
+def _instant(value: datetime) -> str:
+    """A UTC instant in the shape the schemas use.
+
+    `format: date-time` is NOT enforced here (spec §4), so this function is the
+    only thing standing between a malformed value and the deliverable.
+    """
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+@dataclass(frozen=True)
+class VerSeedResult:
+    """What one seed produced, and what it could not say.
+
+    `omitted_poam_ids` is the deliverable's own to-do list and is worth more to
+    an operator than the document beside it -- nothing in the document says a
+    vulnerability was left out.
+    """
+
+    document: Cr26Document
+    omitted_poam_ids: list[OmittedRow]
+    counts: dict[str, int]
+
+
+async def _poam_rows(session: AsyncSession, system_id: int) -> list[POAM]:
+    """EVERY POA&M for this system, flaws and control deficiencies alike.
+
+    The flaw filter deliberately lives downstream in :func:`render_all`, not in
+    this query: `counts["excluded_not_a_flaw"]` can only be reported by code
+    that SEES the excluded rows. Filtering here would make the exclusion
+    invisible and the count a lie. Do not "optimise" it into the WHERE clause.
+    """
+    return list(
+        (
+            await session.execute(
+                select(POAM).where(POAM.system_id == system_id).order_by(POAM.id.asc())
+            )
+        ).scalars()
+    )
+
+
+async def _current(session: AsyncSession, system_id: int, kind: str) -> dict[str, Any]:
+    row = (
+        await session.execute(
+            select(Cr26Document).where(
+                Cr26Document.system_id == system_id, Cr26Document.kind == kind
+            )
+        )
+    ).scalars().first()
+    return dict(row.document) if row is not None and row.document else {}
+
+
+def _carry_uri(document: dict[str, Any], current: dict[str, Any]) -> None:
+    """Keep an authored CPO URI. Never invent one -- the document stays invalid
+    until a CPO is published, which is the honest state."""
+    uri = current.get("certificationPackageOverviewUri")
+    if not is_blank(uri):
+        document["certificationPackageOverviewUri"] = str(uri).strip()
+
+
+async def _seed(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    kind: str,
+    build: Any,
+    today: date | None = None,
+) -> VerSeedResult:
+    today = today or datetime.now(UTC).date()
+    rows = await _poam_rows(session, system_id)
+    rendering = render_all(rows, today=today, window=RemediationWindow())
+    current = await _current(session, system_id, kind)
+    document, extra_omitted = build(rendering, current)
+    _carry_uri(document, current)
+    stored = await put_document(
+        session, system_id=system_id, kind=kind, document=document
+    )
+    omitted: list[OmittedRow] = [*rendering.omitted, *extra_omitted]
+    omitted.sort(key=_omitted_sort_key)
+    return VerSeedResult(
+        document=stored,
+        omitted_poam_ids=omitted,
+        counts=dict(rendering.counts),
+    )
+
+
+async def seed_vdr(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    period_from: datetime,
+    period_to: datetime,
+    today: date | None = None,
+) -> VerSeedResult:
+    """Non-accepted vulnerabilities for the caller's reporting period."""
+
+    def build(
+        rendering: VerRendering, _current: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[OmittedRow]]:
+        return {
+            "reportPeriod": {
+                "from": _instant(period_from),
+                "to": _instant(period_to),
+            },
+            "vulnerabilities": rendering.active,
+        }, []
+
+    return await _seed(session, system_id=system_id, kind="vdr", build=build, today=today)
+
+
+async def seed_avi(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    period_from: datetime,
+    period_to: datetime,
+    today: date | None = None,
+) -> VerSeedResult:
+    """Accepted vulnerabilities, keeping each authored acceptance rationale."""
+
+    def build(
+        rendering: VerRendering, current: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[OmittedRow]]:
+        authored = current.get("acceptedVulnerabilities")
+        merged, omitted = merge_accepted(
+            authored if isinstance(authored, list) else [], rendering.accepted
+        )
+        return {
+            "reportPeriod": {
+                "from": _instant(period_from),
+                "to": _instant(period_to),
+            },
+            "acceptedVulnerabilities": merged,
+        }, omitted
+
+    return await _seed(session, system_id=system_id, kind="avi", build=build, today=today)
+
+
+async def seed_ver_history(
+    session: AsyncSession, *, system_id: int, today: date | None = None
+) -> VerSeedResult:
+    """Both halves at once. No period -- the schema has none, and carries
+    ``generatedAt`` instead."""
+
+    def build(
+        rendering: VerRendering, current: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[OmittedRow]]:
+        authored = current.get("acceptedVulnerabilities")
+        merged, omitted = merge_accepted(
+            authored if isinstance(authored, list) else [], rendering.accepted
+        )
+        return {
+            "generatedAt": _instant(datetime.now(UTC)),
+            "activeVulnerabilities": rendering.active,
+            "acceptedVulnerabilities": merged,
+        }, omitted
+
+    return await _seed(session, system_id=system_id, kind="ver_history", build=build, today=today)
