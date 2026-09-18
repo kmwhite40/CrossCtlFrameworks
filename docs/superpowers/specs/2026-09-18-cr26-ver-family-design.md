@@ -635,6 +635,69 @@ work is lost. Authoring a rationale directly into a document remains possible
 (`PUT /cr26-documents/avi`) but is no longer the recommended path; the column
 is.
 
+> **CORRECTION, 2026-09-18 (review round 2).** This section first said
+> "Resolved" after only the column and the gate existed. An independent
+> review measured the reviewer's own two-population reproduction below and
+> found the claim FALSE for exactly the population the fallback exists to
+> protect: a row whose rationale lives only in the stored document, never in
+> the column, was still losing it byte-for-byte identically to the original
+> defect. A read-only fallback that never promotes what it reads is not a
+> fix for that population, no matter how it reads on the column-backed one.
+> "Resolved" is left in the heading only because it is now true of BOTH
+> populations, measured separately below — see the two transcripts. Do not
+> claim it again on the strength of one population's transcript alone.
+
+**The fix has two halves, and either alone reproduces the false claim above:**
+
+1. **Migration `0080` backfills**, not merely adds the column. On upgrade it
+   walks every system's stored `avi` document and, for each accepted entry
+   with a non-blank `acceptanceRationale` whose `poams` row is still blank,
+   writes it into the column — raw SQL against `op.get_bind()`, idempotent,
+   and tolerant of a malformed stored document (one bad row must not block
+   every deployment). This closes the gap for every rationale that already
+   existed in a document when the migration ran.
+2. **The seeders promote.** `ccf.cr26.ver.merge_accepted` now reports, per
+   entry, whether its rationale was resolved from the document because the
+   column was blank (`AcceptedMerge.promoted`), and `_seed` writes each one
+   back to `POAM.acceptance_rationale` the same cycle it is read. This closes
+   the gap the migration cannot: `PUT /cr26-documents/avi` is not gated, so a
+   rationale can still be authored into the document alone AFTER migration
+   `0080` has already run, with nothing to backfill it. The first seed that
+   reads such an entry promotes it, so the column stops depending on the
+   document from that cycle on.
+
+**Both transcripts, the reviewer's exact reproduction, re-measured after both
+halves landed:**
+
+```
+Column-backed row   CYCLE 1  entries=[rationale]  CYCLE 2  entries=[]  CYCLE 3  entries=[rationale]   FIXED
+Document-only row   CYCLE 1  entries=[rationale]  CYCLE 2  entries=[]  CYCLE 3  entries=[rationale]   FIXED
+                     POAM.acceptance_rationale after CYCLE 1 (promoted from the document) = <rationale>
+```
+
+Both are pinned as automated tests, not just this manual transcript: the
+column-backed sequence in
+`tests/test_cr26_ver_seed.py::test_a_window_moved_backwards_then_forward_no_longer_destroys_the_rationale`,
+and the document-only sequence — which additionally asserts the column is
+NULL going in and non-blank after cycle 1 — in
+`test_a_document_only_rationale_is_promoted_and_then_survives_the_same_regression`.
+`test_seed_ver_history_also_promotes_a_document_only_rationale` proves the
+same promotion on `ver_history` independently, since it reads the `avi`
+document through its own call to `merge_accepted` (spec §5.2).
+
+**One honest residual case remains, and is not silently claimed away:** a
+rationale authored into a document for a row whose reporting window ALREADY
+excludes it, on the very first seed that ever processes it, is never
+resolved and so never promoted — `merge_accepted` skips an excluded id
+entirely (spec §7's scoping rule: no resolution attempted, no omission
+reported, because nothing is wrong with the row). Such a row stays
+document-only until a seed cycle occurs where the row is not scoping-filtered
+out. This is a narrower window than the original defect (it requires the
+rationale to be authored into a document AND every seed since to have
+excluded the row), and it self-heals the moment a seed includes the row, but
+it is not zero, and this section says so rather than rounding it to
+"Resolved" without qualification.
+
 **What keeps a NEW row from arriving without one:** `src/ccf/api/routes/
 poams.py`'s `_require_risk_accepted_gate` refuses the transition into
 `risk_accepted` unless `acceptance_rationale` carries content (a
@@ -644,6 +707,33 @@ column is nullable rather than `NOT NULL`: every `risk_accepted` row that
 predates the gate has no rationale, and the gate — not a database constraint —
 is what stops the gap from growing, while leaving every existing row
 editable.
+
+**The gate guards the transition, not every write that names the status.**
+Measured (review round 2, Critical I2): `PATCH {"severity": "critical"}` on a
+grandfathered row succeeded, but `PATCH {"status": "risk_accepted",
+"severity": "high"}` — exactly what a save-the-whole-form client sends when
+re-submitting a record it already has open — was refused with 409, because
+the gate originally fired on any write that *named* `risk_accepted` rather
+than the transition into it. `update_poam` now also checks the row's status
+*before* the write; the gate only runs when that transition is real.
+
+**Two further invariants close the gap between the gate and an ordinary
+edit** (review round 2, Critical I3 and minor m4), because a gate on the way
+in is not the same claim as a column that stays true afterward:
+
+- A write that blanks `acceptance_rationale` while the row is (or is
+  becoming) `risk_accepted` is refused outright, whether or not `status` is
+  in that request body — otherwise a single PATCH could silently reproduce
+  this section's own defect shape one level up: a change that invalidates
+  the row for the next deliverable render with nothing reported at the
+  moment it happens.
+- Any transition OUT of `risk_accepted` clears the column, unless the same
+  request supplies a replacement. Measured: without this, reopening a POA&M
+  and later re-accepting it silently carried the PREVIOUS acceptance's
+  rationale into the NEW decision — well-formed, validating, and untrue,
+  which is this programme's dominant defect shape (a claim that renders
+  clean but does not describe what actually happened) one level down from
+  where this family spends most of its attention.
 
 ## 10. Out of scope
 
