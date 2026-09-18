@@ -88,10 +88,17 @@ def test_an_authored_indicator_the_platform_no_longer_knows_is_kept() -> None:
 
 
 def test_entries_are_ordered_by_ksi_id() -> None:
-    """Stable order, so re-seeding produces no spurious document diff."""
+    """Stable order, so re-seeding produces no spurious document diff.
+
+    The authored input is deliberately given as IAM, CNA -- the REVERSE of
+    sorted order -- so that insertion order and sorted order disagree. Do not
+    "tidy" this back into sorted input: KSI-CNA-02 before KSI-IAM-01 would make
+    insertion order and sorted order the same sequence again, and the
+    assertion would pass whether or not the implementation actually sorts.
+    """
     authored = [
-        {"ksiId": "KSI-CNA-02", "ksiImplementation": ["b"]},
         {"ksiId": "KSI-IAM-01", "ksiImplementation": ["a"]},
+        {"ksiId": "KSI-CNA-02", "ksiImplementation": ["b"]},
     ]
     merged, _ = merge_indicators(authored, _DERIVED)
     assert [e["ksiId"] for e in merged] == ["KSI-CNA-02", "KSI-IAM-01"]
