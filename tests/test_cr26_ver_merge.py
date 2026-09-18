@@ -102,6 +102,28 @@ def test_a_non_numeric_derived_id_with_no_rationale_does_not_crash() -> None:
     assert omitted == [("POAM-42", "no acceptance rationale")]
 
 
+def test_omitted_ids_sort_numeric_first_then_string_not_lexically() -> None:
+    """Ids are "9", "10" and "POAM-1" -- deliberately chosen so a naive
+    ``str(row[0])`` sort key gets them wrong: lexically "10" sorts before
+    "9", which is backwards. The real key sorts numeric ids numerically
+    (9 before 10) and puts the non-numeric id after both. Do NOT "tidy" these
+    to sequential or single-digit ids -- that is what would let a lexical-key
+    regression here pass silently, and a bare ``.sort()`` over the resulting
+    mix of `int` and `str` ids would raise `TypeError` instead of ordering
+    at all.
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail(p), "acceptanceRationale": f"r{p}"}
+        for p in ("9", "10", "POAM-1")
+    ]
+    _, omitted = merge_accepted(authored, [])
+    assert omitted == [
+        (9, "no longer an accepted vulnerability"),
+        (10, "no longer an accepted vulnerability"),
+        ("POAM-1", "no longer an accepted vulnerability"),
+    ]
+
+
 def test_the_merge_does_not_alias_its_inputs() -> None:
     """Mutating the result must not reach back into the caller's dicts. The SDR
     needed two rounds on exactly this, including the dicts nested inside.
