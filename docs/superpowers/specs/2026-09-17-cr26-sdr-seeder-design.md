@@ -168,13 +168,40 @@ found on a line immediately beside one already corrected.
 - **`parameterValues: []` is unaffected.** An empty list of *answered*
   parameters is a true statement about a control nobody has filled in. An
   empty description is not. The distinction is the whole rule.
-- **Report the affected control ids in the seed result**, as
-  `controls_missing_description`, beside `omitted_ksi_ids`. Nothing in the
-  document says a control is unwritten — the scaffolded `Planned` is omitted as
-  untranslatable — so without this the control gap reaches no operator at all.
-  `rendered_control_count` travels with it, because `ssp_project_id: None`
+- **Report the affected control ids in the seed result**, beside
+  `omitted_ksi_ids`. Nothing in the document says a control is unwritten — the
+  scaffolded `Planned` is omitted as untranslatable — so without this the
+  control gap reaches no operator at all. **Two lists, deliberately
+  overlapping**, because they answer different questions and an operator
+  reading either must get a complete answer to it:
+  - `controls_missing_description` — no `controlImplementationDescription` at
+    all, because nothing was written or everything was scaffolding.
+  - `controls_with_dropped_parts` — at least one part dropped, *whether or not
+    anything survived*. This is the case most easily missed:
+    `ssp/statements.py:88-90` appends `" Frequency: {frequency}."` — carrying
+    `_resolved_frequency`'s placeholder when unset — to the END of
+    otherwise-complete composed paragraphs, so three sentences of real provider
+    content can be dropped whole for one trailing token, leaving a control that
+    still has a description and a status and reads complete.
+
+  `rendered_control_count` travels with them, because `ssp_project_id: None`
   cannot distinguish "no SSP" from "an empty SSP project that happened to be
   the most recently updated one".
+
+- **Dropping is its own failure mode, and the answer is reporting, not
+  keeping.** Omitting the whole description whenever any part drops was
+  considered and rejected: it discards defensible content to avoid a partial
+  claim the operator can already see and fix. The SDR is invalid by design and
+  is a seed a human completes, so the result object *is* the remediation
+  channel — exactly as `omitted_ksi_ids` already works.
+
+- **Blank parts are stripped and skipped before the join.** `" ".join(["", ""])`
+  is `" "` — truthy, and the `""` this section eliminates wearing one character
+  of disguise. `ssp/seed.py:60-79` writes one part per objective part
+  (multi-part is the CMMC norm) and `api/routes/ui.py:1341-1345` re-saves each
+  with `str(...)` and no strip, so a cleared textarea persists as `""`.
+  `merge_indicators`' `_has_narrative` already applies exactly this rule to KSI
+  narratives one level down, and `ssp/completeness.py` strips too.
 
 ### 1.3 Two of the five derived fields are claims, not renderings
 

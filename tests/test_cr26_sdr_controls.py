@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 from ccf.cr26 import sdr as sdr_module
 from ccf.cr26.sdr import (
+    _control_gaps,
     _implementation_status_enum,
     latest_project_id,
     render_controls,
@@ -243,21 +244,136 @@ def test_an_unresolved_odp_placeholder_is_dropped() -> None:
 def test_written_parts_survive_while_scaffolded_ones_beside_them_are_dropped() -> None:
     """The other half: dropping must be surgical, not a blanket refusal of any
     entry that contains one draft part. A human who has written part (a) and
-    left the generated part (b) alone keeps (a)."""
-    out = render_controls(
-        [
-            _entry(
-                part_narratives=[
-                    {"part": "a", "text": "We manage accounts in Entra ID."},
-                    {"part": "b", "text": "[DRAFT] Describe the implementation.",
-                     "draft": True},
-                ]
-            )
-        ]
-    )
+    left the generated part (b) alone keeps (a).
+
+    And the loss must be REPORTED. A control that keeps a truncated
+    description still carries a status and reads complete, so it is the drop
+    most easily missed -- ``controls_missing_description`` fires only when the
+    key vanishes entirely and would say nothing here.
+    """
+    entries = [
+        _entry(
+            part_narratives=[
+                {"part": "a", "text": "We manage accounts in Entra ID."},
+                {"part": "b", "text": "[DRAFT] Describe the implementation.",
+                 "draft": True},
+            ]
+        )
+    ]
+    out = render_controls(entries)
     assert out[0]["controlImplementationDescription"] == (
         "We manage accounts in Entra ID."
     )
+    missing, dropped = _control_gaps(entries)
+    assert missing == []
+    assert dropped == ["AC-2"]
+
+
+def test_a_composed_paragraph_losing_its_frequency_clause_is_reported() -> None:
+    """The realistic shape, not a contrived one. ``ssp/statements.py:88-90``
+    appends ``" Frequency: {frequency}."`` -- with ``_resolved_frequency``'s
+    placeholder when unset -- to the END of an otherwise-complete composed
+    paragraph, so three sentences of real provider content are dropped whole
+    for one trailing token.
+
+    Keeping the placeholder is not the fix: the surviving text is defensible
+    content, and the SDR is a seed a human completes, so the result object is
+    the remediation channel. What is NOT acceptable is losing it silently.
+    """
+    entries = [
+        _entry(
+            implementation_status=["Implemented"],
+            part_narratives=[
+                {
+                    "part": "a",
+                    "text": (
+                        "The system uses Microsoft Entra ID for account lifecycle. "
+                        "Accounts are provisioned on hire and disabled automatically "
+                        "on separation. Frequency: [ORGANIZATION-DEFINED: frequency]."
+                    ),
+                },
+                {"part": "b", "text": "Privileged accounts require PIM approval and MFA."},
+            ],
+        )
+    ]
+    out = render_controls(entries)
+    assert out[0]["controlImplementationDescription"] == (
+        "Privileged accounts require PIM approval and MFA."
+    )
+    assert out[0]["controlImplementationStatus"] == "Implemented"
+    missing, dropped = _control_gaps(entries)
+    assert missing == []  # it kept a description -- which is exactly the trap
+    assert dropped == ["AC-2"]
+
+
+def test_a_control_that_loses_everything_appears_in_both_lists() -> None:
+    """The two lists deliberately overlap, so an operator reading either one
+    gets a complete answer to the question that list asks."""
+    entries = [_entry(part_narratives=[{"text": "[DRAFT] Describe it.", "draft": True}])]
+    missing, dropped = _control_gaps(entries)
+    assert missing == ["AC-2"]
+    assert dropped == ["AC-2"]
+
+
+def test_a_control_that_never_had_a_narrative_is_missing_but_lost_nothing() -> None:
+    """The complement, which is what keeps the two lists from collapsing into
+    one: nothing was dropped here, so the operator is not sent looking for
+    content that never existed."""
+    entries = [_entry(part_narratives=[])]
+    missing, dropped = _control_gaps(entries)
+    assert missing == ["AC-2"]
+    assert dropped == []
+
+
+def test_a_draft_flagged_part_is_dropped_even_without_the_marker_in_its_text() -> None:
+    """The mirror of ``test_the_draft_marker_is_caught_even_without_the_draft_flag``,
+    and without it the ``draft`` gate could be deleted with the suite green:
+    every other fixture that sets the flag ALSO carries ``[DRAFT]`` in its
+    text, so the predicate alone caught them and the flag gate was dead weight.
+
+    A scaffolder that sets the flag without writing the marker into the prose
+    is exactly what this gate is for.
+    """
+    out = render_controls(
+        [_entry(part_narratives=[{"text": "Accounts are managed in Entra ID.", "draft": True}])]
+    )
+    assert "controlImplementationDescription" not in out[0], out[0]
+
+
+def test_blank_parts_never_come_back_as_a_space() -> None:
+    """``" ".join(["", ""])`` is ``" "`` -- truthy, and the ``""`` this rule
+    exists to eliminate wearing one character of disguise.
+
+    Reachable: ``ssp/seed.py`` writes one part per objective part (multi-part
+    is the CMMC norm) and ``api/routes/ui.py`` re-saves each with ``str(...)``
+    and no strip, so a cleared textarea persists as ``""``. ``_has_narrative``
+    already applies exactly this rule to KSI narratives one level down.
+    """
+    for narratives in (
+        [{"text": ""}, {"text": ""}],
+        [{"text": None}, {"text": None}],
+        [{"text": " "}],
+        [{"text": "\t\n"}],
+    ):
+        out = render_controls([_entry(part_narratives=narratives)])
+        assert "controlImplementationDescription" not in out[0], (narratives, out[0])
+    # A blank part beside a written one must not add a stray separator either.
+    out = render_controls(
+        [_entry(part_narratives=[{"text": "  Written.  "}, {"text": ""}])]
+    )
+    assert out[0]["controlImplementationDescription"] == "Written."
+
+
+def test_a_legacy_bare_string_narrative_is_dropped_and_reported() -> None:
+    """No producer writes this shape today, but rendering ``str(part)`` would
+    put a Python repr in a federal deliverable, and vanishing silently is the
+    defect this round is about."""
+    entries = [_entry(part_narratives=["We manage accounts.", {"text": "And review them."}])]
+    out = render_controls(entries)
+    assert out[0]["controlImplementationDescription"] == "And review them."
+    missing, dropped = _control_gaps(entries)
+    assert missing == []
+    assert dropped == ["AC-2"]
 
 
 def test_the_draft_predicate_is_the_ssp_modules_own() -> None:

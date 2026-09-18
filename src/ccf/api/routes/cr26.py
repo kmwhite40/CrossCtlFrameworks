@@ -218,6 +218,10 @@ async def seed_sdr_document(
       none written or carried only ``[DRAFT]`` scaffolding. Nothing in the
       document says so on its own: the scaffolded ``Planned`` status is
       omitted as untranslatable, so this list is the only signal.
+    * ``controls_with_dropped_parts`` -- controls that kept a description but
+      lost at least one narrative part to that same filter. Harder to notice
+      than the list above, because such a control still carries a description
+      and a status and reads complete.
     * ``rendered_control_count`` -- how many controls were rendered at all.
       ``0`` with a non-``None`` ``ssp_project_id`` means an empty SSP project
       won the most-recently-updated selection.
@@ -236,5 +240,6 @@ async def seed_sdr_document(
         "omitted_ksi_ids": result.omitted_ksi_ids,
         "ssp_project_id": result.ssp_project_id,
         "controls_missing_description": result.controls_missing_description,
+        "controls_with_dropped_parts": result.controls_with_dropped_parts,
         "rendered_control_count": result.rendered_control_count,
     }

@@ -151,8 +151,10 @@ def _control_implementation_status(statuses: Sequence[str] | None) -> str | None
     return value if value in _implementation_status_enum() else None
 
 
-def _implementation_description(part_narratives: Sequence[Any] | None) -> str | None:
-    """The written parts of this control's narrative, or ``None`` if none are.
+def _implementation_description(
+    part_narratives: Sequence[Any] | None,
+) -> tuple[str | None, bool]:
+    """The written parts of this control's narrative, and whether any were dropped.
 
     **Scaffolding is dropped, never rendered.** ``ssp/nist80053.py`` writes
     ``"[DRAFT] AC control AC-2 is the responsibility of System Owner. Describe
@@ -179,21 +181,74 @@ def _implementation_description(part_narratives: Sequence[Any] | None) -> str | 
     ``""`` would assert that the provider's description IS blank -- the same
     claim-versus-rendering defect this module refuses for
     ``ksiImplementationStatus`` and ``controlImplementationStatus``. Absence
-    says "not stated"; ``""`` says "stated, and empty".
+    says "not stated"; ``""`` says "stated, and empty". Blank parts are
+    stripped and skipped BEFORE the join, so ``" "`` cannot come back as the
+    truthy ghost of that same empty string -- ``_has_narrative`` applies
+    exactly this rule to KSI narratives one level down, and
+    ``ssp/completeness.py`` strips too.
+
+    Returns ``(description, dropped_something)``. **Dropping content silently
+    is its own defect**: ``ssp/statements.py`` appends
+    ``" Frequency: [ORGANIZATION-DEFINED: frequency]."`` to otherwise-complete
+    composed paragraphs, so a fully written statement can lose a whole part
+    over one trailing token. The caller reports the affected control rather
+    than keeping the placeholder -- the surviving text is defensible content
+    and the operator can see and fix the gap, which is what
+    :class:`SdrSeedResult` is for.
     """
     written: list[str] = []
+    dropped = False
     for part in part_narratives or []:
-        if not isinstance(part, dict) or part.get("draft"):
+        if not isinstance(part, dict):
+            # A legacy bare-string narrative is not a part this can read, and
+            # rendering ``str(part)`` would put a repr in a federal document.
+            dropped = True
             continue
-        text = str(part.get("text") or "")
-        # Both gates matter: ``draft`` is the flag nist80053.py sets, and the
-        # predicate catches text that carries the marker or an unresolved ODP
-        # placeholder without the flag -- statements.py and platforms.py set
-        # no flag at all.
-        if is_draft_or_placeholder(text):
+        text = str(part.get("text") or "").strip()
+        if not text:
+            # Nothing was written here; nothing is lost by leaving it out, so
+            # this is not a drop the operator needs to hear about.
+            # ``api/routes/ui.py`` re-saves a cleared textarea as ``""``.
+            continue
+        # Both gates matter, in both directions: ``draft`` is the flag
+        # ``ssp/nist80053.py`` sets, and the predicate catches marker or
+        # placeholder text from producers that set no flag at all
+        # (``ssp/statements.py``, ``ssp/platforms.py``). A future scaffolder
+        # writing the flag without the marker is exactly what the flag gate is
+        # for.
+        if part.get("draft") or is_draft_or_placeholder(text):
+            dropped = True
             continue
         written.append(text)
-    return " ".join(written) or None
+    return (" ".join(written) or None), dropped
+
+
+def _control_gaps(
+    entries: Sequence[SSPControlEntry],
+) -> tuple[list[str], list[str]]:
+    """``(missing_description, dropped_parts)`` control ids, for the seed result.
+
+    The two answer different questions and **deliberately overlap**, so an
+    operator reading either one gets a complete answer to it:
+
+    * *missing_description* -- this control reached the document with no
+      ``controlImplementationDescription`` at all, because nothing was written
+      or because everything there was scaffolding.
+    * *dropped_parts* -- at least one narrative part was dropped as
+      scaffolding, **whether or not** anything survived. A control that keeps a
+      truncated description appears here and nowhere else, and that is the case
+      most easily missed: it still carries a status, still reads complete, and
+      is the one this list exists for.
+    """
+    missing: list[str] = []
+    dropped_parts: list[str] = []
+    for entry in entries:
+        description, dropped = _implementation_description(entry.part_narratives)
+        if description is None:
+            missing.append(str(entry.control_id))
+        if dropped:
+            dropped_parts.append(str(entry.control_id))
+    return missing, dropped_parts
 
 
 def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
@@ -211,7 +266,7 @@ def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
             "controlId": entry.control_id,
             "parameterValues": _parameter_values(entry.odp_values),
         }
-        description = _implementation_description(entry.part_narratives)
+        description, _dropped = _implementation_description(entry.part_narratives)
         if description is not None:
             control["controlImplementationDescription"] = description
         status = _control_implementation_status(entry.implementation_status)
@@ -656,6 +711,14 @@ class SdrSeedResult:
     #: still unwritten. ``omitted_ksi_ids`` does this job for indicators; this
     #: is its equivalent for controls.
     controls_missing_description: list[str]
+    #: Controls that kept a description but lost at least one narrative part to
+    #: the scaffolding filter. Distinct from the list above and more easily
+    #: missed: such a control still carries a description and a status, and
+    #: reads complete. ``ssp/statements.py`` appends
+    #: ``" Frequency: [ORGANIZATION-DEFINED: frequency]."`` to composed
+    #: paragraphs, so a fully written statement can lose a whole part over one
+    #: trailing token. Controls that lost everything appear in BOTH lists.
+    controls_with_dropped_parts: list[str]
     #: How many controls were rendered at all. ``0`` alongside a non-``None``
     #: ``ssp_project_id`` is the case ``ssp_project_id`` cannot signal by
     #: itself: an empty but recently-updated SSP project wins the
@@ -737,6 +800,7 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
             )
         ).scalars().all()
     controls = render_controls(entries)
+    missing_description, dropped_parts = _control_gaps(entries)
     document["securityControls"] = controls
 
     authored = document.get("keySecurityIndicators")
@@ -754,10 +818,7 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         document=row,
         omitted_ksi_ids=omitted,
         ssp_project_id=project_id,
-        controls_missing_description=[
-            str(control["controlId"])
-            for control in controls
-            if "controlImplementationDescription" not in control
-        ],
+        controls_missing_description=missing_description,
+        controls_with_dropped_parts=dropped_parts,
         rendered_control_count=len(controls),
     )

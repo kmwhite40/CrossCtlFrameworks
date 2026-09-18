@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select
 
 from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
@@ -543,6 +544,57 @@ async def test_the_route_returns_the_document_and_what_was_omitted() -> None:
     assert fx.identifier in body["omitted_ksi_ids"]
     assert body["ssp_project_id"] is not None
     assert [c["controlId"] for c in body["document"]["securityControls"]] == ["AC-2"]
+    # Both control-gap keys must cross the HTTP boundary. They are the ENTIRE
+    # operator-facing remediation for the draft-scaffolding defect -- nothing
+    # in the document says a control is unwritten or truncated -- so a route
+    # that computed them and forgot to return them would silently restore the
+    # invisible gap. Deleting the two lines in the route leaves every
+    # dataclass-level assertion in this file green.
+    assert body["rendered_control_count"] == 1
+    assert body["controls_missing_description"] == []
+    assert body["controls_with_dropped_parts"] == []
+
+
+async def test_the_route_reports_a_draft_control_to_the_caller() -> None:
+    """The empty-list assertions above would pass against a route that
+    hard-coded ``[]``. This one carries real content across the boundary."""
+    fx = await _fixture("route-draft")
+    async with session_scope() as s:
+        s.add(
+            SSPControlEntry(
+                project_id=fx.project_id,
+                control_id="AU-2",
+                implementation_status=["Planned"],
+                part_narratives=[
+                    {"text": "[DRAFT] Describe the implementation.", "draft": True}
+                ],
+                odp_values={},
+            )
+        )
+        s.add(
+            SSPControlEntry(
+                project_id=fx.project_id,
+                control_id="SC-13",
+                implementation_status=["Implemented"],
+                part_narratives=[
+                    {"text": "We use AWS KMS."},
+                    {"text": "Key custody is [ORGANIZATION-DEFINED: owner]."},
+                ],
+                odp_values={},
+            )
+        )
+
+    async with _Session(org_id=fx.org_id).client() as c:
+        resp = await c.post(f"/api/systems/{fx.system_id}/cr26-documents/sdr/seed")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rendered_control_count"] == 3
+    assert body["controls_missing_description"] == ["AU-2"]
+    # SC-13 kept a description and a status -- it reads complete, and this is
+    # the only place its loss is visible.
+    assert body["controls_with_dropped_parts"] == ["AU-2", "SC-13"]
+    by_control = {c["controlId"]: c for c in body["document"]["securityControls"]}
+    assert by_control["SC-13"]["controlImplementationDescription"] == "We use AWS KMS."
 
 
 async def test_the_seed_route_is_admin_gated() -> None:
@@ -730,14 +782,30 @@ async def test_the_latest_validation_run_wins_not_the_first() -> None:
 async def test_a_tie_on_the_timestamp_is_broken_by_row_id() -> None:
     """Two runs can share ``validated_at`` exactly -- ``now()`` is
     transaction-scoped in Postgres, so results written in one transaction all
-    carry the identical server default. The later ROW is the later run, and
-    the answer must not be left to scan order."""
+    carry the identical server default. The later ROW is the later run, and the
+    answer must not be left to whatever order the scan returns.
+
+    Ids are assigned EXPLICITLY, higher first, so physical order is the
+    reverse of id order. That is what makes this test able to fail: inserting
+    normally leaves heap order and id order identical, an unordered fold picks
+    the right row by accident, and dropping ``.id.asc()`` goes unnoticed
+    (measured -- it did). With the rows laid out this way, ordering on the
+    timestamp alone folds to the LOWER-id row and this fails.
+    """
     fx = await _fixture("tie-run")
     same_moment = datetime(2026, 9, 18, tzinfo=UTC)
     async with session_scope() as s:
-        for source in ("first-row", "second-row"):
+        base_result = (
+            await s.execute(select(func.coalesce(func.max(KSIValidationResult.id), 0)))
+        ).scalar_one() + 100
+        base_review = (
+            await s.execute(select(func.coalesce(func.max(KSIAssessorReview.id), 0)))
+        ).scalar_one() + 100
+        # Higher id inserted FIRST -> it sits earlier in the heap.
+        for offset, source in ((1, "higher-id"), (0, "lower-id")):
             s.add(
                 KSIValidationResult(
+                    id=base_result + offset,
                     system_id=fx.system_id,
                     ksi_id=fx.ksi_id,
                     ksi_identifier=fx.identifier,
@@ -747,10 +815,11 @@ async def test_a_tie_on_the_timestamp_is_broken_by_row_id() -> None:
                     evidence_refs=[],
                 )
             )
-            await s.flush()  # distinct ids, in insertion order
-        for assessor in ("first-review", "second-review"):
+            await s.flush()
+        for offset, assessor in ((1, "higher-id-review"), (0, "lower-id-review")):
             s.add(
                 KSIAssessorReview(
+                    id=base_review + offset,
                     system_id=fx.system_id,
                     ksi_id=fx.ksi_id,
                     assessor=assessor,
@@ -777,9 +846,9 @@ async def test_a_tie_on_the_timestamp_is_broken_by_row_id() -> None:
 
     entry = _indicator(result.document.document, fx.identifier)
     assert entry["ksiValidation"] == [
-        "pass at 2026-09-18T00:00:00+00:00 (source: second-row)"
+        "pass at 2026-09-18T00:00:00+00:00 (source: higher-id)"
     ]
-    assert entry["ksiAssessment"] == ["accepted by second-review"]
+    assert entry["ksiAssessment"] == ["accepted by higher-id-review"]
 
 
 async def test_the_seeder_reads_the_sdr_row_not_whatever_document_exists() -> None:
@@ -872,6 +941,7 @@ async def test_a_draft_only_control_is_reported_rather_than_described() -> None:
         "We manage accounts."
     )
     assert result.controls_missing_description == ["AU-2"]
+    assert result.controls_with_dropped_parts == ["AU-2"]
     assert result.rendered_control_count == 2
 
 
@@ -906,6 +976,7 @@ async def test_an_empty_ssp_project_reports_zero_controls_rendered() -> None:
     assert again.ssp_project_id == empty_id  # NOT None -- the gap in that signal
     assert again.rendered_control_count == 0
     assert again.controls_missing_description == []
+    assert again.controls_with_dropped_parts == []
 
 
 def test_a_verdict_mapping_outside_the_schema_enum_is_refused() -> None:
