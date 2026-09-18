@@ -59,6 +59,7 @@ async def _poam(system_id: int, **kw) -> int:
             identified_on=kw.get("identified_on", date(2026, 9, 5)),
             scanner=kw.get("scanner", "nessus"),
             source=kw.get("source", "scan"),
+            acceptance_rationale=kw.get("acceptance_rationale"),
         )
         s.add(row)
         await s.flush()
@@ -451,6 +452,112 @@ async def test_a_rationale_authored_in_the_avi_reaches_ver_history_too() -> None
         assert entries[0]["acceptanceRationale"] == "Compensating control: WAF rule 91234."
         assert entries[0]["vulnerabilityDetail"]["providerTrackingId"] == str(poam_id)
         assert result.omitted_poam_ids == [], (label, result.omitted_poam_ids)
+
+
+async def test_a_document_authored_rationale_predating_the_column_reaches_avi_and_ver_history() -> (
+    None
+):
+    """`acceptance_rationale` is nullable precisely so every `risk_accepted`
+    row that predates this column -- with a rationale living only inside a
+    stored document, authored by hand before the column existed -- keeps
+    working. `merge_accepted` must still find it via the document fallback,
+    in both of the documents that carry acceptance rationales (spec §5.2).
+    """
+    _org_id, system_id = await _system("pre-column-doc-fallback")
+    poam_id = await _poam(system_id, status="risk_accepted")
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.acceptance_rationale is None  # the column exists but was never set
+
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "reportPeriod": {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"},
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(poam_id)},
+                        "acceptanceRationale": "Authored before the column existed.",
+                    }
+                ],
+            },
+        )
+
+    async with session_scope() as s:
+        avi = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    async with session_scope() as s:
+        hist = await seed_ver_history(s, system_id=system_id, today=TODAY)
+
+    for label, result in (("avi", avi), ("ver_history", hist)):
+        entries = result.document.document["acceptedVulnerabilities"]
+        assert len(entries) == 1, (label, entries)
+        assert entries[0]["acceptanceRationale"] == "Authored before the column existed."
+        assert result.omitted_poam_ids == [], (label, result.omitted_poam_ids)
+
+
+async def test_a_window_moved_backwards_then_forward_no_longer_destroys_the_rationale() -> None:
+    """The §9.1 defect, measured the same way it was found -- and no longer
+    reproducible now that the rationale has a durable home.
+
+    Before this column: CYCLE 1 stored the entry, CYCLE 2's window excluded
+    the row so `put_document` overwrote the AVI with an empty
+    `acceptedVulnerabilities`, and CYCLE 3's window covered the row again but
+    the authored document had nothing left to read the rationale from --
+    `(id, "no acceptance rationale")`, silently, with cycle 2 showing no
+    omission at all (spec §9.1's own measured transcript).
+
+    `POAM.acceptance_rationale` does not live inside the document `put_
+    document` overwrites, so cycle 2's overwrite cannot touch it, and cycle 3
+    finds it again.
+    """
+    _org_id, system_id = await _system("window-backwards-then-forward")
+    poam_id = await _poam(
+        system_id,
+        status="risk_accepted",
+        identified_on=date(2026, 10, 1),
+        acceptance_rationale="Compensating control: WAF rule 91234.",
+    )
+    earlier_from = datetime(2026, 1, 1, tzinfo=UTC)
+    earlier_to = datetime(2026, 3, 1, tzinfo=UTC)
+
+    # CYCLE 1: the window covers the row.
+    async with session_scope() as s:
+        cycle1 = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    entries1 = cycle1.document.document["acceptedVulnerabilities"]
+    assert len(entries1) == 1, entries1
+    assert entries1[0]["acceptanceRationale"] == "Compensating control: WAF rule 91234."
+    assert cycle1.omitted_poam_ids == []
+
+    # CYCLE 2: the window moves BACKWARDS past the accepted row -- excluded,
+    # not omitted, and the AVI document is overwritten with an empty array.
+    async with session_scope() as s:
+        cycle2 = await seed_avi(
+            s, system_id=system_id, period_from=earlier_from, period_to=earlier_to, today=TODAY
+        )
+    assert cycle2.document.document["acceptedVulnerabilities"] == []
+    assert cycle2.omitted_poam_ids == []
+    assert cycle2.counts["excluded_outside_period"] == 1
+
+    # CYCLE 3: the window moves forward again. The measured defect lost the
+    # rationale here -- silently, with `(id, "no acceptance rationale")`. It
+    # must be back, unomitted, because the column never lost it.
+    async with session_scope() as s:
+        cycle3 = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    entries3 = cycle3.document.document["acceptedVulnerabilities"]
+    assert len(entries3) == 1, entries3
+    assert entries3[0]["acceptanceRationale"] == "Compensating control: WAF rule 91234."
+    assert entries3[0]["vulnerabilityDetail"]["providerTrackingId"] == str(poam_id)
+    assert cycle3.omitted_poam_ids == []
+    assert (poam_id, "no acceptance rationale") not in cycle3.omitted_poam_ids
 
 
 async def test_a_cpo_uri_already_in_the_document_survives_a_reseed() -> None:

@@ -25,6 +25,7 @@ class _Poam:
         self.closed_on = kw.get("closed_on")
         self.scanner = kw.get("scanner", "nessus")
         self.source = kw.get("source", "scan")
+        self.acceptance_rationale = kw.get("acceptance_rationale")
 
 
 def test_a_control_deficiency_is_not_a_vulnerability_and_is_not_a_defect() -> None:
