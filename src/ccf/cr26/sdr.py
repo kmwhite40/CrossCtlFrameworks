@@ -19,7 +19,7 @@ authored narrative is **omitted entirely** and named in the result.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -86,3 +86,63 @@ async def latest_project_id(session: AsyncSession, system_id: int) -> int | None
             .limit(1)
         )
     ).scalars().first()
+
+
+#: The five ``keySecurityIndicators`` fields the platform derives. Refreshed on
+#: every seed, because each is a fact about the system that changes as scans
+#: and reviews run. ``ksiImplementation`` is deliberately absent: it is the one
+#: field only a human can supply.
+DERIVED_INDICATOR_FIELDS: tuple[str, ...] = (
+    "ksiImplementationStatus",
+    "ksiValidation",
+    "ksiAssessment",
+    "ksiTests",
+    "ksiEvidence",
+)
+
+
+def merge_indicators(
+    authored: Sequence[dict[str, Any]],
+    derived: Mapping[str, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Merge authored narrative with derived facts, keyed by ``ksiId``.
+
+    Returns the merged entries and the ids omitted for want of a narrative.
+
+    Three rules, each load-bearing:
+
+    * **An indicator with no authored ``ksiImplementation`` is omitted.**
+      Emitting it with an empty array would satisfy the schema while saying
+      nothing about how the offering meets the indicator -- and unlike the
+      CPO's gaps, the document would still validate, so the omission would be
+      invisible.
+    * **The five derived fields are overwritten**, because they are facts about
+      the system rather than anything a human authored here.
+    * **An authored entry the platform no longer recognises is KEPT**, with
+      whatever derived fields it last carried. A narrative is human work; a KSI
+      catalog revision must not silently delete it.
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    for authored_entry in authored:
+        ksi_id = authored_entry.get("ksiId")
+        if isinstance(ksi_id, str) and ksi_id:
+            by_id[ksi_id] = dict(authored_entry)
+
+    merged: list[dict[str, Any]] = []
+    omitted: list[str] = []
+    for ksi_id in sorted(set(by_id) | set(derived)):
+        entry = by_id.get(ksi_id)
+        narrative = (entry or {}).get("ksiImplementation") or []
+        if not narrative:
+            omitted.append(ksi_id)
+            continue
+        out = dict(entry or {})
+        out["ksiId"] = ksi_id
+        out["ksiImplementation"] = narrative
+        for field in DERIVED_INDICATOR_FIELDS:
+            if ksi_id in derived:
+                out[field] = derived[ksi_id][field]
+            else:
+                out.setdefault(field, [] if field != "ksiImplementationStatus" else "")
+        merged.append(out)
+    return merged, omitted
