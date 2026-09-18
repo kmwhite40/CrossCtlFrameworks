@@ -129,6 +129,36 @@ def _has_narrative(value: Any) -> bool:
     )
 
 
+def _copied(value: Any) -> Any:
+    """A defensive copy of a derived or carried-forward field value.
+
+    Every field this function assigns without deriving it from scratch is
+    either a scalar or a list, and ``ksiEvidence``'s list elements are
+    further dicts -- exactly the shape Task 3 is most likely to
+    post-process. A shallow ``list(...)`` copy only breaks aliasing at the
+    top level, so list-of-dict elements are copied one level deeper too.
+    Without this, a merged entry can share list (or nested dict) identity
+    with either the caller's ``authored`` input or its ``derived`` mapping,
+    and mutating the returned document would mutate the caller's data
+    underneath it.
+    """
+    if isinstance(value, list):
+        return [dict(item) if isinstance(item, dict) else item for item in value]
+    return value
+
+
+#: Mirrors the vendored schema's ``ksiImplementationStatus`` enum exactly
+#: (``schemas/fedramp-security-decision-record-schema-*.json``). Used to
+#: drop a carried-forward status that is not a member -- most notably the
+#: ``""`` this module's own earlier version wrote into the fallback branch,
+#: which would otherwise round-trip forever: ``seed_sdr`` (Task 3) feeds a
+#: previously-seeded document's own ``keySecurityIndicators`` back in as
+#: ``authored``.
+_VALID_IMPLEMENTATION_STATUSES: frozenset[str] = frozenset(
+    {"Implemented", "Not Implemented", "Partially Implemented"}
+)
+
+
 def merge_indicators(
     authored: Sequence[dict[str, Any]],
     derived: Mapping[str, dict[str, Any]],
@@ -144,22 +174,36 @@ def merge_indicators(
       nothing about how the offering meets the indicator -- and unlike the
       CPO's gaps, the document would still validate, so the omission would be
       invisible. See :func:`_has_narrative` for what counts as "no narrative".
-    * **The five derived fields are overwritten**, because they are facts about
-      the system rather than anything a human authored here. Their list values
-      are copied, not aliased, so mutating the merged document cannot reach
-      back into the caller's derived-facts mapping.
+    * **The five derived fields are overwritten**, because they are facts
+      about the system rather than anything a human authored here. Every list
+      value this function assigns -- derived, or carried forward from the
+      authored side -- is copied rather than aliased, including the dicts
+      inside ``ksiEvidence`` one level deeper (see :func:`_copied`), so
+      mutating the merged document can reach back into neither the caller's
+      ``derived`` mapping nor its ``authored`` list.
     * **An authored entry the platform no longer recognises is KEPT**, with
-      whatever derived fields it last carried. A narrative is human work; a KSI
-      catalog revision must not silently delete it -- and must not blank the
-      fields it can no longer refresh. The four required array fields default
-      to ``[]`` when there is nothing to carry forward; the optional, enum-
-      constrained ``ksiImplementationStatus`` is left absent rather than
-      defaulted, because there is no valid placeholder value for it.
+      whatever derived fields it last carried. A narrative is human work; a
+      KSI catalog revision must not silently delete it -- and must not blank
+      the fields it can no longer refresh. The four required array fields
+      default to ``[]`` when there is nothing to carry forward; the optional,
+      enum-constrained ``ksiImplementationStatus`` is left absent when there
+      is nothing to carry forward, and DROPPED if the carried-forward value is
+      not one of the schema's enum members. That makes this function
+      self-healing against documents an earlier version of it wrote: this
+      same fallback once defaulted the status to ``""``, and ``seed_sdr``
+      (Task 3) feeds a previously-seeded document's own
+      ``keySecurityIndicators`` back in as ``authored`` -- so without this
+      check, that ``""`` would round-trip through every future seed and the
+      document would never validate again.
     * ``keySecurityIndicators`` has no ``uniqueItems`` constraint, so
       **duplicate authored ``ksiId``s are legal input**. A later duplicate
       with no narrative must not evict an earlier real one -- that would both
       destroy human work and misreport it as never having existed (the id
-      would land in ``omitted``).
+      would land in ``omitted``). When the guard fires, the later duplicate is
+      discarded WHOLE, not merged field-by-field, so any fresher derived
+      fields it happened to carry are lost along with its empty narrative --
+      a deliberate choice (narrative preservation is the stated priority),
+      not an oversight.
     """
     by_id: dict[str, dict[str, Any]] = {}
     for authored_entry in authored:
@@ -186,7 +230,7 @@ def merge_indicators(
         assert isinstance(narrative, list)  # _has_narrative just confirmed this
         out = dict(entry or {})
         out["ksiId"] = ksi_id
-        out["ksiImplementation"] = list(narrative)
+        out["ksiImplementation"] = _copied(narrative)
         if ksi_id in derived:
             derived_facts = derived[ksi_id]
             for field in DERIVED_INDICATOR_FIELDS:
@@ -195,10 +239,16 @@ def merge_indicators(
                         f"derived facts for {ksi_id!r} are missing required "
                         f"field {field!r}"
                     )
-                value = derived_facts[field]
-                out[field] = list(value) if isinstance(value, list) else value
+                if derived_facts[field] is None:
+                    raise KeyError(
+                        f"derived facts for {ksi_id!r} has a None value for "
+                        f"required field {field!r}"
+                    )
+                out[field] = _copied(derived_facts[field])
         else:
             for field in _REQUIRED_ARRAY_FIELDS:
-                out.setdefault(field, [])
+                out[field] = _copied(out.get(field, []))
+            if out.get("ksiImplementationStatus") not in _VALID_IMPLEMENTATION_STATUSES:
+                out.pop("ksiImplementationStatus", None)
         merged.append(out)
     return merged, omitted

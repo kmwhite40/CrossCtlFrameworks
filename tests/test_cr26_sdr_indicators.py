@@ -191,6 +191,80 @@ def test_derived_list_fields_are_copied_not_aliased() -> None:
     assert merged[0]["ksiEvidence"] is not _DERIVED["KSI-IAM-01"]["ksiEvidence"]
 
 
+def test_nested_evidence_dicts_are_copied_not_aliased() -> None:
+    """``ksiEvidence`` is the one derived field that is a list of dicts --
+    exactly the shape Task 3 is most likely to post-process. A shallow
+    ``list(...)`` copy alone breaks aliasing of the outer list but leaves the
+    dicts inside it shared with the caller's derived mapping."""
+    authored = [{"ksiId": "KSI-IAM-01", "ksiImplementation": ["x"]}]
+    merged, _omitted = merge_indicators(authored, _DERIVED)
+    merged_item = merged[0]["ksiEvidence"][0]
+    derived_item = _DERIVED["KSI-IAM-01"]["ksiEvidence"][0]
+    assert merged_item == derived_item
+    assert merged_item is not derived_item
+
+
+def test_a_carried_forward_authored_list_is_copied_not_aliased() -> None:
+    """The fallback branch used to reuse the authored entry's own list
+    object for a carried-forward field -- mutating the merged document would
+    have mutated the caller's authored input underneath it."""
+    validation = ["last scan 2026-03-01"]
+    authored = [
+        {
+            "ksiId": "KSI-GONE-97",
+            "ksiImplementation": ["Still true."],
+            "ksiValidation": validation,
+        }
+    ]
+    merged, _omitted = merge_indicators(authored, _DERIVED)
+    assert merged[0]["ksiValidation"] == validation
+    assert merged[0]["ksiValidation"] is not validation
+
+
+def test_a_carried_forward_invalid_status_is_dropped() -> None:
+    """``seed_sdr`` (Task 3) feeds a previously-seeded document's own
+    ``keySecurityIndicators`` back in as ``authored`` -- so an invalid status
+    an earlier defect wrote (or any other producer wrote) must not round-trip
+    forever. Dropping it here is what lets the next document validate."""
+    merged, _omitted = merge_indicators(
+        [
+            {
+                "ksiId": "KSI-GONE-96",
+                "ksiImplementation": ["x"],
+                "ksiImplementationStatus": "",
+            }
+        ],
+        _DERIVED,
+    )
+    assert "ksiImplementationStatus" not in merged[0]
+
+
+def test_a_carried_forward_valid_status_survives() -> None:
+    """The other half of the same guard: a mistyped enum list must not
+    silently discard a status that is actually valid."""
+    merged, _omitted = merge_indicators(
+        [
+            {
+                "ksiId": "KSI-GONE-95",
+                "ksiImplementation": ["x"],
+                "ksiImplementationStatus": "Partially Implemented",
+            }
+        ],
+        _DERIVED,
+    )
+    assert merged[0]["ksiImplementationStatus"] == "Partially Implemented"
+
+
+def test_a_derived_field_with_a_none_value_names_the_indicator() -> None:
+    """A present-but-``None`` derived value is as much a broken contract as
+    an absent key -- it would put a wrongly-typed value into a required
+    ``type: array`` field, with no hint which producer wrote it."""
+    broken_derived = {"KSI-IAM-01": {**_DERIVED["KSI-IAM-01"], "ksiValidation": None}}
+    authored = [{"ksiId": "KSI-IAM-01", "ksiImplementation": ["x"]}]
+    with pytest.raises(KeyError, match="KSI-IAM-01"):
+        merge_indicators(authored, broken_derived)
+
+
 def test_entries_are_ordered_by_ksi_id() -> None:
     """Stable order, so re-seeding produces no spurious document diff.
 
