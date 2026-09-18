@@ -70,6 +70,45 @@ about how the offering meets that indicator.
 The CPO's gap is visible because the document fails validation. The SDR's would
 be invisible. That asymmetry is why §2 omits rather than empties.
 
+### 1.2.1 CORRECTION — `controlImplementationStatus` is enum-constrained too
+
+§1.2 told the implementer to follow `ssp/nist80053_docx.py`'s joins. That was
+right about the *narrative* and wrong about the *status*, and the difference
+is the whole lesson: the docx renderer writes into a Word table cell, where
+any string is fine. **The SDR has an enum.**
+
+`securityControls.items.properties.controlImplementationStatus` is
+`enum: ["Implemented", "Not Implemented", "Partially Implemented"]`, and every
+field of `securityControls.items` is **optional**. Measured against the real
+validator:
+
+```
+implementation_status ['implemented']        -> 'implemented'        invalid
+implementation_status ['planned','partial']  -> 'planned, partial'   invalid
+```
+
+A `", ".join(...)` of two values can **never** be an enum member. This is the
+fourth appearance of the claim-versus-rendering error in this one spec, and the
+first inside code that had already passed review.
+
+The platform's vocabulary is
+`ssp.constants.IMPLEMENTATION_STATUS_OPTIONS = ("Implemented", "Partially
+Implemented", "Planned", "Alternative Implementation", "Not Applicable")` —
+whose first two members are **exact** matches for the schema's, so genuine
+single-valued data was always fine. The lowercase `"implemented"` in the test
+fixture disguised that.
+
+**Decision, applying §1.3's principle rather than re-asking it:** emit
+`controlImplementationStatus` only when the entry carries **exactly one**
+status and that status is a member of the schema's enum. Otherwise **omit the
+key** — it is optional, so omission validates. `Planned`, `Alternative
+Implementation` and `Not Applicable` are therefore omitted rather than
+translated: "Not Implemented" is a harsher claim to a regulator than "Planned"
+is, and inventing the harsher one is the same defect in the other direction.
+
+The narrative join is unaffected — `controlImplementationDescription` is free
+text with no enum, so following the docx renderer there remains correct.
+
 ### 1.3 Two of the five derived fields are claims, not renderings
 
 §1.2 caught that the control fields need a shape conversion rather than a copy.
