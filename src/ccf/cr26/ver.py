@@ -23,6 +23,14 @@ from typing import Any
 
 from ..patching.sla import FLAW_SOURCES, RemediationWindow, accepted_weakness_state, classify
 
+#: An omitted row: its id and one reason. The id is an int for a row read from
+#: the POA&M table, and a str for one keyed on a `providerTrackingId` that came
+#: from stored JSON an admin may have edited -- the document's own field is
+#: `type: string` with no numeric pattern, so int was always the narrower
+#: assumption. Reported verbatim rather than coerced: an id nobody can parse is
+#: still the id the operator has to go and look at.
+OmittedRow = tuple[int | str, str]
+
 #: `classify` buckets that answer the present-tense question `isOverdue` asks.
 #: Every other bucket omits the object rather than claiming `false`, which
 #: would be the favourable answer for a row nobody measured (spec §3.2).
@@ -122,7 +130,7 @@ class VerRendering:
     accepted: list[dict[str, Any]] = field(default_factory=list)
     #: One tuple per (id, reason) pair, so a row failing three rules appears
     #: three times. `counts["omitted"]` counts ROWS.
-    omitted: list[tuple[int, str]] = field(default_factory=list)
+    omitted: list[OmittedRow] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -174,9 +182,24 @@ def _tracking_id(entry: Any) -> str | None:
     return None if is_blank(value) else str(value).strip()
 
 
+def _as_row_id(tid: str) -> int | str:
+    """``int(tid)`` when ``tid`` is all digits, the bare string otherwise.
+
+    ``providerTrackingId`` is ``type: string`` with no numeric pattern, so a
+    non-numeric id is unusual but legitimate -- especially on the authored
+    side, which is stored JSON an admin may have hand-edited. Widening the
+    type rather than coercing or swallowing the row: an id nobody can parse
+    as a number is still the id an operator has to go and look at, and
+    dropping it here would silently drop provider content on exactly the
+    "this vulnerability was remediated" path the omission rule exists to
+    report.
+    """
+    return int(tid) if tid.isdigit() else tid
+
+
 def merge_accepted(
     authored: Sequence[dict[str, Any]], derived: Sequence[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[tuple[int, str]]]:
+) -> tuple[list[dict[str, Any]], list[OmittedRow]]:
     """Refresh each accepted vulnerability, keeping its authored rationale.
 
     ``acceptanceRationale`` is the one field the platform cannot derive -- no
@@ -198,17 +221,21 @@ def merge_accepted(
     }
     seen: set[str] = set()
     merged: list[dict[str, Any]] = []
-    omitted: list[tuple[int, str]] = []
+    omitted: list[OmittedRow] = []
 
     for detail in derived:
         tid = detail.get("providerTrackingId")
         if is_blank(tid):
+            # Unreachable by construction when `derived` comes from
+            # `render_all`: `render_vulnerability` always sets
+            # `providerTrackingId = str(poam.id)` from a non-null primary
+            # key, so no detail it emits can land here blank.
             continue
         tid = str(tid).strip()
         seen.add(tid)
         rationale = (by_id.get(tid) or {}).get("acceptanceRationale")
         if is_blank(rationale):
-            omitted.append((int(tid), "no acceptance rationale"))
+            omitted.append((_as_row_id(tid), "no acceptance rationale"))
             continue
         merged.append(
             {
@@ -219,8 +246,12 @@ def merge_accepted(
 
     for tid in by_id:
         if tid not in seen:
-            omitted.append((int(tid), "no longer an accepted vulnerability"))
+            omitted.append((_as_row_id(tid), "no longer an accepted vulnerability"))
 
     merged.sort(key=lambda e: int(e["vulnerabilityDetail"]["providerTrackingId"]))
-    omitted.sort()
+    # `row[0]` is `int | str`: a plain `.sort()` would raise the moment one
+    # omitted id is numeric and another is not. Numeric ids sort first, in
+    # numeric order -- matching the old all-int behaviour exactly -- with any
+    # non-numeric ids following in string order.
+    omitted.sort(key=lambda row: (isinstance(row[0], str), row[0]))
     return merged, omitted

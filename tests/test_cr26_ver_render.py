@@ -213,6 +213,28 @@ def test_the_nine_unsourced_fields_are_absent() -> None:
         assert field not in detail, field
 
 
+def test_every_rendered_detail_has_a_non_blank_tracking_id() -> None:
+    """`merge_accepted`'s ``continue`` on a blank derived ``providerTrackingId``
+    relies on this guarantee -- `providerTrackingId` is always
+    ``str(poam.id)`` from the non-null primary key, so no detail this
+    renderer emits can have a blank one. Checked over every fixture shape
+    that reaches a detail at all, so a future change that weakens the
+    guarantee fails here rather than downstream in the merge.
+    """
+    cases = [
+        _Poam(),
+        _Poam(status="risk_accepted"),
+        _Poam(status="closed", closed_on=date(2026, 9, 10)),
+        _Poam(weakness="CVE-2026-1234 in libssl"),
+        _Poam(scanner=None, source="scan"),
+    ]
+    for poam in cases:
+        detail, _reasons = render_vulnerability(poam, today=TODAY, window=WINDOW)
+        if detail is None:
+            continue
+        assert not is_blank(detail["providerTrackingId"]), poam.id
+
+
 def test_reasons_are_non_empty_exactly_when_the_detail_is_none() -> None:
     """The invariant Task 2 relies on. Asserted over every fixture shape this
     file uses, so a future branch that returns both or neither fails here.

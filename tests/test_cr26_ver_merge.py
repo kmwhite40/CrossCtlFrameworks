@@ -75,6 +75,33 @@ def test_an_authored_entry_the_scanner_no_longer_reports_is_dropped_and_named() 
     assert omitted == [(99, "no longer an accepted vulnerability")]
 
 
+def test_a_non_numeric_authored_id_the_source_no_longer_reports_does_not_crash() -> None:
+    """`providerTrackingId` is `type: string` with no numeric pattern, so an
+    admin-edited id like "POAM-42" is unusual but legitimate. This id is
+    orphaned -- the source no longer reports it -- which is exactly the "this
+    vulnerability was remediated" path the omission rule exists to report; it
+    must not crash the seeder.
+    """
+    authored = [
+        {
+            "vulnerabilityDetail": _detail("POAM-42"),
+            "acceptanceRationale": "r",
+        }
+    ]
+    merged, omitted = merge_accepted(authored, [])
+    assert merged == []
+    assert omitted == [("POAM-42", "no longer an accepted vulnerability")]
+
+
+def test_a_non_numeric_derived_id_with_no_rationale_does_not_crash() -> None:
+    """The no-rationale branch also builds an omitted tuple from the tracking
+    id, so it needs the same non-numeric-id safety as the orphan branch.
+    """
+    merged, omitted = merge_accepted([], [_detail("POAM-42")])
+    assert merged == []
+    assert omitted == [("POAM-42", "no acceptance rationale")]
+
+
 def test_the_merge_does_not_alias_its_inputs() -> None:
     """Mutating the result must not reach back into the caller's dicts. The SDR
     needed two rounds on exactly this, including the dicts nested inside.
