@@ -213,6 +213,14 @@ async def seed_sdr_document(
     * ``ssp_project_id`` -- which of the system's SSP projects it rendered
       from. ``SSPProject.system_id`` has no unique constraint, so the choice
       is real and an operator should never have to guess it.
+    * ``controls_missing_description`` -- controls that reached the document
+      with no ``controlImplementationDescription``, because the SSP entry has
+      none written or carried only ``[DRAFT]`` scaffolding. Nothing in the
+      document says so on its own: the scaffolded ``Planned`` status is
+      omitted as untranslatable, so this list is the only signal.
+    * ``rendered_control_count`` -- how many controls were rendered at all.
+      ``0`` with a non-``None`` ``ssp_project_id`` means an empty SSP project
+      won the most-recently-updated selection.
 
     Like the CPO seed, the result is **invalid by design**:
     ``certificationPackageOverviewUri`` is required at the root and cannot be
@@ -227,4 +235,6 @@ async def seed_sdr_document(
         **_full(result.document),
         "omitted_ksi_ids": result.omitted_ksi_ids,
         "ssp_project_id": result.ssp_project_id,
+        "controls_missing_description": result.controls_missing_description,
+        "rendered_control_count": result.rendered_control_count,
     }

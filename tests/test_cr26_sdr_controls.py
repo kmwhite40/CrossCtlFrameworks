@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+from ccf.cr26 import sdr as sdr_module
 from ccf.cr26.sdr import (
     _implementation_status_enum,
     latest_project_id,
@@ -19,6 +20,7 @@ from ccf.cr26.sdr import (
 from ccf.cr26.validation import schema_path
 from ccf.db import session_scope
 from ccf.models import Organization, SSPControlEntry, SSPProject, System
+from ccf.ssp.completeness import is_draft_or_placeholder
 
 
 def _entry(**kw: object) -> SSPControlEntry:
@@ -164,24 +166,105 @@ def test_a_non_string_parameter_value_becomes_a_string() -> None:
     assert values == {"count": "30", "flag": "True"}
 
 
-def test_empty_columns_render_as_empty_except_the_enum_which_is_omitted() -> None:
-    """The three unconstrained fields must be present even when the source is
-    empty, so a caller never handles KeyError for them.
+def test_an_entry_with_nothing_in_it_renders_only_what_is_true() -> None:
+    """This test used to assert ``controlImplementationDescription: ""``, on
+    the grounds that "every key must be present so a caller never handles
+    KeyError". Spec 1.2.2 reverses that: ``required`` is absent from
+    ``securityControls.items``, so every property there is optional, and
+    ``""`` does not mean "no description" -- it asserts to FedRAMP that the
+    provider's description of this control IS blank. Convenience for our
+    callers is not worth a false statement in a federal deliverable, and it is
+    the same defect this module already refuses for the two status enums.
 
-    ``controlImplementationStatus`` is the exception and spec 1.2.1 is why:
-    it is enum-constrained, so ``""`` is not "empty", it is a value outside
-    the enum that fails validation. The key is optional, so absence is the
-    correct rendering of "nothing to say" -- exactly as it is for
-    ``ksiImplementationStatus``.
+    ``parameterValues: []`` stays, and the difference is the point: an empty
+    list of *answered* parameters is a true statement about a control nobody
+    has filled in. An empty description is not.
     """
     out = render_controls(
         [_entry(implementation_status=[], part_narratives=[], odp_values={})]
     )
-    assert out[0] == {
-        "controlId": "AC-2",
-        "controlImplementationDescription": "",
-        "parameterValues": [],
-    }
+    assert out[0] == {"controlId": "AC-2", "parameterValues": []}
+
+
+def test_a_draft_scaffolded_narrative_is_dropped_not_shipped() -> None:
+    """The exact text ssp/nist80053.py:83-91 writes into EVERY control of
+    EVERY new 800-53 project, with ``draft: True`` beside it.
+
+    A scaffolded-but-unwritten SSP is the state of every new project and the
+    state an operator is most likely to press "seed" in. Rendering this would
+    tell FedRAMP that the provider's implementation description is an
+    instruction to write one -- and spec 1.2.1 omits the scaffolded ``Planned``
+    status, so nothing else in the document would have signalled it.
+    """
+    out = render_controls(
+        [
+            _entry(
+                implementation_status=["Planned"],
+                part_narratives=[
+                    {
+                        "label": "",
+                        "text": (
+                            "[DRAFT] AC control AC-2 is the responsibility of "
+                            "System Owner. Describe the implementation."
+                        ),
+                        "draft": True,
+                    }
+                ],
+            )
+        ]
+    )
+    assert out[0] == {"controlId": "AC-2", "parameterValues": []}
+
+
+def test_the_draft_marker_is_caught_even_without_the_draft_flag() -> None:
+    """Both gates are load-bearing. ``draft: True`` is nist80053.py's flag;
+    the text predicate catches the same marker from a producer that sets no
+    flag, and dropping either check alone lets one of the two through."""
+    out = render_controls(
+        [_entry(part_narratives=[{"text": "[DRAFT] Describe the implementation."}])]
+    )
+    assert "controlImplementationDescription" not in out[0], out[0]
+
+
+def test_an_unresolved_odp_placeholder_is_dropped() -> None:
+    """ssp/statements.py:65 and ssp/platforms.py:145-161 leave
+    ``[ORGANIZATION-DEFINED: ...]``, and ssp/odp.py leaves ``[Assignment: ...]``
+    / ``[Selection ...]``, in narrative text with no ``draft`` flag at all.
+    ssp/completeness.py already refuses to count these as written."""
+    for placeholder in (
+        "Key custody is [ORGANIZATION-DEFINED: FIPS 140-2 certificate number].",
+        "Accounts are reviewed [Assignment: organization-defined frequency].",
+        "The system enforces [Selection (one or more): a; b].",
+    ):
+        out = render_controls([_entry(part_narratives=[{"text": placeholder}])])
+        assert "controlImplementationDescription" not in out[0], (placeholder, out[0])
+
+
+def test_written_parts_survive_while_scaffolded_ones_beside_them_are_dropped() -> None:
+    """The other half: dropping must be surgical, not a blanket refusal of any
+    entry that contains one draft part. A human who has written part (a) and
+    left the generated part (b) alone keeps (a)."""
+    out = render_controls(
+        [
+            _entry(
+                part_narratives=[
+                    {"part": "a", "text": "We manage accounts in Entra ID."},
+                    {"part": "b", "text": "[DRAFT] Describe the implementation.",
+                     "draft": True},
+                ]
+            )
+        ]
+    )
+    assert out[0]["controlImplementationDescription"] == (
+        "We manage accounts in Entra ID."
+    )
+
+
+def test_the_draft_predicate_is_the_ssp_modules_own() -> None:
+    """Imported, not restated. A second copy of this rule is how this module's
+    status enum went wrong twice, and ssp/completeness.py already owns the
+    judgement -- it calls the same text "draft narrative -- needs review"."""
+    assert sdr_module.is_draft_or_placeholder is is_draft_or_placeholder
 
 
 def test_controls_keep_their_input_order() -> None:

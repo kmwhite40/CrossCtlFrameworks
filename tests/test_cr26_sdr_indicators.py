@@ -335,3 +335,30 @@ def test_derived_facts_may_omit_the_optional_status_and_a_stale_one_is_dropped()
     merged, _omitted = merge_indicators(authored, derived)
     assert "ksiImplementationStatus" not in merged[0], merged[0]
     assert merged[0]["ksiValidation"] == ["passed 2026-09-17 (scan)"]
+
+
+def test_a_carried_forward_non_list_is_replaced_not_carried() -> None:
+    """The array fields got a default but not a type check.
+
+    ``seed_sdr`` feeds a previously-stored document's own entries back in as
+    ``authored``, so an authored ``ksiValidation: null`` on a ksiId the catalog
+    no longer knows would be carried forward verbatim into a field that is
+    ``required`` and ``type: array`` -- and would round-trip through every
+    future seed, exactly like the invalid enum value the guard below it exists
+    for. The document could never validate again.
+    """
+    merged, _omitted = merge_indicators(
+        [
+            {
+                "ksiId": "KSI-GONE-94",
+                "ksiImplementation": ["x"],
+                "ksiValidation": None,
+                "ksiTests": "not a list either",
+            }
+        ],
+        _DERIVED,
+    )
+    assert merged[0]["ksiValidation"] == []
+    assert merged[0]["ksiTests"] == []
+    # A genuine list is still carried, not blanked along with them.
+    assert merged[0]["ksiImplementation"] == ["x"]

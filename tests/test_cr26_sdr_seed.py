@@ -12,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
 from ccf.auth import Principal
+from ccf.cr26 import sdr as sdr_module
 from ccf.cr26.sdr import (
     _evidence,
     _implementation_status,
@@ -96,6 +97,11 @@ async def _fixture(name: str) -> _Fixture:
             rule={"kind": "connector_capture", "captures": ["mfa_enforced"]},
         )
         s.add(ksi)
+        await s.flush()
+        # A passing state, so ksiImplementationStatus is actually DERIVED and
+        # reaches the validator in the seed-twice test. Without it the key is
+        # omitted and the "every derived field at once" claim there is false.
+        s.add(KSIState(system_id=sysm.id, ksi_id=ksi.id, status="pass"))
         await s.flush()
         return _Fixture(org.id, sysm.id, project.id, ksi.id, ident)
 
@@ -218,6 +224,11 @@ async def test_seeding_twice_keeps_the_narrative_and_refreshes_the_derived_field
     # Exact equality, not a membership check: the claim is that a seeded SDR
     # is invalid for exactly ONE reason, and "contains" would pass while the
     # document quietly acquired a second, dishonest one.
+    # Pin the comment's claim rather than trusting it: the fixture's KSIState
+    # is what makes the status a DERIVED value here, and without this
+    # assertion the key could quietly go missing and the "every derived field
+    # at once" promise above would become false without any test noticing.
+    assert entry["ksiImplementationStatus"] == "Implemented", entry
     assert third.document.validation_errors == [
         "<root>: 'certificationPackageOverviewUri' is a required property"
     ], third.document.validation_errors
@@ -423,7 +434,8 @@ async def test_a_passing_state_is_implemented_and_an_untested_one_claims_nothing
         )
         s.add(other)
         await s.flush()
-        s.add(KSIState(system_id=fx.system_id, ksi_id=fx.ksi_id, status="pass"))
+        # fx's own KSI already has a "pass" state from the fixture; this test
+        # only needs the ambiguous counterpart beside it.
         s.add(KSIState(system_id=fx.system_id, ksi_id=other.id, status="not_tested"))
 
     async with session_scope() as s:
@@ -556,3 +568,355 @@ async def test_another_tenants_system_is_404() -> None:
     async with _Session(org_id=other.org_id).client() as c:
         resp = await c.post(f"/api/systems/{owner.system_id}/cr26-documents/sdr/seed")
     assert resp.status_code == 404, resp.text
+
+
+# --- scoping, recency and round-trip ---------------------------------------
+
+
+async def test_another_systems_ksi_facts_never_reach_this_document() -> None:
+    """Every KSI query must filter on ``system_id``. All three filters could be
+    deleted with the suite green, and RLS is not the backstop here: its
+    policies are ORG-scoped, so a dropped filter leaks between systems inside
+    one tenant regardless, and an unscoped principal bypasses RLS entirely.
+    App-layer scoping is the primary defence.
+
+    Same shape as ``test_cr26_sdr_controls.py``'s
+    ``test_a_project_belonging_to_a_different_system_is_not_returned``: system
+    B's rows are the ones a dropped ``.where()`` would return, because they are
+    added later, so each assertion names B's text as the thing that must NOT
+    appear.
+    """
+    a = await _fixture("scope-a")
+    b = await _fixture("scope-b")
+    async with session_scope() as s:
+        # B records facts against A's catalog KSI -- the only way a dropped
+        # system filter shows up as wrong CONTENT rather than merely extra rows.
+        # A's own state is "pass", written by the fixture.
+        s.add(KSIState(system_id=b.system_id, ksi_id=a.ksi_id, status="fail"))
+        s.add(
+            KSIValidationResult(
+                system_id=b.system_id,
+                ksi_id=a.ksi_id,
+                ksi_identifier=a.identifier,
+                status="fail",
+                source="OTHER-SYSTEM-SCAN",
+                validated_at=datetime(2026, 9, 18, tzinfo=UTC),
+                evidence_refs=["OTHER-SYSTEM-EVIDENCE"],
+            )
+        )
+        s.add(
+            KSIAssessorReview(
+                system_id=b.system_id,
+                ksi_id=a.ksi_id,
+                assessor="OTHER-SYSTEM-ASSESSOR",
+                status="rejected",
+                reviewed_at=datetime(2026, 9, 18, tzinfo=UTC),
+            )
+        )
+        s.add(
+            KSIValidationResult(
+                system_id=a.system_id,
+                ksi_id=a.ksi_id,
+                ksi_identifier=a.identifier,
+                status="pass",
+                source="a-scan",
+                validated_at=datetime(2026, 9, 17, tzinfo=UTC),
+                evidence_refs=["a-evidence"],
+            )
+        )
+        s.add(
+            KSIAssessorReview(
+                system_id=a.system_id,
+                ksi_id=a.ksi_id,
+                assessor="a-assessor",
+                status="accepted",
+                reviewed_at=datetime(2026, 9, 17, tzinfo=UTC),
+            )
+        )
+
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=a.system_id,
+            kind="sdr",
+            document={
+                "keySecurityIndicators": [
+                    {"ksiId": a.identifier, "ksiImplementation": ["A's narrative."]}
+                ]
+            },
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=a.system_id)
+
+    entry = _indicator(result.document.document, a.identifier)
+    # ksi_states: A's is "pass" (Implemented), B's is "fail" (Not Implemented).
+    assert entry["ksiImplementationStatus"] == "Implemented", entry
+    assert entry["ksiValidation"] == [
+        "pass at 2026-09-17T00:00:00+00:00 (source: a-scan)"
+    ]
+    assert entry["ksiAssessment"] == ["accepted by a-assessor"]
+    assert entry["ksiEvidence"] == [
+        {"evidenceDescription": "a-evidence", "lastUpdated": "2026-09-17"}
+    ]
+
+
+async def test_the_latest_validation_run_wins_not_the_first() -> None:
+    """``_validation_statements`` claims "the latest run only" and nothing
+    pinned it: no fixture created two results for one KSI, so the dict-fold
+    that makes the newest win was unreachable as a distinguishing branch.
+
+    Reversing the ordering would report the OLDEST scan as current -- a stale
+    ``pass`` outliving a later ``fail``, told to a regulator as the present
+    state. The rows are added newest-first so insertion order disagrees with
+    the answer.
+    """
+    fx = await _fixture("recency")
+    async with session_scope() as s:
+        for status, source, when, ref in (
+            ("fail", "newer-scan", datetime(2026, 9, 18, tzinfo=UTC), "newer-evidence"),
+            ("pass", "older-scan", datetime(2026, 9, 10, tzinfo=UTC), "older-evidence"),
+        ):
+            s.add(
+                KSIValidationResult(
+                    system_id=fx.system_id,
+                    ksi_id=fx.ksi_id,
+                    ksi_identifier=fx.identifier,
+                    status=status,
+                    source=source,
+                    validated_at=when,
+                    evidence_refs=[ref],
+                )
+            )
+        for assessor, status, when in (
+            ("newer-assessor", "rejected", datetime(2026, 9, 18, tzinfo=UTC)),
+            ("older-assessor", "accepted", datetime(2026, 9, 10, tzinfo=UTC)),
+        ):
+            s.add(
+                KSIAssessorReview(
+                    system_id=fx.system_id,
+                    ksi_id=fx.ksi_id,
+                    assessor=assessor,
+                    status=status,
+                    reviewed_at=when,
+                )
+            )
+
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="sdr",
+            document={
+                "keySecurityIndicators": [
+                    {"ksiId": fx.identifier, "ksiImplementation": ["We do it."]}
+                ]
+            },
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    entry = _indicator(result.document.document, fx.identifier)
+    assert entry["ksiValidation"] == [
+        "fail at 2026-09-18T00:00:00+00:00 (source: newer-scan)"
+    ]
+    assert entry["ksiEvidence"] == [
+        {"evidenceDescription": "newer-evidence", "lastUpdated": "2026-09-18"}
+    ]
+    assert entry["ksiAssessment"] == ["rejected by newer-assessor"]
+
+
+async def test_a_tie_on_the_timestamp_is_broken_by_row_id() -> None:
+    """Two runs can share ``validated_at`` exactly -- ``now()`` is
+    transaction-scoped in Postgres, so results written in one transaction all
+    carry the identical server default. The later ROW is the later run, and
+    the answer must not be left to scan order."""
+    fx = await _fixture("tie-run")
+    same_moment = datetime(2026, 9, 18, tzinfo=UTC)
+    async with session_scope() as s:
+        for source in ("first-row", "second-row"):
+            s.add(
+                KSIValidationResult(
+                    system_id=fx.system_id,
+                    ksi_id=fx.ksi_id,
+                    ksi_identifier=fx.identifier,
+                    status="pass",
+                    source=source,
+                    validated_at=same_moment,
+                    evidence_refs=[],
+                )
+            )
+            await s.flush()  # distinct ids, in insertion order
+        for assessor in ("first-review", "second-review"):
+            s.add(
+                KSIAssessorReview(
+                    system_id=fx.system_id,
+                    ksi_id=fx.ksi_id,
+                    assessor=assessor,
+                    status="accepted",
+                    reviewed_at=same_moment,
+                )
+            )
+            await s.flush()
+
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="sdr",
+            document={
+                "keySecurityIndicators": [
+                    {"ksiId": fx.identifier, "ksiImplementation": ["We do it."]}
+                ]
+            },
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    entry = _indicator(result.document.document, fx.identifier)
+    assert entry["ksiValidation"] == [
+        "pass at 2026-09-18T00:00:00+00:00 (source: second-row)"
+    ]
+    assert entry["ksiAssessment"] == ["accepted by second-review"]
+
+
+async def test_the_seeder_reads_the_sdr_row_not_whatever_document_exists() -> None:
+    """A system with both a CPO and an SDR is the normal case. Without the
+    ``kind`` filter, ``_current`` returns whichever row comes back first and
+    ``seed_sdr`` builds the SDR on top of the CPO's body -- carrying
+    ``serviceIdentification`` into a document that has no such field.
+
+    The CPO is written FIRST so it has the lower id, which is what an
+    unfiltered ``.first()`` returns.
+    """
+    fx = await _fixture("kinds")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="cpo",
+            document={"serviceIdentification": {"serviceName": "CPO CONTENT"}},
+        )
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="sdr",
+            document={"certificationPackageOverviewUri": "https://example.gov/cpo.json"},
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    doc = result.document.document
+    assert "serviceIdentification" not in doc, doc
+    assert doc["certificationPackageOverviewUri"] == "https://example.gov/cpo.json"
+
+
+async def test_an_authored_fedramp_requirement_survives_a_reseed() -> None:
+    """``seed_sdr``'s docstring promises "[] unless already authored". Plain
+    assignment instead of ``setdefault`` passes every other test in this file,
+    because nothing else ever authors the field -- and it would silently
+    destroy the one part of ``fedRampRequirements`` a human can supply."""
+    fx = await _fixture("frr")
+    authored = [{"frrID": "SDR-CSO-FRR", "frrImplementation": ["We meet it."]}]
+    async with session_scope() as s:
+        await put_document(
+            s, system_id=fx.system_id, kind="sdr", document={"fedRampRequirements": authored}
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    assert result.document.document["fedRampRequirements"] == authored
+
+
+async def test_a_draft_only_control_is_reported_rather_than_described() -> None:
+    """Spec 1.2.2, end to end. A scaffolded SSP entry reaches the document with
+    NO ``controlImplementationDescription``, and the control id is named in the
+    result -- the only signal there is, since the scaffolded ``Planned`` status
+    is omitted as untranslatable.
+    """
+    fx = await _fixture("draft")
+    async with session_scope() as s:
+        s.add(
+            SSPControlEntry(
+                project_id=fx.project_id,
+                control_id="AU-2",
+                implementation_status=["Planned"],
+                part_narratives=[
+                    {
+                        "label": "",
+                        "text": (
+                            "[DRAFT] AU control AU-2 is the responsibility of "
+                            "System Owner. Describe the implementation."
+                        ),
+                        "draft": True,
+                    }
+                ],
+                odp_values={},
+            )
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    by_control = {
+        control["controlId"]: control
+        for control in result.document.document["securityControls"]
+    }
+    assert by_control["AU-2"] == {"controlId": "AU-2", "parameterValues": []}
+    # AC-2 from the fixture is genuinely written, so it keeps its description.
+    assert by_control["AC-2"]["controlImplementationDescription"] == (
+        "We manage accounts."
+    )
+    assert result.controls_missing_description == ["AU-2"]
+    assert result.rendered_control_count == 2
+
+
+async def test_an_empty_ssp_project_reports_zero_controls_rendered() -> None:
+    """``ssp_project_id: None`` is documented as the signal that
+    ``securityControls: []`` means "no SSP to render from" -- but an EMPTY
+    project that happens to be the most recently updated one wins the
+    selection, blanks a populated ``securityControls`` and returns a
+    non-``None`` id, so that signal does not fire. The rendered count is what
+    distinguishes the two.
+    """
+    fx = await _fixture("empty-project")
+    async with session_scope() as s:
+        first = await seed_sdr(s, system_id=fx.system_id)
+    assert first.rendered_control_count == 1
+
+    async with session_scope() as s:
+        empty = SSPProject(
+            organization_id=fx.org_id,
+            system_id=fx.system_id,
+            customer_name="empty",
+            updated_at=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+        s.add(empty)
+        await s.flush()
+        empty_id = empty.id
+
+    async with session_scope() as s:
+        again = await seed_sdr(s, system_id=fx.system_id)
+
+    assert again.document.document["securityControls"] == []
+    assert again.ssp_project_id == empty_id  # NOT None -- the gap in that signal
+    assert again.rendered_control_count == 0
+    assert again.controls_missing_description == []
+
+
+def test_a_verdict_mapping_outside_the_schema_enum_is_refused() -> None:
+    """M8's other half. ``_IMPLEMENTATION_STATUS_BY_VERDICT`` names its two
+    targets as literals; gating them on the schema's enum is what stops a
+    NARROWING schema bump leaving this producer emitting a value FedRAMP no
+    longer accepts, with nothing saying why."""
+    assert _implementation_status("fail") == "Not Implemented"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(sdr_module, "_implementation_status_enum", lambda: frozenset({"Implemented"}))
+        with pytest.raises(RuntimeError, match="Not Implemented"):
+            _implementation_status("fail")
+        # The mapped-to-nothing verdicts still make no claim rather than raising.
+        assert _implementation_status("not_tested") is None

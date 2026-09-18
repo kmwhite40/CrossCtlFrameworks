@@ -40,14 +40,23 @@ where an implementer invents something:
 | SDR field | Column | Column shape | Conversion |
 |---|---|---|---|
 | `controlId` | `control_id` | `VARCHAR(32)` | direct |
-| `controlImplementationStatus` | `implementation_status` | JSONB `list[str]` | `", ".join(...)` |
-| `controlImplementationDescription` | `part_narratives` | JSONB `list[{"text": ...}]` | `" ".join(p["text"])` |
+| `controlImplementationStatus` | `implementation_status` | JSONB `list[str]` | **see §1.2.1** — enum-constrained; the `", ".join(...)` this row once prescribed can never validate |
+| `controlImplementationDescription` | `part_narratives` | JSONB `list[{"text": ...}]` | `" ".join(p["text"])` over the **written** parts only — **see §1.2.2**; `[DRAFT]` and ODP-placeholder parts are dropped, and the key is omitted if nothing survives |
 | `parameterValues` | `odp_values` | JSONB `{odp_key: value}` | `[{"parameterId": k, "parameterValue": str(v)}]` |
 
 **Follow `ssp/nist80053_docx.py`'s joins rather than inventing new ones** —
 lines 170 and 173 already render exactly these two fields for the Word SSP, and
 the SDR is meant to be a second profile over the same content, not a second
 opinion about how to flatten it.
+
+> **This paragraph and the table above it are corrected by §1.2.1 and §1.2.2,
+> forty and eighty lines below.** Read them before implementing either field.
+> The docx renderer writes into a Word table cell, where any string is fine
+> and a reviewer sees the `[DRAFT]` marker with their own eyes; the SDR is a
+> machine-read federal deliverable with an enum on one field and no reader on
+> the other. Following it produced two defects, one Critical. The *narrative
+> join itself* — a space between parts — is still the docx renderer's, and
+> that much of this paragraph stands.
 
 **`parameterValues` must omit unfilled parameters.** `ssp/nist80053.py:71`
 scaffolds `odp_values` as `{param.id: None}` for every parameter in the
@@ -108,6 +117,63 @@ is, and inventing the harsher one is the same defect in the other direction.
 
 The narrative join is unaffected — `controlImplementationDescription` is free
 text with no enum, so following the docx renderer there remains correct.
+
+### 1.2.2 CORRECTION — the description ships `[DRAFT]` scaffolding
+
+§1.2.1 fixed the status and did not look at the line beside it. Measured
+end to end against the real validator, on an entry as `ssp/nist80053.py`
+scaffolds it:
+
+```
+RENDERED: [{'controlId': 'AC-2',
+            'controlImplementationDescription': '[DRAFT] AC control AC-2 is the
+              responsibility of System Owner. Describe the implementation.',
+            'parameterValues': []}]
+VALID: True   ERRORS: []   STATUS KEY PRESENT: False
+```
+
+`ssp/nist80053.py:83-91` writes that exact text, with `"draft": True`, into
+**every** control entry of **every** new 800-53 project, alongside
+`implementation_status: [Planned]`. §1.2.1 correctly omits `Planned` — so the
+one field that would have signalled incompleteness is silent, and the
+description carries the placeholder instead. A scaffolded-but-unwritten SSP is
+the state of every new project, and the state an operator is most likely to
+press "seed" in. The document validates, and tells FedRAMP that the provider's
+implementation description is an instruction to write one.
+
+Second source, same field: `ssp/statements.py:65` and `ssp/platforms.py:145-161`
+emit `[ORGANIZATION-DEFINED: …]`, and `ssp/odp.py` leaves `[Assignment: …]` /
+`[Selection …]`, into narrative text with no `draft` flag at all.
+
+This is the **fifth** claim-versus-rendering defect on this spec, and the first
+found on a line immediately beside one already corrected.
+
+**Decisions:**
+
+- **Drop any narrative part flagged `draft`, or whose text trips
+  `ssp/completeness.py`'s placeholder predicate.** The platform already owns
+  this judgement — that module calls the same text *"draft narrative — needs
+  review"* — so the predicate is **promoted to `is_draft_or_placeholder` and
+  imported**, never restated. A second copy of a rule is how this spec's
+  status enum went wrong twice.
+- **Omit `controlImplementationDescription` entirely when nothing survives.**
+  `required` is absent from `securityControls.items`, so every property there
+  is optional. The seeder previously emitted `""`, and a test pinned that as
+  intended on the grounds that "every key must be present so a caller never
+  handles KeyError" — but `""` asserts the provider's description *is blank*,
+  which is the same defect this spec refuses for `ksiImplementationStatus`.
+  Convenience for our callers is not worth a false statement in a federal
+  deliverable.
+- **`parameterValues: []` is unaffected.** An empty list of *answered*
+  parameters is a true statement about a control nobody has filled in. An
+  empty description is not. The distinction is the whole rule.
+- **Report the affected control ids in the seed result**, as
+  `controls_missing_description`, beside `omitted_ksi_ids`. Nothing in the
+  document says a control is unwritten — the scaffolded `Planned` is omitted as
+  untranslatable — so without this the control gap reaches no operator at all.
+  `rendered_control_count` travels with it, because `ssp_project_id: None`
+  cannot distinguish "no SSP" from "an empty SSP project that happened to be
+  the most recently updated one".
 
 ### 1.3 Two of the five derived fields are claims, not renderings
 

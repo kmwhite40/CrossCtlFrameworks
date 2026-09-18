@@ -38,6 +38,7 @@ from ..models import (
     System,
 )
 from ..models_cr26 import Cr26Document
+from ..ssp.completeness import is_draft_or_placeholder
 from .store import put_document
 from .validation import schema_path
 
@@ -150,26 +151,69 @@ def _control_implementation_status(statuses: Sequence[str] | None) -> str | None
     return value if value in _implementation_status_enum() else None
 
 
+def _implementation_description(part_narratives: Sequence[Any] | None) -> str | None:
+    """The written parts of this control's narrative, or ``None`` if none are.
+
+    **Scaffolding is dropped, never rendered.** ``ssp/nist80053.py`` writes
+    ``"[DRAFT] AC control AC-2 is the responsibility of System Owner. Describe
+    the implementation."`` -- with ``"draft": True`` -- into every part
+    narrative of every new 800-53 project, and ``ssp/statements.py`` /
+    ``ssp/platforms.py`` leave ``[ORGANIZATION-DEFINED: ...]``,
+    ``[Assignment: ...]`` and ``[Selection ...]`` in narrative text. A
+    scaffolded-but-unwritten SSP is the state of every new project, and the
+    state an operator is most likely to press "seed" in -- so without this,
+    the deliverable tells FedRAMP that the provider's implementation
+    description is an instruction to write one.
+
+    ``ssp/completeness.py`` already owns this judgement and calls the same text
+    "draft narrative -- needs review", so its predicate is imported rather than
+    restated: a second copy of a rule is how this module's status enum went
+    wrong twice.
+
+    The join itself still matches ``ssp/nist80053_docx.py`` line 170 -- two
+    profiles over one body of content must not disagree about what a control
+    says.
+
+    Returns ``None``, not ``""``, when nothing survives. ``required`` is absent
+    from ``securityControls.items``, so every property there is optional, and
+    ``""`` would assert that the provider's description IS blank -- the same
+    claim-versus-rendering defect this module refuses for
+    ``ksiImplementationStatus`` and ``controlImplementationStatus``. Absence
+    says "not stated"; ``""`` says "stated, and empty".
+    """
+    written: list[str] = []
+    for part in part_narratives or []:
+        if not isinstance(part, dict) or part.get("draft"):
+            continue
+        text = str(part.get("text") or "")
+        # Both gates matter: ``draft`` is the flag nist80053.py sets, and the
+        # predicate catches text that carries the marker or an unresolved ODP
+        # placeholder without the flag -- statements.py and platforms.py set
+        # no flag at all.
+        if is_draft_or_placeholder(text):
+            continue
+        written.append(text)
+    return " ".join(written) or None
+
+
 def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
     """The SSP's control content in the SDR's shape.
 
-    The narrative join matches ``ssp/nist80053_docx.py`` line 170, which
-    renders that same field into the Word SSP: two profiles over one body of
-    content must not disagree about what a control says, and
-    ``controlImplementationDescription`` is free text with no enum.
-
-    The status does NOT follow the docx renderer -- see
-    :func:`_control_implementation_status`.
+    Neither enum-constrained nor free-text fields follow the docx renderer
+    blindly -- see :func:`_control_implementation_status` for the status and
+    :func:`_implementation_description` for the narrative. ``parameterValues``
+    is always present, including as ``[]``: an empty list of *answered*
+    parameters is a true statement, unlike an empty description.
     """
     rendered: list[dict[str, Any]] = []
     for entry in entries:
         control: dict[str, Any] = {
             "controlId": entry.control_id,
-            "controlImplementationDescription": " ".join(
-                str(part.get("text") or "") for part in (entry.part_narratives or [])
-            ),
             "parameterValues": _parameter_values(entry.odp_values),
         }
+        description = _implementation_description(entry.part_narratives)
+        if description is not None:
+            control["controlImplementationDescription"] = description
         status = _control_implementation_status(entry.implementation_status)
         if status is not None:
             control["controlImplementationStatus"] = status
@@ -379,7 +423,16 @@ def merge_indicators(
                 out["ksiImplementationStatus"] = status
         else:
             for field in _REQUIRED_ARRAY_FIELDS:
-                out[field] = _copied(out.get(field, []))
+                carried = out.get(field)
+                # Type-checked, not merely defaulted. These four are
+                # ``required`` and ``type: array``, and ``seed_sdr`` feeds a
+                # previously-stored document's own entries back in here -- so
+                # an authored ``ksiValidation: null`` on a ksiId the catalog
+                # no longer knows would round-trip forever and the document
+                # could never validate again. Exactly the round-trip the enum
+                # self-heal below already guards; the array fields had the
+                # default but not the check.
+                out[field] = _copied(carried) if isinstance(carried, list) else []
             if out.get("ksiImplementationStatus") not in _implementation_status_enum():
                 out.pop("ksiImplementationStatus", None)
         merged.append(out)
@@ -424,8 +477,23 @@ _IMPLEMENTATION_STATUS_BY_VERDICT: dict[str, str] = {
 
 
 def _implementation_status(verdict: str | None) -> str | None:
-    """``Implemented``/``Not Implemented``, or ``None`` to make no claim."""
-    return _IMPLEMENTATION_STATUS_BY_VERDICT.get(verdict or "")
+    """``Implemented``/``Not Implemented``, or ``None`` to make no claim.
+
+    The mapping's two target values are checked against
+    :func:`_implementation_status_enum` rather than trusted, for the same
+    reason the control side stopped hand-typing them: a schema bump that
+    NARROWED the enum would leave this producer emitting a value FedRAMP no
+    longer accepts, and the seeded document would be invalid with nothing
+    saying why. Loud, like the drift guard in the enum reader itself.
+    """
+    claimed = _IMPLEMENTATION_STATUS_BY_VERDICT.get(verdict or "")
+    if claimed is not None and claimed not in _implementation_status_enum():
+        raise RuntimeError(
+            f"CR26 schema drift: validation verdict {verdict!r} maps to "
+            f"{claimed!r}, which the vendored schema's implementation-status "
+            f"enum no longer accepts ({sorted(_implementation_status_enum())})"
+        )
+    return claimed
 
 
 def _validation_statements(result: KSIValidationResult | None) -> list[str]:
@@ -578,9 +646,33 @@ class SdrSeedResult:
     document: Cr26Document
     omitted_ksi_ids: list[str]
     ssp_project_id: int | None
+    #: Controls that reached the document with NO
+    #: ``controlImplementationDescription`` -- either because the SSP entry has
+    #: no narrative at all, or because everything it had was ``[DRAFT]``
+    #: scaffolding or an unresolved ODP placeholder and was dropped (see
+    #: :func:`_implementation_description`). Without this the control gap is
+    #: silent: ``controlImplementationStatus`` is omitted for the scaffolded
+    #: ``Planned``, so nothing in the document itself says the control is
+    #: still unwritten. ``omitted_ksi_ids`` does this job for indicators; this
+    #: is its equivalent for controls.
+    controls_missing_description: list[str]
+    #: How many controls were rendered at all. ``0`` alongside a non-``None``
+    #: ``ssp_project_id`` is the case ``ssp_project_id`` cannot signal by
+    #: itself: an empty but recently-updated SSP project wins the
+    #: most-recently-updated selection and blanks a populated
+    #: ``securityControls``.
+    rendered_control_count: int
 
 
 async def _current(session: AsyncSession, system_id: int) -> dict[str, Any] | None:
+    """This system's stored SDR body, or ``None``.
+
+    The ``kind`` filter is load-bearing, not decorative: a system with both a
+    CPO and an SDR is the normal case, and without it this returns whichever
+    row the database hands back first -- so ``seed_sdr`` would build the SDR
+    on top of the CPO's body, carrying ``serviceIdentification`` into a
+    document that has no such field.
+    """
     row = (
         await session.execute(
             select(Cr26Document).where(
@@ -644,7 +736,8 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
                 .order_by(SSPControlEntry.sort_order, SSPControlEntry.control_id)
             )
         ).scalars().all()
-    document["securityControls"] = render_controls(entries)
+    controls = render_controls(entries)
+    document["securityControls"] = controls
 
     authored = document.get("keySecurityIndicators")
     merged, omitted = merge_indicators(
@@ -658,5 +751,13 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
 
     row = await put_document(session, system_id=system_id, kind="sdr", document=document)
     return SdrSeedResult(
-        document=row, omitted_ksi_ids=omitted, ssp_project_id=project_id
+        document=row,
+        omitted_ksi_ids=omitted,
+        ssp_project_id=project_id,
+        controls_missing_description=[
+            str(control["controlId"])
+            for control in controls
+            if "controlImplementationDescription" not in control
+        ],
+        rendered_control_count=len(controls),
     )
