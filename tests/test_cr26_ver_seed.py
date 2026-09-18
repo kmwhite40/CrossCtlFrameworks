@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -20,6 +21,12 @@ from ccf.models import POAM, Organization, System
 FROM = datetime(2026, 9, 1, tzinfo=UTC)
 TO = datetime(2026, 12, 1, tzinfo=UTC)
 ONE_ERROR = ["<root>: 'certificationPackageOverviewUri' is a required property"]
+
+#: The exact shape of every instant this family writes. `format: date-time` is
+#: NOT enforced in this environment (spec §4), so `endswith("Z")` was no test
+#: at all: mutating `_instant` to `"%Y-%m-%d %H:%M:%SZ"` -- a space instead of
+#: the `T`, a malformed date-time -- left the whole suite green.
+INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 
 #: Fixed rather than the real clock. `accepted_weakness_state` flips a row to
 #: `accepted` after `ACCEPTED_WEAKNESS_DAYS = 192` days past `identified_on`,
@@ -146,6 +153,55 @@ async def test_ver_history_carries_a_row_no_report_period_would_cover() -> None:
     body = result.document.document
     assert [v["providerTrackingId"] for v in body["activeVulnerabilities"]] == [str(outside)]
     assert result.counts["excluded_outside_period"] == 0
+
+
+async def test_an_avi_records_the_period_the_caller_asked_for() -> None:
+    """The AVI's own `reportPeriod`, by exact string, in its own test.
+
+    The VDR had this assertion and the AVI did not, so nothing pinned the
+    AVI's values at all: swapping `from` and `to` in `seed_avi` ALONE left the
+    whole suite green. `from` and `to` are deliberately different instants
+    here, which is what makes a swap visible.
+    """
+    _org_id, system_id = await _system("avi-period")
+    await _poam(system_id, status="risk_accepted")
+    async with session_scope() as s:
+        result = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.document.document["reportPeriod"] == {
+        "from": "2026-09-01T00:00:00Z",
+        "to": "2026-12-01T00:00:00Z",
+    }
+
+
+async def test_a_blank_stored_cpo_uri_is_not_carried_forward() -> None:
+    """`_carry_uri` asks `is_blank`, not `is not None`, and that is load-bearing
+    rather than stylistic: `certificationPackageOverviewUri` has `format: uri`
+    -- unenforced here -- and no `minLength`, so a stored `""` VALIDATES.
+    Carrying it forward would produce a document reporting `is_valid: True`
+    while naming no certification package at all, which is worse than the
+    honest invalid state a missing URI leaves.
+    """
+    _org_id, system_id = await _system("uri-blank")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="vdr",
+            document={
+                "certificationPackageOverviewUri": "",
+                "reportPeriod": {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"},
+                "vulnerabilities": [],
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_vdr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert "certificationPackageOverviewUri" not in result.document.document
+    assert result.document.validation_errors == ONE_ERROR
+    assert result.document.is_valid is False
 
 
 async def test_an_accepted_weakness_leaves_the_vdr_and_enters_the_avi() -> None:
@@ -345,7 +401,7 @@ async def test_ver_history_carries_both_halves_and_a_generated_at() -> None:
         body["acceptedVulnerabilities"][0]["acceptanceRationale"]
         == "Compensating control: WAF rule 91234."
     )
-    assert body["generatedAt"].endswith("Z")
+    assert INSTANT.fullmatch(body["generatedAt"]), body["generatedAt"]
     assert "reportPeriod" not in body
     assert result.document.validation_errors == ONE_ERROR
 
@@ -881,7 +937,7 @@ async def test_the_ver_history_route_takes_no_period() -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert "reportPeriod" not in body["document"]
-    assert body["document"]["generatedAt"].endswith("Z")
+    assert INSTANT.fullmatch(body["document"]["generatedAt"]), body["document"]["generatedAt"]
     assert len(body["document"]["activeVulnerabilities"]) == 1
     assert [omitted_id, "no identification date"] in body["omitted_poam_ids"]
     assert body["counts"]["rendered"] == 1
