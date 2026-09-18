@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
@@ -828,6 +828,18 @@ async def test_a_tie_on_the_timestamp_is_broken_by_row_id() -> None:
                 )
             )
             await s.flush()
+        # Explicit ids bypass the sequence, leaving these values in the path of
+        # every future nextval(). Advance it past them so a later insert in
+        # this session cannot collide.
+        for table, highest in (
+            ("ccf.ksi_validation_results", base_result + 1),
+            ("ccf.ksi_assessor_reviews", base_review + 1),
+        ):
+            await s.execute(
+                text(
+                    "SELECT setval(pg_get_serial_sequence(:t, 'id'), :v)"
+                ).bindparams(t=table, v=highest)
+            )
 
     async with session_scope() as s:
         await put_document(
@@ -849,6 +861,21 @@ async def test_a_tie_on_the_timestamp_is_broken_by_row_id() -> None:
         "pass at 2026-09-18T00:00:00+00:00 (source: higher-id)"
     ]
     assert entry["ksiAssessment"] == ["accepted by higher-id-review"]
+
+    # The sequence must now hand out ids ABOVE the explicit ones.
+    async with session_scope() as s:
+        probe = KSIValidationResult(
+            system_id=fx.system_id,
+            ksi_id=fx.ksi_id,
+            ksi_identifier=fx.identifier,
+            status="pass",
+            source="sequence-probe",
+            validated_at=datetime(2026, 9, 19, tzinfo=UTC),
+            evidence_refs=[],
+        )
+        s.add(probe)
+        await s.flush()
+        assert probe.id > base_result + 1, (probe.id, base_result)
 
 
 async def test_the_seeder_reads_the_sdr_row_not_whatever_document_exists() -> None:

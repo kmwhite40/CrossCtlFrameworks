@@ -200,36 +200,71 @@ def _implementation_description(
     dropped = False
     for part in part_narratives or []:
         if not isinstance(part, dict):
-            # A legacy bare-string narrative is not a part this can read, and
+            if _is_blank(part):
+                # A legacy bare blank string lost nothing; saying otherwise
+                # sends an operator hunting for content that never existed.
+                continue
+            # Any other legacy bare value is content this cannot read, and
             # rendering ``str(part)`` would put a repr in a federal document.
             dropped = True
             continue
-        text = str(part.get("text") or "").strip()
+        value = part.get("text")
+        if not isinstance(value, str):
+            if value is None:
+                continue  # nothing written here at all
+            # Same standard one level down: ``{"text": ["a", "b"]}`` must not
+            # render as ``"['a', 'b']"``.
+            dropped = True
+            continue
+        text = value.strip()
         if not text:
             # Nothing was written here; nothing is lost by leaving it out, so
-            # this is not a drop the operator needs to hear about.
-            # ``api/routes/ui.py`` re-saves a cleared textarea as ``""``.
+            # this is NOT a drop the operator needs to hear about -- claiming
+            # otherwise would put a false statement in the one channel that
+            # exists to be truthful. ``api/routes/ui.py`` re-saves a cleared
+            # textarea as ``""``.
             continue
         # Both gates matter, in both directions: ``draft`` is the flag
         # ``ssp/nist80053.py`` sets, and the predicate catches marker or
         # placeholder text from producers that set no flag at all
         # (``ssp/statements.py``, ``ssp/platforms.py``). A future scaffolder
         # writing the flag without the marker is exactly what the flag gate is
-        # for.
-        if part.get("draft") or is_draft_or_placeholder(text):
+        # for -- and ``api/routes/ui.py``'s ``ssp_save_entry`` rebuilds every
+        # part as ``{"label", "text"}``, dropping ``draft``, so for any control
+        # ever touched in that editor the predicate is the ONLY gate left.
+        #
+        # The predicate is given the RAW text, never the stripped copy:
+        # ``constants.DRAFT_PREFIX`` is ``"[DRAFT] "`` WITH its trailing space,
+        # and ``is_draft_or_placeholder`` tests it as a plain substring -- so
+        # stripping first destroys the token whenever the marker ends the
+        # string, and ``"[DRAFT] "`` would ship as ``"[DRAFT]"``. The strip is
+        # for the blank test and the join only.
+        if part.get("draft") or is_draft_or_placeholder(value):
             dropped = True
             continue
         written.append(text)
     return (" ".join(written) or None), dropped
 
 
-def _control_gaps(
-    entries: Sequence[SSPControlEntry],
-) -> tuple[list[str], list[str]]:
-    """``(missing_description, dropped_parts)`` control ids, for the seed result.
+def _is_blank(value: Any) -> bool:
+    """True for a value that says nothing -- ``None``, or whitespace-only text."""
+    return value is None or (isinstance(value, str) and not value.strip())
 
-    The two answer different questions and **deliberately overlap**, so an
-    operator reading either one gets a complete answer to it:
+
+def _rendered_controls(
+    entries: Sequence[SSPControlEntry],
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """One walk producing the rendered controls AND the two gap lists.
+
+    Deliberately a single pass. ``controls_missing_description`` was once read
+    back off the rendered dicts, which made the two structurally impossible to
+    desync; splitting the walk moved the rule into two places, and the whole
+    history of this branch is that what can drift, drifts. The two thin
+    wrappers below exist so each half stays separately testable, but
+    :func:`seed_sdr` takes all three from here in one pass.
+
+    The two gap lists answer different questions and **deliberately overlap**,
+    so an operator reading either one gets a complete answer to it:
 
     * *missing_description* -- this control reached the document with no
       ``controlImplementationDescription`` at all, because nothing was written
@@ -238,17 +273,30 @@ def _control_gaps(
       scaffolding, **whether or not** anything survived. A control that keeps a
       truncated description appears here and nowhere else, and that is the case
       most easily missed: it still carries a status, still reads complete, and
-      is the one this list exists for.
+      is the one this list exists for. A part that was simply blank does NOT
+      count -- nothing was lost, and saying otherwise would send an operator
+      hunting for content that never existed.
     """
+    rendered: list[dict[str, Any]] = []
     missing: list[str] = []
     dropped_parts: list[str] = []
     for entry in entries:
+        control: dict[str, Any] = {
+            "controlId": entry.control_id,
+            "parameterValues": _parameter_values(entry.odp_values),
+        }
         description, dropped = _implementation_description(entry.part_narratives)
-        if description is None:
+        if description is not None:
+            control["controlImplementationDescription"] = description
+        else:
             missing.append(str(entry.control_id))
         if dropped:
             dropped_parts.append(str(entry.control_id))
-    return missing, dropped_parts
+        status = _control_implementation_status(entry.implementation_status)
+        if status is not None:
+            control["controlImplementationStatus"] = status
+        rendered.append(control)
+    return rendered, missing, dropped_parts
 
 
 def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
@@ -260,20 +308,13 @@ def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
     is always present, including as ``[]``: an empty list of *answered*
     parameters is a true statement, unlike an empty description.
     """
-    rendered: list[dict[str, Any]] = []
-    for entry in entries:
-        control: dict[str, Any] = {
-            "controlId": entry.control_id,
-            "parameterValues": _parameter_values(entry.odp_values),
-        }
-        description, _dropped = _implementation_description(entry.part_narratives)
-        if description is not None:
-            control["controlImplementationDescription"] = description
-        status = _control_implementation_status(entry.implementation_status)
-        if status is not None:
-            control["controlImplementationStatus"] = status
-        rendered.append(control)
-    return rendered
+    return _rendered_controls(entries)[0]
+
+
+def _control_gaps(entries: Sequence[SSPControlEntry]) -> tuple[list[str], list[str]]:
+    """``(missing_description, dropped_parts)`` -- see :func:`_rendered_controls`."""
+    _controls, missing, dropped_parts = _rendered_controls(entries)
+    return missing, dropped_parts
 
 
 async def latest_project_id(session: AsyncSession, system_id: int) -> int | None:
@@ -799,8 +840,7 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
                 .order_by(SSPControlEntry.sort_order, SSPControlEntry.control_id)
             )
         ).scalars().all()
-    controls = render_controls(entries)
-    missing_description, dropped_parts = _control_gaps(entries)
+    controls, missing_description, dropped_parts = _rendered_controls(entries)
     document["securityControls"] = controls
 
     authored = document.get("keySecurityIndicators")

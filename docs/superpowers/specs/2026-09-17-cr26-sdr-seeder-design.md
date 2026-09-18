@@ -176,13 +176,20 @@ found on a line immediately beside one already corrected.
   reading either must get a complete answer to it:
   - `controls_missing_description` — no `controlImplementationDescription` at
     all, because nothing was written or everything was scaffolding.
-  - `controls_with_dropped_parts` — at least one part dropped, *whether or not
-    anything survived*. This is the case most easily missed:
-    `ssp/statements.py:88-90` appends `" Frequency: {frequency}."` — carrying
-    `_resolved_frequency`'s placeholder when unset — to the END of
-    otherwise-complete composed paragraphs, so three sentences of real provider
-    content can be dropped whole for one trailing token, leaving a control that
-    still has a description and a status and reads complete.
+  - `controls_with_dropped_parts` — at least one part **that had content**
+    was dropped, *whether or not anything survived*. This is the case most
+    easily missed: `ssp/statements.py:88-90` appends
+    `" Frequency: {frequency}."` — carrying `_resolved_frequency`'s
+    placeholder when unset — to the END of otherwise-complete composed
+    paragraphs, so three sentences of real provider content can be dropped
+    whole for one trailing token, leaving a control that still has a
+    description and a status and reads complete.
+
+    A **blank** part is deliberately NOT reported here. Nothing was lost, and
+    naming a never-written control as having lost content is a false statement
+    in the one channel this section exists to make truthful. The distinction
+    matters enough to be tested: the rule cannot be deleted green, but it can
+    be *inverted* green, which no delete-the-guard mutation would catch.
 
   `rendered_control_count` travels with them, because `ssp_project_id: None`
   cannot distinguish "no SSP" from "an empty SSP project that happened to be
@@ -202,6 +209,24 @@ found on a line immediately beside one already corrected.
   with `str(...)` and no strip, so a cleared textarea persists as `""`.
   `merge_indicators`' `_has_narrative` already applies exactly this rule to KSI
   narratives one level down, and `ssp/completeness.py` strips too.
+
+- **The placeholder predicate is given the RAW text, never the stripped copy.**
+  `constants.DRAFT_PREFIX` is `"[DRAFT] "` — with the trailing space — and
+  `is_draft_or_placeholder` tests it as a plain substring, so stripping first
+  destroys the token whenever the marker ends the string. `"[DRAFT] "` would
+  then ship as `"[DRAFT]"`, keep its status, and appear in **neither** gap
+  list: strictly worse than the original defect, which at least reached
+  `controls_missing_description`. Reachability is human editing rather than
+  scaffolding — `api/routes/ui.py`'s `ssp_save_entry` rebuilds every part as
+  `{"label", "text"}` and drops the `draft` key on every save, so for any
+  control ever touched in that editor the flag gate is inert and the predicate
+  is the only gate left, which is the design `ssp/statements.py:47` documents.
+
+  **Known, unclosed, and deliberately out of scope here:** a bare `"[DRAFT]"`
+  with *no* trailing space is not matched by the predicate at all. The hole is
+  pre-existing, lives inside `is_draft_or_placeholder`, and is shared by its
+  other call sites — widening it is a decision about SSP completeness scoring,
+  not a CR26 cleanup. See the evaluation in the task report.
 
 ### 1.3 Two of the five derived fields are claims, not renderings
 

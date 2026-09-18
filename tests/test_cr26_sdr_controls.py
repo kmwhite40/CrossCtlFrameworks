@@ -355,13 +355,74 @@ def test_blank_parts_never_come_back_as_a_space() -> None:
         [{"text": " "}],
         [{"text": "\t\n"}],
     ):
-        out = render_controls([_entry(part_narratives=narratives)])
+        entries = [_entry(part_narratives=narratives)]
+        out = render_controls(entries)
         assert "controlImplementationDescription" not in out[0], (narratives, out[0])
-    # A blank part beside a written one must not add a stray separator either.
-    out = render_controls(
-        [_entry(part_narratives=[{"text": "  Written.  "}, {"text": ""}])]
-    )
+        # A blank part is NOT a drop. Setting ``dropped`` here would name a
+        # never-written control as having LOST parts -- a false statement in
+        # the one channel that exists to be truthful. A comment saying a thing
+        # deliberately does not happen is as much a claim as a guard, so it
+        # gets an assertion: the rule can be INVERTED green otherwise, which
+        # no delete-the-guard mutation would catch.
+        assert _control_gaps(entries) == (["AC-2"], []), narratives
+    # A blank part beside a written one must not add a stray separator, and
+    # must not be reported as a loss either.
+    entries = [_entry(part_narratives=[{"text": "  Written.  "}, {"text": ""}])]
+    out = render_controls(entries)
     assert out[0]["controlImplementationDescription"] == "Written."
+    assert _control_gaps(entries) == ([], [])
+
+
+def test_the_draft_marker_survives_the_strip_that_kills_the_space_defect() -> None:
+    """``constants.DRAFT_PREFIX`` is ``"[DRAFT] "`` -- WITH the trailing space
+    -- and ``is_draft_or_placeholder`` tests it as a plain substring. So
+    stripping the text before handing it to the predicate destroys the token
+    whenever the marker ends the string, and the control ships ``"[DRAFT]"``
+    as its description, keeps its status, and lands in NEITHER gap list:
+    strictly worse than the defect the strip was added to fix, which at least
+    reached ``controls_missing_description``.
+
+    The predicate gets the raw text; the strip is for the blank test and the
+    join only.
+
+    Reachability is human editing, not scaffolding: ``api/routes/ui.py``'s
+    ``ssp_save_entry`` rebuilds every part as ``{"label", "text"}`` and drops
+    the ``draft`` key on every save, so for any control ever touched in that
+    editor the flag gate is inert and the predicate is the only gate left --
+    which is the design ``ssp/statements.py`` documents, the marker in the
+    stored text being the only durable record.
+    """
+    for text in ("[DRAFT] ", "Accounts are managed. [DRAFT] "):
+        entries = [_entry(part_narratives=[{"text": text}])]  # no draft flag
+        out = render_controls(entries)
+        assert "controlImplementationDescription" not in out[0], (text, out[0])
+        assert _control_gaps(entries) == (["AC-2"], ["AC-2"]), text
+
+
+def test_a_non_string_text_value_is_dropped_rather_than_repr_d() -> None:
+    """Same standard as the legacy bare-string part, one level down:
+    ``{"text": ["a", "b"]}`` must not render as ``"['a', 'b']"``. ``None``
+    stays "nothing written" rather than a loss."""
+    entries = [_entry(part_narratives=[{"text": ["a", "b"]}])]
+    out = render_controls(entries)
+    assert "controlImplementationDescription" not in out[0], out[0]
+    assert _control_gaps(entries) == (["AC-2"], ["AC-2"])
+
+    written = [_entry(part_narratives=[{"text": {"nested": "dict"}},
+                                       {"text": "Real content."}])]
+    assert render_controls(written)[0]["controlImplementationDescription"] == (
+        "Real content."
+    )
+    assert _control_gaps(written) == ([], ["AC-2"])
+
+
+def test_a_legacy_bare_blank_string_lost_nothing_and_is_not_reported() -> None:
+    """The ``isinstance`` guard fired before any blankness test, so ``["",
+    {"text": "..."}]`` reported a loss although nothing was there to lose."""
+    entries = [_entry(part_narratives=["", "   ", {"text": "We manage accounts."}])]
+    out = render_controls(entries)
+    assert out[0]["controlImplementationDescription"] == "We manage accounts."
+    assert _control_gaps(entries) == ([], [])
 
 
 def test_a_legacy_bare_string_narrative_is_dropped_and_reported() -> None:
