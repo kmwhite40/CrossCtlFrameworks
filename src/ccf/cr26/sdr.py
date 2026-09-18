@@ -19,8 +19,10 @@ authored narrative is **omitted entirely** and named in the result.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 from sqlalchemy import select
@@ -37,6 +39,7 @@ from ..models import (
 )
 from ..models_cr26 import Cr26Document
 from .store import put_document
+from .validation import schema_path
 
 
 def _parameter_values(odp_values: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -55,22 +58,74 @@ def _parameter_values(odp_values: dict[str, Any] | None) -> list[dict[str, str]]
     ]
 
 
-#: Mirrors the vendored schema's
-#: ``securityControls.items.properties.controlImplementationStatus`` enum
-#: exactly (``schemas/fedramp-security-decision-record-schema-*.json``).
-#:
-#: The platform's own vocabulary is
-#: :data:`ccf.ssp.constants.IMPLEMENTATION_STATUS_OPTIONS` --
-#: ``Implemented``, ``Partially Implemented``, ``Planned``,
-#: ``Alternative Implementation``, ``Not Applicable`` -- whose first two
-#: members are exact matches here and whose other three have no FedRAMP
-#: equivalent. They are OMITTED rather than translated: "Not Implemented" is
-#: a harsher claim to a regulator than "Planned" is, and inventing the
-#: harsher one is the same claim-versus-rendering defect facing the other
-#: way (spec 1.2.1, applying 1.3's principle).
-_VALID_CONTROL_IMPLEMENTATION_STATUSES: frozenset[str] = frozenset(
-    {"Implemented", "Not Implemented", "Partially Implemented"}
+#: Where the vendored SDR schema states its implementation-status enum. BOTH
+#: places, because this module constrains both fields and a copy that tracked
+#: only one would go stale in silence if FedRAMP widened the other.
+_STATUS_ENUM_PATHS: tuple[tuple[str, ...], ...] = (
+    (
+        "properties", "securityControls", "items", "properties",
+        "controlImplementationStatus", "enum",
+    ),
+    (
+        "properties", "keySecurityIndicators", "items", "properties",
+        "ksiImplementationStatus", "enum",
+    ),
 )
+
+
+@lru_cache(maxsize=1)
+def _implementation_status_enum() -> frozenset[str]:
+    """``{"Implemented", "Not Implemented", "Partially Implemented"}`` -- READ
+    out of the vendored schema, not hand-copied from it.
+
+    Both fields this module constrains --
+    ``securityControls[].controlImplementationStatus`` (spec 1.2.1) and
+    ``keySecurityIndicators[].ksiImplementationStatus`` (spec 1.3) -- carry
+    the same three members, so one derived constant serves both. A hand-typed
+    mirror would be a third place for this spec's recurring
+    claim-versus-rendering defect to hide: a schema bump that WIDENED the enum
+    would leave the copy silently narrow, and the seeder would start omitting
+    a status FedRAMP had just begun to accept.
+
+    The platform's own vocabulary is
+    :data:`ccf.ssp.constants.IMPLEMENTATION_STATUS_OPTIONS` --
+    ``Implemented``, ``Partially Implemented``, ``Planned``,
+    ``Alternative Implementation``, ``Not Applicable`` -- whose first two
+    members are exact matches here and whose other three have no FedRAMP
+    equivalent. Those three are OMITTED rather than translated: "Not
+    Implemented" is a harsher claim to a regulator than "Planned" is, and
+    inventing the harsher one is the same defect facing the other way.
+
+    Read on demand and cached rather than at import, following
+    :mod:`ccf.cr26.validation`, which keeps file I/O out of module import
+    deliberately. Raises rather than guessing if the vendored file is missing
+    or if the two locations ever stop agreeing -- both are packaging or
+    upstream-drift failures that must be loud, and a split enum needs two
+    constants and two decisions, not one silently applied to both.
+    """
+    path = schema_path("sdr")
+    if path is None:
+        raise RuntimeError(
+            "CR26 schema packaging error: the vendored SDR schema is missing, "
+            "so the implementation-status enum cannot be read"
+        )
+    schema: Any = json.loads(path.read_text(encoding="utf-8"))
+    found: dict[str, frozenset[str]] = {}
+    for keys in _STATUS_ENUM_PATHS:
+        node: Any = schema
+        for key in keys:
+            node = node[key]
+        found[keys[-2]] = frozenset(node)
+    distinct = set(found.values())
+    if len(distinct) != 1:
+        raise RuntimeError(
+            "CR26 schema drift: the SDR's two implementation-status enums no "
+            "longer agree -- "
+            f"{ {name: sorted(members) for name, members in sorted(found.items())} }. "
+            "They shared three members when this module was written; splitting "
+            "them needs two constants and two decisions, not one."
+        )
+    return distinct.pop()
 
 
 def _control_implementation_status(statuses: Sequence[str] | None) -> str | None:
@@ -92,7 +147,7 @@ def _control_implementation_status(statuses: Sequence[str] | None) -> str | None
     if len(values) != 1:
         return None
     value = values[0]
-    return value if value in _VALID_CONTROL_IMPLEMENTATION_STATUSES else None
+    return value if value in _implementation_status_enum() else None
 
 
 def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
@@ -140,7 +195,11 @@ async def latest_project_id(session: AsyncSession, system_id: int) -> int | None
         await session.execute(
             select(SSPProject.id)
             .where(SSPProject.system_id == system_id)
-            .order_by(SSPProject.updated_at.desc())
+            # id.desc() breaks a tie: updated_at alone leaves the answer to
+            # whatever order Postgres happens to return, and this id is the
+            # one value SdrSeedResult exists to make VISIBLE. An operator must
+            # not be told a different project on two identical seeds.
+            .order_by(SSPProject.updated_at.desc(), SSPProject.id.desc())
             .limit(1)
         )
     ).scalars().first()
@@ -209,18 +268,6 @@ def _copied(value: Any) -> Any:
     if isinstance(value, list):
         return [dict(item) if isinstance(item, dict) else item for item in value]
     return value
-
-
-#: Mirrors the vendored schema's ``ksiImplementationStatus`` enum exactly
-#: (``schemas/fedramp-security-decision-record-schema-*.json``). Used to
-#: drop a carried-forward status that is not a member -- most notably the
-#: ``""`` this module's own earlier version wrote into the fallback branch,
-#: which would otherwise round-trip forever: ``seed_sdr`` (Task 3) feeds a
-#: previously-seeded document's own ``keySecurityIndicators`` back in as
-#: ``authored``.
-_VALID_IMPLEMENTATION_STATUSES: frozenset[str] = frozenset(
-    {"Implemented", "Not Implemented", "Partially Implemented"}
-)
 
 
 def merge_indicators(
@@ -333,7 +380,7 @@ def merge_indicators(
         else:
             for field in _REQUIRED_ARRAY_FIELDS:
                 out[field] = _copied(out.get(field, []))
-            if out.get("ksiImplementationStatus") not in _VALID_IMPLEMENTATION_STATUSES:
+            if out.get("ksiImplementationStatus") not in _implementation_status_enum():
                 out.pop("ksiImplementationStatus", None)
         merged.append(out)
     return merged, omitted
@@ -552,6 +599,17 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     merged: the five derived fields refresh on every seed, and the authored
     ``ksiImplementation`` survives, because it is the one field the platform
     cannot derive.
+
+    **"Wholesale" includes the empty case**, and it is the one place this
+    seeder destroys stored content without naming what was lost: a system
+    with no SSP project has its ``securityControls`` replaced with ``[]``,
+    however many controls the previous seed wrote there. That follows from
+    the field being wholly derived -- unlike ``ksiImplementation``, no part of
+    it is human work -- but it is worth saying out loud rather than leaving to
+    be discovered. ``ssp_project_id: None`` in the result is the signal: it
+    says the seeder found no SSP to render from, which is exactly when an
+    empty ``securityControls`` means "nothing to say" rather than "no
+    controls".
 
     Two fields are deliberately left unfilled:
 

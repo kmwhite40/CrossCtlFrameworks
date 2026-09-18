@@ -207,6 +207,21 @@ async def test_seeding_twice_keeps_the_narrative_and_refreshes_the_derived_field
     )
     assert entry["ksiEvidence"], entry
 
+    # The ONLY place the derived KSI half goes through the real validator.
+    # This document carries an authored narrative, a pass-derived status, a
+    # validation statement, tests and evidence -- every derived field at once
+    # -- so a derived field that renders a schema-invalid shape shows up here
+    # and nowhere else. The two other validation_errors assertions in this
+    # file run against fixtures with no narrative, where
+    # keySecurityIndicators is [] and there is nothing to get wrong.
+    #
+    # Exact equality, not a membership check: the claim is that a seeded SDR
+    # is invalid for exactly ONE reason, and "contains" would pass while the
+    # document quietly acquired a second, dishonest one.
+    assert third.document.validation_errors == [
+        "<root>: 'certificationPackageOverviewUri' is a required property"
+    ], third.document.validation_errors
+
 
 async def test_a_seeded_document_never_carries_an_out_of_enum_control_status() -> None:
     """Spec 1.2.1, end to end through the validator.

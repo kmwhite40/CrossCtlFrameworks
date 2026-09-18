@@ -8,9 +8,15 @@ disagree about the same control.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
-from ccf.cr26.sdr import latest_project_id, render_controls
+from ccf.cr26.sdr import (
+    _implementation_status_enum,
+    latest_project_id,
+    render_controls,
+)
+from ccf.cr26.validation import schema_path
 from ccf.db import session_scope
 from ccf.models import Organization, SSPControlEntry, SSPProject, System
 
@@ -29,6 +35,46 @@ def _entry(**kw: object) -> SSPControlEntry:
         "odp_values": {},
     }
     return SSPControlEntry(**{**defaults, **kw})  # type: ignore[arg-type]
+
+
+def test_the_status_enum_is_read_from_the_vendored_schema_not_retyped() -> None:
+    """The constant this module gates on must BE the schema's enum, not a
+    hand-copy of it. A copy goes silently stale when a schema bump widens the
+    enum -- the seeder would start omitting a status FedRAMP had just begun to
+    accept -- and this spec has already produced four claim-versus-rendering
+    defects without adding a fifth hiding place.
+
+    Read independently here, straight off disk, so this fails if the module's
+    lookup path drifts from where the value actually lives.
+    """
+    path = schema_path("sdr")
+    assert path is not None
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    from_schema = set(
+        schema["properties"]["securityControls"]["items"]["properties"][
+            "controlImplementationStatus"
+        ]["enum"]
+    )
+    assert from_schema == {"Implemented", "Not Implemented", "Partially Implemented"}
+    assert _implementation_status_enum() == from_schema
+
+
+def test_both_schema_locations_of_the_status_enum_still_agree() -> None:
+    """One derived constant serves both ``controlImplementationStatus`` (spec
+    1.2.1) and ``ksiImplementationStatus`` (spec 1.3) because the vendored
+    schema gives them the same three members. If a future vendoring splits
+    them, one constant silently applied to both would be wrong for one of
+    them -- so the module raises, and this is the test that says why."""
+    path = schema_path("sdr")
+    assert path is not None
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    control = schema["properties"]["securityControls"]["items"]["properties"][
+        "controlImplementationStatus"
+    ]["enum"]
+    ksi = schema["properties"]["keySecurityIndicators"]["items"]["properties"][
+        "ksiImplementationStatus"
+    ]["enum"]
+    assert set(control) == set(ksi), (control, ksi)
 
 
 def test_a_control_renders_every_field() -> None:
@@ -205,3 +251,23 @@ async def test_a_project_belonging_to_a_different_system_is_not_returned() -> No
 
     async with session_scope() as s:
         assert await latest_project_id(s, system_a) == a_id
+
+
+async def test_a_tie_on_updated_at_is_broken_by_id_not_left_to_chance() -> None:
+    """``ssp_project_id`` is the one value :class:`SdrSeedResult` exists to
+    make VISIBLE, so it must not depend on whatever order Postgres happens to
+    return. Two projects can share ``updated_at`` easily -- ``now()`` is
+    transaction-scoped in Postgres, so two rows created in one transaction get
+    the identical server default.
+
+    The newer-by-id project is inserted SECOND, so ordering by ``updated_at``
+    alone returns the other one in physical-scan order and this fails.
+    """
+    system_id = await _system("Tie")
+    same_moment = datetime(2026, 6, 1, tzinfo=UTC)
+    first_id = await _project(system_id, same_moment)
+    second_id = await _project(system_id, same_moment)
+    assert second_id > first_id
+
+    async with session_scope() as s:
+        assert await latest_project_id(s, system_id) == second_id

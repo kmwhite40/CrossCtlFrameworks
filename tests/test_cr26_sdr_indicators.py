@@ -13,16 +13,31 @@ import pytest
 
 from ccf.cr26.sdr import merge_indicators
 
+#: What ``seed_sdr``'s producer actually emits, in the shapes the vendored
+#: schema actually accepts.
+#:
+#: This fixture used to carry ``ksiImplementationStatus: "implemented"`` and
+#: ``evidenceType: "scan"``, neither of which is a valid enum member. They
+#: were harmless here -- these are pure-function tests -- but the identical
+#: mistake in ``tests/test_cr26_sdr_controls.py``'s fixture hid a real defect
+#: through a full review (spec 1.2.1), so invalid values are not left lying
+#: about in a fixture any more, whatever the excuse.
+#:
+#: ``KSI-CNA-02`` omits ``ksiImplementationStatus`` entirely, which is what
+#: the producer emits for an indicator whose verdict is ``warn``,
+#: ``not_tested``, ``manual_review_required`` or ``not_applicable`` -- spec
+#: 1.3: only ``pass`` and ``fail`` map to a defensible claim.
 _DERIVED = {
     "KSI-IAM-01": {
-        "ksiImplementationStatus": "implemented",
+        "ksiImplementationStatus": "Implemented",
         "ksiValidation": ["passed 2026-09-17 (scan)"],
         "ksiAssessment": ["accepted by assessor@3pao.example"],
         "ksiTests": ["automated: mfa_registered"],
-        "ksiEvidence": [{"evidenceType": "scan", "evidenceDescription": "47 users"}],
+        "ksiEvidence": [
+            {"evidenceDescription": "47 users", "lastUpdated": "2026-09-17"}
+        ],
     },
     "KSI-CNA-02": {
-        "ksiImplementationStatus": "planned",
         "ksiValidation": [],
         "ksiAssessment": [],
         "ksiTests": [],
@@ -49,6 +64,8 @@ def test_an_authored_narrative_is_kept_and_the_derived_fields_refresh() -> None:
             "ksiTests": ["STALE"],
             "ksiEvidence": [],
             "ksiAssessment": [],
+            # Deliberately junk, like the "STALE" strings above: this is INPUT
+            # being overwritten, not a shape anything is expected to produce.
             "ksiImplementationStatus": "planned",
         }
     ]
@@ -62,9 +79,9 @@ def test_an_authored_narrative_is_kept_and_the_derived_fields_refresh() -> None:
     ]
     assert entry["ksiValidation"] == ["passed 2026-09-17 (scan)"]
     assert entry["ksiTests"] == ["automated: mfa_registered"]
-    assert entry["ksiImplementationStatus"] == "implemented"
+    assert entry["ksiImplementationStatus"] == "Implemented"
     assert entry["ksiEvidence"] == [
-        {"evidenceType": "scan", "evidenceDescription": "47 users"}
+        {"evidenceDescription": "47 users", "lastUpdated": "2026-09-17"}
     ]
     assert entry["ksiAssessment"] == ["accepted by assessor@3pao.example"]
 
@@ -175,7 +192,7 @@ def test_a_derived_mapping_missing_a_required_field_names_the_indicator() -> Non
     """A bare ``KeyError`` naming no KSI is a debugging trap in a catalog with
     hundreds of indicators; the failure must say which one is short a
     field."""
-    broken_derived = {"KSI-IAM-01": {"ksiImplementationStatus": "implemented"}}
+    broken_derived = {"KSI-IAM-01": {"ksiImplementationStatus": "Implemented"}}
     authored = [{"ksiId": "KSI-IAM-01", "ksiImplementation": ["x"]}]
     with pytest.raises(KeyError, match="KSI-IAM-01"):
         merge_indicators(authored, broken_derived)
