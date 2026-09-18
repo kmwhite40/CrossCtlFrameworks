@@ -16,7 +16,7 @@ constrains shape rather than honesty:
 from __future__ import annotations
 
 import copy
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
@@ -154,6 +154,18 @@ class VerRendering:
     #: three times. `counts["omitted"]` counts ROWS.
     omitted: list[OmittedRow] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
+    #: Rows the walk SAW but could not place, keyed on `providerTrackingId`
+    #: (`str(poam.id)`) -> every reason that applied. `merge_accepted` needs
+    #: this to tell "this row is no longer accepted" from "this row is still
+    #: accepted and could not be rendered this cycle": absence from `accepted`
+    #: alone cannot tell them apart, and reading it as the first DESTROYS the
+    #: human-written rationale over a blanked title (spec §5.1).
+    unplaced: dict[str, list[str]] = field(default_factory=dict)
+    #: Rows the two SCOPING filters excluded -- not a flaw, or outside the
+    #: period. Also not "no longer accepted", and not a defect either: an
+    #: authored entry keyed on one of these must be dropped from the document
+    #: WITHOUT an omission record, exactly as the row itself is (spec §7).
+    excluded: set[str] = field(default_factory=set)
 
 
 def render_all(
@@ -203,6 +215,7 @@ def render_all(
     for poam in poams:
         if (poam.source or "") not in FLAW_SOURCES:
             out.counts["excluded_not_a_flaw"] += 1
+            out.excluded.add(str(poam.id))
             continue
 
         detected_at = _detected_at(poam)
@@ -213,6 +226,7 @@ def render_all(
             bounds[0] <= detected_at <= bounds[1]
         ):
             out.counts["excluded_outside_period"] += 1
+            out.excluded.add(str(poam.id))
             continue
 
         reasons: list[str] = []
@@ -228,6 +242,7 @@ def render_all(
         if reasons or detail is None:
             out.counts["omitted"] += 1
             out.omitted.extend((poam.id, reason) for reason in reasons)
+            out.unplaced[str(poam.id)] = reasons
             continue
 
         out.counts["rendered"] += 1
@@ -280,9 +295,29 @@ def _omitted_sort_key(row: OmittedRow) -> tuple[bool, Any]:
     return (isinstance(row[0], str), row[0])
 
 
+@dataclass(frozen=True)
+class AcceptedMerge:
+    """What one merge of the accepted half produced.
+
+    A dataclass rather than the old ``(merged, omitted)`` tuple because the
+    seed's ``counts`` must describe the SEED: which rows actually reached this
+    document, and which the merge itself left out. Deriving those by matching
+    on reason strings would tie the counts to their wording.
+    """
+
+    #: The document's ``acceptedVulnerabilities``, ordered by tracking id so a
+    #: re-seed with nothing changed produces a byte-identical document.
+    entries: list[dict[str, Any]]
+    omitted: list[OmittedRow]
+
+
 def merge_accepted(
-    authored: Sequence[dict[str, Any]], derived: Sequence[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], list[OmittedRow]]:
+    authored: Sequence[dict[str, Any]],
+    derived: Sequence[dict[str, Any]],
+    *,
+    unplaced: Mapping[str, Sequence[str]] | None = None,
+    excluded: Collection[str] = (),
+) -> AcceptedMerge:
     """Refresh each accepted vulnerability, keeping its authored rationale.
 
     ``acceptanceRationale`` is the one field the platform cannot derive -- no
@@ -294,9 +329,26 @@ def merge_accepted(
     ``""``: the empty string validates while asserting the provider gave a
     blank reason for accepting a vulnerability.
 
-    Entries are ordered by numeric tracking id so a re-seed produces a
-    byte-identical document when nothing has changed.
+    **An authored entry absent from ``derived`` has three possible causes and
+    they must not be collapsed** (spec §5.1). Absence alone cannot tell them
+    apart, so the walk hands over what it saw:
+
+    * in ``derived`` -- refresh the detail, keep the rationale.
+    * in ``unplaced`` -- the row still exists and is still accepted; it could
+      not be RENDERED this cycle (rules 1-3) or became UNMEASURABLE (rule 4).
+      The authored entry is kept **verbatim**, rationale and stored detail
+      alike, and reported with a reason naming the real cause. One cycle stale
+      and labelled beats destroyed: ``put_document`` replaces the stored body,
+      so reporting this as "no longer an accepted vulnerability" irrecoverably
+      destroyed a human-written rationale over a blanked title -- and fixing
+      the title did not bring it back.
+    * in ``excluded`` -- a SCOPING filter excluded the row (not a flaw, or
+      outside this report's period). Not a defect and not an omission (§7), so
+      the entry leaves this period's document with no reason reported at all.
+    * seen nowhere -- genuinely no longer an accepted vulnerability. Dropped
+      and reported, which is the only case where that reason is TRUE.
     """
+    unplaced = unplaced or {}
     by_id = {
         tid: entry
         for entry in authored
@@ -327,13 +379,27 @@ def merge_accepted(
             }
         )
 
-    for tid in by_id:
-        if tid not in seen:
+    for tid, entry in by_id.items():
+        if tid in seen or tid in excluded:
+            continue
+        reasons = list(unplaced.get(tid) or ())
+        if not reasons:
             omitted.append((_as_row_id(tid), "no longer an accepted vulnerability"))
+            continue
+        rationale = entry.get("acceptanceRationale")
+        if is_blank(rationale):
+            # Nothing to preserve, and keeping it would emit an entry with no
+            # `acceptanceRationale` -- required by the schema.
+            omitted.append((_as_row_id(tid), "no acceptance rationale"))
+            continue
+        merged.append(copy.deepcopy(entry))
+        omitted.extend(
+            (_as_row_id(tid), f"detail not refreshed: {reason}") for reason in reasons
+        )
 
     merged.sort(key=lambda e: int(e["vulnerabilityDetail"]["providerTrackingId"]))
     omitted.sort(key=_omitted_sort_key)
-    return merged, omitted
+    return AcceptedMerge(merged, omitted)
 
 
 def _instant(value: datetime) -> str:
@@ -483,16 +549,19 @@ async def seed_avi(
         rendering: VerRendering, current: dict[str, Any]
     ) -> tuple[dict[str, Any], list[OmittedRow]]:
         authored = current.get("acceptedVulnerabilities")
-        merged, omitted = merge_accepted(
-            authored if isinstance(authored, list) else [], rendering.accepted
+        merge = merge_accepted(
+            authored if isinstance(authored, list) else [],
+            rendering.accepted,
+            unplaced=rendering.unplaced,
+            excluded=rendering.excluded,
         )
         return {
             "reportPeriod": {
                 "from": _instant(period_from),
                 "to": _instant(period_to),
             },
-            "acceptedVulnerabilities": merged,
-        }, omitted
+            "acceptedVulnerabilities": merge.entries,
+        }, merge.omitted
 
     return await _seed(
         session,
@@ -514,13 +583,16 @@ async def seed_ver_history(
         rendering: VerRendering, current: dict[str, Any]
     ) -> tuple[dict[str, Any], list[OmittedRow]]:
         authored = current.get("acceptedVulnerabilities")
-        merged, omitted = merge_accepted(
-            authored if isinstance(authored, list) else [], rendering.accepted
+        merge = merge_accepted(
+            authored if isinstance(authored, list) else [],
+            rendering.accepted,
+            unplaced=rendering.unplaced,
+            excluded=rendering.excluded,
         )
         return {
             "generatedAt": _instant(datetime.now(UTC)),
             "activeVulnerabilities": rendering.active,
-            "acceptedVulnerabilities": merged,
-        }, omitted
+            "acceptedVulnerabilities": merge.entries,
+        }, merge.omitted
 
     return await _seed(session, system_id=system_id, kind="ver_history", build=build, today=today)

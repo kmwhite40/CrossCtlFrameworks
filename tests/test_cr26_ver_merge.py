@@ -5,6 +5,17 @@ from __future__ import annotations
 from ccf.cr26.ver import merge_accepted
 
 
+def _merge(*args, **kwargs) -> tuple[list[dict], list[tuple]]:
+    """`merge_accepted` as `(entries, omitted)`.
+
+    The real return is an :class:`AcceptedMerge`, which also carries the
+    figures the seed's `counts` needs; these tests are about the document and
+    the reasons, so they read the two fields they are named for.
+    """
+    result = merge_accepted(*args, **kwargs)
+    return result.entries, result.omitted
+
+
 def _detail(pid: str, desc: str = "Outdated OpenSSL") -> dict:
     return {
         "providerTrackingId": pid,
@@ -20,7 +31,7 @@ def test_an_authored_rationale_survives_and_the_detail_refreshes() -> None:
             "acceptanceRationale": "Compensating control: WAF rule 91234.",
         }
     ]
-    merged, omitted = merge_accepted(authored, [_detail("1", "Outdated OpenSSL")])
+    merged, omitted = _merge(authored, [_detail("1", "Outdated OpenSSL")])
     assert omitted == []
     assert merged == [
         {
@@ -35,14 +46,14 @@ def test_a_derived_entry_with_no_authored_rationale_is_omitted_and_named() -> No
     empty-description defect: a value that validates and asserts the provider
     gave a blank reason for accepting a vulnerability.
     """
-    merged, omitted = merge_accepted([], [_detail("7")])
+    merged, omitted = _merge([], [_detail("7")])
     assert merged == []
     assert omitted == [(7, "no acceptance rationale")]
 
 
 def test_a_blank_authored_rationale_is_no_rationale() -> None:
     authored = [{"vulnerabilityDetail": _detail("7"), "acceptanceRationale": "   "}]
-    merged, omitted = merge_accepted(authored, [_detail("7")])
+    merged, omitted = _merge(authored, [_detail("7")])
     assert merged == []
     assert omitted == [(7, "no acceptance rationale")]
 
@@ -56,7 +67,7 @@ def test_entries_are_ordered_by_tracking_id_not_by_input_order() -> None:
         for p in ("30", "4", "200")
     ]
     derived = [_detail(p) for p in ("30", "4", "200")]
-    merged, _ = merge_accepted(authored, derived)
+    merged, _ = _merge(authored, derived)
     assert [e["vulnerabilityDetail"]["providerTrackingId"] for e in merged] == [
         "4",
         "30",
@@ -70,7 +81,7 @@ def test_an_authored_entry_the_scanner_no_longer_reports_is_dropped_and_named() 
     as still accepted.
     """
     authored = [{"vulnerabilityDetail": _detail("99"), "acceptanceRationale": "r"}]
-    merged, omitted = merge_accepted(authored, [])
+    merged, omitted = _merge(authored, [])
     assert merged == []
     assert omitted == [(99, "no longer an accepted vulnerability")]
 
@@ -88,7 +99,7 @@ def test_a_non_numeric_authored_id_the_source_no_longer_reports_does_not_crash()
             "acceptanceRationale": "r",
         }
     ]
-    merged, omitted = merge_accepted(authored, [])
+    merged, omitted = _merge(authored, [])
     assert merged == []
     assert omitted == [("POAM-42", "no longer an accepted vulnerability")]
 
@@ -97,7 +108,7 @@ def test_a_non_numeric_derived_id_with_no_rationale_does_not_crash() -> None:
     """The no-rationale branch also builds an omitted tuple from the tracking
     id, so it needs the same non-numeric-id safety as the orphan branch.
     """
-    merged, omitted = merge_accepted([], [_detail("POAM-42")])
+    merged, omitted = _merge([], [_detail("POAM-42")])
     assert merged == []
     assert omitted == [("POAM-42", "no acceptance rationale")]
 
@@ -116,7 +127,7 @@ def test_omitted_ids_sort_numeric_first_then_string_not_lexically() -> None:
         {"vulnerabilityDetail": _detail(p), "acceptanceRationale": f"r{p}"}
         for p in ("9", "10", "POAM-1")
     ]
-    _, omitted = merge_accepted(authored, [])
+    _, omitted = _merge(authored, [])
     assert omitted == [
         (9, "no longer an accepted vulnerability"),
         (10, "no longer an accepted vulnerability"),
@@ -130,7 +141,92 @@ def test_the_merge_does_not_alias_its_inputs() -> None:
     """
     derived = [_detail("1")]
     authored = [{"vulnerabilityDetail": _detail("1"), "acceptanceRationale": "r"}]
-    merged, _ = merge_accepted(authored, derived)
+    merged, _ = _merge(authored, derived)
     merged[0]["vulnerabilityDetail"]["detection"]["detectionSource"] = "MUTATED"
     assert derived[0]["detection"]["detectionSource"] == "nessus"
+    assert authored[0]["vulnerabilityDetail"]["detection"]["detectionSource"] == "nessus"
+
+
+# --- an authored entry must not be dropped for the wrong reason (spec §5.1) --
+
+
+def test_an_entry_whose_row_could_not_be_rendered_is_kept_and_named_truthfully() -> None:
+    """The measured defect. Blanking a `risk_accepted` POA&M's `title` produced
+    `[(3, "no description"), (3, "no longer an accepted vulnerability")]` --
+    the second is simply FALSE, the row is still `risk_accepted` -- and since
+    `put_document` replaces the stored body, the human-written rationale was
+    irrecoverably destroyed. Fixing the title did not bring it back.
+
+    So the entry is kept VERBATIM, stored detail and rationale alike, and the
+    reason names the real cause. One cycle stale and labelled beats destroyed.
+    """
+    authored = [
+        {
+            "vulnerabilityDetail": _detail("3", "Outdated OpenSSL"),
+            "acceptanceRationale": "Compensating control: WAF rule 91234.",
+        }
+    ]
+    merged, omitted = _merge(authored, [], unplaced={"3": ["no description"]})
+    assert merged == authored
+    assert omitted == [(3, "detail not refreshed: no description")]
+    assert (3, "no longer an accepted vulnerability") not in omitted
+
+
+def test_every_reason_the_walk_gave_reaches_the_kept_entrys_report() -> None:
+    """A row can trip several rules at once, and §7 requires all of them: an
+    operator told about one missing field fixes it and comes straight back.
+    """
+    authored = [{"vulnerabilityDetail": _detail("3"), "acceptanceRationale": "r"}]
+    merged, omitted = _merge(
+        authored,
+        [],
+        unplaced={"3": ["no detection source", "not measurable as accepted or not"]},
+    )
+    assert len(merged) == 1
+    assert omitted == [
+        (3, "detail not refreshed: no detection source"),
+        (3, "detail not refreshed: not measurable as accepted or not"),
+    ]
+
+
+def test_an_entry_the_walk_never_saw_is_still_dropped_and_named() -> None:
+    """The third case, and the ONLY one where "no longer an accepted
+    vulnerability" is true: the walk saw the id nowhere at all.
+    """
+    authored = [{"vulnerabilityDetail": _detail("99"), "acceptanceRationale": "r"}]
+    merged, omitted = _merge(authored, [], unplaced={"3": ["no description"]})
+    assert merged == []
+    assert omitted == [(99, "no longer an accepted vulnerability")]
+
+
+def test_an_entry_whose_row_a_scoping_filter_excluded_leaves_with_no_reason() -> None:
+    """A row outside this report's period -- or one that stopped being
+    scanner-derived -- is EXCLUDED, not omitted (spec §7): nothing is wrong
+    with it, so no reason is reported. Reporting "no longer an accepted
+    vulnerability" here would be the same false claim §5.1 forbids.
+    """
+    authored = [{"vulnerabilityDetail": _detail("5"), "acceptanceRationale": "r"}]
+    merged, omitted = _merge(authored, [], excluded={"5"})
+    assert merged == []
+    assert omitted == []
+
+
+def test_a_kept_entry_with_no_rationale_is_omitted_rather_than_emitted_blank() -> None:
+    """Keeping an entry verbatim must not smuggle in an entry the schema
+    refuses: `acceptanceRationale` is required, and there is nothing to
+    preserve when the authored entry never had one.
+    """
+    authored = [{"vulnerabilityDetail": _detail("3"), "acceptanceRationale": "  "}]
+    merged, omitted = _merge(authored, [], unplaced={"3": ["no description"]})
+    assert merged == []
+    assert omitted == [(3, "no acceptance rationale")]
+
+
+def test_a_kept_entry_is_not_aliased_to_the_caller_s_document() -> None:
+    """The stored document is a dict the caller still holds; the SDR needed two
+    rounds on exactly this, including the dicts nested inside.
+    """
+    authored = [{"vulnerabilityDetail": _detail("3"), "acceptanceRationale": "r"}]
+    merged, _ = _merge(authored, [], unplaced={"3": ["no description"]})
+    merged[0]["vulnerabilityDetail"]["detection"]["detectionSource"] = "MUTATED"
     assert authored[0]["vulnerabilityDetail"]["detection"]["detectionSource"] == "nessus"

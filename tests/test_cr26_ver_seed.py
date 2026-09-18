@@ -218,6 +218,87 @@ async def test_an_authored_rationale_survives_a_reseed_and_the_document_validate
     assert result.document.validation_errors == ONE_ERROR, result.document.validation_errors
 
 
+async def _retitle(poam_id: int, title: str) -> None:
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        row.title = title
+
+
+async def test_a_blanked_title_does_not_destroy_the_authored_rationale() -> None:
+    """The measured defect, end to end (spec §5.1).
+
+    Blanking a `risk_accepted` POA&M's `title` produced
+    `[(id, "no description"), (id, "no longer an accepted vulnerability")]`.
+    The second was FALSE -- the row is still `risk_accepted` -- and because
+    `put_document` replaces the stored body in place, the human-written
+    rationale was irrecoverably destroyed: fixing the title did not bring it
+    back.
+
+    The reseed here happens with the title still blank, which is the whole
+    point: the rationale must survive the bad cycle, not merely the good one.
+    """
+    _org_id, system_id = await _system("avi-blanked-title")
+    poam_id = await _poam(system_id, status="risk_accepted")
+    async with session_scope() as s:
+        await seed_avi(s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY)
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "reportPeriod": {"from": "2026-09-01T00:00:00Z", "to": "2026-12-01T00:00:00Z"},
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {
+                            "providerTrackingId": str(poam_id),
+                            "detection": {
+                                "detectedAt": "2026-09-05T00:00:00Z",
+                                "detectionSource": "nessus",
+                            },
+                            "vulnerabilityDescription": "Outdated OpenSSL",
+                        },
+                        "acceptanceRationale": "Compensating control: WAF rule 91234.",
+                    }
+                ],
+            },
+        )
+
+    await _retitle(poam_id, "   ")
+    async with session_scope() as s:
+        blanked = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    entries = blanked.document.document["acceptedVulnerabilities"]
+    assert len(entries) == 1, entries
+    assert entries[0]["acceptanceRationale"] == "Compensating control: WAF rule 91234."
+    assert entries[0]["vulnerabilityDetail"]["vulnerabilityDescription"] == "Outdated OpenSSL"
+    # Both reasons, in `_seed`'s order: the walk's own reason for the row,
+    # then the merge's note that the stored detail was kept instead.
+    assert blanked.omitted_poam_ids == [
+        (poam_id, "no description"),
+        (poam_id, "detail not refreshed: no description"),
+    ], blanked.omitted_poam_ids
+    assert (poam_id, "no longer an accepted vulnerability") not in blanked.omitted_poam_ids
+
+    # And the stale detail refreshes once the data is fixed -- "kept verbatim"
+    # must mean one cycle behind, not frozen for ever.
+    await _retitle(poam_id, "Outdated OpenSSL, retitled")
+    async with session_scope() as s:
+        fixed = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    refreshed = fixed.document.document["acceptedVulnerabilities"]
+    assert len(refreshed) == 1
+    assert refreshed[0]["acceptanceRationale"] == "Compensating control: WAF rule 91234."
+    assert (
+        refreshed[0]["vulnerabilityDetail"]["vulnerabilityDescription"]
+        == "Outdated OpenSSL, retitled"
+    )
+    assert fixed.omitted_poam_ids == []
+
+
 async def test_ver_history_carries_both_halves_and_a_generated_at() -> None:
     """Both arrays populated with real content, not one empty and one full:
     `activeVulnerabilities` and `acceptedVulnerabilities` `$ref` the same
