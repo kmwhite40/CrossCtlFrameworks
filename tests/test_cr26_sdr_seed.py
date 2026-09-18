@@ -72,7 +72,10 @@ async def _fixture(name: str) -> _Fixture:
             SSPControlEntry(
                 project_id=project.id,
                 control_id="AC-2",
-                implementation_status=["implemented"],
+                # Title-cased, as ssp.constants.IMPLEMENTATION_STATUS_OPTIONS
+                # actually writes it -- and an exact member of the schema's
+                # enum, so it survives the 1.2.1 rule.
+                implementation_status=["Implemented"],
                 part_narratives=[{"part": "a", "text": "We manage accounts."}],
                 odp_values={"ac-2_prm_1": "30 days", "ac-2_prm_2": None},
             )
@@ -131,7 +134,7 @@ async def test_a_seeded_sdr_renders_the_ssp_controls_and_is_invalid() -> None:
     assert doc["securityControls"] == [
         {
             "controlId": "AC-2",
-            "controlImplementationStatus": "implemented",
+            "controlImplementationStatus": "Implemented",
             "controlImplementationDescription": "We manage accounts.",
             # ac-2_prm_2 is unanswered and must NOT appear as "None".
             "parameterValues": [{"parameterId": "ac-2_prm_1", "parameterValue": "30 days"}],
@@ -198,6 +201,59 @@ async def test_seeding_twice_keeps_the_narrative_and_refreshes_the_derived_field
     assert entry["ksiEvidence"], entry
 
 
+async def test_a_seeded_document_never_carries_an_out_of_enum_control_status() -> None:
+    """Spec 1.2.1, end to end through the validator.
+
+    Four entries covering every branch of the rule: one schema-valid status,
+    one real platform status with no FedRAMP equivalent, two statuses at once,
+    and none at all. Only the first may reach the document.
+
+    The second assertion is the one that matters: the seeded SDR is still
+    invalid, but ``certificationPackageOverviewUri`` must now be the ONLY
+    reason. A ``", ".join(...)`` renderer puts three more errors in this list.
+    """
+    fx = await _fixture("enum")
+    async with session_scope() as s:
+        for control_id, statuses in (
+            ("AU-2", ["Partially Implemented"]),
+            ("AU-6", ["Planned"]),
+            ("CM-6", ["Implemented", "Partially Implemented"]),
+            ("CP-9", []),
+        ):
+            s.add(
+                SSPControlEntry(
+                    project_id=fx.project_id,
+                    control_id=control_id,
+                    implementation_status=statuses,
+                    part_narratives=[{"text": f"About {control_id}."}],
+                    odp_values={},
+                )
+            )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    by_control = {
+        control["controlId"]: control
+        for control in result.document.document["securityControls"]
+    }
+    assert by_control["AC-2"]["controlImplementationStatus"] == "Implemented"
+    assert by_control["AU-2"]["controlImplementationStatus"] == "Partially Implemented"
+    for control_id in ("AU-6", "CM-6", "CP-9"):
+        assert "controlImplementationStatus" not in by_control[control_id], (
+            control_id,
+            by_control[control_id],
+        )
+
+    assert result.document.is_valid is False
+    assert not [
+        e for e in result.document.validation_errors if "controlImplementationStatus" in e
+    ], result.document.validation_errors
+    assert [
+        e for e in result.document.validation_errors if "certificationPackageOverviewUri" in e
+    ], result.document.validation_errors
+
+
 async def test_an_authored_cpo_uri_survives_a_reseed() -> None:
     """The seeder never invents ``certificationPackageOverviewUri`` -- but once
     someone publishes the CPO and authors it, a re-seed must not throw it away,
@@ -252,7 +308,7 @@ async def test_the_latest_project_is_used() -> None:
             SSPControlEntry(
                 project_id=older.id,
                 control_id="AU-6",
-                implementation_status=["planned"],
+                implementation_status=["Planned"],
                 part_narratives=[{"text": "From the older project."}],
                 odp_values={},
             )

@@ -19,7 +19,12 @@ def _entry(**kw: object) -> SSPControlEntry:
     defaults: dict[str, object] = {
         "project_id": 1,
         "control_id": "AC-2",
-        "implementation_status": ["implemented"],
+        # ssp.constants.IMPLEMENTATION_STATUS_OPTIONS is title-cased, so this
+        # is what the platform actually writes -- and it is an exact member of
+        # the schema's enum. The lowercase "implemented" this fixture used to
+        # carry is a value no column ever holds, and it disguised the fact
+        # that the rendered status was failing enum validation (spec 1.2.1).
+        "implementation_status": ["Implemented"],
         "part_narratives": [{"part": "a", "text": "We do the thing."}],
         "odp_values": {},
     }
@@ -31,7 +36,7 @@ def test_a_control_renders_every_field() -> None:
     assert out == [
         {
             "controlId": "AC-2",
-            "controlImplementationStatus": "implemented",
+            "controlImplementationStatus": "Implemented",
             "controlImplementationDescription": "We do the thing.",
             "parameterValues": [],
         }
@@ -46,10 +51,42 @@ def test_several_narrative_parts_join_with_a_space() -> None:
     assert out[0]["controlImplementationDescription"] == "First. Second."
 
 
-def test_several_statuses_join_with_a_comma() -> None:
-    """Matching nist80053_docx.py:173."""
-    out = render_controls([_entry(implementation_status=["planned", "partial"])])
-    assert out[0]["controlImplementationStatus"] == "planned, partial"
+def test_several_statuses_omit_the_key_rather_than_joining() -> None:
+    """Spec 1.2.1. ``controlImplementationStatus`` is enum-constrained
+    (``Implemented`` / ``Not Implemented`` / ``Partially Implemented``), so a
+    ``", ".join(...)`` of two values can NEVER be a member -- "planned,
+    partial" is not a status, it is a sentence. nist80053_docx.py:173 joins
+    them because it writes into a Word table cell where any string is fine.
+
+    The key is optional, so omitting it validates; the narrative join is
+    unaffected, which is what the second assertion pins.
+    """
+    out = render_controls(
+        [_entry(implementation_status=["Implemented", "Partially Implemented"])]
+    )
+    assert "controlImplementationStatus" not in out[0], out[0]
+    assert out[0]["controlImplementationDescription"] == "We do the thing."
+
+
+def test_a_single_valid_status_is_still_emitted() -> None:
+    """The other half of the same rule: omitting is not the answer to
+    everything. ``Implemented`` and ``Partially Implemented`` are exact
+    members of BOTH the platform's vocabulary
+    (ssp.constants.IMPLEMENTATION_STATUS_OPTIONS) and the schema's enum, so
+    genuine single-valued data must still reach the document."""
+    out = render_controls([_entry(implementation_status=["Partially Implemented"])])
+    assert out[0]["controlImplementationStatus"] == "Partially Implemented"
+
+
+def test_a_platform_status_with_no_fedramp_equivalent_is_omitted_not_translated() -> None:
+    """``Planned``, ``Alternative Implementation`` and ``Not Applicable`` are
+    real members of the platform's vocabulary with no member of FedRAMP's to
+    map to. Translating ``Planned`` to ``Not Implemented`` would tell a
+    regulator something harsher than the provider said -- the same
+    claim-versus-rendering defect as 1.3's, facing the other way."""
+    for status in ("Planned", "Alternative Implementation", "Not Applicable"):
+        out = render_controls([_entry(implementation_status=[status])])
+        assert "controlImplementationStatus" not in out[0], (status, out[0])
 
 
 def test_an_answered_parameter_is_rendered() -> None:
@@ -81,15 +118,21 @@ def test_a_non_string_parameter_value_becomes_a_string() -> None:
     assert values == {"count": "30", "flag": "True"}
 
 
-def test_empty_columns_render_as_empty_not_missing() -> None:
-    """Every key must be present even when the source is empty -- a caller
-    reading controlImplementationStatus must not have to handle KeyError."""
+def test_empty_columns_render_as_empty_except_the_enum_which_is_omitted() -> None:
+    """The three unconstrained fields must be present even when the source is
+    empty, so a caller never handles KeyError for them.
+
+    ``controlImplementationStatus`` is the exception and spec 1.2.1 is why:
+    it is enum-constrained, so ``""`` is not "empty", it is a value outside
+    the enum that fails validation. The key is optional, so absence is the
+    correct rendering of "nothing to say" -- exactly as it is for
+    ``ksiImplementationStatus``.
+    """
     out = render_controls(
         [_entry(implementation_status=[], part_narratives=[], odp_values={})]
     )
     assert out[0] == {
         "controlId": "AC-2",
-        "controlImplementationStatus": "",
         "controlImplementationDescription": "",
         "parameterValues": [],
     }

@@ -55,24 +55,71 @@ def _parameter_values(odp_values: dict[str, Any] | None) -> list[dict[str, str]]
     ]
 
 
+#: Mirrors the vendored schema's
+#: ``securityControls.items.properties.controlImplementationStatus`` enum
+#: exactly (``schemas/fedramp-security-decision-record-schema-*.json``).
+#:
+#: The platform's own vocabulary is
+#: :data:`ccf.ssp.constants.IMPLEMENTATION_STATUS_OPTIONS` --
+#: ``Implemented``, ``Partially Implemented``, ``Planned``,
+#: ``Alternative Implementation``, ``Not Applicable`` -- whose first two
+#: members are exact matches here and whose other three have no FedRAMP
+#: equivalent. They are OMITTED rather than translated: "Not Implemented" is
+#: a harsher claim to a regulator than "Planned" is, and inventing the
+#: harsher one is the same claim-versus-rendering defect facing the other
+#: way (spec 1.2.1, applying 1.3's principle).
+_VALID_CONTROL_IMPLEMENTATION_STATUSES: frozenset[str] = frozenset(
+    {"Implemented", "Not Implemented", "Partially Implemented"}
+)
+
+
+def _control_implementation_status(statuses: Sequence[str] | None) -> str | None:
+    """The one schema-valid status this entry claims, or ``None`` to claim none.
+
+    ``implementation_status`` is JSONB ``list[str]`` and the SDR field is a
+    single enum-constrained string, so a ``", ".join(...)`` of two values can
+    **never** be an enum member -- ``"planned, partial"`` is not a status, it
+    is a sentence. ``ssp/nist80053_docx.py`` joins them because it writes into
+    a Word table cell where any string is fine; the SDR has an enum, and that
+    difference is the whole of spec 1.2.1.
+
+    So: exactly one status, and that status a member of the enum, or the key
+    is omitted. Every field of ``securityControls.items`` is optional, so
+    omission validates -- and a control whose status the platform cannot state
+    in FedRAMP's vocabulary should say nothing rather than guess.
+    """
+    values = list(statuses or [])
+    if len(values) != 1:
+        return None
+    value = values[0]
+    return value if value in _VALID_CONTROL_IMPLEMENTATION_STATUSES else None
+
+
 def render_controls(entries: Sequence[SSPControlEntry]) -> list[dict[str, Any]]:
     """The SSP's control content in the SDR's shape.
 
-    The joins match ``ssp/nist80053_docx.py`` lines 170 and 173, which render
-    these same two fields into the Word SSP. Two profiles over one body of
-    content must not disagree about what a control says.
+    The narrative join matches ``ssp/nist80053_docx.py`` line 170, which
+    renders that same field into the Word SSP: two profiles over one body of
+    content must not disagree about what a control says, and
+    ``controlImplementationDescription`` is free text with no enum.
+
+    The status does NOT follow the docx renderer -- see
+    :func:`_control_implementation_status`.
     """
-    return [
-        {
+    rendered: list[dict[str, Any]] = []
+    for entry in entries:
+        control: dict[str, Any] = {
             "controlId": entry.control_id,
-            "controlImplementationStatus": ", ".join(entry.implementation_status or []),
             "controlImplementationDescription": " ".join(
                 str(part.get("text") or "") for part in (entry.part_narratives or [])
             ),
             "parameterValues": _parameter_values(entry.odp_values),
         }
-        for entry in entries
-    ]
+        status = _control_implementation_status(entry.implementation_status)
+        if status is not None:
+            control["controlImplementationStatus"] = status
+        rendered.append(control)
+    return rendered
 
 
 async def latest_project_id(session: AsyncSession, system_id: int) -> int | None:
@@ -194,11 +241,16 @@ def merge_indicators(
     * **The five derived fields are overwritten**, because they are facts
       about the system rather than anything a human authored here. The four
       required array fields MUST be present and non-``None`` in
-      ``derived[ksi_id]`` or this raises, naming the indicator. The optional
-      ``ksiImplementationStatus`` may be absent, because only ``pass`` and
-      ``fail`` map to a defensible implementation status (spec 1.3) -- and
-      when it is absent, a status the authored entry carried from an earlier
-      seed is dropped rather than left standing as a stale claim. Every list
+      ``derived[ksi_id]`` or this raises, naming the indicator.
+      **``ksiImplementationStatus`` is the one derived field a producer may
+      omit**, and the reason is spec 1.3: it is optional and enum-constrained
+      in the schema, and only two of the six validation verdicts (``pass``,
+      ``fail``) map to a defensible implementation status, so
+      :func:`_implementation_status` returns ``None`` for the other four and
+      the producer leaves the key out rather than inventing a claim. When it
+      is absent, a status the authored entry carried from an earlier seed is
+      DROPPED rather than left standing as a stale claim -- the derived half
+      is refreshed wholesale, not patched. Every list
       value this function assigns -- derived, or carried forward from the
       authored side -- is copied rather than aliased, including the dicts
       inside ``ksiEvidence`` one level deeper (see :func:`_copied`), so
