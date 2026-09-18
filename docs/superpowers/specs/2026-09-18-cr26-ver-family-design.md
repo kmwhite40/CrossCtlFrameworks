@@ -60,6 +60,35 @@ Do not re-derive the partition. Call `accepted_weakness_state`.
 
 ---
 
+## 2.1 Which POA&Ms are vulnerabilities at all
+
+**Only scanner-derived rows.** `ccf.patching.sla.FLAW_SOURCES` is `("scan",)`,
+and the constant's own comment states the reason:
+
+> Only scanner-derived POA&Ms are flaws. An assessment finding is a control
+> deficiency, and measuring it here would distort the SI-2 number.
+
+These are **Vulnerability** reports. A control deficiency rendered into
+`vulnerabilities` would tell a regulator that an assessor's finding about, say,
+incomplete AC-2 documentation is a vulnerability with a detection source and a
+remediation clock. It is not, and the platform already draws this line for
+exactly this reason.
+
+So the seeders select `POAM` rows where `source` is in `FLAW_SOURCES`, and
+every other row is **out of scope rather than omitted**. The distinction
+matters to the operator and must be visible in the result:
+
+- `counts["excluded_not_a_flaw"]` — rows that are not vulnerabilities. Nothing
+  is wrong with them; they belong to the POA&M, not to the VER family.
+- `omitted_poam_ids` — rows that **are** vulnerabilities but could not be
+  rendered (§7). These are a to-do list.
+
+Collapsing the two would either bury a real data gap in a benign count, or
+report a healthy control-deficiency POA&M as a defect in the VER pipeline.
+Reuse `FLAW_SOURCES`; do not re-list `("scan",)`.
+
+---
+
 ## 3. Field map
 
 ### 3.1 Required, and sourced
@@ -85,12 +114,40 @@ both `weakness` and `title` strip to nothing, the row is omitted under §7.
 
 `overdueStatus` — `{isOverdue: bool}` required, `explanation` optional.
 
-Source is `ccf.patching.sla.classify`, which returns
-`on_track | overdue | no_due_date`. Map `overdue → true`, `on_track → false`,
-and **omit the whole `overdueStatus` object for `no_due_date`**. A row with no
-due date cannot be shown to be overdue, and `isOverdue: false` is the
-favourable answer — the same three-state rule as §2, one level down. This is
-the single most likely place to reintroduce this programme's signature defect.
+Source is `ccf.patching.sla.classify(poam, *, allowed_days, today)`, whose
+return values are **measured** as:
+
+```
+accepted | unknown | closed_on_time | closed_late | within_sla | breached
+```
+
+`allowed_days` comes from `RemediationWindow().days_for(poam.severity)`, which
+defaults to `FEDRAMP_TIMEFRAMES` (critical/high 30, moderate 90, low 180) and
+gives an unrecognised severity the **strictest** window, not the most generous.
+
+| bucket | `overdueStatus` |
+|---|---|
+| `breached` | `{"isOverdue": true}` |
+| `within_sla` | `{"isOverdue": false}` |
+| `closed_on_time`, `closed_late` | **omit the object** |
+| `unknown` | **omit the object** |
+| `accepted` | **omit the object** |
+
+`isOverdue` asks a present-tense question — the schema says "True if the
+vulnerability *is* overdue". Only an outstanding vulnerability has an answer.
+A closed one is no longer outstanding, so neither `true` nor `false` is honest;
+`unknown` is unmeasurable by definition; and `accepted` short-circuits in
+`classify` *ahead of every date check*, so no date judgment was ever made for
+it. Emitting `false` in any of those cases is the favourable answer — the same
+three-state rule as §2, one level down, and the single most likely place to
+reintroduce this programme's signature defect.
+
+> **Correction, 2026-09-18.** An earlier draft of this section said `classify`
+> returns `on_track | overdue | no_due_date`. It does not — those are
+> `analytics/posture.py`'s buckets. The names were carried from memory instead
+> of measured, which is the mistake §4 of this very spec warns about. Measure
+> `classify`'s return values before trusting any mapping table, including this
+> one.
 
 ### 3.3 The midnight-UTC convention, stated once
 
@@ -217,7 +274,10 @@ carries `generatedAt` instead.
   force a choice about which reason to keep and hide the rest. The reason is
   what makes this actionable — `omitted_ksi_ids` carries bare ids because there
   was one possible reason, and here there are five (§7).
-- `counts: dict[str, int]` — rows partitioned to each destination
+- `counts: dict[str, int]` — where every candidate row went. Keys:
+  `excluded_not_a_flaw` (§2.1), `rendered`, `omitted`. These must **sum to the
+  number of POA&M rows the seeder considered**, and a test asserts that sum:
+  a partition whose parts do not add up is how a row disappears silently.
 
 ### 6.2 Store
 
@@ -259,7 +319,10 @@ period would produce a report whose own stated window is impossible.
 
 ## 7. Omission rules, consolidated
 
-A POA&M is omitted, with its id and reason, when:
+The flaw filter (§2.1) runs **first**. A row that is not scanner-derived is out
+of scope and never reaches these rules — it is counted, not omitted.
+
+Of the rows that remain, one is omitted, with its id and reason, when:
 
 1. `identified_on` is `NULL` — `detection.detectedAt` is required and has no
    other honest source. `updated_at` is when the row last changed, not when the
@@ -331,7 +394,12 @@ actually shipped.
    "a blank part is not a dropped part" was documented twice and tested
    nowhere, and inverting it left the suite green. Any comment saying "we
    deliberately do not do X" must have an assertion behind it.
-7. **Use `tests/conftest.py`'s `isolate_ksi_rows` / `isolate_source_rows` if
+7. **Pin the flaw filter and the sum invariant.** A non-`scan` POA&M must be
+   absent from the document, absent from `omitted_poam_ids`, and counted in
+   `counts["excluded_not_a_flaw"]`. Separately, assert
+   `sum(counts.values()) == <rows considered>` on a fixture containing at least
+   one row of each kind — excluded, rendered and omitted.
+8. **Use `tests/conftest.py`'s `isolate_ksi_rows` / `isolate_source_rows` if
    any test creates global-catalog rows.** POA&M rows are system-scoped, so
    this family probably needs neither — but check by counting, not by
    assuming.
