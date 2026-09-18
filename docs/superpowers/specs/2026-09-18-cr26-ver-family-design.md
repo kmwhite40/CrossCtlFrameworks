@@ -269,10 +269,19 @@ was a real guard, here it is not.
 
 ## 5. `acceptanceRationale`
 
-Required on every `acceptedVulnerabilityInfo`, and no `POAM` column holds one.
+Required on every `acceptedVulnerabilityInfo`.
+
+> **CORRECTION, 2026-09-18 (post-launch).** This section originally read "no
+> `POAM` column holds one" and "No migration" — true when this family
+> shipped, false after §9.1's fix. `POAM.acceptance_rationale` (migration
+> `0080`) is now the durable source; see §9.1 for the full story, including
+> why the authored-document path described just below is kept rather than
+> removed.
 
 It is **authored into the stored document and preserved across re-seeds**,
-exactly as `ksiImplementation` is in the SDR. No migration.
+exactly as `ksiImplementation` is in the SDR — this was the only mechanism
+until §9.1's fix, and remains a read-only fallback afterward for every
+rationale authored before the column existed.
 
 `merge_accepted(authored, derived) -> (merged, omitted)` mirrors
 `ccf.cr26.sdr.merge_indicators`:
@@ -434,7 +443,9 @@ kinds are already in `CR26_KINDS`. Each document records the period it covered
 inside its own body, so a re-seed overwrites a report with a report, and the
 period is never inferred.
 
-No migration. `alembic heads` must remain `0079_cr26_documents`.
+`cr26_documents` itself needed no migration at family launch. `alembic heads`
+was `0079_cr26_documents` then; §9.1's later fix added `0080` on `POAM`, not
+on this table — `cr26_documents` is still schema-unchanged.
 
 ### 6.3 Routes
 
@@ -587,11 +598,13 @@ actually shipped.
 
 ---
 
-## 9.1 Known limitation — a window change destroys acceptance rationales
+## 9.1 Resolved — a window change no longer destroys acceptance rationales
 
-**Measured, and accepted rather than solved.** `put_document` replaces the
-stored body in place with no history, and the rationale lives only inside that
-body. So moving a reporting window past an accepted entry destroys it:
+**RESOLVED, 2026-09-18.** This section originally documented a known,
+accepted-rather-than-solved limitation: `put_document` replaces the stored
+body in place with no history, and the rationale lived only inside that body.
+So moving a reporting window past an accepted entry destroyed it. Measured, at
+the time:
 
 ```
 CYCLE 1  window 2026-09-01..2026-12-01   entries=[<entry with rationale>]  omitted=[]
@@ -599,22 +612,38 @@ CYCLE 2  window 2026-06-01..2026-08-31   entries=[]                        omitt
 CYCLE 3  window 2026-09-01..2026-12-01   entries=[]   omitted=[(1, "no acceptance rationale")]
 ```
 
-Cycle 2 is the damage and `omitted_poam_ids` is **empty** — the loss is
-invisible at the moment it happens, which is the one property this family's
-design exists to prevent. Cycle 3 shows it does not come back. Because §5.2
-routes `ver_history`'s rationales through the AVI, the loss reaches that
+Cycle 2 was the damage and `omitted_poam_ids` was **empty** — the loss was
+invisible at the moment it happened, which is the one property this family's
+design exists to prevent. Cycle 3 showed it did not come back. Because §5.2
+routes `ver_history`'s rationales through the AVI, the loss reached that
 deliverable too — named there rather than silently empty, but gone from both.
+This transcript is kept here as the record of what the defect was, not as a
+description of current behaviour.
 
-Why it is not fixed here: reporting it would contradict §7's rule that a
-scoping filter produces no omission, and keeping the entry would defeat the
-period filter. **The root cause is that a human-authored rationale lives inside
-a document the seeder overwrites.** The fix is to give it a durable home —
-plausibly an `acceptance_rationale` column on `POAM`, captured when a weakness
-is marked `risk_accepted` — which is a migration and a product decision about
-where that text belongs, not a patch to this branch.
+**The fix: `acceptance_rationale TEXT NULL` on `POAM`** (migration `0080`),
+captured when a weakness is marked `risk_accepted`. This is now the durable
+source `ccf.cr26.ver.merge_accepted` prefers whenever it carries content —
+re-running the cycle above against the column no longer loses anything in
+cycle 2, because the column is not inside the document `put_document`
+overwrites.
 
-Until then: **do not move a reporting window backwards past an accepted
-vulnerability without re-authoring its rationale afterwards.**
+The authored document is **kept as a read-only fallback and is never
+removed**: every rationale authored by hand before this column existed lives
+only inside that stored document, and `merge_accepted` still reads it —
+preferring the column, falling back to the document — so none of that prior
+work is lost. Authoring a rationale directly into a document remains possible
+(`PUT /cr26-documents/avi`) but is no longer the recommended path; the column
+is.
+
+**What keeps a NEW row from arriving without one:** `src/ccf/api/routes/
+poams.py`'s `_require_risk_accepted_gate` refuses the transition into
+`risk_accepted` unless `acceptance_rationale` carries content (a
+blank-or-missing test, not a `None` test — the same rule as §7's rules 1–5),
+alongside the owner and due-date checks it already enforced. This is why the
+column is nullable rather than `NOT NULL`: every `risk_accepted` row that
+predates the gate has no rationale, and the gate — not a database constraint —
+is what stops the gap from growing, while leaving every existing row
+editable.
 
 ## 10. Out of scope
 
