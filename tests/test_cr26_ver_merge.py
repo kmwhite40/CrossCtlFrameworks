@@ -250,3 +250,37 @@ def test_a_non_numeric_id_that_is_still_accepted_sorts_rather_than_crashing() ->
         "30",
         "POAM-42",
     ]
+
+
+def test_an_authored_entry_with_no_tracking_id_is_named_not_silently_dropped() -> None:
+    """Reachable by hand: `PUT /cr26-documents/avi` takes an unvalidated
+    `dict[str, Any]`, so an entry can be stored with no `vulnerabilityDetail`
+    at all. It used to vanish with no `omitted` record -- and "omit and name
+    it" is this branch's spine, so an unnamed omission contradicts it.
+
+    The position is the only handle an operator has on an entry with no id,
+    so the position is what is reported.
+    """
+    authored = [
+        {"acceptanceRationale": "Rationale with nothing to attach it to."},
+        {"vulnerabilityDetail": _detail("7"), "acceptanceRationale": "r7"},
+    ]
+    merged, omitted = _merge(authored, [_detail("7")])
+    assert [e["vulnerabilityDetail"]["providerTrackingId"] for e in merged] == ["7"]
+    assert omitted == [
+        ("acceptedVulnerabilities[0]", "authored entry has no providerTrackingId")
+    ]
+
+
+def test_a_duplicate_authored_entry_is_reported_rather_than_silently_losing() -> None:
+    """Two entries for one id means one human-written rationale is discarded.
+    Last wins, as it always has; what is new is that the discarded one is
+    named -- the document alone cannot show that it ever existed.
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail("7"), "acceptanceRationale": "FIRST"},
+        {"vulnerabilityDetail": _detail("7"), "acceptanceRationale": "SECOND"},
+    ]
+    merged, omitted = _merge(authored, [_detail("7")])
+    assert [e["acceptanceRationale"] for e in merged] == ["SECOND"]
+    assert omitted == [(7, "duplicate authored entry discarded")]

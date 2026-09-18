@@ -339,7 +339,9 @@ def merge_accepted(
 
     An entry with no rationale is **omitted and named**, never emitted with
     ``""``: the empty string validates while asserting the provider gave a
-    blank reason for accepting a vulnerability.
+    blank reason for accepting a vulnerability. So is an authored entry with
+    no usable ``providerTrackingId``, and so is the loser of a duplicate pair:
+    every entry that does not reach the document is accounted for by name.
 
     **An authored entry absent from ``derived`` has three possible causes and
     they must not be collapsed** (spec §5.1). Absence alone cannot tell them
@@ -361,18 +363,37 @@ def merge_accepted(
       and reported, which is the only case where that reason is TRUE.
     """
     unplaced = unplaced or {}
-    by_id = {
-        tid: entry
-        for entry in authored
-        if (tid := _tracking_id(entry)) is not None
-    }
+    omitted: list[OmittedRow] = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for index, entry in enumerate(authored):
+        tid = _tracking_id(entry)
+        if tid is None:
+            # Reachable by hand: `PUT /cr26-documents/avi` takes an
+            # unvalidated `dict[str, Any]`, so an entry can arrive with no
+            # `vulnerabilityDetail` at all. Dropping it silently contradicts
+            # this family's spine -- omit and NAME it. Its position is the
+            # only handle an operator has on an entry with no id, so the
+            # position is what is reported.
+            omitted.append(
+                (
+                    f"acceptedVulnerabilities[{index}]",
+                    "authored entry has no providerTrackingId",
+                )
+            )
+            continue
+        if tid in by_id:
+            # Last wins, as it always has; what is new is saying so. Two
+            # entries for one id mean one human-written rationale is being
+            # discarded, and nothing said which.
+            omitted.append((_as_row_id(tid), "duplicate authored entry discarded"))
+        by_id[tid] = entry
+
     seen: set[str] = set()
     #: ``(row id, entry)`` rather than bare entries: the id an entry is sorted
     #: on is the one it was KEYED on, parsed once by `_as_row_id`, so the
     #: ordering cannot disagree with the lookup and nothing re-parses stored
     #: JSON to sort it.
     merged: list[tuple[int | str, dict[str, Any]]] = []
-    omitted: list[OmittedRow] = []
 
     for detail in derived:
         tid = detail.get("providerTrackingId")
