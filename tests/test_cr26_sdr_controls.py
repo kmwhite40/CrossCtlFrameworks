@@ -8,8 +8,11 @@ disagree about the same control.
 
 from __future__ import annotations
 
-from ccf.cr26.sdr import render_controls
-from ccf.models import SSPControlEntry
+from datetime import UTC, datetime
+
+from ccf.cr26.sdr import latest_project_id, render_controls
+from ccf.db import session_scope
+from ccf.models import Organization, SSPControlEntry, SSPProject, System
 
 
 def _entry(**kw: object) -> SSPControlEntry:
@@ -95,3 +98,67 @@ def test_empty_columns_render_as_empty_not_missing() -> None:
 def test_controls_keep_their_input_order() -> None:
     out = render_controls([_entry(control_id="AC-1"), _entry(control_id="AU-2")])
     assert [c["controlId"] for c in out] == ["AC-1", "AU-2"]
+
+
+# ``latest_project_id`` is a real DB query with two disagreeing precedents in
+# the codebase -- oscal.py orders by ``id.desc()``, reports.py by
+# ``updated_at.desc()`` -- so a sign flip or a dropped ``.where()`` would
+# silently change which SSP a customer's SDR is seeded from. These need a
+# session, unlike the eight above; the helper style follows
+# tests/test_cr26_cpo_seed.py's ``_system``.
+
+
+async def _system(name: str) -> int:
+    async with session_scope() as s:
+        org = Organization(name=f"{name} Org")
+        s.add(org)
+        await s.flush()
+        sysm = System(organization_id=org.id, name=f"{name} System")
+        s.add(sysm)
+        await s.flush()
+        return sysm.id
+
+
+async def _project(system_id: int, updated_at: datetime) -> int:
+    async with session_scope() as s:
+        proj = SSPProject(system_id=system_id, customer_name="Acme", updated_at=updated_at)
+        s.add(proj)
+        await s.flush()
+        return proj.id
+
+
+async def test_the_more_recently_updated_project_wins() -> None:
+    """Matching reports.py:184 -- not oscal.py:996's id.desc().
+
+    The newer project is inserted first (so it gets the LOWER id) and the
+    older one second (so it gets the HIGHER id). That arrangement is
+    deliberate: an ``id.desc()`` mistake (oscal.py's ordering) would return
+    the older project here, so this test fails under that mistake instead of
+    passing it by insertion-order coincidence.
+    """
+    system_id = await _system("Recency")
+    newer_id = await _project(system_id, datetime(2024, 6, 1, tzinfo=UTC))
+    older_id = await _project(system_id, datetime(2023, 1, 1, tzinfo=UTC))
+    assert older_id > newer_id  # pin the arrangement the docstring above relies on
+
+    async with session_scope() as s:
+        assert await latest_project_id(s, system_id) == newer_id
+
+
+async def test_a_system_with_no_project_returns_none() -> None:
+    system_id = await _system("Empty")
+    async with session_scope() as s:
+        assert await latest_project_id(s, system_id) is None
+
+
+async def test_a_project_belonging_to_a_different_system_is_not_returned() -> None:
+    """Pins the ``.where(SSPProject.system_id == system_id)`` clause: system
+    B's project is the more recently updated one, so a dropped ``.where()``
+    would return it instead of system A's."""
+    system_a = await _system("A")
+    system_b = await _system("B")
+    a_id = await _project(system_a, datetime(2023, 1, 1, tzinfo=UTC))
+    await _project(system_b, datetime(2024, 6, 1, tzinfo=UTC))
+
+    async with session_scope() as s:
+        assert await latest_project_id(s, system_a) == a_id
