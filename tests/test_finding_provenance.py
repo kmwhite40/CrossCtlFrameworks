@@ -374,6 +374,149 @@ async def test_patch_poam_already_risk_accepted_with_no_rationale_stays_editable
 
 
 @pytest.mark.asyncio
+async def test_patch_poam_already_risk_accepted_resending_status_also_stays_editable() -> None:
+    """The transition-only guard's B case (Critical I2). Measured before the
+    fix: `PATCH {"severity": "critical"}` on a legacy row succeeded, but
+    `PATCH {"status": "risk_accepted", "severity": "high"}` -- exactly what a
+    save-the-whole-form client sends -- was blocked with 409, because the
+    gate fired on any write naming `risk_accepted` rather than the actual
+    transition into it. The row is ALREADY `risk_accepted`; re-sending the
+    same status is not a transition and must not require a rationale.
+    """
+    _org_id, sys_id = await _make_system("PoamRiskAcceptGrandfatherResend")
+    async with session_scope() as s:
+        row = POAM(
+            system_id=sys_id,
+            title="Pre-existing accepted risk",
+            status="risk_accepted",
+            owner_user_id=None,
+            due_on=date.today() + timedelta(days=90),
+            acceptance_rationale=None,
+        )
+        s.add(row)
+        await s.flush()
+        pid = row.id
+
+    async with _client() as c:
+        r = await c.patch(
+            f"/api/poams/{pid}", json={"status": "risk_accepted", "severity": "high"}
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["severity"] == "high"
+        assert r.json()["status"] == "risk_accepted"
+        assert r.json()["acceptance_rationale"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_poam_cannot_blank_the_rationale_while_risk_accepted() -> None:
+    """Critical I3: the gate refuses a MISSING rationale on the transition in,
+    but nothing stopped a later PATCH from blanking one that already existed
+    -- `PATCH {"acceptance_rationale": "   "}` on an accepted row succeeded
+    (200) and silently invalidated the row for the next AVI/ver_history seed,
+    which would omit it with no warning at PATCH time. Refused regardless of
+    whether `status` is in the body, since the row is risk_accepted either
+    way.
+    """
+    org_id, sys_id = await _make_system("PoamRiskAcceptBlankOut")
+    async with session_scope() as s:
+        u = User(
+            organization_id=org_id,
+            email="owner@poamriskacceptblankout.example",
+            role="control_owner",
+            password_hash=hash_password("pw"),
+        )
+        s.add(u)
+        await s.flush()
+        owner_id = u.id
+
+    async with _client() as c:
+        created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Accepted risk"})
+        pid = created.json()["id"]
+        r = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Compensating control: WAF rule 91234.",
+            },
+        )
+        assert r.status_code == 200, r.text
+
+        blanked = await c.patch(f"/api/poams/{pid}", json={"acceptance_rationale": "   "})
+        assert blanked.status_code == 409, blanked.text
+
+        got = await c.get(f"/api/poams/{pid}")
+        assert got.json()["acceptance_rationale"] == "Compensating control: WAF rule 91234."
+
+
+@pytest.mark.asyncio
+async def test_patch_poam_clears_the_rationale_on_any_transition_out_of_risk_accepted() -> None:
+    """m4: reopening then re-accepting must not silently reuse the PREVIOUS
+    acceptance's rationale for a NEW decision. Measured before the fix:
+    "Reason A (2026 Q1)." survived open -> risk_accepted verbatim and would
+    have been filed as the reason for a decision it was never written for --
+    well-formed, validating, and untrue.
+    """
+    org_id, sys_id = await _make_system("PoamRiskAcceptClearOnExit")
+    async with session_scope() as s:
+        u = User(
+            organization_id=org_id,
+            email="owner@poamriskacceptclearonexit.example",
+            role="control_owner",
+            password_hash=hash_password("pw"),
+        )
+        s.add(u)
+        await s.flush()
+        owner_id = u.id
+
+    async with _client() as c:
+        created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Accepted risk"})
+        pid = created.json()["id"]
+        accept = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Reason A (2026 Q1).",
+            },
+        )
+        assert accept.status_code == 200, accept.text
+
+        reopened = await c.patch(f"/api/poams/{pid}", json={"status": "open"})
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["acceptance_rationale"] is None
+
+        # Re-accepting without a fresh rationale is blocked -- the old one is
+        # truly gone, not merely hidden from the read.
+        blocked = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+            },
+        )
+        assert blocked.status_code == 409, blocked.text
+
+        reaccepted = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Reason B (2026 Q3) -- new finding, new justification.",
+            },
+        )
+        assert reaccepted.status_code == 200, reaccepted.text
+        assert (
+            reaccepted.json()["acceptance_rationale"]
+            == "Reason B (2026 Q3) -- new finding, new justification."
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_poam_with_status_risk_accepted_is_gated_too() -> None:
     """A caller cannot skip the PATCH gate by setting status='risk_accepted' at
     creation time — POAMCreate exposes the same field, mirroring risks.py."""
