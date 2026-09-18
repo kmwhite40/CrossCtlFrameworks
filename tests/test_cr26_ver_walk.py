@@ -156,7 +156,7 @@ def test_a_row_a_day_outside_the_period_is_excluded_not_omitted() -> None:
     assert sum(out.counts.values()) == len(rows)
 
 
-def test_no_period_filters_nothing_because_ver_history_says_ALL() -> None:
+def test_no_period_filters_nothing_because_ver_history_says_all() -> None:
     """`ver_history`'s arrays are "**All** non-accepted" / "**All** accepted",
     against VDR's and AVI's "with activity in this period". That contrast only
     means something if one filters and the other does not, so this is the
