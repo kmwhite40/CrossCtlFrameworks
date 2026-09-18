@@ -115,8 +115,9 @@ Implementation` and `Not Applicable` are therefore omitted rather than
 translated: "Not Implemented" is a harsher claim to a regulator than "Planned"
 is, and inventing the harsher one is the same defect in the other direction.
 
-The narrative join is unaffected — `controlImplementationDescription` is free
-text with no enum, so following the docx renderer there remains correct.
+The narrative join has no enum to violate, so §1.2.1 left it alone. That was
+wrong for a different reason, and **§1.2.2 below supersedes this paragraph**:
+free text can still make a false claim. Do not read this section without it.
 
 ### 1.2.2 CORRECTION — the description ships `[DRAFT]` scaffolding
 
