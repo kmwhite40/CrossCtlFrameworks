@@ -203,6 +203,25 @@ def _as_row_id(tid: str) -> int | str:
     return int(tid) if tid.isdigit() else tid
 
 
+def _omitted_sort_key(row: OmittedRow) -> tuple[bool, Any]:
+    """The one ordering rule for an :data:`OmittedRow` list, used everywhere
+    one is sorted.
+
+    ``row[0]`` is ``int | str``: a bare ``sorted()``/``.sort()`` raises
+    ``TypeError`` the moment one omitted id is numeric (a POA&M row) and
+    another is not (an admin-edited ``providerTrackingId``). Numeric ids sort
+    first, in numeric order -- matching the old all-int behaviour exactly --
+    with any non-numeric ids following in string order.
+
+    :func:`merge_accepted` and :func:`_seed` both sort an ``OmittedRow`` list
+    and must agree on the order, so this is the single body both call rather
+    than two hand-written copies of the same tuple that could drift --
+    exactly the "one rule expressed in two places" shape that cost the
+    sibling SDR module a full review round.
+    """
+    return (isinstance(row[0], str), row[0])
+
+
 def merge_accepted(
     authored: Sequence[dict[str, Any]], derived: Sequence[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], list[OmittedRow]]:
@@ -255,24 +274,8 @@ def merge_accepted(
             omitted.append((_as_row_id(tid), "no longer an accepted vulnerability"))
 
     merged.sort(key=lambda e: int(e["vulnerabilityDetail"]["providerTrackingId"]))
-    # `row[0]` is `int | str`: a plain `.sort()` would raise the moment one
-    # omitted id is numeric and another is not. Numeric ids sort first, in
-    # numeric order -- matching the old all-int behaviour exactly -- with any
-    # non-numeric ids following in string order.
-    omitted.sort(key=lambda row: (isinstance(row[0], str), row[0]))
+    omitted.sort(key=_omitted_sort_key)
     return merged, omitted
-
-
-def _omitted_sort_key(row: OmittedRow) -> tuple[bool, Any]:
-    """The same key :func:`merge_accepted` sorts its own ``omitted`` by.
-
-    ``row[0]`` is ``int | str``: a bare ``sorted()`` raises ``TypeError`` the
-    moment one omitted id is numeric (a POA&M row) and another is not (an
-    admin-edited ``providerTrackingId``). Numeric ids sort first, in numeric
-    order, with any non-numeric ids following in string order -- reusing
-    :func:`merge_accepted`'s approach rather than inventing a second one.
-    """
-    return (isinstance(row[0], str), row[0])
 
 
 def _instant(value: datetime) -> str:

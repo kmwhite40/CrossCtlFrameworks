@@ -153,13 +153,40 @@ async def test_an_authored_rationale_survives_a_reseed_and_the_document_validate
 
 
 async def test_ver_history_carries_both_halves_and_a_generated_at() -> None:
+    """Both arrays populated with real content, not one empty and one full:
+    `activeVulnerabilities` and `acceptedVulnerabilities` `$ref` the same
+    `vulnerabilityDetail` definition, and an empty array validates trivially.
+    Only a populated array on *each* side proves both halves of this document
+    reach the validator -- the exact gap that cost the sibling SDR three
+    review rounds.
+    """
     _org_id, system_id = await _system("hist")
     await _poam(system_id, status="open")
+    accepted_id = await _poam(system_id, status="risk_accepted")
+    async with session_scope() as s:
+        row = await put_document(
+            s,
+            system_id=system_id,
+            kind="ver_history",
+            document={
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(accepted_id)},
+                        "acceptanceRationale": "Compensating control: WAF rule 91234.",
+                    }
+                ],
+            },
+        )
+        assert row is not None
     async with session_scope() as s:
         result = await seed_ver_history(s, system_id=system_id, today=TODAY)
     body = result.document.document
     assert len(body["activeVulnerabilities"]) == 1
-    assert body["acceptedVulnerabilities"] == []
+    assert len(body["acceptedVulnerabilities"]) == 1
+    assert (
+        body["acceptedVulnerabilities"][0]["acceptanceRationale"]
+        == "Compensating control: WAF rule 91234."
+    )
     assert body["generatedAt"].endswith("Z")
     assert "reportPeriod" not in body
     assert result.document.validation_errors == ONE_ERROR
@@ -221,4 +248,45 @@ async def test_another_systems_poams_never_reach_this_document() -> None:
     assert descriptions == ["MINE"]
     assert [v["providerTrackingId"] for v in result.document.document["vulnerabilities"]] == [
         str(mine)
+    ]
+
+
+async def test_seed_combines_an_int_and_a_str_omitted_id_without_raising() -> None:
+    """`_seed` re-combines `[*rendering.omitted, *extra_omitted]` and re-sorts
+    the result. `rendering.omitted` ids are always `int` (POA&M primary
+    keys); a `str` id arises only through `merge_accepted`'s "no longer an
+    accepted vulnerability" rule, when a stored document carries an
+    admin-edited, non-numeric `providerTrackingId` the source no longer
+    reports. No other test in this file produces both in the same seed call,
+    so nothing exercises `_seed`'s own recombination point -- only
+    `merge_accepted`'s internal sort is covered, by
+    `test_omitted_ids_sort_numeric_first_then_string_not_lexically` in
+    `tests/test_cr26_ver_merge.py`. Exact equality: ints first, in the order
+    `render_all` produced them, then the string.
+    """
+    _org_id, system_id = await _system("mixed-omit")
+    unmeasurable_id = await _poam(system_id, identified_on=None)
+    async with session_scope() as s:
+        row = await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": "POAM-X"},
+                        "acceptanceRationale": "Stale, admin-edited tracking id.",
+                    }
+                ],
+            },
+        )
+        assert row is not None
+    async with session_scope() as s:
+        result = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.omitted_poam_ids == [
+        (unmeasurable_id, "not measurable as accepted or not"),
+        (unmeasurable_id, "no identification date"),
+        ("POAM-X", "no longer an accepted vulnerability"),
     ]
