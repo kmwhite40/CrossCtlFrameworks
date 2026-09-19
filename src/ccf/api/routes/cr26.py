@@ -119,6 +119,11 @@ async def list_documents(
 ) -> list[dict[str, Any]]:
     """Every deliverable authored for this system, with its verdict, no bodies."""
     await _owned_system(session, system_id, principal)
+    # No document_key filter and _summary does not expose document_key: a
+    # no-op today, since no route writes a keyed document yet, but once a
+    # keyed deliverable ships this will list several rows under the same
+    # kind with no way to tell them apart in this response. Revisit
+    # alongside that deliverable's own routes, not here.
     rows = (
         await session.execute(
             select(Cr26Document)

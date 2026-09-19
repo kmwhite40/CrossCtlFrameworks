@@ -176,11 +176,24 @@ async def put_document(
     }
     # Omitted rather than always-present-as-None: every shipped deliverable
     # passes no key, and this diff shape is asserted verbatim by existing
-    # tests -- adding a stray ``"document_key": None`` to it for a code path
-    # that never has one would be an unannounced behaviour change of the
-    # kind this branch is explicitly not allowed to make.
+    # tests -- adding a stray key to it for a code path that never has one
+    # would be an unannounced behaviour change of the kind this branch is
+    # explicitly not allowed to make.
+    #
+    # Named "document_instance", not "document_key": ccf.api.audit._redact
+    # masks ANY diff field whose name contains the substring "key" to
+    # "***", unconditionally, for every audit event the app records --
+    # discovered by writing the test that pins this and watching it fail
+    # with the value literally replaced by asterisks. Naming this field
+    # "document_key" would satisfy nothing: the diff would carry
+    # {"document_key": "***"} for every keyed write, identical for every
+    # key, which is exactly the "indistinguishable in the audit trail"
+    # failure this field exists to prevent. _redact is shared, broad-by-
+    # design, app-wide security behaviour, well outside this branch's
+    # store-only scope to narrow -- so the fix here is to not spell the
+    # field name with "key" in it, not to touch _redact.
     if document_key is not None:
-        diff["document_key"] = document_key
+        diff["document_instance"] = document_key
     await _audit(
         session,
         actor=updated_by or "system",

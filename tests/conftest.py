@@ -74,6 +74,17 @@ def _delete_keyed_cr26_documents_before_wipe(cfg: Config) -> None:
     been migrated into (the ``ccf`` schema, and so
     ``information_schema.columns``, has no matching row either way) --
     this fixture must keep working against both.
+
+    The ``DELETE`` itself only succeeds because ``cr26_documents`` has
+    ``FORCE ROW LEVEL SECURITY`` and its ``tenant_isolation`` policy (0079)
+    is permissive when ``ccf.current_tenant()`` is NULL -- which it is on
+    this helper's own standalone engine, opened fresh with no tenant ever
+    set. If that policy is ever tightened to require a tenant even for a
+    superuser-adjacent maintenance connection like this one, this DELETE
+    would start silently matching zero rows instead of failing -- and the
+    first symptom would be migration 0081's ``downgrade()`` raising
+    ``RuntimeError`` out of THIS fixture at some later, unrelated session's
+    startup, exactly the failure this function exists to prevent.
     """
     engine = create_engine(cfg.get_main_option("sqlalchemy.url"))
     try:
