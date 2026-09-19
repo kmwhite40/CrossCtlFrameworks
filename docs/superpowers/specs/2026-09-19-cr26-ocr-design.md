@@ -111,12 +111,37 @@ which is the one place this deliverable is *safer* than its predecessors. Emit
 It is a **string**, not an array — "Summary of accepted vulnerabilities. Full
 records are reported per VER-RPT-AVI." The platform knows this: reuse
 `ccf.patching.sla.accepted_weakness_state` over the system's POA&M rows, the
-same partition the AVI uses, so the OCR's summary and the AVI's records cannot
-disagree.
+same scanner-derived-flaw, same-period partition the AVI's own walk scopes
+to.
+
+**Correction (review round 2): the count and the AVI's array CAN disagree, and
+an earlier version of this spec wrongly claimed they cannot.** Measured, one
+system, one period, three `risk_accepted` in-period `scan` rows:
+
+```
+AVI acceptedVulnerabilities: 1
+AVI omitted_poam_ids: [(47, "no acceptance rationale"), (48, "no description")]
+OCR acceptedVulnerabilities: "3 accepted vulnerabilities for this reporting
+  period. Full records are reported per VER-RPT-AVI."
+OCR accepted_count: 3
+```
+
+The count is the honest number: it is the **whole population** of accepted
+weaknesses in period, exactly what `accepted_weakness_state` says about each
+row. The AVI's own `acceptedVulnerabilities` array is narrower by two further
+filters the count does not apply — `render_vulnerability` can refuse a row
+(no description, no detection source), and `merge_accepted` omits any
+accepted row with no acceptance rationale, which is the *default* state of an
+elapsed accepted weakness nobody has declared or documented. Narrowing the
+OCR's count to match the AVI's array would hide accepted vulnerabilities from
+the summary *because* they are undocumented — the favourable answer, and the
+wrong direction under a rule obliging disclosure. The count must stay the
+whole population; the gap must be made visible instead (see `avi_gap` below).
 
 The sentence states a count and points at the AVI, and says nothing it cannot
-support. It is regenerated on every seed; it is not authored and is not
-preserved.
+support — the cross-reference is the schema's own required wording, and
+stays. What changes is that the platform stops asserting the two numbers
+agree.
 
 **If the count is zero, say zero — do not omit.** A derived zero is measured,
 not assumed, and differs from the eight fields below precisely because the
@@ -170,13 +195,25 @@ class OcrSeedResult:
     document: Cr26Document
     missing_fields: list[tuple[str, str]]   # field name, why it is still owed
     accepted_count: int                     # what the derived summary counted
+    avi_gap: list[tuple[int | str, str]]    # (poam id, reason) the AVI cannot report
 ```
 
 `missing_fields` is the to-do list. It names every required field omitted for
-want of an author, with a reason written for the person who has to fix it.
+want of an author, with a reason written for the person who has to fix it. The
+reason distinguishes a field nobody touched from one a human authored but left
+unusable (malformed shape) — collapsing those two into one message destroys
+the authored content with no record of what was actually wrong.
 
 `accepted_count` is reported separately so an operator can reconcile the OCR's
 prose summary against the AVI's records without parsing the sentence.
+
+`avi_gap` is the honest accounting §3.3 requires: which of the rows
+`accepted_count` counted the AVI will not be able to report right now, and
+why, computed by running `ccf.cr26.ver.render_all` and
+`ccf.cr26.ver.merge_accepted` read-only — the same pipeline `seed_avi` uses,
+never a second hand-maintained copy of "why AVI omits a row". A non-empty
+`avi_gap` beside a document that otherwise validates is the operator's signal
+that they owe acceptance rationales, not silence.
 
 ---
 
@@ -195,9 +232,17 @@ prose summary against the AVI's records without parsing the sentence.
    difference from the VER family.
 5. **A partially-authored `plannedCertificationDataChanges` or
    `reportableIncidents` is treated as unauthored**, not filed half-complete.
-6. **The derived summary agrees with `accepted_count`**, and both agree with
-   what `accepted_weakness_state` says about the same rows — so the OCR and the
-   AVI cannot contradict each other.
+6. **The derived summary agrees with `accepted_count`**, and `accepted_count`
+   agrees with what `accepted_weakness_state` says about the same rows.
+   Separately: seed BOTH the AVI and the OCR for the same system and period,
+   and assert `accepted_count >= len(avi["acceptedVulnerabilities"])` with
+   every difference accounted for in the AVI's own `omitted_poam_ids` — the
+   OCR and the AVI are not asserted to agree (§3.3), but the size and cause of
+   their disagreement must be provable, not assumed.
+7. **A row with no `identified_on` never enters `accepted_count`.** Mutating
+   that guard away must be caught by a dedicated test — an undated row cannot
+   be placed in any period, and this is the one guard in the module a mutation
+   sweep found unpinned (review round 2).
 
 ---
 

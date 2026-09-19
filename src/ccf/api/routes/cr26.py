@@ -394,12 +394,13 @@ async def seed_ocr_document(
 
     This deliverable is almost entirely authored (spec §1): of its nine
     required fields, only ``acceptedVulnerabilities`` is platform-derived.
-    ``missing_fields`` and ``accepted_count`` travel beside the document for
-    the same reason ``omitted_ksi_ids`` and ``omitted_poam_ids`` do on the
-    SDR and VER routes -- nothing in the document itself says a field was
-    left out, or what a derived summary counted. Deleting either from this
-    response would leave every seeder-level test green while an operator
-    stopped seeing what they still owe.
+    ``missing_fields``, ``accepted_count``, and ``avi_gap`` travel beside the
+    document for the same reason ``omitted_ksi_ids`` and ``omitted_poam_ids``
+    do on the SDR and VER routes -- nothing in the document itself says a
+    field was left out, what a derived summary counted, or which of the
+    counted vulnerabilities the AVI cannot yet report. Deleting any of them
+    from this response would leave every seeder-level test green while an
+    operator stopped seeing what they still owe.
     """
     await _owned_system(session, system_id, principal)
     result = await seed_ocr(
@@ -414,4 +415,5 @@ async def seed_ocr_document(
         **_full(result.document),
         "missing_fields": result.missing_fields,
         "accepted_count": result.accepted_count,
+        "avi_gap": result.avi_gap,
     }

@@ -10,7 +10,7 @@ delivered alongside this file for the mutation-by-mutation results.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -23,12 +23,19 @@ from ccf.auth import Principal
 from ccf.cr26.ocr import seed_ocr
 from ccf.cr26.store import put_document
 from ccf.cr26.validation import validate_document
+from ccf.cr26.ver import seed_avi
 from ccf.db import session_scope
 from ccf.models import POAM, Organization, System
 from ccf.patching.sla import accepted_weakness_state
 
 FROM = date(2026, 9, 1)
 TO = date(2026, 12, 1)
+
+#: The same window as `FROM`/`TO`, as an AWARE datetime pair -- `seed_avi`
+#: (the VER family) takes a datetime period; `seed_ocr` takes a date period.
+#: Used only by the cross-deliverable test, which seeds both.
+FROM_DT = datetime(2026, 9, 1, tzinfo=UTC)
+TO_DT = datetime(2026, 12, 1, tzinfo=UTC)
 
 #: Fixed rather than the real clock -- same reasoning as `test_cr26_ver_seed`'s
 #: `TODAY`: `accepted_weakness_state` flips a row to `accepted` 192 days past
@@ -68,11 +75,13 @@ async def _poam(system_id: int, **kw: object) -> int:
         row = POAM(
             system_id=system_id,
             title=kw.get("title", "Outdated OpenSSL"),
+            weakness=kw.get("weakness"),
             severity=kw.get("severity", "high"),
             status=kw.get("status", "open"),
             identified_on=kw.get("identified_on", date(2026, 9, 5)),
             scanner=kw.get("scanner", "nessus"),
             source=kw.get("source", "scan"),
+            acceptance_rationale=kw.get("acceptance_rationale"),
         )
         s.add(row)
         await s.flush()
@@ -581,6 +590,207 @@ async def test_the_accepted_count_excludes_a_non_flaw_source() -> None:
     assert result.accepted_count == 0
 
 
+async def test_avi_gap_accounts_for_every_row_the_avi_could_not_report() -> None:
+    """Spec §5 requirement 6, corrected (review round 2): the OCR's
+    `accepted_count` is the WHOLE population of accepted weaknesses in
+    period; the AVI's own array is narrower by two further filters the count
+    does not apply. Seeds BOTH deliverables for the same system and period
+    and proves the gap is exactly accounted for, matching the measured
+    transcript in the spec and this module's docstrings:
+
+    * one row WITH a usable rationale (the column) -- the AVI actually
+      reports it.
+    * one row with NO rationale anywhere -- `merge_accepted` omits it
+      ("no acceptance rationale"), the default state of an elapsed,
+      undeclared accepted weakness.
+    * one row with a blank title AND no weakness text -- `render_vulnerability`
+      refuses it before rationale is even considered ("no description").
+
+    `accepted_count` must be the full `3`; the AVI's array must be exactly
+    `1`; `avi_gap` must name the other two, and every id `avi_gap` names must
+    also appear in the AVI's OWN `omitted_poam_ids` -- the cross-deliverable
+    accounting requirement, not merely an internal OCR computation.
+
+    MUTATION: narrowing `_accepted_rows` to match the AVI (e.g. requiring a
+    usable rationale before counting a row as accepted) would report
+    `accepted_count == 1`, hiding the two undocumented rows from the summary
+    -- exactly the wrong-direction fix review round 2 rejected.
+    """
+    _org_id, system_id = await _system("avi-gap-accounted")
+    reportable_id = await _poam(
+        system_id,
+        status="risk_accepted",
+        identified_on=date(2026, 10, 1),
+        acceptance_rationale="Compensating control: WAF rule 91234.",
+    )
+    no_rationale_id = await _poam(
+        system_id, status="risk_accepted", identified_on=date(2026, 10, 1)
+    )
+    no_description_id = await _poam(
+        system_id,
+        status="risk_accepted",
+        identified_on=date(2026, 10, 1),
+        title="",
+        weakness=None,
+    )
+
+    async with session_scope() as s:
+        avi = await seed_avi(
+            s, system_id=system_id, period_from=FROM_DT, period_to=TO_DT, today=TODAY
+        )
+    async with session_scope() as s:
+        ocr = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+
+    assert ocr.accepted_count == 3
+    avi_entries = avi.document.document["acceptedVulnerabilities"]
+    assert len(avi_entries) == 1
+    assert ocr.accepted_count >= len(avi_entries)
+
+    avi_reported_ids = {
+        int(e["vulnerabilityDetail"]["providerTrackingId"]) for e in avi_entries
+    }
+    assert avi_reported_ids == {reportable_id}
+
+    gap_ids = {poam_id for poam_id, _reason in ocr.avi_gap}
+    assert gap_ids == {no_rationale_id, no_description_id}
+    assert reportable_id not in gap_ids
+
+    # The cross-deliverable accounting requirement: every id the OCR's gap
+    # names must be independently named in the AVI's OWN omitted list too.
+    avi_omitted_ids = {poam_id for poam_id, _reason in avi.omitted_poam_ids}
+    assert gap_ids <= avi_omitted_ids
+
+    assert (no_rationale_id, "no acceptance rationale") in ocr.avi_gap
+    assert (no_description_id, "no description") in ocr.avi_gap
+    assert (no_rationale_id, "no acceptance rationale") in avi.omitted_poam_ids
+    assert (no_description_id, "no description") in avi.omitted_poam_ids
+
+
+async def test_a_zero_accepted_count_gives_an_empty_avi_gap() -> None:
+    """No accepted rows -> nothing to look for a gap in. Also proves the
+    early return in `_avi_gap` does not need an `avi` document to exist."""
+    _org_id, system_id = await _system("avi-gap-empty")
+    async with session_scope() as s:
+        result = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.accepted_count == 0
+    assert result.avi_gap == []
+
+
+# --- requirement 7: an undated row never enters accepted_count -------------
+
+
+async def test_the_accepted_count_excludes_an_undated_risk_accepted_row() -> None:
+    """Review round 2: a mutation sweep found this guard UNPINNED -- letting
+    an undated row through left all 29 tests in the pre-review file passing.
+    `risk_accepted` is date-independent in `accepted_weakness_state` (it
+    returns "accepted" regardless of `identified_on`), so this specific
+    combination -- accepted, but with no date to place it in any period -- is
+    the one case that actually exercises the `identified_on is not None`
+    guard rather than the state check.
+
+    MUTATION: dropping `poam.identified_on is not None` from
+    `_accepted_rows`'s filter reports `accepted_count == 1` here instead
+    of `0`.
+    """
+    _org_id, system_id = await _system("undated-accepted-excluded")
+    await _poam(system_id, status="risk_accepted", identified_on=None)
+    async with session_scope() as s:
+        result = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.accepted_count == 0
+    assert result.avi_gap == []
+
+
+# --- minor 1: an authored-but-malformed value is distinguished from absent -
+
+
+async def test_a_malformed_reportable_incidents_value_is_distinguished_from_absent() -> None:
+    """Review round 2, minor 1: an authored-but-unusable value must not be
+    reported with the same reason text as "nothing was ever authored" -- the
+    human's content was present and discarded by `put_document` replacing
+    the body in place, and the reason must say so rather than misstate what
+    happened.
+    """
+    _org_id, system_id = await _system("incidents-malformed-not-list")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="ocr",
+            document={
+                "certificationPackageOverviewUri": CPO_URI,
+                "reportableIncidents": {"incidents": "none occurred"},
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert "reportableIncidents" not in result.document.document
+    reasons = dict(result.missing_fields)
+    assert reasons["reportableIncidents"] == (
+        "an authored reportableIncidents was present but `incidents` was "
+        "not a list"
+    )
+    assert "no authored incident attestation" not in reasons["reportableIncidents"]
+
+
+async def test_a_malformed_plain_array_value_is_distinguished_from_absent() -> None:
+    """Same distinction, one of the four plain array fields."""
+    _org_id, system_id = await _system("array-malformed-not-list")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="ocr",
+            document={"certificationPackageOverviewUri": CPO_URI, "activeAgencies": "GSA"},
+        )
+    async with session_scope() as s:
+        result = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert "activeAgencies" not in result.document.document
+    reasons = dict(result.missing_fields)
+    assert reasons["activeAgencies"] == (
+        "an authored activeAgencies was present but not usable: expected a "
+        "list of strings, got str"
+    )
+    assert "no authored list of agencies" not in reasons["activeAgencies"]
+
+
+async def test_a_malformed_planned_changes_value_is_distinguished_from_absent() -> None:
+    """Same distinction, the object field with its own required keys."""
+    _org_id, system_id = await _system("planned-malformed-not-dict")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="ocr",
+            document={
+                "certificationPackageOverviewUri": CPO_URI,
+                "plannedCertificationDataChanges": "TBD next quarter",
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert "plannedCertificationDataChanges" not in result.document.document
+    reasons = dict(result.missing_fields)
+    assert reasons["plannedCertificationDataChanges"] == (
+        "an authored plannedCertificationDataChanges was present but not "
+        "usable: expected an object with planningHorizonThrough and changes"
+    )
+    assert "no authored forward-looking commitment" not in reasons[
+        "plannedCertificationDataChanges"
+    ]
+
+
 # --- carrying the CPO URI, and carrying it only when authored --------------
 
 
@@ -645,23 +855,36 @@ class _Session:
         return AsyncClient(transport=ASGITransport(app=self.app), base_url="http://test")
 
 
-#: Dated relative to today, same reasoning as `test_cr26_ver_seed.RECENT`/
-#: `PERIOD`: the route has no `today` override, so a literal window would go
-#: stale the moment the real clock passes it.
+#: Dated relative to today, same reasoning as `test_cr26_ver_seed.PERIOD`: the
+#: route has no `today` override, so a literal window would go stale the
+#: moment the real clock passes it.
 PERIOD = {
     "from": str(date.today() - timedelta(days=30)),
     "to": str(date.today() + timedelta(days=30)),
 }
 
+#: A POA&M dated this recently stays "not accepted"/within any real
+#: `RemediationWindow` for the next several months regardless of when the
+#: suite runs, and -- more to the point for the route tests below -- stays
+#: `accepted_weakness_state == "accepted"` once `status="risk_accepted"` is
+#: set, without depending on the literal date the suite happens to run on.
+RECENT = date.today() - timedelta(days=5)
+
 
 async def test_the_ocr_route_reports_every_result_field_to_the_caller() -> None:
     """Every field of `OcrSeedResult` must cross the HTTP boundary -- on this
     module, deleting result fields from the route left the whole suite green
-    (task brief). `missing_fields` and `accepted_count` are the only signal
-    an operator gets that six fields are still owed and what the derived
-    summary counted; nothing in `document` says either on its own.
+    (task brief). `missing_fields`, `accepted_count`, and `avi_gap` are the
+    only signal an operator gets that six fields are still owed, what the
+    derived summary counted, and which of those the AVI cannot yet report;
+    nothing in `document` says any of it on its own.
+
+    An accepted, undocumented row (`RECENT`, no rationale) is seeded so
+    `avi_gap` is genuinely non-empty here -- an all-zero fixture would let a
+    route that hard-coded `avi_gap: []` pass this test too.
     """
     org_id, system_id = await _system("route-ocr")
+    undocumented_id = await _poam(system_id, status="risk_accepted", identified_on=RECENT)
     async with _Session(org_id=org_id).client() as c:
         resp = await c.post(
             f"/api/systems/{system_id}/cr26-documents/ocr/seed", json=PERIOD
@@ -669,10 +892,11 @@ async def test_the_ocr_route_reports_every_result_field_to_the_caller() -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["kind"] == "ocr"
-    assert body["accepted_count"] == 0
+    assert body["accepted_count"] == 1
     assert [name for name, _reason in body["missing_fields"]] == list(SIX_REQUIRED)
     assert body["document"]["reportPeriod"] == PERIOD
-    assert body["document"]["acceptedVulnerabilities"].startswith("0 accepted")
+    assert body["document"]["acceptedVulnerabilities"].startswith("1 accepted")
+    assert body["avi_gap"] == [[undocumented_id, "no acceptance rationale"]]
 
 
 async def test_a_non_admin_cannot_seed_an_ocr() -> None:
