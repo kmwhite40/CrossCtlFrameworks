@@ -132,6 +132,22 @@ def test_only_blank_statements_are_omitted() -> None:
     assert omitted == [("SDR-CSO-FRR", "no implementation statement")]
 
 
+def test_only_non_string_statements_reports_both_reasons() -> None:
+    """``[42, None]`` leaves nothing usable, so the entry is omitted -- but
+    "no implementation statement" alone understates what was actually there:
+    real, if unusable, authored content was also dropped. Both reasons are
+    reported rather than the first, matching the "report every reason that
+    applies" rule this function already follows for the id/locator cases."""
+    merged, omitted = merge_requirements(
+        [{"frrID": "SDR-CSO-FRR", "frrImplementation": [42, None]}]
+    )
+    assert merged == []
+    assert omitted == [
+        ("SDR-CSO-FRR", "no implementation statement"),
+        ("SDR-CSO-FRR", "frrImplementation entry dropped: not a string"),
+    ]
+
+
 def test_blank_statements_are_stripped_and_the_rest_kept() -> None:
     """A repair, not an omission: the entry survives with only its real
     statements."""
@@ -207,6 +223,36 @@ def test_an_absent_implementation_status_is_not_reported() -> None:
     )
     assert "frrImplementationStatus" not in merged[0]
     assert omitted == []
+
+
+def test_a_non_scalar_implementation_status_is_dropped_not_raised() -> None:
+    """Live defect, verified reachable through ``PUT /cr26-documents/sdr``
+    (an unvalidated ``dict[str, Any]``): ``status_enum`` is a ``frozenset``,
+    and membership-testing an unhashable value raises ``TypeError`` instead
+    of being recognised as invalid. A dict or a list must be dropped and
+    named exactly like any other invalid value, not crash the seed -- and
+    once stored, a raise here means the document can never self-heal."""
+    merged, omitted = merge_requirements(
+        [
+            {
+                "frrID": "SDR-CSO-A",
+                "frrImplementation": ["ok"],
+                "frrImplementationStatus": {},
+            },
+            {
+                "frrID": "SDR-CSO-B",
+                "frrImplementation": ["ok"],
+                "frrImplementationStatus": [],
+            },
+        ]
+    )
+    by_id = {e["frrID"]: e for e in merged}
+    assert "frrImplementationStatus" not in by_id["SDR-CSO-A"]
+    assert "frrImplementationStatus" not in by_id["SDR-CSO-B"]
+    assert omitted == [
+        ("SDR-CSO-A", "implementation status dropped: not a schema enum member"),
+        ("SDR-CSO-B", "implementation status dropped: not a schema enum member"),
+    ]
 
 
 def test_a_valid_implementation_status_survives() -> None:
@@ -324,8 +370,26 @@ def test_a_schema_invalid_optional_array_is_repaired_and_reported() -> None:
     assert omitted == [
         ("SDR-CSO-A", "frrValidation dropped: not a list"),
         ("SDR-CSO-B", "frrValidation dropped: not a list"),
-        ("SDR-CSO-C", "frrAssessment dropped: contains a non-string entry"),
+        ("SDR-CSO-C", "frrAssessment entry dropped: not a string"),
     ]
+
+
+def test_the_element_drop_reason_does_not_claim_the_field_was_dropped() -> None:
+    """``["keep", 42]`` survives as ``["keep"]`` -- the FIELD is not dropped,
+    only the offending element is. ``"{field} dropped: ..."`` would be
+    accurate for the not-a-list case above and misleading here; this pins
+    that the two cases use different wording."""
+    merged, omitted = merge_requirements(
+        [
+            {
+                "frrID": "SDR-CSO-FRR",
+                "frrImplementation": ["ok"],
+                "frrValidation": ["keep", 42],
+            }
+        ]
+    )
+    assert merged[0]["frrValidation"] == ["keep"]
+    assert omitted == [("SDR-CSO-FRR", "frrValidation entry dropped: not a string")]
 
 
 def test_a_blank_entry_in_an_optional_array_is_dropped_silently() -> None:
@@ -346,13 +410,14 @@ def test_a_blank_entry_in_an_optional_array_is_dropped_silently() -> None:
 
 
 def test_a_clean_optional_array_is_not_aliased_to_the_caller() -> None:
-    """The deepcopy at the top of the walk is what protects an untouched
-    optional array -- ``frrImplementation`` is always rebuilt fresh via its
-    own comprehension regardless of copy depth, so it cannot tell a
-    ``copy.deepcopy`` from a shallow ``dict(raw_entry)`` apart. An
-    already-valid ``frrValidation`` IS left as the object the deep copy
-    produced (see the docstring), so mutating it must not reach the caller's
-    list -- a shallow copy would leave the two aliased and this would fail."""
+    """An already-valid ``frrValidation`` is left as the object the deep copy
+    produced (see the docstring) rather than rebuilt, so mutating it must not
+    reach the caller's list. This pin is INDIRECT -- it holds only while the
+    ``cleaned == value`` early-continue exists in the array-cleaning code, and
+    a plausible "simplify: always rebuild" refactor of that loop would leave
+    it green with no deepcopy involved at all. See
+    ``test_an_unrecognised_field_does_not_alias_the_caller`` below for the
+    pin that survives such a refactor."""
     validation = ["We validated via scan."]
     authored = [
         {
@@ -366,6 +431,28 @@ def test_a_clean_optional_array_is_not_aliased_to_the_caller() -> None:
     merged[0]["frrValidation"].append("mutated")
     assert validation == ["We validated via scan."]
     assert authored[0]["frrValidation"] == ["We validated via scan."]
+
+
+def test_an_unrecognised_field_does_not_alias_the_caller() -> None:
+    """The direct deepcopy pin: an unknown nested field is never inspected or
+    rebuilt by ANY repair rule in this function -- the vendored schema places
+    no ``additionalProperties: false`` on a requirement entry, so such a field
+    is legal input and the only thing standing between it and aliasing is the
+    top-level ``copy.deepcopy(raw_entry)`` itself. Unlike the array-cleaning
+    fields above, this survives any future restructuring of that code."""
+    nested = {"note": ["draft"]}
+    authored = [
+        {
+            "frrID": "SDR-CSO-FRR",
+            "frrImplementation": ["We meet it."],
+            "frrCustomField": nested,
+        }
+    ]
+    merged, omitted = merge_requirements(authored)
+    assert omitted == []
+    merged[0]["frrCustomField"]["note"].append("mutated")
+    assert nested == {"note": ["draft"]}
+    assert authored[0]["frrCustomField"] == {"note": ["draft"]}
 
 
 def test_frr_id_is_stored_stripped() -> None:

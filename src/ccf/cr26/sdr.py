@@ -553,7 +553,17 @@ def merge_indicators(
                 # self-heal below already guards; the array fields had the
                 # default but not the check.
                 out[field] = _copied(carried) if isinstance(carried, list) else []
-            if out.get("ksiImplementationStatus") not in _implementation_status_enum():
+            # ``isinstance(..., str)`` FIRST: ``_implementation_status_enum()``
+            # is a ``frozenset``, and ``in`` on a set hashes its operand
+            # before comparing -- a carried-forward ``{}`` or ``[]`` (an
+            # authored value from ``PUT /cr26-documents/sdr``, which takes an
+            # unvalidated ``dict[str, Any]``) raised ``TypeError`` here rather
+            # than being recognised as invalid and dropped. Once such a value
+            # was stored, it round-tripped: every future seed 500d instead of
+            # self-healing, which is exactly the failure this drop exists to
+            # prevent.
+            status = out.get("ksiImplementationStatus")
+            if not isinstance(status, str) or status not in _implementation_status_enum():
                 out.pop("ksiImplementationStatus", None)
         merged.append(out)
     return merged, omitted
@@ -703,6 +713,15 @@ def merge_requirements(
         ]
         if not statements:
             notes.append((frr_id, "no implementation statement"))
+            if dropped_non_string_statement:
+                # Say both: the entry is omitted either way, but "no
+                # implementation statement" alone understates what was
+                # actually there when e.g. ``[42, None]`` supplied nothing
+                # else to fall back to -- real, if unusable, authored content
+                # was also dropped, and this list is a to-do list, not a
+                # single-reason verdict (spec-mirroring rule: report every
+                # reason that applies, not the first).
+                notes.append((frr_id, "frrImplementation entry dropped: not a string"))
             continue
 
         entry = copy.deepcopy(raw_entry)
@@ -713,7 +732,15 @@ def merge_requirements(
 
         if "frrImplementationStatus" in entry:
             status = entry["frrImplementationStatus"]
-            if status not in status_enum:
+            # ``isinstance(status, str)`` FIRST: ``status_enum`` is a
+            # ``frozenset``, and ``in`` on a set hashes its operand before
+            # comparing -- an authored ``{}`` or ``[]`` raises ``TypeError``
+            # rather than being recognised as invalid. Reachable through
+            # ``PUT /cr26-documents/sdr``, which takes an unvalidated
+            # ``dict[str, Any]``, and once stored it round-trips: every future
+            # seed 500s instead of self-healing, which is exactly the failure
+            # this drop exists to prevent.
+            if not isinstance(status, str) or status not in status_enum:
                 entry.pop("frrImplementationStatus", None)
                 notes.append(
                     (frr_id, "implementation status dropped: not a schema enum member")
@@ -736,7 +763,11 @@ def merge_requirements(
                 continue
             entry[field] = cleaned
             if any(not isinstance(item, str) for item in value):
-                notes.append((frr_id, f"{field} dropped: contains a non-string entry"))
+                # NOT "{field} dropped": the field survives (as ``cleaned``,
+                # possibly ``[]``) -- only the offending element is dropped.
+                # "dropped" here would say the field itself vanished, which
+                # is true of the not-a-list branch above but false here.
+                notes.append((frr_id, f"{field} entry dropped: not a string"))
 
         if frr_id in seen_ids:
             notes.append((frr_id, "duplicate authored entry kept"))
