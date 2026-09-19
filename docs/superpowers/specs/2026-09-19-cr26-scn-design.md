@@ -70,6 +70,35 @@ as an error would refuse a valid identifier from a framework we do not hold.
 Blank entries are a different matter: an empty string in `impactedControls`
 identifies nothing at all and is reported as such.
 
+**Resolution order, and it matters.** Measured:
+
+```
+canonicalize('IA-02')      -> CanonicalId(value='IA-2', ...)
+canonicalize('AC-2(1)')    -> CanonicalId(value='AC-2(1)', ...)
+canonicalize('KSI-IAM-01') -> None
+canonicalize('EIA-02')     -> None
+```
+
+`canonicalize` handles **control** ids only — a KSI identifier yields `None`,
+exactly as an unknown string does. So an implementation that resolved through
+`canonicalize` alone would report **every KSI as unrecognised**, and the field
+is documented as holding "KSI **or** control identifiers". A list that cries
+wolf on half its legitimate input is worse than no list: it trains an operator
+to ignore it.
+
+So, per entry:
+
+1. Blank after stripping → reported as `"identifies nothing"`.
+2. `canonicalize` yields a `CanonicalId` → look it up in the control catalog.
+   Found → recognised. Not found → `"no such control"`.
+3. Otherwise → look the raw value up in the KSI catalog by `identifier`.
+   Found → recognised. Not found → `"not a known control or KSI"`.
+
+Step 3 catches both a genuine KSI and anything `canonicalize` cannot parse,
+which is the same bucket for a reason: we cannot tell a KSI we do not hold from
+a framework identifier we have never ingested, and both deserve the same
+non-committal wording.
+
 ---
 
 ## 3. Field rules
