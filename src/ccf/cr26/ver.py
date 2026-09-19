@@ -686,11 +686,20 @@ async def _poam_rows(session: AsyncSession, system_id: int) -> list[POAM]:
     )
 
 
-async def _current(session: AsyncSession, system_id: int, kind: str) -> dict[str, Any]:
+async def _current(
+    session: AsyncSession, system_id: int, kind: str, document_key: str | None = None
+) -> dict[str, Any]:
+    """The system's currently stored document of ``(kind, document_key)``, or
+    ``{}`` if none. ``document_key`` defaults to ``None`` -- the VER family
+    (``vdr``, ``avi``, ``ver_history``) is unkeyed, unchanged since before
+    0081.
+    """
     row = (
         await session.execute(
             select(Cr26Document).where(
-                Cr26Document.system_id == system_id, Cr26Document.kind == kind
+                Cr26Document.system_id == system_id,
+                Cr26Document.kind == kind,
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()

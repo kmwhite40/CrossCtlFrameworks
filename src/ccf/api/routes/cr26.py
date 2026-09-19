@@ -136,12 +136,25 @@ async def get_document(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
+    """The system's NULL-keyed document of ``kind``.
+
+    Explicit ``document_key IS NULL`` rather than a bare ``(system_id, kind)``
+    filter: since 0081 that pair is no longer necessarily unique -- a
+    per-instance deliverable can have several rows of the same kind,
+    distinguished by key. This route is not key-aware (that belongs with
+    whichever deliverable needs it) and every deliverable it serves today is
+    NULL-keyed, so filtering explicitly for the NULL key is what keeps this
+    route's behaviour identical to before 0081 rather than leaving
+    ``.first()`` to pick arbitrarily once a keyed row exists.
+    """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
     row = (
         await session.execute(
             select(Cr26Document).where(
-                Cr26Document.system_id == system_id, Cr26Document.kind == kind
+                Cr26Document.system_id == system_id,
+                Cr26Document.kind == kind,
+                Cr26Document.document_key.is_(None),
             )
         )
     ).scalars().first()

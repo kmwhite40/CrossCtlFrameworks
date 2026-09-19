@@ -1024,19 +1024,24 @@ class SdrSeedResult:
     omitted_requirements: list[tuple[str, str]]
 
 
-async def _current(session: AsyncSession, system_id: int) -> dict[str, Any] | None:
+async def _current(
+    session: AsyncSession, system_id: int, document_key: str | None = None
+) -> dict[str, Any] | None:
     """This system's stored SDR body, or ``None``.
 
     The ``kind`` filter is load-bearing, not decorative: a system with both a
     CPO and an SDR is the normal case, and without it this returns whichever
     row the database hands back first -- so ``seed_sdr`` would build the SDR
     on top of the CPO's body, carrying ``serviceIdentification`` into a
-    document that has no such field.
+    document that has no such field. ``document_key`` defaults to ``None``,
+    the SDR's own identity, unchanged since before 0081.
     """
     row = (
         await session.execute(
             select(Cr26Document).where(
-                Cr26Document.system_id == system_id, Cr26Document.kind == "sdr"
+                Cr26Document.system_id == system_id,
+                Cr26Document.kind == "sdr",
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()

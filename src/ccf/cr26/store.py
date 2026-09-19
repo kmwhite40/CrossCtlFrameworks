@@ -21,11 +21,19 @@ without a recorded verdict. There is no way for a call to
 :func:`put_document` to write ``document`` and leave ``is_valid`` or
 ``validation_errors`` stale.
 
-There is one row per ``(system_id, kind)``, so a second write **overwrites**
-the previous document in place and nothing in this table remembers that it
-existed. :mod:`ccf.models_cr26` justifies having no history table by saying
-change history is :mod:`ccf.api.audit`'s job -- so every write records an
-audit event here, ``create`` on the first and ``update`` on an overwrite.
+There is one row per ``(system_id, kind, document_key)``, so a second write
+with the SAME key **overwrites** the previous document in place and nothing
+in this table remembers that it existed. :mod:`ccf.models_cr26` justifies
+having no history table by saying change history is :mod:`ccf.api.audit`'s
+job -- so every write records an audit event here, ``create`` on the first
+and ``update`` on an overwrite.
+
+``document_key`` defaults to ``None`` and every deliverable shipped as of
+0081 (``cpo``, ``sdr``, ``ocr``, ``vdr``, ``avi``, ``ver_history``) always
+passes ``None`` -- their upsert identity stays exactly ``(system_id, kind)``,
+unchanged from before 0081. A non-``None`` key is reserved for a per-instance
+deliverable no shipped code writes yet; see :mod:`ccf.models_cr26` and
+migration ``0081_cr26_document_key``.
 That compensating control is the reason there is no history table; it is not
 optional decoration. The event goes through
 :func:`ccf.api.audit.record_event` and never by constructing ``AuditLog``
@@ -83,9 +91,19 @@ async def put_document(
     system_id: int,
     kind: str,
     document: dict[str, Any],
+    document_key: str | None = None,
     updated_by: str | None = None,
 ) -> Cr26Document:
-    """Create or replace this system's document of ``kind``, judged on write."""
+    """Create or replace this system's document of ``(kind, document_key)``,
+    judged on write.
+
+    ``document_key`` defaults to ``None``, which is what every shipped
+    deliverable passes -- the upsert identity for those six stays exactly
+    ``(system_id, kind)``, matching the unique constraint's NULLS NOT
+    DISTINCT behaviour (see :mod:`ccf.models_cr26`): a second write with a
+    NULL key still overwrites the one NULL-keyed row for that kind, never
+    creates a second one.
+    """
     if kind not in DELIVERABLE_KINDS:
         if kind in CR26_KINDS:
             raise ValueError(
@@ -116,13 +134,20 @@ async def put_document(
     row = (
         await session.execute(
             select(Cr26Document).where(
-                Cr26Document.system_id == system_id, Cr26Document.kind == kind
+                Cr26Document.system_id == system_id,
+                Cr26Document.kind == kind,
+                # `== document_key` rather than a branch on None: SQLAlchemy
+                # compiles `Column == None` to `IS NULL`, so this is exactly
+                # `IS NULL` for every shipped deliverable and `= :key` for a
+                # keyed one, with no separate code path to keep in sync with
+                # the constraint's own NULLS NOT DISTINCT behaviour.
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()
     created = row is None
     if row is None:
-        row = Cr26Document(system_id=system_id, kind=kind)
+        row = Cr26Document(system_id=system_id, kind=kind, document_key=document_key)
         session.add(row)
 
     # Tenant comes from the system, never from a caller-supplied value.
@@ -139,21 +164,30 @@ async def put_document(
     await session.flush()
 
     # The only record that the overwritten document ever existed: this table
-    # keeps one row per (system, kind) on the explicit grounds that change
-    # history lives in the audit chain. ``create`` vs ``update`` is what makes
-    # an overwrite distinguishable from a first write after the fact.
+    # keeps one row per (system, kind, document_key) on the explicit grounds
+    # that change history lives in the audit chain. ``create`` vs ``update``
+    # is what makes an overwrite distinguishable from a first write after the
+    # fact.
+    diff: dict[str, Any] = {
+        "system_id": system_id,
+        "kind": kind,
+        "is_valid": report.ok,
+        "updated_by": updated_by,
+    }
+    # Omitted rather than always-present-as-None: every shipped deliverable
+    # passes no key, and this diff shape is asserted verbatim by existing
+    # tests -- adding a stray ``"document_key": None`` to it for a code path
+    # that never has one would be an unannounced behaviour change of the
+    # kind this branch is explicitly not allowed to make.
+    if document_key is not None:
+        diff["document_key"] = document_key
     await _audit(
         session,
         actor=updated_by or "system",
         action="create" if created else "update",
         entity_type="cr26_document",
         entity_id=str(row.id),
-        diff={
-            "system_id": system_id,
-            "kind": kind,
-            "is_valid": report.ok,
-            "updated_by": updated_by,
-        },
+        diff=diff,
     )
     await session.flush()
     return row

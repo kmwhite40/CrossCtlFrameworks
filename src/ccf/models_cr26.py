@@ -7,10 +7,22 @@ the published schema and need a migration every time a field is added. The
 vendored schema under ``ccf/cr26/schemas/`` is the constraint, and
 ``ccf.cr26.store`` is what enforces it.
 
-One row per ``(system_id, kind)``: the documents are self-versioning -- the
-CPO's ``CPO-CSO-MTD`` metadata block carries version, last-updated and
-update-source -- so a history table here would be a second record of one fact.
-Change history is :mod:`ccf.api.audit`'s job.
+One row per ``(system_id, kind, document_key)``: the documents are
+self-versioning -- the CPO's ``CPO-CSO-MTD`` metadata block carries version,
+last-updated and update-source -- so a history table here would be a second
+record of one fact. Change history is :mod:`ccf.api.audit`'s job.
+
+``document_key`` (0081) exists for deliverables that are per-instance rather
+than per-system: an Incident Report's ``providerTrackingId`` must stay
+consistent across its Initial/Ongoing/Final filings, and one system has many
+incidents concurrently, so one row per ``(system_id, "incident")`` would let
+filing a report for one incident overwrite another's. The six deliverables
+shipped as of 0081 (``cpo``, ``sdr``, ``ocr``, ``vdr``, ``avi``,
+``ver_history``) are current-state or overwrite-on-purpose snapshots, so all
+six always use a NULL key -- see 0081's docstring for why the unique
+constraint below is ``NULLS NOT DISTINCT`` rather than a plain unique, which
+is what keeps "NULL key" meaning "the one row for this system and kind"
+instead of silently admitting a second one.
 """
 
 from __future__ import annotations
@@ -39,7 +51,19 @@ class Cr26Document(Base):
 
     __tablename__ = "cr26_documents"
     __table_args__ = (
-        UniqueConstraint("system_id", "kind", name="uq_cr26_document_system_kind"),
+        # NULLS NOT DISTINCT is load-bearing, not decoration: Postgres treats
+        # NULLs as distinct from one another by default, so a plain UNIQUE
+        # here would silently accept a second NULL-keyed row per
+        # (system_id, kind) -- exactly the row every shipped deliverable's
+        # one-row invariant depends on not existing. See 0081's docstring for
+        # the measured proof.
+        UniqueConstraint(
+            "system_id",
+            "kind",
+            "document_key",
+            name="uq_cr26_document_system_kind_key",
+            postgresql_nulls_not_distinct=True,
+        ),
         {"schema": "ccf"},
     )
 
@@ -59,6 +83,12 @@ class Cr26Document(Base):
     #: rather than a database enum: the vocabulary is FedRAMP's and grows when
     #: they publish a schema, and a new kind should not require a migration.
     kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+
+    #: Distinguishes multiple documents of the same ``kind`` for the same
+    #: system. NULL for all six deliverables shipped as of 0081 -- see the
+    #: module docstring. Reserved for a per-instance deliverable (e.g. an
+    #: incident's ``providerTrackingId``) that no shipped code writes yet.
+    document_key: Mapped[str | None] = mapped_column(String(128))
 
     document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
