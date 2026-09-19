@@ -54,7 +54,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from .store import put_document
-from .ver import is_blank
+from .ver import has_content, is_blank
 
 #: The lifecycle order carry-forward walks backward through (spec §2.1).
 #: A tuple, not a set: order is the whole point -- :func:`_prior_report`
@@ -431,11 +431,21 @@ async def seed_incident(
     # The twelve authored-in-practice fields (spec §3.3): authored on this
     # report wins outright; carried forward whole, never merged, when this
     # report does not have it; otherwise absent and named as advisory.
+    #
+    # `has_content`, not a bare `in` test (review round 3, I2): a field
+    # present but blank -- `""` on a string field, or authored-then-cleared
+    # -- carried no more information than an absent one, and a bare
+    # `field_name in current` check let a blank string through as though it
+    # were genuine content, reported nowhere. `has_content` is NOT
+    # `is_blank` applied directly, because `is_blank` treats every
+    # non-string as blank and several of these fields (`timeline`,
+    # `potentialImpact`) are objects -- see its own docstring for why that
+    # distinction matters.
     missing_advisory: list[str] = []
     for field_name in _CARRY_FIELDS:
-        if field_name in current:
+        if field_name in current and has_content(current[field_name]):
             document[field_name] = current[field_name]
-        elif field_name in prior:
+        elif field_name in prior and has_content(prior[field_name]):
             document[field_name] = prior[field_name]
             carried_fields.append(field_name)
         else:

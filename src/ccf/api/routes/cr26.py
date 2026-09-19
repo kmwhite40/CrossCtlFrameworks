@@ -35,6 +35,7 @@ from ...auth import Principal
 from ...cr26.cpo import seed_cpo
 from ...cr26.incident import seed_incident
 from ...cr26.ocr import seed_ocr
+from ...cr26.scn import seed_scn
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
@@ -573,4 +574,74 @@ async def seed_incident_document(
         "carried_fields": result.carried_fields,
         "missing_required": result.missing_required,
         "missing_advisory": result.missing_advisory,
+    }
+
+
+class ScnSeedIn(BaseModel):
+    """What only the caller can supply for a Significant Change Notification
+    (spec §1): the provider's own reference for the change, used verbatim as
+    ``document_key`` since the SCN has no identity field of its own at all --
+    no tracking id, no change id, no date -- and the significance category.
+    Everything else the seeder can produce comes from what was already
+    authored and stored at that exact key, not from this request body.
+
+    ``change_type`` is a ``Literal`` of the schema's own two-member ``enum``
+    for the same reason ``IncidentSeedIn.report_type`` is: ``seed_scn``
+    deliberately leaves an unrecognised ``changeType`` for the vendored
+    schema itself to refuse (this programme's posture everywhere else), but
+    this request body is a narrower, human-facing surface where FastAPI's
+    own 422 is the cheaper and earlier place to catch a typo.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    change_ref: str = Field(alias="changeRef")
+    change_type: Literal["Adaptive", "Transformative"] = Field(alias="changeType")
+
+
+@router.post("/systems/{system_id}/cr26-documents/scn/seed")
+async def seed_scn_document(
+    system_id: int,
+    body: ScnSeedIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed or amend one Significant Change Notification. Admin only.
+
+    Like the Incident Report, this is a per-instance deliverable --
+    ``document_key`` is the caller's own ``change_ref``, verbatim (spec §1),
+    so a system can file many SCNs over time without one overwriting
+    another. Unlike the Incident Report there is no cross-key continuity:
+    each SCN stands alone, so re-seeding the same ``change_ref`` amends
+    exactly that SCN and nothing else. A blank or overlong ``change_ref`` is
+    refused with 422 rather than reaching the seeder's ``ValueError`` as a
+    500 -- an unidentifiable notification cannot be filed at all.
+
+    ``document_key``, ``missing_required``, ``missing_advisory`` and
+    ``unrecognised_controls`` all travel beside the document: nothing in
+    the document's own JSON says which field is genuinely missing versus
+    merely unauthored-so-far, or which ``impactedControls`` entries this
+    catalog could not resolve. Dropping any of them from this response
+    would leave the seeder-level tests green while an operator lost the
+    only signal for each of those questions (task brief: deleting a result
+    field from a route on this module left the whole suite green).
+    """
+    await _owned_system(session, system_id, principal)
+    try:
+        result = await seed_scn(
+            session,
+            system_id=system_id,
+            change_ref=body.change_ref,
+            change_type=body.change_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    await session.commit()
+    await session.refresh(result.document)
+    return {
+        **_full(result.document),
+        "document_key": result.document_key,
+        "missing_required": result.missing_required,
+        "missing_advisory": result.missing_advisory,
+        "unrecognised_controls": result.unrecognised_controls,
     }
