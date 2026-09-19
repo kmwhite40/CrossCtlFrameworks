@@ -52,16 +52,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models_cr26 import Cr26Document
+from ..models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from .store import put_document
 from .ver import is_blank
-
-#: ``Cr26Document.document_key`` is ``String(128)`` (see
-#: ``ccf.models_cr26``). Nothing upstream of :func:`_validate_tracking_id`
-#: bounds ``providerTrackingId``'s length, so an overlong one reached the
-#: database as a raw ``StringDataRightTruncationError`` (a 500) instead of a
-#: refusal this module controls -- see that function's docstring.
-_DOCUMENT_KEY_MAX_LENGTH = 128
 
 #: The lifecycle order carry-forward walks backward through (spec §2.1).
 #: A tuple, not a set: order is the whole point -- :func:`_prior_report`
@@ -119,13 +112,22 @@ def _validate_tracking_id(provider_tracking_id: str, report_type: str) -> str:
 
     ``report_type`` is taken only to size the check below -- it is not
     otherwise validated here (see :func:`seed_incident`'s docstring).
-    ``document_key`` is ``String(128)`` in the database (see
-    :mod:`ccf.models_cr26`), and nothing upstream bounds
-    ``providerTrackingId``'s length, so a sufficiently long one would reach
-    the database as a raw ``StringDataRightTruncationError`` -- a 500 --
-    instead of a refusal this module controls. Refused here instead, as a
-    ``ValueError`` the route turns into a 422, exactly like the other two
-    checks.
+    ``document_key`` is bounded to :data:`ccf.models_cr26.DOCUMENT_KEY_MAX_
+    LENGTH` -- read from the column's own declared type, not a second
+    hardcoded number here (review round 2: two independent hardcoded
+    ``128``s, one here and one in the generic route, is exactly the
+    duplicated-rule shape this programme keeps getting bitten by; an
+    off-by-one in either would reach Postgres as a raw
+    ``StringDataRightTruncationError``, a 500, in the one case this check
+    exists to prevent). The arithmetic below is written out rather than left
+    implicit: ``document_key`` is ``"{trackingId}/{reportType}"``, so this
+    tracking id's own budget is the column width MINUS one separator
+    character MINUS however long ``report_type`` turns out to be -- not the
+    column width alone, and not the column width minus a guessed constant
+    for "the longest report type", which would silently stop matching
+    ``_LIFECYCLE`` the day a new report type was added there. Nothing upstream
+    of this function bounds ``providerTrackingId``'s length, so this is the
+    only place that budget is ever checked for the seeder's own key shape.
     """
     stripped = provider_tracking_id.strip()
     if not stripped:
@@ -137,11 +139,11 @@ def _validate_tracking_id(provider_tracking_id: str, report_type: str) -> str:
             "tracking id would make that key ambiguous"
         )
     key_length = len(stripped) + 1 + len(report_type)  # "/" separator
-    if key_length > _DOCUMENT_KEY_MAX_LENGTH:
+    if key_length > DOCUMENT_KEY_MAX_LENGTH:
         raise ValueError(
             f"providerTrackingId is too long: the resulting document_key "
             f"'{stripped}/{report_type}' would be {key_length} characters, "
-            f"and document_key is limited to {_DOCUMENT_KEY_MAX_LENGTH}"
+            f"and document_key is limited to {DOCUMENT_KEY_MAX_LENGTH}"
         )
     return stripped
 

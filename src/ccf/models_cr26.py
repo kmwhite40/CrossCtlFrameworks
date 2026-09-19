@@ -108,3 +108,22 @@ class Cr26Document(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
     notes: Mapped[str | None] = mapped_column(Text)
+
+
+#: ``document_key``'s own column width, read from the column's declared type
+#: rather than duplicated as a hand-copied literal anywhere that needs to
+#: bound an input against it (review round 2: two separate call sites --
+#: ``ccf.cr26.incident``'s tracking-id check and ``ccf.api.routes.cr26``'s
+#: generic-route check -- had each hardcoded ``128``, which is exactly the
+#: "one rule expressed in two places" shape this programme keeps getting
+#: bitten by; an unbounded ``document_key`` reaches Postgres as a raw
+#: ``StringDataRightTruncationError`` -- a 500 -- rather than a 422 either
+#: caller controls, so both must bound against the SAME number, not a copy
+#: of it). ``String(128)``'s ``.length`` is genuinely optional on
+#: SQLAlchemy's own type (a dialect-native string type could have none), so
+#: this asserts it is set rather than silently typing this constant
+#: ``int | None`` for every caller to re-check.
+_document_key_type = Cr26Document.__table__.c.document_key.type
+assert isinstance(_document_key_type, String), "Cr26Document.document_key must be a String"
+assert _document_key_type.length is not None, "Cr26Document.document_key must declare a length"
+DOCUMENT_KEY_MAX_LENGTH: int = _document_key_type.length

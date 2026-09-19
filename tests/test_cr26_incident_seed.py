@@ -31,11 +31,12 @@ from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
 from ccf.api.routes import cr26 as cr26_routes
 from ccf.auth import Principal
+from ccf.cr26 import incident as incident_module
 from ccf.cr26.incident import seed_incident
 from ccf.cr26.store import put_document
 from ccf.db import session_scope
 from ccf.models import Organization, System
-from ccf.models_cr26 import Cr26Document
+from ccf.models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 
 CPO_URI = "https://example.gov/cpo.json"
 
@@ -1269,3 +1270,93 @@ async def test_a_tracking_id_at_exactly_the_length_boundary_is_accepted() -> Non
         assert len(result.document_key) == 128
     finally:
         await _delete_org(_org_id)
+
+
+# --- M2 at the other door (review round 2): the generic keyed route also ---
+# --- bounds document_key, without adopting the incident key's format rules -
+
+
+async def test_an_overlong_document_key_is_422_on_the_generic_put() -> None:
+    """Review round 2: the generic route stays format-agnostic (no
+    blank/'/' rule -- a future SCN may key itself differently), but a length
+    bound is not a format rule, it is the column's own physical limit.
+    Measured before this fix: a 200-character `document_key` on `PUT`
+    reached Postgres as `asyncpg.exceptions.StringDataRightTruncationError`
+    -- an unhandled 500, not a refusal this route controlled.
+
+    MUTATION: removing the `_checked_document_key` call from
+    `put_cr26_document` reintroduces the 500 (verified below via mutation).
+    """
+    org_id, system_id = await _system("incident-generic-put-key-overlong")
+    overlong_key = "K" * (DOCUMENT_KEY_MAX_LENGTH + 1)
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            resp = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": overlong_key},
+                json={"document": {"incidentDescription": "should never be stored"}},
+            )
+        assert resp.status_code == 422, resp.text
+    finally:
+        await _delete_org(org_id)
+
+
+async def test_an_overlong_document_key_is_422_not_a_500_or_a_silent_miss_on_the_generic_get() -> (
+    None
+):
+    """The other door: `GET` with an overlong `document_key` must also be
+    422, not a 500 (the query would otherwise reach Postgres with an
+    over-width parameter) and not a silent 404 miss (which would look like
+    an ordinary "nothing authored yet" rather than a caller error).
+    """
+    org_id, system_id = await _system("incident-generic-get-key-overlong")
+    overlong_key = "K" * (DOCUMENT_KEY_MAX_LENGTH + 1)
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            resp = await c.get(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": overlong_key},
+            )
+        assert resp.status_code == 422, resp.text
+        assert resp.status_code != 404
+    finally:
+        await _delete_org(org_id)
+
+
+async def test_a_document_key_at_exactly_the_column_width_is_accepted_on_the_generic_route() -> (
+    None
+):
+    """The boundary's other side: exactly `DOCUMENT_KEY_MAX_LENGTH`
+    characters must be accepted on both doors, not refused -- this is a
+    length LIMIT, not an arbitrary shorter cutoff.
+    """
+    org_id, system_id = await _system("incident-generic-key-at-boundary")
+    boundary_key = "K" * DOCUMENT_KEY_MAX_LENGTH
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            put_resp = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": boundary_key},
+                json={"document": {"incidentDescription": "at the boundary"}},
+            )
+            assert put_resp.status_code == 200, put_resp.text
+
+            get_resp = await c.get(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": boundary_key},
+            )
+        assert get_resp.status_code == 200, get_resp.text
+        assert get_resp.json()["document"]["incidentDescription"] == "at the boundary"
+    finally:
+        await _delete_org(org_id)
+
+
+def test_the_incident_seeders_own_bound_and_the_generic_routes_bound_share_one_source() -> None:
+    """Review round 2: confirms `ccf.cr26.incident` and `ccf.api.routes.cr26`
+    both import `ccf.models_cr26.DOCUMENT_KEY_MAX_LENGTH` rather than each
+    hardcoding `128` -- the exact drift this review round's fix removed.
+    A change to the column's width is felt by both call sites automatically,
+    or this test's own import would already have failed.
+    """
+    assert incident_module.DOCUMENT_KEY_MAX_LENGTH is DOCUMENT_KEY_MAX_LENGTH
+    assert cr26_routes.DOCUMENT_KEY_MAX_LENGTH is DOCUMENT_KEY_MAX_LENGTH

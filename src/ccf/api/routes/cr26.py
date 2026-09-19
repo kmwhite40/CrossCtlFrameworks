@@ -39,7 +39,7 @@ from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
 from ...models import System
-from ...models_cr26 import Cr26Document
+from ...models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -121,6 +121,41 @@ def _checked_kind(kind: str) -> str:
     return kind
 
 
+def _checked_document_key(document_key: str | None) -> str | None:
+    """Refuse a ``document_key`` too long for the column before it reaches
+    Postgres as a raw ``StringDataRightTruncationError`` (a 500), on BOTH
+    doors this route pair opens (review round 2, "M2 at the other door" --
+    measured live: a 200-character key on ``PUT`` crashed rather than
+    refused).
+
+    This is deliberately the ONLY thing this generic route checks about
+    ``document_key`` -- it stays format-agnostic (no blank/``/`` rule, no
+    assumption about ``"{x}/{y}"`` shape): a future per-instance deliverable
+    (e.g. SCN) may key itself differently from the Incident Report, and
+    baking the Incident Report's own key format into this shared route would
+    make the generic surface serve one deliverable. A length bound is not a
+    format rule, though -- it is the column's own physical limit, and every
+    caller of this route shares that one limit regardless of key shape, so
+    it belongs here even though the format rules do not.
+
+    Bounded against :data:`ccf.models_cr26.DOCUMENT_KEY_MAX_LENGTH`, read
+    from the column's own declared type -- not a second hardcoded number,
+    which is exactly what produced the crash this function exists to
+    prevent: :mod:`ccf.cr26.incident`'s tracking-id check bounds the SAME
+    column independently, for the same reason, and the two must read one
+    source rather than risk drifting apart.
+    """
+    if document_key is not None and len(document_key) > DOCUMENT_KEY_MAX_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"document_key is too long: {len(document_key)} characters, "
+                f"and document_key is limited to {DOCUMENT_KEY_MAX_LENGTH}"
+            ),
+        )
+    return document_key
+
+
 @router.get("/systems/{system_id}/cr26-documents")
 async def list_documents(
     system_id: int,
@@ -173,6 +208,7 @@ async def get_document(
     """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
+    document_key = _checked_document_key(document_key)
     row = (
         await session.execute(
             select(Cr26Document).where(
@@ -216,6 +252,7 @@ async def put_cr26_document(
     """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
+    document_key = _checked_document_key(document_key)
     row = await put_document(
         session,
         system_id=system_id,
