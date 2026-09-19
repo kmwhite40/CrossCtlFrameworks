@@ -96,13 +96,17 @@ async def seed_cpo(session: AsyncSession, *, system_id: int) -> Cr26Document:
     return await put_document(session, system_id=system_id, kind="cpo", document=document)
 
 
-async def _current(session: AsyncSession, system_id: int) -> dict[str, Any] | None:
+async def _current(
+    session: AsyncSession, system_id: int, document_key: str | None = None
+) -> dict[str, Any] | None:
     from sqlalchemy import select  # noqa: PLC0415
 
     row = (
         await session.execute(
             select(Cr26Document).where(
-                Cr26Document.system_id == system_id, Cr26Document.kind == "cpo"
+                Cr26Document.system_id == system_id,
+                Cr26Document.kind == "cpo",
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()

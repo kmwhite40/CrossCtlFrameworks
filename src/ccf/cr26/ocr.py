@@ -273,19 +273,27 @@ async def _poam_rows(session: AsyncSession, system_id: int) -> list[POAM]:
     )
 
 
-async def _current(session: AsyncSession, system_id: int, kind: str) -> dict[str, Any]:
-    """The system's currently stored document of ``kind``, or ``{}`` if none.
+async def _current(
+    session: AsyncSession, system_id: int, kind: str, document_key: str | None = None
+) -> dict[str, Any]:
+    """The system's currently stored document of ``(kind, document_key)``, or
+    ``{}`` if none.
 
     Generic over ``kind`` -- read only, never :func:`ccf.cr26.store.
     put_document` -- so the same helper serves both this system's ``ocr``
     document (the URI carry-forward and the six authored fields) and its
     ``avi`` document (:func:`_avi_gap`'s read-only pipeline), without a
     second copy of the same query hardcoded to a different kind.
+    ``document_key`` defaults to ``None``: both callers read a shipped
+    deliverable, and every shipped deliverable's identity is still exactly
+    ``(system_id, kind)``, unchanged since before 0081.
     """
     row = (
         await session.execute(
             select(Cr26Document).where(
-                Cr26Document.system_id == system_id, Cr26Document.kind == kind
+                Cr26Document.system_id == system_id,
+                Cr26Document.kind == kind,
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()

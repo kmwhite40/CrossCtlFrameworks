@@ -35,13 +35,14 @@ setup errors elsewhere.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 
 from ccf.config import get_settings
-from ccf.cr26.store import put_document
 from ccf.db import session_scope
 from ccf.models import POAM
 
@@ -108,8 +109,17 @@ async def test_migration_0080_backfills_a_document_only_rationale() -> None:
                 )
             ).scalar_one()
 
-            # `put_document` only touches `System` and `Cr26Document`, both
-            # already at their final shape at 0079 -- safe through the ORM.
+            # Raw SQL, not `put_document`: 0081 added `document_key` to
+            # `Cr26Document` and `put_document`'s own upsert query now reads
+            # it unconditionally, which does not exist at 0079 either --
+            # the ORM model always reflects HEAD's shape, not the shape of
+            # whatever revision the database happens to be pinned to right
+            # now, so going through it here would raise
+            # ``UndefinedColumnError`` before ever reaching 0080's migration
+            # under test. Insert the row exactly as `put_document` would
+            # (a ``2026-06-24`` ruleset, ``is_valid: false`` -- the backfill
+            # only reads `document`, so the verdict fields are inert here).
+            #
             # A second entry with `providerTrackingId: "²"` rides along in
             # the SAME document (round 3, N3): `"²".isdigit()` is `True`
             # while `int("²")` raises `ValueError`, and the backfill used to
@@ -118,21 +128,33 @@ async def test_migration_0080_backfills_a_document_only_rationale() -> None:
             # skipped harmlessly (no POA&M has that id to write to), not
             # crash the upgrade that is also backfilling the real legacy
             # row below.
-            await put_document(
-                s,
-                system_id=system_id,
-                kind="avi",
-                document={
-                    "acceptedVulnerabilities": [
+            await s.execute(
+                text(
+                    "INSERT INTO ccf.cr26_documents "
+                    "(organization_id, system_id, kind, document, ruleset_version, "
+                    "is_valid, validation_errors) "
+                    "VALUES (:org_id, :system_id, 'avi', CAST(:document AS jsonb), "
+                    "'2026-06-24', false, '[]'::jsonb)"
+                ),
+                {
+                    "org_id": org_id,
+                    "system_id": system_id,
+                    "document": json.dumps(
                         {
-                            "vulnerabilityDetail": {"providerTrackingId": str(poam_id)},
-                            "acceptanceRationale": "Backfill-pin rationale.",
-                        },
-                        {
-                            "vulnerabilityDetail": {"providerTrackingId": "²"},
-                            "acceptanceRationale": "Must not abort the migration.",
-                        },
-                    ],
+                            "acceptedVulnerabilities": [
+                                {
+                                    "vulnerabilityDetail": {
+                                        "providerTrackingId": str(poam_id)
+                                    },
+                                    "acceptanceRationale": "Backfill-pin rationale.",
+                                },
+                                {
+                                    "vulnerabilityDetail": {"providerTrackingId": "²"},
+                                    "acceptanceRationale": "Must not abort the migration.",
+                                },
+                            ],
+                        }
+                    ),
                 },
             )
 

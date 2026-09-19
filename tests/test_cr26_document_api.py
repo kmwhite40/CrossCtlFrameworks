@@ -12,12 +12,14 @@ import itertools
 from datetime import UTC, datetime
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import delete
 
 from ccf.api.auth_deps import get_principal
 from ccf.api.main import create_app
 from ccf.auth import Principal
 from ccf.db import session_scope
 from ccf.models import Organization, System
+from ccf.models_cr26 import Cr26Document
 
 _SEQ = itertools.count()
 
@@ -107,6 +109,61 @@ async def test_reading_is_open_to_any_authenticated_role() -> None:
         resp = await c.get(f"/api/systems/{system_id}/cr26-documents/sdr")
     assert resp.status_code == 200, resp.text
     assert resp.json()["document"] == _VALID_SDR
+
+
+async def test_reading_returns_the_unkeyed_document_even_when_a_keyed_one_exists() -> None:
+    """``get_document`` filters explicitly on ``document_key.is_(None)``
+    rather than a bare ``(system_id, kind)`` lookup -- since 0081 that pair
+    is no longer necessarily unique, and without the explicit filter
+    ``.first()`` would return whichever row Postgres hands back first once a
+    keyed row of the same kind exists. This route is not key-aware (no
+    route in this branch writes a keyed document), so the only correct
+    answer for an unkeyed ``GET`` is the unkeyed row, every time.
+
+    Deleting ``Cr26Document.document_key.is_(None)`` from the route leaves
+    every OTHER test in this module green, because none of them puts a
+    keyed row in front of an unkeyed one of the same kind -- this is the
+    one that would catch it.
+    """
+    org_id, system_id = await _system("get-filter")
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            authored = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/sdr", json={"document": _VALID_SDR}
+            )
+            assert authored.status_code == 200, authored.text
+
+        # No route in this branch can write a keyed document, so insert one
+        # directly -- this is exactly the shape the incident deliverable
+        # will produce: an unkeyed row (if any) coexisting with a keyed one
+        # of the same kind.
+        async with session_scope() as s:
+            s.add(
+                Cr26Document(
+                    organization_id=org_id,
+                    system_id=system_id,
+                    kind="sdr",
+                    document_key="ALT-1",
+                    document={"who": "keyed"},
+                    ruleset_version="2026-06-24",
+                    is_valid=False,
+                )
+            )
+
+        async with _Session(org_id=org_id, role="viewer").client() as c:
+            resp = await c.get(f"/api/systems/{system_id}/cr26-documents/sdr")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["document"] == _VALID_SDR, (
+            "an unkeyed GET must return the unkeyed document, not an arbitrary "
+            "row of the same kind"
+        )
+    finally:
+        # A keyed row left behind trips migration 0081's downgrade guard at
+        # the next session's clean_migrated_db -- see
+        # tests/test_cr26_document_key.py's _delete_org for the same
+        # discipline.
+        async with session_scope() as s:
+            await s.execute(delete(Organization).where(Organization.id == org_id))
 
 
 async def test_a_document_that_was_never_authored_is_404() -> None:
