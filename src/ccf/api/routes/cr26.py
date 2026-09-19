@@ -23,6 +23,7 @@ itself a disclosure.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...cr26.cpo import seed_cpo
+from ...cr26.ocr import seed_ocr
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
@@ -357,3 +359,61 @@ async def seed_ver_history_document(
     await session.commit()
     await session.refresh(result.document)
     return _ver_body(result)
+
+
+class OcrPeriod(BaseModel):
+    """The OCR's reporting window -- **dates**, not the VER family's aware
+    datetimes. The OCR's ``reportPeriod`` is ``format: date``
+    (``$def: reportPeriodDate``), a different ``$def`` from the VER family's
+    ``reportPeriodDateTime``, so it takes a different request model rather
+    than reusing :class:`VerPeriod`: a plain ``date`` has no naive/aware
+    distinction to guard against, and posting a datetime here would only
+    produce a value the schema itself rejects downstream.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    period_from: date = Field(alias="from")
+    period_to: date = Field(alias="to")
+
+    @model_validator(mode="after")
+    def _ordered(self) -> OcrPeriod:
+        if self.period_from >= self.period_to:
+            raise ValueError("'from' must be strictly before 'to'")
+        return self
+
+
+@router.post("/systems/{system_id}/cr26-documents/ocr/seed")
+async def seed_ocr_document(
+    system_id: int,
+    period: OcrPeriod,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed this system's Ongoing Certification Report. Admin only.
+
+    This deliverable is almost entirely authored (spec §1): of its nine
+    required fields, only ``acceptedVulnerabilities`` is platform-derived.
+    ``missing_fields``, ``accepted_count``, and ``avi_gap`` travel beside the
+    document for the same reason ``omitted_ksi_ids`` and ``omitted_poam_ids``
+    do on the SDR and VER routes -- nothing in the document itself says a
+    field was left out, what a derived summary counted, or which of the
+    counted vulnerabilities the AVI cannot yet report. Deleting any of them
+    from this response would leave every seeder-level test green while an
+    operator stopped seeing what they still owe.
+    """
+    await _owned_system(session, system_id, principal)
+    result = await seed_ocr(
+        session,
+        system_id=system_id,
+        period_from=period.period_from,
+        period_to=period.period_to,
+    )
+    await session.commit()
+    await session.refresh(result.document)
+    return {
+        **_full(result.document),
+        "missing_fields": result.missing_fields,
+        "accepted_count": result.accepted_count,
+        "avi_gap": result.avi_gap,
+    }
