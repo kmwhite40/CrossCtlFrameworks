@@ -256,6 +256,28 @@ def test_a_carried_forward_invalid_status_is_dropped() -> None:
     assert "ksiImplementationStatus" not in merged[0]
 
 
+def test_a_non_scalar_carried_forward_status_is_dropped_not_raised() -> None:
+    """Live defect on ``main`` prior to this fix, verified reachable through
+    ``PUT /cr26-documents/sdr`` (an unvalidated ``dict[str, Any]``):
+    ``_implementation_status_enum()`` is a ``frozenset``, and
+    membership-testing an unhashable authored value (a dict or a list) raised
+    ``TypeError`` here instead of being recognised as invalid and dropped.
+    Once such a value was stored, every future seed crashed instead of
+    self-healing -- exactly the failure this drop exists to prevent."""
+    for bad_status in ({}, []):
+        merged, _omitted = merge_indicators(
+            [
+                {
+                    "ksiId": "KSI-GONE-93",
+                    "ksiImplementation": ["x"],
+                    "ksiImplementationStatus": bad_status,
+                }
+            ],
+            _DERIVED,
+        )
+        assert "ksiImplementationStatus" not in merged[0], bad_status
+
+
 def test_a_carried_forward_valid_status_survives() -> None:
     """The other half of the same guard: a mistyped enum list must not
     silently discard a status that is actually valid."""

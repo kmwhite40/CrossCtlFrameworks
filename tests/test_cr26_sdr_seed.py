@@ -597,6 +597,36 @@ async def test_the_route_reports_a_draft_control_to_the_caller() -> None:
     assert by_control["SC-13"]["controlImplementationDescription"] == "We use AWS KMS."
 
 
+async def test_the_route_reports_an_omitted_fedramp_requirement_to_the_caller() -> None:
+    """``omitted_requirements`` must cross the HTTP boundary with real content,
+    the same way ``controls_missing_description`` does above. On this module,
+    deleting two result fields from the route left the entire suite green --
+    this pins that ``omitted_requirements`` is not a third one."""
+    fx = await _fixture("route-frr")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="sdr",
+            document={
+                "fedRampRequirements": [
+                    {"frrID": "SDR-CSO-GOOD", "frrImplementation": ["We meet it."]},
+                    {"frrID": "SDR-CSO-BLANK", "frrImplementation": ["", "   "]},
+                ]
+            },
+        )
+
+    async with _Session(org_id=fx.org_id).client() as c:
+        resp = await c.post(f"/api/systems/{fx.system_id}/cr26-documents/sdr/seed")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    doc_ids = [e["frrID"] for e in body["document"]["fedRampRequirements"]]
+    assert doc_ids == ["SDR-CSO-GOOD"]
+    assert body["omitted_requirements"] == [
+        ["SDR-CSO-BLANK", "no implementation statement"]
+    ]
+
+
 async def test_the_seed_route_is_admin_gated() -> None:
     """Deliberately tries ``control_owner``, not ``viewer``: viewer 403s under
     either gate, so it could not tell an admin-only gate from an
@@ -911,10 +941,10 @@ async def test_the_seeder_reads_the_sdr_row_not_whatever_document_exists() -> No
 
 
 async def test_an_authored_fedramp_requirement_survives_a_reseed() -> None:
-    """``seed_sdr``'s docstring promises "[] unless already authored". Plain
-    assignment instead of ``setdefault`` passes every other test in this file,
-    because nothing else ever authors the field -- and it would silently
-    destroy the one part of ``fedRampRequirements`` a human can supply."""
+    """``fedRampRequirements`` is authored narrative, exactly like
+    ``ksiImplementation``, and ``seed_sdr`` must build on the stored document
+    rather than discarding it -- the one part of ``fedRampRequirements`` a
+    human can supply must not be silently destroyed."""
     fx = await _fixture("frr")
     authored = [{"frrID": "SDR-CSO-FRR", "frrImplementation": ["We meet it."]}]
     async with session_scope() as s:
@@ -926,6 +956,81 @@ async def test_an_authored_fedramp_requirement_survives_a_reseed() -> None:
         result = await seed_sdr(s, system_id=fx.system_id)
 
     assert result.document.document["fedRampRequirements"] == authored
+    assert result.omitted_requirements == []
+
+
+async def test_an_unusable_fedramp_requirement_is_omitted_and_reported() -> None:
+    """End to end through the seeder, not just the pure merge function: an
+    entry that would satisfy the schema while saying nothing must not reach
+    the stored document, and the gap must be visible in the seed result."""
+    fx = await _fixture("frr-omit")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="sdr",
+            document={
+                "fedRampRequirements": [
+                    {"frrID": "SDR-CSO-GOOD", "frrImplementation": ["We meet it."]},
+                    {"frrID": "", "frrImplementation": ["Orphaned -- no id."]},
+                    {"frrID": "SDR-CSO-EMPTY", "frrImplementation": ["", "   "]},
+                ]
+            },
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    doc_ids = [e["frrID"] for e in result.document.document["fedRampRequirements"]]
+    assert doc_ids == ["SDR-CSO-GOOD"]
+    assert ("fedRampRequirements[1]", "no frrID") in result.omitted_requirements
+    assert (
+        "SDR-CSO-EMPTY",
+        "no implementation statement",
+    ) in result.omitted_requirements
+
+
+async def test_a_seeded_document_with_a_real_requirement_is_invalid_for_exactly_one_reason() -> (
+    None
+):
+    """Spec-mirroring requirement (design doc §9 item 1, applied to
+    ``fedRampRequirements``): the SDR's "invalid for exactly one reason" claim
+    must be pinned on a document that actually CONTAINS a real requirement
+    entry, not just an empty array -- an empty-array fixture pins nothing.
+
+    Exact equality, not a membership check: a document that quietly acquired
+    a second, dishonest validation error must fail this test.
+    """
+    fx = await _fixture("frr-validate")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=fx.system_id,
+            kind="sdr",
+            document={
+                "fedRampRequirements": [
+                    {
+                        "frrID": "SDR-CSO-FRR",
+                        "frrImplementation": ["We meet this requirement via X."],
+                        "frrImplementationStatus": "Implemented",
+                    }
+                ]
+            },
+        )
+
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=fx.system_id)
+
+    assert result.document.document["fedRampRequirements"] == [
+        {
+            "frrID": "SDR-CSO-FRR",
+            "frrImplementation": ["We meet this requirement via X."],
+            "frrImplementationStatus": "Implemented",
+        }
+    ]
+    assert result.document.validation_errors == [
+        "<root>: 'certificationPackageOverviewUri' is a required property"
+    ], result.document.validation_errors
 
 
 async def test_a_draft_only_control_is_reported_rather_than_described() -> None:

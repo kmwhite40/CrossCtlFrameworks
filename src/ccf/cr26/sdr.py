@@ -19,6 +19,7 @@ authored narrative is **omitted entirely** and named in the result.
 
 from __future__ import annotations
 
+import copy
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -59,9 +60,10 @@ def _parameter_values(odp_values: dict[str, Any] | None) -> list[dict[str, str]]
     ]
 
 
-#: Where the vendored SDR schema states its implementation-status enum. BOTH
-#: places, because this module constrains both fields and a copy that tracked
-#: only one would go stale in silence if FedRAMP widened the other.
+#: Where the vendored SDR schema states its implementation-status enum. ALL
+#: THREE places, because this module constrains all three fields and a copy
+#: that tracked only some would go stale in silence if FedRAMP widened one of
+#: the others.
 _STATUS_ENUM_PATHS: tuple[tuple[str, ...], ...] = (
     (
         "properties", "securityControls", "items", "properties",
@@ -71,6 +73,10 @@ _STATUS_ENUM_PATHS: tuple[tuple[str, ...], ...] = (
         "properties", "keySecurityIndicators", "items", "properties",
         "ksiImplementationStatus", "enum",
     ),
+    (
+        "properties", "fedRampRequirements", "items", "properties",
+        "frrImplementationStatus", "enum",
+    ),
 )
 
 
@@ -79,14 +85,15 @@ def _implementation_status_enum() -> frozenset[str]:
     """``{"Implemented", "Not Implemented", "Partially Implemented"}`` -- READ
     out of the vendored schema, not hand-copied from it.
 
-    Both fields this module constrains --
-    ``securityControls[].controlImplementationStatus`` (spec 1.2.1) and
-    ``keySecurityIndicators[].ksiImplementationStatus`` (spec 1.3) -- carry
-    the same three members, so one derived constant serves both. A hand-typed
-    mirror would be a third place for this spec's recurring
-    claim-versus-rendering defect to hide: a schema bump that WIDENED the enum
-    would leave the copy silently narrow, and the seeder would start omitting
-    a status FedRAMP had just begun to accept.
+    All three fields this module constrains --
+    ``securityControls[].controlImplementationStatus`` (spec 1.2.1),
+    ``keySecurityIndicators[].ksiImplementationStatus`` (spec 1.3), and
+    ``fedRampRequirements[].frrImplementationStatus`` -- carry the same three
+    members, so one derived constant serves all three. A hand-typed mirror
+    would be another place for this spec's recurring claim-versus-rendering
+    defect to hide: a schema bump that WIDENED the enum would leave the copy
+    silently narrow, and the seeder would start omitting a status FedRAMP had
+    just begun to accept.
 
     The platform's own vocabulary is
     :data:`ccf.ssp.constants.IMPLEMENTATION_STATUS_OPTIONS` --
@@ -120,11 +127,12 @@ def _implementation_status_enum() -> frozenset[str]:
     distinct = set(found.values())
     if len(distinct) != 1:
         raise RuntimeError(
-            "CR26 schema drift: the SDR's two implementation-status enums no "
+            "CR26 schema drift: the SDR's implementation-status enums no "
             "longer agree -- "
             f"{ {name: sorted(members) for name, members in sorted(found.items())} }. "
             "They shared three members when this module was written; splitting "
-            "them needs two constants and two decisions, not one."
+            "them needs a constant and a decision per field, not one applied "
+            "to all."
         )
     return distinct.pop()
 
@@ -545,10 +553,229 @@ def merge_indicators(
                 # self-heal below already guards; the array fields had the
                 # default but not the check.
                 out[field] = _copied(carried) if isinstance(carried, list) else []
-            if out.get("ksiImplementationStatus") not in _implementation_status_enum():
+            # ``isinstance(..., str)`` FIRST: ``_implementation_status_enum()``
+            # is a ``frozenset``, and ``in`` on a set hashes its operand
+            # before comparing -- a carried-forward ``{}`` or ``[]`` (an
+            # authored value from ``PUT /cr26-documents/sdr``, which takes an
+            # unvalidated ``dict[str, Any]``) raised ``TypeError`` here rather
+            # than being recognised as invalid and dropped. Once such a value
+            # was stored, it round-tripped: every future seed 500d instead of
+            # self-healing, which is exactly the failure this drop exists to
+            # prevent.
+            status = out.get("ksiImplementationStatus")
+            if not isinstance(status, str) or status not in _implementation_status_enum():
                 out.pop("ksiImplementationStatus", None)
         merged.append(out)
     return merged, omitted
+
+
+def merge_requirements(
+    authored: Sequence[Any],
+) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
+    """Filter and repair ``fedRampRequirements``, entirely authored narrative.
+
+    Unlike ``keySecurityIndicators``, nothing here is derived: there is no
+    machine-readable FedRAMP ruleset to check an ``frrID`` against (see
+    :func:`seed_sdr`'s docstring), and each entry's ``frrImplementation`` is a
+    written description of how the offering meets the requirement -- exactly
+    the kind of content only a human can supply, like ``ksiImplementation``.
+    So this function has no ``derived`` half to merge in; it only decides
+    which authored entries are honest enough to keep.
+
+    The returned list is an operator TO-DO LIST, not a list of absences --
+    the same distinction the VER family's ninth omission case draws (spec
+    §7): most entries in it name something dropped from the document, but a
+    REPAIR entry -- a duplicate kept, or a field silently emptied -- stays IN
+    the document and is still named here, because the gap it reports is real
+    even though nothing was omitted.
+
+    Every requirement in the vendored schema's ``fedRampRequirements.items``
+    is measured to validate cleanly even when it says nothing at all:
+    ``frrID: ""``, ``frrImplementation: []`` and
+    ``frrImplementation: ["", "   "]`` all satisfy the schema on their own.
+    So, mirroring :func:`merge_indicators`' omit-and-name discipline, an
+    entry that would satisfy the schema while saying nothing is OMITTED from
+    the rendered array and named in the result rather than shipped:
+
+    * not a dict at all -- reason ``"not an object"``. It carries no
+      ``frrID``, so it is reported by DOCUMENT LOCATOR (``"fedRampRequirements
+      [0]"``), matching :func:`ccf.cr26.ver.merge_accepted`'s convention for
+      an entry with nothing to key on.
+    * ``frrID`` blank, missing, or not a string -- reason ``"no frrID"``,
+      also by locator: an entry with no usable id has nothing else to report
+      it by, exactly like the case above. When present and usable, the id is
+      STRIPPED before it is used for anything -- comparison, storage, or
+      reporting -- so ``"  SDR-CSO-FRR  "`` does not ship unstripped and does
+      not fail to match the trimmed form a consumer looks it up by.
+    * ``frrImplementation`` present but not a list -- reason
+      ``"frrImplementation is not a list"``. ``type: array`` in the schema,
+      so a bare string here would satisfy naive truthiness while violating
+      the schema, the same shape :func:`_has_narrative` guards for
+      ``ksiImplementation``.
+    * every statement in ``frrImplementation`` is blank once stripped --
+      reason ``"no implementation statement"``. ``[""]`` and ``["   "]`` both
+      validate and both say nothing.
+
+    Several rules REPAIR an entry rather than omitting it wholesale, all
+    self-healing against a document this same function wrote on an earlier
+    seed -- ``seed_sdr`` feeds a previously-stored document's own
+    ``fedRampRequirements`` back in as ``authored``, and ``PUT
+    /cr26-documents/sdr`` takes an unvalidated ``dict[str, Any]``, so a stray
+    edit can introduce exactly the shapes these rules repair:
+
+    * a BLANK statement inside an otherwise-real ``frrImplementation`` is
+      dropped silently, keeping the rest -- nothing was lost, so nothing is
+      reported, the same asymmetry :func:`_implementation_description` draws
+      between a blank part and one that had content. A NON-STRING statement
+      (``42``, a nested object) is dropped and REPORTED, reason
+      ``"frrImplementation entry dropped: not a string"`` -- that is real
+      authored content of a shape this function cannot render, and destroying
+      it with no signal is the exact gap this docstring's TO-DO-LIST note
+      exists to close. Kept statements are **not** further stripped of
+      surrounding whitespace: the schema says these fields "May use
+      Markdown," and trimming would turn an authored indented code block into
+      a plain paragraph -- a silent reformatting this function has no
+      business doing.
+    * ``frrImplementationStatus`` present but not an enum member is DROPPED
+      and REPORTED, reason ``"implementation status dropped: not a schema
+      enum member"``. This is the identical self-heal :func:`merge_indicators`
+      applies to ``ksiImplementationStatus``, but reported where that one is
+      silent: ``merge_indicators`` can point to its derived half being
+      refreshed wholesale every seed as the reason silence is safe there. This
+      function has no derived half at all -- every field is authored -- so an
+      unreported drop here is indistinguishable from ``seed_sdr``'s
+      ``securityControls`` wipe, which is the one place that function is
+      forced to destroy stored content, and even that names what was lost.
+      Absence is not a repair and is not reported: only a PRESENT, invalid
+      value is dropped and named.
+    * ``frrValidation`` / ``frrAssessment``, when present, are type-checked
+      the same way :func:`merge_indicators` type-checks every carried-forward
+      array field. A non-list value (``null``, a bare string) is dropped and
+      REPORTED, reason ``"{field} dropped: not a list"``; a list containing a
+      non-string element is repaired to keep only its string entries and
+      REPORTED, reason ``"{field} dropped: contains a non-string entry"``
+      (blank strings inside an otherwise-valid list are dropped silently,
+      matching ``frrImplementation``). An already-valid array is left exactly
+      as the caller wrote it -- not rebuilt -- so this repair only ever fires
+      on a genuinely invalid value.
+
+    A DUPLICATE ``frrID`` is neither an omission nor a silent repair: unlike
+    ``acceptedVulnerabilities`` (spec §7 rule 8), nothing here asserts a claim
+    to a regulator that a duplicate could falsify by itself -- but
+    ``frrImplementationStatus`` is exactly such a claim, and two authored
+    entries for the same ``frrID`` disagreeing on it (one ``"Implemented"``,
+    one ``"Not Implemented"``) would file a document telling FedRAMP the
+    requirement is both. Discarding either one destroys human work the same
+    way an evicted duplicate KSI narrative would (:func:`merge_indicators`'s
+    own precedent for keeping rather than discarding authored content), and
+    the schema carries no ``uniqueItems`` constraint on this array either. So
+    **both entries are kept**, sorted adjacently by their shared ``frrID``,
+    and every entry after the first sharing an id is REPORTED, reason
+    ``"duplicate authored entry kept"`` -- naming the conflict rather than
+    silently filing it, which is what an operator needs to actually resolve
+    it.
+
+    Ordered by ``frrID`` for a diff-free re-seed, matching
+    :func:`merge_indicators` (:func:`list.sort` is stable, so two entries
+    sharing an id keep their original relative order). Every dict returned is
+    a deep copy of the caller's entry (:mod:`copy`.``deepcopy``, not
+    :func:`_copied`: an untouched, schema-valid ``frrValidation`` /
+    ``frrAssessment`` is left as the array the deep copy produced, not rebuilt
+    from scratch, so a shallow copy here would leave it aliased to the
+    caller's list), so mutating the merged document can never reach back into
+    ``authored``.
+    """
+    status_enum = _implementation_status_enum()
+    rendered: list[dict[str, Any]] = []
+    notes: list[tuple[str, str]] = []
+    seen_ids: set[str] = set()
+
+    for index, raw_entry in enumerate(authored):
+        locator = f"fedRampRequirements[{index}]"
+        if not isinstance(raw_entry, dict):
+            notes.append((locator, "not an object"))
+            continue
+        raw_id = raw_entry.get("frrID")
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            notes.append((locator, "no frrID"))
+            continue
+        frr_id = raw_id.strip()
+
+        implementation = raw_entry.get("frrImplementation")
+        if not isinstance(implementation, list):
+            notes.append((frr_id, "frrImplementation is not a list"))
+            continue
+        dropped_non_string_statement = any(
+            not isinstance(item, str) for item in implementation
+        )
+        statements = [
+            item for item in implementation if isinstance(item, str) and item.strip()
+        ]
+        if not statements:
+            notes.append((frr_id, "no implementation statement"))
+            if dropped_non_string_statement:
+                # Say both: the entry is omitted either way, but "no
+                # implementation statement" alone understates what was
+                # actually there when e.g. ``[42, None]`` supplied nothing
+                # else to fall back to -- real, if unusable, authored content
+                # was also dropped, and this list is a to-do list, not a
+                # single-reason verdict (spec-mirroring rule: report every
+                # reason that applies, not the first).
+                notes.append((frr_id, "frrImplementation entry dropped: not a string"))
+            continue
+
+        entry = copy.deepcopy(raw_entry)
+        entry["frrID"] = frr_id
+        entry["frrImplementation"] = statements
+        if dropped_non_string_statement:
+            notes.append((frr_id, "frrImplementation entry dropped: not a string"))
+
+        if "frrImplementationStatus" in entry:
+            status = entry["frrImplementationStatus"]
+            # ``isinstance(status, str)`` FIRST: ``status_enum`` is a
+            # ``frozenset``, and ``in`` on a set hashes its operand before
+            # comparing -- an authored ``{}`` or ``[]`` raises ``TypeError``
+            # rather than being recognised as invalid. Reachable through
+            # ``PUT /cr26-documents/sdr``, which takes an unvalidated
+            # ``dict[str, Any]``, and once stored it round-trips: every future
+            # seed 500s instead of self-healing, which is exactly the failure
+            # this drop exists to prevent.
+            if not isinstance(status, str) or status not in status_enum:
+                entry.pop("frrImplementationStatus", None)
+                notes.append(
+                    (frr_id, "implementation status dropped: not a schema enum member")
+                )
+
+        for field in ("frrValidation", "frrAssessment"):
+            if field not in entry:
+                continue
+            value = entry[field]
+            if not isinstance(value, list):
+                entry.pop(field, None)
+                notes.append((frr_id, f"{field} dropped: not a list"))
+                continue
+            cleaned = [item for item in value if isinstance(item, str) and item.strip()]
+            if cleaned == value:
+                # Nothing to repair -- leave the deep-copied list exactly as
+                # the caller wrote it, rather than rebuilding it, so a
+                # shallow ``dict(raw_entry)`` here would leave this list
+                # aliased to ``authored`` and a mutation test can tell.
+                continue
+            entry[field] = cleaned
+            if any(not isinstance(item, str) for item in value):
+                # NOT "{field} dropped": the field survives (as ``cleaned``,
+                # possibly ``[]``) -- only the offending element is dropped.
+                # "dropped" here would say the field itself vanished, which
+                # is true of the not-a-list branch above but false here.
+                notes.append((frr_id, f"{field} entry dropped: not a string"))
+
+        if frr_id in seen_ids:
+            notes.append((frr_id, "duplicate authored entry kept"))
+        seen_ids.add(frr_id)
+        rendered.append(entry)
+
+    rendered.sort(key=lambda entry: entry["frrID"])
+    return rendered, notes
 
 
 # ---------------------------------------------------------------------------
@@ -782,6 +1009,19 @@ class SdrSeedResult:
     #: most-recently-updated selection and blanks a populated
     #: ``securityControls``.
     rendered_control_count: int
+    #: Authored ``fedRampRequirements`` entries, and what
+    #: :func:`merge_requirements` did to them -- the deliverable's own to-do
+    #: list for that field, exactly as ``omitted_ksi_ids`` is for
+    #: ``keySecurityIndicators``. ``fedRampRequirements`` is authored
+    #: narrative the platform cannot derive, and every one of its required
+    #: fields validates cleanly while saying nothing (``frrID: ""``,
+    #: ``frrImplementation: []``), so without this list that gap is invisible.
+    #: **Not every entry here was OMITTED from the document.** Most name an
+    #: entry left out; some name a REPAIR made to an entry that is still
+    #: present -- a duplicate ``frrID`` kept rather than discarded, or a
+    #: schema-invalid field silently emptied -- because that gap is just as
+    #: real and just as invisible in the document's own JSON.
+    omitted_requirements: list[tuple[str, str]]
 
 
 async def _current(session: AsyncSession, system_id: int) -> dict[str, Any] | None:
@@ -807,10 +1047,14 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     """Render this system's SDR from what the platform holds, preserving narrative.
 
     ``securityControls`` is regenerated wholesale -- every field of it is
-    derived, so there is nothing to preserve. ``keySecurityIndicators`` is
-    merged: the five derived fields refresh on every seed, and the authored
-    ``ksiImplementation`` survives, because it is the one field the platform
-    cannot derive.
+    derived, so there is nothing to preserve. ``keySecurityIndicators`` and
+    ``fedRampRequirements`` are both merged rather than regenerated: neither
+    has anything derived to refresh, because both are entirely authored
+    narrative -- ``ksiImplementation`` and ``frrImplementation`` alike are the
+    one thing only a human can supply, and :func:`merge_indicators` /
+    :func:`merge_requirements` apply the identical omit-and-name discipline to
+    each, mirroring each other's aliasing, ordering and self-healing
+    behaviour.
 
     **"Wholesale" includes the empty case**, and it is the one place this
     seeder destroys stored content without naming what was lost: a system
@@ -823,17 +1067,25 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     empty ``securityControls`` means "nothing to say" rather than "no
     controls".
 
-    Two fields are deliberately left unfilled:
+    One field is deliberately left unfilled:
 
-    * ``fedRampRequirements`` is ``[]`` unless already authored. FedRAMP
-      publishes no machine-readable ruleset -- the rule ids exist only in
-      README prose -- so there is nothing to populate it from, and the array
-      has no ``minItems``, so empty validates.
     * ``certificationPackageOverviewUri`` is carried forward if authored and
       otherwise ABSENT. It is required at the root, so **a seeded SDR is
       invalid until someone publishes the CPO and supplies its URI**. That is
       correct rather than unfortunate -- something is genuinely still owed --
       and it is the same honest-failure posture as the CPO seeder's.
+
+    ``fedRampRequirements`` is NOT in that list, and an earlier version of
+    this docstring wrongly put it there, reasoning that "FedRAMP publishes no
+    machine-readable ruleset -- the rule ids exist only in README prose -- so
+    there is nothing to populate it from". That reasoning does not hold up:
+    ``frrID`` is an unconstrained string with no enum and no pattern anywhere
+    in the vendored schema, so no canonical id list was ever required to
+    populate it, and each entry's real content is ``frrImplementation`` -- a
+    written description of how the provider meets the requirement. It is
+    authored narrative, exactly like ``ksiImplementation``, not a lookup that
+    is missing its table. So it is merged like one: see
+    :func:`merge_requirements`.
     """
     system = await session.get(System, system_id)
     # A soft-deleted system is not a writable system -- see ccf.cr26.store.
@@ -867,7 +1119,12 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         await _derived_indicators(session, system_id),
     )
     document["keySecurityIndicators"] = merged
-    document.setdefault("fedRampRequirements", [])
+
+    authored_requirements = document.get("fedRampRequirements")
+    rendered_requirements, omitted_requirements = merge_requirements(
+        authored_requirements if isinstance(authored_requirements, list) else []
+    )
+    document["fedRampRequirements"] = rendered_requirements
 
     row = await put_document(session, system_id=system_id, kind="sdr", document=document)
     return SdrSeedResult(
@@ -877,4 +1134,5 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         controls_missing_description=missing_description,
         controls_with_dropped_parts=dropped_parts,
         rendered_control_count=len(controls),
+        omitted_requirements=omitted_requirements,
     )
