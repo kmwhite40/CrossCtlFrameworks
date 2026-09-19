@@ -685,18 +685,47 @@ NULL going in and non-blank after cycle 1 — in
 same promotion on `ver_history` independently, since it reads the `avi`
 document through its own call to `merge_accepted` (spec §5.2).
 
-**One honest residual case remains, and is not silently claimed away:** a
-rationale authored into a document for a row whose reporting window ALREADY
-excludes it, on the very first seed that ever processes it, is never
-resolved and so never promoted — `merge_accepted` skips an excluded id
-entirely (spec §7's scoping rule: no resolution attempted, no omission
-reported, because nothing is wrong with the row). Such a row stays
-document-only until a seed cycle occurs where the row is not scoping-filtered
-out. This is a narrower window than the original defect (it requires the
-rationale to be authored into a document AND every seed since to have
-excluded the row), and it self-heals the moment a seed includes the row, but
-it is not zero, and this section says so rather than rounding it to
-"Resolved" without qualification.
+> **CORRECTION, 2026-09-18 (review round 3).** The paragraph that used to sit
+> here called the scoping-excluded case an honest, narrow, self-healing
+> residual and left "Resolved" standing anyway. Measured, it was neither
+> narrow nor self-healing:
+>
+> ```
+> poam=3  column going in = None   (rationale authored into the avi document only)
+> CYCLE 1 (EXCLUDING window)  entries=[]  omitted=[]                             column=None
+> CYCLE 2 (including window)  entries=[]  omitted=[(3,'no acceptance rationale')] column=None
+> ```
+>
+> The FIRST excluding seed resolved the rationale from the document (to
+> correctly decide the entry leaves with no omission), then dropped it
+> without promoting it — `put_document` then overwrote the AVI with an empty
+> array, and the including cycle had nothing left to resolve. That is the
+> original §9.1 defect byte for byte, reached through the scoping path
+> instead of the window-move path, including the same invisible loss on the
+> excluding cycle. It was terminal, not self-healing: nothing about a later
+> including cycle repairs a document the excluding cycle already emptied.
+
+**Fixed in code, not by rewording.** `merge_accepted`'s excluded branch now
+promotes an authored rationale for **any id the walk saw**, including a
+scoping-excluded one, before dropping the entry — the same `_resolve_
+rationale` call the `derived` and `unplaced` branches already made, run one
+branch earlier. This is what makes the case impossible rather than merely
+documented, which is the only condition under which this section may keep
+saying "Resolved" for it. Pinned at the merge layer
+(`tests/test_cr26_ver_merge.py::test_a_scoping_excluded_row_still_promotes_its_document_rationale`)
+and reproduced end to end against the reviewer's exact sequence
+(`tests/test_cr26_ver_seed.py::test_a_scoping_excluded_row_promotes_instead_of_losing_its_rationale`),
+re-measured after the fix:
+
+```
+poam column going in = None
+CYCLE 1 (EXCLUDING window)  entries=[]         omitted=[]   column=<rationale>  (promoted this cycle)
+CYCLE 2 (including window)  entries=[rationale] omitted=[]  column=<rationale>
+```
+
+No residual case remains open. "Resolved" now covers every population this
+section has measured: column-backed, document-only, and document-only-while-
+scoping-excluded.
 
 **What keeps a NEW row from arriving without one:** `src/ccf/api/routes/
 poams.py`'s `_require_risk_accepted_gate` refuses the transition into
@@ -734,6 +763,30 @@ in is not the same claim as a column that stays true afterward:
   which is this programme's dominant defect shape (a claim that renders
   clean but does not describe what actually happened) one level down from
   where this family spends most of its attention.
+
+**This last rule is shared, not duplicated** (review round 3, Important N2):
+`ccf.constants.poam_leaves_risk_accepted(old_status, new_status)` is the one
+place "left `risk_accepted`" is decided, called from both `update_poam`'s
+PATCH path and `ccf.ingest.scanners.reconcile_findings`'s reopen path — a
+scan finding a previously-accepted vulnerability still present sets
+`poam.status = "open"` with no operator anywhere near `update_poam` to
+notice a stale rationale riding along, and measured, it reached the exact
+same defect before this helper existed. Two independently-written copies of
+"left `risk_accepted`" is exactly the shape that has drifted apart on this
+branch before (§9.1 first "Resolved" for the wrong reason, twice) — one
+function, two call sites, is the fix.
+
+**One digit-parsing bug closed in two places** (review round 3, Important
+N3): `providerTrackingId` ids were coerced with `tid.isdigit()` before
+`int(tid)`, and `"²".isdigit()` is `True` while `int("²")` raises
+`ValueError` — measured, `isdigit()` does not guard that call, it only
+defers the crash, and in migration `0080`'s backfill an uncaught one aborts
+the whole migration. Both `ccf.cr26.ver._as_row_id` and the backfill now use
+`try/except ValueError` around `int(tid)` directly, never `.isdigit()`
+(alone or narrowed with `.isascii()` — measured, `"٣"` (Arabic-Indic three)
+is non-ASCII, `.isdigit()` is `True` for it, and `int("٣") == 3`, so an
+ASCII narrowing would silently stop accepting an id that parses correctly
+today).
 
 ## 10. Out of scope
 
