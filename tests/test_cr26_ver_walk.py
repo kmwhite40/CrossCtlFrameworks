@@ -25,6 +25,7 @@ class _Poam:
         self.closed_on = kw.get("closed_on")
         self.scanner = kw.get("scanner", "nessus")
         self.source = kw.get("source", "scan")
+        self.acceptance_rationale = kw.get("acceptance_rationale")
 
 
 def test_a_control_deficiency_is_not_a_vulnerability_and_is_not_a_defect() -> None:
@@ -107,6 +108,52 @@ def test_one_row_with_several_faults_is_counted_once_and_reported_thrice() -> No
     out = render_all([row], today=TODAY, window=WINDOW)
     assert out.counts["omitted"] == 1
     assert len([pid for pid, _ in out.omitted if pid == 8]) >= 2
+
+
+def test_column_rationale_is_collected_even_for_a_row_this_cycle_cannot_place() -> None:
+    """A `risk_accepted` row that fails `render_vulnerability` this cycle
+    (blank title here) lands in `unplaced`, never `accepted` -- but
+    `VerRendering.column_rationale` must still carry its id. If collection
+    were narrowed to rows that reach `out.accepted` (accepted AND rendered
+    this cycle), `merge_accepted`'s kept-verbatim path for this exact row
+    would fall back to whatever rationale is trapped in the last stored
+    document instead of the freshest column value -- silently, since both
+    paths still produce *an* entry, just not necessarily the current one.
+    """
+    row = _Poam(
+        id=9,
+        status="risk_accepted",
+        title="",
+        weakness=None,
+        acceptance_rationale="Compensating control: WAF rule 91234.",
+    )
+    out = render_all([row], today=TODAY, window=WINDOW)
+    assert out.accepted == []  # never reached `accepted`: render_vulnerability failed
+    assert "9" in out.unplaced
+    assert out.column_rationale == {"9": "Compensating control: WAF rule 91234."}
+
+
+def test_column_rationale_is_collected_even_for_a_scoping_excluded_row() -> None:
+    """N5b: the placement claim covers BOTH scoping filters, not just the
+    accepted-branch narrowing the previous test pins. A row that is not a
+    FLAW at all (source != "scan") is excluded before either the accepted/
+    active split or the render step -- `VerRendering.column_rationale` must
+    still carry its id, because `merge_accepted`'s excluded branch (spec
+    §9.1) promotes a document-only rationale for exactly this population
+    before dropping the entry, and needs to see whether the column already
+    has a fresher value to avoid re-promoting a stale one.
+    """
+    row = _Poam(
+        id=11,
+        status="risk_accepted",
+        source="assessment",  # not a flaw -- excluded before rendering
+        acceptance_rationale="Compensating control: WAF rule 91234.",
+    )
+    out = render_all([row], today=TODAY, window=WINDOW)
+    assert out.accepted == []
+    assert out.active == []
+    assert "11" in out.excluded
+    assert out.column_rationale == {"11": "Compensating control: WAF rule 91234."}
 
 
 def test_an_empty_input_is_an_empty_rendering() -> None:

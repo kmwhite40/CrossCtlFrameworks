@@ -29,7 +29,7 @@ from defusedxml.ElementTree import fromstring as _safe_fromstring
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..constants import POAM_ACTIVE_STATUSES, POAM_CLOSED_STATUSES
+from ..constants import POAM_ACTIVE_STATUSES, POAM_CLOSED_STATUSES, poam_leaves_risk_accepted
 from ..models import POAM
 
 # Remediation SLA (days from identification) by normalized severity. Aligned to
@@ -390,6 +390,16 @@ async def reconcile_findings(
             )
             res.created += 1
         elif poam.status in _RESOLVED_STATES:
+            if poam_leaves_risk_accepted(poam.status, "open"):
+                # A superseded acceptance's rationale must not silently
+                # survive to be read as the justification for whatever
+                # NEW disposition this reopened row eventually gets --
+                # measured via ccf.api.routes.poams.update_poam's PATCH
+                # path; a scan reopening a risk_accepted row is the same
+                # transition with no operator in the loop to notice a
+                # stale rationale riding along. See
+                # ccf.constants.poam_leaves_risk_accepted's docstring.
+                poam.acceptance_rationale = None
             poam.status = "open"
             poam.closed_on = None
             poam.severity = f.severity

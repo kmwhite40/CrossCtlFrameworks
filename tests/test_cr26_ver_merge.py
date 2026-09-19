@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ccf.cr26.ver import merge_accepted
+from ccf.cr26.ver import _as_row_id, merge_accepted
 
 
 def _merge(*args, **kwargs) -> tuple[list[dict], list[tuple]]:
@@ -113,6 +113,30 @@ def test_a_non_numeric_derived_id_with_no_rationale_does_not_crash() -> None:
     assert omitted == [("POAM-42", "no acceptance rationale")]
 
 
+def test_as_row_id_does_not_raise_on_a_digit_that_int_rejects() -> None:
+    """`"²".isdigit()` is `True` while `int("²")` raises `ValueError` --
+    `_as_row_id` used to guard with `.isdigit()`, which does not guard this
+    at all, it only defers the crash. `try/except ValueError` is the fix,
+    not `.isascii() and .isdigit()`: `"٣"` (Arabic-Indic three) is
+    non-ASCII, `.isdigit()` is `True` for it too, and `int("٣") == 3` --
+    it parses correctly and must keep doing so.
+    """
+    assert _as_row_id("²") == "²"
+    assert _as_row_id("٣") == 3
+    assert _as_row_id("42") == 42
+    assert _as_row_id("POAM-42") == "POAM-42"
+
+
+def test_a_superscript_digit_tracking_id_does_not_abort_the_merge() -> None:
+    """End to end through `merge_accepted`, not just the helper in isolation
+    -- `"²".isdigit()` being `True` is exactly what let this reach `_as_row_id`
+    believing it was safe to call `int()` on.
+    """
+    merged, omitted = _merge([], [_detail("²")])
+    assert merged == []
+    assert omitted == [("²", "no acceptance rationale")]
+
+
 def test_omitted_ids_sort_numeric_first_then_string_not_lexically() -> None:
     """Ids are "9", "10" and "POAM-1" -- deliberately chosen so a naive
     ``str(row[0])`` sort key gets them wrong: lexically "10" sorts before
@@ -211,6 +235,40 @@ def test_an_entry_whose_row_a_scoping_filter_excluded_leaves_with_no_reason() ->
     assert omitted == []
 
 
+def test_a_scoping_excluded_row_still_promotes_its_document_rationale() -> None:
+    """Spec §9.1's residual case, closed: a rationale authored only into the
+    document, for a row a scoping filter excludes THIS cycle, must still be
+    promoted into the column before the entry is dropped -- otherwise the
+    document is the only copy, and a later `put_document` overwrite (while
+    still excluded) can lose it with nothing left to promote from. The entry
+    itself still leaves the document with no reason reported (previous
+    test); only `promoted` is new here.
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail("5"), "acceptanceRationale": "Only in the document."}
+    ]
+    result = merge_accepted(authored, [], excluded={"5"})
+    assert result.entries == []
+    assert result.omitted == []
+    assert result.promoted == [(5, "Only in the document.")]
+
+
+def test_a_scoping_excluded_row_with_a_fresh_column_value_is_not_re_promoted() -> None:
+    """The column already has it -- `_resolve_rationale` resolves from the
+    column, not the document, so `from_document` is `False` and nothing is
+    re-promoted (there is nothing new to write).
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail("5"), "acceptanceRationale": "Stale document value."}
+    ]
+    result = merge_accepted(
+        authored, [], excluded={"5"}, column_rationale={"5": "Current column value."}
+    )
+    assert result.entries == []
+    assert result.omitted == []
+    assert result.promoted == []
+
+
 def test_a_kept_entry_with_no_rationale_is_omitted_rather_than_emitted_blank() -> None:
     """Keeping an entry verbatim must not smuggle in an entry the schema
     refuses: `acceptanceRationale` is required, and there is nothing to
@@ -284,3 +342,100 @@ def test_a_duplicate_authored_entry_is_reported_rather_than_silently_losing() ->
     merged, omitted = _merge(authored, [_detail("7")])
     assert [e["acceptanceRationale"] for e in merged] == ["SECOND"]
     assert omitted == [(7, "duplicate authored entry discarded")]
+
+
+# --- `POAM.acceptance_rationale` (spec §9.1): the durable source, preferred
+# over the authored document -- which stays a fallback for rationales
+# authored before the column existed. ----------------------------------------
+
+
+def test_column_rationale_is_preferred_over_a_stale_authored_document() -> None:
+    """The column is the durable source from here on; a stale value still
+    sitting in the authored document must not win over it.
+    """
+    authored = [
+        {
+            "vulnerabilityDetail": _detail("7"),
+            "acceptanceRationale": "Stale, document-authored rationale.",
+        }
+    ]
+    merged, omitted = _merge(
+        authored, [_detail("7")], column_rationale={"7": "Current column rationale."}
+    )
+    assert omitted == []
+    assert [e["acceptanceRationale"] for e in merged] == ["Current column rationale."]
+
+
+def test_column_rationale_alone_is_enough_no_authored_entry_needed() -> None:
+    """The §9.1 defect, at the merge layer: a window moved backwards past an
+    accepted row and then forward again leaves the authored document with
+    NOTHING for that id (`put_document` overwrote it while the row was
+    excluded). Before this column existed that meant the rationale was gone
+    for good. Now the column alone is enough to keep the row in the document.
+    """
+    merged, omitted = _merge([], [_detail("7")], column_rationale={"7": "From the column."})
+    assert omitted == []
+    assert merged == [
+        {"vulnerabilityDetail": _detail("7"), "acceptanceRationale": "From the column."}
+    ]
+
+
+def test_a_blank_column_rationale_falls_back_to_the_authored_document() -> None:
+    """The column exists but this particular row's is blank -- e.g. a
+    rationale authored before the column existed, never re-entered into it.
+    The document fallback must still work: it is NEVER removed.
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail("7"), "acceptanceRationale": "From the document."}
+    ]
+    merged, omitted = _merge(authored, [_detail("7")], column_rationale={"7": "   "})
+    assert omitted == []
+    assert [e["acceptanceRationale"] for e in merged] == ["From the document."]
+
+
+def test_neither_source_having_a_rationale_is_still_omitted_and_named() -> None:
+    merged, omitted = _merge([], [_detail("7")], column_rationale={"7": "  "})
+    assert merged == []
+    assert omitted == [(7, "no acceptance rationale")]
+
+
+def test_column_rationale_reaches_a_kept_verbatim_entry_too() -> None:
+    """The column wins even for an entry kept verbatim because its row could
+    not be rendered this cycle (spec §5.1) -- the same precedence, not a
+    special case for the common path only.
+    """
+    authored = [
+        {
+            "vulnerabilityDetail": _detail("3", "Outdated OpenSSL"),
+            "acceptanceRationale": "Stale, document-authored rationale.",
+        }
+    ]
+    merged, omitted = _merge(
+        authored,
+        [],
+        unplaced={"3": ["no description"]},
+        column_rationale={"3": "Current column rationale."},
+    )
+    assert len(merged) == 1
+    assert merged[0]["acceptanceRationale"] == "Current column rationale."
+    assert merged[0]["vulnerabilityDetail"] == _detail("3", "Outdated OpenSSL")
+    assert omitted == [(3, "detail not refreshed: no description")]
+
+
+def test_a_kept_verbatim_entry_resolved_from_the_document_is_promoted() -> None:
+    """N5a: the kept-verbatim/`unplaced` branch does real promotion work too,
+    not just the common "freshly rendered" branch -- a row whose column is
+    still blank but whose title just got blanked (landing it in `unplaced`)
+    must still have its document-authored rationale promoted, or it depends
+    on the document surviving forever specifically on the one path where the
+    detail is already known to be stale.
+    """
+    authored = [
+        {
+            "vulnerabilityDetail": _detail("3", "Outdated OpenSSL"),
+            "acceptanceRationale": "Only ever authored into the document.",
+        }
+    ]
+    result = merge_accepted(authored, [], unplaced={"3": ["no description"]})
+    assert len(result.entries) == 1
+    assert result.promoted == [(3, "Only ever authored into the document.")]

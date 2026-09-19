@@ -885,6 +885,14 @@ class POAM(Base):
     # "assessment:{assessment_control_result_id}"), so re-running generation
     # from that origin is idempotent on this reference rather than a title match.
     source_ref: Mapped[str | None] = mapped_column(String(128), index=True)
+    # CR26 VER family: the durable home for a written acceptance rationale
+    # (spec §5, §9.1). Nullable -- every `risk_accepted` row that predates
+    # this column has none, and `_require_risk_accepted_gate` (poams.py) is
+    # what keeps a NEW transition into `risk_accepted` from arriving without
+    # one. `ccf.cr26.ver.merge_accepted` prefers this column and falls back
+    # to a rationale authored into the stored document before this column
+    # existed.
+    acceptance_rationale: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

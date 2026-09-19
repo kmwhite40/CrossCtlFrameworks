@@ -17,7 +17,8 @@ from sqlalchemy.orm import selectinload
 from ...assessment.engine import jobs as engine_jobs
 from ...auth import Principal
 from ...config import get_settings
-from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES
+from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
+from ...cr26.ver import is_blank
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...logging import get_logger
@@ -51,6 +52,7 @@ class POAMCreate(BaseModel):
     scheduled_completion: date | None = None
     risk_id: int | None = None
     vendor_id: int | None = None
+    acceptance_rationale: str | None = None
 
 
 class POAMUpdate(BaseModel):
@@ -70,6 +72,7 @@ class POAMUpdate(BaseModel):
     scheduled_completion: date | None = None
     risk_id: int | None = None
     vendor_id: int | None = None
+    acceptance_rationale: str | None = None
 
 
 class MilestoneIn(BaseModel):
@@ -136,6 +139,7 @@ def _out(p: POAM, today: date | None = None, approval_state: str | None = None) 
         "cost_estimate": p.cost_estimate,
         "risk_id": p.risk_id,
         "vendor_id": p.vendor_id,
+        "acceptance_rationale": p.acceptance_rationale,
         # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
         # (never submitted) | submitted (pending review) | approved | rejected. This
         # does NOT drive the closure gate itself — see _require_closure_gate — it
@@ -234,11 +238,22 @@ async def _require_risk_accepted_gate(
     owner_user_id: int | None,
     due_on: object,
     poam_id: int | str | None,
+    acceptance_rationale: object,
 ) -> None:
     if owner_user_id is None or due_on is None:
         raise HTTPException(
             409,
             "risk_accepted requires an owner (owner_user_id) and an expiration/due_on date",
+        )
+    # CR26 requires a written acceptance rationale (`acceptanceRationale`) on
+    # every accepted vulnerability (spec §5, §9.1) -- a blank-or-missing test,
+    # never a `None` test (`is_blank`, mirroring §7's omission rules in
+    # ccf.cr26.ver), since a cleared field can persist as "" or "   " rather
+    # than NULL.
+    if is_blank(acceptance_rationale):
+        raise HTTPException(
+            409,
+            "risk_accepted requires a written acceptance rationale (acceptance_rationale)",
         )
     if get_settings().auth_enabled and (
         poam_id is None or await entity_state(session, "poam", poam_id) != "approved"
@@ -403,7 +418,11 @@ async def create_poam(
         # be created open, then moved to risk_accepted via PATCH once approved
         # (mirrors create_risk's handling of status="accepted" in risks.py).
         await _require_risk_accepted_gate(
-            session, owner_user_id=obj.owner_user_id, due_on=obj.due_on, poam_id=None
+            session,
+            owner_user_id=obj.owner_user_id,
+            due_on=obj.due_on,
+            poam_id=None,
+            acceptance_rationale=obj.acceptance_rationale,
         )
     if obj.due_on is not None and obj.original_due_on is None:
         obj.original_due_on = obj.due_on  # capture the baseline for deviation tracking
@@ -445,14 +464,39 @@ async def update_poam(
     obj = await _require_poam(session, pid, principal)
     data = body.model_dump(exclude_none=True)
     was_closed = obj.status == "closed"
+    old_status = obj.status  # captured before the update loop mutates it
+    was_risk_accepted = old_status == "risk_accepted"
+    if (
+        "acceptance_rationale" in data
+        and is_blank(data["acceptance_rationale"])
+        and data.get("status", obj.status) == "risk_accepted"
+    ):
+        # Refused outright, whether or not `status` is in this body: a write
+        # that blanks the rationale while the row is (or is becoming)
+        # risk_accepted must not be allowed to leave it silently invalid for
+        # a later deliverable render to discover -- that is spec §9.1's own
+        # defect shape, one level up: a change that damages the record with
+        # nothing reported at the moment it happens.
+        raise HTTPException(
+            409,
+            "cannot blank acceptance_rationale while risk_accepted -- move the "
+            "POA&M out of risk_accepted first, or supply a replacement",
+        )
     if data.get("status") == "closed":
         await _require_closure_gate(session, obj)
-    elif data.get("status") == "risk_accepted":
+    elif data.get("status") == "risk_accepted" and not was_risk_accepted:
+        # `and not was_risk_accepted`: the gate guards the TRANSITION into
+        # risk_accepted, not every write that merely names it. A save-the-
+        # whole-form client re-sending {"status": "risk_accepted", ...} on a
+        # row that is already risk_accepted -- e.g. one grandfathered in with
+        # no rationale, predating this column -- must not be bricked by a
+        # gate meant for the moment the row first becomes risk_accepted.
         await _require_risk_accepted_gate(
             session,
             owner_user_id=data.get("owner_user_id", obj.owner_user_id),
             due_on=data.get("due_on", obj.due_on),
             poam_id=pid,
+            acceptance_rationale=data.get("acceptance_rationale", obj.acceptance_rationale),
         )
     for k, v in data.items():
         setattr(obj, k, v)
@@ -467,6 +511,32 @@ async def update_poam(
         # ingest/scanners.py, which clears closed_on when a scan finds a
         # "resolved" flaw's vulnerability still present.
         obj.closed_on = None
+    if poam_leaves_risk_accepted(old_status, data.get("status", old_status)):
+        # Any transition OUT of risk_accepted clears the rationale --
+        # unconditionally, EVEN WHEN the same request also supplies a
+        # value for acceptance_rationale. That is deliberate, not an
+        # oversight: a rationale sent alongside a REOPEN describes the
+        # acceptance being ENDED, not a new one, so keeping it would
+        # attribute someone's stated reason for leaving risk_accepted to
+        # whatever decision comes next instead. A caller who wants a
+        # rationale on the way back IN sends it on the re-accept PATCH.
+        #
+        # A narrower version of this rule shipped once already, with
+        # `and "acceptance_rationale" not in data` -- an escape hatch a
+        # save-the-whole-form client (one that re-sends every field on
+        # every PATCH, the common case) opens on every single reopen.
+        # Measured end to end: accept with "Reason A." -> reopen via a
+        # whole-form PATCH that still carries "Reason A." in its body ->
+        # the column was NOT cleared -> re-accept succeeded because the
+        # gate was satisfied by the SUPERSEDED reason, unlabelled, with
+        # nothing reported. That is this rule's own defect, reintroduced
+        # by trying to be lenient about who supplied the value.
+        #
+        # `poam_leaves_risk_accepted` (ccf.constants) is the ONE rule
+        # behind this, shared with ccf.ingest.scanners' reopen path -- see
+        # its docstring for why a second, hand-written copy of "left
+        # risk_accepted" here would risk drifting from that one.
+        obj.acceptance_rationale = None
     await bus.emit(
         session,
         verb="updated",

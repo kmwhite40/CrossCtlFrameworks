@@ -269,10 +269,19 @@ was a real guard, here it is not.
 
 ## 5. `acceptanceRationale`
 
-Required on every `acceptedVulnerabilityInfo`, and no `POAM` column holds one.
+Required on every `acceptedVulnerabilityInfo`.
+
+> **CORRECTION, 2026-09-18 (post-launch).** This section originally read "no
+> `POAM` column holds one" and "No migration" — true when this family
+> shipped, false after §9.1's fix. `POAM.acceptance_rationale` (migration
+> `0080`) is now the durable source; see §9.1 for the full story, including
+> why the authored-document path described just below is kept rather than
+> removed.
 
 It is **authored into the stored document and preserved across re-seeds**,
-exactly as `ksiImplementation` is in the SDR. No migration.
+exactly as `ksiImplementation` is in the SDR — this was the only mechanism
+until §9.1's fix, and remains a read-only fallback afterward for every
+rationale authored before the column existed.
 
 `merge_accepted(authored, derived) -> (merged, omitted)` mirrors
 `ccf.cr26.sdr.merge_indicators`:
@@ -434,7 +443,9 @@ kinds are already in `CR26_KINDS`. Each document records the period it covered
 inside its own body, so a re-seed overwrites a report with a report, and the
 period is never inferred.
 
-No migration. `alembic heads` must remain `0079_cr26_documents`.
+`cr26_documents` itself needed no migration at family launch. `alembic heads`
+was `0079_cr26_documents` then; §9.1's later fix added `0080` on `POAM`, not
+on this table — `cr26_documents` is still schema-unchanged.
 
 ### 6.3 Routes
 
@@ -587,11 +598,13 @@ actually shipped.
 
 ---
 
-## 9.1 Known limitation — a window change destroys acceptance rationales
+## 9.1 Resolved — a window change no longer destroys acceptance rationales
 
-**Measured, and accepted rather than solved.** `put_document` replaces the
-stored body in place with no history, and the rationale lives only inside that
-body. So moving a reporting window past an accepted entry destroys it:
+**RESOLVED, 2026-09-18.** This section originally documented a known,
+accepted-rather-than-solved limitation: `put_document` replaces the stored
+body in place with no history, and the rationale lived only inside that body.
+So moving a reporting window past an accepted entry destroyed it. Measured, at
+the time:
 
 ```
 CYCLE 1  window 2026-09-01..2026-12-01   entries=[<entry with rationale>]  omitted=[]
@@ -599,22 +612,207 @@ CYCLE 2  window 2026-06-01..2026-08-31   entries=[]                        omitt
 CYCLE 3  window 2026-09-01..2026-12-01   entries=[]   omitted=[(1, "no acceptance rationale")]
 ```
 
-Cycle 2 is the damage and `omitted_poam_ids` is **empty** — the loss is
-invisible at the moment it happens, which is the one property this family's
-design exists to prevent. Cycle 3 shows it does not come back. Because §5.2
-routes `ver_history`'s rationales through the AVI, the loss reaches that
+Cycle 2 was the damage and `omitted_poam_ids` was **empty** — the loss was
+invisible at the moment it happened, which is the one property this family's
+design exists to prevent. Cycle 3 showed it did not come back. Because §5.2
+routes `ver_history`'s rationales through the AVI, the loss reached that
 deliverable too — named there rather than silently empty, but gone from both.
+This transcript is kept here as the record of what the defect was, not as a
+description of current behaviour.
 
-Why it is not fixed here: reporting it would contradict §7's rule that a
-scoping filter produces no omission, and keeping the entry would defeat the
-period filter. **The root cause is that a human-authored rationale lives inside
-a document the seeder overwrites.** The fix is to give it a durable home —
-plausibly an `acceptance_rationale` column on `POAM`, captured when a weakness
-is marked `risk_accepted` — which is a migration and a product decision about
-where that text belongs, not a patch to this branch.
+**The fix: `acceptance_rationale TEXT NULL` on `POAM`** (migration `0080`),
+captured when a weakness is marked `risk_accepted`. This is now the durable
+source `ccf.cr26.ver.merge_accepted` prefers whenever it carries content —
+re-running the cycle above against the column no longer loses anything in
+cycle 2, because the column is not inside the document `put_document`
+overwrites.
 
-Until then: **do not move a reporting window backwards past an accepted
-vulnerability without re-authoring its rationale afterwards.**
+The authored document is **kept as a read-only fallback and is never
+removed**: every rationale authored by hand before this column existed lives
+only inside that stored document, and `merge_accepted` still reads it —
+preferring the column, falling back to the document — so none of that prior
+work is lost. Authoring a rationale directly into a document remains possible
+(`PUT /cr26-documents/avi`) but is no longer the recommended path; the column
+is.
+
+> **CORRECTION, 2026-09-18 (review round 2).** This section first said
+> "Resolved" after only the column and the gate existed. An independent
+> review measured the reviewer's own two-population reproduction below and
+> found the claim FALSE for exactly the population the fallback exists to
+> protect: a row whose rationale lives only in the stored document, never in
+> the column, was still losing it byte-for-byte identically to the original
+> defect. A read-only fallback that never promotes what it reads is not a
+> fix for that population, no matter how it reads on the column-backed one.
+> "Resolved" is left in the heading only because it is now true of BOTH
+> populations, measured separately below — see the two transcripts. Do not
+> claim it again on the strength of one population's transcript alone.
+
+**The fix has two halves, and either alone reproduces the false claim above:**
+
+1. **Migration `0080` backfills**, not merely adds the column. On upgrade it
+   walks every system's stored `avi` document and, for each accepted entry
+   with a non-blank `acceptanceRationale` whose `poams` row is still blank,
+   writes it into the column — raw SQL against `op.get_bind()`, idempotent,
+   and tolerant of a malformed stored document (one bad row must not block
+   every deployment). This closes the gap for every rationale that already
+   existed in a document when the migration ran.
+2. **The seeders promote.** `ccf.cr26.ver.merge_accepted` now reports, per
+   entry, whether its rationale was resolved from the document because the
+   column was blank (`AcceptedMerge.promoted`), and `_seed` writes each one
+   back to `POAM.acceptance_rationale` the same cycle it is read. This closes
+   the gap the migration cannot: `PUT /cr26-documents/avi` is not gated, so a
+   rationale can still be authored into the document alone AFTER migration
+   `0080` has already run, with nothing to backfill it. The first seed that
+   reads such an entry promotes it, so the column stops depending on the
+   document from that cycle on.
+
+**Both transcripts, the reviewer's exact reproduction, re-measured after both
+halves landed:**
+
+```
+Column-backed row   CYCLE 1  entries=[rationale]  CYCLE 2  entries=[]  CYCLE 3  entries=[rationale]   FIXED
+Document-only row   CYCLE 1  entries=[rationale]  CYCLE 2  entries=[]  CYCLE 3  entries=[rationale]   FIXED
+                     POAM.acceptance_rationale after CYCLE 1 (promoted from the document) = <rationale>
+```
+
+Both are pinned as automated tests, not just this manual transcript: the
+column-backed sequence in
+`tests/test_cr26_ver_seed.py::test_a_window_moved_backwards_then_forward_no_longer_destroys_the_rationale`,
+and the document-only sequence — which additionally asserts the column is
+NULL going in and non-blank after cycle 1 — in
+`test_a_document_only_rationale_is_promoted_and_then_survives_the_same_regression`.
+`test_seed_ver_history_also_promotes_a_document_only_rationale` proves the
+same promotion on `ver_history` independently, since it reads the `avi`
+document through its own call to `merge_accepted` (spec §5.2).
+
+> **CORRECTION, 2026-09-18 (review round 3).** The paragraph that used to sit
+> here called the scoping-excluded case an honest, narrow, self-healing
+> residual and left "Resolved" standing anyway. Measured, it was neither
+> narrow nor self-healing:
+>
+> ```
+> poam=3  column going in = None   (rationale authored into the avi document only)
+> CYCLE 1 (EXCLUDING window)  entries=[]  omitted=[]                             column=None
+> CYCLE 2 (including window)  entries=[]  omitted=[(3,'no acceptance rationale')] column=None
+> ```
+>
+> The FIRST excluding seed resolved the rationale from the document (to
+> correctly decide the entry leaves with no omission), then dropped it
+> without promoting it — `put_document` then overwrote the AVI with an empty
+> array, and the including cycle had nothing left to resolve. That is the
+> original §9.1 defect byte for byte, reached through the scoping path
+> instead of the window-move path, including the same invisible loss on the
+> excluding cycle. It was terminal, not self-healing: nothing about a later
+> including cycle repairs a document the excluding cycle already emptied.
+
+**Fixed in code, not by rewording.** `merge_accepted`'s excluded branch now
+promotes an authored rationale for **any id the walk saw**, including a
+scoping-excluded one, before dropping the entry — the same `_resolve_
+rationale` call the `derived` and `unplaced` branches already made, run one
+branch earlier. This is what makes the case impossible rather than merely
+documented, which is the only condition under which this section may keep
+saying "Resolved" for it. Pinned at the merge layer
+(`tests/test_cr26_ver_merge.py::test_a_scoping_excluded_row_still_promotes_its_document_rationale`)
+and reproduced end to end against the reviewer's exact sequence
+(`tests/test_cr26_ver_seed.py::test_a_scoping_excluded_row_promotes_instead_of_losing_its_rationale`),
+re-measured after the fix:
+
+```
+poam column going in = None
+CYCLE 1 (EXCLUDING window)  entries=[]         omitted=[]   column=<rationale>  (promoted this cycle)
+CYCLE 2 (including window)  entries=[rationale] omitted=[]  column=<rationale>
+```
+
+No residual case remains open. "Resolved" now covers every population this
+section has measured: column-backed, document-only, and document-only-while-
+scoping-excluded.
+
+**What keeps a NEW row from arriving without one:** `src/ccf/api/routes/
+poams.py`'s `_require_risk_accepted_gate` refuses the transition into
+`risk_accepted` unless `acceptance_rationale` carries content (a
+blank-or-missing test, not a `None` test — the same rule as §7's rules 1–5),
+alongside the owner and due-date checks it already enforced. This is why the
+column is nullable rather than `NOT NULL`: every `risk_accepted` row that
+predates the gate has no rationale, and the gate — not a database constraint —
+is what stops the gap from growing, while leaving every existing row
+editable.
+
+**The gate guards the transition, not every write that names the status.**
+Measured (review round 2, Critical I2): `PATCH {"severity": "critical"}` on a
+grandfathered row succeeded, but `PATCH {"status": "risk_accepted",
+"severity": "high"}` — exactly what a save-the-whole-form client sends when
+re-submitting a record it already has open — was refused with 409, because
+the gate originally fired on any write that *named* `risk_accepted` rather
+than the transition into it. `update_poam` now also checks the row's status
+*before* the write; the gate only runs when that transition is real.
+
+**Two further invariants close the gap between the gate and an ordinary
+edit** (review round 2, Critical I3 and minor m4), because a gate on the way
+in is not the same claim as a column that stays true afterward:
+
+- A write that blanks `acceptance_rationale` while the row is (or is
+  becoming) `risk_accepted` is refused outright, whether or not `status` is
+  in that request body — otherwise a single PATCH could silently reproduce
+  this section's own defect shape one level up: a change that invalidates
+  the row for the next deliverable render with nothing reported at the
+  moment it happens.
+- Any transition OUT of `risk_accepted` clears the column — unconditionally,
+  even when the same request also supplies a value for `acceptance_
+  rationale`. A rationale sent alongside a reopen describes the acceptance
+  being ENDED, not a new one; a caller who wants one on the way back in
+  sends it on the re-accept PATCH instead.
+
+  > **CORRECTION, 2026-09-18 (review round 4).** This rule shipped once with
+  > an escape hatch — `and "acceptance_rationale" not in data` — that this
+  > section did not flag as a narrowing. It is opened by precisely the
+  > save-the-whole-form client the "transition, not every write that names
+  > the status" rule above exists for: a client that re-sends every field on
+  > every PATCH never has an ABSENT `acceptance_rationale` key, so the hatch
+  > applied to it always. Measured end to end through the exact PATCH
+  > sequence that shape of client sends:
+  >
+  > ```
+  > accept:                          200  'Reason A (2026 Q1).'
+  > reopen via whole-form PATCH:     200  rationale = 'Reason A (2026 Q1).'  (not cleared)
+  > re-accept via whole-form PATCH:  200  rationale = 'Reason A (2026 Q1).'
+  >                                        (gate satisfied by the SUPERSEDED reason)
+  > ```
+  >
+  > The previous acceptance's reason silently justified a new decision, with
+  > nothing reported — m4's exact defect, reintroduced by trying to be
+  > lenient about who supplied the value. The hatch is gone; the rule now
+  > reads exactly as it holds.
+
+  Measured, with the hatch removed: without clearing unconditionally,
+  reopening a POA&M and later re-accepting it silently carried the PREVIOUS
+  acceptance's rationale into the NEW decision — well-formed, validating,
+  and untrue, which is this programme's dominant defect shape (a claim that
+  renders clean but does not describe what actually happened) one level
+  down from where this family spends most of its attention.
+
+**This last rule is shared, not duplicated** (review round 3, Important N2):
+`ccf.constants.poam_leaves_risk_accepted(old_status, new_status)` is the one
+place "left `risk_accepted`" is decided, called from both `update_poam`'s
+PATCH path and `ccf.ingest.scanners.reconcile_findings`'s reopen path — a
+scan finding a previously-accepted vulnerability still present sets
+`poam.status = "open"` with no operator anywhere near `update_poam` to
+notice a stale rationale riding along, and measured, it reached the exact
+same defect before this helper existed. Two independently-written copies of
+"left `risk_accepted`" is exactly the shape that has drifted apart on this
+branch before (§9.1 first "Resolved" for the wrong reason, twice) — one
+function, two call sites, is the fix.
+
+**One digit-parsing bug closed in two places** (review round 3, Important
+N3): `providerTrackingId` ids were coerced with `tid.isdigit()` before
+`int(tid)`, and `"²".isdigit()` is `True` while `int("²")` raises
+`ValueError` — measured, `isdigit()` does not guard that call, it only
+defers the crash, and in migration `0080`'s backfill an uncaught one aborts
+the whole migration. Both `ccf.cr26.ver._as_row_id` and the backfill now use
+`try/except ValueError` around `int(tid)` directly, never `.isdigit()`
+(alone or narrowed with `.isascii()` — measured, `"٣"` (Arabic-Indic three)
+is non-ASCII, `.isdigit()` is `True` for it, and `int("٣") == 3`, so an
+ASCII narrowing would silently stop accepting an id that parses correctly
+today).
 
 ## 10. Out of scope
 
