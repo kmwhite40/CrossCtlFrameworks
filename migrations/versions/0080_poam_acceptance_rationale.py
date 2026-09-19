@@ -109,11 +109,20 @@ def _backfill_from_avi_documents(bind: sa.engine.Connection) -> None:
             detail = entry.get("vulnerabilityDetail")
             tracking_id = detail.get("providerTrackingId") if isinstance(detail, dict) else None
             rationale = entry.get("acceptanceRationale")
-            if (
-                not isinstance(tracking_id, str)
-                or not tracking_id.isdigit()
-                or _is_blank(rationale)
-            ):
+            if not isinstance(tracking_id, str) or _is_blank(rationale):
+                continue
+            # try/except, never `tracking_id.isdigit()`: measured,
+            # `"²".isdigit()` is `True` while `int("²")` raises -- `isdigit()`
+            # does not guard this `int()`, it only defers the crash to here,
+            # aborting the whole migration on one hand-edited entry. The
+            # tempting `tid.isascii() and tid.isdigit()` is a regression, not
+            # a fix: `"٣"` (Arabic-Indic three) is non-ASCII with
+            # `isdigit() == True` and `int("٣") == 3` -- it parses correctly
+            # today, and narrowing to ASCII would silently stop accepting it.
+            # See `ccf.cr26.ver._as_row_id`, which has the identical shape.
+            try:
+                poam_id = int(tracking_id)
+            except ValueError:
                 continue
             bind.execute(
                 sa.text(
@@ -124,7 +133,7 @@ def _backfill_from_avi_documents(bind: sa.engine.Connection) -> None:
                 ),
                 {
                     "rationale": rationale.strip(),
-                    "poam_id": int(tracking_id),
+                    "poam_id": poam_id,
                     "system_id": system_id,
                 },
             )
