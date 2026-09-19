@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from ...assessment.engine import jobs as engine_jobs
 from ...auth import Principal
 from ...config import get_settings
-from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES
+from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
 from ...cr26.ver import is_blank
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
@@ -464,7 +464,8 @@ async def update_poam(
     obj = await _require_poam(session, pid, principal)
     data = body.model_dump(exclude_none=True)
     was_closed = obj.status == "closed"
-    was_risk_accepted = obj.status == "risk_accepted"
+    old_status = obj.status  # captured before the update loop mutates it
+    was_risk_accepted = old_status == "risk_accepted"
     if (
         "acceptance_rationale" in data
         and is_blank(data["acceptance_rationale"])
@@ -511,8 +512,7 @@ async def update_poam(
         # "resolved" flaw's vulnerability still present.
         obj.closed_on = None
     if (
-        was_risk_accepted
-        and data.get("status") not in (None, "risk_accepted")
+        poam_leaves_risk_accepted(old_status, data.get("status", old_status))
         and "acceptance_rationale" not in data
     ):
         # Any transition OUT of risk_accepted clears the rationale, unless
@@ -523,6 +523,11 @@ async def update_poam(
         # which is this programme's dominant defect shape one level down.
         # `_require_risk_accepted_gate` then requires a fresh one before the
         # row can become risk_accepted again.
+        #
+        # `poam_leaves_risk_accepted` (ccf.constants) is the ONE rule
+        # behind this, shared with ccf.ingest.scanners' reopen path -- see
+        # its docstring for why a second, hand-written copy of "left
+        # risk_accepted" here would risk drifting from that one.
         obj.acceptance_rationale = None
     await bus.emit(
         session,

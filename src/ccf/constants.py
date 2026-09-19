@@ -119,6 +119,28 @@ POAM_ACTIVE_STATUSES: tuple[str, ...] = ("open", "in_progress")
 POAM_UNRESOLVED_STATUSES: tuple[str, ...] = ("open", "in_progress", "risk_accepted")
 POAM_CLOSED_STATUSES: tuple[str, ...] = ("completed", "closed")
 
+
+def poam_leaves_risk_accepted(old_status: str, new_status: str) -> bool:
+    """True when a status transition moves a POA&M OUT of ``risk_accepted``.
+
+    The ONE rule behind "clear ``acceptance_rationale`` on any transition out
+    of ``risk_accepted``" (CR26 spec §9.1) -- expressed once here so its two
+    call sites cannot drift apart: ``ccf.api.routes.poams.update_poam`` (an
+    operator's PATCH) and ``ccf.ingest.scanners`` (a scan re-detecting a
+    vulnerability and reopening it, ``poam.status = "open"``, with no
+    operator in the loop at all to notice a stale rationale riding along).
+    Both would otherwise let a superseded acceptance's reason survive,
+    unlabelled, to be read as the justification for a DIFFERENT decision it
+    was never written for -- this project's dominant defect shape, and the
+    kind of thing that has already drifted apart twice on this one branch.
+
+    Pure and value-only, not POAM-object-shaped, so it can live in this
+    constants module without pulling ``ccf.models`` into it (``models.py``
+    already imports FROM here) -- each call site decides how to apply the
+    answer to its own object.
+    """
+    return old_status == "risk_accepted" and new_status != "risk_accepted"
+
 # ---------------------------------------------------------------------------
 # CR26 Certification vocabulary.
 #
