@@ -24,7 +24,7 @@ itself a disclosure.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...cr26.cpo import seed_cpo
+from ...cr26.incident import seed_incident
 from ...cr26.ocr import seed_ocr
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
@@ -434,4 +435,73 @@ async def seed_ocr_document(
         "missing_fields": result.missing_fields,
         "accepted_count": result.accepted_count,
         "avi_gap": result.avi_gap,
+    }
+
+
+class IncidentSeedIn(BaseModel):
+    """What only the caller can supply for an Incident Report (spec §3.1):
+    which of the three lifecycle reports this is, and the tracking id that
+    must stay consistent across all three. Everything else the seeder can
+    produce comes from continuity, not from this request body.
+
+    ``report_type`` is a ``Literal`` of the three lifecycle stages rather
+    than a plain ``str``: the module-level ``seed_incident`` deliberately
+    leaves an unrecognised ``reportType`` for the vendored schema's own
+    ``enum`` to refuse (matching this programme's posture everywhere else --
+    the schema is the authority on shape), but this request body is a
+    narrower, human-facing surface where FastAPI's own 422 is the cheaper
+    and earlier place to catch a typo than a round trip through validation.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider_tracking_id: str = Field(alias="providerTrackingId")
+    report_type: Literal["Initial", "Ongoing", "Final"] = Field(alias="reportType")
+
+
+@router.post("/systems/{system_id}/cr26-documents/incident/seed")
+async def seed_incident_document(
+    system_id: int,
+    body: IncidentSeedIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed or amend one report of one incident. Admin only.
+
+    Unlike every other CR26 seed route, this one can have more than one row
+    per system under the same ``kind`` -- ``document_key`` is
+    ``"{providerTrackingId}/{reportType}"`` (spec §1.1), so filing an
+    Ongoing report never overwrites a filed Initial. A blank tracking id, or
+    one containing ``/``, is refused with 422 rather than reaching the
+    seeder's ``ValueError`` as a 500 -- an unidentifiable or ambiguously-keyed
+    report cannot be filed at all (spec §3.1).
+
+    ``document_key``, ``carried_from``, ``carried_fields``,
+    ``missing_required`` and ``missing_advisory`` all travel beside the
+    document, for the same reason the OCR route's extra fields do: nothing
+    in the document's own JSON says which report this is among an incident's
+    three, what continuity supplied on the operator's behalf, or what still
+    blocks filing versus what is merely worth knowing. Dropping any of them
+    from this response would leave the seeder-level tests green while an
+    operator lost the only signal for each of those questions.
+    """
+    await _owned_system(session, system_id, principal)
+    try:
+        result = await seed_incident(
+            session,
+            system_id=system_id,
+            provider_tracking_id=body.provider_tracking_id,
+            report_type=body.report_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    await session.commit()
+    await session.refresh(result.document)
+    return {
+        **_full(result.document),
+        "document_key": result.document_key,
+        "carried_from": result.carried_from,
+        "carried_fields": result.carried_fields,
+        "missing_required": result.missing_required,
+        "missing_advisory": result.missing_advisory,
     }
