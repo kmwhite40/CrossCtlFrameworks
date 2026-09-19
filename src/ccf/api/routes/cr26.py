@@ -24,7 +24,7 @@ itself a disclosure.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
@@ -33,12 +33,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...cr26.cpo import seed_cpo
+from ...cr26.incident import seed_incident
 from ...cr26.ocr import seed_ocr
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
 from ...models import System
-from ...models_cr26 import Cr26Document
+from ...models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -56,9 +57,18 @@ class DocumentIn(BaseModel):
 
 
 def _summary(row: Cr26Document) -> dict[str, Any]:
-    """A row without its body, for the list view."""
+    """A row without its body, for the list view.
+
+    ``document_key`` is included even though it is ``None`` for every
+    single-instance deliverable: once a keyed one exists (the Incident
+    Report), several rows share a ``kind`` in this response, and
+    ``document_key`` is the only thing that tells them apart. It is not
+    secret -- the incident seed route already returns it in its own
+    response.
+    """
     return {
         "kind": row.kind,
+        "document_key": row.document_key,
         "is_valid": row.is_valid,
         "validation_errors": row.validation_errors,
         "ruleset_version": row.ruleset_version,
@@ -111,19 +121,55 @@ def _checked_kind(kind: str) -> str:
     return kind
 
 
+def _checked_document_key(document_key: str | None) -> str | None:
+    """Refuse a ``document_key`` too long for the column before it reaches
+    Postgres as a raw ``StringDataRightTruncationError`` (a 500), on BOTH
+    doors this route pair opens (review round 2, "M2 at the other door" --
+    measured live: a 200-character key on ``PUT`` crashed rather than
+    refused).
+
+    This is deliberately the ONLY thing this generic route checks about
+    ``document_key`` -- it stays format-agnostic (no blank/``/`` rule, no
+    assumption about ``"{x}/{y}"`` shape): a future per-instance deliverable
+    (e.g. SCN) may key itself differently from the Incident Report, and
+    baking the Incident Report's own key format into this shared route would
+    make the generic surface serve one deliverable. A length bound is not a
+    format rule, though -- it is the column's own physical limit, and every
+    caller of this route shares that one limit regardless of key shape, so
+    it belongs here even though the format rules do not.
+
+    Bounded against :data:`ccf.models_cr26.DOCUMENT_KEY_MAX_LENGTH`, read
+    from the column's own declared type -- not a second hardcoded number,
+    which is exactly what produced the crash this function exists to
+    prevent: :mod:`ccf.cr26.incident`'s tracking-id check bounds the SAME
+    column independently, for the same reason, and the two must read one
+    source rather than risk drifting apart.
+    """
+    if document_key is not None and len(document_key) > DOCUMENT_KEY_MAX_LENGTH:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"document_key is too long: {len(document_key)} characters, "
+                f"and document_key is limited to {DOCUMENT_KEY_MAX_LENGTH}"
+            ),
+        )
+    return document_key
+
+
 @router.get("/systems/{system_id}/cr26-documents")
 async def list_documents(
     system_id: int,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
-    """Every deliverable authored for this system, with its verdict, no bodies."""
+    """Every deliverable authored for this system, with its verdict, no bodies.
+
+    No ``document_key`` filter: this lists every row regardless of kind or
+    key, including every filing of every incident. ``_summary`` carries
+    ``document_key`` precisely so those rows are distinguishable here rather
+    than all reading ``"incident"`` with no way to tell them apart.
+    """
     await _owned_system(session, system_id, principal)
-    # No document_key filter and _summary does not expose document_key: a
-    # no-op today, since no route writes a keyed document yet, but once a
-    # keyed deliverable ships this will list several rows under the same
-    # kind with no way to tell them apart in this response. Revisit
-    # alongside that deliverable's own routes, not here.
     rows = (
         await session.execute(
             select(Cr26Document)
@@ -138,28 +184,37 @@ async def list_documents(
 async def get_document(
     system_id: int,
     kind: str,
+    document_key: str | None = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """The system's NULL-keyed document of ``kind``.
+    """This system's document of ``kind``, at ``document_key`` (default
+    ``None``, i.e. the NULL key).
 
-    Explicit ``document_key IS NULL`` rather than a bare ``(system_id, kind)``
-    filter: since 0081 that pair is no longer necessarily unique -- a
-    per-instance deliverable can have several rows of the same kind,
-    distinguished by key. This route is not key-aware (that belongs with
-    whichever deliverable needs it) and every deliverable it serves today is
-    NULL-keyed, so filtering explicitly for the NULL key is what keeps this
-    route's behaviour identical to before 0081 rather than leaving
-    ``.first()`` to pick arbitrarily once a keyed row exists.
+    ``document_key`` is an optional query parameter, not part of the path:
+    omitting it is unchanged from before this parameter existed. Filtering
+    ``Cr26Document.document_key == document_key`` -- rather than branching on
+    whether a key was supplied -- is what ``ccf.cr26.store.put_document``
+    already does for exactly this reason: SQLAlchemy compiles
+    ``Column == None`` to ``IS NULL``, so a caller who supplies nothing gets
+    precisely the pre-0081 ``(system_id, kind)`` row and no other, with no
+    separate code path to keep in sync with the unique constraint's own
+    NULLS NOT DISTINCT behaviour.
+
+    A per-instance deliverable (the Incident Report) has several rows under
+    one ``kind``, distinguished only by this key -- a caller must supply the
+    key that :func:`ccf.cr26.incident.seed_incident`'s own response returned
+    as ``document_key`` to read a specific filing back.
     """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
+    document_key = _checked_document_key(document_key)
     row = (
         await session.execute(
             select(Cr26Document).where(
                 Cr26Document.system_id == system_id,
                 Cr26Document.kind == kind,
-                Cr26Document.document_key.is_(None),
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()
@@ -173,22 +228,37 @@ async def put_cr26_document(
     system_id: int,
     kind: str,
     body: DocumentIn,
+    *,
+    document_key: str | None = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
-    """Author or replace this system's document of ``kind``.
+    """Author or replace this system's document of ``kind``, at
+    ``document_key`` (default ``None``, i.e. the NULL key).
 
     An invalid document is stored, not refused -- a draft is necessarily
     incomplete, and the verdict comes back with it so the author can see what
     is still missing.
+
+    ``document_key`` matters most for a per-instance deliverable: without it,
+    this route always wrote (and overwrote) the single NULL-keyed row for
+    ``kind`` regardless of which specific incident report a caller meant --
+    the exact loss keying by ``document_key`` (migration ``0081``) exists to
+    prevent, reachable through this route even though
+    :func:`ccf.cr26.incident.seed_incident` itself never writes a NULL key.
+    A caller authoring a specific incident report's content must supply the
+    same key :func:`ccf.cr26.incident.seed_incident` returned as
+    ``document_key`` -- e.g. ``?document_key=INC-1%2FInitial``.
     """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
+    document_key = _checked_document_key(document_key)
     row = await put_document(
         session,
         system_id=system_id,
         kind=kind,
         document=body.document,
+        document_key=document_key,
         updated_by=principal.email,
     )
     await session.commit()
@@ -434,4 +504,73 @@ async def seed_ocr_document(
         "missing_fields": result.missing_fields,
         "accepted_count": result.accepted_count,
         "avi_gap": result.avi_gap,
+    }
+
+
+class IncidentSeedIn(BaseModel):
+    """What only the caller can supply for an Incident Report (spec §3.1):
+    which of the three lifecycle reports this is, and the tracking id that
+    must stay consistent across all three. Everything else the seeder can
+    produce comes from continuity, not from this request body.
+
+    ``report_type`` is a ``Literal`` of the three lifecycle stages rather
+    than a plain ``str``: the module-level ``seed_incident`` deliberately
+    leaves an unrecognised ``reportType`` for the vendored schema's own
+    ``enum`` to refuse (matching this programme's posture everywhere else --
+    the schema is the authority on shape), but this request body is a
+    narrower, human-facing surface where FastAPI's own 422 is the cheaper
+    and earlier place to catch a typo than a round trip through validation.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider_tracking_id: str = Field(alias="providerTrackingId")
+    report_type: Literal["Initial", "Ongoing", "Final"] = Field(alias="reportType")
+
+
+@router.post("/systems/{system_id}/cr26-documents/incident/seed")
+async def seed_incident_document(
+    system_id: int,
+    body: IncidentSeedIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
+) -> dict[str, Any]:
+    """Seed or amend one report of one incident. Admin only.
+
+    Unlike every other CR26 seed route, this one can have more than one row
+    per system under the same ``kind`` -- ``document_key`` is
+    ``"{providerTrackingId}/{reportType}"`` (spec §1.1), so filing an
+    Ongoing report never overwrites a filed Initial. A blank tracking id, or
+    one containing ``/``, is refused with 422 rather than reaching the
+    seeder's ``ValueError`` as a 500 -- an unidentifiable or ambiguously-keyed
+    report cannot be filed at all (spec §3.1).
+
+    ``document_key``, ``carried_from``, ``carried_fields``,
+    ``missing_required`` and ``missing_advisory`` all travel beside the
+    document, for the same reason the OCR route's extra fields do: nothing
+    in the document's own JSON says which report this is among an incident's
+    three, what continuity supplied on the operator's behalf, or what still
+    blocks filing versus what is merely worth knowing. Dropping any of them
+    from this response would leave the seeder-level tests green while an
+    operator lost the only signal for each of those questions.
+    """
+    await _owned_system(session, system_id, principal)
+    try:
+        result = await seed_incident(
+            session,
+            system_id=system_id,
+            provider_tracking_id=body.provider_tracking_id,
+            report_type=body.report_type,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    await session.commit()
+    await session.refresh(result.document)
+    return {
+        **_full(result.document),
+        "document_key": result.document_key,
+        "carried_from": result.carried_from,
+        "carried_fields": result.carried_fields,
+        "missing_required": result.missing_required,
+        "missing_advisory": result.missing_advisory,
     }
