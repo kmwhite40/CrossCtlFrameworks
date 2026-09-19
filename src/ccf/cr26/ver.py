@@ -231,17 +231,28 @@ def render_all(
     )
     for poam in poams:
         # Collected unconditionally, ahead of every filter below -- PINNED in
-        # test_cr26_ver_walk.py (see the "column_rationale_is_collected"
-        # test), not merely commented. A row that is `risk_accepted` but fails
-        # render_vulnerability this cycle (blank title, say) lands in
-        # `unplaced`, not `accepted` -- and `merge_accepted`'s kept-verbatim
-        # path for such a row needs the FRESHEST column value, not last
-        # cycle's value trapped in the stored document, or a column edit
-        # made between two cycles would not reach a row that happens to be
-        # mid-repair on the cycle it is finally read. Moving this collection
-        # inside an `if state == "accepted"` branch would silently narrow it
-        # to rows that both are accepted AND rendered this cycle -- exactly
-        # the population `unplaced` exists to also cover.
+        # test_cr26_ver_walk.py by TWO tests, one per way this could be
+        # narrowed without anything else going red:
+        #
+        # * test_column_rationale_is_collected_even_for_a_row_this_cycle_cannot_place
+        #   -- moving this inside an `if state == "accepted"` branch would
+        #   silently narrow it to rows that are BOTH accepted AND rendered
+        #   this cycle, missing `unplaced` (a `risk_accepted` row whose
+        #   render failed this cycle, e.g. a blanked title).
+        # * test_column_rationale_is_collected_even_for_a_scoping_excluded_row
+        #   -- moving this below the two scoping filters (not-a-flaw,
+        #   outside-period) would miss `excluded`, which `merge_accepted`'s
+        #   excluded branch (spec §9.1) also needs it for: a rationale
+        #   authored only into the document, for a row scoping-excludes on
+        #   the very first cycle that reads it, must still be promoted into
+        #   the column before the entry is dropped -- this is what makes
+        #   that case impossible rather than merely self-healing.
+        #
+        # In both cases the FRESHEST column value is what a later branch
+        # needs, not last cycle's value trapped in the stored document -- a
+        # column edit made between two cycles must reach a row regardless of
+        # which of these three destinations (`accepted`, `unplaced`,
+        # `excluded`) it lands in this cycle.
         rationale = poam.acceptance_rationale
         if not is_blank(rationale):
             out.column_rationale[str(poam.id)] = str(rationale).strip()
@@ -295,7 +306,7 @@ def _tracking_id(entry: Any) -> str | None:
 
 
 def _as_row_id(tid: str) -> int | str:
-    """``int(tid)`` when ``tid`` is all digits, the bare string otherwise.
+    """``int(tid)`` when ``tid`` parses as one, the bare string otherwise.
 
     ``providerTrackingId`` is ``type: string`` with no numeric pattern, so a
     non-numeric id is unusual but legitimate -- especially on the authored
@@ -305,8 +316,22 @@ def _as_row_id(tid: str) -> int | str:
     dropping it here would silently drop provider content on exactly the
     "this vulnerability was remediated" path the omission rule exists to
     report.
+
+    ``try/except ValueError`` around ``int(tid)``, never ``tid.isdigit()``:
+    measured, ``"²".isdigit()`` is ``True`` while ``int("²")`` raises --
+    ``isdigit()`` guards nothing, it only defers the crash. The tempting fix,
+    ``tid.isascii() and tid.isdigit()``, is a behaviour regression rather
+    than a fix: measured, ``"٣"`` (Arabic-Indic three) is non-ASCII, has
+    ``isdigit() == True``, and ``int("٣") == 3`` -- it parses correctly
+    today, and narrowing to ASCII would silently stop accepting it. Only
+    ``try/except`` accepts exactly what ``int()`` accepts and rejects exactly
+    what it rejects, which is the property this function actually wants. Do
+    not "simplify" this back to an ``isdigit()`` check.
     """
-    return int(tid) if tid.isdigit() else tid
+    try:
+        return int(tid)
+    except ValueError:
+        return tid
 
 
 def _id_sort_key(row_id: int | str) -> tuple[bool, Any]:
@@ -519,7 +544,28 @@ def merge_accepted(
         )
 
     for tid, entry in by_id.items():
-        if tid in seen or tid in excluded:
+        if tid in seen:
+            continue
+        if tid in excluded:
+            # A SCOPING filter excluded this row (not a flaw, or outside this
+            # report's period) -- not a defect, so the entry leaves THIS
+            # document with no reason reported (spec §7), same as always.
+            # But the row still EXISTS and is still accepted; only its
+            # presence in this period's document is what scoping decided.
+            # Promoting here, before dropping the entry, is what makes §9.1's
+            # residual case impossible rather than merely documented: without
+            # it, a rationale authored only into the document, for a row
+            # excluded on the very first cycle that reads it, is resolved
+            # from the document, immediately dropped with no promotion, and
+            # the NEXT cycle's `put_document` overwrites this document with
+            # nothing left to resolve it from -- the original defect,
+            # reached through the scoping path instead of the window-move
+            # path, with the same invisible loss.
+            rationale, from_document = _resolve_rationale(tid, entry, column_rationale)
+            if rationale is not None and from_document:
+                row_id = _as_row_id(tid)
+                if isinstance(row_id, int):
+                    promoted.append((row_id, rationale))
             continue
         reasons = list(unplaced.get(tid) or ())
         if not reasons:
