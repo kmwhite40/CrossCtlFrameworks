@@ -37,8 +37,25 @@ in either direction is a real trap:
 2. :func:`ccf.catalog.canonical.canonicalize` yields a ``CanonicalId`` ->
    look it up in the control catalog. Found -> recognised (nothing added).
    Not found -> ``"no such control"``.
-3. Otherwise -> look the RAW value up in the KSI catalog by ``identifier``.
-   Found -> recognised. Not found -> ``"not a known control or KSI"``.
+3. Otherwise -> stripped and lower-cased, look the value up in the KSI
+   catalog by ``identifier`` (also lower-cased). Found -> recognised. Not
+   found -> ``"not a known control or KSI"``.
+
+   **Corrected from the design spec's original wording (review round 3,
+   I5).** The spec's §2.1 literally said "the RAW value", and an exact,
+   case-sensitive match on the raw string is what this module originally
+   shipped -- but measured against a real catalog KSI ``"KSI-PRB-01"``,
+   both ``" KSI-PRB-01 "`` (author's leading/trailing whitespace) and
+   ``"ksi-prb-01"`` (author's lowercase) came back ``"not a known control
+   or KSI"``, denying an identifier Concord actually holds. That is the
+   exact cry-wolf failure §2.1 itself warns about, in a narrower form --
+   an operator who pastes a KSI id with different casing or a stray space
+   is told it is unrecognised when it is not. The control path already
+   normalises through ``canonicalize`` before its lookup; the KSI path
+   normalises with ``.strip().lower()`` before its lookup, for the same
+   reason. The value in ``unrecognised_controls`` and in the stored
+   document are both still the entry exactly as authored -- only the
+   COMPARISON is normalised, never what is kept or reported.
 
 ``canonicalize`` handles control ids only -- measured,
 ``canonicalize('KSI-IAM-01')`` returns ``None``, exactly like an unrecognised
@@ -62,6 +79,24 @@ itself -- a blank-after-stripping or absent stored value is treated as
 OMITTED, not written blank, so the document stays invalid and the gap is
 named rather than an operator being told a filing is complete when nothing
 was actually said.
+
+**Re-categorising an SCN invalidates its stale ``changeTypeExplanation``
+(review round 3, C1).** ``changeTypeExplanation`` exists to explain why
+THIS ``changeType`` was chosen (spec §3.3) -- its meaning is inseparable
+from the category it was written to justify. This module's own docstring
+already documented re-seeding the same ``change_ref`` with a DIFFERENT
+``change_type`` as the way to amend an SCN's category. Measured before
+this fix: doing exactly that carried the OLD explanation forward verbatim
+underneath the NEW ``changeType`` and reported the document as fully
+valid -- an Adaptive-justifying sentence sitting under ``"changeType":
+"Transformative"``, an internally contradictory federal filing with
+nothing flagged. So :func:`seed_scn` now carries a stored
+``changeTypeExplanation`` only when the stored ``changeType`` still
+matches the ``change_type`` THIS call asserts; otherwise it is treated
+exactly like an absent one -- omitted and named in ``missing_advisory``,
+never rewritten or silently kept. A caller who wants the explanation to
+survive a re-categorisation must re-author it, which is correct: nobody
+has actually explained why the NEW category applies yet.
 """
 
 from __future__ import annotations
@@ -69,14 +104,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..catalog.canonical import canonicalize
 from ..models import KSI, Control
 from ..models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from .store import put_document
-from .ver import is_blank
+from .ver import has_content, is_blank
 
 #: Every optional field that is authored in practice and carried forward
 #: verbatim from the stored document at this exact key when this seed call
@@ -164,7 +199,8 @@ async def _resolve_impacted_controls(
 ) -> list[tuple[str, str]]:
     """Name every ``impactedControls`` entry this catalog does not
     recognise, in the resolution order spec §2.1 fixes exactly (see the
-    module docstring for why the order matters). Never refuses: this only
+    module docstring for why the order matters, and for review round 3
+    I5's correction to step 3's matching rule). Never refuses: this only
     NAMES what it could not resolve -- the caller is responsible for keeping
     every entry in the stored document verbatim regardless of this
     function's verdict, which :func:`seed_scn` does by building ``document``
@@ -177,17 +213,31 @@ async def _resolve_impacted_controls(
     is not a ``list`` is treated as naming nothing to resolve, matching this
     module's posture everywhere else of never raising over shape the
     vendored schema itself is the authority on.
+
+    A non-``str`` ENTRY inside that list is reported by its **position**
+    (``"impactedControls[{index}]"``, matching
+    :func:`ccf.cr26.ver.merge_accepted`'s identical locator shape for an
+    entry with no usable identity), not by ``str(entry)`` (review round 3,
+    M2). Measured before this fix: an authored ``None`` or ``["x"]`` in the
+    list was reported as the literal string ``"None"`` or ``"['x']"`` --
+    Python's own ``repr``, which appears nowhere in the document an
+    operator is actually reading, under the reason ``"identifies nothing"``
+    -- itself the wrong reason, since a non-string entry is a TYPE error the
+    vendored schema's own ``items: {"type": "string"}`` already names in
+    ``validation_errors``, not an empty identifier.
     """
     if not isinstance(entries, list):
         return []
     unrecognised: list[tuple[str, str]] = []
-    for entry in entries:
-        if is_blank(entry):
-            raw = entry if isinstance(entry, str) else str(entry)
-            unrecognised.append((raw, "identifies nothing"))
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, str):
+            unrecognised.append(
+                (f"impactedControls[{index}]", "not a string -- see validation_errors")
+            )
             continue
-        # `is_blank` above already guarantees `entry` is a non-blank `str`
-        # at this point (see its own docstring: non-strings are blank).
+        if is_blank(entry):
+            unrecognised.append((entry, "identifies nothing"))
+            continue
         canonical = canonicalize(entry)
         if canonical is not None:
             found_control = (
@@ -196,10 +246,22 @@ async def _resolve_impacted_controls(
                 )
             ).scalar_one_or_none()
             if found_control is None:
-                unrecognised.append((entry, "no such control"))
+                unrecognised.append((entry, "not a known control"))
             continue
+        # Stripped and case-folded on BOTH sides before the lookup (review
+        # round 3, I5): matching the RAW value byte-for-byte denied a
+        # genuine catalog KSI over nothing but an author's whitespace or
+        # casing, and the catalog's own `identifier` column is not
+        # guaranteed lower-case, so only folding `entry`'s side would still
+        # miss a real match. `entry` itself -- unstripped, original case --
+        # is still what is reported and what stays in the stored document;
+        # only the comparison changes.
         found_ksi = (
-            await session.execute(select(KSI.id).where(KSI.identifier == entry))
+            await session.execute(
+                select(KSI.id).where(
+                    func.lower(KSI.identifier) == entry.strip().lower()
+                )
+            )
         ).scalar_one_or_none()
         if found_ksi is None:
             unrecognised.append((entry, "not a known control or KSI"))
@@ -251,9 +313,15 @@ async def seed_scn(
     Re-seeding the same ``change_ref`` is how a filed SCN is amended: it
     reads whatever is already stored at that exact key as "authored" and
     keeps every field of it, refreshing only ``changeType`` from this call's
-    own argument. There is no content parameter here at all -- every other
-    field this function can populate comes from what was already stored at
-    this key.
+    own argument -- with ONE exception: a stored ``changeTypeExplanation``
+    is kept only when the stored ``changeType`` still matches this call's
+    ``change_type`` (spec §3.3, review round 3 C1). Re-categorising an SCN
+    -- passing a DIFFERENT ``change_type`` than what is currently stored --
+    is therefore how an operator changes an SCN's category, and doing so
+    drops the old explanation rather than leaving a Transformative-labelled
+    filing justified by an Adaptive-era sentence. There is no content
+    parameter here at all otherwise -- every other field this function can
+    populate comes from what was already stored at this key.
     """
     document_key = _validate_change_ref(change_ref)
     current = await _current_document(session, system_id, document_key)
@@ -279,12 +347,31 @@ async def seed_scn(
         document["changeDescription"] = description
 
     # The eight authored-in-practice optional fields (spec §3.3): preserved
-    # verbatim when stored at this key already; otherwise absent and named
-    # as advisory. No continuity source to fall back to -- see the module
-    # docstring on why there is no cross-key carry here.
+    # verbatim when stored at this key already and actually carries
+    # something (`has_content`, not a bare `in` test -- review round 3,
+    # I2: a field present but blank, e.g. `"reason": ""`, carried no more
+    # information than an absent one, and a bare `in` check let it through
+    # unnamed). Otherwise absent and named as advisory. No continuity
+    # source to fall back to -- see the module docstring on why there is
+    # no cross-key carry here.
     missing_advisory: list[str] = []
     for field_name in _AUTHORED_FIELDS:
-        if field_name in current:
+        if field_name == "changeTypeExplanation":
+            # Review round 3, C1: this field explains why THIS changeType
+            # was chosen, so it is only still true when the stored
+            # changeType matches the changeType THIS call asserts -- see
+            # the module docstring for the contradiction re-categorising
+            # without this guard produced. A stale explanation is treated
+            # exactly like an absent one: omitted and named here, never
+            # rewritten or silently carried under a category it no longer
+            # justifies.
+            explanation = current.get("changeTypeExplanation")
+            if current.get("changeType") == change_type and has_content(explanation):
+                document[field_name] = explanation
+            else:
+                missing_advisory.append(field_name)
+            continue
+        if field_name in current and has_content(current[field_name]):
             document[field_name] = current[field_name]
         else:
             missing_advisory.append(field_name)

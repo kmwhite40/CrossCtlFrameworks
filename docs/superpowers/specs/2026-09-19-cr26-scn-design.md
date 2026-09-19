@@ -90,9 +90,33 @@ So, per entry:
 
 1. Blank after stripping → reported as `"identifies nothing"`.
 2. `canonicalize` yields a `CanonicalId` → look it up in the control catalog.
-   Found → recognised. Not found → `"no such control"`.
-3. Otherwise → look the raw value up in the KSI catalog by `identifier`.
-   Found → recognised. Not found → `"not a known control or KSI"`.
+   Found → recognised. Not found → `"not a known control"`.
+
+   **Correction (review round 3, M5): originally `"no such control"`.**
+   That asserts the control does not exist, where step 3's own wording is
+   deliberately non-committal (`"not a known control or KSI"` — Concord
+   simply does not hold it). Concord not holding an identifier is not the
+   same claim as the identifier not existing at all — the control could be
+   real and simply outside this catalog, exactly the posture "check, name,
+   never refuse" already takes for step 3. The two reasons should read as
+   one policy, not two.
+3. Otherwise → stripped and lower-cased, look the value up in the KSI catalog
+   by `identifier` (also lower-cased for the comparison). Found → recognised.
+   Not found → `"not a known control or KSI"`.
+
+**Correction (review round 3, I5): step 3 originally said "look the raw value
+up".** That is wrong. Measured against a real catalog KSI `"KSI-PRB-01"`, an
+exact byte-for-byte match on the raw string reports `" KSI-PRB-01 "` (an
+author's stray whitespace) and `"ksi-prb-01"` (an author's lowercase) both as
+`"not a known control or KSI"` — denying an identifier Concord actually
+holds. That is the exact cry-wolf failure this section itself warns about
+one paragraph up, in a narrower form: an operator who pastes a real KSI id
+with different casing or a leading space is told it is unrecognised. Step 2's
+control path already normalises through `canonicalize` before its lookup;
+step 3 must normalise the same way, with `.strip().lower()` on both the
+entry and the catalog's `identifier` before comparing. What is *reported* in
+`unrecognised_controls` and what is *kept* in the stored document are both
+still the entry exactly as authored — only the comparison is normalised.
 
 Step 3 catches both a genuine KSI and anything `canonicalize` cannot parse,
 which is the same bucket for a reason: we cannot tell a KSI we do not hold from

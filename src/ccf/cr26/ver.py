@@ -66,6 +66,33 @@ def is_blank(value: Any) -> bool:
     return not isinstance(value, str) or not value.strip()
 
 
+def has_content(value: Any) -> bool:
+    """True when a stored authored value carries something worth carrying
+    forward -- the question :func:`ccf.cr26.incident.seed_incident`'s and
+    :func:`ccf.cr26.scn.seed_scn`'s optional-field carry loops both need to
+    ask, distinct from :func:`is_blank` because it must answer correctly for
+    a STRUCTURED authored field too.
+
+    A ``str`` is tested by :func:`is_blank`: ``""`` or whitespace-only
+    carries nothing, the exact question already asked of
+    ``changeDescription``/``certificationPackageOverviewUri``-shaped
+    fields. But :func:`is_blank` treats EVERY non-string as blank by
+    design (see its own docstring) -- applying it directly to a structured
+    authored field such as ``timeline``, ``potentialImpact`` or
+    ``planAndTimeline`` (all objects) or ``affectedAgencies`` or
+    ``impactedControls`` (both arrays) would misreport a genuinely
+    authored one as absent on every single call, which is a worse defect
+    than the one this function exists to fix: a carry loop that uses
+    ``is_blank`` unguarded for a non-string field silently never carries it
+    at all, and no test that only exercises string fields would ever catch
+    that. So: non-string values are "has content" whenever they are not
+    literally ``None`` (a stored JSON ``null``), never blank-tested.
+    """
+    if isinstance(value, str):
+        return not is_blank(value)
+    return value is not None
+
+
 def _first_written(*values: Any) -> str | None:
     """The first value with content, stripped -- or ``None`` if none has any."""
     for value in values:

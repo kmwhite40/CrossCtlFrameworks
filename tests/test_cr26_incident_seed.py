@@ -304,6 +304,67 @@ async def test_authored_field_on_this_report_beats_carried_value_from_prior() ->
         await _delete_org(_org_id)
 
 
+# --- review round 3, I2: a blank authored field carries no information -----
+# --- (found on ccf.cr26.scn, fixed here too -- the identical shape) -------
+
+
+async def test_a_blank_authored_field_on_this_report_is_treated_as_absent_and_named() -> None:
+    """Review round 3, I2. The carry loop used a bare ``field_name in
+    current`` test, so a field present but blank -- ``""`` on
+    ``rootCause`` here -- was carried into the document as though it were
+    genuine content, and named nowhere. ``has_content``, not a bare ``in``
+    test, must guard both branches of the carry loop.
+
+    MUTATION: reverting the ``current`` branch of the carry loop in
+    ``seed_incident`` to a bare ``field_name in current`` check turns this
+    red -- the blank ``rootCause`` would be carried and
+    ``missing_advisory`` would not name it.
+    """
+    _org_id, system_id = await _system("incident-blank-current-field")
+    tid = "INC-BLANK-CURRENT"
+    try:
+        await _author(system_id, f"{tid}/Initial", {"rootCause": "   "})
+        async with session_scope() as s:
+            result = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Initial"
+            )
+        assert "rootCause" not in result.document.document
+        assert "rootCause" in result.missing_advisory
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_a_blank_field_in_a_prior_report_is_not_carried_forward() -> None:
+    """Review round 3, I2, the ``prior`` half of the same fix: a blank
+    field in the closest prior report must not be carried into a later
+    report either, and must not count as "continuity supplied something"
+    for ``carried_from``/``carried_fields``.
+
+    MUTATION: reverting the ``prior`` branch of the carry loop to a bare
+    ``field_name in prior`` check turns this red -- the blank ``rootCause``
+    would be carried from the Initial into the Ongoing and reported as
+    carried.
+    """
+    _org_id, system_id = await _system("incident-blank-prior-field")
+    tid = "INC-BLANK-PRIOR"
+    try:
+        await _author(system_id, f"{tid}/Initial", {"rootCause": "   "})
+        async with session_scope() as s:
+            result = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Ongoing"
+            )
+        assert "rootCause" not in result.document.document
+        assert "rootCause" in result.missing_advisory
+        assert "rootCause" not in result.carried_fields
+        # Nothing carry-worthy was actually found in the prior report, so
+        # `carried_from` must stay `None` -- matching
+        # `test_carried_from_stays_none_when_a_prior_report_exists_but_has_
+        # nothing_to_offer`'s existing pin of this same rule.
+        assert result.carried_from is None
+    finally:
+        await _delete_org(_org_id)
+
+
 # --- requirement 5: a blank or `/`-containing tracking id is refused -------
 
 

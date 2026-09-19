@@ -28,12 +28,15 @@ having no history table by saying change history is :mod:`ccf.api.audit`'s
 job -- so every write records an audit event here, ``create`` on the first
 and ``update`` on an overwrite.
 
-``document_key`` defaults to ``None`` and every deliverable shipped as of
-0081 (``cpo``, ``sdr``, ``ocr``, ``vdr``, ``avi``, ``ver_history``) always
-passes ``None`` -- their upsert identity stays exactly ``(system_id, kind)``,
-unchanged from before 0081. A non-``None`` key is reserved for a per-instance
-deliverable no shipped code writes yet; see :mod:`ccf.models_cr26` and
-migration ``0081_cr26_document_key``.
+``document_key`` defaults to ``None`` and every single-instance deliverable
+(``cpo``, ``sdr``, ``ocr``, ``vdr``, ``avi``, ``ver_history``) always passes
+``None`` -- their upsert identity stays exactly ``(system_id, kind)``,
+unchanged from before 0081. A non-``None`` key is for a per-instance
+deliverable, of which two now ship: the Incident Report
+(:mod:`ccf.cr26.incident`, ``"{providerTrackingId}/{reportType}"``) and the
+Significant Change Notification (:mod:`ccf.cr26.scn`, ``change_ref``
+verbatim). See :mod:`ccf.models_cr26` and migration
+``0081_cr26_document_key``.
 That compensating control is the reason there is no history table; it is not
 optional decoration. The event goes through
 :func:`ccf.api.audit.record_event` and never by constructing ``AuditLog``

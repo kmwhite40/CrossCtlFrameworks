@@ -35,7 +35,7 @@ from ccf.api.main import create_app
 from ccf.api.routes import cr26 as cr26_routes
 from ccf.auth import Principal
 from ccf.cr26 import scn as scn_module
-from ccf.cr26.scn import seed_scn
+from ccf.cr26.scn import ScnSeedResult, seed_scn
 from ccf.cr26.store import put_document
 from ccf.db import session_scope
 from ccf.models import KSI, Control, Organization, System
@@ -201,6 +201,15 @@ async def test_a_blank_change_description_is_omitted_and_invalid_for_exactly_tha
         reasons = dict(result.missing_required)
         assert "changeDescription" in reasons
         assert "certificationPackageOverviewUri" not in reasons
+        # Regression guard for review round 3, I2: `has_content` treats a
+        # STRUCTURED authored field (a dict, here) as content whenever it
+        # is not literally `None` -- it must never be blank-tested the way
+        # a string is, or this real, non-empty `planAndTimeline` would be
+        # silently dropped and reported as missing_advisory instead.
+        assert result.document.document["planAndTimeline"] == {
+            "summary": "Patch and redeploy over a weekend."
+        }
+        assert "planAndTimeline" not in result.missing_advisory
     finally:
         await _delete_org(_org_id)
 
@@ -299,6 +308,117 @@ async def test_ia_02_resolves_where_ia_2_exists_proving_canonicalize_is_applied(
             await _delete_control(control_id)
 
 
+# --- review round 3, C1: changeTypeExplanation cannot outlive its category -
+
+
+async def test_change_type_explanation_survives_re_seeding_with_the_same_change_type() -> None:
+    """The un-broken half of C1: re-seeding with the SAME ``change_type`` as
+    what is already stored must still carry a genuinely-matching
+    ``changeTypeExplanation`` forward -- the fix must not turn "amend with
+    no category change" into "drop the explanation every time".
+
+    MUTATION: requiring ``current.get("changeType") == change_type`` when
+    ``current`` never had a stored ``changeType`` in the first place would
+    ALSO break this test if the precondition below did not author
+    ``changeType`` alongside the explanation -- which is why it does.
+    """
+    _org_id, system_id = await _system("scn-explanation-same-category")
+    ref = "CHG-EXPLANATION-SAME"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {
+                "certificationPackageOverviewUri": CPO_URI,
+                "changeDescription": "Rotating an expiring TLS certificate.",
+                "changeType": "Adaptive",
+                "changeTypeExplanation": "Adaptive because it does not alter the boundary.",
+            },
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert (
+            result.document.document["changeTypeExplanation"]
+            == "Adaptive because it does not alter the boundary."
+        )
+        assert "changeTypeExplanation" not in result.missing_advisory
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_re_categorising_an_scn_drops_its_stale_change_type_explanation() -> None:
+    """C1, the Critical the task brief's coordinator found. Measured before
+    this fix: re-seeding ``"CHG-FLIP"`` first as ``Adaptive`` (with an
+    explanation arguing exactly that) and then as ``Transformative`` --
+    the documented way to amend an SCN's category -- carried the OLD
+    explanation forward under the NEW category and reported the document
+    fully valid: a ``changeType`` of ``"Transformative"`` sitting over a
+    sentence arguing ``"Adaptive"``, an internally contradictory federal
+    filing with nothing flagged.
+
+    MUTATION: removing the
+    ``current.get("changeType") == change_type`` guard (i.e. treating
+    ``changeTypeExplanation`` like every other ``_AUTHORED_FIELDS`` member)
+    reintroduces exactly that -- the assertions below on
+    ``changeTypeExplanation`` and ``missing_advisory`` would fail.
+    """
+    _org_id, system_id = await _system("scn-recategorise-flip")
+    ref = "CHG-FLIP"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {
+                "certificationPackageOverviewUri": CPO_URI,
+                "changeDescription": "Reworking the ingress boundary.",
+                "changeType": "Adaptive",
+                "changeTypeExplanation": "Adaptive because it does not alter the boundary.",
+            },
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Transformative"
+            )
+        assert result.document.document["changeType"] == "Transformative"
+        assert "changeTypeExplanation" not in result.document.document
+        assert "changeTypeExplanation" in result.missing_advisory
+        # The document is otherwise complete -- proving the fix reports an
+        # honestly-thin filing, not a broken one, and did not just make
+        # everything invalid as a side effect.
+        assert result.document.document["changeDescription"] == "Reworking the ingress boundary."
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_change_type_explanation_absent_is_named_in_missing_advisory() -> None:
+    """M3: ``changeTypeExplanation`` is called out by name in spec §3.3 --
+    when nothing was ever authored for it (the ordinary case, distinct from
+    C1's stale-explanation case above), it must still be named, not
+    silently swallowed by the branch C1 added.
+
+    MUTATION: the C1 branch's ``else`` clause failing to append to
+    ``missing_advisory`` turns this red.
+    """
+    _org_id, system_id = await _system("scn-explanation-never-authored")
+    ref = "CHG-NO-EXPLANATION"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {"certificationPackageOverviewUri": CPO_URI, "changeDescription": "A minor change."},
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert "changeTypeExplanation" not in result.document.document
+        assert "changeTypeExplanation" in result.missing_advisory
+    finally:
+        await _delete_org(_org_id)
+
+
 # --- requirement 5: a blank or overlong change_ref is refused --------------
 
 
@@ -335,14 +455,60 @@ async def test_an_overlong_change_ref_is_refused_at_the_seeder() -> None:
         await _delete_org(_org_id)
 
 
-def test_the_scn_seeders_own_bound_and_the_generic_routes_bound_share_one_source() -> None:
-    """Confirms ``ccf.cr26.scn`` and ``ccf.api.routes.cr26`` both import
-    ``ccf.models_cr26.DOCUMENT_KEY_MAX_LENGTH`` rather than either
-    restating ``128`` -- see the module docstring and spec's own warning
-    against exactly that drift.
+async def test_a_change_ref_padded_to_exactly_the_bound_after_stripping_is_accepted() -> None:
+    """I6: the strip in ``_validate_change_ref`` runs BEFORE the length
+    check and BEFORE ``document_key`` is built, so a ``change_ref`` that is
+    only overlong because of padding -- not because its meaningful content
+    exceeds the bound -- is accepted, and accepted at EXACTLY
+    ``DOCUMENT_KEY_MAX_LENGTH`` (a length LIMIT, not an arbitrary shorter
+    cutoff).
+
+    MUTATION: stripping after measuring length, or not stripping at all
+    before building ``document_key``, either wrongly refuses this in-bounds
+    ref (if the length check also uses the unstripped value) or -- the more
+    serious failure -- lets an over-width ``document_key`` reach Postgres
+    as a raw ``StringDataRightTruncationError`` instead of this seeder's own
+    clean ``ValueError``, exactly what ``ccf.cr26.incident``'s identical
+    check was written to prevent.
     """
-    assert scn_module.DOCUMENT_KEY_MAX_LENGTH is DOCUMENT_KEY_MAX_LENGTH
-    assert cr26_routes.DOCUMENT_KEY_MAX_LENGTH is DOCUMENT_KEY_MAX_LENGTH
+    core = "K" * DOCUMENT_KEY_MAX_LENGTH
+    padded = f"  {core}  "
+    _org_id, system_id = await _system("scn-strip-boundary")
+    try:
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=padded, change_type="Adaptive"
+            )
+        assert result.document_key == core
+        assert len(result.document_key) == DOCUMENT_KEY_MAX_LENGTH
+    finally:
+        await _delete_org(_org_id)
+
+
+def test_the_scn_seeders_own_bound_matches_the_document_key_columns_declared_width() -> None:
+    """I3: a review round 3 finding about the ORIGINAL version of this test,
+    which asserted ``scn_module.DOCUMENT_KEY_MAX_LENGTH is
+    DOCUMENT_KEY_MAX_LENGTH`` against a second import of the very same
+    name. That assertion could never fail: ``DOCUMENT_KEY_MAX_LENGTH`` is
+    ``128``, CPython interns every ``int`` in ``-5..256``, and a hardcoded
+    ``DOCUMENT_KEY_MAX_LENGTH = 128`` dropped into ``ccf.cr26.scn`` in
+    place of the import is measured to leave that identity check passing.
+
+    This version instead asserts against the ACTUAL source of truth -- the
+    ``document_key`` column's own declared width,
+    ``Cr26Document.__table__.c.document_key.type.length`` -- so the claim
+    becomes "this module's bound tracks the column", which is what
+    actually matters: if the column's width is ever changed, ``ccf.cr26.
+    scn.DOCUMENT_KEY_MAX_LENGTH`` must move with it or Postgres, not this
+    module's own check, becomes the thing that refuses an overlong key.
+
+    MUTATION: hardcoding a DIFFERENT number in ``ccf.cr26.scn`` (not merely
+    the CURRENT column width, which no test can distinguish from a correct
+    import by value alone -- see above) turns this red.
+    """
+    column_width = Cr26Document.__table__.c.document_key.type.length
+    assert column_width == scn_module.DOCUMENT_KEY_MAX_LENGTH
+    assert column_width == cr26_routes.DOCUMENT_KEY_MAX_LENGTH
 
 
 # --- requirement 6: every ScnSeedResult field crosses the HTTP boundary ----
@@ -364,12 +530,25 @@ class _Session:
 
 async def test_the_scn_route_reports_every_result_field_to_the_caller() -> None:
     """Spec §5 requirement 6 (task brief: deleting a result field from a
-    route on this module left the whole suite green). Every field of
-    ``ScnSeedResult`` must cross the HTTP boundary: ``document_key``,
-    ``missing_required``, ``missing_advisory`` and ``unrecognised_controls``.
+    route on this module left the whole suite green).
 
-    MUTATION: dropping any one key from the route's response dict makes the
-    corresponding assertion below ``KeyError``/fail.
+    The key-presence check is asserted MECHANICALLY against
+    ``ScnSeedResult.__dataclass_fields__`` (review round 3, I4) rather than
+    a hand-written list of field names: a hand-written list only proves
+    that whatever the author remembered to type crosses the boundary, and
+    review round 3 measured that dropping the route's explicit
+    ``"document_key": result.document_key`` line specifically leaves this
+    kind of test green anyway, because ``_full()`` already emits
+    ``document_key`` from the row itself -- the two happen to agree, which
+    hid the missing wiring rather than proving it present. Asserting
+    against the dataclass itself means a FUTURE field added to
+    ``ScnSeedResult`` and never wired into the route fails this test
+    automatically, without anyone needing to remember to extend a
+    hand-maintained set.
+
+    MUTATION: dropping ``"missing_required"`` (a field ``_full()`` has no
+    other source for, unlike ``document_key``) from the route's response
+    dict turns this red.
     """
     org_id, system_id = await _system("scn-route-fields")
     ref = "CHG-ROUTE-FIELDS"
@@ -390,6 +569,8 @@ async def test_the_scn_route_reports_every_result_field_to_the_caller() -> None:
             )
         assert resp.status_code == 200, resp.text
         body = resp.json()
+        missing_keys = set(ScnSeedResult.__dataclass_fields__) - set(body)
+        assert not missing_keys, f"ScnSeedResult fields missing from the response: {missing_keys}"
         assert body["kind"] == "scn"
         assert body["document_key"] == ref
         required_names = {name for name, _reason in body["missing_required"]}
@@ -427,3 +608,182 @@ async def test_a_blank_change_ref_is_422_at_the_route() -> None:
         assert resp.status_code == 422, resp.text
     finally:
         await _delete_org(org_id)
+
+
+# --- review round 3: I1, I2 -- blank authored content is absent content ----
+
+
+async def test_a_blank_certification_package_overview_uri_is_treated_as_absent() -> None:
+    """I1: ``is_blank``, not ``uri is not None``, guards
+    ``certificationPackageOverviewUri``. A stored value of all whitespace
+    must be treated exactly like an absent one, not carried through as a
+    "complete" filing with an empty package overview.
+
+    MUTATION: changing the guard in ``seed_scn`` from ``is_blank(uri)`` to
+    ``uri is None`` turns this red -- a whitespace-only stored URI would
+    then be carried and this one required field would look satisfied.
+    """
+    _org_id, system_id = await _system("scn-blank-uri")
+    ref = "CHG-BLANK-URI"
+    try:
+        await _author(
+            system_id, ref, {"certificationPackageOverviewUri": "   ", "changeDescription": "x"}
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert "certificationPackageOverviewUri" not in result.document.document
+        reasons = dict(result.missing_required)
+        assert "certificationPackageOverviewUri" in reasons
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_a_blank_authored_optional_field_is_treated_as_absent_and_named() -> None:
+    """I2: ``has_content``, not a bare ``field_name in current`` test,
+    guards the eight authored-in-practice optional fields. A stored ``""``
+    for ``reason`` carries no more information than an absent one, and must
+    be named in ``missing_advisory`` rather than silently carried.
+
+    MUTATION: reverting the carry loop to a bare ``field_name in current``
+    check turns this red -- the blank ``reason`` would be carried into the
+    document and never named.
+    """
+    _org_id, system_id = await _system("scn-blank-optional-field")
+    ref = "CHG-BLANK-REASON"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {
+                "certificationPackageOverviewUri": CPO_URI,
+                "changeDescription": "A change.",
+                "reason": "   ",
+            },
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert "reason" not in result.document.document
+        assert "reason" in result.missing_advisory
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- review round 3: I5 -- the KSI-catalog lookup normalises like control --
+# --- ids already do, and M5 -- step 2's wording is non-committal too ------
+
+
+async def test_a_ksi_id_with_different_casing_or_whitespace_still_resolves() -> None:
+    """I5: step 3 originally matched the RAW value byte-for-byte, which
+    denied a real catalog KSI over nothing but the author's whitespace or
+    casing -- see the module docstring's correction and the design spec's
+    own §2.1 correction. Both variants below must resolve.
+
+    MUTATION: removing ``.strip().lower()`` from either side of the
+    comparison in ``_resolve_impacted_controls`` turns this red.
+    """
+    await _add_ksi("KSI-SCN-CASE-1")
+    _org_id, system_id = await _system("scn-ksi-case-insensitive")
+    ref = "CHG-KSI-CASE"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {
+                "certificationPackageOverviewUri": CPO_URI,
+                "changeDescription": "Testing KSI matching normalisation.",
+                "impactedControls": [" KSI-SCN-CASE-1 ", "ksi-scn-case-1"],
+            },
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert result.unrecognised_controls == []
+        # Kept verbatim -- only the COMPARISON is normalised, never what is
+        # reported or what stays in the stored document.
+        assert result.document.document["impactedControls"] == [
+            " KSI-SCN-CASE-1 ",
+            "ksi-scn-case-1",
+        ]
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_a_canonicalisable_but_uncatalogued_control_id_is_named_not_a_known_control() -> (
+    None
+):
+    """M5: step 2's not-found reason is ``"not a known control"``, aligned
+    with step 3's deliberately non-committal wording -- see the module
+    docstring and the design spec's own correction. ``"YY-01"``
+    canonicalizes cleanly (a valid family-number shape) but nothing seeds
+    it into the catalog for this test, so it must fall into step 2's
+    not-found branch and use step 2's reason, not step 3's.
+
+    MUTATION: reverting the reason string back to ``"no such control"``
+    turns this red.
+    """
+    _org_id, system_id = await _system("scn-uncatalogued-control")
+    ref = "CHG-UNCATALOGUED"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {
+                "certificationPackageOverviewUri": CPO_URI,
+                "changeDescription": "Testing an uncatalogued but well-formed control id.",
+                "impactedControls": ["YY-01"],
+            },
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert result.unrecognised_controls == [("YY-01", "not a known control")]
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- review round 3, M2: a non-string entry is named by position, never ----
+# --- by its Python repr -----------------------------------------------
+
+
+async def test_a_non_string_impacted_controls_entry_is_named_by_position_not_repr() -> None:
+    """M2: a non-string entry -- reachable only via the generic PUT route or
+    (as here) by authoring the row directly, since the vendored schema's
+    own ``items: {"type": "string"}`` already refuses it in
+    ``validation_errors`` -- used to be reported as Python's own ``repr``
+    (``"None"``, ``"['nested']"``) under the wrong reason ("identifies
+    nothing"), text that appears nowhere in the document an operator is
+    actually reading. It must be reported by POSITION instead.
+
+    MUTATION: reverting to ``str(entry)`` for a non-string entry, or
+    reverting the reason back to ``"identifies nothing"``, turns this red.
+    """
+    _org_id, system_id = await _system("scn-non-string-entry")
+    ref = "CHG-NON-STRING"
+    try:
+        await _author(
+            system_id,
+            ref,
+            {
+                "certificationPackageOverviewUri": CPO_URI,
+                "changeDescription": "Testing a malformed impactedControls entry.",
+                "impactedControls": [None, ["nested"]],
+            },
+        )
+        async with session_scope() as s:
+            result = await seed_scn(
+                s, system_id=system_id, change_ref=ref, change_type="Adaptive"
+            )
+        assert result.unrecognised_controls == [
+            ("impactedControls[0]", "not a string -- see validation_errors"),
+            ("impactedControls[1]", "not a string -- see validation_errors"),
+        ]
+        # Still kept verbatim, exactly like every other unrecognised entry.
+        assert result.document.document["impactedControls"] == [None, ["nested"]]
+    finally:
+        await _delete_org(_org_id)
