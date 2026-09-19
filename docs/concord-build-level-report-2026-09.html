@@ -727,7 +727,7 @@
       <li><strong>Gap assessment and Trust Center depth</strong> — now possible, because the ontology finally gives them something to compare and something to publish.</li>
       <li><strong>Assessment depth</strong> — objective-level SAR findings, a generated OSCAL assessment plan, and a FedRAMP Rev 5 baseline overlay with assigned parameter values.</li>
       <li><strong>Identity and crypto hardening</strong> — MFA and PIV-CAC, SSO hardening, KMS-backed key rotation and FIPS-validated cryptography.</li>
-      <li><strong>CR26 completeness</strong> — a durable home for the acceptance rationale, and a source for the rule identifiers each deliverable must cite. FedRAMP publishes roughly 246 of them as prose in a README and in no machine-readable form, so today that field ships empty rather than guessed.</li>
+      <li><strong>CR26 completeness</strong> — the Security Decision Record's <span class="mono">fedRampRequirements</span> is the last unfilled field on a shipped deliverable. It is not blocked on sourcing FedRAMP's rule identifiers, as first thought: the schema leaves that id an unconstrained string and asks, per requirement, for a written description of how the provider meets it. That is authored work, not generated — the same shape as the narrative and rationale fields already handled — so it needs an authoring surface, not a lookup table.</li>
       <li><strong>Integrations</strong> — eMASS, Jira, and wiring the typed AI action path to the organization's own gateway.</li>
     </ul>
 
