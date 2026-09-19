@@ -19,7 +19,7 @@ from ccf.ingest import (
     normalize_severity,
     parse_scan,
 )
-from ccf.ingest.scanners import parse_nessus
+from ccf.ingest.scanners import ScanFinding, parse_nessus, reconcile_findings
 from ccf.models import POAM, Organization, ScanIngestion, System
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -212,6 +212,55 @@ async def test_ingest_creates_updates_reopens_and_autocloses() -> None:
             await s.execute(select(ScanIngestion).where(ScanIngestion.system_id == sid))
         ).scalars().all()
         assert len(ingestions) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_scan_reopening_a_risk_accepted_poam_clears_its_rationale() -> None:
+    """N2 (review round 3): the routine reopen path -- a scan finding the
+    same vulnerability still present -- must obey the same rule as an
+    operator's PATCH (ccf.api.routes.poams.update_poam): a superseded
+    acceptance's rationale must not silently survive to be read as the
+    justification for whatever this reopened row's NEXT disposition is.
+
+    Shared via `ccf.constants.poam_leaves_risk_accepted`, not a second,
+    independently-written copy of "left risk_accepted" -- this test proves
+    the RULE, not just the PATCH route, since a scan reopening a row never
+    goes anywhere near `update_poam` at all.
+    """
+    finding = ScanFinding(
+        scanner="nessus",
+        native_id="99099",
+        title="Accepted then rediscovered",
+        severity="high",
+        asset="reaccept01.example.gov",
+    )
+    sid = await _fresh_system("ScanSysReopenAccepted")
+    async with session_scope() as s:
+        poam = POAM(
+            system_id=sid,
+            title=finding.title,
+            severity=finding.severity,
+            status="risk_accepted",
+            source="scan",
+            scanner=finding.scanner,
+            finding_uid=finding.fingerprint(),
+            acceptance_rationale="Compensating control, since superseded.",
+        )
+        s.add(poam)
+        await s.flush()
+        poam_id = poam.id
+
+    async with session_scope() as s:
+        result = await reconcile_findings(
+            s, system_id=sid, scanner="nessus", findings=[finding]
+        )
+        assert result.reopened == 1
+
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.status == "open"
+        assert row.acceptance_rationale is None
 
 
 @pytest.mark.asyncio

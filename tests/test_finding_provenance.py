@@ -534,6 +534,42 @@ async def test_create_poam_with_status_risk_accepted_is_gated_too() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_poam_born_accepted_with_a_whitespace_rationale_is_gated_too() -> None:
+    """N6 (review round 3): the shared gate's `is_blank` check was only
+    exercised through PATCH, where I3's separate top-level blank guard fires
+    first and can mask whether `create_poam`'s own call into the gate still
+    correctly rejects a whitespace-only rationale -- `"   "` is as absent as
+    a missing field (`ccf.cr26.ver.is_blank`), and POST has no I3 guard in
+    front of it to hide behind.
+    """
+    org_id, sys_id = await _make_system("PoamRiskAcceptOrg5")
+    async with session_scope() as s:
+        u = User(
+            organization_id=org_id,
+            email="owner@poamriskacceptorg5.example",
+            role="control_owner",
+            password_hash=hash_password("pw"),
+        )
+        s.add(u)
+        await s.flush()
+        owner_id = u.id
+
+    async with _client() as c:
+        r = await c.post(
+            "/api/poams",
+            json={
+                "system_id": sys_id,
+                "title": "Born accepted, blank rationale",
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "   ",
+            },
+        )
+        assert r.status_code == 409, r.text
+
+
+@pytest.mark.asyncio
 async def test_patch_poam_to_risk_accepted_blocked_without_approval_when_auth_enabled() -> None:
     os.environ["CCF_AUTH_ENABLED"] = "true"
     os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"

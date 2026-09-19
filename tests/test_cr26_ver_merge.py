@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ccf.cr26.ver import merge_accepted
+from ccf.cr26.ver import _as_row_id, merge_accepted
 
 
 def _merge(*args, **kwargs) -> tuple[list[dict], list[tuple]]:
@@ -113,6 +113,30 @@ def test_a_non_numeric_derived_id_with_no_rationale_does_not_crash() -> None:
     assert omitted == [("POAM-42", "no acceptance rationale")]
 
 
+def test_as_row_id_does_not_raise_on_a_digit_that_int_rejects() -> None:
+    """`"²".isdigit()` is `True` while `int("²")` raises `ValueError` --
+    `_as_row_id` used to guard with `.isdigit()`, which does not guard this
+    at all, it only defers the crash. `try/except ValueError` is the fix,
+    not `.isascii() and .isdigit()`: `"٣"` (Arabic-Indic three) is
+    non-ASCII, `.isdigit()` is `True` for it too, and `int("٣") == 3` --
+    it parses correctly and must keep doing so.
+    """
+    assert _as_row_id("²") == "²"
+    assert _as_row_id("٣") == 3
+    assert _as_row_id("42") == 42
+    assert _as_row_id("POAM-42") == "POAM-42"
+
+
+def test_a_superscript_digit_tracking_id_does_not_abort_the_merge() -> None:
+    """End to end through `merge_accepted`, not just the helper in isolation
+    -- `"²".isdigit()` being `True` is exactly what let this reach `_as_row_id`
+    believing it was safe to call `int()` on.
+    """
+    merged, omitted = _merge([], [_detail("²")])
+    assert merged == []
+    assert omitted == [("²", "no acceptance rationale")]
+
+
 def test_omitted_ids_sort_numeric_first_then_string_not_lexically() -> None:
     """Ids are "9", "10" and "POAM-1" -- deliberately chosen so a naive
     ``str(row[0])`` sort key gets them wrong: lexically "10" sorts before
@@ -209,6 +233,40 @@ def test_an_entry_whose_row_a_scoping_filter_excluded_leaves_with_no_reason() ->
     merged, omitted = _merge(authored, [], excluded={"5"})
     assert merged == []
     assert omitted == []
+
+
+def test_a_scoping_excluded_row_still_promotes_its_document_rationale() -> None:
+    """Spec §9.1's residual case, closed: a rationale authored only into the
+    document, for a row a scoping filter excludes THIS cycle, must still be
+    promoted into the column before the entry is dropped -- otherwise the
+    document is the only copy, and a later `put_document` overwrite (while
+    still excluded) can lose it with nothing left to promote from. The entry
+    itself still leaves the document with no reason reported (previous
+    test); only `promoted` is new here.
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail("5"), "acceptanceRationale": "Only in the document."}
+    ]
+    result = merge_accepted(authored, [], excluded={"5"})
+    assert result.entries == []
+    assert result.omitted == []
+    assert result.promoted == [(5, "Only in the document.")]
+
+
+def test_a_scoping_excluded_row_with_a_fresh_column_value_is_not_re_promoted() -> None:
+    """The column already has it -- `_resolve_rationale` resolves from the
+    column, not the document, so `from_document` is `False` and nothing is
+    re-promoted (there is nothing new to write).
+    """
+    authored = [
+        {"vulnerabilityDetail": _detail("5"), "acceptanceRationale": "Stale document value."}
+    ]
+    result = merge_accepted(
+        authored, [], excluded={"5"}, column_rationale={"5": "Current column value."}
+    )
+    assert result.entries == []
+    assert result.omitted == []
+    assert result.promoted == []
 
 
 def test_a_kept_entry_with_no_rationale_is_omitted_rather_than_emitted_blank() -> None:
@@ -362,3 +420,22 @@ def test_column_rationale_reaches_a_kept_verbatim_entry_too() -> None:
     assert merged[0]["acceptanceRationale"] == "Current column rationale."
     assert merged[0]["vulnerabilityDetail"] == _detail("3", "Outdated OpenSSL")
     assert omitted == [(3, "detail not refreshed: no description")]
+
+
+def test_a_kept_verbatim_entry_resolved_from_the_document_is_promoted() -> None:
+    """N5a: the kept-verbatim/`unplaced` branch does real promotion work too,
+    not just the common "freshly rendered" branch -- a row whose column is
+    still blank but whose title just got blanked (landing it in `unplaced`)
+    must still have its document-authored rationale promoted, or it depends
+    on the document surviving forever specifically on the one path where the
+    detail is already known to be stale.
+    """
+    authored = [
+        {
+            "vulnerabilityDetail": _detail("3", "Outdated OpenSSL"),
+            "acceptanceRationale": "Only ever authored into the document.",
+        }
+    ]
+    result = merge_accepted(authored, [], unplaced={"3": ["no description"]})
+    assert len(result.entries) == 1
+    assert result.promoted == [(3, "Only ever authored into the document.")]

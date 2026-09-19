@@ -23,6 +23,7 @@ from ccf.constants import (
     POAM_CLOSED_STATUSES,
     POAM_STATUSES,
     POAM_UNRESOLVED_STATUSES,
+    poam_leaves_risk_accepted,
 )
 from ccf.models import POAM
 
@@ -86,3 +87,19 @@ def test_task_vocabulary_was_not_folded_in() -> None:
     """Task is a different entity: its open set includes "blocked"."""
     assert "blocked" in TASK_OPEN
     assert set(TASK_OPEN) != set(POAM_ACTIVE_STATUSES)
+
+
+def test_poam_leaves_risk_accepted_is_exactly_one_transition_shape() -> None:
+    """The ONE rule shared by ccf.api.routes.poams.update_poam's PATCH path
+    and ccf.ingest.scanners' reopen path (spec §9.1): only leaving FROM
+    risk_accepted TO something else counts. Re-sending the same status,
+    never having been accepted, and moving between two non-accepted
+    statuses are all "no", by the same test each time.
+    """
+    assert poam_leaves_risk_accepted("risk_accepted", "open") is True
+    assert poam_leaves_risk_accepted("risk_accepted", "closed") is True
+    assert poam_leaves_risk_accepted("risk_accepted", "risk_accepted") is False
+    assert poam_leaves_risk_accepted("open", "risk_accepted") is False
+    assert poam_leaves_risk_accepted("open", "in_progress") is False
+    for status in POAM_STATUSES:
+        assert poam_leaves_risk_accepted(status, status) is False

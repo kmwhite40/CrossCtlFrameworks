@@ -685,6 +685,81 @@ async def test_seed_ver_history_also_promotes_a_document_only_rationale() -> Non
         assert row.acceptance_rationale == "Authored via PUT, never in the column."
 
 
+async def test_a_scoping_excluded_row_promotes_instead_of_losing_its_rationale() -> None:
+    """Spec §9.1's residual case (review round 3), reproduced and then closed.
+
+    Measured before this fix, exactly this sequence:
+
+        poam column going in = None (rationale authored into the avi document only)
+        CYCLE 1 (EXCLUDING window)  entries=[]  omitted=[]                              column=None
+        CYCLE 2 (including window)  entries=[]  omitted=[(id,'no acceptance rationale')] column=None
+
+    The FIRST seed, while the row is scoping-excluded, resolved the
+    rationale from the document (to decide the entry leaves with no
+    omission, correctly), then dropped it on the floor instead of promoting
+    it -- `put_document` then overwrote the AVI with an empty array, and the
+    SECOND seed had nothing left to resolve. Terminal, not self-healing: the
+    original §9.1 defect, reached through the scoping path instead of the
+    window-move path, with the same invisible loss on the excluding cycle.
+
+    `merge_accepted`'s excluded branch now promotes before dropping, so the
+    excluding cycle's `_seed` call writes the column, and the including
+    cycle needs nothing from the document at all.
+    """
+    _org_id, system_id = await _system("scoping-excluded-promotes")
+    poam_id = await _poam(system_id, status="risk_accepted", identified_on=date(2026, 10, 1))
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.acceptance_rationale is None
+
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="avi",
+            document={
+                "reportPeriod": {"from": "2026-01-01T00:00:00Z", "to": "2026-03-01T00:00:00Z"},
+                "acceptedVulnerabilities": [
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(poam_id)},
+                        "acceptanceRationale": "Only ever authored into the document.",
+                    }
+                ],
+            },
+        )
+
+    earlier_from = datetime(2026, 1, 1, tzinfo=UTC)
+    earlier_to = datetime(2026, 3, 1, tzinfo=UTC)
+
+    # CYCLE 1: the window EXCLUDES the row -- the measured loss happened here.
+    async with session_scope() as s:
+        cycle1 = await seed_avi(
+            s, system_id=system_id, period_from=earlier_from, period_to=earlier_to, today=TODAY
+        )
+    assert cycle1.document.document["acceptedVulnerabilities"] == []
+    assert cycle1.omitted_poam_ids == []
+    assert cycle1.counts["excluded_outside_period"] == 1
+
+    async with session_scope() as s:
+        promoted_row = await s.get(POAM, poam_id)
+        assert promoted_row is not None
+        assert promoted_row.acceptance_rationale == "Only ever authored into the document."
+
+    # CYCLE 2: the window includes the row again. Before this fix, the
+    # document CYCLE 1 just overwrote had nothing left, and this cycle
+    # measured `(id, "no acceptance rationale")`. It must be back, unomitted.
+    async with session_scope() as s:
+        cycle2 = await seed_avi(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    entries2 = cycle2.document.document["acceptedVulnerabilities"]
+    assert len(entries2) == 1, entries2
+    assert entries2[0]["acceptanceRationale"] == "Only ever authored into the document."
+    assert cycle2.omitted_poam_ids == []
+    assert (poam_id, "no acceptance rationale") not in cycle2.omitted_poam_ids
+
+
 async def test_a_cpo_uri_already_in_the_document_survives_a_reseed() -> None:
     """Never invented, always carried forward -- as in the SDR."""
     _org_id, system_id = await _system("uri")
