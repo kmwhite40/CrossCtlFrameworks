@@ -11,7 +11,7 @@ import openpyxl
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, select
+from sqlalchemy import create_engine, delete, select, text
 
 from ccf import db as ccf_db
 from ccf.config import get_settings
@@ -39,6 +39,61 @@ os.environ.setdefault(
 os.environ.setdefault("CCF_ENV", "test")
 
 
+def _delete_keyed_cr26_documents_before_wipe(cfg: Config) -> None:
+    """Delete any ``cr26_documents`` row with a non-NULL ``document_key``,
+    immediately before ``clean_migrated_db`` drops every table.
+
+    Migration ``0081_cr26_document_key``'s ``downgrade()`` deliberately
+    refuses to run past such a row: it is a filed federal report (an
+    incident report or SCN), and dropping the column that identifies it
+    would silently discard what makes it identifiable. That guard is
+    correct and must stay strict -- no migration can tell a test database
+    from a real one, and it must protect the real one.
+
+    But ``clean_migrated_db``'s ``downgrade(cfg, "base")`` a few lines below
+    is not a production downgrade that stops at 0080 -- it drops every
+    table in the schema, all the way to nothing. The keyed row is destroyed
+    either way, one line later; deleting it here first is honest about that,
+    not a workaround for the guard. This is the ONE caller whose entire
+    purpose is the total wipe the guard exists to prevent everywhere else,
+    so it is the one place allowed to do it without asking.
+
+    Without this, one keyed row a future incident/SCN test forgets to clean
+    up would not just fail that test -- migration 0081's guard would raise
+    out of THIS fixture at the start of every later session, for every
+    test module, on a database shared by everyone who runs the suite here.
+
+    A short-lived engine of its own, not the async ``session_scope`` this
+    module uses elsewhere: this fixture is synchronous (alembic's
+    ``command`` API is sync), and it must run before ``command.downgrade``
+    below, which tears down the very engine ``ccf.db`` would otherwise
+    reuse.
+
+    Guarded to be a no-op against a database that predates 0081 (the
+    ``document_key`` column does not exist yet) or one nothing has ever
+    been migrated into (the ``ccf`` schema, and so
+    ``information_schema.columns``, has no matching row either way) --
+    this fixture must keep working against both.
+    """
+    engine = create_engine(cfg.get_main_option("sqlalchemy.url"))
+    try:
+        with engine.begin() as conn:
+            has_column = conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'ccf' AND table_name = 'cr26_documents' "
+                    "AND column_name = 'document_key'"
+                )
+            ).first()
+            if has_column is None:
+                return
+            conn.execute(
+                text("DELETE FROM ccf.cr26_documents WHERE document_key IS NOT NULL")
+            )
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def clean_migrated_db() -> None:
     """Start every test session from a clean, fully-migrated schema.
@@ -53,6 +108,10 @@ def clean_migrated_db() -> None:
         return  # SQLite reader build manages its own schema
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
+    # See _delete_keyed_cr26_documents_before_wipe: the downgrade below wipes
+    # every table anyway, so this is the one caller allowed to clear a row
+    # migration 0081's downgrade() would otherwise refuse to run past.
+    _delete_keyed_cr26_documents_before_wipe(cfg)
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
 
