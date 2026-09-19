@@ -12,8 +12,20 @@ from __future__ import annotations
 
 import json
 
-from ccf.cr26.sdr import _implementation_status_enum, merge_requirements
+from ccf.cr26.sdr import _STATUS_ENUM_PATHS, _implementation_status_enum, merge_requirements
 from ccf.cr26.validation import schema_path
+
+
+def test_the_third_status_enum_path_targets_frr_implementation_status() -> None:
+    """Reverting to two paths (dropping FRR's) leaves ``_implementation_status_enum``'s
+    answer unchanged, because the drift guard only fires on DISAGREEMENT
+    between paths -- it can raise, but it can never assert False when a path
+    is simply missing. So the third path is pinned directly rather than
+    through the constant's behaviour, which cannot detect its absence."""
+    assert (
+        "properties", "fedRampRequirements", "items", "properties",
+        "frrImplementationStatus", "enum",
+    ) in _STATUS_ENUM_PATHS
 
 
 def test_frr_implementation_status_enum_agrees_with_the_shared_constant() -> None:
@@ -136,19 +148,41 @@ def test_blank_statements_are_stripped_and_the_rest_kept() -> None:
     assert merged[0]["frrImplementation"] == ["We meet it.", "And this too."]
 
 
-def test_a_non_string_statement_is_dropped_like_a_blank_one() -> None:
+def test_a_non_string_statement_is_dropped_and_reported() -> None:
+    """Unlike a blank statement, a non-string one (``42``, ``None``) is real
+    authored content of a shape this function cannot render -- destroying it
+    silently would be the same invisible-repair gap as the status drop
+    below, so it is named."""
     merged, omitted = merge_requirements(
         [{"frrID": "SDR-CSO-FRR", "frrImplementation": ["We meet it.", 42, None]}]
     )
-    assert omitted == []
     assert merged[0]["frrImplementation"] == ["We meet it."]
+    assert omitted == [
+        ("SDR-CSO-FRR", "frrImplementation entry dropped: not a string")
+    ]
 
 
-def test_an_invalid_implementation_status_is_dropped_not_left_standing() -> None:
+def test_a_kept_statement_is_not_stripped_of_surrounding_whitespace() -> None:
+    """The schema says these fields 'May use Markdown' -- an authored indented
+    code block must survive verbatim, not be silently reformatted into a
+    plain paragraph. Only the BLANK-ness test strips; the stored value must
+    not."""
+    indented = "    def example():\n        pass"
+    merged, omitted = merge_requirements(
+        [{"frrID": "SDR-CSO-FRR", "frrImplementation": [indented]}]
+    )
+    assert omitted == []
+    assert merged[0]["frrImplementation"] == [indented]
+
+
+def test_an_invalid_implementation_status_is_dropped_and_reported() -> None:
     """The self-heal ``merge_indicators`` applies to ``ksiImplementationStatus``,
     mirrored here: ``seed_sdr`` feeds a previously-seeded document's own
     ``fedRampRequirements`` back in as ``authored``, so an invalid value must
-    not round-trip forever."""
+    not round-trip forever. Unlike ``merge_indicators`` (whose derived half is
+    refreshed wholesale every seed, making silence defensible), this function
+    has no derived half at all -- so the drop is a destructive repair on
+    entirely authored content, and it is named."""
     merged, omitted = merge_requirements(
         [
             {
@@ -158,8 +192,21 @@ def test_an_invalid_implementation_status_is_dropped_not_left_standing() -> None
             }
         ]
     )
-    assert omitted == []
     assert "frrImplementationStatus" not in merged[0]
+    assert omitted == [
+        ("SDR-CSO-FRR", "implementation status dropped: not a schema enum member")
+    ]
+
+
+def test_an_absent_implementation_status_is_not_reported() -> None:
+    """Absence is not a repair: only a PRESENT, invalid value is dropped and
+    named -- an entry that never claimed a status must not be flagged as if
+    one had been silently erased."""
+    merged, omitted = merge_requirements(
+        [{"frrID": "SDR-CSO-FRR", "frrImplementation": ["We meet it."]}]
+    )
+    assert "frrImplementationStatus" not in merged[0]
+    assert omitted == []
 
 
 def test_a_valid_implementation_status_survives() -> None:
@@ -225,9 +272,9 @@ def test_an_empty_authored_list_produces_an_empty_result() -> None:
     assert omitted == []
 
 
-def test_extra_fields_survive_a_valid_entry_untouched() -> None:
+def test_valid_optional_arrays_survive_a_valid_entry_untouched() -> None:
     """``frrValidation`` and ``frrAssessment`` are optional array fields this
-    module does not derive or constrain -- a merge that dropped them would be
+    module does not derive -- a merge that dropped a schema-valid one would be
     destroying authored content nobody asked it to touch."""
     authored = [
         {
@@ -241,3 +288,134 @@ def test_extra_fields_survive_a_valid_entry_untouched() -> None:
     assert omitted == []
     assert merged[0]["frrValidation"] == ["Validated via scan."]
     assert merged[0]["frrAssessment"] == ["Assessed by 3PAO."]
+
+
+def test_a_schema_invalid_optional_array_is_repaired_and_reported() -> None:
+    """Unlike ``frrID`` and ``frrImplementation``, ``frrValidation`` and
+    ``frrAssessment`` are optional -- but ``PUT /cr26-documents/sdr`` takes an
+    unvalidated ``dict[str, Any]``, so a stray edit (a bare string or ``null``
+    instead of an array, or a non-string element inside one) must not
+    round-trip through every future seed as an invalid document with no
+    signal. ``merge_indicators`` applies exactly this discipline to every
+    array field it carries; this closes the same gap here."""
+    merged, omitted = merge_requirements(
+        [
+            {
+                "frrID": "SDR-CSO-A",
+                "frrImplementation": ["ok"],
+                "frrValidation": "not a list",
+            },
+            {
+                "frrID": "SDR-CSO-B",
+                "frrImplementation": ["ok"],
+                "frrValidation": None,
+            },
+            {
+                "frrID": "SDR-CSO-C",
+                "frrImplementation": ["ok"],
+                "frrAssessment": [42],
+            },
+        ]
+    )
+    by_id = {e["frrID"]: e for e in merged}
+    assert "frrValidation" not in by_id["SDR-CSO-A"]
+    assert "frrValidation" not in by_id["SDR-CSO-B"]
+    assert by_id["SDR-CSO-C"]["frrAssessment"] == []
+    assert omitted == [
+        ("SDR-CSO-A", "frrValidation dropped: not a list"),
+        ("SDR-CSO-B", "frrValidation dropped: not a list"),
+        ("SDR-CSO-C", "frrAssessment dropped: contains a non-string entry"),
+    ]
+
+
+def test_a_blank_entry_in_an_optional_array_is_dropped_silently() -> None:
+    """Matching ``frrImplementation``'s asymmetry: a blank string inside an
+    otherwise-valid optional array is dropped without a report -- nothing was
+    lost, unlike a non-string element."""
+    merged, omitted = merge_requirements(
+        [
+            {
+                "frrID": "SDR-CSO-FRR",
+                "frrImplementation": ["ok"],
+                "frrValidation": ["Validated via scan.", "   "],
+            }
+        ]
+    )
+    assert omitted == []
+    assert merged[0]["frrValidation"] == ["Validated via scan."]
+
+
+def test_a_clean_optional_array_is_not_aliased_to_the_caller() -> None:
+    """The deepcopy at the top of the walk is what protects an untouched
+    optional array -- ``frrImplementation`` is always rebuilt fresh via its
+    own comprehension regardless of copy depth, so it cannot tell a
+    ``copy.deepcopy`` from a shallow ``dict(raw_entry)`` apart. An
+    already-valid ``frrValidation`` IS left as the object the deep copy
+    produced (see the docstring), so mutating it must not reach the caller's
+    list -- a shallow copy would leave the two aliased and this would fail."""
+    validation = ["We validated via scan."]
+    authored = [
+        {
+            "frrID": "SDR-CSO-FRR",
+            "frrImplementation": ["ok"],
+            "frrValidation": validation,
+        }
+    ]
+    merged, omitted = merge_requirements(authored)
+    assert omitted == []
+    merged[0]["frrValidation"].append("mutated")
+    assert validation == ["We validated via scan."]
+    assert authored[0]["frrValidation"] == ["We validated via scan."]
+
+
+def test_frr_id_is_stored_stripped() -> None:
+    """The id is stripped before it is used for anything, including storage
+    -- an authored ``"  SDR-CSO-FRR  "`` must not ship with its whitespace, or
+    a consumer that trims before matching would fail to find it and one that
+    does not would group it separately from the trimmed form."""
+    merged, omitted = merge_requirements(
+        [{"frrID": "  SDR-CSO-FRR  ", "frrImplementation": ["We meet it."]}]
+    )
+    assert omitted == []
+    assert merged[0]["frrID"] == "SDR-CSO-FRR"
+
+
+def test_a_duplicate_frr_id_is_kept_not_discarded() -> None:
+    """A duplicate ``frrID`` is not a duplicate KSI narrative: unlike an
+    evicted authored entry, dropping either one here destroys human work,
+    and unlike ``acceptedVulnerabilities``, nothing forces a choice between
+    them on its own. Both survive, sorted adjacently."""
+    authored = [
+        {
+            "frrID": "SDR-CSO-FRR",
+            "frrImplementation": ["First statement."],
+            "frrImplementationStatus": "Implemented",
+        },
+        {
+            "frrID": "SDR-CSO-FRR",
+            "frrImplementation": ["Second statement."],
+            "frrImplementationStatus": "Not Implemented",
+        },
+    ]
+    merged, omitted = merge_requirements(authored)
+    assert [e["frrID"] for e in merged] == ["SDR-CSO-FRR", "SDR-CSO-FRR"]
+    assert [e["frrImplementationStatus"] for e in merged] == [
+        "Implemented",
+        "Not Implemented",
+    ]
+    assert omitted == [("SDR-CSO-FRR", "duplicate authored entry kept")]
+
+
+def test_inserting_a_last_wins_dedup_would_be_a_regression() -> None:
+    """A last-wins dedup (evicting the first of a pair) is invertible with
+    the rest of this module's suite green -- this is the pin that specifically
+    catches it: BOTH entries, and their distinguishing content, must survive."""
+    authored = [
+        {"frrID": "SDR-CSO-DUP", "frrImplementation": ["Kept if not deduped."]},
+        {"frrID": "SDR-CSO-DUP", "frrImplementation": ["Also kept."]},
+    ]
+    merged, _omitted = merge_requirements(authored)
+    assert len(merged) == 2
+    statements = [e["frrImplementation"][0] for e in merged]
+    assert "Kept if not deduped." in statements
+    assert "Also kept." in statements
