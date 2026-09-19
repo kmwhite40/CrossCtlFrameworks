@@ -511,18 +511,26 @@ async def update_poam(
         # ingest/scanners.py, which clears closed_on when a scan finds a
         # "resolved" flaw's vulnerability still present.
         obj.closed_on = None
-    if (
-        poam_leaves_risk_accepted(old_status, data.get("status", old_status))
-        and "acceptance_rationale" not in data
-    ):
-        # Any transition OUT of risk_accepted clears the rationale, unless
-        # the caller explicitly supplied a new one in this same PATCH.
-        # Measured: without this, reopening then re-accepting silently
-        # reused the PREVIOUS acceptance's rationale for a NEW decision it
-        # was never written for -- well-formed, validating, and untrue,
-        # which is this programme's dominant defect shape one level down.
-        # `_require_risk_accepted_gate` then requires a fresh one before the
-        # row can become risk_accepted again.
+    if poam_leaves_risk_accepted(old_status, data.get("status", old_status)):
+        # Any transition OUT of risk_accepted clears the rationale --
+        # unconditionally, EVEN WHEN the same request also supplies a
+        # value for acceptance_rationale. That is deliberate, not an
+        # oversight: a rationale sent alongside a REOPEN describes the
+        # acceptance being ENDED, not a new one, so keeping it would
+        # attribute someone's stated reason for leaving risk_accepted to
+        # whatever decision comes next instead. A caller who wants a
+        # rationale on the way back IN sends it on the re-accept PATCH.
+        #
+        # A narrower version of this rule shipped once already, with
+        # `and "acceptance_rationale" not in data` -- an escape hatch a
+        # save-the-whole-form client (one that re-sends every field on
+        # every PATCH, the common case) opens on every single reopen.
+        # Measured end to end: accept with "Reason A." -> reopen via a
+        # whole-form PATCH that still carries "Reason A." in its body ->
+        # the column was NOT cleared -> re-accept succeeded because the
+        # gate was satisfied by the SUPERSEDED reason, unlabelled, with
+        # nothing reported. That is this rule's own defect, reintroduced
+        # by trying to be lenient about who supplied the value.
         #
         # `poam_leaves_risk_accepted` (ccf.constants) is the ONE rule
         # behind this, shared with ccf.ingest.scanners' reopen path -- see

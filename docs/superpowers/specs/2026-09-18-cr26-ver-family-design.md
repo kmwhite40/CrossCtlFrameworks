@@ -756,13 +756,39 @@ in is not the same claim as a column that stays true afterward:
   this section's own defect shape one level up: a change that invalidates
   the row for the next deliverable render with nothing reported at the
   moment it happens.
-- Any transition OUT of `risk_accepted` clears the column, unless the same
-  request supplies a replacement. Measured: without this, reopening a POA&M
-  and later re-accepting it silently carried the PREVIOUS acceptance's
-  rationale into the NEW decision — well-formed, validating, and untrue,
-  which is this programme's dominant defect shape (a claim that renders
-  clean but does not describe what actually happened) one level down from
-  where this family spends most of its attention.
+- Any transition OUT of `risk_accepted` clears the column — unconditionally,
+  even when the same request also supplies a value for `acceptance_
+  rationale`. A rationale sent alongside a reopen describes the acceptance
+  being ENDED, not a new one; a caller who wants one on the way back in
+  sends it on the re-accept PATCH instead.
+
+  > **CORRECTION, 2026-09-18 (review round 4).** This rule shipped once with
+  > an escape hatch — `and "acceptance_rationale" not in data` — that this
+  > section did not flag as a narrowing. It is opened by precisely the
+  > save-the-whole-form client the "transition, not every write that names
+  > the status" rule above exists for: a client that re-sends every field on
+  > every PATCH never has an ABSENT `acceptance_rationale` key, so the hatch
+  > applied to it always. Measured end to end through the exact PATCH
+  > sequence that shape of client sends:
+  >
+  > ```
+  > accept:                          200  'Reason A (2026 Q1).'
+  > reopen via whole-form PATCH:     200  rationale = 'Reason A (2026 Q1).'  (not cleared)
+  > re-accept via whole-form PATCH:  200  rationale = 'Reason A (2026 Q1).'
+  >                                        (gate satisfied by the SUPERSEDED reason)
+  > ```
+  >
+  > The previous acceptance's reason silently justified a new decision, with
+  > nothing reported — m4's exact defect, reintroduced by trying to be
+  > lenient about who supplied the value. The hatch is gone; the rule now
+  > reads exactly as it holds.
+
+  Measured, with the hatch removed: without clearing unconditionally,
+  reopening a POA&M and later re-accepting it silently carried the PREVIOUS
+  acceptance's rationale into the NEW decision — well-formed, validating,
+  and untrue, which is this programme's dominant defect shape (a claim that
+  renders clean but does not describe what actually happened) one level
+  down from where this family spends most of its attention.
 
 **This last rule is shared, not duplicated** (review round 3, Important N2):
 `ccf.constants.poam_leaves_risk_accepted(old_status, new_status)` is the one

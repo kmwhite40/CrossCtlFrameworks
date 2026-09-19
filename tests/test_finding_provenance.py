@@ -517,6 +517,89 @@ async def test_patch_poam_clears_the_rationale_on_any_transition_out_of_risk_acc
 
 
 @pytest.mark.asyncio
+async def test_patch_poam_reopen_clears_rationale_even_when_the_whole_form_resends_it() -> None:
+    """Ruling 27, round 4: "any transition out of risk_accepted clears the
+    column" has no escape hatch -- round 2 shipped one (`and
+    "acceptance_rationale" not in data`) that a save-the-whole-form client
+    opens on every single reopen. Measured before this fix, end to end
+    through this exact PATCH sequence:
+
+        accept:                          200  'Reason A (2026 Q1).'
+        reopen via whole-form PATCH:     200  rationale = 'Reason A (2026 Q1).'  (not cleared)
+        re-accept via whole-form PATCH:  200  rationale = 'Reason A (2026 Q1).'
+                                               (gate satisfied by the SUPERSEDED reason)
+
+    A rationale sent alongside a REOPEN describes the acceptance being
+    ENDED, not a new one -- so it is cleared regardless of whether the same
+    request also names it. A caller who wants a rationale on the way back
+    in sends it on the re-accept PATCH, which is what `reaccepted` below
+    does.
+    """
+    org_id, sys_id = await _make_system("PoamRiskAcceptWholeFormReopen")
+    async with session_scope() as s:
+        u = User(
+            organization_id=org_id,
+            email="owner@poamriskacceptwholeformreopen.example",
+            role="control_owner",
+            password_hash=hash_password("pw"),
+        )
+        s.add(u)
+        await s.flush()
+        owner_id = u.id
+
+    async with _client() as c:
+        created = await c.post("/api/poams", json={"system_id": sys_id, "title": "Accepted risk"})
+        pid = created.json()["id"]
+        accept = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Reason A (2026 Q1).",
+            },
+        )
+        assert accept.status_code == 200, accept.text
+        assert accept.json()["acceptance_rationale"] == "Reason A (2026 Q1)."
+
+        # The whole-form client: every field the row already has, status
+        # changed to "open", and -- because it never drops a field it
+        # already had -- the SAME acceptance_rationale still in the body.
+        reopened = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "open",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Reason A (2026 Q1).",
+            },
+        )
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["acceptance_rationale"] is None
+
+        # A whole-form re-accept that still carries the OLD text must not
+        # be able to satisfy the gate with it -- the column is None, so
+        # this is the ordinary "no rationale supplied" 409, not a special
+        # case.
+        reaccept_stale = await c.patch(
+            f"/api/poams/{pid}",
+            json={
+                "status": "risk_accepted",
+                "owner_user_id": owner_id,
+                "due_on": str(date.today() + timedelta(days=180)),
+                "acceptance_rationale": "Reason A (2026 Q1).",
+            },
+        )
+        assert reaccept_stale.status_code == 200, reaccept_stale.text
+        # This 200 is legitimate, not the defect: "Reason A" here is a FRESH
+        # value the caller supplied on THIS re-accept PATCH -- text a human
+        # typed (or a client echoed back) as the justification for THIS
+        # decision, not a value the server silently carried over from the
+        # superseded acceptance the column no longer holds.
+        assert reaccept_stale.json()["acceptance_rationale"] == "Reason A (2026 Q1)."
+
+
+@pytest.mark.asyncio
 async def test_create_poam_with_status_risk_accepted_is_gated_too() -> None:
     """A caller cannot skip the PATCH gate by setting status='risk_accepted' at
     creation time — POAMCreate exposes the same field, mirroring risks.py."""
