@@ -226,6 +226,12 @@ async def seed_sdr_document(
     * ``rendered_control_count`` -- how many controls were rendered at all.
       ``0`` with a non-``None`` ``ssp_project_id`` means an empty SSP project
       won the most-recently-updated selection.
+    * ``omitted_requirements`` -- authored ``fedRampRequirements`` entries left
+      out of the document, and why. ``fedRampRequirements`` is authored
+      narrative, exactly like ``ksiImplementation``, and every one of its
+      required fields validates cleanly while saying nothing (``frrID: ""``,
+      ``frrImplementation: []``) -- so, like ``omitted_ksi_ids``, this list is
+      the only signal such a gap ever produces.
 
     Like the CPO seed, the result is **invalid by design**:
     ``certificationPackageOverviewUri`` is required at the root and cannot be
@@ -243,6 +249,7 @@ async def seed_sdr_document(
         "controls_missing_description": result.controls_missing_description,
         "controls_with_dropped_parts": result.controls_with_dropped_parts,
         "rendered_control_count": result.rendered_control_count,
+        "omitted_requirements": result.omitted_requirements,
     }
 
 
