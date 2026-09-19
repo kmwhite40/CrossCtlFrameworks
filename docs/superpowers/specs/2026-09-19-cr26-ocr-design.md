@@ -136,10 +136,29 @@ platform can see the whole population.
 Each is preserved verbatim when authored, and omitted when not. Each omission
 is named in the result.
 
+**"Authored" means the key is PRESENT, not that its value is non-empty.** The
+seeder itself never writes any of these six keys when nothing was authored —
+so if a key is there at all, it can only have come from a human's own `PUT`.
+An authored `[]` is that human's attestation that nothing happened this
+period, and it must be preserved exactly like a non-empty one: an empty array
+in this context still reads as "none", not "unknown" (§1.2) — but that is the
+reason the *seeder* must never fabricate one on nobody's behalf, not a reason
+to discard one a human actually supplied. Refusing an authored empty makes
+the OCR's single most common case — a quiet quarter in which genuinely
+nothing happened — unfileable: an operator who honestly authors `[]` for
+`certificationDataChanges`, `transformativeChanges`, `updatedRecommendations`,
+and `activeAgencies` must see the document become valid, not stay invalid for
+saying so. `reportableIncidents`'s empty `incidents` array is the sharpest
+instance of this rule, not an exception to it: every one of these six fields
+is governed by the same presence test.
+
 `plannedCertificationDataChanges` and `reportableIncidents` are objects with
 their own `required` keys, so a partially-authored one is **invalid**, not
 merely incomplete. Treat an object missing its required keys as unauthored:
-omit it and name it, rather than filing half an attestation.
+omit it and name it, rather than filing half an attestation. An object with
+*all* of its required keys present — including one whose value is an empty
+array, such as `plannedCertificationDataChanges.changes` — is fully authored
+and carried forward, by the same presence rule.
 
 ---
 

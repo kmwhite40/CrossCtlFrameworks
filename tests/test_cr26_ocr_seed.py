@@ -377,16 +377,24 @@ async def test_planned_changes_with_an_empty_changes_list_is_still_fully_authore
     assert "plannedCertificationDataChanges" not in [n for n, _r in result.missing_fields]
 
 
-async def test_an_authored_but_empty_plain_array_is_still_treated_as_unauthored() -> None:
-    """Spec §1.2: an empty array reads as "none", not as "unknown" -- and
-    nothing distinguishes a human who explicitly saved `[]` here from a
-    document that was simply never touched. `activeAgencies` here, picked
-    arbitrarily among the four plain array fields; the same guard,
+async def test_an_authored_empty_plain_array_is_honoured_not_discarded() -> None:
+    """Presence, not length, is the authored signal (spec §3.4, as corrected
+    by review). The seeder itself never writes `activeAgencies` when nothing
+    was authored, so a stored `[]` under that key can only have come from a
+    human's own `PUT` -- exactly the same reasoning already applied to
+    `reportableIncidents`'s empty `incidents` array. `activeAgencies` here,
+    picked arbitrarily among the four plain array fields; the same guard,
     `_authored_array`, covers all four identically.
 
-    MUTATION: `_authored_array` returning `value` whenever it is a list (no
-    length check) would carry this `[]` forward into the document, and this
-    test's `not in` assertion catches it.
+    An earlier version of this test asserted the OPPOSITE -- that an authored
+    `[]` was discarded -- which was the defect: it made a quiet quarter, where
+    an operator has genuinely nothing to report for this field, unfileable.
+
+    MUTATION: `_authored_array` reverting to `len(value) > 0` (discarding an
+    authored empty list) makes this field vanish from the document again, and
+    this test's `==` assertion catches it. See
+    `test_a_quiet_quarter_with_every_field_authored_empty_is_filable` for the
+    same guard exercised across all six fields at once.
     """
     _org_id, system_id = await _system("plain-array-empty-authored")
     async with session_scope() as s:
@@ -400,8 +408,65 @@ async def test_an_authored_but_empty_plain_array_is_still_treated_as_unauthored(
         result = await seed_ocr(
             s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
         )
-    assert "activeAgencies" not in result.document.document
-    assert "activeAgencies" in [n for n, _r in result.missing_fields]
+    assert result.document.document["activeAgencies"] == []
+    assert "activeAgencies" not in [n for n, _r in result.missing_fields]
+
+
+async def test_a_quiet_quarter_with_every_field_authored_empty_is_filable() -> None:
+    """The end-to-end proof that the fix above matters: the OCR's most common
+    case -- a quarter where genuinely nothing happened -- must be FILABLE.
+
+    An operator authors an honest `[]`/empty attestation for all six fields:
+    the four plain arrays, `reportableIncidents` (the built-in attestation),
+    and `plannedCertificationDataChanges` with a real horizon and no planned
+    changes. None of that is "nothing authored" -- every key is genuinely
+    present, a human decision recorded -- so the resulting document must
+    validate, and `missing_fields` must be empty.
+
+    This is the test that would have caught the reviewed defect: the earlier
+    `_authored_array` discarded four of these six authored empties, leaving
+    the document permanently invalid no matter what an operator did for a
+    quiet quarter.
+
+    MUTATION: reverting `_authored_array` to `len(value) > 0` makes
+    `missing_fields` non-empty again (the four plain fields reappear) and
+    `is_valid` false.
+    """
+    _org_id, system_id = await _system("quiet-quarter")
+    async with session_scope() as s:
+        await put_document(
+            s,
+            system_id=system_id,
+            kind="ocr",
+            document={
+                "certificationPackageOverviewUri": CPO_URI,
+                "certificationDataChanges": [],
+                "plannedCertificationDataChanges": {
+                    "planningHorizonThrough": "2027-01-01",
+                    "changes": [],
+                },
+                "transformativeChanges": [],
+                "updatedRecommendations": [],
+                "activeAgencies": [],
+                "reportableIncidents": {"incidents": []},
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_ocr(
+            s, system_id=system_id, period_from=FROM, period_to=TO, today=TODAY
+        )
+    assert result.missing_fields == []
+    assert result.document.validation_errors == [], result.document.validation_errors
+    assert result.document.is_valid is True
+    assert result.document.document["certificationDataChanges"] == []
+    assert result.document.document["transformativeChanges"] == []
+    assert result.document.document["updatedRecommendations"] == []
+    assert result.document.document["activeAgencies"] == []
+    assert result.document.document["reportableIncidents"] == {"incidents": []}
+    assert result.document.document["plannedCertificationDataChanges"] == {
+        "planningHorizonThrough": "2027-01-01",
+        "changes": [],
+    }
 
 
 async def test_a_reportable_incidents_object_missing_its_incidents_key_is_unauthored() -> None:

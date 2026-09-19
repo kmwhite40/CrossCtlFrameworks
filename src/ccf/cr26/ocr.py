@@ -19,7 +19,24 @@ Reportable Incidents occurred*. Manufacturing that from nothing authored would
 be a false statement to a federal regulator, not a harmless placeholder --
 spec §1.2 calls it the most serious instance of this programme's signature
 defect. This seeder never manufactures it: it is carried forward *only* when
-a human has actually supplied the ``incidents`` key, empty or not.
+a human has actually supplied the ``incidents`` key.
+
+**The authored signal for all six of these fields is the KEY'S PRESENCE, not
+its length.** The seeder itself never writes any of these six keys when
+nothing was authored -- so if a key is there at all, a human's own ``PUT`` is
+the only thing that could have put it there, empty or not. An authored ``[]``
+is that human's attestation that nothing happened, and it is exactly as real
+as an authored non-empty list. An earlier version of this module discarded an
+authored empty list for the four plain array fields while honouring it for
+``reportableIncidents`` -- the same signal, trusted in one place and not the
+other, for a reason (an empty array "reads as none") that in fact applies
+identically to both: it explains why the SEEDER must never fabricate an empty
+value, not why an authored one should be thrown away. The practical cost was
+concrete: a quarter in which genuinely nothing happened -- the OCR's most
+common case -- became unfileable, because the operator's honest ``[]`` for
+``certificationDataChanges``/``transformativeChanges``/``updatedRecommend-
+ations``/``activeAgencies`` was silently dropped and the document could never
+validate.
 """
 
 from __future__ import annotations
@@ -186,15 +203,18 @@ def _authored_array(current: dict[str, Any], key: str) -> list[Any] | None:
     """The stored value for a plain authored array field, or ``None`` if it
     carries no authored content.
 
-    A missing key, a non-list value, and an EMPTY list are all treated alike:
-    unauthored. Spec §1.2 -- "an empty array reads as none, not as unknown" --
-    applies to these four fields with less force than it does to
-    ``reportableIncidents``, but it still applies: nothing here distinguishes
-    a human who explicitly confirmed "nothing changed" from a document that
-    was simply never touched, so an empty array is not trusted as content.
+    PRESENCE is the authored signal, not length -- matching
+    :func:`_authored_reportable_incidents`. The seeder never writes this key
+    itself when nothing was authored (see :func:`seed_ocr`: the key is added
+    to the document only from this function's own non-``None`` return), so a
+    key that IS present, at any length, can only have come from a human's own
+    ``PUT``. An authored ``[]`` is that human's attestation that nothing
+    happened this period -- the OCR's most common case -- and discarding it
+    would make the document unfileable in exactly that case. Only a missing
+    key or a non-list value is unauthored.
     """
     value = current.get(key)
-    return value if isinstance(value, list) and len(value) > 0 else None
+    return value if isinstance(value, list) else None
 
 
 def _authored_planned_changes(current: dict[str, Any]) -> dict[str, Any] | None:
@@ -206,11 +226,12 @@ def _authored_planned_changes(current: dict[str, Any]) -> dict[str, Any] | None:
     half-complete: both required keys must be present and usable, or the
     whole object is omitted and named.
 
-    ``changes`` MAY be an empty list here -- unlike the four plain array
-    fields above, this object's completeness is judged by whether both of
-    ITS OWN required keys are present and valid, not by whether ``changes``
-    itself is non-empty. A human who set a real planning horizon and has
-    genuinely nothing planned has still authored this object.
+    ``changes`` MAY be an empty list here, exactly as an authored empty list
+    is honoured for the four plain array fields above (:func:`_authored_
+    array`): this object's completeness is judged by whether both of ITS OWN
+    required keys are present and valid, not by whether ``changes`` itself is
+    non-empty. A human who set a real planning horizon and has genuinely
+    nothing planned has still authored this object.
     """
     value = current.get(_PLANNED_CHANGES_FIELD)
     if not isinstance(value, dict):
@@ -226,12 +247,13 @@ def _authored_reportable_incidents(current: dict[str, Any]) -> dict[str, Any] | 
     """The stored ``reportableIncidents``, or ``None``.
 
     This object has exactly one required key, ``incidents``. Its presence --
-    not its length -- is the authored signal: an empty ``incidents`` array
-    with the key genuinely present IS the schema's own attestation of "none
-    occurred" (spec §1.2), and this function must return it rather than
-    treating it as absent. What this function refuses is a document that
-    never carries the key at all, or carries something that is not a list
-    under it -- both of those are exactly as unauthored as a missing object.
+    not its length -- is the authored signal, matching :func:`_authored_
+    array`'s presence rule: an empty ``incidents`` array with the key
+    genuinely present IS the schema's own attestation of "none occurred"
+    (spec §1.2), and this function must return it rather than treating it as
+    absent. What this function refuses is a document that never carries the
+    key at all, or carries something that is not a list under it -- both of
+    those are exactly as unauthored as a missing object.
     """
     value = current.get(_INCIDENTS_FIELD)
     if not isinstance(value, dict):
