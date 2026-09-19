@@ -226,16 +226,16 @@
   </header>
 
   <dl class="ledger">
-    <div class="cell"><dt>Migration head</dt><dd>0079</dd></div>
-    <div class="cell"><dt>Tests passing</dt><dd>2,745</dd></div>
-    <div class="cell"><dt>API endpoints</dt><dd>489</dd></div>
+    <div class="cell"><dt>Migration head</dt><dd>0081</dd></div>
+    <div class="cell"><dt>Tests passing</dt><dd>2,926</dd></div>
+    <div class="cell"><dt>API endpoints</dt><dd>492</dd></div>
     <div class="cell"><dt>Tenant tables</dt><dd>138</dd></div>
   </dl>
 
   <section>
     <div class="sec-head">
       <h2>Where the build stands</h2>
-      <span class="sec-note">as of head 95e6ba0</span>
+      <span class="sec-note">as of head 46205e1</span>
     </div>
     <p class="lede">
       Concord is feature-complete across the authorization lifecycle: a customer can define
@@ -593,7 +593,7 @@
       <div class="item">
         <span class="tag t-built">Shipped</span>
         <div>
-          <h3>CR26 deliverables — five of eleven</h3>
+          <h3>CR26 deliverables — every one a provider files</h3>
           <p>The Certification Package Overview and the Security Decision Record are
           generated from what the platform already holds: SSP control narrative, assigned
           parameter values, KSI validation results and assessor findings. Authoring is
@@ -608,6 +608,22 @@
           identification date, no detection source or no description is left out and named,
           because the deliverable's own to-do list is worth more to an operator than a
           document that quietly looks complete.</p>
+          <p>Three more have since landed. The Ongoing Certification Report inverts the
+          others: eight of its nine required fields are statements only a human can make,
+          so it is seeded as a scaffold and stays <em>invalid</em> until someone writes
+          them — the validation errors are the author's to-do list. A document that
+          validates is a document somebody can file, and one of its empty values is a
+          formal attestation that no security incidents occurred, which the platform has
+          no way to know.</p>
+          <p>Incident Reports and Significant Change Notifications are filed per incident
+          and per change rather than per system, so each filing is stored under its own
+          key: advancing an incident from Initial to Ongoing to Final keeps all three
+          rather than overwriting the record of the last one.</p>
+          <p><strong>That is every CR26 deliverable a cloud service provider files.</strong>
+          The two not built — Advisor Information and Assessor Information — are published
+          by assessment firms about themselves, on their own websites. They describe a
+          company rather than a system, and building them here would file a document about
+          somebody else against a customer's system.</p>
         </div>
       </div>
 
@@ -727,7 +743,7 @@
       <li><strong>Gap assessment and Trust Center depth</strong> — now possible, because the ontology finally gives them something to compare and something to publish.</li>
       <li><strong>Assessment depth</strong> — objective-level SAR findings, a generated OSCAL assessment plan, and a FedRAMP Rev 5 baseline overlay with assigned parameter values.</li>
       <li><strong>Identity and crypto hardening</strong> — MFA and PIV-CAC, SSO hardening, KMS-backed key rotation and FIPS-validated cryptography.</li>
-      <li><strong>CR26 completeness</strong> — the Security Decision Record's <span class="mono">fedRampRequirements</span> is the last unfilled field on a shipped deliverable. It is not blocked on sourcing FedRAMP's rule identifiers, as first thought: the schema leaves that id an unconstrained string and asks, per requirement, for a written description of how the provider meets it. That is authored work, not generated — the same shape as the narrative and rationale fields already handled — so it needs an authoring surface, not a lookup table.</li>
+      <li><strong>Ongoing certification status</strong> — FedRAMP has not published the vocabulary for it, so nothing models it. The ruleset covers Classes, Paths and the 120-day downgrade notice but never lists the status values, and inventing them is exactly what was refused for Certification Classes.</li>
       <li><strong>Integrations</strong> — eMASS, Jira, and wiring the typed AI action path to the organization's own gateway.</li>
     </ul>
 
@@ -741,10 +757,9 @@
 
   <footer>
     <p>Build level at <span class="mono">main</span> head
-    <span class="mono">95e6ba0</span>. Migration head
-    <span class="mono">0079</span>, single Alembic head — the CR26 deliverables added none.
-    ruff and mypy strict clean across 295 source files. 2,745 tests passing, 1 skipped,
-    against a real PostgreSQL instance.</p>
+    <span class="mono">46205e1</span>. Migration head <span class="mono">0081</span>,
+    single Alembic head. ruff, mypy strict and bandit clean across 298 source files.
+    2,926 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
     <p>Counts in this report are measured from the repository at that commit, not quoted
     from prior documents. Where a figure in the README disagrees, the README is the stale
     one.</p>
