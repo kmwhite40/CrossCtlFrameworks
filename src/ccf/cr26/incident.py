@@ -44,6 +44,7 @@ the one case (spec §3.4.1) where it is also flagged as still-owed instead.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -54,6 +55,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models_cr26 import Cr26Document
 from .store import put_document
 from .ver import is_blank
+
+#: ``Cr26Document.document_key`` is ``String(128)`` (see
+#: ``ccf.models_cr26``). Nothing upstream of :func:`_validate_tracking_id`
+#: bounds ``providerTrackingId``'s length, so an overlong one reached the
+#: database as a raw ``StringDataRightTruncationError`` (a 500) instead of a
+#: refusal this module controls -- see that function's docstring.
+_DOCUMENT_KEY_MAX_LENGTH = 128
 
 #: The lifecycle order carry-forward walks backward through (spec §2.1).
 #: A tuple, not a set: order is the whole point -- :func:`_prior_report`
@@ -90,7 +98,7 @@ _CARRY_FIELDS: tuple[str, ...] = (
 )
 
 
-def _validate_tracking_id(provider_tracking_id: str) -> str:
+def _validate_tracking_id(provider_tracking_id: str, report_type: str) -> str:
     """Refuse what cannot be filed or safely keyed (spec §1.1, §3.1).
 
     A blank tracking id cannot identify an incident at all. One containing
@@ -101,6 +109,23 @@ def _validate_tracking_id(provider_tracking_id: str) -> str:
     ``ValueError`` the route turns into a 422 -- not omitted and named like
     the optional fields below, because an unidentifiable report cannot be
     filed at all.
+
+    Leading/trailing whitespace is stripped before any of the above checks
+    and before the key is built: ``"  INC-1 "`` and ``"INC-1"`` must resolve
+    to the SAME document_key, or the same incident's own reports would split
+    into two chains under two different keys -- exactly the collision
+    §1.1 exists to prevent, produced by whitespace rather than a literal
+    duplicate id.
+
+    ``report_type`` is taken only to size the check below -- it is not
+    otherwise validated here (see :func:`seed_incident`'s docstring).
+    ``document_key`` is ``String(128)`` in the database (see
+    :mod:`ccf.models_cr26`), and nothing upstream bounds
+    ``providerTrackingId``'s length, so a sufficiently long one would reach
+    the database as a raw ``StringDataRightTruncationError`` -- a 500 --
+    instead of a refusal this module controls. Refused here instead, as a
+    ``ValueError`` the route turns into a 422, exactly like the other two
+    checks.
     """
     stripped = provider_tracking_id.strip()
     if not stripped:
@@ -111,22 +136,60 @@ def _validate_tracking_id(provider_tracking_id: str) -> str:
             "'{providerTrackingId}/{reportType}', and a '/' inside the "
             "tracking id would make that key ambiguous"
         )
+    key_length = len(stripped) + 1 + len(report_type)  # "/" separator
+    if key_length > _DOCUMENT_KEY_MAX_LENGTH:
+        raise ValueError(
+            f"providerTrackingId is too long: the resulting document_key "
+            f"'{stripped}/{report_type}' would be {key_length} characters, "
+            f"and document_key is limited to {_DOCUMENT_KEY_MAX_LENGTH}"
+        )
     return stripped
 
 
+#: A full ISO-8601 instant: a calendar date, a ``T``, an hour/minute/second
+#: time, an optional fractional-second part, and a mandatory UTC offset
+#: (``Z`` or ``+HH:MM``/``-HH:MM``). Used ahead of ``datetime.fromisoformat``
+#: in :func:`_parses_as_iso8601_instant` because ``fromisoformat`` alone is
+#: far looser than "instant" -- see that function's docstring for the
+#: measured forms it accepts that this regex does not.
+_INSTANT_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
+)
+
+
 def _parses_as_iso8601_instant(value: Any) -> bool:
-    """True when ``value`` is a string ``datetime.fromisoformat`` accepts.
+    """True when ``value`` is a full ISO-8601 instant -- a date, a time, AND
+    a UTC offset -- not merely anything ``datetime.fromisoformat`` accepts.
 
     Used only for :func:`_resolved_at_problem` (spec §3.4.1): ``date-time``
     is NOT enforced by this environment's validator (see
     :mod:`ccf.cr26.validation`), so a ``resolvedAt`` like ``"whenever"``
     satisfies the schema's own ``required`` conditional while asserting
     nothing true. This is Concord's own, stricter check, not the schema's.
+
+    ``fromisoformat`` alone is measured to accept every one of these, none
+    of which names a single instant in time -- and several of which are far
+    more plausible operator typos than the spec's own ``"whenever"``
+    example, because each one IS a real, syntactically valid ISO-8601 form,
+    just not an instant:
+
+    * ``"2026-09-15"`` -- a bare date, no time at all.
+    * ``"20260915"`` -- the same date, compact form.
+    * ``"2026-W01-1"`` -- an ISO week date.
+    * ``"2026-09-15T08"`` -- an hour with no minute or second.
+    * ``"2026-09-15T08:00:00"`` -- a full date and time with no UTC offset
+      at all, i.e. a NAIVE datetime -- the single most likely thing an
+      operator pastes from a form that does not show a timezone.
+
+    Every one of the above fails the regex pre-check and is therefore
+    reported exactly like ``"whenever"``, never silently accepted.
     """
     if not isinstance(value, str):
         return False
+    if not _INSTANT_RE.match(value):
+        return False
     try:
-        datetime.fromisoformat(value)
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return False
     return True
@@ -193,7 +256,7 @@ async def _prior_report(
     return None, {}
 
 
-def _resolved_at_problem(report_type: str, resolved_at: Any) -> tuple[str, str] | None:
+def _resolved_at_problem(resolved_at: Any) -> tuple[str, str] | None:
     """What, if anything, ``resolvedAt`` still owes a Final report (spec
     §3.2, §3.4.1).
 
@@ -211,8 +274,15 @@ def _resolved_at_problem(report_type: str, resolved_at: Any) -> tuple[str, str] 
       that closes a federal incident. Reported, never rewritten or dropped:
       the seeder must not silently discard an operator's authored value.
 
-    Only ever called for a ``Final`` report -- ``resolvedAt`` is optional
-    for an Initial or Ongoing, so neither failure applies to them.
+    Takes no ``report_type``: ``resolvedAt`` is optional for an Initial or
+    Ongoing, so neither failure applies to them, and :func:`seed_incident`
+    is the one place that decides that -- it calls this function only when
+    ``report_type == "Final"``. Duplicating that gate inside this function
+    too would be the same rule expressed in two places, with nothing here to
+    keep them in sync if one changed; see
+    ``tests/test_cr26_incident_seed.py``'s
+    ``test_resolved_at_is_never_required_on_an_ongoing_report`` for the test
+    that pins the caller's gate rather than a gate inside this function.
     """
     if resolved_at is None:
         return (
@@ -237,21 +307,55 @@ class IncidentSeedResult:
     still owes (spec §4).
 
     ``carried_from`` and ``carried_fields`` exist so an operator can see
-    what the platform asserted on their behalf: continuity puts words into a
-    federal filing, and that must be visible, not silent. ``carried_from``
+    what THIS SEED CALL asserted on their behalf: continuity puts words into
+    a federal filing, and that must be visible, not silent. ``carried_from``
     is the prior report's ``document_key``, but only when continuity
-    actually supplied something -- ``None`` both when no prior report exists
-    and when one exists but had nothing this report needed, so its presence
-    always means "this report contains words a human did not write here".
+    actually supplied something on THIS call -- ``None`` both when no prior
+    report exists and when one exists but had nothing this report needed.
+
+    They describe only this one call, not the document's full provenance
+    (review round 1, C2). Once a carried value is written, it becomes this
+    report's own stored ``document`` content -- Concord keeps no "still
+    carried" marker distinguishing it from a value an operator typed
+    directly. Re-seeding the SAME ``(providerTrackingId, reportType)`` again,
+    with nothing new authored anywhere, therefore reports
+    ``carried_fields == []`` even though most of the body still originated
+    from continuity on an EARLIER seed: nothing needed fetching a second
+    time, because it was already ``current``. Read an empty
+    ``carried_fields`` as "this call added nothing new from a prior report",
+    never as "everything in this document was typed by a human" -- see
+    ``tests/test_cr26_incident_seed.py``'s
+    ``test_reseeding_the_same_key_reports_nothing_carried_even_though_content_is``.
+
+    A related, deliberate consequence, also pinned there and in
+    ``test_correcting_a_prior_report_does_not_retroactively_rewrite_an_already_seeded_one``:
+    correcting the PRIOR report after a LATER one has already been seeded
+    from it does not retroactively change the later one.
+    :func:`seed_incident` only ever reads a prior report at the moment it is
+    seeding *from* it going forward; it never re-derives an already-filed
+    report's content because an earlier, unrelated report changed. A seeder
+    that did re-propagate would silently rewrite a report someone has
+    already filed with the federal government whenever an earlier report was
+    merely corrected -- the same category of loss keying by
+    ``providerTrackingId`` alone (spec §1.1) exists to prevent, reintroduced
+    through continuity instead of through the key.
 
     ``missing_required`` and ``missing_advisory`` are deliberately separate
     (spec §4): collapsing them would tell an operator that a missing
     ``rootCause`` blocks filing when it does not, or that a missing
     ``resolvedAt`` on a Final is merely advisory when it is the one thing
     that makes the document invalid. ``missing_required`` pairs a field with
-    why it is still owed; ``missing_advisory`` is bare names -- there is
-    only one reason anything appears there: nobody has authored it yet,
-    anywhere in this incident's history.
+    why it is still owed; ``missing_advisory`` is bare names.
+
+    A field in ``missing_advisory`` means only that neither this report nor
+    the single most recent prior report the lifecycle walk actually reached
+    (:func:`_prior_report`) has it -- NOT that nobody has authored it
+    anywhere in this incident's history (review round 1, I2). An Initial can
+    author ``rootCause`` and a Final can still list ``rootCause`` in
+    ``missing_advisory`` if the Ongoing between them was filed with nothing
+    in it: the walk stops at the closest filed report and does not reach
+    back past it. See
+    ``test_carried_from_stays_none_when_a_prior_report_exists_but_has_nothing_to_offer``.
     """
 
     document: Cr26Document
@@ -285,9 +389,12 @@ async def seed_incident(
     continuity. It is not a way to erase previously authored content by
     calling this function with less context -- there is no content parameter
     here at all; every field this function can populate comes from what was
-    already stored, at this key or the prior one.
+    already stored, at this key or the prior one. See
+    :class:`IncidentSeedResult`'s own docstring for what a re-seed does and
+    does not do to ``carried_from``/``carried_fields`` and to a report whose
+    prior report has since been corrected -- both are deliberate, not bugs.
     """
-    tracking_id = _validate_tracking_id(provider_tracking_id)
+    tracking_id = _validate_tracking_id(provider_tracking_id, report_type)
     document_key = f"{tracking_id}/{report_type}"
 
     _exists, current = await _document_at_key(session, system_id, document_key)
@@ -344,7 +451,7 @@ async def seed_incident(
             )
         )
     if report_type == "Final":
-        problem = _resolved_at_problem(report_type, document.get("resolvedAt"))
+        problem = _resolved_at_problem(document.get("resolvedAt"))
         if problem is not None:
             missing_required.append(problem)
 

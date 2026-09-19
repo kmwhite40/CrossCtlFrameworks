@@ -57,9 +57,18 @@ class DocumentIn(BaseModel):
 
 
 def _summary(row: Cr26Document) -> dict[str, Any]:
-    """A row without its body, for the list view."""
+    """A row without its body, for the list view.
+
+    ``document_key`` is included even though it is ``None`` for every
+    single-instance deliverable: once a keyed one exists (the Incident
+    Report), several rows share a ``kind`` in this response, and
+    ``document_key`` is the only thing that tells them apart. It is not
+    secret -- the incident seed route already returns it in its own
+    response.
+    """
     return {
         "kind": row.kind,
+        "document_key": row.document_key,
         "is_valid": row.is_valid,
         "validation_errors": row.validation_errors,
         "ruleset_version": row.ruleset_version,
@@ -118,13 +127,14 @@ async def list_documents(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
-    """Every deliverable authored for this system, with its verdict, no bodies."""
+    """Every deliverable authored for this system, with its verdict, no bodies.
+
+    No ``document_key`` filter: this lists every row regardless of kind or
+    key, including every filing of every incident. ``_summary`` carries
+    ``document_key`` precisely so those rows are distinguishable here rather
+    than all reading ``"incident"`` with no way to tell them apart.
+    """
     await _owned_system(session, system_id, principal)
-    # No document_key filter and _summary does not expose document_key: a
-    # no-op today, since no route writes a keyed document yet, but once a
-    # keyed deliverable ships this will list several rows under the same
-    # kind with no way to tell them apart in this response. Revisit
-    # alongside that deliverable's own routes, not here.
     rows = (
         await session.execute(
             select(Cr26Document)
@@ -139,19 +149,27 @@ async def list_documents(
 async def get_document(
     system_id: int,
     kind: str,
+    document_key: str | None = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """The system's NULL-keyed document of ``kind``.
+    """This system's document of ``kind``, at ``document_key`` (default
+    ``None``, i.e. the NULL key).
 
-    Explicit ``document_key IS NULL`` rather than a bare ``(system_id, kind)``
-    filter: since 0081 that pair is no longer necessarily unique -- a
-    per-instance deliverable can have several rows of the same kind,
-    distinguished by key. This route is not key-aware (that belongs with
-    whichever deliverable needs it) and every deliverable it serves today is
-    NULL-keyed, so filtering explicitly for the NULL key is what keeps this
-    route's behaviour identical to before 0081 rather than leaving
-    ``.first()`` to pick arbitrarily once a keyed row exists.
+    ``document_key`` is an optional query parameter, not part of the path:
+    omitting it is unchanged from before this parameter existed. Filtering
+    ``Cr26Document.document_key == document_key`` -- rather than branching on
+    whether a key was supplied -- is what ``ccf.cr26.store.put_document``
+    already does for exactly this reason: SQLAlchemy compiles
+    ``Column == None`` to ``IS NULL``, so a caller who supplies nothing gets
+    precisely the pre-0081 ``(system_id, kind)`` row and no other, with no
+    separate code path to keep in sync with the unique constraint's own
+    NULLS NOT DISTINCT behaviour.
+
+    A per-instance deliverable (the Incident Report) has several rows under
+    one ``kind``, distinguished only by this key -- a caller must supply the
+    key that :func:`ccf.cr26.incident.seed_incident`'s own response returned
+    as ``document_key`` to read a specific filing back.
     """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
@@ -160,7 +178,7 @@ async def get_document(
             select(Cr26Document).where(
                 Cr26Document.system_id == system_id,
                 Cr26Document.kind == kind,
-                Cr26Document.document_key.is_(None),
+                Cr26Document.document_key == document_key,
             )
         )
     ).scalars().first()
@@ -174,14 +192,27 @@ async def put_cr26_document(
     system_id: int,
     kind: str,
     body: DocumentIn,
+    *,
+    document_key: str | None = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
-    """Author or replace this system's document of ``kind``.
+    """Author or replace this system's document of ``kind``, at
+    ``document_key`` (default ``None``, i.e. the NULL key).
 
     An invalid document is stored, not refused -- a draft is necessarily
     incomplete, and the verdict comes back with it so the author can see what
     is still missing.
+
+    ``document_key`` matters most for a per-instance deliverable: without it,
+    this route always wrote (and overwrote) the single NULL-keyed row for
+    ``kind`` regardless of which specific incident report a caller meant --
+    the exact loss keying by ``document_key`` (migration ``0081``) exists to
+    prevent, reachable through this route even though
+    :func:`ccf.cr26.incident.seed_incident` itself never writes a NULL key.
+    A caller authoring a specific incident report's content must supply the
+    same key :func:`ccf.cr26.incident.seed_incident` returned as
+    ``document_key`` -- e.g. ``?document_key=INC-1%2FInitial``.
     """
     await _owned_system(session, system_id, principal)
     _checked_kind(kind)
@@ -190,6 +221,7 @@ async def put_cr26_document(
         system_id=system_id,
         kind=kind,
         document=body.document,
+        document_key=document_key,
         updated_by=principal.email,
     )
     await session.commit()

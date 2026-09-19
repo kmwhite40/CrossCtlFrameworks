@@ -604,7 +604,10 @@ async def test_seeder_never_writes_resolved_at_itself() -> None:
         assert "resolvedAt" not in result.document.document
         reasons = dict(result.missing_required)
         assert "resolvedAt" in reasons
-        assert "never invents" in reasons["resolvedAt"] or "never" in reasons["resolvedAt"]
+        # M5 (review round 1): a bare `"never" in reasons[...]` disjunct
+        # would match almost any prose about resolvedAt, including the
+        # unparseable-value reason below -- this pins the specific phrase.
+        assert "never invents or carries one forward" in reasons["resolvedAt"]
     finally:
         await _delete_org(_org_id)
 
@@ -796,6 +799,13 @@ async def test_carried_from_stays_none_when_a_prior_report_exists_but_has_nothin
     """A prior report can exist (was filed) while contributing nothing this
     report needs -- `carried_from` must reflect what was actually used, not
     merely that a row exists.
+
+    This is also I2's fixture (review round 1): the Initial genuinely DID
+    author `rootCause`, but the walk stops at Ongoing (the closest filed
+    report), which is empty, and never reaches back past it -- so `rootCause`
+    lands in `missing_advisory` despite having been authored somewhere in
+    this incident's history. `IncidentSeedResult`'s own docstring on
+    `missing_advisory` says exactly this now; it used to claim the opposite.
     """
     _org_id, system_id = await _system("incident-carried-from-empty-prior")
     tid = "INC-FROM-EMPTY-PRIOR"
@@ -807,9 +817,455 @@ async def test_carried_from_stays_none_when_a_prior_report_exists_but_has_nothin
                 s, system_id=system_id, provider_tracking_id=tid, report_type="Final"
             )
         # Ongoing (the closest filed prior report) had nothing to offer, and
-        # the walk must NOT reach back past it to Initial (which also has
-        # nothing here, but that is not the point being proven).
+        # the walk must NOT reach back past it to the Initial -- even though
+        # the Initial itself DOES have rootCause authored.
         assert result.carried_from is None
         assert result.carried_fields == []
+        # I2: rootCause was authored on the Initial, yet it is still
+        # "advisory, absent" here -- proving missing_advisory means "not
+        # reachable by the walk", not "never authored anywhere".
+        assert "rootCause" in result.missing_advisory
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- C1 (review round 1): PUT and GET are key-aware ------------------------
+
+
+async def test_a_keyed_document_written_directly_is_invisible_to_the_null_keyed_get() -> None:
+    """Before C1's fix: `PUT .../incident` (no key) always wrote the single
+    NULL-keyed `incident` row, and `GET .../incident` (no key) only ever
+    read that NULL-keyed row -- so a seeded report at a REAL key was 404
+    forever, and a second unkeyed PUT silently overwrote the first (the
+    exact loss migration 0081 exists to prevent, reachable through the
+    generic route this branch had not yet narrowed).
+
+    This test pins the CURRENT, fixed behaviour: writing at an explicit key
+    does not appear under the NULL key, and reading with the SAME key that
+    `seed_incident` returned finds it.
+    """
+    org_id, system_id = await _system("incident-put-get-key-aware")
+    tid = "INC-PUT-GET"
+    try:
+        async with session_scope() as s:
+            seeded = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Initial"
+            )
+        key = seeded.document_key
+
+        async with _Session(org_id=org_id).client() as c:
+            # Author content AT that exact key.
+            put_resp = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": key},
+                json={"document": {"reportType": "Initial", "providerTrackingId": tid,
+                                    "incidentDescription": "Authored via the keyed PUT."}},
+            )
+            assert put_resp.status_code == 200, put_resp.text
+
+            # Reading it back with the SAME key finds it.
+            get_keyed = await c.get(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": key},
+            )
+            assert get_keyed.status_code == 200, get_keyed.text
+            assert (
+                get_keyed.json()["document"]["incidentDescription"]
+                == "Authored via the keyed PUT."
+            )
+
+            # The NULL-keyed GET (no document_key at all) does NOT see it --
+            # it is a different row entirely.
+            get_null = await c.get(f"/api/systems/{system_id}/cr26-documents/incident")
+            assert get_null.status_code == 404, get_null.text
+    finally:
+        await _delete_org(org_id)
+
+
+async def test_a_second_keyed_put_at_a_different_key_does_not_overwrite_the_first() -> None:
+    """The core of C1: two DIFFERENT keyed PUTs to the same `kind` must
+    produce two rows, not one overwriting the other -- the incident
+    equivalent of `tests/test_cr26_document_key.py`'s own coexistence test,
+    now proven through the route rather than only through `put_document`
+    directly.
+    """
+    org_id, system_id = await _system("incident-put-two-keys")
+    tid = "INC-TWO-KEYS"
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            first = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": f"{tid}/Initial"},
+                json={"document": {"incidentDescription": "Initial body."}},
+            )
+            second = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": f"{tid}/Ongoing"},
+                json={"document": {"incidentDescription": "Ongoing body."}},
+            )
+            assert first.status_code == 200, first.text
+            assert second.status_code == 200, second.text
+
+            get_initial = await c.get(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": f"{tid}/Initial"},
+            )
+            get_ongoing = await c.get(
+                f"/api/systems/{system_id}/cr26-documents/incident",
+                params={"document_key": f"{tid}/Ongoing"},
+            )
+        assert get_initial.json()["document"]["incidentDescription"] == "Initial body."
+        assert get_ongoing.json()["document"]["incidentDescription"] == "Ongoing body."
+    finally:
+        await _delete_org(org_id)
+
+
+async def test_the_null_keyed_put_and_get_are_unchanged_for_a_single_instance_deliverable() -> (
+    None
+):
+    """C1's own regression guard: omitting `document_key` entirely must
+    behave EXACTLY as before this parameter existed, for the six
+    single-instance deliverables that always use the NULL key. Two PUTs with
+    no key collapse onto one row (unchanged upsert identity), and GET with
+    no key reads it back.
+
+    MUTATION: `document_key: str | None = None` defaulting to anything other
+    than `None`, or the query filtering `!=` instead of `==`, would make
+    this test fail.
+    """
+    org_id, system_id = await _system("incident-null-key-unchanged")
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            first = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/sdr",
+                json={"document": {"seed": 1}},
+            )
+            second = await c.put(
+                f"/api/systems/{system_id}/cr26-documents/sdr",
+                json={"document": {"seed": 2}},
+            )
+            assert first.status_code == 200, first.text
+            assert second.status_code == 200, second.text
+
+            get_resp = await c.get(f"/api/systems/{system_id}/cr26-documents/sdr")
+        assert get_resp.status_code == 200, get_resp.text
+        assert get_resp.json()["document"] == {"seed": 2}
+
+        # Still exactly one row for this system+kind.
+        async with session_scope() as s:
+            rows = (
+                await s.execute(
+                    select(Cr26Document).where(
+                        Cr26Document.system_id == system_id, Cr26Document.kind == "sdr"
+                    )
+                )
+            ).scalars().all()
+        assert len(rows) == 1
+        assert rows[0].document_key is None
+    finally:
+        await _delete_org(org_id)
+
+
+# --- I3 (review round 1): the list view distinguishes keyed rows -----------
+
+
+async def test_the_list_view_distinguishes_two_incident_filings_by_document_key() -> None:
+    """`routes/cr26.py`'s own prior-branch note said this deliverable's
+    routes would revisit the list view; C1/I3 do. Before the fix, two
+    incident filings both rendered as `{"kind": "incident", ...}` with no
+    way to tell them apart in this response.
+    """
+    org_id, system_id = await _system("incident-list-distinguishes")
+    tid = "INC-LIST"
+    try:
+        async with session_scope() as s:
+            await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Initial"
+            )
+        async with session_scope() as s:
+            await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Ongoing"
+            )
+
+        async with _Session(org_id=org_id).client() as c:
+            resp = await c.get(f"/api/systems/{system_id}/cr26-documents")
+        assert resp.status_code == 200, resp.text
+        rows = [row for row in resp.json() if row["kind"] == "incident"]
+        keys = {row["document_key"] for row in rows}
+        assert keys == {f"{tid}/Initial", f"{tid}/Ongoing"}
+    finally:
+        await _delete_org(org_id)
+
+
+# --- C2 (review round 1): re-seeding does not silently re-propagate --------
+
+
+async def test_reseeding_the_same_key_reports_nothing_carried_even_though_content_is() -> None:
+    """C2: a value carried on the FIRST seed becomes this report's own
+    stored content -- a re-seed of the SAME key reports
+    `carried_fields == []` even though most of the body originated from
+    continuity, because nothing needed fetching a second time. Not a bug:
+    `carried_fields` describes what THIS seed call did, not the document's
+    full provenance -- see `IncidentSeedResult`'s corrected docstring.
+    """
+    _org_id, system_id = await _system("incident-reseed-same-key")
+    tid = "INC-RESEED-SAME-KEY"
+    try:
+        await _author(system_id, f"{tid}/Initial", {"rootCause": "Original cause."})
+        async with session_scope() as s:
+            first = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Ongoing"
+            )
+        assert first.carried_fields == ["rootCause"]
+        assert first.carried_from == f"{tid}/Initial"
+
+        async with session_scope() as s:
+            second = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Ongoing"
+            )
+        # Same body...
+        assert second.document.document["rootCause"] == "Original cause."
+        # ...but nothing was carried THIS time, because it was already there.
+        assert second.carried_fields == []
+        assert second.carried_from is None
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_correcting_a_prior_report_does_not_retroactively_rewrite_an_already_seeded_one() -> (
+    None
+):
+    """The other half of C2: this is deliberate, not a bug. Seed an Ongoing
+    from an Initial's `rootCause`, THEN correct the Initial's `rootCause`
+    directly, then re-seed the SAME Ongoing again -- its `rootCause` must
+    still be the ORIGINAL value, not the correction, because `seed_incident`
+    never re-derives an already-filed report's content from a prior report
+    that has since changed.
+
+    MUTATION: making `seed_incident` always re-read `prior` and overwrite an
+    already-carried field on every re-seed (rather than only filling what
+    `current` lacks) would make this test's first assertion fail.
+    """
+    _org_id, system_id = await _system("incident-no-retroactive-rewrite")
+    tid = "INC-NO-RETRO"
+    try:
+        await _author(system_id, f"{tid}/Initial", {"rootCause": "Original cause."})
+        async with session_scope() as s:
+            await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Ongoing"
+            )
+        # Correct the Initial after the fact.
+        await _author(system_id, f"{tid}/Initial", {"rootCause": "Corrected cause."})
+
+        async with session_scope() as s:
+            result = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Ongoing"
+            )
+        assert result.document.document["rootCause"] == "Original cause."
+        assert result.carried_fields == []
+        assert result.carried_from is None
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- I1 (review round 1): resolvedAt must be a full instant, not just an ---
+# --- ISO-8601-shaped string -------------------------------------------------
+
+
+_LOOSE_RESOLVED_AT_CASES = [
+    ("bare-date", "2026-09-15"),
+    ("compact", "20260915"),
+    ("week-date", "2026-W01-1"),
+    ("hour-only", "2026-09-15T08"),
+    ("naive-no-offset", "2026-09-15T08:00:00"),
+]
+
+
+@pytest.mark.parametrize("label,resolved_at", _LOOSE_RESOLVED_AT_CASES)
+async def test_a_resolved_at_missing_date_time_or_offset_is_named(
+    label: str, resolved_at: str
+) -> None:
+    """I1: `datetime.fromisoformat` alone accepts all five of these, and
+    every one `is_valid=True`s against the schema (date-time is unenforced),
+    but NONE of them names a single instant -- and each is a far more
+    plausible operator typo than the spec's own `"whenever"` example,
+    because each one IS a syntactically real ISO-8601 form, just not an
+    instant.
+
+    MUTATION: reverting `_parses_as_iso8601_instant` to `fromisoformat`
+    alone (dropping the `_INSTANT_RE` pre-check) makes every one of these
+    parametrized cases pass silently instead of being named.
+    """
+    _org_id, system_id = await _system(f"incident-resolved-loose-{label}")
+    tid = "INC-RESOLVED-LOOSE"
+    key = f"{tid}/Final"
+    try:
+        await _author(
+            system_id,
+            key,
+            {"certificationPackageOverviewUri": CPO_URI, "resolvedAt": resolved_at},
+        )
+        async with session_scope() as s:
+            result = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Final"
+            )
+        assert result.document.document["resolvedAt"] == resolved_at, "not rewritten"
+        assert result.document.is_valid is True, "the schema itself is still satisfied"
+        reasons = dict(result.missing_required)
+        assert "resolvedAt" in reasons, f"{resolved_at!r} should have been named"
+        assert "does not parse" in reasons["resolvedAt"]
+    finally:
+        await _delete_org(_org_id)
+
+
+_FULL_RESOLVED_AT_CASES = [
+    ("z-suffix", "2026-09-15T08:00:00Z"),
+    ("numeric-offset", "2026-09-15T08:00:00+00:00"),
+]
+
+
+@pytest.mark.parametrize("label,resolved_at", _FULL_RESOLVED_AT_CASES)
+async def test_a_full_resolved_at_instant_is_not_named(label: str, resolved_at: str) -> None:
+    """The boundary's other side: a genuine date + time + offset must NOT be
+    flagged, in either accepted spelling of "UTC".
+    """
+    _org_id, system_id = await _system(f"incident-resolved-full-{label}")
+    tid = "INC-RESOLVED-FULL"
+    key = f"{tid}/Final"
+    try:
+        await _author(
+            system_id,
+            key,
+            {"certificationPackageOverviewUri": CPO_URI, "resolvedAt": resolved_at},
+        )
+        async with session_scope() as s:
+            result = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Final"
+            )
+        reasons = dict(result.missing_required)
+        assert "resolvedAt" not in reasons, f"{resolved_at!r} should NOT have been named"
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- I4 (review round 1): resolvedAt is required for Final alone -----------
+
+
+async def test_resolved_at_is_never_required_on_an_ongoing_report() -> None:
+    """I4: `_resolved_at_problem` is only ever called when
+    `report_type == "Final"` -- an Ongoing report with no `resolvedAt` must
+    not be told it owes one; a still-open incident does not owe a resolution
+    time.
+
+    MUTATION: broadening the caller's guard to
+    `if report_type in ("Final", "Ongoing")` leaves every other test in this
+    file green (measured -- review round 1) and makes only this one fail.
+    """
+    _org_id, system_id = await _system("incident-resolved-not-required-ongoing")
+    try:
+        async with session_scope() as s:
+            result = await seed_incident(
+                s,
+                system_id=system_id,
+                provider_tracking_id="INC-ONGOING-NO-RESOLVED",
+                report_type="Ongoing",
+            )
+        required_names = {name for name, _reason in result.missing_required}
+        assert "resolvedAt" not in required_names
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- M1 (review round 1): the tracking id is stripped before it is keyed ---
+
+
+async def test_a_tracking_id_with_surrounding_whitespace_joins_the_same_chain() -> None:
+    """M1: `"  INC-1 "` and `"INC-1"` must resolve to the SAME document_key,
+    or an incident's own reports would split into two chains under two
+    different keys -- the whitespace-shaped version of the collision §1.1
+    exists to prevent.
+
+    MUTATION: `_validate_tracking_id` returning the unstripped value would
+    make the second seed below produce `document_key ==
+    "  INC-WHITESPACE  /Ongoing"` instead of joining the first seed's chain,
+    and `carried_from` would be `None` instead of naming the Initial.
+    """
+    _org_id, system_id = await _system("incident-tracking-id-whitespace")
+    try:
+        async with session_scope() as s:
+            first = await seed_incident(
+                s,
+                system_id=system_id,
+                provider_tracking_id="  INC-WHITESPACE  ",
+                report_type="Initial",
+            )
+        assert first.document_key == "INC-WHITESPACE/Initial"
+
+        await _author(system_id, "INC-WHITESPACE/Initial", {"rootCause": "Known cause."})
+
+        async with session_scope() as s:
+            second = await seed_incident(
+                s, system_id=system_id, provider_tracking_id="INC-WHITESPACE", report_type="Ongoing"
+            )
+        assert second.document_key == "INC-WHITESPACE/Ongoing"
+        assert second.carried_from == "INC-WHITESPACE/Initial"
+        assert second.document.document["rootCause"] == "Known cause."
+    finally:
+        await _delete_org(_org_id)
+
+
+# --- M2 (review round 1): an overlong tracking id is refused, not a 500 ----
+
+
+async def test_an_overlong_tracking_id_is_refused_at_the_seeder_not_a_500() -> None:
+    """M2: `document_key` is `String(128)`. Before this guard, a
+    sufficiently long `providerTrackingId` reached the database as a raw
+    `StringDataRightTruncationError` -- an unhandled 500 -- instead of a
+    refusal this module controls.
+    """
+    _org_id, system_id = await _system("incident-tracking-id-overlong")
+    overlong = "X" * 125  # 125 + len("/Initial") == 133 > 128
+    try:
+        async with session_scope() as s:
+            with pytest.raises(ValueError, match="too long"):
+                await seed_incident(
+                    s,
+                    system_id=system_id,
+                    provider_tracking_id=overlong,
+                    report_type="Initial",
+                )
+    finally:
+        await _delete_org(_org_id)
+
+
+async def test_an_overlong_tracking_id_is_422_at_the_route() -> None:
+    org_id, system_id = await _system("incident-tracking-id-overlong-route")
+    overlong = "X" * 125
+    try:
+        async with _Session(org_id=org_id).client() as c:
+            resp = await c.post(
+                f"/api/systems/{system_id}/cr26-documents/incident/seed",
+                json={"providerTrackingId": overlong, "reportType": "Initial"},
+            )
+        assert resp.status_code == 422, resp.text
+    finally:
+        await _delete_org(org_id)
+
+
+async def test_a_tracking_id_at_exactly_the_length_boundary_is_accepted() -> None:
+    """The other side of M2's boundary: a tracking id whose resulting
+    document_key is exactly 128 characters must be accepted, not refused --
+    this is a length LIMIT, not an arbitrary shorter cutoff.
+    """
+    _org_id, system_id = await _system("incident-tracking-id-at-boundary")
+    # len(tid) + 1 ("/") + len("Initial"=7) == 128  =>  len(tid) == 120
+    tid = "Y" * 120
+    try:
+        async with session_scope() as s:
+            result = await seed_incident(
+                s, system_id=system_id, provider_tracking_id=tid, report_type="Initial"
+            )
+        assert result.document_key == f"{tid}/Initial"
+        assert len(result.document_key) == 128
     finally:
         await _delete_org(_org_id)
