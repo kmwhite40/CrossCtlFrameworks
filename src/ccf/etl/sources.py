@@ -27,6 +27,7 @@ import asyncio
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -52,6 +53,7 @@ _UA = "ConcordCatalogPoller/0.1 (+compliance-controls-platform)"
 #     exports against, bundled under ccf/oscal/schemas).
 _NIST_RAW = "https://raw.githubusercontent.com/usnistgov/oscal-content/main/nist.gov"
 _OSCAL_SPEC_RAW = "https://raw.githubusercontent.com/usnistgov/OSCAL/main"
+_OSCAL_SPEC_SSP_KEY = "nist_oscal_schema_ssp"
 
 # Seeded on `ccf sources-seed`. Authoritative, machine-readable upstreams.
 DEFAULT_SOURCES: list[dict[str, Any]] = [
@@ -133,7 +135,7 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         # means drift is at least detected and recorded for a human to act on.
         # Consumed by ccf.oscal.validation, not by the catalog loader, so the
         # kind is content-hash only.
-        "key": "nist_oscal_schema_ssp",
+        "key": _OSCAL_SPEC_SSP_KEY,
         "name": "NIST OSCAL - SSP JSON schema (specification)",
         "authority": "NIST",
         "kind": "generic",
@@ -642,29 +644,60 @@ def _cr26_seed_digests() -> dict[str, str]:
     return {f"{_CR26_KEY_PREFIX}{kind}": sha for kind, sha in _cr26_vendored_digests().items()}
 
 
+_OSCAL_SPEC_MANIFEST = Path(__file__).resolve().parents[1] / "oscal" / "schemas" / "MANIFEST.json"
+_OSCAL_SPEC_SSP_FILENAME = "oscal_ssp_schema.json"
+
+
+def _oscal_spec_seed_digests() -> dict[str, str]:
+    """``nist_oscal_schema_ssp`` -> the sha256 the vendored OSCAL manifest pins.
+
+    Same shape as :func:`_cr26_seed_digests`, for the same reason: read lazily
+    from :func:`seed_sources`, never at import, so this module keeps doing no
+    file I/O at import time.
+    """
+    manifest = json.loads(_OSCAL_SPEC_MANIFEST.read_text(encoding="utf-8"))
+    sha = manifest["files"][_OSCAL_SPEC_SSP_FILENAME]
+    return {_OSCAL_SPEC_SSP_KEY: str(sha)}
+
+
+#: ``CatalogSource.key`` -> the reader that can produce its seed-time
+#: ``last_sha256``. One mechanism for every row that must not start life with
+#: a NULL drift baseline (see :func:`seed_sources`'s docstring for why that is
+#: unsafe), rather than one hardcoded branch per row family: adding a new
+#: pinned source means adding an entry here, not a new ``if``. Each reader
+#: covers every key drawn from one manifest, so :func:`seed_sources` reads
+#: that manifest at most once per call no matter how many of its keys are
+#: being newly created.
+_SEED_DIGEST_READERS: dict[str, Callable[[], dict[str, str]]] = {
+    **{f"{_CR26_KEY_PREFIX}{kind}": _cr26_seed_digests for kind in _CR26_KINDS_FOR_SOURCES},
+    _OSCAL_SPEC_SSP_KEY: _oscal_spec_seed_digests,
+}
+
+
 async def seed_sources(session: AsyncSession) -> int:
     """Upsert :data:`DEFAULT_SOURCES` by ``key``. Returns rows created.
 
-    CR26 schema rows are seeded with ``last_sha256`` already set to the digest
-    the vendored ``MANIFEST.json`` pins, because :func:`check_source` compares
-    a fetched body against ``source.last_sha256``. Left NULL, the first poll
-    of every one of those rows reports "changed" against nothing (eleven
-    meaningless drift warnings), and worse, silently adopts whatever upstream
-    served that day as the baseline -- so a schema that moved between the
-    vendoring and the first poll would never be reported at all. Seeded, the
-    first comparison is upstream against exactly what Concord validates with.
+    Rows keyed in :data:`_SEED_DIGEST_READERS` are seeded with ``last_sha256``
+    already set to the digest their vendored manifest pins, because
+    :func:`check_source` compares a fetched body against ``source.last_sha256``.
+    Left NULL, the first poll of every one of those rows reports "changed"
+    against nothing, and worse, silently adopts whatever upstream served that
+    day as the baseline -- so a schema that moved between the vendoring and
+    the first poll would never be reported at all. Seeded, the first
+    comparison is upstream against exactly what Concord validates with.
     """
     existing = {s.key for s in (await session.execute(select(CatalogSource))).scalars().all()}
     created = 0
-    cr26_digests: dict[str, str] | None = None
+    digest_cache: dict[Callable[[], dict[str, str]], dict[str, str]] = {}
     for spec in DEFAULT_SOURCES:
         if spec["key"] in existing:
             continue
         row = dict(spec)  # never mutate the module-level spec
-        if row["key"].startswith(_CR26_KEY_PREFIX):
-            if cr26_digests is None:  # read the manifest once, and only if needed
-                cr26_digests = _cr26_seed_digests()
-            row["last_sha256"] = cr26_digests[row["key"]]
+        reader = _SEED_DIGEST_READERS.get(row["key"])
+        if reader is not None:
+            if reader not in digest_cache:  # read each manifest once, and only if needed
+                digest_cache[reader] = reader()
+            row["last_sha256"] = digest_cache[reader][row["key"]]
         session.add(CatalogSource(**row))
         created += 1
     await session.flush()

@@ -974,16 +974,22 @@ actually arrive, because "populate the new column from the impact level we
 already hold" reads like housekeeping rather than like the mapping FedRAMP
 forbids.
 
-**Three known blind spots, disclosed rather than implied away.** This is a
+**Four known blind spots, disclosed rather than implied away.** This is a
 source-shaped guard, not a data-flow one, so it does not follow a value
-through an intermediate variable, a function's return, or `setattr`. And the
-widening to `migrations/versions/` does **not** close the case that motivated
-it: a backfill written as raw SQL inside `op.execute("UPDATE ccf.systems SET
-certification_class = CASE baseline WHEN 'high' THEN 'B' … END")` is a string
-literal to an AST assignment walker, invisible however wide the glob is
-thrown. No walker can fix that one, and a substring scan that could would
-fire on prose, so it is recorded here as a place review — not the test suite
-— has to hold the line. What the guard does catch is the direct,
+through:
+
+1. An intermediate variable.
+2. A function's return.
+3. `setattr`.
+4. Raw SQL inside `op.execute(...)`. The widening to `migrations/versions/`
+   does **not** close the case that motivated it: a backfill written as
+   `op.execute("UPDATE ccf.systems SET certification_class = CASE baseline
+   WHEN 'high' THEN 'B' … END")` is a string literal to an AST assignment
+   walker, invisible however wide the glob is thrown.
+
+No walker can fix that last one, and a substring scan that could would fire
+on prose, so it is recorded here as a place review — not the test suite —
+has to hold the line. What the guard does catch is the direct,
 textually-adjacent Python form the mapping's temptation actually takes, in
 both roots.
 

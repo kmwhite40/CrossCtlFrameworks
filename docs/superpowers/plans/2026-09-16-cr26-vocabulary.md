@@ -40,7 +40,7 @@ export CCF_DATABASE_URL_SYNC=postgresql+psycopg://ccf:ccf@localhost:5434/ccf_tes
 
 | File | Responsibility | Task |
 |---|---|---|
-| `src/ccf/patching/sla.py` | gains `ACCEPTED_WEAKNESS_DAYS`, `is_accepted_weakness`; `SLA_BUCKETS` and `classify` gain `accepted` | 1, 2 |
+| `src/ccf/patching/sla.py` | gains `ACCEPTED_WEAKNESS_DAYS`, `is_accepted_weakness` *(superseded — see the Task 1 amendment note below, which `accepted_weakness_state` replaced it with)*; `SLA_BUCKETS` and `classify` gain `accepted` | 1, 2 |
 | `tests/test_accepted_weakness.py` | the 192-day rule and the disjoint union | 1 |
 | `tests/test_patching_sla.py` | extended: `risk_accepted` is its own bucket | 2 |
 | `src/ccf/constants.py` | `CERTIFICATION_CLASSES`, `CERTIFICATION_PATHS` + why they are not impact levels | 3 |
@@ -68,7 +68,9 @@ The deadline-bound piece (VER mandatory 7 December 2026), and pure — no databa
 - Consumes: `ccf.constants.POAM_ACTIVE_STATUSES` (NOT currently imported by `sla.py` — it imports only `POAM_CLOSED_STATUSES`; add it to that same import).
 - Produces:
   - `ACCEPTED_WEAKNESS_DAYS: int = 192`
-  - `def is_accepted_weakness(poam: Any, *, today: date) -> bool`
+  - `def is_accepted_weakness(poam: Any, *, today: date) -> bool` *(superseded —
+    see the amendment note above: this shipped as
+    `accepted_weakness_state(poam, *, today) -> str` instead)*
 
 - [ ] **Step 1: Write the failing test**
 
