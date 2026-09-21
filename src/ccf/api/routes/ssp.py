@@ -49,7 +49,7 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import entry_to_dict, seed_80053_project, seed_project_entries
 from ...ssp.statements import STYLES
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/ssp", tags=["ssp"])
@@ -58,6 +58,27 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 
 # Frameworks a project may target — validated on create.
 FRAMEWORKS = ("cmmc-800-171", "nist-800-53r5")
+
+#: Roles that may author an SSP: edit control entries, create and update
+#: projects, apply templates, pull connector config into ODP values.
+#:
+#: ``_require_project`` scopes every project-addressed route to the caller's
+#: organization, but tenancy is not authority — before these gates existed, a
+#: ``viewer`` in the right org could rewrite every control narrative in a plan
+#: and delete the project outright. ``assessor`` and ``viewer`` are read-only
+#: here by design: an assessor judges the plan it is handed, and an assessor
+#: who can edit the statements being assessed is not an assessor.
+AUTHOR_ROLES = ("admin", "control_owner")
+
+#: Roles that may destroy or wholesale replace authored content.
+#:
+#: Narrower than :data:`AUTHOR_ROLES` because these are not edits. ``delete``
+#: removes the project; ``reseed`` regenerates sample statements over it; and
+#: ``auto-statements`` assigns ``part_narratives`` for *every* entry
+#: unconditionally (``governance/automation.py``), so one call replaces a
+#: project's worth of human-authored narrative. Editing a control is the
+#: control owner's job; discarding the plan's content is not.
+DESTRUCTIVE_ROLES = ("admin",)
 
 _BASELINE_LABELS = {"low": "Low", "moderate": "Moderate", "high": "High"}
 _FIPS_ORDER = {"low": 0, "moderate": 1, "high": 2}
@@ -209,7 +230,7 @@ async def list_projects(
 async def create_project(
     body: ProjectCreate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> ProjectOut:
     if body.framework not in FRAMEWORKS:
         raise HTTPException(422, f"framework must be one of {', '.join(FRAMEWORKS)}")
@@ -402,7 +423,7 @@ async def set_metadata(
     project_id: int,
     body: MetadataIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
     """Set SSP front matter; optionally auto-fill from the linked system + profile."""
     proj = await _require_project(session, project_id, principal)
@@ -454,7 +475,7 @@ async def add_revision(
     project_id: int,
     body: RevisionIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
     """Append a revision-history entry (and bump the project version)."""
     proj = await _require_project(session, project_id, principal)
@@ -475,7 +496,7 @@ async def auto_statements(
     include_captured: bool = True,
     mark_draft: bool = True,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*DESTRUCTIVE_ROLES)),
 ) -> dict[str, Any]:
     """(Re)compose every control's implementation statement from the derivation.
 
@@ -526,7 +547,7 @@ async def connectors() -> list[dict[str, Any]]:
 async def verify_connector(
     key: str,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
     """Prove connectivity into the target environment (e.g. an AWS GovCloud account).
 
@@ -547,7 +568,7 @@ async def autofill_from_connector(
     connector: str,
     apply: bool = False,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
     """Capture live config via a connector and map it onto the project's ODPs.
 
@@ -641,7 +662,7 @@ async def apply_template(
     control_id: str,
     body: ApplyTemplate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
     """Render a canned template with the entry's ODP values and add it as a part.
 
@@ -685,7 +706,7 @@ async def update_project(
     project_id: int,
     body: ProjectUpdate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> ProjectOut:
     proj = await _require_project(session, project_id, principal)
     for k, v in body.model_dump(exclude_none=True).items():
@@ -699,7 +720,7 @@ async def update_project(
 async def delete_project(
     project_id: int,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*DESTRUCTIVE_ROLES)),
 ) -> None:
     proj = await _require_project(session, project_id, principal)
     await session.delete(proj)
@@ -712,7 +733,7 @@ async def reseed_project(
     overwrite: bool = False,
     platform: str | None = None,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*DESTRUCTIVE_ROLES)),
 ) -> dict[str, int | str]:
     """Regenerate sample statements, optionally switching the target platform.
 
@@ -742,7 +763,7 @@ async def update_entry(
     control_id: str,
     body: EntryUpdate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
     await _require_project(session, project_id, principal)
     entry = (
