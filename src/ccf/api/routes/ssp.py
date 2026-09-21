@@ -20,14 +20,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
-from ...boundary.summary import reconcile_categorization, system_boundary_summary
 from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
 from ...governance import automation
 from ...models import (
-    Control,
-    ControlImplementation,
-    Evidence,
     ScoringControl,
     SSPControlEntry,
     SSPProject,
@@ -35,8 +31,8 @@ from ...models import (
     System,
     SystemProfile,
 )
-from ...ssp import completeness as ssp_completeness
 from ...ssp import constants
+from ...ssp.completeness_query import project_completeness
 from ...ssp.generator import generate_ssp_docx
 from ...ssp.nist80053_docx import render_80053_docx
 from ...ssp.odp import render as render_template
@@ -337,80 +333,14 @@ async def completeness(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """SSP readiness score + exactly what front matter / controls are missing."""
+    """SSP readiness score + exactly what front matter / controls are missing.
+
+    The gathering and scoring live in :func:`ccf.ssp.completeness_query.
+    project_completeness` so a second page can ask for the same number rather
+    than grow a second copy of these joins.
+    """
     proj = await _require_project(session, project_id, principal)
-    entries = (
-        (
-            await session.execute(
-                select(SSPControlEntry).where(SSPControlEntry.project_id == project_id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    odp_map: dict[str, Any] = {
-        row[0]: row[1]
-        for row in (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringControl.odp_definitions)
-            )
-        ).all()
-    }
-
-    # Real evidence linkage: a control counts as evidenced when its system's
-    # ControlImplementation (matched by catalog identifier == this entry's
-    # control_id, the same best-effort join ``governance/control_tests.py``
-    # uses) has at least one linked Evidence row. Without this, entries built
-    # by ``entry_to_dict`` carry no evidence_ref/control_implementation keys at
-    # all and ``_has_linked_evidence`` always reads as false.
-    evidence_by_control: dict[str, list[dict[str, Any]]] = {}
-    if proj.system_id is not None:
-        evidence_rows = (
-            await session.execute(
-                select(Control.identifier, Evidence.id)
-                .join(ControlImplementation, ControlImplementation.control_id == Control.id)
-                .join(Evidence, Evidence.implementation_id == ControlImplementation.id)
-                .where(ControlImplementation.system_id == proj.system_id)
-            )
-        ).all()
-        for identifier, evidence_id in evidence_rows:
-            evidence_by_control.setdefault(identifier, []).append({"id": evidence_id})
-
-    rows = []
-    for e in entries:
-        d = entry_to_dict(e)
-        d["odp_definitions"] = list(odp_map.get(e.control_id) or [])
-        linked = evidence_by_control.get(e.control_id)
-        if linked:
-            d["control_implementation"] = {"evidence": linked}
-        rows.append(d)
-
-    boundary: dict[str, Any] | None = None
-    if proj.system_id is not None:
-        summary = await system_boundary_summary(session, proj.system_id)
-        system_row = await session.get(System, proj.system_id)
-        # No System row to compare against (e.g. it was deleted out from under
-        # the project, which SET NULLs system_id) -> nothing to reconcile, so
-        # don't hold the boundary check against the SSP.
-        reconciles = (
-            reconcile_categorization(system_row, summary.info_types) == []
-            if system_row is not None
-            else True
-        )
-        ic_total = len(summary.interconnections)
-        ic_with_agreement = sum(
-            1
-            for ic in summary.interconnections
-            if ic.agreement_type not in (None, "", "none") and (ic.agreement_ref or "").strip()
-        )
-        boundary = {
-            "components": len(summary.components),
-            "info_types": len(summary.info_types),
-            "categorization_reconciles": reconciles,
-            "interconnections_with_agreements": (ic_with_agreement, ic_total),
-        }
-
-    return ssp_completeness.assess(proj.metadata_json or {}, rows, boundary=boundary)
+    return await project_completeness(session, proj)
 
 
 class MetadataIn(BaseModel):

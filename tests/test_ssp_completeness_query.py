@@ -53,6 +53,7 @@ from ccf.models import (
     System,
     SystemComponent,
 )
+from ccf.ssp.completeness_query import project_completeness
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -497,5 +498,23 @@ async def test_completeness_endpoint_response_is_pinned() -> None:
         assert _normalize(linked.json()) == _EXPECTED_LINKED
         assert _normalize(unlinked.json()) == _EXPECTED_UNLINKED
         assert _normalize(dangling.json()) == _EXPECTED_DANGLING
+    finally:
+        await _cleanup(ids)
+
+
+@pytest.mark.asyncio
+async def test_project_completeness_service_matches_the_endpoint() -> None:
+    """The extracted, DB-backed service returns the same report without HTTP."""
+    ids = await _seed()
+    try:
+        async with session_scope() as s:
+            for key, expected in (
+                ("linked", _EXPECTED_LINKED),
+                ("unlinked", _EXPECTED_UNLINKED),
+                ("dangling", _EXPECTED_DANGLING),
+            ):
+                proj = await s.get(SSPProject, ids[key])
+                assert proj is not None
+                assert _normalize(await project_completeness(s, proj)) == expected
     finally:
         await _cleanup(ids)
