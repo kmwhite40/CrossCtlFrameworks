@@ -41,7 +41,11 @@ class ExternalPrincipal(Base):
     organization_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
     )
-    kind: Mapped[str] = mapped_column(String(16), default="customer")  # customer|assessor|vendor
+    #: One of :data:`ccf.constants.EXTERNAL_PRINCIPAL_KINDS`, enforced by the
+    #: portal service on write. Deliberately not spelled out again here: the
+    #: members used to live only in a comment on this line, which is how
+    #: ``kind="assesor"`` became storable and indistinguishable from a member.
+    kind: Mapped[str] = mapped_column(String(16), default="customer")
     name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(320))
     organization_name: Mapped[str | None] = mapped_column(String(255))
@@ -105,6 +109,7 @@ class ExternalAccessGrant(Base):
     principal_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.external_principals.id", ondelete="SET NULL")
     )
+    #: Mirrors the principal's kind; same vocabulary, same enforcement.
     kind: Mapped[str] = mapped_column(String(16), default="customer")
     #: The engagement this credential carries the authority of, if any. Nullable
     #: because every existing customer and vendor grant has none and always

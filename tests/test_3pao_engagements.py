@@ -36,6 +36,7 @@ from ccf.models import Organization, System, User
 from ccf.models_portal import AssessmentEngagement, ExternalAccessGrant
 from ccf.packages import service as pkg_service
 from ccf.portal import service as portal
+from ccf.reliability.checks import _check_external_grant_expiration
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -814,3 +815,95 @@ async def test_migration_0083_round_trips_and_reports_out_of_vocabulary_kind(
     finally:
         engine.dispose()
     assert counts.get("external_principals", 0) >= 1
+
+
+async def test_an_elapsed_engagement_does_not_report_its_grant_as_active(
+    orgs: list[int],
+) -> None:
+    """The operator surface must not claim access that does not exist.
+
+    ``_valid`` stops resolving a grant once its engagement elapses (§4 rule 4),
+    but the portal-admin page used to classify a grant from its own row alone --
+    ``revoked`` then ``expires_at`` -- so a grant with a live expiry under a
+    dead engagement displayed as ``active``. The row said access was live; the
+    resolution path denied it. Both now go through ``grant_status``.
+
+    The grant is written directly, with an expiry deliberately in the future,
+    so the only thing that can make it non-active is the engagement.
+    """
+    now = datetime.now(UTC)
+    org_id = await _org(orgs, f"stale-engagement-org-{_tag()}")
+    system_id = await _system(org_id, "s")
+    principal_id = await _assessor(org_id, "Firm")
+    engagement_id = await _engagement(
+        org_id, system_id, principal_id,
+        period_from=now - timedelta(days=60), period_to=now + timedelta(days=1),
+    )
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        grant = ExternalAccessGrant(
+            organization_id=org_id, principal_id=principal_id, kind="assessor",
+            engagement_id=engagement_id, expires_at=now + timedelta(days=365),
+        )
+        grant.token = new_api_token()
+        s.add(grant)
+        await s.flush()
+        grant_id = grant.id
+
+        # While the engagement is current, everything agrees it is active.
+        current = await portal.current_engagement_ids(s, [engagement_id])
+        assert portal.grant_status(grant, current) == "active"
+        assert await portal.resolve_grant_by_id(s, grant_id) is not None
+
+        # Elapse the engagement without touching the grant.
+        engagement = await s.get(AssessmentEngagement, engagement_id)
+        assert engagement is not None
+        engagement.period_to = now - timedelta(days=1)
+        await s.flush()
+
+        current = await portal.current_engagement_ids(s, [engagement_id])
+        assert portal.grant_status(grant, current) == "engagement ended"
+        assert await portal.resolve_grant_by_id(s, grant_id) is None
+        # The grant's own expiry is untouched and still in the future -- so
+        # nothing but the engagement can be producing this answer.
+        assert grant.expires_at is not None and grant.expires_at > now
+        assert not grant.revoked
+
+
+async def test_the_hygiene_check_counts_an_engagement_ended_grant(orgs: list[int]) -> None:
+    """A check that reports a clean bill of health it has not verified is worse
+    than one that does not run.
+
+    ``_check_external_grant_expiration`` counted only ``expires_at < now()``, so
+    an un-revoked grant under a dead engagement was reported as nothing to see.
+    It is counted now, and counted *separately* -- an expired grant needs a new
+    token, an engagement-ended one may need nothing at all.
+    """
+    now = datetime.now(UTC)
+    org_id = await _org(orgs, f"hygiene-org-{_tag()}")
+    system_id = await _system(org_id, "s")
+    principal_id = await _assessor(org_id, "Firm")
+    engagement_id = await _engagement(
+        org_id, system_id, principal_id,
+        period_from=now - timedelta(days=60), period_to=now + timedelta(days=1),
+    )
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        grant = ExternalAccessGrant(
+            organization_id=org_id, principal_id=principal_id, kind="assessor",
+            engagement_id=engagement_id, expires_at=now + timedelta(days=365),
+        )
+        grant.token = new_api_token()
+        s.add(grant)
+        await s.flush()
+
+        engagement = await s.get(AssessmentEngagement, engagement_id)
+        assert engagement is not None
+        engagement.period_to = now - timedelta(days=1)
+        await s.flush()
+
+        check = await _check_external_grant_expiration(s)
+        assert check.status == "warn", check
+        # Named by cause, not lumped into one number.
+        assert "engagement-ended" in check.message, check.message
+        assert "expired" not in check.message, check.message

@@ -1109,7 +1109,7 @@ async def _portal_admin_context(
     from ...constants import EXTERNAL_PRINCIPAL_KINDS  # noqa: PLC0415
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
-    from ...portal import list_grants  # noqa: PLC0415
+    from ...portal import current_engagement_ids, grant_status, list_grants  # noqa: PLC0415
 
     rows: list[dict[str, Any]] = []
     packages: list[Any] = []
@@ -1124,13 +1124,18 @@ async def _portal_admin_context(
                 )
             ).scalars().all()
         }
-        _now = datetime.now(UTC)
+        # One query for every engagement on the page, then the SAME classifier
+        # the resolution path uses. This used to compute the status from the
+        # grant row alone, so a grant whose engagement had ended displayed as
+        # "active" while resolving to nothing -- the operator surface asserting
+        # access that does not exist.
+        current = await current_engagement_ids(
+            session, [g.engagement_id for g in grants if g.engagement_id is not None]
+        )
         rows = [
             {"g": g,
              "principal": principals.get(g.principal_id) if g.principal_id else None,
-             "status": ("revoked" if g.revoked
-                        else "expired" if (g.expires_at and g.expires_at < _now)
-                        else "active")}
+             "status": grant_status(g, current)}
             for g in grants
         ]
         packages = list(

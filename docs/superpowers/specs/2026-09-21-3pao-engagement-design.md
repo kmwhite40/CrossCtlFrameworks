@@ -213,6 +213,14 @@ and are visible; new ones cannot be created.
    capped — asserted on the returned value, not only on the stored row.
 3. **Revoking an engagement kills every grant under it**, including ones issued
    after the first. Seed two, revoke, assert both resolve to `None`.
+
+   **Correction (implementation, 2026-09-21): as written above, this test
+   cannot fail.** Rule 4 rejects a grant under a revoked engagement at
+   resolution, so both grants resolve to `None` whether or not rule 3's loop
+   ran at all — the assertion is satisfied by the guard it is not testing.
+   The test must additionally assert on the grant **rows** (`revoked is True`),
+   which is what rule 3 actually does and what an operator sees in the admin
+   list. Deleting the loop is then caught.
 4. **A grant whose engagement has ended is rejected at resolution even though
    its own `expires_at` is in the future.** Write the row directly to bypass
    issuance, so the test exercises rule 4 and not rule 2. This is the most

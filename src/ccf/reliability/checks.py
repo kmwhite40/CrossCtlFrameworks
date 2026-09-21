@@ -715,27 +715,66 @@ async def _check_external_access_scope_integrity(session: AsyncSession) -> Check
 
 
 async def _check_external_grant_expiration(session: AsyncSession) -> Check:
-    """Warn on expired external grants that were never revoked (hygiene)."""
+    """Warn on dead external grants that were never revoked (hygiene).
+
+    "Dead" means what ``ccf.portal.service.grant_status`` means, not merely
+    ``expires_at < now()``. An assessment credential also stops resolving when
+    its engagement is revoked or its ``period_to`` passes, and this check used
+    to miss that case entirely -- reporting "no expired, un-revoked external
+    grants" while a grant that authorizes nothing sat un-revoked. A hygiene
+    check that states a clean bill of health it has not actually verified is
+    worse than one that does not run.
+    """
     if not await _regclass(session, "ccf.external_access_grants"):
         return Check("external_grant_expiration", PASS, "External portal not deployed.")
-    n = int(
-        (
-            await session.execute(
-                text(
-                    "SELECT count(*) FROM ccf.external_access_grants "
-                    "WHERE NOT revoked AND expires_at IS NOT NULL AND expires_at < now()"
+    # The engagements table postdates the grants table, so a database migrated
+    # only to 0082 has grants and no engagements; fall back to the expiry-only
+    # count there rather than failing on a missing relation.
+    # Counted separately, and reported separately: "3 dead grants" sends an
+    # operator looking in one place when the cause may be in the other. An
+    # expired grant needs a new token; an engagement-ended one needs a new
+    # engagement, or nothing at all because the assessment is simply over.
+    if await _regclass(session, "ccf.assessment_engagements"):
+        sql = (
+            "SELECT "
+            "  count(*) FILTER (WHERE g.expires_at IS NOT NULL"
+            "                     AND g.expires_at < now()) AS expired,"
+            "  count(*) FILTER (WHERE g.expires_at IS NULL OR g.expires_at >= now()) AS ended "
+            "FROM ccf.external_access_grants g "
+            "LEFT JOIN ccf.assessment_engagements e ON e.id = g.engagement_id "
+            "WHERE NOT g.revoked AND ("
+            "  (g.expires_at IS NOT NULL AND g.expires_at < now())"
+            "  OR (g.engagement_id IS NOT NULL"
+            "      AND (e.id IS NULL OR e.revoked_at IS NOT NULL OR e.period_to < now()))"
+            ")"
+        )
+        row = (await session.execute(text(sql))).one()
+        expired, ended = int(row.expired or 0), int(row.ended or 0)
+    else:
+        expired = int(
+            (
+                await session.execute(
+                    text(
+                        "SELECT count(*) FROM ccf.external_access_grants "
+                        "WHERE NOT revoked AND expires_at IS NOT NULL AND expires_at < now()"
+                    )
                 )
-            )
-        ).scalar()
-        or 0
-    )
-    if n:
+            ).scalar()
+            or 0
+        )
+        ended = 0
+    parts = []
+    if expired:
+        parts.append(f"{expired} expired")
+    if ended:
+        parts.append(f"{ended} engagement-ended")
+    if parts:
         return Check(
             "external_grant_expiration", WARN,
-            f"{n} expired external grant(s) not yet revoked.",
-            "Revoke stale grants in the portal admin; expired tokens already deny access.",
+            f"{' and '.join(parts)} external grant(s) not yet revoked.",
+            "Revoke stale grants in the portal admin; they already deny access.",
         )
-    return Check("external_grant_expiration", PASS, "No expired, un-revoked external grants.")
+    return Check("external_grant_expiration", PASS, "No dead, un-revoked external grants.")
 
 
 async def _check_external_portal_audit_completeness(session: AsyncSession) -> Check:

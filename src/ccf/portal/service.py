@@ -11,6 +11,7 @@ plus an explicit allow-list. Every access writes an immutable portal audit event
 from __future__ import annotations
 
 import secrets
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -427,17 +428,43 @@ async def revoke_grant(session: AsyncSession, grant_id: int, *, actor: str | Non
 # --- portal: token resolution + scoped contents ----------------------------
 
 
-async def _engagement_is_current(session: AsyncSession, engagement_id: int) -> bool:
-    """Whether the engagement behind a grant still authorizes anything.
+def grant_status(grant: ExternalAccessGrant, current_engagement_ids: set[int]) -> str:
+    """Why a grant does or does not resolve, in one word.
 
-    False if it is missing, revoked, or its ``period_to`` has passed.
+    **The single rule.** ``_valid`` decides access with it and the portal-admin
+    page labels rows with it, so the two cannot disagree. They did: the admin
+    page classified a grant from its own row alone, so one whose *engagement*
+    had ended displayed as ``active`` while resolving to nothing -- an operator
+    surface asserting live access that does not exist.
+
+    ``current_engagement_ids`` is passed in rather than looked up so this stays
+    pure and a caller rendering a list can resolve every engagement in one
+    query instead of one per row.
     """
-    engagement = await session.get(AssessmentEngagement, engagement_id)
-    if engagement is None:
-        return False
-    if engagement.revoked_at is not None:
-        return False
-    return engagement.period_to >= _now()
+    if grant.revoked:
+        return "revoked"
+    if grant.expires_at is not None and grant.expires_at < _now():
+        return "expired"
+    if grant.engagement_id is not None and grant.engagement_id not in current_engagement_ids:
+        return "engagement ended"
+    return "active"
+
+
+async def current_engagement_ids(session: AsyncSession, ids: Iterable[int]) -> set[int]:
+    """Which of ``ids`` still authorize anything -- one query, for list rendering."""
+    wanted = {i for i in ids if i is not None}
+    if not wanted:
+        return set()
+    rows = (
+        await session.execute(
+            select(AssessmentEngagement.id).where(
+                AssessmentEngagement.id.in_(wanted),
+                AssessmentEngagement.revoked_at.is_(None),
+                AssessmentEngagement.period_to >= _now(),
+            )
+        )
+    ).scalars().all()
+    return set(rows)
 
 
 async def _valid(
@@ -452,16 +479,18 @@ async def _valid(
     engagement is the authority; the token merely carries it, so a grant whose
     engagement is revoked or elapsed must stop resolving **regardless of the
     grant's own expiry**.
+
+    Delegates the classification to :func:`grant_status` so the rule has one
+    home; anything that reports a grant's state reports what this enforces.
     """
-    if grant is None or grant.revoked:
+    if grant is None:
         return None
-    if grant.expires_at is not None and grant.expires_at < _now():
-        return None
-    if grant.engagement_id is not None and not await _engagement_is_current(
-        session, grant.engagement_id
-    ):
-        return None
-    return grant
+    current = (
+        await current_engagement_ids(session, [grant.engagement_id])
+        if grant.engagement_id is not None
+        else set()
+    )
+    return grant if grant_status(grant, current) == "active" else None
 
 
 async def resolve_grant(session: AsyncSession, token: str) -> ExternalAccessGrant | None:

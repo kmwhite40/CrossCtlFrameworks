@@ -24,7 +24,7 @@
 
 <div class="cols-4" style="margin-bottom:16px">
   <div class="kpi"><div class="kpi__label">Grants</div><div class="kpi__value">{{ rows|length }}</div></div>
-  <div class="kpi"><div class="kpi__label">Active</div><div class="kpi__value">{{ rows|selectattr('g.revoked','equalto',false)|list|length }}</div></div>
+  <div class="kpi"><div class="kpi__label">Active</div><div class="kpi__value">{{ rows|selectattr('status','equalto','active')|list|length }}</div></div>
   <div class="kpi"><div class="kpi__label">Shareable packages</div><div class="kpi__value">{{ packages|length }}</div></div>
   <div class="kpi"><div class="kpi__label">Shareable evidence</div><div class="kpi__value">{{ evidence|length }}</div></div>
 </div>
@@ -69,7 +69,7 @@
         <td><strong>{{ r.principal.name if r.principal else '—' }}</strong>{% if r.g.label %}<div class="dim" style="font-size:12px">{{ r.g.label }}</div>{% endif %}</td>
         <td class="dim">{{ r.g.kind }}</td>
         <td class="dim">{{ r.g.expires_at.date() if r.g.expires_at else 'never' }}</td>
-        <td>{% if r.status=='revoked' %}<span class="chip chip--err">revoked</span>{% elif r.status=='expired' %}<span class="chip chip--warn">expired</span>{% else %}<span class="chip chip--ok">active</span>{% endif %}</td>
+        <td>{% if r.status=='revoked' %}<span class="chip chip--err">revoked</span>{% elif r.status=='expired' %}<span class="chip chip--warn">expired</span>{% elif r.status=='engagement ended' %}<span class="chip chip--warn">engagement ended</span>{% else %}<span class="chip chip--ok">active</span>{% endif %}</td>
         <td>{% if not r.g.revoked %}<form method="post" action="/admin/portal/grants/{{ r.g.id }}/revoke"><input type="hidden" name="organization_id" value="{{ org_id }}"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="ban"></i> Revoke</button></form>{% endif %}</td>
       </tr>{% endfor %}
     </tbody>
