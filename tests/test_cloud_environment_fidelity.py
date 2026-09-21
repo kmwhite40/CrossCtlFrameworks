@@ -275,18 +275,52 @@ async def test_aws_govcloud_platform_inherited_state_still_counts_covered() -> N
 
 @pytest.mark.asyncio
 async def test_m365_unconfirmed_tier_does_not_render_gcc_high() -> None:
-    """A profile with no cloud_platform selected still authors on the "m365"
-    SSP platform (generate_ssp's default), but the tenant tier was never
-    confirmed via intake — must not assert GCC High."""
-    async with _seeded_system("M365 Fidelity Org 1", "M365U", None) as (
-        proj,
-        _cov,
-        entries,
-    ):
+    """An SSP authored directly on "m365" whose system never answered intake:
+    the tenant tier was never confirmed, so GCC High must not be asserted.
+
+    This test used to reach the same state a different way -- a profile with no
+    ``cloud_platform`` at all, which ``generate_ssp`` coerced to "m365". That
+    coercion was the defect ``fix/platform-default`` removed (an undeclared or
+    unrecognized platform now yields "none"), and asserting on it here made
+    this test a witness for it: ``assert proj.platform == "m365"`` passed
+    *because* Concord had guessed Microsoft 365 for a customer who said
+    nothing. The FR-07 property is about a project genuinely on m365 with an
+    unconfirmed tier, which is what this now builds -- the SSP editor's own
+    platform choice, with no intake answer behind it. That a *profile* with no
+    declared platform must no longer land on m365 is pinned separately, in
+    ``tests/test_platform_default.py``.
+    """
+    control_ids: list[str] = []
+    try:
+        async with session_scope() as session:
+            sys_row = await _make_system(session, "M365 Fidelity Org 1")
+            control_ids = await _seed_controls(session, "M365U")
+            profile = SystemProfile(
+                system_id=sys_row.id, environment_type="cloud", cloud_platform=None
+            )
+            session.add(profile)
+            proj = SSPProject(
+                organization_id=sys_row.organization_id,
+                system_id=sys_row.id,
+                customer_name="M365 Fidelity Org 1",
+                system_name=sys_row.name,
+                platform="m365",
+            )
+            session.add(proj)
+            await session.flush()
+            await seed_project_entries(session, proj)
+            await generate_statements(session, project=proj, profile=profile)
+            entries = await _entries(session, proj)
         assert proj.platform == "m365"
         text = _all_narrative_text(entries)
         assert "GCC High" not in text
         assert "Microsoft 365 (tenant tier not confirmed)" in text
+    finally:
+        if control_ids:
+            async with session_scope() as session:
+                await session.execute(
+                    delete(ScoringControl).where(ScoringControl.control_id.in_(control_ids))
+                )
 
 
 @pytest.mark.asyncio

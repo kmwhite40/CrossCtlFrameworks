@@ -397,17 +397,52 @@ def ssp_overlay_for(control_id: str, derivation: dict[str, Any]) -> dict[str, li
     }
 
 
+def _ssp_platform_for(profile: SystemProfile) -> tuple[str, str | None]:
+    """``(platform, note)`` for a profile — the mapping, with no fallback.
+
+    The mapping is used exactly as written: a declared code it does not carry
+    is *not* translated into a product, it is reported. ``"m365"`` used to sit
+    here as the default second argument to ``.get``, which is how a customer
+    who answered "none" -- one of the four answers the questionnaire itself
+    offers -- received an SSP describing Microsoft 365, and how everyone on
+    GCP, Oracle Cloud or on-premises equipment received the same one.
+
+    The note is the reported fact, worded as ``ccf.onboarding`` already words
+    it at step 2, so the two surfaces say the same thing about the same
+    system. ``None`` when the declared answer translated cleanly.
+    """
+    declared = profile.cloud_platform or ""
+    mapped = PLATFORM_TO_SSP.get(declared)
+    if mapped is not None:
+        return mapped, None
+    if declared:
+        note = (
+            f"Concord does not recognize the declared platform {declared!r}, so this "
+            f"project was created with no cloud platform and nothing platform-specific "
+            f"was drafted for it."
+        )
+    else:
+        note = (
+            "This system has not declared a cloud platform, so this project was created "
+            "with no cloud platform and nothing platform-specific was drafted for it."
+        )
+    return NO_PLATFORM, note
+
+
 async def generate_ssp(
     session: AsyncSession, *, system: System, profile: SystemProfile, actor: str | None = None
 ) -> int:
     """Create an SSP project seeded from the derivation (origination + status)."""
-    plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", "m365")
+    plat, platform_note = _ssp_platform_for(profile)
     proj = SSPProject(
         organization_id=system.organization_id,
         system_id=system.id,
         customer_name=system.name,
         system_name=system.name,
         platform=plat,
+        # Stored on the project, not only logged: the person who opens this SSP
+        # is the one who needs to know Concord could not place their platform.
+        metadata_json={"platform_note": platform_note} if platform_note else None,
     )
     session.add(proj)
     await session.flush()
@@ -435,7 +470,10 @@ async def generate_ssp(
         verb="generated",
         entity_type="ssp_project",
         entity_id=proj.id,
-        summary=f"SSP auto-generated for {system.name} from profile ({len(entries)} controls)",
+        summary=(
+            f"SSP auto-generated for {system.name} from profile ({len(entries)} controls)"
+            + (f" — {platform_note}" if platform_note else "")
+        ),
         org_id=system.organization_id,
         actor=actor,
     )
@@ -502,7 +540,19 @@ async def generate_statements(
     Reflects responsibility/inheritance source, environment, services, filled
     ODP values, and live captured config; optionally drafts via AI when enabled.
     """
-    ssp_plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", project.platform or "m365")
+    # The declared answer first, then the project's stored platform. An
+    # unrecognized declared code is carried through *as itself* rather than
+    # resolved: ssp/platforms.py names it in the drafted statements, and
+    # substituting the project's "none" here would tell a GCP customer they
+    # declared no cloud platform (spec §2.1). "m365" used to be the last
+    # resort of this chain.
+    declared_platform = profile.cloud_platform or ""
+    ssp_plat = (
+        PLATFORM_TO_SSP.get(declared_platform)
+        or declared_platform
+        or project.platform
+        or NO_PLATFORM
+    )
     environment = environment_for(ssp_plat, profile.cloud_platform)
     # Is there a live capture connector that has actually evidenced THIS
     # tenant's platform? Not "does Concord ship a connector for it" — that is a
