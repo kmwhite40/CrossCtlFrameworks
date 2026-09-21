@@ -170,6 +170,25 @@ Mutation check: render a stage into any seeder and the test must fail.
    fail at both the Python enum and the Postgres enum, asserted separately, so
    the belt-and-suspenders claim is actually tested rather than assumed.
 
+   **Correction (implementation, 2026-09-21): this spec was wrong about the
+   pattern it cited.** SQLAlchemy's `Enum` does *not* validate strings by
+   default — measured on 2.0.51, `_db_value_for_elem("ZZZ")` returns `"ZZZ"`
+   unchanged. So `certification_class` / `certification_path` have exactly
+   **one** belt, Postgres, and a spec requiring a test for a second one was
+   asking for a test of something that did not exist.
+
+   The right answer was not to drop the requirement but to make it true:
+   `pipeline_stage` carries `validate_strings=True`, so the Python enum does
+   reject a cross-regime value before it reaches the database. The
+   consequence is a deliberate, documented divergence — this column does not
+   behave identically to the two beside it, and a query comparing it to an
+   unrecognised literal raises rather than returning empty.
+
+   **`certification_class` and `certification_path` still carry the hole**, and
+   closing it is a separate change: it alters the behaviour of columns already
+   in use, so it needs its own measurement of what currently compares against
+   them. Recorded here rather than fixed silently.
+
 ---
 
 ## 6. Out of scope
