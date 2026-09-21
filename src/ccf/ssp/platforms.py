@@ -8,6 +8,8 @@ that CMMC domain. The drafts remain fully editable in the SSP editor.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from . import constants
@@ -50,23 +52,58 @@ GOV_ENVIRONMENTS: dict[str, str] = {
 # unconfirmed, so "GCC High" must not be rendered.
 M365_GCC_HIGH_CLOUD_CODE = "m365_gcc_high"
 
-# Platforms with a live capture connector that can actually pull config/evidence
-# from the tenant (see ccf.connectors: msgraph.py = m365, aws.py = aws_govcloud).
-# Azure — and anything else added to PLATFORMS without a connector — has none;
-# its service catalog below stays usable for drafting, but callers must gate
-# statements built from it out of "implemented/evidenced" claims (FR-06). See
-# ``has_capture_connector`` and ``MANUAL_EVIDENCE_NOTE``.
-CONNECTOR_PLATFORMS: frozenset[str] = frozenset({"m365", "aws_govcloud"})
+# SSP platform code → the ``ccf.connectors`` registry key that can capture it.
+#
+# THE single source for this correspondence. The two name spaces are NOT the
+# same — SSP platform "m365" is captured by the connector registered under
+# "msgraph" — and before this mapping existed that fact was written down
+# nowhere, with a second hand-maintained set of platform codes to drift against.
+# ``CONNECTOR_PLATFORMS`` is derived from it rather than maintained beside it.
+#
+# Only SSP platforms belong here: a registry key with no PLATFORMS entry (e.g.
+# "puppetdb") is a connector for something that is not a deployment platform.
+# ``tests/test_connector_backed_claim.py`` asserts every value here is a real
+# key in :func:`ccf.connectors.connector_keys`, so renaming or removing a
+# connector fails loudly instead of silently making a platform look unbacked.
+PLATFORM_CONNECTOR_KEYS: Mapping[str, str] = MappingProxyType(
+    {
+        "m365": "msgraph",
+        "aws_govcloud": "aws_govcloud",
+    }
+)
 
-# Appended to every auto-composed statement for a platform with no capture
-# connector, so a reviewer — and ccf.governance.automation's coverage rollup —
-# can tell the claim was never technically verified and needs a human to
-# attach evidence before the control counts as covered.
+# Platforms Concord *ships* a capture connector for. This is a fact about
+# Concord's feature set — NOT about any particular tenant, which may have
+# configured nothing. Deciding whether a statement is evidenced needs the
+# tenant-aware check (``ccf.governance.automation.platform_capture_is_live``).
+CONNECTOR_PLATFORMS: frozenset[str] = frozenset(PLATFORM_CONNECTOR_KEYS)
+
+# Appended to every auto-composed statement for a platform Concord ships no
+# capture connector for at all (Azure today), so a reviewer — and
+# ccf.governance.automation's coverage rollup — can tell the claim was never
+# technically verified and needs a human to attach evidence before the control
+# counts as covered.
 MANUAL_EVIDENCE_NOTE = (
     "[MANUAL-EVIDENCE-REQUIRED — NO CONNECTOR: no automated capture connector "
     "exists for this platform; a human must attach evidence before this control "
     "is considered evidenced.]"
 )
+
+# The same flag for the other reason: Concord *does* ship a connector for this
+# platform, but THIS organization has none that has actually captured anything
+# (never configured, never synced, stale, or discovered nothing). Rendering the
+# NO CONNECTOR wording here would itself be a false statement, so the reason is
+# stated accurately while the reviewer-facing requirement is identical.
+NO_TENANT_CAPTURE_NOTE = (
+    "[MANUAL-EVIDENCE-REQUIRED — NO TENANT CAPTURE: this organization has no "
+    "capture connector for this platform that has completed a recent, non-empty "
+    "sync; a human must attach evidence before this control is considered "
+    "evidenced.]"
+)
+
+# The substring common to both notes — what a reader/report keys off to find a
+# statement that is flagged as needing manual evidence, whatever the reason.
+MANUAL_EVIDENCE_MARKER = "[MANUAL-EVIDENCE-REQUIRED"
 
 PLATFORM_CHOICES = tuple(PLATFORMS)
 
@@ -180,14 +217,20 @@ def platform_label(platform: str | None) -> str:
     return PLATFORMS.get(normalize_platform(platform), PLATFORMS[DEFAULT_PLATFORM])
 
 
-def has_capture_connector(platform: str | None) -> bool:
-    """True if a live capture connector exists to evidence this platform.
+def connector_key_for_platform(platform: str | None) -> str | None:
+    """The ``ccf.connectors`` registry key that can capture this SSP platform.
 
-    False for Azure (and anything else not wired to a connector) — the platform's
-    service catalog stays usable for drafting, but auto-composed statements built
-    from it must be gated out of "implemented/evidenced" claims (FR-06).
+    ``None`` when Concord ships no connector for the platform at all (Azure
+    today) — the platform's service catalog stays usable for drafting, but
+    statements built from it can never be auto-evidenced.
+
+    A non-``None`` key answers only the *support* question: Concord has code
+    that could capture this platform. It says nothing about whether any
+    particular organization has configured it, so it must never on its own
+    decide whether a statement carries the manual-evidence caveat. Use
+    :func:`ccf.governance.automation.platform_capture_is_live` for that.
     """
-    return normalize_platform(platform) in CONNECTOR_PLATFORMS
+    return PLATFORM_CONNECTOR_KEYS.get(normalize_platform(platform))
 
 
 def environment_for(platform: str | None, cloud_platform: str | None = None) -> str:

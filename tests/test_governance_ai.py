@@ -13,6 +13,7 @@ faked — rather than mocking ``ai.draft_narrative`` itself, so ``ai.py``'s own
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -35,6 +36,7 @@ from ccf.models import (
     SystemProfile,
     User,
 )
+from ccf.models_grc import ConnectorConfig
 from ccf.ssp.constants import DRAFT_PREFIX
 from ccf.ssp.statements import is_draft_narrative
 
@@ -49,14 +51,20 @@ def _credential_master_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "unit-test-master-key-32-chars-xx")
     get_settings.cache_clear()
 
-# A connector-backed platform (see ssp/platforms.py CONNECTOR_PLATFORMS) with an
-# AC-domain control lands as responsibility "unknown" (aws_govcloud's per-domain
-# table has no AC entry — see ssp/constants.py PLATFORM_DOMAIN_RESPONSIBILITY),
-# which is one of the three responsibilities generate_statements will attempt an
-# AI draft for. Being connector-backed also means the "no capture connector"
-# branch (automation.py ~577-586) never fires here, which would otherwise force
-# its own DRAFT_PREFIX/MANUAL_EVIDENCE_NOTE and confound the assertions below.
+# A connector-backed platform (see ssp/platforms.py PLATFORM_CONNECTOR_KEYS)
+# with an AC-domain control lands as responsibility "unknown" (aws_govcloud's
+# per-domain table has no AC entry — see ssp/constants.py
+# PLATFORM_DOMAIN_RESPONSIBILITY), which is one of the three responsibilities
+# generate_statements will attempt an AI draft for. Keeping the manual-evidence
+# branch quiet also matters here: it would force its own
+# DRAFT_PREFIX/MANUAL_EVIDENCE note and confound the assertions below. That
+# branch is now TENANT-aware, so ``_seeded`` also gives the org a real, healthy
+# ConnectorConfig — Concord shipping an AWS connector is no longer enough.
 _PLATFORM = "aws_govcloud"
+
+# The ccf.connectors registry key that evidences _PLATFORM (ssp/platforms.py
+# PLATFORM_CONNECTOR_KEYS).
+_PLATFORM_CONNECTOR_KEY = "aws_govcloud"
 
 _FAKE_AI_TEXT = "AI-DRAFTED-NARRATIVE-TOKEN-7f3c"
 _LEGACY_KEY = "sk-ant-legacy-poison-marker"
@@ -148,6 +156,21 @@ async def _seeded(
     async with session_scope() as session:
         sys = await _make_system(session, name)
         await _seed_control(session, control_id, prefix)
+        # A real, healthy connector row for the org so the tenant-aware
+        # manual-evidence branch stays quiet on the default platform. Seeded
+        # (not monkeypatched) so these tests exercise the same query the
+        # production path runs. "azure_gov" tests pass a platform with no
+        # connector at all, so this row is simply irrelevant to them.
+        session.add(
+            ConnectorConfig(
+                organization_id=sys.organization_id,
+                name=f"{name} aws",
+                connector_type=_PLATFORM_CONNECTOR_KEY,
+                status="configured",
+                last_sync=datetime.now(UTC),
+                objects_discovered=12,
+            )
+        )
         profile = SystemProfile(
             system_id=sys.id, environment_type="cloud", cloud_platform=platform
         )
@@ -307,8 +330,8 @@ async def test_mark_draft_false_still_suppresses_deterministic_review_marker(
 
     Uses intake code "azure_gov" (-> ssp platform "azure" via PLATFORM_TO_SSP)
     rather than the module's usual aws_govcloud fixture platform specifically
-    because "azure" carries no capture connector (see ssp/platforms.py
-    CONNECTOR_PLATFORMS) -- this exercises the automation.py:588
+    because "azure" carries no capture connector at all (see ssp/platforms.py
+    PLATFORM_CONNECTOR_KEYS) -- this exercises the automation.py
     ``if mark_draft and not text.startswith(DRAFT_PREFIX)`` branch directly
     (the "no capture connector, force review" path), which is the second,
     untouched call site for the ``mark_draft`` knob besides statements.py:174.
