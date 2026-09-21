@@ -31,13 +31,16 @@ from ...auth import Principal, sign_session, verify_session
 from ...config import get_settings, is_dev_env
 from ...portal import (
     add_comment,
+    create_engagement,
     create_grant,
     create_principal,
     grant_contents,
+    list_engagements,
     list_grants,
     record_access,
     resolve_grant,
     resolve_grant_by_id,
+    revoke_engagement,
     revoke_grant,
 )
 from ..auth_deps import require_role
@@ -134,9 +137,83 @@ async def create_principal_endpoint(
             "organization_name": row.organization_name}
 
 
+class EngagementIn(BaseModel):
+    organization_id: int
+    system_id: int
+    assessor_principal_id: int
+    period_from: datetime
+    period_to: datetime
+    authorized_by: str | None = None
+
+
+def _engagement_out(row: Any) -> dict[str, Any]:
+    """Every column of ``assessment_engagements``, across the HTTP boundary.
+
+    Listed explicitly rather than serialized from the ORM row so that adding a
+    column is a visible decision here — and
+    ``tests/test_3pao_engagements.py::test_every_engagement_field_crosses_the_http_boundary``
+    compares these keys against the model's own columns, so a field dropped
+    from this dict fails rather than quietly disappearing from the API.
+    """
+    return {
+        "id": row.id,
+        "organization_id": row.organization_id,
+        "system_id": row.system_id,
+        "assessor_principal_id": row.assessor_principal_id,
+        "period_from": row.period_from,
+        "period_to": row.period_to,
+        "authorized_by": row.authorized_by,
+        "independence_note": row.independence_note,
+        "revoked_at": row.revoked_at,
+        "created_at": row.created_at,
+    }
+
+
+@router.post("/engagements")
+async def create_engagement_endpoint(
+    body: EngagementIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    try:
+        row = await create_engagement(
+            session, org_id=body.organization_id, system_id=body.system_id,
+            assessor_principal_id=body.assessor_principal_id,
+            period_from=body.period_from, period_to=body.period_to,
+            authorized_by=body.authorized_by or principal.email, actor=principal.email,
+        )
+    except ValueError as exc:  # unknown principal, or one that is not an assessor
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await session.commit()
+    return _engagement_out(row)
+
+
+@router.get("/engagements")
+async def list_engagements_endpoint(
+    organization_id: int,
+    session: AsyncSession = Depends(get_session),
+    _principal: Principal = Depends(require_role("admin")),
+) -> list[dict[str, Any]]:
+    return [_engagement_out(row) for row in await list_engagements(session, org_id=organization_id)]
+
+
+@router.post("/engagements/{engagement_id}/revoke")
+async def revoke_engagement_endpoint(
+    engagement_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """End the engagement, and with it every grant issued under it."""
+    ok = await revoke_engagement(session, engagement_id, actor=principal.email)
+    await session.commit()
+    if not ok:
+        raise HTTPException(status_code=404, detail="engagement not found")
+    return {"revoked": True}
+
+
 class GrantIn(BaseModel):
     organization_id: int
-    principal_name: str
+    principal_name: str = ""
     kind: str = "customer"
     email: str | None = None
     organization_name: str | None = None
@@ -144,6 +221,8 @@ class GrantIn(BaseModel):
     evidence_ids: list[int] = []
     ttl_days: int | None = 30
     label: str | None = None
+    engagement_id: int | None = None
+    principal_id: int | None = None
 
 
 @router.post("/grants")
@@ -157,7 +236,9 @@ async def create_grant_endpoint(
             session, org_id=body.organization_id, principal_name=body.principal_name,
             kind=body.kind, email=body.email, organization_name=body.organization_name,
             package_ids=body.package_ids, evidence_ids=body.evidence_ids,
-            ttl_days=body.ttl_days, label=body.label, actor=principal.email,
+            ttl_days=body.ttl_days, label=body.label,
+            engagement_id=body.engagement_id, principal_id=body.principal_id,
+            actor=principal.email,
         )
     except ValueError as exc:
         # A refusal the caller can fix by sending different input (an unknown
@@ -168,7 +249,10 @@ async def create_grant_endpoint(
     # IA-09: the plaintext token is shown exactly once, here at issuance — it
     # is not persisted and cannot be recovered from `grant.token_hash`.
     return {"id": grant.id, "token": grant.token, "kind": grant.kind,
-            "expires_at": grant.expires_at}
+            "expires_at": grant.expires_at, "engagement_id": grant.engagement_id,
+            # §4 rule 2: the caller asked for longer and the engagement's end
+            # date won. Said out loud, not left to be noticed in ``expires_at``.
+            "expiry_capped": grant.expiry_capped}
 
 
 @router.get("/grants")
@@ -179,7 +263,7 @@ async def list_grants_endpoint(
 ) -> list[dict[str, Any]]:
     grants = await list_grants(session, org_id=organization_id)
     return [
-        {"id": g.id, "kind": g.kind, "label": g.label,
+        {"id": g.id, "kind": g.kind, "label": g.label, "engagement_id": g.engagement_id,
          "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at}
         for g in grants
     ]

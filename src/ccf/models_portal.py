@@ -132,6 +132,23 @@ class ExternalAccessGrant(Base):
     )
 
     @property
+    def expiry_capped(self) -> bool:
+        """True when issuance shortened this grant's expiry to its engagement's
+        ``period_to``.
+
+        In-memory only, on the instance that was just issued — same shape as
+        ``token`` below, and for the same reason: it is something the caller is
+        *told* at issuance, not a fact about the row. The row records the
+        expiry that resulted; this records that the caller asked for longer and
+        the engagement's end date won. A freshly loaded grant reports ``False``.
+        """
+        return bool(getattr(self, "_expiry_capped", False))
+
+    @expiry_capped.setter
+    def expiry_capped(self, value: bool) -> None:
+        self._expiry_capped = bool(value)
+
+    @property
     def token(self) -> str | None:
         """Plaintext grant token — available only in-memory, only on the
         instance that just set it (issuance). Never persisted: the DB holds
