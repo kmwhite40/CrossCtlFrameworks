@@ -193,13 +193,17 @@ def test_the_two_functions_agree_on_which_rows_are_unmeasurable() -> None:
     measure and the other cannot would mean one of them had grown a date
     comparison the other lacks -- the divergence this design exists to prevent.
     """
+    saw_unknown = False
     for label, poam in _AGREEMENT_ROWS:
         bucket = classify(poam, allowed_days=_ALLOWED_DAYS, today=TODAY)
         state = accepted_weakness_state(poam, today=TODAY)
+        if bucket == "unknown" or state == "unknown":
+            saw_unknown = True
         assert (bucket == "unknown") == (state == "unknown"), (
             f"{label}: classify said {bucket!r} but accepted_weakness_state "
             f"said {state!r}"
         )
+    assert saw_unknown, "the table lost its unmeasurable rows"
 
 
 def test_the_two_functions_agree_on_declared_acceptance() -> None:
