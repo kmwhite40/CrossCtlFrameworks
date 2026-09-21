@@ -241,12 +241,13 @@ def _implementation_description(
         # part as ``{"label", "text"}``, dropping ``draft``, so for any control
         # ever touched in that editor the predicate is the ONLY gate left.
         #
-        # The predicate is given the RAW text, never the stripped copy:
-        # ``constants.DRAFT_PREFIX`` is ``"[DRAFT] "`` WITH its trailing space,
-        # and ``is_draft_or_placeholder`` tests it as a plain substring -- so
-        # stripping first destroys the token whenever the marker ends the
-        # string, and ``"[DRAFT] "`` would ship as ``"[DRAFT]"``. The strip is
-        # for the blank test and the join only.
+        # The predicate is given the RAW text, never the stripped copy, on
+        # general principle -- ``is_draft_or_placeholder`` now matches the
+        # ``[DRAFT]`` marker whether or not it is followed by a space, so
+        # stripping no longer changes the answer for that token specifically,
+        # but the ODP placeholder tokens it also checks have no such
+        # guarantee. The strip (``text``) is for the blank test and the join
+        # only; the predicate always sees the untouched value.
         if part.get("draft") or is_draft_or_placeholder(value):
             dropped = True
             continue
@@ -254,17 +255,16 @@ def _implementation_description(
 
     description = " ".join(written) or None
     if description is not None and is_draft_or_placeholder(description):
-        # **The join can manufacture the token the per-part check rejected.**
-        # ``DRAFT_PREFIX`` is ``"[DRAFT] "`` with a trailing space, so a bare
-        # ``"[DRAFT]"`` part slips the per-part predicate -- and then the
-        # ``" "`` separator supplies the missing space, putting a literal
-        # ``"[DRAFT] "`` into the SHIPPED description. It would read as
-        # complete, keep its status, and appear in neither gap list.
-        #
-        # Re-running the SAME predicate on the composed string closes that
-        # without touching ``is_draft_or_placeholder`` itself: the existing
-        # membership test already returns True on the join's output. A control
-        # that trips here is treated exactly like one whose parts were all
+        # **The join can still manufacture a placeholder token the per-part
+        # check rejected.** ``is_draft_or_placeholder`` now matches ``[DRAFT]``
+        # whether or not it is followed by a space, so a bare marker no longer
+        # slips the per-part check above -- but the ODP placeholder tokens
+        # (``"[Assignment:"`` etc.) are not space-terminated the same way, and
+        # a part boundary can still land inside one of those. Re-running the
+        # SAME predicate on the composed string catches that class without
+        # touching ``is_draft_or_placeholder`` itself: the existing membership
+        # test already returns True on the join's output. A control that
+        # trips here is treated exactly like one whose parts were all
         # scaffolding -- no description, named in both lists.
         return None, True
     return description, dropped

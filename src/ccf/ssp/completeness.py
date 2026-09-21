@@ -33,6 +33,20 @@ _ODP_PLACEHOLDER_TOKENS = ("[Assignment:", "[Selection", "[ORGANIZATION-DEFINED:
 # that represent a claim of implementation strong enough to require evidence.
 _EVIDENCE_REQUIRED_STATUSES = {"Implemented", "Partially Implemented"}
 
+# The detection token, derived from DRAFT_PREFIX rather than a second literal
+# "[DRAFT]" -- two spellings of one marker drifting apart is the defect shape
+# this project has hit repeatedly. DRAFT_PREFIX ("[DRAFT] ", WITH a trailing
+# space) is correct for *construction* (DRAFT_PREFIX + text must keep
+# producing "[DRAFT] text") but wrong for *detection*: testing the full,
+# space-including prefix as a substring misses a marker a human typed without
+# a following space ("[DRAFT]" with nothing after it, or "Done. [DRAFT]" at
+# the end of a sentence) -- no producer in this codebase ever omits the
+# space, so this hole is only reachable through hand-typed narrative text.
+# Stripping the trailing space still matches every producer-written instance
+# (the stripped token is a substring of the space-including one) while also
+# catching the space-less human-typed shape.
+_DRAFT_TOKEN = DRAFT_PREFIX.rstrip()
+
 
 def is_draft_or_placeholder(text: str) -> bool:
     """True if ``text`` is scaffolding rather than a written statement.
@@ -42,13 +56,18 @@ def is_draft_or_placeholder(text: str) -> bool:
     organization-defined-parameter placeholder (``ssp/statements.py``,
     ``ssp/platforms.py``, ``ssp/odp.py``).
 
+    Matches the marker whether or not it is followed by a space -- a human
+    typing ``[DRAFT]`` with nothing after it (or at the end of a sentence,
+    e.g. ``"Done. [DRAFT]"``) means the same thing as the producer-written
+    ``"[DRAFT] "`` and must not slip through this gate. See :data:`_DRAFT_TOKEN`.
+
     Public because :mod:`ccf.cr26.sdr` must drop exactly this text rather than
     render it into a FedRAMP deliverable as the provider's implementation
     description -- and a second copy of the rule is how the CR26 status enum
     went wrong twice. This module already calls the same text "draft narrative
     -- needs review"; one predicate, one answer.
     """
-    return DRAFT_PREFIX in text or any(tok in text for tok in _ODP_PLACEHOLDER_TOKENS)
+    return _DRAFT_TOKEN in text or any(tok in text for tok in _ODP_PLACEHOLDER_TOKENS)
 
 
 #: Retained for this module's existing call site; :func:`is_draft_or_placeholder`
