@@ -803,7 +803,7 @@ Add a section to `docs/architecture/forge-capability-inventory.md` in the establ
 - CR26 eliminates the provider-side POA&M and replaces it with Accepted Weaknesses; this platform already modelled the weakness, so the change is a classification, not a new record.
 - The union is declared ∪ elapsed, and why the declared half is necessary: the rule says "is not **or will not be**", and a projection keyed only to age would report an accepted weakness as open work for up to 191 days.
 - Class and Path are independent axes. The mapping FedRAMP disclaims was the thing blocking this work; closing it *removed* a schema change rather than specifying one.
-- `certification_status` is deliberately absent — the vocabulary is not published in any reachable source, and inventing it is what the gap analysis rightly refused to do for Classes.
+- `certification_status` is deliberately absent — the vocabulary is not published in any reachable source, and inventing it is what the gap analysis rightly refused to do for Classes. **(Answered 2026-09-21 by `docs/superpowers/specs/2026-09-21-pipeline-stage-design.md`: FedRAMP still publishes no status vocabulary, so `certification_status` remains unmodelled; Concord instead tracks its own `systems.pipeline_stage`, which is an operator's note rather than a FedRAMP fact.)**
 - The 192 days run from *evaluation*; `identified_on` is a stated assumption to confirm against the published VER when it lands.
 - The binding deadline is **7 December 2026** for VDR/VER.
 
@@ -833,7 +833,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - **Do not add a table for Accepted Weakness.** It is a classification of a `POAM` row. Two records of one fact is the defect this design exists to avoid.
 - **Do not collapse `POAM_ACTIVE_STATUSES` and `POAM_UNRESOLVED_STATUSES`.** `constants.py:91-110` explains why they answer different questions; unifying them would either hide accepted risk from the AO or count it as outstanding work.
 - **Do not wire `classify` through `is_accepted_weakness`.** One measures an org's declared window, the other FedRAMP's fixed 192 days. They agree on which rows are accepted and must not be made to share a threshold.
-- **Do not model `certification_status`.** The vocabulary is unpublished.
+- **Do not model `certification_status`.** The vocabulary is unpublished. **Still true (re-checked 2026-09-21), and `systems.pipeline_stage` does not change it:** that column is Concord's own operational tracking, not FedRAMP's status. See `docs/superpowers/specs/2026-09-21-pipeline-stage-design.md` §1.1 for why the two must never be the same field.
 - **Do not backfill either new column.** Null is the correct value for every existing row.
 - After committing a task, run `git show --stat` and confirm the intended files are in it. A green suite answers "does the tree work", not "is the tree committed".
 

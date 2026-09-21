@@ -5,6 +5,10 @@
 **Closes:** the vocabulary half of G15
 **Defers:** CPO and SDR deliverables (their own spec), the Ongoing Certification
 Report (`CCM-OCR-AVL`), and `certification_status` — see §5
+**Superseded in part (2026-09-21):** the `certification_status` refusal in §5
+was answered, not reversed, by `2026-09-21-pipeline-stage-design.md`. FedRAMP
+still publishes no status vocabulary; Concord now tracks its own
+`systems.pipeline_stage` instead.
 
 ## 1. Why this is smaller than it looked
 
@@ -150,6 +154,19 @@ may serve a High system, and a High system may be served by B, C or D.
   notice (120 days), but never lists status values. Inventing them is precisely
   what the gap analysis refused to do for Classes, and was right to. Recorded
   as an open question with its reason.
+
+  **Resolved 2026-09-21 — see `2026-09-21-pipeline-stage-design.md`.** The
+  finding above still holds, re-checked at source: FedRAMP has published no
+  status enumeration. The marketplace pages give two designations only, and
+  the five-per-regime status lists exist solely in RFC-0020, which remains a
+  proposal. So `certification_status` is still not modelled and no FedRAMP
+  status vocabulary was adopted. What changed is that Concord now records its
+  own operational position — `systems.pipeline_stage`, nullable, borrowing
+  RFC-0020's words so the values are recognisable to an operator. It answers
+  "where does Concord understand this system to be?", never "what does the
+  FedRAMP Marketplace say?". The name says so, the regime is part of each
+  value so a cross-regime state is unrepresentable, and a test forbids any
+  stage from reaching a filed CR26 document.
 - **No CPO or SDR.** Their own spec. Note SDR is largely a *rendering* of ODP
   assignments the platform already holds (`ssp/odp.py`, `odp_values`), and CPO
   replaces the SSP for Rev5 — a second deliverable profile over content the SSP
