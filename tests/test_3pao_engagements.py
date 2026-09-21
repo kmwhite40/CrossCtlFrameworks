@@ -904,6 +904,13 @@ async def test_the_hygiene_check_counts_an_engagement_ended_grant(orgs: list[int
 
         check = await _check_external_grant_expiration(s)
         assert check.status == "warn", check
-        # Named by cause, not lumped into one number.
-        assert "engagement-ended" in check.message, check.message
-        assert "expired" not in check.message, check.message
+        # Counted under its own cause, not lumped in with self-expired grants.
+        #
+        # Asserted on the engagement-ended COUNT, never on the absence of the
+        # word "expired": this check counts database-wide, so any other module
+        # that leaves an expired grant behind would break an absence assertion
+        # and the failure would surface here, far from its cause. (It did --
+        # running this file after tests/test_portal.py.) If the two causes were
+        # ever lumped together the message would carry a single "N expired" and
+        # no engagement-ended count at all, so this still catches that.
+        assert "1 engagement-ended" in check.message, check.message
