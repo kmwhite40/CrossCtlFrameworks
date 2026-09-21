@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ... import onboarding
 from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
@@ -62,6 +63,7 @@ from ...models import (
     Worksheet,
     WorksheetRow,
 )
+from ...onboarding import onboarding_state
 from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
 from ...ssp.odp import render as render_template
@@ -74,13 +76,14 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
-from ..auth_deps import SESSION_COOKIE, require_role
+from ..auth_deps import SESSION_COOKIE, get_principal, require_role
 from ..deps import get_session
 from ..limiter import limiter
 from ..login_service import LoginResult, authenticate, revoke_sessions_for_request
 from .diff import diff_workbook
 from .scoring import compute_summary
 from .ssp import FRAMEWORKS
+from .systems import require_system_in_scope
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
@@ -110,6 +113,33 @@ templates.env.globals["settings"] = get_settings()
 templates.env.globals["asset_v"] = _asset_version()
 
 router = APIRouter(include_in_schema=False)
+
+# The guided onboarding path's state -> existing chip modifier. Presentation
+# lives here rather than in ``ccf.onboarding`` so the service stays free of CSS
+# class names, and as a dict rather than an ``{% if %}`` chain in the template
+# so a test can assert what matters: every state in ``onboarding.STATES`` has a
+# chip, and no two states share one.
+#
+# ``unknown`` and ``not_started`` must not look alike (spec §4). Collapsing them
+# visually says "the platform knows nothing is there" when what is true is "the
+# platform cannot see", which is the same false claim as collapsing the states
+# themselves -- the reader only ever sees the chip.
+ONBOARDING_CHIPS: dict[str, str] = {
+    onboarding.DONE: "chip--ok",
+    onboarding.IN_PROGRESS: "chip--warn",
+    onboarding.NOT_STARTED: "chip--err",
+    onboarding.UNKNOWN: "chip--info",
+    onboarding.NOT_AVAILABLE: "chip--ghost",
+}
+#: The same states in the words a customer reads. ``unknown`` deliberately says
+#: what Concord cannot do, not what the customer has not done.
+ONBOARDING_STATE_LABELS: dict[str, str] = {
+    onboarding.DONE: "Done",
+    onboarding.IN_PROGRESS: "In progress",
+    onboarding.NOT_STARTED: "Not started",
+    onboarding.UNKNOWN: "Not enough information",
+    onboarding.NOT_AVAILABLE: "Not available",
+}
 
 
 def _is_htmx(request: Request) -> bool:
@@ -602,15 +632,21 @@ async def system_detail(
     system_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> HTMLResponse:
-    org = _principal_org(request)
-    sys = (
-        await session.execute(
-            select(System).where(System.id == system_id, System.deleted_at.is_(None))
-        )
-    ).scalar_one_or_none()
-    if sys is None or (org is not None and sys.organization_id != org):
-        raise HTTPException(404, "system not found")
+    # ``require_system_in_scope`` rather than the org check this handler used to
+    # open-code: it is the same rule (out of org, or soft-deleted, is 404) with
+    # one home, and ``ccf.api.routes.ui_boundary`` already takes the system for
+    # its own per-system page this way. No new role gate -- a viewer could open
+    # this page before and still can.
+    sys = await require_system_in_scope(session, system_id, principal)
+    # The guided onboarding path (docs/superpowers/specs/
+    # 2026-09-21-guided-onboarding-design.md). Rendered above the counts below
+    # rather than on a page of its own: four of the signals it needs are
+    # already on this page as bare numbers with no state and no next action, so
+    # those counts become the evidence behind the steps instead of a parallel
+    # display.
+    onboarding_steps = await onboarding_state(session, sys)
     impl_counts = (
         await session.execute(
             select(ControlImplementation.status, func.count())
@@ -676,6 +712,9 @@ async def system_detail(
             "poams": poams,
             "evidence_count": evidence_count,
             "boundary_counts": boundary_counts,
+            "onboarding_steps": onboarding_steps,
+            "onboarding_chips": ONBOARDING_CHIPS,
+            "onboarding_state_labels": ONBOARDING_STATE_LABELS,
         },
     )
 
