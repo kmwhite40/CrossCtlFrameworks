@@ -186,7 +186,22 @@ async def coverage(
     profile = await _get_profile(session, system_id)
     if profile is None:
         raise HTTPException(404, "system has no profile")
-    return {"system_id": system_id, **automation.coverage(profile)}
+    # ``coverage`` is pure; the tenant-aware "has this org actually captured
+    # anything for this platform" question is IO, so it is answered here and
+    # passed in. The system is loaded only for its organization_id --
+    # ConnectorConfig is org-scoped, not system-scoped.
+    system = (
+        await session.execute(select(System).where(System.id == system_id))
+    ).scalar_one_or_none()
+    connector_backed = await automation.platform_capture_is_live(
+        session,
+        organization_id=system.organization_id if system else None,
+        platform=automation.PLATFORM_TO_SSP.get(profile.cloud_platform or "", ""),
+    )
+    return {
+        "system_id": system_id,
+        **automation.coverage(profile, connector_backed=connector_backed),
+    }
 
 
 @router.post("/systems/{system_id}/generate-ssp", status_code=201)
@@ -324,8 +339,18 @@ async def authorization_package(
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         if profile is not None:
+            connector_backed = await automation.platform_capture_is_live(
+                session,
+                organization_id=system.organization_id,
+                platform=automation.PLATFORM_TO_SSP.get(profile.cloud_platform or "", ""),
+            )
             z.writestr(
-                "coverage.json", json.dumps(automation.coverage(profile), indent=2, default=str)
+                "coverage.json",
+                json.dumps(
+                    automation.coverage(profile, connector_backed=connector_backed),
+                    indent=2,
+                    default=str,
+                ),
             )
             z.writestr("profile.json", json.dumps(profile.answers or {}, indent=2, default=str))
         poams = (

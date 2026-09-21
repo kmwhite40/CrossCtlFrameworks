@@ -37,12 +37,14 @@ from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
 from ..ssp.platforms import (
     MANUAL_EVIDENCE_NOTE,
+    NO_TENANT_CAPTURE_NOTE,
+    connector_key_for_platform,
     environment_for,
-    has_capture_connector,
     services_for,
 )
 from ..ssp.seed import seed_project_entries
 from . import ai, bus
+from .control_tests import organization_capture_is_live
 
 # --- The questionnaire that makes intake simplistic --------------------------
 QUESTIONNAIRE: list[dict[str, Any]] = [
@@ -451,6 +453,35 @@ def _cap_key(entry: SSPControlEntry) -> str | None:
     return None
 
 
+async def platform_capture_is_live(
+    session: AsyncSession,
+    *,
+    organization_id: int | None,
+    platform: str | None,
+) -> bool:
+    """Has this organization actually captured configuration for ``platform``?
+
+    The tenant-aware question, as opposed to
+    :func:`ccf.ssp.platforms.connector_key_for_platform`'s support question
+    ("does Concord ship a connector for this platform"). False whenever the
+    platform has no connector at all (Azure), and false whenever the
+    organization's connector of that type has not completed a recent, non-empty
+    sync — see :func:`ccf.governance.control_tests.organization_capture_is_live`
+    for the shared ladder.
+
+    Conservative by construction: anything that cannot be positively
+    established is NOT backed, so callers add the manual-evidence caveat.
+    Over-flagging is safe; under-flagging ships a false evidenced claim to an
+    assessor.
+    """
+    connector_key = connector_key_for_platform(platform)
+    if connector_key is None:
+        return False
+    return await organization_capture_is_live(
+        session, organization_id=organization_id, connector_type=connector_key
+    )
+
+
 async def generate_statements(
     session: AsyncSession,
     *,
@@ -468,11 +499,24 @@ async def generate_statements(
     """
     ssp_plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", project.platform or "m365")
     environment = environment_for(ssp_plat, profile.cloud_platform)
-    # No live capture connector exists for this platform (Azure/GCP/etc. today —
-    # see ssp/platforms.py CONNECTOR_PLATFORMS) — every statement composed below
-    # gets an explicit manual-evidence flag rather than reading as auto-evidenced
-    # (FR-06).
-    connector_backed = has_capture_connector(ssp_plat)
+    # Is there a live capture connector that has actually evidenced THIS
+    # tenant's platform? Not "does Concord ship a connector for it" — that is a
+    # fact about Concord's feature set, and answering the first question with
+    # the second is what let an AWS GovCloud / M365 customer who had configured
+    # nothing receive an SSP with the manual-evidence caveat omitted and a
+    # platform-derived "Implemented" retained. Every statement composed below
+    # gets the explicit manual-evidence flag unless this organization really has
+    # captured something (FR-06).
+    connector_backed = await platform_capture_is_live(
+        session, organization_id=project.organization_id, platform=ssp_plat
+    )
+    # Which of the two accurate reasons to state when it is not backed: the
+    # platform has no connector at all, or this tenant has not captured with it.
+    manual_evidence_note = (
+        MANUAL_EVIDENCE_NOTE
+        if connector_key_for_platform(ssp_plat) is None
+        else NO_TENANT_CAPTURE_NOTE
+    )
     derivation = profile.derivation or {}
 
     # Live captured config indexed by NIST id (from the connector collection loop).
@@ -641,13 +685,14 @@ async def generate_statements(
                 ai_used += 1
         if not connector_backed:
             # Nothing about this platform has been technically verified by any
-            # capture connector — force review and make that explicit in the
-            # narrative itself, even for statements (e.g. "inherited") that
-            # would otherwise read as already evidenced (FR-06).
+            # capture connector *for this organization* — force review and make
+            # that explicit in the narrative itself, even for statements (e.g.
+            # "inherited") that would otherwise read as already evidenced
+            # (FR-06).
             needs_review = True
             if mark_draft and not text.startswith(stmt.DRAFT_PREFIX):
                 text = stmt.DRAFT_PREFIX + text
-            text = f"{text} {MANUAL_EVIDENCE_NOTE}"
+            text = f"{text} {manual_evidence_note}"
             manual_evidence_required += 1
             # A platform-derived "Implemented" status (never a vendor-linked
             # one — see coverage()'s identical ``is_platform_sourced`` check)
@@ -744,18 +789,22 @@ async def evidence_requirements(
     }
 
 
-def coverage(profile: SystemProfile) -> dict[str, Any]:
-    """Read the derivation snapshot into a coverage rollup for dashboards."""
+def coverage(profile: SystemProfile, *, connector_backed: bool) -> dict[str, Any]:
+    """Read the derivation snapshot into a coverage rollup for dashboards.
+
+    ``connector_backed`` — has this organization actually captured configuration
+    for the profile's platform — is passed in, not looked up. This function is
+    deliberately pure and synchronous so the rollup arithmetic stays testable in
+    isolation; the caller computes the flag with
+    :func:`platform_capture_is_live`. It is keyword-only and has no default so a
+    caller cannot silently fall into the unsafe direction: when this is False, a
+    "platform:"-sourced inherited state is the derivation's own default
+    assumption, never anything a connector captured, so it must not count as
+    "covered" (FR-06). An explicit vendor inheritance (a customer-linked
+    vendor's ``linked_controls``) is a deliberate human action, not a platform
+    default, and is unaffected either way.
+    """
     d = profile.derivation or {}
-    ssp_plat = PLATFORM_TO_SSP.get(profile.cloud_platform or "", "")
-    # No live capture connector exists for this platform (Azure/GCP/etc. — see
-    # ssp/platforms.py CONNECTOR_PLATFORMS): a "platform:"-sourced inherited
-    # state here is the derivation's own default assumption, never anything a
-    # connector actually captured, so it must not silently count as "covered"
-    # (FR-06). An explicit vendor inheritance (a customer-linked vendor's
-    # ``linked_controls``) is a deliberate human action, not a platform default,
-    # and is unaffected.
-    connector_backed = has_capture_connector(ssp_plat)
     by_resp: dict[str, int] = {}
     by_state: dict[str, int] = {}
     covered = 0

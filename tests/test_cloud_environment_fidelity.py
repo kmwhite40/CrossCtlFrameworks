@@ -2,8 +2,10 @@
 
 FR-06 — a platform with no live capture connector (Azure, or anything else not
 wired up — connectors today are M365/Graph + AWS GovCloud only, see
-``ccf.ssp.platforms.CONNECTOR_PLATFORMS``) must not have its auto-composed
-statements read as auto-evidenced. They must carry an explicit
+``ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS``) must not have its auto-composed
+statements read as auto-evidenced. Nor may a platform that Concord *does* ship
+a connector for, when the tenant has never captured anything with it — see
+test_connector_backed_claim.py. They must carry an explicit
 manual-evidence-required flag and must not silently count toward the coverage
 rollup's "covered" figure.
 
@@ -24,6 +26,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import pytest
 from alembic import command
@@ -32,7 +35,14 @@ from sqlalchemy import delete, select
 
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.governance.automation import coverage, derive_system, generate_ssp, generate_statements
+from ccf.governance.automation import (
+    PLATFORM_TO_SSP,
+    coverage,
+    derive_system,
+    generate_ssp,
+    generate_statements,
+    platform_capture_is_live,
+)
 from ccf.models import (
     Organization,
     ScoringControl,
@@ -42,12 +52,12 @@ from ccf.models import (
     SystemProfile,
     Vendor,
 )
+from ccf.models_grc import ConnectorConfig
 from ccf.ssp.constants import GENERIC_ROLE_FLAG
 from ccf.ssp.platforms import (
     GOV_ENVIRONMENTS,
     MANUAL_EVIDENCE_NOTE,
     environment_for,
-    has_capture_connector,
 )
 from ccf.ssp.seed import seed_project_entries
 
@@ -112,7 +122,7 @@ async def _seed_controls(session, prefix: str) -> list[str]:
 
 @asynccontextmanager
 async def _seeded_system(
-    name: str, prefix: str, cloud_platform: str | None
+    name: str, prefix: str, cloud_platform: str | None, *, connector_key: str | None = None
 ) -> AsyncIterator[tuple[SSPProject, dict, list[SSPControlEntry]]]:
     """Seed a system with a throwaway pair of prefixed ``ScoringControl`` rows,
     generate its SSP, and yield ``(proj, cov, entries)`` — then ALWAYS delete
@@ -124,6 +134,21 @@ async def _seeded_system(
         async with session_scope() as session:
             sys = await _make_system(session, name)
             control_ids = await _seed_controls(session, prefix)
+            if connector_key is not None:
+                # A REAL connector row for this org — "connector-backed" is now
+                # a question about the tenant, not about Concord's feature set,
+                # so a test that wants the backed behaviour must seed one.
+                session.add(
+                    ConnectorConfig(
+                        organization_id=sys.organization_id,
+                        name=f"{name} connector",
+                        connector_type=connector_key,
+                        status="configured",
+                        last_sync=datetime.now(UTC),
+                        objects_discovered=7,
+                    )
+                )
+                await session.flush()
             proj, cov = await _generate(session, sys, cloud_platform)
             entries = await _entries(session, proj)
         yield proj, cov, entries
@@ -153,7 +178,14 @@ async def _generate(
     proj_id = await generate_ssp(session, system=sys, profile=profile)
     proj = await session.get(SSPProject, proj_id)
     assert proj is not None
-    cov = coverage(profile)
+    cov = coverage(
+        profile,
+        connector_backed=await platform_capture_is_live(
+            session,
+            organization_id=sys.organization_id,
+            platform=PLATFORM_TO_SSP.get(cloud_platform or "", ""),
+        ),
+    )
     return proj, cov
 
 
@@ -217,11 +249,17 @@ async def test_azure_gov_platform_inherited_state_excluded_from_covered() -> Non
 
 @pytest.mark.asyncio
 async def test_aws_govcloud_platform_inherited_state_still_counts_covered() -> None:
-    """Control: AWS GovCloud *does* have a capture connector, so the identical
-    domain-responsibility shape (PE inherited) must still count as covered —
-    proves the exclusion is connector-driven, not a blanket "no platform ever
-    counts" regression."""
-    async with _seeded_system("AWS Fidelity Org 1", "AWSCOV", "aws_govcloud") as (
+    """Control: an AWS GovCloud tenant with a real, healthy capture connector
+    keeps the identical domain-responsibility shape (PE inherited) counted as
+    covered — proves the exclusion is capture-driven, not a blanket "no platform
+    ever counts" regression.
+
+    The ConnectorConfig row is what makes this case backed; without it the org
+    has captured nothing and the caveat applies (see
+    test_connector_backed_claim.py)."""
+    async with _seeded_system(
+        "AWS Fidelity Org 1", "AWSCOV", "aws_govcloud", connector_key="aws_govcloud"
+    ) as (
         _proj,
         cov,
         entries,
@@ -266,11 +304,11 @@ async def test_m365_gcc_high_confirmed_tier_renders_gcc_high() -> None:
 # --- Pure unit coverage of the new ssp/platforms.py helpers -----------------
 
 
-def test_has_capture_connector_matches_known_connectors() -> None:
-    assert has_capture_connector("m365") is True
-    assert has_capture_connector("aws_govcloud") is True
-    assert has_capture_connector("azure") is False
-    assert has_capture_connector("something_unrecognized") is True  # falls back to DEFAULT_PLATFORM
+# ``has_capture_connector`` is gone: it answered the *support* question ("does
+# Concord ship a connector for this platform") and every caller was using it as
+# if it answered the tenant question. Its replacements —
+# ``connector_key_for_platform`` and the tenant-aware
+# ``platform_capture_is_live`` — are covered in test_connector_backed_claim.py.
 
 
 def test_environment_for_only_confirms_gcc_high_with_exact_intake_code() -> None:
@@ -358,16 +396,26 @@ async def test_vendor_authorization_reaches_crm_ref_and_clears_needs_review() ->
     ``crm_ref``, so a vendor-inherited control's narrative always claimed "no
     leveraged-authorization ... is linked" even when a real one was on file.
 
-    Uses AWS GovCloud (a connector-backed platform per
-    ``has_capture_connector``) so the no-connector manual-evidence override
-    doesn't mask the effect being tested here; drives the real
-    ``derive_system`` + ``generate_ssp`` production path against a real
+    Uses AWS GovCloud *with a real, healthy ConnectorConfig for the org* so the
+    manual-evidence override — now a tenant-level question, not a
+    platform-level one — doesn't mask the effect being tested here; drives the
+    real ``derive_system`` + ``generate_ssp`` production path against a real
     ``Vendor`` row, and asserts on the actual rendered narrative."""
     control_ids: list[str] = []
     try:
         async with session_scope() as session:
             sys = await _make_system(session, "Vendor CRM Org")
             control_ids = await _seed_controls(session, "VENDORCRM")
+            session.add(
+                ConnectorConfig(
+                    organization_id=sys.organization_id,
+                    name="Vendor CRM Org aws",
+                    connector_type="aws_govcloud",
+                    status="configured",
+                    last_sync=datetime.now(UTC),
+                    objects_discovered=9,
+                )
+            )
             session.add(
                 Vendor(
                     organization_id=sys.organization_id,

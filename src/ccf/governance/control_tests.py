@@ -125,17 +125,88 @@ async def _connector_for(
     return (await session.execute(stmt)).scalars().first()
 
 
+# How stale a connector's last sync may be before it stops counting as live,
+# for callers with no test frequency to derive a window from.
+CONNECTOR_STALE_DAYS_DEFAULT = 30
+
+
+def connector_backing_state(
+    conn: ConnectorConfig | None, today: date, stale_after_days: int
+) -> str:
+    """The ONE definition of "this connector is actually producing evidence".
+
+    Returns one of ``missing``, ``unsynced``, ``stale``, ``empty``, ``current``.
+    Only ``current`` means a live capture really happened: a row exists, it is
+    ``configured``, it has synced at least once, that sync is not stale, and it
+    discovered something. Every other rung is NOT backed.
+
+    Extracted from :func:`_evaluate` so the control-test scheduler and the SSP
+    statement generator (:func:`organization_capture_is_live`) share one
+    definition instead of two that can drift apart.
+    """
+    if conn is None:
+        return "missing"
+    if conn.status != "configured" or conn.last_sync is None:
+        return "unsynced"
+    if (today - conn.last_sync.date()).days > stale_after_days:
+        return "stale"
+    if conn.objects_discovered <= 0:
+        return "empty"
+    return "current"
+
+
+async def organization_capture_is_live(
+    session: AsyncSession,
+    *,
+    organization_id: int | None,
+    connector_type: str | None,
+    today: date | None = None,
+    stale_after_days: int = CONNECTOR_STALE_DAYS_DEFAULT,
+) -> bool:
+    """True only if *this organization* has actually captured configuration.
+
+    ``ConnectorConfig`` is organization-scoped (no ``system_id``), so this is a
+    per-org, per-connector-type question.
+
+    Deliberately conservative: a missing connector type, a missing org, no row,
+    a row that is not ``configured``, one that has never synced, a stale sync,
+    and a sync that discovered nothing ALL return False — anything that cannot
+    be positively established counts as NOT backed, so the caller adds the
+    manual-evidence caveat. Over-flagging costs a reviewer an edit;
+    under-flagging ships an "evidenced" claim to an assessor that nothing ever
+    verified.
+    """
+    if not connector_type or organization_id is None:
+        return False
+    stmt = (
+        select(ConnectorConfig)
+        .where(
+            ConnectorConfig.organization_id == organization_id,
+            ConnectorConfig.connector_type == connector_type,
+        )
+        # Same ordering rationale as _connector_for: a never-synced row must
+        # not outrank a synced one (Postgres DESC defaults to NULLS FIRST).
+        .order_by(ConnectorConfig.last_sync.desc().nulls_last())
+    )
+    conn = (await session.execute(stmt)).scalars().first()
+    when = today or datetime.now(UTC).date()
+    return connector_backing_state(conn, when, stale_after_days) == "current"
+
+
 def _evaluate(test: ControlTest, conn: ConnectorConfig | None, today: date) -> tuple[str, str]:
     """Derive (status, detail) for a connector-backed test from connector state."""
+    days = _FREQ_DAYS.get((test.frequency or "").lower(), CONNECTOR_STALE_DAYS_DEFAULT)
+    state = connector_backing_state(conn, today, days)
     if conn is None:
         return "warn", f"No {test.connector_type} connector registered to collect evidence."
-    if conn.status != "configured" or conn.last_sync is None:
+    # ``or conn.last_sync is None`` is redundant with state == "unsynced" but
+    # narrows last_sync for the branches below (the type checker cannot infer
+    # that from the state string).
+    if state == "unsynced" or conn.last_sync is None:
         return "warn", f"Connector '{conn.name}' has not completed a successful sync."
-    days = _FREQ_DAYS.get((test.frequency or "").lower(), 30)
-    stale = (today - conn.last_sync.date()).days > days
-    if stale:
+    if state == "stale":
         return "warn", f"Connector '{conn.name}' last synced {conn.last_sync.date()} — stale."
-    if conn.objects_discovered <= 0:
+    if state == "empty":
         return "fail", f"Connector '{conn.name}' synced but discovered no configuration objects."
     return "pass", (
         f"Connector '{conn.name}' current ({conn.objects_discovered} objects, "
