@@ -29,6 +29,42 @@
   {% if sys.ato_expires_on %}<span class="chip chip--warn">Expires {{ sys.ato_expires_on }}</span>{% endif %}
 </div>
 
+{#
+  The guided onboarding path -- six steps, per system, above the counts below.
+  Those counts are not a second display of the same thing: they are the
+  evidence behind these steps. See
+  docs/superpowers/specs/2026-09-21-guided-onboarding-design.md.
+
+  Nothing here gates anything; every step is a door to the page where that
+  work happens. The step count is derived from these same six rows, so it can
+  move backwards -- a connector revoked or an engagement expired takes a step
+  back with it.
+#}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Where this system is</div>
+    <span class="dim" style="font-size:13px">
+      {{ onboarding_steps | selectattr('state', 'equalto', 'done') | list | length }}
+      of {{ onboarding_steps | length }} steps done
+    </span>
+  </div>
+  <div class="table-wrap"><table class="data">
+    <thead>
+      <tr><th>Step</th><th>State</th><th>What remains</th><th></th></tr>
+    </thead>
+    <tbody>
+      {% for step in onboarding_steps %}
+      <tr>
+        <td><span class="dim">{{ step.number }}.</span> {{ step.label }}</td>
+        <td><span class="chip {{ onboarding_chips[step.state] }}">{{ onboarding_state_labels[step.state] }}</span></td>
+        <td class="dim">{{ step.detail }}</td>
+        <td><a class="btn btn--ghost btn--sm" href="{{ step.href }}"><i data-lucide="arrow-right"></i> Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
 <section class="grid-cards" style="margin-bottom:16px">
   {% set total = impl_counts.values() | sum %}
   {% for label, key, cls in [

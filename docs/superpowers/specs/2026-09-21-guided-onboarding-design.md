@@ -68,11 +68,14 @@ Ongoing monitoring is the steady state after 6, not a seventh step.
 An earlier version of this reasoning was **wrong** and is corrected here
 because the wrong version is plausible and will be re-derived otherwise.
 
-`has_capture_connector` (`ssp/platforms.py:183`) is pure — it checks whether
-the declared `cloud_platform` is in a hardcoded set, not whether the tenant has
-anything configured. **Connecting a connector does not change what SSP
-generation emits**; the `cloud_platform` answer does. That is the defect
-`fix/connector-backed-claim` addresses.
+`has_capture_connector` **was** pure — it checked whether the declared
+`cloud_platform` was in a hardcoded set, not whether the tenant had anything
+configured, so **connecting a connector did not change what SSP generation
+emitted**; the `cloud_platform` answer did. `fix/connector-backed-claim`
+(merged at `e92ee64`) fixed that and removed the function; the tenant question
+is now `governance.control_tests.organization_capture_is_live`. The wrong
+version of this reasoning is recorded because it is plausible and would
+otherwise be re-derived.
 
 The ordering still holds, for two real reasons:
 
@@ -182,9 +185,18 @@ The boundary dict built at `ssp.py:389-412` — including the
 
 ## 8. Testing requirements
 
-1. **Each step's four states are reachable**, driven by real seeded rows — not
-   by stubbing the state function. A test that mocks the signal proves only
-   that the mock works.
+1. **Every state a step can honestly reach is reachable**, driven by real
+   seeded rows — not by stubbing the state function. A test that mocks the
+   signal proves only that the mock works.
+
+   **Correction (implementation, 2026-09-21): this originally said "each
+   step's four states", which asked for something that cannot be built
+   honestly.** Steps 1, 5 and 6 read tables the platform can always see, so
+   they have no truthful `unknown` rung, and `not_available` is step-2-only by
+   §4.1. `unknown` is implemented and tested on steps 2, 3 and 4, where it is
+   genuinely true. Adding an `unknown` branch to the others to make the state
+   set look uniform would be exactly the fabrication §4's asymmetry exists to
+   prevent — a shape imposed on the data rather than read from it.
 2. **`unknown` never renders as `done`**, asserted per step.
 3. **A step goes backwards.** Seed a current engagement (step 6 `done`), revoke
    it, assert the step is no longer `done`. Same for a connector. This is the
