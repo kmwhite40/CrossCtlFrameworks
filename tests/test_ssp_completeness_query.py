@@ -20,11 +20,11 @@ The fixtures are deliberately mid-range: each project scores strictly between
 and a partially-filled ``odp_summary``. A characterization test over a
 degenerate fixture proves nothing.
 
-``control_gaps`` is compared with the entries sorted by ``control_id``: the
-completeness query issues its ``SSPControlEntry`` select with no ``ORDER BY``
-(unlike ``GET /projects/{id}``, which orders by ``sort_order``), so the row
-order Postgres happens to return is not part of the contract. Everything else
-is compared by exact equality.
+``control_gaps`` is compared with the entries sorted by ``control_id`` so
+these expectations stay about *content*. The order itself is a separate
+contract, pinned by ``test_control_gaps_follow_sort_order`` below -- the
+select originally had no ``ORDER BY`` at all, which left a checklist whose
+order Postgres was free to change between refreshes.
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from ccf.api.main import create_app
 from ccf.config import get_settings
-from ccf.db import session_scope
+from ccf.db import session_scope, set_session_tenant
 from ccf.models import (
     Control,
     ControlImplementation,
@@ -516,5 +516,45 @@ async def test_project_completeness_service_matches_the_endpoint() -> None:
                 proj = await s.get(SSPProject, ids[key])
                 assert proj is not None
                 assert _normalize(await project_completeness(s, proj)) == expected
+    finally:
+        await _cleanup(ids)
+
+
+@pytest.mark.asyncio
+async def test_control_gaps_follow_sort_order() -> None:
+    """The gap list is a checklist, so its order is part of the contract.
+
+    The completeness select originally had no ``ORDER BY``, unlike every other
+    read of this table (``ssp.py:285``, ``:728``). Postgres guarantees nothing
+    without one, so the order of ``control_gaps`` was whatever the plan
+    produced and could change after a vacuum, a plan flip, or an unrelated
+    entry update -- a compliance tool listing the same gaps in a different
+    order each refresh invites a reader to wonder what changed.
+
+    Asserted against the entries' own ``sort_order``, read back from the
+    database rather than restated here, so this cannot drift from what the
+    fixture actually seeded.
+    """
+    ids = await _seed()
+    try:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            proj = await s.get(SSPProject, ids["linked"])
+            assert proj is not None
+            report = await project_completeness(s, proj)
+
+            rows = (
+                await s.execute(
+                    select(SSPControlEntry.control_id)
+                    .where(SSPControlEntry.project_id == ids["linked"])
+                    .order_by(SSPControlEntry.sort_order)
+                )
+            ).scalars().all()
+
+        gap_ids = [g["control_id"] for g in report["control_gaps"]]
+        # Every gap is an entry, in the entries' own order -- a subsequence of
+        # the full ordered list, since entries without gaps do not appear.
+        assert gap_ids == [cid for cid in rows if cid in set(gap_ids)], (gap_ids, rows)
+        assert len(gap_ids) > 1, "fixture must produce several gaps or order proves nothing"
     finally:
         await _cleanup(ids)

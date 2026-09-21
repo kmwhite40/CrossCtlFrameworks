@@ -47,7 +47,16 @@ async def project_completeness(session: AsyncSession, project: SSPProject) -> di
     entries = (
         (
             await session.execute(
-                select(SSPControlEntry).where(SSPControlEntry.project_id == project.id)
+                # Ordered, like every other read of this table (ssp.py:285, :728).
+                # Without it Postgres gives no row-order guarantee, so the order
+                # of ``control_gaps`` -- which reads as a checklist -- was
+                # whatever the plan happened to produce, and could change after a
+                # vacuum, a plan flip, or an unrelated entry update. A compliance
+                # tool that lists the same gaps in a different order each refresh
+                # invites a reader to wonder what changed.
+                select(SSPControlEntry)
+                .where(SSPControlEntry.project_id == project.id)
+                .order_by(SSPControlEntry.sort_order)
             )
         )
         .scalars()
