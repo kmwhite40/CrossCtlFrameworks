@@ -78,7 +78,7 @@ def _migrate() -> None:
 
 # Snapshot of every ccf-schema table carrying a `tenant_isolation` policy,
 # taken from `pg_policy`/`pg_class` on the fully-migrated schema (migrations
-# 0010 through 0064). If a future migration adds/removes RLS coverage, update
+# 0010 through 0083). If a future migration adds/removes RLS coverage, update
 # this set alongside it — that's the point: the test is living documentation
 # of exactly which tables are protected.
 EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
@@ -88,6 +88,7 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "ai_agent_approvals", "ai_agent_incidents", "ai_agent_kill_switch_events",
         "ai_agent_monitoring_events", "ai_agent_risk_assessments", "ai_agents",
         "ai_approved_mutations", "ai_guardrail_violations", "ai_provider_configs", "approvals",
+        "assessment_engagements",
         "artifacts", "assessment_control_proposals", "assessment_control_results",
         "assessment_jobs", "assessment_objective_proposals", "assessment_results", "assessments",
         "assurance_build_runs", "assurance_edges", "assurance_impacts", "assurance_nodes",
@@ -182,7 +183,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 138
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 139
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

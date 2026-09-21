@@ -212,3 +212,30 @@ PIPELINE_STAGES: tuple[str, ...] = (
     "20x:persistent-validation",
     "20x:remediation",
 )
+
+# ---------------------------------------------------------------------------
+# External portal principal / grant kinds.
+#
+# ``ExternalPrincipal.kind`` and ``ExternalAccessGrant.kind`` carried this
+# vocabulary in a trailing ``# customer|assessor|vendor`` comment only: nothing
+# validated it and nothing branched on it, so ``kind="assesor"`` stored fine and
+# behaved identically to every other value. That is the same defect shape as an
+# ``issm``/``isso`` typo -- an authorization-adjacent vocabulary that exists
+# only in prose, where a misspelling is indistinguishable from a real member.
+#
+# Deliberately NOT a Postgres enum. Both are pre-existing ``String(16)`` columns
+# that may already hold unknown values in live databases, and a migration
+# converting them would fail on the first such row -- blocking an upgrade over
+# data the operator cannot see. Migration 0083 therefore COUNTS and REPORTS
+# out-of-vocabulary rows and leaves them untouched; enforcement is at the
+# service layer, on write (``ccf.portal.service._require_kind``), with 422 at
+# the route. Existing odd rows keep working and stay visible; new ones cannot
+# be created.
+#
+# ``assessor`` here is an EXTERNAL party -- an independent assessment firm
+# reached through the portal. It is not the internal ``user_role`` member of the
+# same name, which is the CSP's own assessment staff. See
+# docs/superpowers/specs/2026-09-21-3pao-engagement-design.md §1.1: the two must
+# not be merged, because merging them would put an independent firm inside the
+# tenant's own user table.
+EXTERNAL_PRINCIPAL_KINDS: tuple[str, ...] = ("customer", "assessor", "vendor")
