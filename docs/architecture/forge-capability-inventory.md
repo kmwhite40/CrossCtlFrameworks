@@ -1001,6 +1001,24 @@ analysis correctly refused to do for Certification Classes themselves before
 FedRAMP's guidance settled the question above, and doing it here would trade
 one unvalidated mapping for one unvalidated vocabulary.
 
+That holds as written — re-checked at source on 2026-09-21, FedRAMP has still
+published no status enumeration, and the five-per-regime lists live only in
+RFC-0020, a proposal — but it is no longer the whole picture.
+`systems.pipeline_stage` (migration `0082_pipeline_stage`) records
+**Concord's own** position in the pipeline: an operator's note about where this
+platform understands a system to be, borrowing RFC-0020's words so the values
+read naturally, and never a claim about what FedRAMP has conferred or what the
+Marketplace says. The distinction is enforced rather than asserted. The column
+is named `pipeline_stage`, not `certification_status`, with no alias; the
+regime is part of each value (`rev5:continuous-monitoring`,
+`20x:persistent-validation`) so a cross-regime pair is unrepresentable instead
+of merely undocumented; nothing derives it from a baseline, Class or Path
+(the guard above now covers all three pairings); and
+`tests/test_pipeline_stage_is_never_filed.py` seeds every deliverable kind for
+every stage and searches each stored document whole, so an internal note
+cannot become a federal assertion in a filed CR26 document. Design and the
+source check behind it: `docs/superpowers/specs/2026-09-21-pipeline-stage-design.md`.
+
 **Stated, not silent, assumption:** the 192-day accepted-weakness window
 runs from *evaluation* under CR26's Vulnerability Evaluation and Reporting
 (VER) rules, and `POAM.identified_on` is the closest existing field, not a
