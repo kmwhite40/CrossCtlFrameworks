@@ -255,17 +255,26 @@ def _implementation_description(
 
     description = " ".join(written) or None
     if description is not None and is_draft_or_placeholder(description):
-        # **The join can still manufacture a placeholder token the per-part
-        # check rejected.** ``is_draft_or_placeholder`` now matches ``[DRAFT]``
-        # whether or not it is followed by a space, so a bare marker no longer
-        # slips the per-part check above -- but the ODP placeholder tokens
-        # (``"[Assignment:"`` etc.) are not space-terminated the same way, and
-        # a part boundary can still land inside one of those. Re-running the
-        # SAME predicate on the composed string catches that class without
-        # touching ``is_draft_or_placeholder`` itself: the existing membership
-        # test already returns True on the join's output. A control that
-        # trips here is treated exactly like one whose parts were all
-        # scaffolding -- no description, named in both lists.
+        # **A backstop, and today an unreachable one -- kept deliberately.**
+        # Before the draft-marker widening this branch was live: the predicate
+        # tested ``DRAFT_PREFIX``, which is ``"[DRAFT] "`` WITH a trailing
+        # space, so a bare ``"[DRAFT]"`` part slipped the per-part check above
+        # and the ``" "`` separator then supplied the missing space --
+        # manufacturing the marker inside the SHIPPED description.
+        #
+        # Every token ``is_draft_or_placeholder`` matches now contains no
+        # space, and the join inserts exactly one space, so no token can span
+        # a part boundary: this branch cannot fire. It stays because that is a
+        # property of the TOKEN LIST, not of this function. One future token
+        # with a space in it -- ``"[Assignment: organization-defined"``, say --
+        # makes the branch live again, and a backstop deleted for being dead
+        # is not something the author of that token would think to restore.
+        # ``test_no_placeholder_token_can_span_a_part_boundary`` pins the
+        # invariant, so adding such a token fails loudly here rather than
+        # silently reopening the hole.
+        #
+        # A control that trips this is treated exactly like one whose parts
+        # were all scaffolding -- no description, named in both lists.
         return None, True
     return description, dropped
 

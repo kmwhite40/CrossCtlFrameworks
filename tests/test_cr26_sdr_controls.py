@@ -21,7 +21,11 @@ from ccf.cr26.sdr import (
 from ccf.cr26.validation import schema_path
 from ccf.db import session_scope
 from ccf.models import Organization, SSPControlEntry, SSPProject, System
-from ccf.ssp.completeness import is_draft_or_placeholder
+from ccf.ssp.completeness import (
+    _DRAFT_TOKEN,
+    _ODP_PLACEHOLDER_TOKENS,
+    is_draft_or_placeholder,
+)
 
 
 def _entry(**kw: object) -> SSPControlEntry:
@@ -475,6 +479,34 @@ def test_a_marker_at_the_end_of_a_sentence_with_no_trailing_space_is_caught() ->
     out = render_controls(entries)
     assert "controlImplementationDescription" not in out[0]
     assert _control_gaps(entries) == (["AC-2"], ["AC-2"])
+
+
+def test_no_placeholder_token_can_span_a_part_boundary() -> None:
+    """The invariant that makes the composed-string guard in
+    ``_implementation_description`` a backstop rather than a live path.
+
+    That guard re-runs ``is_draft_or_placeholder`` on the joined description
+    because the join used to MANUFACTURE the marker: parts are joined with a
+    single ``" "``, and the old predicate tested ``"[DRAFT] "`` -- trailing
+    space included -- so ``["[DRAFT]", "Kept."]`` composed to ``"[DRAFT] Kept."``
+    out of two parts that each passed the per-part check.
+
+    After the widening, every token the predicate matches is space-free, and a
+    token can only straddle a boundary if it contains the separator. So the
+    guard cannot fire, and the per-part check is the whole defence -- which is
+    a fact about this tuple, not about the function.
+
+    If this fails, a token containing a space was added: the composed-string
+    guard in ``_implementation_description`` is LIVE again and needs a test
+    exercising it, rather than the comment that currently calls it
+    unreachable.
+    """
+    for token in (_DRAFT_TOKEN, *_ODP_PLACEHOLDER_TOKENS):
+        assert " " not in token, (
+            f"{token!r} contains the part-join separator, so it can be formed "
+            "across a part boundary -- the composed-string guard in "
+            "_implementation_description is reachable again"
+        )
 
 
 def test_a_null_element_in_the_narrative_list_lost_nothing() -> None:
