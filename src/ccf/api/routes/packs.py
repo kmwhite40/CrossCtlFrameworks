@@ -250,7 +250,16 @@ class PackSourceIn(BaseModel):
 
 #: Roles that may adopt a fetched change. The same gate waivers use, for the
 #: same reason: this is the act that changes what the platform asserts.
-ADOPTER_ROLES = ("admin", "issm", "isso")
+#:
+#: It says ``("admin",)`` because that is what it always *meant*: ``issm`` and
+#: ``isso`` are not members of the ``user_role`` enum backing ``User.role``, so
+#: no real user could ever hold one and this tuple has only ever matched
+#: ``admin``. Naming them made the gate read broader than it was and made a 403
+#: quote roles nobody can be granted. ``control_owner`` is deliberately still
+#: out: adoption is the separation-of-duties act waivers keeps to
+#: ``APPROVER_ROLES = ("admin",)``, and the control owner is the party whose own
+#: posture the adopted content re-asserts.
+ADOPTER_ROLES = ("admin",)
 
 #: Its own router: these paths are addressed by source id, not pack key, so
 #: they do not sit under the /api/packs/{pack_key} prefix. Two routers in one

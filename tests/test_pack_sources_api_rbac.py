@@ -24,17 +24,15 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
 
 from ccf.api.main import create_app
-from ccf.api.routes.packs import PackSourceIn, adopt_source, register_source
+from ccf.api.routes.packs import ADOPTER_ROLES, PackSourceIn, register_source
 from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Organization, User
-from ccf.models_packs import PackSource
-from ccf.packs.sync import check_pack_source
 from tests.conftest import pack_source_url
 
 pytestmark = pytest.mark.usefixtures(
@@ -179,25 +177,34 @@ async def test_an_admin_can_register_with_auto_install(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_issm_can_register_with_auto_install(tmp_path: Path) -> None:
-    """``issm``/``isso`` are not yet values ``ccf.user_role`` (the Postgres
-    enum backing ``User.role``) accepts, so there is no way to mint a real
-    bearer token with one of these roles through the HTTP/DB path -- exercised
-    directly against the route function instead, exactly like
-    ``test_pack_sources_api.py``'s cross-tenant and global-principal tests
-    already do for the same reason (a ``Principal`` is a plain dataclass, not
-    constrained by that enum)."""
+async def test_no_dead_role_name_grants_auto_install(tmp_path: Path) -> None:
+    """``issm``/``isso`` used to be named in ADOPTER_ROLES and were tested here
+    as if they granted adoption -- with a hand-built ``Principal``, because
+    ``ccf.user_role`` (the Postgres enum behind ``User.role``) cannot hold
+    either name, so no bearer token could ever carry one. The gate matched on
+    string equality, so those two names matched nobody: the tuple was
+    ``("admin",)`` in effect, and the test asserting otherwise only passed
+    because a dataclass ``Principal`` is not constrained by the enum.
+
+    What is worth keeping is the inverse: every name in ADOPTER_ROLES must be
+    a role the database can actually store (``tests/test_role_names_are_real.py``
+    enforces that for the whole tree), and a principal carrying an invented
+    role is refused rather than let through.
+    """
+    valid = set(User.__table__.c.role.type.enums)
+    assert set(ADOPTER_ROLES) <= valid, ADOPTER_ROLES
     tag = _tag()
-    path = tmp_path / f"issm-{tag}.json"
+    path = tmp_path / f"deadrole-{tag}.json"
     path.write_text(json.dumps(_manifest(path.stem)), encoding="utf-8")
     async with session_scope() as session:
-        org = Organization(name=f"PackRBAC ISSM Org {tag}")
+        org = Organization(name=f"PackRBAC DeadRole Org {tag}")
         session.add(org)
         await session.flush()
         issm = Principal(user_id=1, email="issm@pack-rbac.test", org_id=org.id, role="issm")
         body = PackSourceIn(url=pack_source_url(path), auto_install=True)
-        out = await register_source(f"pack-{tag}", body, session, issm)
-        assert out["auto_install"] is True
+        with pytest.raises(HTTPException) as exc:
+            await register_source(f"pack-{tag}", body, session, issm)
+        assert exc.value.status_code == 403
 
 
 # --- /adopt requires an adopter role (pre-existing gate, previously untested
@@ -246,32 +253,25 @@ async def test_a_control_owner_cannot_adopt(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_isso_can_adopt(tmp_path: Path) -> None:
-    """``isso`` is not yet a value ``ccf.user_role`` accepts -- see
-    ``test_an_issm_can_register_with_auto_install``'s docstring -- so this is
-    exercised directly against the route functions with a hand-built
-    ``Principal`` rather than through a real bearer token."""
+async def test_an_admin_can_adopt(tmp_path: Path) -> None:
+    """The passing direction, end to end over HTTP as a real bearer token --
+    the gate refusing viewer and control_owner above must not have closed on
+    the role that is supposed to hold it."""
     tag = _tag()
-    path = tmp_path / f"isso-{tag}.json"
+    token, _org = await _mk_user(
+        f"adoptadmin-{tag}@pack-rbac.test", f"PackRBAC AdoptAdmin Org {tag}", "admin"
+    )
+    path = tmp_path / f"adoptadmin-{tag}.json"
     path.write_text(json.dumps(_manifest(path.stem)), encoding="utf-8")
-    async with session_scope() as session:
-        org = Organization(name=f"PackRBAC ISSO Org {tag}")
-        session.add(org)
-        await session.flush()
-        isso = Principal(user_id=1, email="isso@pack-rbac.test", org_id=org.id, role="isso")
+    async with _client() as c:
+        created = await _register(c, token, f"pack-{tag}", pack_source_url(path))
+        source_id = created.json()["id"]
+        synced = await c.post(f"/api/pack-sources/{source_id}/sync", headers=_auth(token))
+        assert synced.json()["status"] == "pending"
 
-        body = PackSourceIn(url=pack_source_url(path))
-        created = await register_source(f"pack-{tag}", body, session, isso)
-        source_id = created["id"]
-
-        src = (
-            await session.execute(select(PackSource).where(PackSource.id == source_id))
-        ).scalar_one()
-        out = await check_pack_source(session, src, actor=isso.email)
-        assert out["status"] == "pending"
-
-        pack = await adopt_source(source_id, session, isso)
-        assert pack["status"] == "installed"
+        resp = await c.post(f"/api/pack-sources/{source_id}/adopt", headers=_auth(token))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "installed"
 
 
 # --- unauthenticated is refused ----------------------------------------------
