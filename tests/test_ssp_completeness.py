@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ccf.ssp.completeness import assess
+from ccf.ssp.completeness import assess, is_draft_or_placeholder
 from ccf.ssp.constants import GENERIC_ROLE_FLAG
 from ccf.ssp.statements import DRAFT_PREFIX
 
@@ -173,3 +173,37 @@ def test_complete_entry_with_control_implementation_evidence_has_no_new_gaps() -
     r = assess(_FULL_META, [good])
     assert r["control_gaps"] == []
     assert r["ready"] is True
+
+
+def test_is_draft_or_placeholder_matches_the_marker_with_or_without_a_space() -> None:
+    """The draft-marker widening. ``DRAFT_PREFIX`` is ``"[DRAFT] "`` WITH a
+    trailing space, and the old predicate tested it as a plain substring, so a
+    marker not followed by a space (a human typing ``"[DRAFT]"`` with nothing
+    after it, or at the end of a sentence like ``"Done. [DRAFT]"``) was not
+    recognised as a draft. ``is_draft_or_placeholder`` now matches the marker
+    either way.
+
+    Every shape flagged before this change must still be flagged -- this is a
+    widening, not a narrowing.
+    """
+    # Newly caught: the marker with nothing (or no space) after it.
+    assert is_draft_or_placeholder("[DRAFT]") is True
+    assert is_draft_or_placeholder("Done. [DRAFT]") is True
+    # Still caught: every shape that was already flagged.
+    assert is_draft_or_placeholder("[DRAFT] Describe the implementation.") is True
+    assert is_draft_or_placeholder("Done. [DRAFT] ") is True
+    assert is_draft_or_placeholder("We use [DRAFT] mode") is True
+    # Still NOT flagged: ordinary text with no marker at all.
+    assert is_draft_or_placeholder("The organization enforces MFA.") is False
+
+
+def test_draft_prefix_construction_is_unchanged_by_the_widening() -> None:
+    """The widening changes DETECTION only. ``DRAFT_PREFIX`` itself must keep
+    its trailing space so ``DRAFT_PREFIX + text`` still constructs
+    ``"[DRAFT] text"`` -- every producer (``ssp/statements.py``,
+    ``ssp/platforms.py``, ``ssp/nist80053.py``, ``governance/automation.py``)
+    depends on that literal shape."""
+    assert DRAFT_PREFIX == "[DRAFT] "
+    assert DRAFT_PREFIX + "The platform provides the capability." == (
+        "[DRAFT] The platform provides the capability."
+    )

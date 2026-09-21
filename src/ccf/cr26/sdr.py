@@ -241,12 +241,13 @@ def _implementation_description(
         # part as ``{"label", "text"}``, dropping ``draft``, so for any control
         # ever touched in that editor the predicate is the ONLY gate left.
         #
-        # The predicate is given the RAW text, never the stripped copy:
-        # ``constants.DRAFT_PREFIX`` is ``"[DRAFT] "`` WITH its trailing space,
-        # and ``is_draft_or_placeholder`` tests it as a plain substring -- so
-        # stripping first destroys the token whenever the marker ends the
-        # string, and ``"[DRAFT] "`` would ship as ``"[DRAFT]"``. The strip is
-        # for the blank test and the join only.
+        # The predicate is given the RAW text, never the stripped copy, on
+        # general principle -- ``is_draft_or_placeholder`` now matches the
+        # ``[DRAFT]`` marker whether or not it is followed by a space, so
+        # stripping no longer changes the answer for that token specifically,
+        # but the ODP placeholder tokens it also checks have no such
+        # guarantee. The strip (``text``) is for the blank test and the join
+        # only; the predicate always sees the untouched value.
         if part.get("draft") or is_draft_or_placeholder(value):
             dropped = True
             continue
@@ -254,18 +255,26 @@ def _implementation_description(
 
     description = " ".join(written) or None
     if description is not None and is_draft_or_placeholder(description):
-        # **The join can manufacture the token the per-part check rejected.**
-        # ``DRAFT_PREFIX`` is ``"[DRAFT] "`` with a trailing space, so a bare
-        # ``"[DRAFT]"`` part slips the per-part predicate -- and then the
-        # ``" "`` separator supplies the missing space, putting a literal
-        # ``"[DRAFT] "`` into the SHIPPED description. It would read as
-        # complete, keep its status, and appear in neither gap list.
+        # **A backstop, and today an unreachable one -- kept deliberately.**
+        # Before the draft-marker widening this branch was live: the predicate
+        # tested ``DRAFT_PREFIX``, which is ``"[DRAFT] "`` WITH a trailing
+        # space, so a bare ``"[DRAFT]"`` part slipped the per-part check above
+        # and the ``" "`` separator then supplied the missing space --
+        # manufacturing the marker inside the SHIPPED description.
         #
-        # Re-running the SAME predicate on the composed string closes that
-        # without touching ``is_draft_or_placeholder`` itself: the existing
-        # membership test already returns True on the join's output. A control
-        # that trips here is treated exactly like one whose parts were all
-        # scaffolding -- no description, named in both lists.
+        # Every token ``is_draft_or_placeholder`` matches now contains no
+        # space, and the join inserts exactly one space, so no token can span
+        # a part boundary: this branch cannot fire. It stays because that is a
+        # property of the TOKEN LIST, not of this function. One future token
+        # with a space in it -- ``"[Assignment: organization-defined"``, say --
+        # makes the branch live again, and a backstop deleted for being dead
+        # is not something the author of that token would think to restore.
+        # ``test_no_placeholder_token_can_span_a_part_boundary`` pins the
+        # invariant, so adding such a token fails loudly here rather than
+        # silently reopening the hole.
+        #
+        # A control that trips this is treated exactly like one whose parts
+        # were all scaffolding -- no description, named in both lists.
         return None, True
     return description, dropped
 

@@ -47,6 +47,19 @@ def is_draft_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
     presence of :data:`DRAFT_PREFIX` in the stored text is the only durable
     record that it hasn't been human-reviewed yet (CISO-02: AI-drafted
     content must stay visibly distinguishable until a human clears it).
+
+    Deliberately kept strict (``startswith(DRAFT_PREFIX)``, the full literal
+    WITH its trailing space) rather than widened the way
+    ``ssp.completeness.is_draft_or_placeholder`` was: every producer of this
+    marker (``statements.py``/``platforms.py``/``nist80053.py``/
+    ``governance/automation.py``) always writes the space, so the strict form
+    never misses machine-drafted content -- widening it would instead let a
+    human's own hand-typed ``"[DRAFT]"`` register as "AI-sourced" here (this
+    predicate drives the UI's AI-provenance badges, ``ui.py``'s and
+    ``reports.py``'s ``is_draft_entry``/``ai_sourced_map``), which is a false
+    claim about *authorship* -- a different question from
+    ``is_draft_or_placeholder``'s "is this text real content yet," which a
+    human-typed marker answers correctly either way.
     """
     for part in part_narratives or []:
         text = (part or {}).get("text") or ""

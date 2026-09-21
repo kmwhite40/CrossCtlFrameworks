@@ -21,7 +21,11 @@ from ccf.cr26.sdr import (
 from ccf.cr26.validation import schema_path
 from ccf.db import session_scope
 from ccf.models import Organization, SSPControlEntry, SSPProject, System
-from ccf.ssp.completeness import is_draft_or_placeholder
+from ccf.ssp.completeness import (
+    _DRAFT_TOKEN,
+    _ODP_PLACEHOLDER_TOKENS,
+    is_draft_or_placeholder,
+)
 
 
 def _entry(**kw: object) -> SSPControlEntry:
@@ -409,18 +413,26 @@ def test_the_draft_marker_survives_the_strip_that_kills_the_space_defect() -> No
         assert _control_gaps(entries) == (["AC-2"], ["AC-2"]), text
 
 
-def test_the_join_cannot_manufacture_the_marker_the_parts_slipped() -> None:
-    """``DRAFT_PREFIX`` is ``"[DRAFT] "`` WITH a trailing space, so a bare
-    ``"[DRAFT]"`` part slips the per-part predicate -- and then the ``" "``
-    separator supplies the missing space, putting a literal ``"[DRAFT] "`` into
-    the SHIPPED description. Measured before the fix:
+def test_a_bare_draft_part_is_dropped_at_the_per_part_check_now() -> None:
+    """Formerly ``test_the_join_cannot_manufacture_the_marker_the_parts_slipped``.
+
+    Under the old, space-including ``DRAFT_PREFIX`` substring test, a bare
+    ``"[DRAFT]"`` part slipped the per-part predicate -- and then the ``" "``
+    join separator supplied the missing space, manufacturing a literal
+    ``"[DRAFT] "`` in the composed string, which a *second* predicate call on
+    the joined text caught, dropping the whole description even though real
+    content ("Kept.") survived in another part. Measured before that guard:
 
         [{'text':'[DRAFT]'}, {'text':'Kept.'}] -> desc='[DRAFT] Kept.' gaps=([], [])
 
-    It reads as complete, keeps ``Implemented``, and is in neither list. The
-    same predicate returns ``True`` on the composed string, so re-running it
-    once after the join closes this here -- no change to
-    ``is_draft_or_placeholder`` and no decision about SSP completeness scoring.
+    Now that ``is_draft_or_placeholder`` matches ``[DRAFT]`` with or without a
+    trailing space (the draft-marker widening), the bare part is caught
+    directly by the PER-PART check and dropped before the join ever runs --
+    the real content in the other part(s) is no longer collateral damage. The
+    control keeps a truncated-but-real description and is named in
+    ``dropped_parts`` (something was lost) but not ``missing_description``
+    (something real survived) -- the same distinction the module docstring
+    draws for any other dropped part.
     """
     for narratives in (
         [{"text": "[DRAFT]"}, {"text": "Kept."}],
@@ -428,25 +440,73 @@ def test_the_join_cannot_manufacture_the_marker_the_parts_slipped() -> None:
     ):
         entries = [_entry(implementation_status=["Implemented"], part_narratives=narratives)]
         out = render_controls(entries)
-        assert "controlImplementationDescription" not in out[0], (narratives, out[0])
-        # Treated exactly like a control whose parts were all scaffolding.
-        assert _control_gaps(entries) == (["AC-2"], ["AC-2"]), narratives
+        assert "[DRAFT]" not in out[0].get("controlImplementationDescription", ""), (
+            narratives,
+            out[0],
+        )
+        # Real content survived, so this is a dropped-part gap, not a
+        # missing-description gap.
+        assert _control_gaps(entries) == ([], ["AC-2"]), narratives
 
 
-def test_a_bare_draft_token_that_never_gains_a_space_is_still_shipped() -> None:
-    """The honest boundary of the fix above, stated so nobody mistakes it for
-    more than it is: the composed check catches the token only once the join
-    has supplied the space. A lone ``"[DRAFT]"`` part with nothing after it
-    composes to ``"[DRAFT]"``, which ``is_draft_or_placeholder`` does not match
-    -- that hole lives inside the shared predicate, is reachable from four call
-    sites, and widening it is a decision about SSP completeness scoring rather
-    than a CR26 cleanup.
+def test_a_bare_draft_token_with_nothing_after_it_is_now_caught() -> None:
+    """This test used to document the hole: a lone ``"[DRAFT]"`` part with
+    nothing after it composes to ``"[DRAFT]"``, which the old, space-including
+    ``DRAFT_PREFIX`` substring test did not match -- so it shipped verbatim as
+    the control's ``controlImplementationDescription`` to a FedRAMP deliverable,
+    reported in neither gap list. That was the hole; this asserts it is closed.
 
-    This test exists so the gap is recorded and visible rather than assumed
-    closed. Change it deliberately, with that decision made.
+    ``is_draft_or_placeholder`` now matches the marker whether or not it is
+    followed by a space, so the sole part is scaffolding, the description is
+    dropped entirely (nothing real survived), and the control is named in
+    BOTH gap lists -- the same outcome as any control whose only narrative was
+    scaffolding.
     """
-    out = render_controls([_entry(part_narratives=[{"text": "[DRAFT]"}])])
-    assert out[0]["controlImplementationDescription"] == "[DRAFT]"
+    entries = [_entry(part_narratives=[{"text": "[DRAFT]"}])]
+    out = render_controls(entries)
+    assert "controlImplementationDescription" not in out[0]
+    assert _control_gaps(entries) == (["AC-2"], ["AC-2"])
+
+
+def test_a_marker_at_the_end_of_a_sentence_with_no_trailing_space_is_caught() -> None:
+    """The SDR-shaped instance of the draft-marker widening: a human typing
+    ``"Done. [DRAFT]"`` -- the marker ending the sentence, never followed by a
+    space -- used to ship verbatim as ``controlImplementationDescription`` in
+    the FedRAMP deliverable, reported in neither gap list. That was the hole
+    this change closes end to end.
+    """
+    entries = [_entry(part_narratives=[{"text": "Done. [DRAFT]"}])]
+    out = render_controls(entries)
+    assert "controlImplementationDescription" not in out[0]
+    assert _control_gaps(entries) == (["AC-2"], ["AC-2"])
+
+
+def test_no_placeholder_token_can_span_a_part_boundary() -> None:
+    """The invariant that makes the composed-string guard in
+    ``_implementation_description`` a backstop rather than a live path.
+
+    That guard re-runs ``is_draft_or_placeholder`` on the joined description
+    because the join used to MANUFACTURE the marker: parts are joined with a
+    single ``" "``, and the old predicate tested ``"[DRAFT] "`` -- trailing
+    space included -- so ``["[DRAFT]", "Kept."]`` composed to ``"[DRAFT] Kept."``
+    out of two parts that each passed the per-part check.
+
+    After the widening, every token the predicate matches is space-free, and a
+    token can only straddle a boundary if it contains the separator. So the
+    guard cannot fire, and the per-part check is the whole defence -- which is
+    a fact about this tuple, not about the function.
+
+    If this fails, a token containing a space was added: the composed-string
+    guard in ``_implementation_description`` is LIVE again and needs a test
+    exercising it, rather than the comment that currently calls it
+    unreachable.
+    """
+    for token in (_DRAFT_TOKEN, *_ODP_PLACEHOLDER_TOKENS):
+        assert " " not in token, (
+            f"{token!r} contains the part-join separator, so it can be formed "
+            "across a part boundary -- the composed-string guard in "
+            "_implementation_description is reachable again"
+        )
 
 
 def test_a_null_element_in_the_narrative_list_lost_nothing() -> None:
