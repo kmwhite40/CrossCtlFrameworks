@@ -32,6 +32,7 @@ from ...config import get_settings, is_dev_env
 from ...portal import (
     add_comment,
     create_grant,
+    create_principal,
     grant_contents,
     list_grants,
     record_access,
@@ -104,6 +105,35 @@ def _portal_cookie_ttl_hours(grant: Any) -> int:
 # --- admin (internal) ------------------------------------------------------
 
 
+class PrincipalIn(BaseModel):
+    organization_id: int
+    name: str
+    kind: str = "customer"
+    email: str | None = None
+    organization_name: str | None = None
+
+
+@router.post("/principals")
+async def create_principal_endpoint(
+    body: PrincipalIn,
+    session: AsyncSession = Depends(get_session),
+    _principal: Principal = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """Create an external principal on its own — an engagement names one
+    before any grant exists, so it cannot only be created as a side effect of
+    issuing a grant."""
+    try:
+        row = await create_principal(
+            session, org_id=body.organization_id, name=body.name, kind=body.kind,
+            email=body.email, organization_name=body.organization_name,
+        )
+    except ValueError as exc:  # unknown ``kind`` — a vocabulary error, not a server fault
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await session.commit()
+    return {"id": row.id, "kind": row.kind, "name": row.name, "email": row.email,
+            "organization_name": row.organization_name}
+
+
 class GrantIn(BaseModel):
     organization_id: int
     principal_name: str
@@ -122,12 +152,18 @@ async def create_grant_endpoint(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    grant = await create_grant(
-        session, org_id=body.organization_id, principal_name=body.principal_name,
-        kind=body.kind, email=body.email, organization_name=body.organization_name,
-        package_ids=body.package_ids, evidence_ids=body.evidence_ids,
-        ttl_days=body.ttl_days, label=body.label, actor=principal.email,
-    )
+    try:
+        grant = await create_grant(
+            session, org_id=body.organization_id, principal_name=body.principal_name,
+            kind=body.kind, email=body.email, organization_name=body.organization_name,
+            package_ids=body.package_ids, evidence_ids=body.evidence_ids,
+            ttl_days=body.ttl_days, label=body.label, actor=principal.email,
+        )
+    except ValueError as exc:
+        # A refusal the caller can fix by sending different input (an unknown
+        # ``kind``; from §4, an engagement-backed grant with no TTL) — 422, not
+        # a 500 that reads as a Concord fault.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     await session.commit()
     # IA-09: the plaintext token is shown exactly once, here at issuance — it
     # is not persisted and cannot be recovered from `grant.token_hash`.

@@ -1106,6 +1106,7 @@ async def _portal_admin_context(
     param (which would land in access logs / browser history; see the
     ``issued_link`` note below).
     """
+    from ...constants import EXTERNAL_PRINCIPAL_KINDS  # noqa: PLC0415
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
     from ...portal import list_grants  # noqa: PLC0415
@@ -1154,8 +1155,11 @@ async def _portal_admin_context(
     # grant just issued in this same request — never from a query param — so
     # it never transits a URL (IA-09: the DB stores only the hash).
     issued_link = f"{request.base_url}portal?token={issued_token}" if issued_token else None
+    # The form's kind options come from the one vocabulary, not a hard-coded list in
+    # the template: a second copy is a second place for a typo to live.
     return {"active": "portaladmin", "org_id": org_id, "rows": rows,
-            "packages": packages, "evidence": evidence, "issued_link": issued_link}
+            "packages": packages, "evidence": evidence, "issued_link": issued_link,
+            "kinds": EXTERNAL_PRINCIPAL_KINDS}
 
 
 @router.get("/admin/portal", response_class=HTMLResponse)
@@ -1184,11 +1188,14 @@ async def portal_admin_create(
 ) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
 
-    grant = await create_grant(
-        session, org_id=organization_id, principal_name=principal_name, kind=kind,
-        package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
-        label=label or None, actor=_actor(request),
-    )
+    try:
+        grant = await create_grant(
+            session, org_id=organization_id, principal_name=principal_name, kind=kind,
+            package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
+            label=label or None, actor=_actor(request),
+        )
+    except ValueError as exc:  # a kind outside the vocabulary — the form offers only members
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     # The plaintext token is only ever available on this in-memory `grant`
     # (IA-09: the DB stores its hash only). Render the page directly with it
     # in the template context — never put it in a redirect URL/query param,

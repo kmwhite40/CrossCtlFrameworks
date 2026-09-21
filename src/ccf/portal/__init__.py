@@ -12,6 +12,7 @@ from __future__ import annotations
 from .service import (
     add_comment,
     create_grant,
+    create_principal,
     grant_contents,
     list_grants,
     record_access,
@@ -23,6 +24,7 @@ from .service import (
 __all__ = [
     "add_comment",
     "create_grant",
+    "create_principal",
     "grant_contents",
     "list_grants",
     "record_access",

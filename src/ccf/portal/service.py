@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import hash_token
+from ..constants import EXTERNAL_PRINCIPAL_KINDS
 from ..db import set_session_tenant
 from ..models_evidence import EvidenceObject
 from ..models_packages import AuthorizationPackage
@@ -52,6 +53,51 @@ async def _clamp(session: AsyncSession, grant: ExternalAccessGrant) -> None:
     await set_session_tenant(session, grant.organization_id)
 
 
+def _require_kind(kind: str) -> str:
+    """Enforce :data:`~ccf.constants.EXTERNAL_PRINCIPAL_KINDS` on write.
+
+    The columns are plain ``String(16)`` and stay that way (see the constant's
+    own note on why this is not a Postgres enum), so this function is the only
+    thing standing between a typo and a stored value that looks like a real
+    member. Every path that writes a ``kind`` -- principal or grant -- goes
+    through it; the route turns the ``ValueError`` into a 422.
+    """
+    if kind not in EXTERNAL_PRINCIPAL_KINDS:
+        raise ValueError(
+            f"unknown external principal kind {kind!r}; "
+            f"expected one of {', '.join(EXTERNAL_PRINCIPAL_KINDS)}"
+        )
+    return kind
+
+
+async def create_principal(
+    session: AsyncSession,
+    *,
+    org_id: int,
+    name: str,
+    kind: str = "customer",
+    email: str | None = None,
+    organization_name: str | None = None,
+) -> ExternalPrincipal:
+    """Create an external principal without issuing it a grant.
+
+    ``create_grant`` creates a principal inline, which is enough for a one-off
+    customer share but not for an assessment: an engagement names the assessor
+    principal, and the grants come after it. So the principal has to be
+    creatable on its own.
+    """
+    principal = ExternalPrincipal(
+        organization_id=org_id,
+        kind=_require_kind(kind),
+        name=name,
+        email=email,
+        organization_name=organization_name,
+    )
+    session.add(principal)
+    await session.flush()
+    return principal
+
+
 # --- admin: issue / list / revoke ------------------------------------------
 
 
@@ -70,6 +116,7 @@ async def create_grant(
     actor: str | None = None,
 ) -> ExternalAccessGrant:
     """Issue a scoped, expiring bearer-token grant to an external principal."""
+    _require_kind(kind)
     principal = ExternalPrincipal(
         organization_id=org_id, kind=kind, name=principal_name,
         email=email, organization_name=organization_name,

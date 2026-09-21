@@ -36,7 +36,7 @@
     <div class="filters" style="margin-bottom:12px">
       <input class="input" name="principal_name" required placeholder="Recipient name (e.g. Acme 3PAO)" aria-label="Recipient name">
       <select class="select" name="kind" aria-label="Recipient kind">
-        {% for k in ['customer','assessor','vendor'] %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
+        {% for k in kinds %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
       </select>
       <input class="input" name="ttl_days" type="number" min="1" value="30" aria-label="Days until expiry" title="Days until expiry">
       <input class="input" name="label" placeholder="Label (optional)" aria-label="Label">
