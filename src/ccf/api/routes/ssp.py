@@ -37,8 +37,9 @@ from ...ssp.generator import generate_ssp_docx
 from ...ssp.nist80053_docx import render_80053_docx
 from ...ssp.odp import render as render_template
 from ...ssp.platforms import (
-    GOV_ENVIRONMENTS,
+    NO_PLATFORM,
     PLATFORMS,
+    environment_for,
     normalize_platform,
     platform_label,
     services_for,
@@ -54,6 +55,21 @@ DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 
 # Frameworks a project may target — validated on create.
 FRAMEWORKS = ("cmmc-800-171", "nist-800-53r5")
+
+def require_platform(platform: str | None) -> str:
+    """The stored platform code for a value a *client* supplied, or 422.
+
+    A write path must never coerce: the UI offers a fixed choice list, so a
+    value outside it is a bug or a hand-crafted request, and neither deserves a
+    guess. Coercing is how project rows came to claim a platform nobody chose
+    — ``normalize_platform`` used to answer "m365" here for GCP, Oracle,
+    on-premises, a typo, and for the questionnaire's own "none".
+    """
+    plat = normalize_platform(platform)
+    if plat is None:
+        raise HTTPException(422, f"platform must be one of {', '.join(PLATFORMS)}")
+    return plat
+
 
 #: Roles that may author an SSP: edit control entries, create and update
 #: projects, apply templates, pull connector config into ODP values.
@@ -103,7 +119,10 @@ class ProjectCreate(BaseModel):
     customer_name: str
     system_id: int | None = None
     system_name: str | None = None
-    platform: str = "m365"
+    #: Defaults to "no cloud platform declared", not to a product. A client
+    #: that omits this field has declared nothing, and the previous "m365"
+    #: default made a factual claim about the customer's stack on its behalf.
+    platform: str = NO_PLATFORM
     framework: str = "cmmc-800-171"
     title: str = "System Security Plan (SSP)"
     version: str = "0.1"
@@ -230,6 +249,7 @@ async def create_project(
 ) -> ProjectOut:
     if body.framework not in FRAMEWORKS:
         raise HTTPException(422, f"framework must be one of {', '.join(FRAMEWORKS)}")
+    platform = require_platform(body.platform)
     system_name = body.system_name
     org_id = principal.org_id
     if body.system_id is not None:
@@ -249,7 +269,7 @@ async def create_project(
         system_id=body.system_id,
         customer_name=body.customer_name,
         system_name=system_name,
-        platform=normalize_platform(body.platform),
+        platform=platform,
         framework=body.framework,
         title=body.title,
         version=body.version,
@@ -310,12 +330,17 @@ async def get_project(
 
 
 async def _render_context(proj: SSPProject, domain: str | None) -> dict[str, str]:
-    """Context tokens available to every template body ({{environment}}, …)."""
-    plat = normalize_platform(proj.platform)
+    """Context tokens available to every template body ({{environment}}, …).
+
+    The project's stored platform is passed through raw rather than normalized
+    first: each helper reports an unrecognized value as itself, and a value
+    resolved here would lose the string they need in order to say what was
+    declared.
+    """
     return {
-        "environment": GOV_ENVIRONMENTS.get(plat, platform_label(plat)),
-        "platform": platform_label(plat),
-        "services": services_for(plat, domain),
+        "environment": environment_for(proj.platform),
+        "platform": platform_label(proj.platform),
+        "services": services_for(proj.platform, domain),
     }
 
 
@@ -381,7 +406,7 @@ async def set_metadata(
             )
         ).scalar_one_or_none()
         if prof is not None and not meta.get("authorization_boundary"):
-            env = GOV_ENVIRONMENTS.get(normalize_platform(proj.platform), proj.platform)
+            env = environment_for(proj.platform)
             meta["authorization_boundary"] = (
                 f"The authorization boundary is the {env} tenant/account and the managed "
                 f"endpoints, identities ({prof.identity_model or 'enterprise IdP'}), and "
@@ -640,7 +665,7 @@ async def update_project(
 ) -> ProjectOut:
     proj = await _require_project(session, project_id, principal)
     for k, v in body.model_dump(exclude_none=True).items():
-        setattr(proj, k, normalize_platform(v) if k == "platform" else v)
+        setattr(proj, k, require_platform(v) if k == "platform" else v)
     await session.commit()
     await session.refresh(proj)
     return ProjectOut.model_validate(proj)
@@ -681,7 +706,7 @@ async def reseed_project(
         await session.commit()
         return {"touched": touched, "platform": proj.platform}
     if platform is not None:
-        proj.platform = normalize_platform(platform)
+        proj.platform = require_platform(platform)
         await session.flush()
     touched = await seed_project_entries(session, proj, overwrite=overwrite, platform=proj.platform)
     return {"touched": touched, "platform": proj.platform}

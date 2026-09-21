@@ -223,9 +223,12 @@ def _declared_connector(declared: str) -> tuple[str | None, str, str, str]:
     three fields are the settled answer.
 
     :data:`ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS` is read directly rather
-    than through ``connector_key_for_platform``, whose ``normalize_platform``
-    silently defaults an unrecognized code to Microsoft 365 -- which would turn
-    "we cannot tell" into "go configure Microsoft Graph".
+    than through ``connector_key_for_platform``. That helper used to default an
+    unrecognized code to Microsoft 365, turning "we cannot tell" into "go
+    configure Microsoft Graph"; it no longer does, but it still answers ``None``
+    for both "Concord ships no connector for this platform" and "Concord does
+    not know what this platform is", and this function has to tell those two
+    apart to say anything true to the customer.
     """
     if not declared:
         return None, UNKNOWN, (
