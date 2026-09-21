@@ -37,6 +37,7 @@ from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
 from ..ssp.platforms import (
     MANUAL_EVIDENCE_NOTE,
+    NO_PLATFORM,
     NO_TENANT_CAPTURE_NOTE,
     connector_key_for_platform,
     environment_for,
@@ -128,6 +129,10 @@ PLATFORM_TO_SSP = {
     "m365_gcc_high": "m365",
     "azure_gov": "azure",
     "aws_govcloud": "aws_govcloud",
+    # The questionnaire's fourth answer. Without this entry it fell through to
+    # the default beside every unrecognized string, and a customer who told us
+    # they run no cloud received a Microsoft 365 SSP.
+    "none": NO_PLATFORM,
 }
 
 _RESP_TO_STATE = {"inherited": "inherited", "shared": "partial"}

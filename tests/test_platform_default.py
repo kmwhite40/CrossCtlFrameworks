@@ -16,6 +16,7 @@ satisfied -- or defeated -- by the fixture's own text.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -52,6 +53,16 @@ def _migrate() -> None:
 # the exhaustive, catalog-driven version of this assertion lives in
 # ``test_no_other_platform_services_are_drafted_for_none`` below.
 _PRODUCT_TOKENS = ("Microsoft", "Entra", "Purview", "Intune", "Defender", "Azure", "AWS")
+
+
+def _names(token: str, text: str) -> bool:
+    """Whole-word, case-insensitive containment.
+
+    Substring matching is not good enough here and quietly gave a false
+    failure first time round: the real CMMC catalog's SI.L2-3.14.1 text is
+    "correct system flaws in a timely manner", and "flaws" contains "aws".
+    """
+    return re.search(rf"\b{re.escape(token)}\b", text, re.IGNORECASE) is not None
 
 
 async def _make_system(session, name: str) -> System:
@@ -144,10 +155,18 @@ async def _seeded_system(
                 )
 
 
-def _narrative_text(entries: list[SSPControlEntry]) -> str:
+def _narrative_text(entries: list[SSPControlEntry], prefix: str | None = None) -> str:
+    """Every drafted narrative, optionally only for this test's own controls.
+
+    ``prefix`` scopes the text to the throwaway controls a test seeded. The
+    SSP project covers whatever is in the global ``ccf.scoring_controls``
+    table, which other modules populate with the real 110-practice CMMC
+    catalog, so an unscoped assertion would depend on run order.
+    """
     return "\n".join(
         (part.get("text") or "")
         for e in entries
+        if prefix is None or prefix in e.control_id
         for part in (e.part_narratives or [])
     )
 
@@ -169,13 +188,14 @@ async def test_declared_none_yields_a_project_that_names_no_product() -> None:
         )
         label = platform_label(proj.platform)
         for token in _PRODUCT_TOKENS:
-            assert token.lower() not in label.lower(), (
+            assert not _names(token, label), (
                 f"platform label {label!r} names the product {token!r}"
             )
         assert entries, "expected seeded SSP entries"
-        text = _narrative_text(entries)
+        text = _narrative_text(entries, prefix="NPHEAD")
+        assert text.strip(), "expected narratives for this test's own controls"
         for token in _PRODUCT_TOKENS:
-            assert token.lower() not in text.lower(), (
+            assert not _names(token, text), (
                 f"a statement drafted for a system with no cloud platform names "
                 f"{token!r}:\n{text}"
             )
