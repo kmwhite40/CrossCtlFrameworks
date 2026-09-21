@@ -163,3 +163,52 @@ CERTIFICATION_CLASSES: tuple[str, ...] = ("A", "B", "C", "D")
 
 #: Program certification, or an agency-sponsored path to one.
 CERTIFICATION_PATHS: tuple[str, ...] = ("program", "agency")
+
+# ---------------------------------------------------------------------------
+# Concord pipeline stage.
+#
+# NOT a FedRAMP vocabulary. FedRAMP has published no status enumeration: the
+# brand pages give two marketplace designations (Certified (Rev5), Validated
+# (20x)) and nothing more, and the only place the five-per-regime status lists
+# appear is RFC-0020, which is a PROPOSAL -- "March 18, 2026 (tentatively)",
+# no adoption banner. See docs/superpowers/specs/2026-09-21-pipeline-stage-design.md
+# §1, checked at source 2026-09-21.
+#
+# So this field answers Concord's own question -- "where does Concord
+# understand this system to be?" -- and borrows RFC-0020's words only so the
+# values are recognisable to an operator. It deliberately does NOT answer "what
+# does the FedRAMP Marketplace say about this system?", which is a fact about a
+# register Concord does not ingest. One field answering both would be an
+# operator's private note read as a federal fact, which is this programme's
+# recurring claim-versus-rendering defect in its purest form. That is also why
+# the column is named ``pipeline_stage`` and not ``certification_status``, and
+# why the old name is not kept as an alias.
+#
+# RFC-0020 gives TWO five-member lists, overlapping on three words and
+# differing on two each: Continuous Monitoring is Rev5-only, Persistent
+# Validation and Prioritized are 20x-only. A flat seven-member union would make
+# "Rev5 + Persistent Validation" storable -- a value that validates while
+# asserting something that cannot be true. Carrying the regime INSIDE the value
+# makes that pair unrepresentable: no check constraint to write, no second
+# column to disagree with, nothing to keep in sync. A ``certification_type``
+# column was considered and rejected (spec §3): certificationType is a
+# declaration the provider makes, deliberately absent from the CPO seeder, and
+# a column for it would smuggle that declaration in through a side door.
+#
+# NULL means "nobody has said" -- the only honest default on a field no
+# platform signal can populate. Nothing derives a stage from anything
+# (tests/test_certification_class_is_independent.py enforces it), and no stage
+# may ever reach a filed CR26 document
+# (tests/test_pipeline_stage_is_never_filed.py enforces that).
+PIPELINE_STAGES: tuple[str, ...] = (
+    "rev5:preparation",
+    "rev5:agency-authorization-in-process",
+    "rev5:assessment-by-fedramp",
+    "rev5:continuous-monitoring",
+    "rev5:remediation",
+    "20x:preparation",
+    "20x:prioritized",
+    "20x:assessment-by-fedramp",
+    "20x:persistent-validation",
+    "20x:remediation",
+)

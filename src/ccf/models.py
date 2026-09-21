@@ -37,7 +37,12 @@ from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from .auth import hash_token
-from .constants import CERTIFICATION_CLASSES, CERTIFICATION_PATHS, POAM_STATUSES
+from .constants import (
+    CERTIFICATION_CLASSES,
+    CERTIFICATION_PATHS,
+    PIPELINE_STAGES,
+    POAM_STATUSES,
+)
 
 
 class Base(DeclarativeBase):
@@ -364,6 +369,31 @@ class System(Base):
     #: Program or agency-sponsored certification path. Null when not applicable.
     certification_path: Mapped[str | None] = mapped_column(
         Enum(*CERTIFICATION_PATHS, name="certification_path", schema="ccf")
+    )
+    #: Where CONCORD understands this system to be in its pipeline -- an
+    #: operator's own note, NOT a status FedRAMP conferred and not what the
+    #: FedRAMP Marketplace says (see ``ccf.constants.PIPELINE_STAGES`` and
+    #: docs/superpowers/specs/2026-09-21-pipeline-stage-design.md). The regime
+    #: is part of the value, so "Rev5 + Persistent Validation" is
+    #: unrepresentable rather than merely undocumented. INDEPENDENT of
+    #: ``baseline``, ``certification_class`` and ``certification_path``:
+    #: nothing derives a stage from any of them or any of them from a stage.
+    #: Null means "nobody has said", correct for every row until an operator
+    #: says otherwise -- no platform signal can populate this.
+    #:
+    #: ``validate_strings=True``, unlike the two columns above: spec §5.6
+    #: requires a cross-regime value such as ``"rev5:persistent-validation"``
+    #: to be refused at the Python enum AND the Postgres enum. SQLAlchemy's
+    #: ``Enum`` passes an unknown *string* straight through to the database by
+    #: default (``_db_value_for_elem``), so without this the Python belt named
+    #: by the spec would not exist and only Postgres would object.
+    pipeline_stage: Mapped[str | None] = mapped_column(
+        Enum(
+            *PIPELINE_STAGES,
+            name="pipeline_stage",
+            schema="ccf",
+            validate_strings=True,
+        )
     )
     ato_status: Mapped[str | None] = mapped_column(
         Enum("none", "in_progress", "authorized", "expired", name="ato_status", schema="ccf"),
