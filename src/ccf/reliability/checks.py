@@ -895,6 +895,86 @@ async def _check_query_templates_health(session: AsyncSession) -> Check:
     return Check("query_templates_health", PASS, f"All {len(REGISTRY)} query templates run.")
 
 
+async def _check_ssp_platform_agreement(session: AsyncSession) -> Check:
+    """Warn on SSP projects whose platform disagrees with the intake answer.
+
+    Until ``fix/platform-default``, three layers each coerced an unrecognized
+    ``cloud_platform`` to "m365": a customer who answered "none" -- one of the
+    four answers the questionnaire offers -- received an SSP describing
+    Microsoft 365, and so did everyone on GCP, Oracle Cloud or on-premises
+    equipment. Those rows were written and cannot be silently repaired: a
+    project coerced to "m365" is now indistinguishable from one legitimately on
+    M365, so rewriting them would be a second guess on top of the first and
+    would destroy the record of what was actually stored.
+
+    They are, however, **detectable**: ``SystemProfile.cloud_platform`` still
+    holds the declared answer while ``SSPProject.platform`` holds the stored
+    one. This counts the disagreements and names the remediation as a human
+    decision.
+
+    ``WARN``, never ``FAIL``. A legitimate mismatch exists: an author may
+    deliberately change a project's platform after intake, and an SSP authored
+    directly in the editor never had an intake answer to agree with. This check
+    finds candidates for a human to look at -- it does not allege an error.
+
+    The two causes are counted and reported **separately**, for the same reason
+    :func:`_check_external_grant_expiration` reports its two: "4 mismatched
+    projects" sends someone looking in one place when the cause may be in the
+    other. A project that disagrees with a *recognized* answer needs the intake
+    answer and the project reconciled; one that names a product for a system
+    that declared nothing Concord recognizes needs someone to find out what the
+    customer actually runs.
+
+    The intake-code mapping is rendered from :data:`PLATFORM_TO_SSP` rather
+    than retyped as SQL, so a new questionnaire answer cannot leave this check
+    quietly comparing against a stale table.
+    """
+    if not await _regclass(session, "ccf.ssp_projects") or not await _regclass(
+        session, "ccf.system_profiles"
+    ):
+        return Check("ssp_platform_agreement", PASS, "SSP projects not deployed.")
+    from ..governance.automation import PLATFORM_TO_SSP  # noqa: PLC0415
+    from ..ssp.platforms import NO_PLATFORM  # noqa: PLC0415
+
+    keys = {f"c{i}": cloud for i, cloud in enumerate(PLATFORM_TO_SSP)}
+    values = ", ".join(f"(:{k}, :{k}_v)" for k in keys)
+    params: dict[str, str] = {"no_platform": NO_PLATFORM}
+    for k, cloud in keys.items():
+        params[k], params[f"{k}_v"] = cloud, PLATFORM_TO_SSP[cloud]
+    # ``values`` is built from this module's own PLATFORM_TO_SSP keys, never
+    # from user input, and every value in it is a bound parameter.
+    sql = (  # nosec B608
+        "SELECT "
+        "  count(*) FILTER (WHERE m.ssp IS NOT NULL AND p.platform <> m.ssp) AS disagrees,"
+        "  count(*) FILTER (WHERE m.ssp IS NULL AND p.platform <> :no_platform) AS unmapped "
+        "FROM ccf.ssp_projects p "
+        "JOIN ccf.system_profiles sp ON sp.system_id = p.system_id "
+        f"LEFT JOIN (VALUES {values}) AS m(cloud, ssp) ON m.cloud = sp.cloud_platform"
+    )
+    row = (await session.execute(text(sql), params)).one()
+    disagrees, unmapped = int(row.disagrees or 0), int(row.unmapped or 0)
+    parts = []
+    if disagrees:
+        parts.append(f"{disagrees} disagree with a recognized intake answer")
+    if unmapped:
+        parts.append(
+            f"{unmapped} name a platform for a system that declared none Concord recognizes"
+        )
+    if parts:
+        return Check(
+            "ssp_platform_agreement", WARN,
+            f"SSP project platform vs. declared cloud platform: {'; '.join(parts)}.",
+            "Review each project against its system's intake answer and correct it by hand. "
+            "Concord does not rewrite these: a project coerced to a platform is "
+            "indistinguishable from one legitimately on it, so only a human can tell which "
+            "past rows were wrong.",
+        )
+    return Check(
+        "ssp_platform_agreement", PASS,
+        "Every SSP project's platform agrees with its system's declared cloud platform.",
+    )
+
+
 _CHECKS = [
     _check_database,
     _check_migrations,
@@ -939,6 +1019,7 @@ _CHECKS = [
     _check_external_portal_audit_completeness,
     _check_query_templates_health,
     _check_catalog_integrity,
+    _check_ssp_platform_agreement,
 ]
 
 
