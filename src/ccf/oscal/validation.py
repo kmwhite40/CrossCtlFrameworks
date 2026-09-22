@@ -47,9 +47,23 @@ KINDS: dict[str, tuple[str, tuple[str, ...]]] = {
         "assessment-results",
         ("oscal_assessment-results_schema.json", "oscal_complete_schema.json"),
     ),
+    "sap": (
+        "assessment-plan",
+        ("oscal_assessment-plan_schema.json", "oscal_complete_schema.json"),
+    ),
 }
-# Accept a few friendly aliases for the bundle/assessment kind.
-_ALIASES = {"ksi_bundle": "assessment", "bundle": "assessment", "ar": "assessment"}
+# Accept a few friendly aliases for the bundle/assessment kind, and for the
+# assessment PLAN — whose root key ("assessment-plan") is one hyphen away from
+# the assessment RESULTS root key, so a caller passing the OSCAL model name
+# rather than Concord's short kind must not silently fall through to "unknown".
+_ALIASES = {
+    "ksi_bundle": "assessment",
+    "bundle": "assessment",
+    "ar": "assessment",
+    "assessment-plan": "sap",
+    "assessment_plan": "sap",
+    "ap": "sap",
+}
 
 
 @dataclass
@@ -218,6 +232,11 @@ _REQUIRED_CHILDREN: dict[str, tuple[str, ...]] = {
     "component": ("components",),
     "poam": ("poam-items",),
     "assessment": ("results",),
+    # An assessment plan that imports no SSP, or reviews no controls, is not a
+    # plan — both are REQUIRED by the official model, so the structural
+    # fallback must reject their absence too rather than passing a document the
+    # official schema would fail.
+    "sap": ("import-ssp", "reviewed-controls"),
 }
 
 
