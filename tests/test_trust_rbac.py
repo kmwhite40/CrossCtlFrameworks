@@ -15,6 +15,9 @@ What it pins:
   server-rendered UI — ``viewer`` and ``control_owner`` get 403;
 * every role can still *read* the trust page, the profile and the request
   list, and any member can *ask* for access (asking is not approving);
+* the package **export** is admin, in both formats -- it serialises
+  ``approved_reports``, which ``/trust`` never renders, so an open export
+  handed a ``viewer`` content the page withholds;
 * a decision made through the UI leaves the same audit record as the same
   decision made through the API — asserted by equality, not by shape;
 * another tenant's request is not decidable, 404 rather than 403.
@@ -127,6 +130,19 @@ async def _load_request(req_id: int) -> TrustAccessRequest:
         ).scalar_one()
 
 
+async def _seed_profile(org_id: int, *, headline: str, approved_reports: list[str]) -> None:
+    """A trust profile whose ``approved_reports`` the ``/trust`` page will not
+    render -- the content the export gate exists for."""
+    async with session_scope() as s:
+        s.add(
+            TrustProfile(
+                organization_id=org_id,
+                headline=headline,
+                approved_reports=approved_reports,
+            )
+        )
+
+
 async def _profile_headline(org_id: int) -> str | None:
     async with session_scope() as s:
         row = (
@@ -232,6 +248,66 @@ async def test_admin_can_save_the_profile_through_the_ui() -> None:
     assert await _profile_headline(org) == f"UI posture {tag}"
 
 
+# --- the package export is an artifact, not a read --------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", NON_ADMIN_ROLES)
+@pytest.mark.parametrize("fmt", ("json", "md"))
+async def test_non_admin_cannot_export_the_trust_package(role: str, fmt: str) -> None:
+    """Both formats, because both serialise the same profile.
+
+    The markdown branch renders ``approved_reports`` under its own heading and
+    the json branch dumps the whole ``_trust_out`` mapping; gating only one
+    would leave the other as the way around it.
+    """
+    tag = _tag()
+    org = await _mk_org(f"Trust RBAC Pkg {role} {fmt} Org {tag}")
+    token = await _mk_user(org, f"{role}-pkg-{fmt}-{tag}@trust-rbac.test", role)
+    await _seed_profile(org, headline=f"Posture {tag}", approved_reports=[f"SOC 2 {tag}"])
+    async with _client() as c:
+        res = await c.get(f"/api/trust/package?fmt={fmt}", headers=_auth(token))
+        assert res.status_code == 403, res.text
+        assert f"SOC 2 {tag}" not in res.text  # the refusal leaked nothing
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ("json", "md"))
+async def test_admin_can_export_the_trust_package(fmt: str) -> None:
+    """The gate must not break the export for the role that owns it."""
+    tag = _tag()
+    org = await _mk_org(f"Trust RBAC Pkg Admin {fmt} Org {tag}")
+    token = await _mk_user(org, f"admin-pkg-{fmt}-{tag}@trust-rbac.test", "admin")
+    await _seed_profile(org, headline=f"Posture {tag}", approved_reports=[f"SOC 2 {tag}"])
+    async with _client() as c:
+        res = await c.get(f"/api/trust/package?fmt={fmt}", headers=_auth(token))
+        assert res.status_code == 200, res.text
+        assert f"SOC 2 {tag}" in res.text  # the content really is in the export
+
+
+@pytest.mark.asyncio
+async def test_the_export_carries_what_the_trust_page_does_not_render() -> None:
+    """Why this endpoint is gated at all, pinned rather than asserted in prose.
+
+    If ``/trust`` ever starts rendering ``approved_reports`` to every role,
+    this fails and the gate should be revisited -- it is not a gate on secret
+    data, it is a gate on data the UI deliberately withholds.
+    """
+    tag = _tag()
+    org = await _mk_org(f"Trust RBAC Pkg Parity Org {tag}")
+    admin = await _mk_user(org, f"admin-pkgparity-{tag}@trust-rbac.test", "admin")
+    viewer = await _mk_user(org, f"viewer-pkgparity-{tag}@trust-rbac.test", "viewer")
+    await _seed_profile(org, headline=f"Posture {tag}", approved_reports=[f"SOC 2 {tag}"])
+    async with _client() as c:
+        page = await c.get("/trust", headers=_auth(viewer))
+        assert page.status_code == 200, page.text
+        assert f"SOC 2 {tag}" not in page.text  # the page withholds it
+
+        pkg = await c.get("/api/trust/package?fmt=md", headers=_auth(admin))
+        assert pkg.status_code == 200, pkg.text
+        assert f"SOC 2 {tag}" in pkg.text  # the export does not
+
+
 # --- reads stay open to every role -----------------------------------------
 
 
@@ -256,9 +332,6 @@ async def test_every_role_can_read_the_trust_center(role: str) -> None:
         listed = await c.get("/api/trust/access-requests", headers=_auth(token))
         assert listed.status_code == 200, listed.text
         assert [r["requester_name"] for r in listed.json()] == [f"Reader Co {tag}"]
-
-        pkg = await c.get("/api/trust/package", headers=_auth(token))
-        assert pkg.status_code == 200, pkg.text
 
 
 @pytest.mark.asyncio

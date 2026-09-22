@@ -68,13 +68,17 @@ def _now() -> datetime:
 
 
 # ── Trust Center ────────────────────────────────────────────────────────────
-#: Roles that may edit the trust profile or decide an access request. Editing
-#: the profile publishes what the organization asserts about its own security
-#: posture; deciding a request is an approval -- the same reason
-#: ``waivers.APPROVER_ROLES`` is ``("admin",)``. Reading either, and *asking*
+#: Roles that may edit the trust profile, decide an access request, or export
+#: the trust package. Editing the profile publishes what the organization
+#: asserts about its own security posture; deciding a request is an approval --
+#: the same reason ``waivers.APPROVER_ROLES`` is ``("admin",)``. The package
+#: export is here because it is the *artifact* the approval workflow exists to
+#: control: it serialises ``approved_reports``, which the ``/trust`` page does
+#: not render, so leaving it open let any member download content they could
+#: not see on screen. Reading the profile and the request list, and *asking*
 #: for access, stay open to any authenticated org member: logging that someone
 #: asked is not an approval. The server-rendered UI in ``ui_grc.py`` gates the
-#: same two writes on the same role, spelled as a literal there because
+#: profile write on the same role, spelled as a literal there because
 #: ``tests/test_role_names_are_real`` cannot resolve an imported constant.
 TRUST_ADMIN_ROLES = ("admin",)
 
@@ -180,9 +184,16 @@ async def update_trust_profile(
 async def trust_package(
     fmt: str = Query("json"),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*TRUST_ADMIN_ROLES)),
 ) -> Response:
-    """Export the trust package (json|md) — internal-first, share on request."""
+    """Admin only: export the trust package (json|md).
+
+    "Internal-first, share on request" is a policy about who hands this out,
+    and the export is what gets handed out -- including ``approved_reports``,
+    which ``/trust`` itself never renders. Ungated it was a download of
+    content a ``viewer`` cannot see on the page, which is the same disclosure
+    the access-request approval gate exists to mediate.
+    """
     t = await _get_trust(session, principal.org_id)
     data = _trust_out(t)
     if fmt == "md":
