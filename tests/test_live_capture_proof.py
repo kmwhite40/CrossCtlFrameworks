@@ -670,6 +670,48 @@ async def test_a_profile_backed_credential_for_another_connector_is_unaffected()
         assert await _is_live(org_id, "msgraph") is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_credential_storage")
+async def test_an_unreadable_credential_is_not_live() -> None:
+    """Fail closed: a credential that cannot be read may be a host profile.
+
+    The master key is bound when the credential is stored and gone when it is
+    read, which is what a deployment with credential storage misconfigured
+    looks like. It must not 500 an SSP generation, and it must not quietly
+    count as the tenant's own identity either.
+    """
+    async with _org_with(
+        "Unreadable Credential AWS",
+        last_sync=_now(),
+        captured_at=_now(),
+        credential={
+            "access_key_id": "AKIAEXAMPLEEXAMPLE",
+            "secret_access_key": "s3cr3t-example-key-material",
+        },
+    ) as org_id:
+        assert await _is_live(org_id) is True  # readable: the tenant's own
+        os.environ.pop("CCF_AI_CREDENTIAL_MASTER_KEY", None)
+        get_settings.cache_clear()
+        assert await _is_live(org_id) is False
+
+
+@pytest.mark.asyncio
+async def test_no_bound_credential_is_not_treated_as_a_host_profile() -> None:
+    """The other boundary of §3, pinned so it is a decision and not a side effect.
+
+    A fresh snapshot can only have come from ``ccf.governance.collection``,
+    which resolves strictly per-organization with no global fallback (IA-05) --
+    so whatever produced it WAS this org's credential, even though the row
+    carries none now. Treating an absent credential as a host identity would
+    impose a credential-storage requirement on AWS that no other connector
+    carries, in a branch whose subject is the mock sync.
+    """
+    async with _org_with(
+        "No Credential AWS", last_sync=_now(), captured_at=_now(), credential=None
+    ) as org_id:
+        assert await _is_live(org_id) is True
+
+
 # --- §4.6 Control tests are deliberately unchanged --------------------------
 
 
