@@ -48,6 +48,13 @@ class TrustProfile(Base):
     approved_policies: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     approved_evidence: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     faq: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # [{q,a}]
+    #: Recorded and **read by no code**. ``/trust`` is not in the API's
+    #: ``_PUBLIC_PREFIXES`` (``tests/test_auth_gate_prefixes.py`` pins that
+    #: set deliberately) and nothing consults this column, so setting it
+    #: publishes nothing. It stays inert on purpose: whether this
+    #: organization's posture page may be served unauthenticated is a
+    #: decision that has not been taken, and a flag that silently starts
+    #: gating something is worse than one that does nothing.
     published: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

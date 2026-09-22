@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...evidence import service as evidence_service
-from ...governance import control_tests, insights, personnel, tprm
+from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
 from ...ingest import parse_scan, reconcile_findings
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
 from ...models_evidence import EvidenceObject
@@ -138,8 +138,22 @@ async def trust_page(
     if org is not None:
         ar_stmt = ar_stmt.where(TrustAccessRequest.organization_id == org)
     access_requests = (await session.execute(ar_stmt)).scalars().all()
+    # Computed beside the operator's badges, never in place of them: the
+    # template renders ``c.badge`` -- the typed text, in the typed order --
+    # with the state alongside. Run even when ``t`` is None, because a lapsed
+    # authorization must still be reported on a page with no badges at all.
+    corroboration = await trust_corroboration.corroborate_badges(
+        session, t.framework_badges if t else [], org_id=org
+    )
     return templates.TemplateResponse(
-        request, "trust.html", {"active": "trust", "t": t, "access_requests": access_requests}
+        request,
+        "trust.html",
+        {
+            "active": "trust",
+            "t": t,
+            "access_requests": access_requests,
+            "corroboration": corroboration,
+        },
     )
 
 
