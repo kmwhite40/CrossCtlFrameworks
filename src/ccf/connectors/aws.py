@@ -12,6 +12,47 @@ The provider calls live behind ``_session`` — a single, clearly-marked
 integration seam — so wiring real credentials is additive and does not change
 the interface the API depends on.
 
+What ``PARAMETER_MAP`` may claim
+-------------------------------
+``PARAMETER_MAP`` is shown to an operator as what this connector *would* pull
+once credentials are configured (``connectors/base.py`` says so, and
+``api/routes/ssp.py`` returns it for an unconfigured connector so the UI can
+display it). It is therefore a claim about the product, not a backlog. This map
+once advertised six keys while ``capture()`` emitted two --
+``flaw_remediation_timeframe``, ``risk_assessment_frequency``,
+``incident_report_timeframe`` and ``nonlocal_maintenance_mfa`` were advertised
+and never captured by anything. They have been removed rather than implemented:
+the defect was the claim, and four new AWS integrations do not belong inside a
+parity fix. ``tests/test_connector_capture_parity.py`` now drives ``capture()``
+against a stubbed session and asserts the emitted keys equal this map's keys,
+for this connector and every other one that has a ``PARAMETER_MAP``.
+
+Which ``nist_id`` namespace, and how that was decided
+-----------------------------------------------------
+``CapturedParameter.nist_id`` is the join key that decides whether a capture is
+ever read: ``governance/automation.py`` keys ``caps_by_nist`` on it and matches
+it against ``SSPControlEntry.nist_id``, and ``api/routes/ssp.py``'s autofill
+builds ``by_nist`` the same way. A capture in the wrong namespace is captured,
+stored, and silently never rendered.
+
+``encryption_at_rest`` used to emit ``"SC-28"``. Measured against the dev
+database, grouping every ``SSPControlEntry`` by its project's platform and the
+namespace of its ``nist_id``:
+
+* ``platform = "aws_govcloud"``: 7 projects, 770 entries, **all** 800-171
+  (``3.x.y``), zero 800-53. Every one of those 7 projects carries a ``3.13.16``
+  entry and a ``3.3.1`` entry.
+* ``platform = "m365"``: 8 projects, 880 entries, all 800-171.
+
+An AWS project is seeded by ``ssp/seed.py`` from ``ScoringControl.nist_id``,
+which is 800-171 throughout, so no AWS project could ever match ``"SC-28"`` --
+the EBS-encryption value was captured and discarded at the join on every run.
+**This connector emits 800-171 ids**, the choice ``connectors/azure_arm.py``
+made one branch earlier for the same reason. The 800-53r5 equivalent is carried
+in ``detail["nist_80053_id"]`` -- carried, not emitted as ``nist_id``, so it
+cannot silently become a second competing answer, and a future 800-53 join has
+a documented value to read instead of a re-derivation.
+
 ``scan()`` assesses the account against the posture checks in
 :mod:`ccf.posture.providers.aws`. The division of labour is the one the Graph
 connector established: transport and credentials live here, judgement lives in
@@ -60,14 +101,19 @@ class AwsGovCloudConnector(ConfigConnector):
     key = "aws_govcloud"
     label = "AWS GovCloud (US)"
 
-    # ODP key → the AWS signal it is (or will be) derived from.
+    # ODP key → the AWS signal it IS derived from. Every key here is one
+    # ``capture()`` below actually emits; see the module docstring on why this
+    # map may not carry an aspiration.
     PARAMETER_MAP: ClassVar[dict[str, str]] = {
         "audit_retention_period": "CloudWatch Logs retention (log group retentionInDays)",
         "encryption_at_rest": "EC2 default EBS encryption (get_ebs_encryption_by_default)",
-        "flaw_remediation_timeframe": "Security Hub / Inspector finding SLAs (org policy)",
-        "risk_assessment_frequency": "AWS Config conformance-pack evaluation cadence",
-        "incident_report_timeframe": "GuardDuty / Security Hub automation (org runbook)",
-        "nonlocal_maintenance_mfa": "IAM account MFA + Systems Manager Session Manager policy",
+    }
+
+    # ODP key → the 800-53r5 control the same signal informs. Carried in each
+    # capture's ``detail`` (never as ``nist_id``); see the module docstring.
+    _NIST_80053: ClassVar[dict[str, str]] = {
+        "audit_retention_period": "AU-11",
+        "encryption_at_rest": "SC-28",
     }
 
     def _boto3_available(self) -> bool:
@@ -135,6 +181,34 @@ class AwsGovCloudConnector(ConfigConnector):
         except Exception as e:
             return {"connected": False, "reason": str(e)[:200], "region": region}
 
+    def _captured(
+        self,
+        odp_key: str,
+        value: str,
+        nist_id: str,
+        source: str,
+        *,
+        confidence: str = "medium",
+        detail: dict[str, Any] | None = None,
+    ) -> CapturedParameter:
+        """One capture, with the 800-53 equivalent carried in ``detail``.
+
+        Built through here rather than at each call site so no sub-capture can
+        ship without its ``nist_id`` or without the 800-53 cross-reference --
+        the two fields that decide whether it ever reaches a narrative. The
+        same helper ``connectors/azure_arm.py`` uses, for the same reason;
+        ``_NIST_80053[odp_key]`` raises rather than defaulting, so a new
+        capture cannot be added without deciding what it cross-references.
+        """
+        return CapturedParameter(
+            odp_key=odp_key,
+            value=value,
+            nist_id=nist_id,
+            source=source,
+            confidence=confidence,
+            detail={**(detail or {}), "nist_80053_id": self._NIST_80053[odp_key]},
+        )
+
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():
             return []
@@ -173,17 +247,24 @@ class AwsGovCloudConnector(ConfigConnector):
         if not value:
             return []
         return [
-            CapturedParameter(
-                odp_key="audit_retention_period",
-                value=value,
-                nist_id="3.3.1",
-                source="AWS: CloudWatch Logs retentionInDays (minimum across log groups)",
-                confidence="medium",
+            self._captured(
+                "audit_retention_period",
+                value,
+                "3.3.1",
+                "AWS: CloudWatch Logs retentionInDays (minimum across log groups)",
             )
         ]
 
     async def _capture_ebs_encryption(self) -> list[CapturedParameter]:
-        """EC2 default EBS encryption → encryption-at-rest signal (KSI-SVC-03)."""
+        """EC2 default EBS encryption → encryption-at-rest signal (KSI-SVC-03).
+
+        Emits ``3.13.16`` — the 800-171 practice an AWS GovCloud project's
+        entries are actually keyed on — with ``SC-28`` carried in ``detail``.
+        See the module docstring for the measurement behind that: while this
+        emitted ``SC-28`` as its ``nist_id``, the value was captured on every
+        run and then discarded at the join, because no AWS project has an
+        800-53 id on any entry.
+        """
 
         def _read() -> bool:
             client = self._session().client("ec2", region_name=self._region())
@@ -192,11 +273,11 @@ class AwsGovCloudConnector(ConfigConnector):
         if not await asyncio.to_thread(_read):
             return []
         return [
-            CapturedParameter(
-                odp_key="encryption_at_rest",
-                value="enabled",
-                nist_id="SC-28",
-                source="AWS: EC2 default EBS encryption enabled",
+            self._captured(
+                "encryption_at_rest",
+                "enabled",
+                "3.13.16",
+                "AWS: EC2 default EBS encryption enabled",
                 confidence="high",
             )
         ]
