@@ -10,7 +10,7 @@ so P2b's move into ``packs/`` relocates content rather than redesigning it.
 
 from __future__ import annotations
 
-from .providers import m365, puppetdb
+from .providers import aws, m365, puppetdb
 from .types import CheckOutcome, PostureCheck, ResourceFinding
 
 __all__ = [
@@ -25,15 +25,13 @@ __all__ = [
     "platform_check_keys",
 ]
 
-#: Provider key -> its checks. Empty per provider until P3 implements the
-#: adapters; the registry exists now so the contract and orchestration are
-#: testable, and so P2b has something to relocate into ``packs/``.
+#: Provider key -> its checks. Every registered provider now ships checks; the
+#: registry keeps the shape it had when they were empty, so P2b still has
+#: content to relocate into ``packs/`` rather than a redesign to perform.
 CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
     "msgraph": m365.CHECKS,
     "puppetdb": puppetdb.CHECKS,
-    # Empty until P3 implements the adapter; the key exists so a check filed
-    # under it is a registry edit rather than a new dict entry.
-    "aws_govcloud": (),
+    "aws_govcloud": aws.CHECKS,
 }
 
 
@@ -41,10 +39,16 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
 #: :data:`CHECK_REGISTRY` and kept beside it so a provider cannot register a
 #: check without also saying where its data comes from -- a check with no
 #: endpoint cannot be scanned, and resolution refuses to return one.
+#:
+#: "Where its data comes from" is provider-shaped, not universally a URL: the
+#: HTTP providers register a relative path, and ``aws_govcloud`` registers a
+#: boto3 ``<service>.<operation>`` source token, because AWS has no request
+#: path to register. See ``providers.aws``'s module docstring for why a
+#: URL-shaped placeholder was refused, and what it costs pack authors.
 ENDPOINT_REGISTRY: dict[str, dict[str, str]] = {
     "msgraph": m365.ENDPOINTS,
     "puppetdb": puppetdb.ENDPOINTS,
-    "aws_govcloud": {},
+    "aws_govcloud": aws.ENDPOINTS,
 }
 
 

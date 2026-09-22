@@ -153,7 +153,14 @@ async def test_a_rule_for_another_provider_is_excluded() -> None:
         keys = {r.check.key for r in resolved}
         assert "org.aws_thing" not in keys
         aws = await resolve_checks(session, provider="aws_govcloud", org_id=org.id)
-        assert [r.check.key for r in aws] == ["org.aws_thing"]
+        # Platform checks first, then the declared one -- asserted as
+        # "the platform's, plus this rule" rather than as a fixed list, so
+        # registering another AWS check does not falsify the property this
+        # test is actually about (which provider a rule belongs to).
+        platform_keys = [c.key for c in checks_for("aws_govcloud")]
+        assert [r.check.key for r in aws] == [*platform_keys, "org.aws_thing"]
+        # The declared rule is the only non-platform one.
+        assert [r.check.key for r in aws if r.source != "platform"] == ["org.aws_thing"]
 
 
 async def test_a_non_posture_rule_is_ignored() -> None:
