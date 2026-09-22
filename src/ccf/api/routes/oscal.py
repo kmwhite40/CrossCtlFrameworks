@@ -114,6 +114,20 @@ _OSCAL_PROFILE_HREF = (
 # never fall back to a false constant like "cui"/"operational".
 _PLACEHOLDER = "UNSPECIFIED"
 
+#: OSCAL assessment method -> the ``Control`` attribute holding the catalog's
+#: text for it. These are the workbook's EXAMINE / INTERVIEW / TEST columns,
+#: ingested as first-class ``Control`` fields by ``ccf.etl.pipeline`` — each is
+#: a ``[SELECT FROM: ...]`` list of the objects to examine, the people to
+#: interview, or the mechanisms to test. Ordered EXAMINE -> INTERVIEW -> TEST so
+#: a control's planned activities come out in a stable, catalog-like order. The
+#: method tokens are OSCAL's own assessment-method vocabulary, the same one
+#: ``build_sar_doc`` already emits in ``observation.methods``.
+_ASSESSMENT_METHOD_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("EXAMINE", "examine"),
+    ("INTERVIEW", "interview"),
+    ("TEST", "test"),
+)
+
 # metadata_json["roles"] key -> (OSCAL role-id, human title). Mirrors the roles
 # rendered in ssp/generator.py's "1.2 Roles and Responsibilities" table.
 _OSCAL_ROLES: tuple[tuple[str, str, str], ...] = (
@@ -862,6 +876,31 @@ async def sar_export(
     return await build_sar_doc(session, assessment)
 
 
+@router.get("/sap/{assessment_id}")
+async def sap_export(
+    assessment_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Emit an OSCAL 1.1 Assessment-Plan (SAP) document for one assessment."""
+    assessment = (
+        await session.execute(select(Assessment).where(Assessment.id == assessment_id))
+    ).scalar_one_or_none()
+    if assessment is None:
+        raise HTTPException(404, "assessment not found")
+
+    sys = (
+        await session.execute(select(System).where(System.id == assessment.system_id))
+    ).scalar_one_or_none()
+    # Scope to the caller's org via the assessment's system, exactly as
+    # ``sar_export`` does (global/auth-off principals are unscoped). A plan
+    # enumerates another tenant's control scope just as a report does.
+    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
+        raise HTTPException(404, "assessment not found")
+
+    return await build_sap_doc(session, assessment)
+
+
 async def _objective_findings_by_control(
     session: AsyncSession, assessment_id: int
 ) -> dict[str, list[dict[str, Any]]]:
@@ -911,6 +950,253 @@ async def _objective_findings_by_control(
     return by_cid
 
 
+async def _assessed_results(session: AsyncSession, assessment_id: int) -> list[AssessmentResult]:
+    """One assessment's ``AssessmentResult`` rows with their control loaded.
+
+    Factored out of ``build_sar_doc`` so the SAP and the SAR read the SAME rows
+    in the SAME order. They must: ``build_sar_doc``'s ``import-ap`` resolves to
+    a plan only when that plan has a non-empty control selection, and a second
+    query that drifted from this one would decide that on a different set of
+    controls than the plan is actually built from.
+    """
+    return list(
+        (
+            await session.execute(
+                select(AssessmentResult)
+                .where(AssessmentResult.assessment_id == assessment_id)
+                .options(
+                    selectinload(AssessmentResult.implementation).selectinload(
+                        ControlImplementation.control
+                    )
+                )
+                .order_by(AssessmentResult.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _assessed_control_scope(
+    results: list[AssessmentResult],
+) -> tuple[dict[int, str], list[dict[str, str]], dict[str, Control]]:
+    """The distinct controls ``results`` covers, in first-seen order.
+
+    Returns ``(oscal_cid_by_implementation_id, include_controls, control_by_cid)``.
+    ``control_by_cid`` keeps the first catalog row seen for each OSCAL control
+    id — the SAP reads its EXAMINE/INTERVIEW/TEST columns from it. Controls
+    whose implementation carries no catalog row are absent from that mapping
+    rather than mapped to a blank stand-in, so "the catalog has no methods for
+    this control" stays distinguishable from "there is no control row at all".
+    """
+    oscal_cid_by_impl: dict[int, str] = {}
+    include_controls: list[dict[str, str]] = []
+    control_by_cid: dict[str, Control] = {}
+    seen_cids: set[str] = set()
+    for r in results:
+        impl = r.implementation
+        control = impl.control if impl else None
+        oscal_cid = _oscal_control_id(control.identifier if control else None)
+        oscal_cid_by_impl[r.implementation_id] = oscal_cid
+        if oscal_cid not in seen_cids:
+            seen_cids.add(oscal_cid)
+            include_controls.append({"control-id": oscal_cid})
+        if control is not None and oscal_cid not in control_by_cid:
+            control_by_cid[oscal_cid] = control
+    return oscal_cid_by_impl, include_controls, control_by_cid
+
+
+def _control_selection(
+    include_controls: list[dict[str, str]], *, empty_remark: str
+) -> dict[str, Any]:
+    """One OSCAL ``control-selection``, honest about an empty scope.
+
+    ``include-controls`` carries ``minItems 1`` in BOTH the assessment-results
+    and the assessment-plan models, so an empty list is not a "no controls"
+    signal — it is an invalid document. The key is omitted and a remark says
+    why, rather than emitting ``"include-controls": []``.
+    """
+    if include_controls:
+        return {"include-controls": include_controls}
+    return {"remarks": empty_remark}
+
+
+_NO_ASSESSMENT_RESULTS_REMARK = f"{_PLACEHOLDER} — no AssessmentResult rows on record"
+
+
+def _assessment_metadata(assessment: Assessment, now: str, *, title: str) -> dict[str, Any]:
+    """OSCAL ``metadata`` for a document about ``assessment``.
+
+    The assessor identity the platform actually holds (``assessment.assessor``,
+    a free-text name) projected as a ``party`` + ``responsible-parties`` entry,
+    plus ``assessment.kind`` as a prop. Shared by the SAR and the SAP so the two
+    documents name the same assessor in the same shape — they describe one
+    assessment, and a plan crediting a different party than its own results is
+    a contradiction no schema would catch.
+    """
+    assessor_party_uuid = str(uuid.uuid4())
+    return {
+        "title": title,
+        "last-modified": now,
+        "version": "0.1.0",
+        "oscal-version": "1.1.2",
+        "roles": [{"id": "assessor", "title": "Assessor"}],
+        "parties": [
+            {
+                "uuid": assessor_party_uuid,
+                "type": "person",
+                "name": assessment.assessor or "Assessor",
+            }
+        ],
+        "responsible-parties": [{"role-id": "assessor", "party-uuids": [assessor_party_uuid]}],
+        "props": [{"name": "assessment-kind", "value": assessment.kind}],
+    }
+
+
+def _import_ap(assessment_id: int, *, has_reviewed_controls: bool) -> dict[str, Any]:
+    """The SAR's ``import-ap``: the real plan when there is one, else the
+    honest placeholder this release shipped.
+
+    Concord stores no separately-authored assessment plan, so "a plan exists"
+    can only mean "a plan with content can be derived for this assessment".
+    The condition is the plan's own scope: ``build_sap_doc`` derives
+    ``reviewed-controls`` from the assessment's recorded control coverage, so an
+    assessment with no ``AssessmentResult`` rows yields a plan that reviews
+    nothing. Pointing ``import-ap`` at that would make the SAR cite a plan
+    asserting an assessment scope nobody defined — precisely what the
+    placeholder exists to avoid. So the placeholder stays for exactly that case.
+    """
+    if not has_reviewed_controls:
+        return {
+            "href": "#no-assessment-plan",
+            "remarks": (
+                "No OSCAL assessment plan (SAP) is referenced: this assessment has no "
+                "recorded control coverage, so a generated plan would review no "
+                "controls. Results are reported directly."
+            ),
+        }
+    return {
+        "href": f"/api/oscal/sap/{assessment_id}",
+        "remarks": (
+            "The OSCAL assessment plan (SAP) Concord derives for this assessment. "
+            "Its reviewed-controls are derived from the assessment's recorded "
+            "control coverage, not from a separately-authored plan scope."
+        ),
+    }
+
+
+async def build_sap_doc(session: AsyncSession, assessment: Assessment) -> dict[str, Any]:
+    """Build an OSCAL ``assessment-plan`` (SAP) document for ``assessment``.
+
+    Emits only what Concord actually holds:
+
+    * ``import-ssp`` (REQUIRED by the model) — the system's most recent
+      ``SSPProject``, selected by the same rule ``build_package_zip`` uses, as a
+      resolvable route reference. With no SSP project on record the href is an
+      explicit ``#no-system-security-plan`` marker carrying a remark, the same
+      pattern ``build_poam_doc``'s ``import-ssp`` already uses: the field cannot
+      be omitted, so it is emitted saying plainly that it is not derived.
+    * ``reviewed-controls`` — the controls the assessment covers, built by the
+      same ``_assessed_control_scope`` the SAR uses, with the same ``minItems 1``
+      guard on ``include-controls``. The selection carries a ``description``
+      stating that the scope is derived from recorded coverage, because Concord
+      has no planned-scope record and a plan that silently presented a
+      retrospective scope as a planned one would be asserting something nobody
+      entered.
+    * ``local-definitions.activities`` — one activity per (control, method) that
+      the CATALOG populates, from ``Control.examine`` / ``.interview`` /
+      ``.test`` (the workbook's EXAMINE / INTERVIEW / TEST columns, which are
+      ``[SELECT FROM: ...]`` assessment-method sources). A control whose catalog
+      row is blank for a method contributes no activity for it, and
+      ``local-definitions.remarks`` names the reviewed controls that produced no
+      activities at all — so a thin plan reads as a thin catalog rather than as
+      an assessor having chosen not to test.
+
+    Deliberately NOT emitted: ``terms-and-conditions``, ``assessment-subjects``,
+    ``assessment-assets`` and ``tasks``. All four are optional, and Concord holds
+    no rules of engagement, no enumerated subject inventory, no assessment
+    platform registry and no schedule. Emitting any of them would mean inventing
+    an assessment scope or a timetable no record supports.
+    """
+    results = await _assessed_results(session, assessment.id)
+    _impl_map, include_controls, control_by_cid = _assessed_control_scope(results)
+    now = datetime.now(UTC).isoformat()
+
+    proj = (
+        await session.execute(
+            select(SSPProject)
+            .where(SSPProject.system_id == assessment.system_id)
+            .order_by(SSPProject.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if proj is not None:
+        import_ssp: dict[str, Any] = {"href": f"/api/oscal/ssp/{proj.id}"}
+    else:
+        import_ssp = {
+            "href": "#no-system-security-plan",
+            "remarks": (
+                f"{_PLACEHOLDER} — no SSP project on record for this system, so the "
+                "system security plan this assessment covers is not yet derivable."
+            ),
+        }
+
+    selection = _control_selection(
+        include_controls, empty_remark=_NO_ASSESSMENT_RESULTS_REMARK
+    )
+    selection["description"] = (
+        "Controls in scope for this assessment, derived from the control coverage "
+        "recorded against it. Concord stores no separately-authored plan scope."
+    )
+
+    activities: list[dict[str, Any]] = []
+    without_methods: list[str] = []
+    for entry in include_controls:
+        oscal_cid = entry["control-id"]
+        control = control_by_cid.get(oscal_cid)
+        found = False
+        for method, column in _ASSESSMENT_METHOD_COLUMNS:
+            text = (getattr(control, column, None) or "").strip() if control is not None else ""
+            if not text:
+                continue
+            found = True
+            activities.append(
+                {
+                    "uuid": str(uuid.uuid4()),
+                    "title": f"{method} — {oscal_cid}",
+                    "description": text,
+                    "props": [{"name": "method", "value": method}],
+                    "related-controls": {
+                        "control-selections": [{"include-controls": [{"control-id": oscal_cid}]}]
+                    },
+                }
+            )
+        if not found:
+            without_methods.append(oscal_cid)
+
+    local_definitions: dict[str, Any] = {}
+    if activities:
+        local_definitions["activities"] = activities
+    if without_methods:
+        # Named, not counted, and never silently absent: a reader comparing the
+        # plan to its scope must be able to tell WHICH controls have no methods.
+        local_definitions["remarks"] = (
+            f"{_PLACEHOLDER} — the catalog carries no EXAMINE/INTERVIEW/TEST "
+            "assessment methods for these reviewed controls, so no assessment "
+            f"activities are planned for them: {', '.join(without_methods)}."
+        )
+
+    plan: dict[str, Any] = {
+        "uuid": str(uuid.uuid4()),
+        "metadata": _assessment_metadata(assessment, now, title="Security Assessment Plan"),
+        "import-ssp": import_ssp,
+        "reviewed-controls": {"control-selections": [selection]},
+    }
+    if local_definitions:
+        plan["local-definitions"] = local_definitions
+    return {"assessment-plan": plan}
+
+
 async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[str, Any]:
     """Build an OSCAL ``assessment-results`` document for ``assessment``:
     findings from its ``AssessmentResult`` rows, evidence-backed
@@ -932,37 +1218,12 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
     grain from that column, so the *machine-readable* artifact — the one an
     assessor ingests — was the coarser of the two SARs Concord ships.
     """
-    results = (
-        (
-            await session.execute(
-                select(AssessmentResult)
-                .where(AssessmentResult.assessment_id == assessment.id)
-                .options(
-                    selectinload(AssessmentResult.implementation).selectinload(
-                        ControlImplementation.control
-                    )
-                )
-                .order_by(AssessmentResult.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    results = await _assessed_results(session, assessment.id)
 
     now = datetime.now(UTC).isoformat()
 
     # Distinct assessed controls, in first-seen order, for reviewed-controls.
-    oscal_cid_by_impl: dict[int, str] = {}
-    include_controls: list[dict[str, str]] = []
-    seen_cids: set[str] = set()
-    for r in results:
-        impl = r.implementation
-        control = impl.control if impl else None
-        oscal_cid = _oscal_control_id(control.identifier if control else None)
-        oscal_cid_by_impl[r.implementation_id] = oscal_cid
-        if oscal_cid not in seen_cids:
-            seen_cids.add(oscal_cid)
-            include_controls.append({"control-id": oscal_cid})
+    oscal_cid_by_impl, include_controls, _control_by_cid = _assessed_control_scope(results)
 
     # Observations: one per EvidenceObject tied to an assessed implementation.
     impl_ids = list(oscal_cid_by_impl)
@@ -1113,11 +1374,10 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
     # "include-controls" has minItems 1 when present — an assessment with no
     # AssessmentResult rows yet has genuinely nothing to list, so the key is
     # omitted (an honest placeholder remark stands in for it) rather than
-    # emitting an OSCAL-illegal empty array.
-    control_selection: dict[str, Any] = (
-        {"include-controls": include_controls}
-        if include_controls
-        else {"remarks": f"{_PLACEHOLDER} — no AssessmentResult rows on record"}
+    # emitting an OSCAL-illegal empty array. Shared with build_sap_doc, which
+    # faces the identical constraint in the assessment-plan model.
+    control_selection = _control_selection(
+        include_controls, empty_remark=_NO_ASSESSMENT_RESULTS_REMARK
     )
     result: dict[str, Any] = {
         "uuid": str(uuid.uuid4()),
@@ -1135,35 +1395,18 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
     if risks:
         result["risks"] = risks
 
-    assessor_party_uuid = str(uuid.uuid4())
-    metadata: dict[str, Any] = {
-        "title": "Security Assessment Report",
-        "last-modified": now,
-        "version": "0.1.0",
-        "oscal-version": "1.1.2",
-        "roles": [{"id": "assessor", "title": "Assessor"}],
-        "parties": [
-            {
-                "uuid": assessor_party_uuid,
-                "type": "person",
-                "name": assessment.assessor or "Assessor",
-            }
-        ],
-        "responsible-parties": [{"role-id": "assessor", "party-uuids": [assessor_party_uuid]}],
-        "props": [{"name": "assessment-kind", "value": assessment.kind}],
-    }
+    metadata = _assessment_metadata(assessment, now, title="Security Assessment Report")
 
     return {
         "assessment-results": {
             "uuid": str(uuid.uuid4()),
             "metadata": metadata,
-            "import-ap": {
-                "href": "#no-assessment-plan",
-                "remarks": (
-                    "No OSCAL assessment plan (SAP) is generated in this release; "
-                    "results are reported directly."
-                ),
-            },
+            # The seam to the plan. Resolved against the SAME control scope the
+            # plan is built from (include_controls), so the SAR can never cite a
+            # plan that reviews nothing.
+            "import-ap": _import_ap(
+                assessment.id, has_reviewed_controls=bool(include_controls)
+            ),
             "results": [result],
         }
     }
