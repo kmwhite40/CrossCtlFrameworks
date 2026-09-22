@@ -1914,11 +1914,17 @@ async def assessment_save_result(
     result.assessor_note = assessor_note or None
     result.evidence_ref = evidence_ref or None
     result.reviewed = "reviewed" in form
-    objs: list[dict[str, str]] = []
+    # Rebuilding each part from scratch here used to erase everything the
+    # acceptance projection carries (rationale, gaps, contradictions,
+    # citations, the dissent record) on the first save an assessor made after
+    # accepting a proposal -- silently, and on the row the SAR is built from.
+    # The form only ever owns one field per part; everything else is copied
+    # forward untouched.
+    objs: list[dict[str, Any]] = []
     for part in result.objective_findings or []:
         label = part.get("label", "")
         of = str(form.get(f"obj::{label}", part.get("finding", "not_assessed")))
-        objs.append({"label": label, "text": part.get("text", ""), "finding": of})
+        objs.append({**part, "label": label, "text": part.get("text", ""), "finding": of})
     result.objective_findings = objs
     result.observed_on = datetime.now(UTC).date()
     await session.commit()
