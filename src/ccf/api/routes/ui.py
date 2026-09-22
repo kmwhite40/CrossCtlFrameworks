@@ -21,6 +21,7 @@ from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session
+from ...capability import divergence
 from ...config import get_settings, is_dev_env
 from ...constants import POAM_ACTIVE_STATUSES
 from ...fedramp20x import cr26_display_label
@@ -283,6 +284,15 @@ async def control_detail(
         if any(normalize_control(c) == norm for c in (k.nist_refs or []))
     ]
 
+    # What the organization's capabilities derive for this control, beside what
+    # its SSP authors. Read-only: nothing here writes `status`, and a
+    # derivation never becomes a claim. This is the only place an operator can
+    # act on the divergence, so the contributing capabilities are named here --
+    # capabilities have no UI of their own, so there is nothing to link to.
+    derivations = await divergence.derivations_for_control(
+        session, control_id=ctl.id, org_id=_principal_org(request)
+    )
+
     return templates.TemplateResponse(
         request,
         "control_detail.html",
@@ -291,6 +301,9 @@ async def control_detail(
             "control": ctl,
             "grouped": grouped,
             "supporting_ksis": supporting_ksis,
+            "derivations": derivations,
+            "divergent": [d for d in derivations if d.divergent],
+            "no_coverage_state": divergence.NO_COVERAGE,
         },
     )
 

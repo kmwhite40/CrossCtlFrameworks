@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics import org_summary
+from ..capability.divergence import divergence_count
 from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
     POAM,
@@ -94,6 +95,26 @@ async def data_quality(session: AsyncSession, *, org_id: int | None = None) -> d
             "check": "implemented_without_evidence",
             "severity": "warning",
             "count": await _n(impl_no_ev),
+        }
+    )
+    # Authored control status contradicted by the organization's capabilities.
+    #
+    # The capability ontology derives a status per control and writes it
+    # beside the authored one; until this check nothing read it, so the
+    # divergence -- "the SSP says planned, your capabilities say implemented",
+    # or the dangerous direction, "the SSP says implemented, your capabilities
+    # say partial" -- was computed and discarded. It is precisely a
+    # data-quality problem an assessor would find, which is why it belongs
+    # here rather than in a surface of its own.
+    #
+    # Uncovered controls (``derived_status IS NULL``) are not counted:
+    # ``rollup.roll_up`` returns None for "no capability says anything about
+    # this control", which contradicts no authored claim.
+    findings.append(
+        {
+            "check": "capability_derived_divergence",
+            "severity": "warning",
+            "count": await divergence_count(session, org_id=org_id),
         }
     )
     # Expired evidence.
