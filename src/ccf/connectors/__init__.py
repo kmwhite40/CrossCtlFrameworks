@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from .aws import AwsGovCloudConnector
+from .azure_arm import AzureArmConnector
 from .base import CapturedParameter, ConfigConnector
 from .msgraph import MsGraphConnector
 from .puppetdb import PuppetDbConnector
@@ -16,6 +17,7 @@ from .puppetdb import PuppetDbConnector
 _REGISTRY: dict[str, type[ConfigConnector]] = {
     MsGraphConnector.key: MsGraphConnector,
     AwsGovCloudConnector.key: AwsGovCloudConnector,
+    AzureArmConnector.key: AzureArmConnector,
     PuppetDbConnector.key: PuppetDbConnector,
 }
 
@@ -43,6 +45,7 @@ def connector_keys() -> tuple[str, ...]:
 
 __all__ = [
     "AwsGovCloudConnector",
+    "AzureArmConnector",
     "CapturedParameter",
     "ConfigConnector",
     "MsGraphConnector",

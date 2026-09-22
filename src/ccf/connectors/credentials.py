@@ -35,6 +35,7 @@ _SECRET_FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     "msgraph": ("client_secret",),
     "msgraph_write": ("client_secret",),  # ccf.enforcement's write credential
     "aws_govcloud": ("secret_access_key", "profile"),
+    "azure_arm": ("client_secret",),
 }
 
 

@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     aws_region: str = Field(default="us-gov-west-1")  # GovCloud West by default
     aws_profile: str | None = Field(default=None)  # named AWS profile (optional)
     aws_capture_enabled: bool = Field(default=False)
+    # Azure Resource Manager (infrastructure config capture). Defaults target
+    # Azure Government (management.usgovcloudapi.net / login.microsoftonline.us).
+    # Deliberately NO ``azure_capture_enabled`` opt-in, matching Graph rather
+    # than AWS: the AWS flag exists because boto3 is an *optional* dependency
+    # and an untested SDK path needed a deployment-wide off switch. ARM is
+    # reached over httpx, a core dependency, and ``is_configured()`` already
+    # requires this organization's own bound ARM credential -- which nobody has
+    # by default. A second switch would only create the failure mode where an
+    # operator binds a credential and silently captures nothing.
+    arm_base_url: str = Field(default="https://management.usgovcloudapi.net")
+    arm_login_url: str = Field(default="https://login.microsoftonline.us")
 
     # In-app automation scheduler. When enabled, background jobs run the catalog
     # poll, ConMon scan, alert digest, and connector collection on a cadence.
