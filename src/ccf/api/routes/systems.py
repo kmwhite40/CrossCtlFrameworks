@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
@@ -11,6 +12,11 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...catalog.baseline_delta import (
+    BaselineNotSetError,
+    UnknownBaselineError,
+    baseline_delta,
+)
 from ...constants import POAM_ACTIVE_STATUSES
 from ...governance import bus, reactions
 from ...models import (
@@ -382,6 +388,53 @@ async def bulk_import_implementations(
         upserted += 1
     await session.commit()
     return {"upserted": upserted, "skipped": skipped, "total": len(rows)}
+
+
+class BaselineDeltaOut(BaseModel):
+    """Exactly :class:`ccf.catalog.baseline_delta.BaselineDelta`'s seven fields.
+
+    No counts, no percentage, no "gap" key: the platform already carries nine
+    distinct notions of "gap" and this endpoint answers a new question, not
+    with a new vocabulary. A caller that wants a count takes ``len()``.
+    """
+
+    system_id: int
+    current: str
+    target: str
+    added: list[str]
+    removed: list[str]
+    already_satisfied: list[str]
+    outstanding: list[str]
+    unmapped: list[str]
+
+
+@router.get("/{system_id}/baseline-delta", response_model=BaselineDeltaOut)
+async def system_baseline_delta(
+    system_id: int,
+    target: str,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> BaselineDeltaOut:
+    """What moving this system to ``target`` would require.
+
+    ``removed`` reports controls in the current baseline that the target does
+    not carry (``CM-2(2)`` for Moderate -> High). It is an observation about
+    what the catalog says, never a recommendation to stop implementing a
+    control -- which is why this endpoint reports and does not advise, open
+    POA&Ms, or schedule anything.
+
+    422 rather than a guess when the system has no baseline: a delta from an
+    unknown current state is not computable, and 8 of the dev database's 14
+    systems are in exactly that state.
+    """
+    sys = await require_system_in_scope(session, system_id, principal)
+    try:
+        delta = await baseline_delta(session, system_id=sys.id, target=target)
+    except UnknownBaselineError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except BaselineNotSetError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return BaselineDeltaOut(**asdict(delta))
 
 
 @router.get("/{system_id}/poams", response_model=list[POAMOut])
