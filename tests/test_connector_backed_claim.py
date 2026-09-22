@@ -40,6 +40,7 @@ from ccf.governance.automation import (
     platform_capture_is_live,
 )
 from ccf.models import (
+    CaptureSnapshot,
     Organization,
     ScoringControl,
     SSPControlEntry,
@@ -113,13 +114,28 @@ async def _tenant(
     cloud_platform: str | None,
     *,
     connector: dict | None = None,
+    captured_at: datetime | None = None,
 ) -> AsyncIterator[tuple[dict, list[SSPControlEntry]]]:
-    """Seed one org + system + (optionally) one real ``ConnectorConfig`` row,
-    generate the SSP, and yield ``(coverage_rollup, entries)``.
+    """Seed one org + system + (optionally) one real ``ConnectorConfig`` row and
+    one real ``CaptureSnapshot``, generate the SSP, and yield
+    ``(coverage_rollup, entries)``.
 
     ``connector`` is the literal column state for the row (connector_type,
     status, last_sync, objects_discovered) so each rung of the "is this
     connector actually producing evidence" ladder can be seeded for real.
+
+    ``captured_at`` seeds the *artifact* a real capture produces. The status
+    columns alone stopped being proof once ``POST /connector-configs/{id}/sync``
+    -- a credential-free mock that writes exactly those columns -- was measured
+    to manufacture an evidenced SSP claim; ``organization_capture_is_live`` now
+    also requires a recent ``CaptureSnapshot``, which no status-column writer
+    can fabricate. Tests of the unhealthy rungs pass a *fresh* ``captured_at``
+    deliberately, so the only thing wrong with the tenant is the rung under
+    test and rung 1 is proved to still carry its own weight.
+
+    The snapshot's ``nist_id`` is left NULL on purpose: a captured value keyed
+    to one of the seeded controls would be rendered into the narrative, and a
+    fixture that supplies the text under assertion proves nothing.
     """
     control_ids: list[str] = []
     org_id: int | None = None
@@ -142,6 +158,16 @@ async def _tenant(
                         **connector,
                     )
                 )
+                if captured_at is not None:
+                    session.add(
+                        CaptureSnapshot(
+                            organization_id=org.id,
+                            connector=connector["connector_type"],
+                            odp_key="mfa_enforced",
+                            value="true",
+                            captured_at=captured_at,
+                        )
+                    )
                 await session.flush()
             profile = SystemProfile(
                 system_id=sysrow.id, environment_type="cloud", cloud_platform=cloud_platform
@@ -241,6 +267,7 @@ async def test_aws_govcloud_with_live_connector_keeps_implemented() -> None:
             "last_sync": _now(),
             "objects_discovered": 42,
         },
+        captured_at=_now(),
     ) as (cov, entries):
         assert entries
         for control_id, text in _texts(entries).items():
@@ -307,7 +334,11 @@ async def test_each_unhealthy_rung_counts_as_not_backed(rung: str, row: dict) ->
     elif rung == "stale sync":
         row["last_sync"] = _now() - timedelta(days=120)
     prefix = "AWS" + "".join(c for c in rung.upper() if c.isalpha())[:8]
-    async with _tenant(f"Rung Org {rung}", prefix, "aws_govcloud", connector=row) as (
+    # A FRESH capture artifact, so rung 2 is satisfied and the only thing wrong
+    # with this tenant is the status-column rung under test.
+    async with _tenant(
+        f"Rung Org {rung}", prefix, "aws_govcloud", connector=row, captured_at=_now()
+    ) as (
         cov,
         entries,
     ):
@@ -334,6 +365,7 @@ async def test_another_orgs_connector_does_not_back_this_org() -> None:
             "last_sync": _now(),
             "objects_discovered": 31,
         },
+        captured_at=_now(),
     ) as (_cov, _entries), _tenant("Isolated AWS Org", "AWSISO", "aws_govcloud") as (cov, entries):
         for control_id, text in _texts(entries).items():
             assert MANUAL_EVIDENCE_MARKER in text, (
@@ -353,7 +385,9 @@ async def test_m365_is_backed_by_the_msgraph_connector_not_an_m365_one() -> None
         "last_sync": _now(),
         "objects_discovered": 15,
     }
-    async with _tenant("M365 Wrong Key Org", "M365WK", "m365_gcc_high", connector=wrong) as (
+    async with _tenant(
+        "M365 Wrong Key Org", "M365WK", "m365_gcc_high", connector=wrong, captured_at=_now()
+    ) as (
         cov,
         entries,
     ):
@@ -364,7 +398,9 @@ async def test_m365_is_backed_by_the_msgraph_connector_not_an_m365_one() -> None
         assert cov["covered"] == 0
 
     right = dict(wrong, connector_type="msgraph")
-    async with _tenant("M365 Right Key Org", "M365RK", "m365_gcc_high", connector=right) as (
+    async with _tenant(
+        "M365 Right Key Org", "M365RK", "m365_gcc_high", connector=right, captured_at=_now()
+    ) as (
         cov,
         entries,
     ):
@@ -502,6 +538,7 @@ async def test_azure_stays_flagged_whatever_the_org_has_configured() -> None:
             "last_sync": _now(),
             "objects_discovered": 99,
         },
+        captured_at=_now(),
     ) as (cov, entries):
         assert entries
         for control_id, text in _texts(entries).items():

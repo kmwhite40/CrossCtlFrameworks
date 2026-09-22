@@ -15,9 +15,11 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..connectors.aws import AwsGovCloudConnector
+from ..connectors.credentials import resolve_credential
 from ..constants import POAM_ACTIVE_STATUSES
 from ..fedramp20x import VALIDATION_STATUSES
 from ..logging import get_logger
@@ -155,6 +157,98 @@ def connector_backing_state(
     return "current"
 
 
+# The one connector whose credential can identify the HOST rather than the
+# tenant: ``connectors/aws.py`` accepts either this organization's own access
+# key pair OR a named ``profile``, which boto3 resolves from the deployment's
+# own ``~/.aws/credentials`` — one shared identity for every tenant on the box.
+# Named specifically rather than generalized into an "is this credential
+# tenant-scoped" abstraction: one case does not justify one (spec §3).
+_HOST_PROFILE_CONNECTOR = AwsGovCloudConnector.key
+
+
+async def _has_recent_capture(
+    session: AsyncSession,
+    organization_id: int,
+    connector_type: str,
+    today: date,
+    stale_after_days: int,
+) -> bool:
+    """Rung 2: did this org's connector actually *produce* something, recently?
+
+    Measured on :attr:`CaptureSnapshot.captured_at`, deliberately NOT on
+    ``ConnectorConfig.last_sync`` (spec §2.1): ``last_sync`` says the connector
+    *ran*, ``captured_at`` says it produced an artifact. Where the two disagree
+    the artifact is the honest one — and the artifact is the rung a status-column
+    writer cannot fabricate.
+
+    ``CaptureSnapshot.connector`` stores ``conn.key``
+    (:mod:`ccf.governance.collection`), the same value space as
+    ``ConnectorConfig.connector_type``, so the join is direct.
+
+    The freshness arithmetic is the same shape as
+    :func:`connector_backing_state`'s (whole days, inclusive at the boundary)
+    so the two rungs cannot disagree about what "stale" means.
+    """
+    newest = (
+        await session.execute(
+            select(func.max(CaptureSnapshot.captured_at)).where(
+                CaptureSnapshot.organization_id == organization_id,
+                CaptureSnapshot.connector == connector_type,
+            )
+        )
+    ).scalar_one_or_none()
+    if newest is None:
+        return False
+    return (today - newest.date()).days <= stale_after_days
+
+
+async def _capture_identity_is_tenants_own(
+    session: AsyncSession, organization_id: int, connector_type: str
+) -> bool:
+    """Rung 3: was the capture made under *this tenant's* identity (spec §3)?
+
+    Only :data:`_HOST_PROFILE_CONNECTOR` can answer "no": every other provider
+    authenticates with a tenant-supplied API credential, so there is no host
+    identity for them to have used. AWS also accepts a named ``profile``, and
+    capture under one keeps working — it is just not this organization's own
+    automated capture, so it cannot license the SSP sentence that says it is.
+
+    Two boundaries, stated rather than left to fall out:
+
+    * **No credential bound at all** counts as the tenant's own. A fresh
+      snapshot can only have come from :func:`ccf.governance.collection`, which
+      resolves strictly per-organization with no global fallback (IA-05) — so
+      whatever produced it *was* this org's credential, even if the row has
+      since been unbound. Treating this as "not the tenant's" would impose a
+      credential-storage requirement on AWS that no other connector carries.
+    * **A credential we cannot read** counts as NOT the tenant's. It may be a
+      host profile and we cannot tell, and this module's whole direction is
+      that anything which cannot be positively established is not backed.
+      Broad ``except`` because credential storage raises several ways (no
+      master key, an unimplemented key provider, a decryption failure) and none
+      of them should 500 an SSP generation.
+    """
+    if connector_type != _HOST_PROFILE_CONNECTOR:
+        return True
+    try:
+        credential = await resolve_credential(session, organization_id, connector_type)
+    except Exception as e:  # see docstring: credential storage raises several ways
+        log.warning(
+            "capture.credential_unreadable",
+            connector=connector_type,
+            organization_id=organization_id,
+            error=str(e)[:200],
+        )
+        return False
+    if credential is None:
+        return True
+    # The same distinction ``AwsGovCloudConnector.is_configured`` draws: an
+    # access key pair is the tenant's, a bare profile is the host's.
+    if credential.get("access_key_id") and credential.get("secret_access_key"):
+        return True
+    return not credential.get("profile")
+
+
 async def organization_capture_is_live(
     session: AsyncSession,
     *,
@@ -166,13 +260,38 @@ async def organization_capture_is_live(
     """True only if *this organization* has actually captured configuration.
 
     ``ConnectorConfig`` is organization-scoped (no ``system_id``), so this is a
-    per-org, per-connector-type question.
+    per-org, per-connector-type question. Three things must ALL hold (spec §2):
 
-    Deliberately conservative: a missing connector type, a missing org, no row,
-    a row that is not ``configured``, one that has never synced, a stale sync,
-    and a sync that discovered nothing ALL return False — anything that cannot
-    be positively established counts as NOT backed, so the caller adds the
-    manual-evidence caveat. Over-flagging costs a reviewer an edit;
+    1. **The connector is currently usable** — :func:`connector_backing_state`
+       returns ``current``. A revoked or unconfigured connector cannot evidence
+       anything, however much it captured last month.
+    2. **A recent capture artifact exists** — at least one ``CaptureSnapshot``
+       for this ``(organization_id, connector)`` inside the staleness window
+       (:func:`_has_recent_capture`).
+    3. **The credential is the tenant's own**, not a host profile
+       (:func:`_capture_identity_is_tenants_own`).
+
+    Rung 1 alone used to be the whole answer, and rung 1 reads four
+    *self-reported status columns*. ``POST /connector-configs/{id}/sync`` is a
+    mock that writes exactly those four, so two API calls and no credentials
+    manufactured an "evidenced by automated capture" claim in a document filed
+    with a federal regulator. Rung 2 is the fix: the mock writes no snapshots,
+    and no status column can invent one.
+
+    Rung 2 also closes a split that let the document disagree with itself.
+    Captured values reach a statement's **prose** through ``CaptureSnapshot``
+    (:func:`ccf.governance.automation.generate_statements`) while the caveat was
+    decided from the ``ConnectorConfig`` columns — two independent paths, so a
+    mock sync produced a statement with no captured parameters in its prose AND
+    no caveat either: the reviewer saw neither the evidence nor the warning that
+    there was none. Both paths now depend on the same artifact.
+
+    Deliberately conservative throughout: a missing connector type, a missing
+    org, no row, a row that is not ``configured``, one that has never synced, a
+    stale sync, a sync that discovered nothing, no capture artifact, a stale
+    capture artifact, and a host-profile identity ALL return False — anything
+    that cannot be positively established counts as NOT backed, so the caller
+    adds the manual-evidence caveat. Over-flagging costs a reviewer an edit;
     under-flagging ships an "evidenced" claim to an assessor that nothing ever
     verified.
     """
@@ -190,7 +309,13 @@ async def organization_capture_is_live(
     )
     conn = (await session.execute(stmt)).scalars().first()
     when = today or datetime.now(UTC).date()
-    return connector_backing_state(conn, when, stale_after_days) == "current"
+    if connector_backing_state(conn, when, stale_after_days) != "current":
+        return False
+    if not await _has_recent_capture(
+        session, organization_id, connector_type, when, stale_after_days
+    ):
+        return False
+    return await _capture_identity_is_tenants_own(session, organization_id, connector_type)
 
 
 def _evaluate(test: ControlTest, conn: ConnectorConfig | None, today: date) -> tuple[str, str]:

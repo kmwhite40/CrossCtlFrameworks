@@ -117,15 +117,24 @@ MANUAL_EVIDENCE_NOTE = (
 )
 
 # The same flag for the other reason: Concord *does* ship a connector for this
-# platform, but THIS organization has none that has actually captured anything
-# (never configured, never synced, stale, or discovered nothing). Rendering the
-# NO CONNECTOR wording here would itself be a false statement, so the reason is
-# stated accurately while the reviewer-facing requirement is identical.
+# platform, but THIS organization has none that has actually captured anything.
+# Rendering the NO CONNECTOR wording here would itself be a false statement, so
+# the reason is stated accurately while the reviewer-facing requirement is
+# identical.
+#
+# The wording has to stay true of EVERY way
+# ``ccf.governance.control_tests.organization_capture_is_live`` can answer no —
+# no connector row; one that is not configured, never synced, stale, or
+# discovered nothing; no capture artifact or only a stale one; and a capture
+# made under a host profile rather than this tenant's own credential. It used
+# to name a single rung ("has completed a recent, non-empty sync"), which a
+# profile-backed connector that HAS synced recently and non-emptily falsifies:
+# the caveat would be correctly added and then given a false reason for it.
 NO_TENANT_CAPTURE_NOTE = (
     "[MANUAL-EVIDENCE-REQUIRED — NO TENANT CAPTURE: this organization has no "
-    "capture connector for this platform that has completed a recent, non-empty "
-    "sync; a human must attach evidence before this control is considered "
-    "evidenced.]"
+    "capture connector for this platform that has recently captured "
+    "configuration under the organization's own credential; a human must "
+    "attach evidence before this control is considered evidenced.]"
 )
 
 # The substring common to both notes — what a reader/report keys off to find a

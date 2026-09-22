@@ -520,9 +520,11 @@ async def platform_capture_is_live(
     :func:`ccf.ssp.platforms.connector_key_for_platform`'s support question
     ("does Concord ship a connector for this platform"). False whenever the
     platform has no connector at all (Azure), and false whenever the
-    organization's connector of that type has not completed a recent, non-empty
-    sync — see :func:`ccf.governance.control_tests.organization_capture_is_live`
-    for the shared ladder.
+    organization's connector of that type has not recently captured anything
+    under this tenant's own credential — see
+    :func:`ccf.governance.control_tests.organization_capture_is_live`, which
+    owns the whole rule (a usable connector, a recent ``CaptureSnapshot``, and a
+    tenant rather than host identity).
 
     Conservative by construction: anything that cannot be positively
     established is NOT backed, so callers add the manual-evidence caveat.

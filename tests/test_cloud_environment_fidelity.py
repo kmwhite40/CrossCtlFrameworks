@@ -44,6 +44,7 @@ from ccf.governance.automation import (
     platform_capture_is_live,
 )
 from ccf.models import (
+    CaptureSnapshot,
     Organization,
     ScoringControl,
     SSPControlEntry,
@@ -146,6 +147,20 @@ async def _seeded_system(
                         status="configured",
                         last_sync=datetime.now(UTC),
                         objects_discovered=7,
+                    )
+                )
+                # A real capture writes an ARTIFACT, and it is the artifact -- not the
+                # connector's self-reported status columns -- that now proves this
+                # tenant captured something (``organization_capture_is_live`` rung 2).
+                # The mock sync route writes the columns and no snapshot, which is how
+                # two credential-free API calls used to manufacture an evidenced claim.
+                session.add(
+                    CaptureSnapshot(
+                        organization_id=sys.organization_id,
+                        connector=connector_key,
+                        odp_key="mfa_enforced",
+                        value="true",
+                        captured_at=datetime.now(UTC),
                     )
                 )
                 await session.flush()
@@ -448,6 +463,17 @@ async def test_vendor_authorization_reaches_crm_ref_and_clears_needs_review() ->
                     status="configured",
                     last_sync=datetime.now(UTC),
                     objects_discovered=9,
+                )
+            )
+            # ...and the capture artifact that healthy row now has to be backed
+            # by: the status columns alone no longer evidence anything.
+            session.add(
+                CaptureSnapshot(
+                    organization_id=sys.organization_id,
+                    connector="aws_govcloud",
+                    odp_key="mfa_enforced",
+                    value="true",
+                    captured_at=datetime.now(UTC),
                 )
             )
             session.add(

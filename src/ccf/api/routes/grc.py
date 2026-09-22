@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
+from ...config import get_settings, is_dev_env
 from ...governance import bus, control_tests
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, System, Task
@@ -730,7 +731,29 @@ async def sync_connector(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """Mock sync path — records discovery + sets status until live auth is wired."""
+    """Mock sync path — records discovery + sets status until live auth is wired.
+
+    **Development environments only.** This writes exactly the four columns
+    ``governance.control_tests.connector_backing_state`` reads — ``status``,
+    ``last_sync``, ``objects_discovered``, ``error_message`` — with no
+    credentials, so it once let any authenticated user manufacture an
+    "evidenced by automated capture" claim in an SSP filed with a federal
+    regulator.
+
+    Rung 2 of :func:`ccf.governance.control_tests.organization_capture_is_live`
+    is the actual fix: that rung requires a ``CaptureSnapshot``, which this path
+    does not write and cannot fake. This gate is defence in depth, and it is
+    applied *as well* rather than instead (spec §2.2) — a future write path to
+    those columns must not reopen the defect, and a mock that silently does
+    nothing in production is worse than one that says so.
+    """
+    if not is_dev_env(get_settings()):
+        raise HTTPException(
+            503,
+            "connector sync is a development-only mock and is disabled in this "
+            "environment; connectors capture through the scheduled collection "
+            "cycle using this organization's own bound credential",
+        )
     c = await session.get(ConnectorConfig, cfg_id)
     if c is None:
         raise HTTPException(404, "connector not found")

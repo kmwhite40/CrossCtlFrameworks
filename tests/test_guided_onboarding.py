@@ -50,6 +50,7 @@ from ccf.governance import automation
 from ccf.models import (
     KSI,
     POAM,
+    CaptureSnapshot,
     InformationType,
     KSIState,
     Organization,
@@ -292,6 +293,23 @@ async def test_step2_walks_not_started_to_in_progress_to_done() -> None:
             conn.status = "configured"
             conn.last_sync = datetime.now(UTC)
             conn.objects_discovered = 42
+        # Healthy status columns are no longer the whole answer: the step is
+        # done only once a real capture ARTIFACT exists for this org. Without
+        # this the credential-free mock sync route -- which writes exactly the
+        # three columns above and nothing else -- would report "connected" to a
+        # customer who has connected nothing.
+        assert (await _steps(sys_id))["connect_evidence"].state == IN_PROGRESS
+
+        async with session_scope() as s:
+            s.add(
+                CaptureSnapshot(
+                    organization_id=org_id,
+                    connector="msgraph",
+                    odp_key="mfa_enforced",
+                    value="true",
+                    captured_at=datetime.now(UTC),
+                )
+            )
         assert (await _steps(sys_id))["connect_evidence"].state == DONE
     finally:
         await _drop(org_id, sys_id)
@@ -314,6 +332,15 @@ async def test_step2_goes_backwards_when_a_connector_stops_capturing() -> None:
                     status="configured",
                     last_sync=datetime.now(UTC),
                     objects_discovered=42,
+                )
+            )
+            s.add(
+                CaptureSnapshot(
+                    organization_id=org_id,
+                    connector="msgraph",
+                    odp_key="mfa_enforced",
+                    value="true",
+                    captured_at=datetime.now(UTC),
                 )
             )
         assert (await _steps(sys_id))["connect_evidence"].state == DONE
@@ -339,6 +366,25 @@ async def test_step2_goes_backwards_when_a_connector_stops_capturing() -> None:
             ).scalar_one()
             conn.status = "configured"
             conn.last_sync = datetime.now(UTC) - timedelta(days=400)
+        assert (await _steps(sys_id))["connect_evidence"].state != DONE
+
+        # And once more for the artifact: the connector reports a healthy,
+        # recent, non-empty sync again, but it has produced nothing for a long
+        # time. ``last_sync`` says it RAN; ``captured_at`` says what it
+        # produced, and where they disagree the artifact is the honest one.
+        async with session_scope() as s:
+            conn = (
+                await s.execute(
+                    select(ConnectorConfig).where(ConnectorConfig.organization_id == org_id)
+                )
+            ).scalar_one()
+            conn.last_sync = datetime.now(UTC)
+            snap = (
+                await s.execute(
+                    select(CaptureSnapshot).where(CaptureSnapshot.organization_id == org_id)
+                )
+            ).scalar_one()
+            snap.captured_at = datetime.now(UTC) - timedelta(days=400)
         assert (await _steps(sys_id))["connect_evidence"].state != DONE
     finally:
         await _drop(org_id, sys_id)
@@ -736,6 +782,15 @@ async def test_step4_names_controls_covered_only_by_an_uncaptured_platform_defau
                     status="configured",
                     last_sync=datetime.now(UTC),
                     objects_discovered=7,
+                )
+            )
+            s.add(
+                CaptureSnapshot(
+                    organization_id=org_id,
+                    connector="msgraph",
+                    odp_key="mfa_enforced",
+                    value="true",
+                    captured_at=datetime.now(UTC),
                 )
             )
         assert (await _steps(sys_id))["close_gaps"].state == DONE
