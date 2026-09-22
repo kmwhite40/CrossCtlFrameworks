@@ -96,6 +96,12 @@ PLATFORM_CONNECTOR_KEYS: Mapping[str, str] = MappingProxyType(
     {
         "m365": "msgraph",
         "aws_govcloud": "aws_govcloud",
+        # Azure Government is captured by the ARM connector, NOT by "msgraph":
+        # an Azure Gov tenant is usually the same Microsoft tenant Graph
+        # authenticates against, and pointing this entry at "msgraph" would let
+        # an identity-only capture license an infrastructure claim. See
+        # ``ccf.connectors.azure_arm`` for the scope boundary between the two.
+        "azure": "azure_arm",
     }
 )
 
@@ -106,10 +112,15 @@ PLATFORM_CONNECTOR_KEYS: Mapping[str, str] = MappingProxyType(
 CONNECTOR_PLATFORMS: frozenset[str] = frozenset(PLATFORM_CONNECTOR_KEYS)
 
 # Appended to every auto-composed statement for a platform Concord ships no
-# capture connector for at all (Azure today), so a reviewer — and
-# ccf.governance.automation's coverage rollup — can tell the claim was never
-# technically verified and needs a human to attach evidence before the control
-# counts as covered.
+# capture connector for at all, so a reviewer — and ccf.governance.automation's
+# coverage rollup — can tell the claim was never technically verified and needs
+# a human to attach evidence before the control counts as covered.
+#
+# Every platform in PLATFORMS except NO_PLATFORM now has a connector, so in
+# practice this note is reached only by NO_PLATFORM and by an unrecognized
+# platform code. It is kept, and kept accurate, because that is exactly when it
+# is true: the alternative note (NO_TENANT_CAPTURE_NOTE) would tell a customer
+# with no cloud platform to go configure a connector that does not exist.
 MANUAL_EVIDENCE_NOTE = (
     "[MANUAL-EVIDENCE-REQUIRED — NO CONNECTOR: no automated capture connector "
     "exists for this platform; a human must attach evidence before this control "

@@ -35,9 +35,12 @@ which must never be collapsed into ``done`` (an empty result read as the
 favourable answer) nor into ``not_started`` (a guess rendered as a fact).
 
 ``not_available`` is derived, never stored: a system whose declared platform has
-no connector in :data:`ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS` (Azure today),
-or which declared no cloud at all, is not failing step 2 -- there is nothing
-there to do. A *stored* not-applicable override is deliberately out of scope
+no connector in :data:`ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS`, or which
+declared no cloud at all, is not failing step 2 -- there is nothing there to do.
+Every platform Concord recognizes now has a connector, so the first of those
+two is reached only by an unrecognized platform code; the branch stays because
+"no connector for this" and "no cloud at all" are different sentences to say to
+a customer. A *stored* not-applicable override is deliberately out of scope
 (spec §4.1/§9); it needs an audit trail and a migration, and this page needs
 neither.
 """
@@ -285,8 +288,7 @@ async def _step_connect_evidence(
 
     ``not_available`` is derived (spec §4.1) from the declared platform alone,
     by :func:`_declared_connector`: ``"none"`` (no cloud), or an SSP platform
-    with no entry in :data:`ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS` (Azure
-    today).
+    with no entry in :data:`ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS`.
     """
     key = "connect_evidence"
     number = 2
