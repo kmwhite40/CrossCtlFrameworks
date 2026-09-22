@@ -20,6 +20,7 @@ Two things make this orchestration, not just a loop:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -488,6 +489,85 @@ async def _ensure_poam_for_other_than_satisfied(
         )
 
 
+def _objective_finding_record(objective: AssessmentObjectiveProposal) -> dict[str, Any]:
+    """Project one evaluated objective into the record a SAR is built from.
+
+    This runs at the exact boundary where the engine's working material
+    becomes a federal artifact: ``AssessmentControlResult.objective_findings``
+    is read by the docx SAR (``ccf.assessment.sar``), by the OSCAL SAR
+    (``ccf.api.routes.oscal.build_sar_doc``), and by the assessor UI. What is
+    not carried here is gone from all three.
+
+    CARRIED — everything an assessor could be asked to stand behind:
+
+    - ``label`` / ``text`` / ``finding``: the objective and its determination.
+    - ``rationale``: WHY the determination was reached. This is SAR content by
+      any reading — a finding with no stated reason is not an assessment
+      result, and the OSCAL export uses it as the finding's ``description``.
+    - ``gaps`` / ``contradictions``: what the evidence failed to show, and
+      where it disagreed with itself. These are the substance of an
+      other-than-satisfied finding and the raw material of a POA&M.
+    - ``cited_unit_ids``: which prepared evidence the determination rests on.
+      Validated at evaluation time against what retrieval actually returned,
+      so it is a real citation, not a claim of one — an assessor's first
+      question about any finding is "based on what?", and this answers it.
+    - ``dissent``: that the primary verdict was CHALLENGED, and what was
+      argued. Previously dropped entirely. A contested objective silently
+      becoming an uncontested finding at the moment of acceptance is the
+      single worst loss in the old projection: the record that two passes
+      disagreed is precisely what an assessor needs in order to adjudicate,
+      and acceptance is where it stopped existing.
+
+    DELIBERATELY LEFT BEHIND — real, still on
+    ``AssessmentObjectiveProposal``, and not part of the assessment record:
+
+    - ``model_confidence``: a model's self-reported score is not a measure of
+      assurance, and a number sitting beside a federal finding will be read
+      as one. It stays on the proposal row, where it belongs to the
+      engineering record and to calibration.
+    - ``model_name`` / ``ai_action_run_id`` / ``retrieved_unit_ids`` /
+      ``objective_text_sha256`` / ``state`` / ``error``: provenance and
+      machinery. They answer "how did this system produce this?", which is
+      an audit question about Concord, not an assessment question about the
+      system under assessment. ``ai_action_runs`` already holds that trail
+      and survives acceptance.
+
+    The split is deliberately conservative in one further way: the OSCAL SAR
+    (see ``build_sar_doc``) emits only the ``rationale`` of what is carried
+    here. Gaps, contradictions, citations and dissent belong to the record
+    *behind* the artifact — available to an assessor who asks, not asserted
+    in the delivered document.
+
+    Absent values are OMITTED rather than stored empty: an empty ``gaps``
+    list in a SAR reads as "checked, nothing found", which is a different
+    claim from "not recorded".
+    """
+    record: dict[str, Any] = {
+        "label": objective.label,
+        "text": objective.objective_text,
+        "finding": objective.verdict or "not_assessed",
+    }
+    if objective.rationale:
+        record["rationale"] = objective.rationale
+    if objective.gaps:
+        record["gaps"] = list(objective.gaps)
+    if objective.contradictions:
+        record["contradictions"] = list(objective.contradictions)
+    if objective.cited_unit_ids:
+        record["cited_unit_ids"] = list(objective.cited_unit_ids)
+    # A non-NULL primary_verdict is the documented marker that a challenge
+    # ran at all (models_assessment_engine: "NULL means not challenged"),
+    # including the case where the challenger AGREED -- which must stay
+    # distinguishable from never having been challenged.
+    if objective.primary_verdict is not None:
+        record["dissent"] = {
+            "primary_verdict": objective.primary_verdict,
+            "challenger_verdict": objective.challenger_verdict,
+            "challenger_rationale": objective.challenger_rationale,
+        }
+    return record
+
+
 async def accept_control_proposal(
     session: AsyncSession, proposal_id: int, *, accepted_by: str
 ) -> AssessmentControlResult:
@@ -573,10 +653,7 @@ async def accept_control_proposal(
         )
         session.add(result)
 
-    result.objective_findings = [
-        {"label": o.label, "text": o.objective_text, "finding": o.verdict or "not_assessed"}
-        for o in objectives
-    ]
+    result.objective_findings = [_objective_finding_record(o) for o in objectives]
     result.finding = proposed_finding
     result.nist_id = proposal.control_identifier
     result.assessor_note = proposal.rollup_rationale

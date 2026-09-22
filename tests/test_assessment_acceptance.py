@@ -249,13 +249,25 @@ def _docx_text(data: bytes) -> str:
 async def test_acceptance_projects_objectives_into_the_existing_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """objective_findings must match what ccf.assessment.sar already renders."""
+    """objective_findings must match what ccf.assessment.sar already renders.
+
+    ``label``/``text``/``finding`` are the contract both SAR generators read
+    and are asserted exactly. The projection also carries the evidentiary
+    material an assessor can cite (rationale, gaps, contradictions,
+    citations, the dissent record) -- see
+    ``service._objective_finding_record`` -- which is additive to that
+    contract, so this test pins the three required keys plus the absence of
+    what is deliberately left behind, rather than pinning the whole dict and
+    forbidding the rest.
+    """
     proposal_id = await _evaluated_proposal("acc-shape", monkeypatch)
     async with session_scope() as s:
         result = await accept_control_proposal(s, proposal_id, accepted_by="assessor@example.com")
         objective_findings = list(result.objective_findings)
 
-    assert objective_findings == [
+    assert [
+        {k: p[k] for k in ("label", "text", "finding")} for p in objective_findings
+    ] == [
         {
             "label": "ZQ-90a",
             "text": "personnel to whom the policy is disseminated are defined;",
@@ -272,6 +284,11 @@ async def test_acceptance_projects_objectives_into_the_existing_shape(
             "finding": "satisfied",
         },
     ]
+    # A model's self-reported confidence is not an assessment determination
+    # and must not ride along into the record a SAR is built from.
+    for part in objective_findings:
+        assert "model_confidence" not in part
+        assert "model_name" not in part
 
 
 async def test_acceptance_sets_the_control_finding(monkeypatch: pytest.MonkeyPatch) -> None:
