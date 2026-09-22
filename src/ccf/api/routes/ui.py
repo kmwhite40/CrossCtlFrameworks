@@ -64,6 +64,7 @@ from ...models import (
     Worksheet,
     WorksheetRow,
 )
+from ...models_assessment_engine import OBJECTIVE_VERDICTS
 from ...onboarding import onboarding_state
 from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
@@ -1748,6 +1749,87 @@ _FINDING_META = [
     ("not_applicable", "N/A", "chip--info"),
 ]
 
+# ---------------------------------------------------------------------------
+# Objective-grain finding vocabulary -- the per-objective <select> on the
+# assessor form. DISTINCT from _FINDING_META above, which is control grain and
+# deliberately unchanged.
+#
+# ``AssessmentControlResult.objective_findings`` has TWO producers with two
+# vocabularies: the seeder and this form write ``ccf.assessment.seed.FINDINGS``;
+# the assessment engine writes ``ccf.models_assessment_engine
+# .OBJECTIVE_VERDICTS`` into the same JSONB on acceptance (see
+# ``ccf.assessment.engine.service._objective_finding_record``). The select was
+# built from the first list alone, so an objective holding ``not_satisfied`` or
+# ``insufficient_evidence`` rendered with NO matching <option>; a browser then
+# submits the first one, and the next save wrote ``not_assessed`` over it. A
+# real failure, or a real "the evidence did not settle this", downgraded to
+# "nobody looked" by an assessor merely opening the page and pressing Save --
+# and since the SAR is built at objective grain (``oscal.build_sar_doc``) that
+# value reaches the artifact an assessor ingests.
+#
+# The list is the UNION of the two constants, DERIVED from them rather than
+# restated, so a future member of either is offered here without a second edit.
+#
+# BOTH failure spellings are offered, deliberately. They are one determination
+# in two standards' words -- ``constants._FINDING_ALIASES`` maps
+# ``not_satisfied`` onto ``OTHER_THAN_SATISFIED``, and nothing downstream
+# branches on which spelling was stored. Offering only one was considered and
+# rejected twice over: it makes the other unrepresentable, which is precisely
+# the defect being fixed, and a row-dependent list (show the stored spelling
+# only) would leave an assessor unable to record ``not_satisfied`` on an
+# objective currently ``satisfied`` while the engine records exactly that on
+# the objective beside it. The labels name the standard, so the choice is
+# informed rather than a coin toss.
+#
+# ``insufficient_evidence`` and ``not_assessed`` are NOT merged, although both
+# canonicalize to NOT_ASSESSED (``constants._FINDING_ALIASES``): one means the
+# evidence was examined and did not settle the question, the other that nobody
+# looked. The OSCAL layer keeps them apart with a ``determination`` prop, and
+# the form an assessor types into must be able to say each.
+_OBJECTIVE_FINDING_DISPLAY: dict[str, tuple[str, str]] = {
+    "not_assessed": ("Not assessed", "chip--ghost"),
+    "satisfied": ("Satisfied", "chip--ok"),
+    "other_than_satisfied": ("Other than satisfied (800-171A)", "chip--err"),
+    "not_satisfied": ("Not satisfied (800-53A)", "chip--err"),
+    "insufficient_evidence": ("Insufficient evidence", "chip--warn"),
+    "not_applicable": ("N/A", "chip--info"),
+}
+
+#: Both producers' vocabularies, deduplicated in first-seen order.
+_OBJECTIVE_FINDINGS: tuple[str, ...] = tuple(dict.fromkeys((*FINDINGS, *OBJECTIVE_VERDICTS)))
+
+
+def _objective_finding_option(key: str) -> tuple[str, str, str]:
+    """One <option>. An unlisted key still gets a readable label, never a
+    blank one -- a nameless determination beside an objective is worse than an
+    ugly one."""
+    label, cls = _OBJECTIVE_FINDING_DISPLAY.get(key, (key.replace("_", " "), "chip--ghost"))
+    return key, label, cls
+
+
+def objective_finding_options(stored: str | None) -> list[tuple[str, str, str]]:
+    """The options one objective's <select> renders, given what the row holds.
+
+    ``_OBJECTIVE_FINDINGS`` plus ``stored`` itself whenever it falls outside
+    it. The column is free JSONB with no DB constraint, so "outside it" is
+    reachable -- a legacy import, or a producer added after this list -- and
+    appending it is what makes the rendered select able to represent EVERY
+    value the data can actually hold, not merely the two vocabularies known
+    today. The stored value is therefore ALWAYS selectable, so a select nobody
+    touched always submits back exactly what it was rendered from. That
+    property, not the width of the list, is what stops a save from rewriting a
+    finding the assessor never looked at.
+
+    ``assessment_save_result`` builds its accept-list from this same function,
+    so the page and the handler cannot drift into disagreeing about what was
+    offerable -- the drift that caused the original defect.
+    """
+    key = stored or "not_assessed"
+    options = [_objective_finding_option(k) for k in _OBJECTIVE_FINDINGS]
+    if key not in _OBJECTIVE_FINDINGS:
+        options.append((key, f"{key} (as recorded)", "chip--ghost"))
+    return options
+
 
 @router.get("/assessments", response_class=HTMLResponse)
 async def assessments_page(
@@ -1877,6 +1959,7 @@ async def assessment_detail(
             "summary": summarize_results(results),
             "findings": FINDINGS,
             "finding_meta": _FINDING_META,
+            "objective_finding_options": objective_finding_options,
         },
     )
 
@@ -1907,13 +1990,17 @@ async def assessment_save_result(
     if result is None:
         raise HTTPException(404, "result not found")
     form = await request.form()
-    result.finding = finding if finding in FINDINGS else "not_assessed"
-    result.examine_note = examine_note or None
-    result.interview_note = interview_note or None
-    result.test_note = test_note or None
-    result.assessor_note = assessor_note or None
-    result.evidence_ref = evidence_ref or None
-    result.reviewed = "reviewed" in form
+
+    # Objective findings are resolved and VALIDATED BEFORE anything is
+    # assigned, so a refusal below leaves this ORM object untouched rather
+    # than half-written. Persistence is already safe without the ordering --
+    # ``get_session`` closes without committing when a handler raises, and a
+    # mutation test confirms the ordering alone is not what prevents the
+    # partial write -- but the ordering keeps "a save we cannot honour writes
+    # nothing" readable HERE instead of resting on a fact about a dependency
+    # three modules away, and it holds if this handler ever gains an earlier
+    # flush or a second session.
+    #
     # Rebuilding each part from scratch here used to erase everything the
     # acceptance projection carries (rationale, gaps, contradictions,
     # citations, the dissent record) on the first save an assessor made after
@@ -1923,8 +2010,38 @@ async def assessment_save_result(
     objs: list[dict[str, Any]] = []
     for part in result.objective_findings or []:
         label = part.get("label", "")
-        of = str(form.get(f"obj::{label}", part.get("finding", "not_assessed")))
+        stored = str(part.get("finding") or "not_assessed")
+        posted = form.get(f"obj::{label}")
+        # An absent field is not a cleared field: a caller that does not send
+        # this objective at all keeps whatever is stored.
+        of = stored if posted is None else str(posted)
+        if of not in {key for key, _label, _cls in objective_finding_options(stored)}:
+            # REFUSE, never substitute. The page could not have offered this
+            # value for this objective, so the submission cannot be read as an
+            # assessor's determination -- and the two ways of carrying on are
+            # both the defect shape this codebase keeps finding: writing it
+            # stores a determination nobody made, and quietly keeping the old
+            # value reports "Saved" over something else. Refusing is the only
+            # honest answer, and it is the one `capability.rollup.roll_up`
+            # (None for "no contributors") and `trust_corroboration`
+            # ("unsupported") already give. Unreachable from the rendered form
+            # -- `objective_finding_options` always contains `stored` -- which
+            # is the point: this makes a future drift between the page and the
+            # handler loud instead of silent.
+            raise HTTPException(
+                422,
+                f"objective {label!r}: {of!r} is not a finding this form offers "
+                f"(recorded: {stored!r}). Nothing was saved.",
+            )
         objs.append({**part, "label": label, "text": part.get("text", ""), "finding": of})
+
+    result.finding = finding if finding in FINDINGS else "not_assessed"
+    result.examine_note = examine_note or None
+    result.interview_note = interview_note or None
+    result.test_note = test_note or None
+    result.assessor_note = assessor_note or None
+    result.evidence_ref = evidence_ref or None
+    result.reviewed = "reviewed" in form
     result.objective_findings = objs
     result.observed_on = datetime.now(UTC).date()
     await session.commit()
