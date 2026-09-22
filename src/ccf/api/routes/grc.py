@@ -31,7 +31,7 @@ from ...models_grc import (
     TrustAccessRequest,
     TrustProfile,
 )
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api", tags=["grc"])
@@ -68,6 +68,57 @@ def _now() -> datetime:
 
 
 # ── Trust Center ────────────────────────────────────────────────────────────
+#: Roles that may edit the trust profile or decide an access request. Editing
+#: the profile publishes what the organization asserts about its own security
+#: posture; deciding a request is an approval -- the same reason
+#: ``waivers.APPROVER_ROLES`` is ``("admin",)``. Reading either, and *asking*
+#: for access, stay open to any authenticated org member: logging that someone
+#: asked is not an approval. The server-rendered UI in ``ui_grc.py`` gates the
+#: same two writes on the same role, spelled as a literal there because
+#: ``tests/test_role_names_are_real`` cannot resolve an imported constant.
+TRUST_ADMIN_ROLES = ("admin",)
+
+
+async def _load_access_request(
+    session: AsyncSession, req_id: int, principal: Principal
+) -> TrustAccessRequest:
+    """The access request, scoped to the caller's organization, or 404.
+
+    The organization predicate is in SQL rather than left to RLS alone: the
+    CLI/scheduler paths and any unscoped session bypass RLS by design, and the
+    list query beside this one already filters explicitly. 404 rather than 403
+    for another tenant's id -- confirming the id exists is itself a disclosure
+    (``waivers._load``'s rationale).
+    """
+    stmt = select(TrustAccessRequest).where(TrustAccessRequest.id == req_id)
+    if principal.org_id is not None:
+        stmt = stmt.where(TrustAccessRequest.organization_id == principal.org_id)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "request not found")
+    return row
+
+
+async def _emit_access_decision(
+    session: AsyncSession, r: TrustAccessRequest, principal: Principal
+) -> None:
+    """The audit record of who decided a trust access request.
+
+    Shared by the API and the server-rendered UI so the same decision made
+    through either path leaves the same record -- the UI handler previously
+    emitted nothing and never stamped ``decided_by``.
+    """
+    await bus.emit(
+        session,
+        verb="decided",
+        entity_type="trust_access_request",
+        entity_id=r.id,
+        summary=f"Trust access {r.status} for {r.requester_name}",
+        org_id=r.organization_id,
+        actor=principal.email,
+    )
+
+
 class TrustProfileIn(BaseModel):
     headline: str | None = None
     summary: str | None = None
@@ -114,8 +165,10 @@ async def get_trust_profile(
 async def update_trust_profile(
     body: TrustProfileIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*TRUST_ADMIN_ROLES)),
 ) -> dict[str, Any]:
+    """Admin only: this is the content of the page the organization presents
+    as its security posture. Reading it stays open to any org member."""
     t = await _get_trust(session, principal.org_id)
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(t, k, v)
@@ -205,16 +258,20 @@ async def decide_access_request(
     req_id: int,
     approve: bool = True,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*TRUST_ADMIN_ROLES)),
 ) -> dict[str, Any]:
-    r = (
-        await session.execute(select(TrustAccessRequest).where(TrustAccessRequest.id == req_id))
-    ).scalar_one_or_none()
-    if r is None:
-        raise HTTPException(404, "request not found")
+    """Admin only -- this is an approval, the same reason ``waivers``'
+    ``APPROVER_ROLES`` is ``("admin",)``.
+
+    Scoped in SQL rather than left to RLS alone: 404 rather than 403 for
+    another tenant's id, since confirming the id exists is itself a
+    disclosure (``waivers._load``'s rationale).
+    """
+    r = await _load_access_request(session, req_id, principal)
     r.status = "approved" if approve else "denied"
     r.decided_by = principal.email
     r.decided_at = _now()
+    await _emit_access_decision(session, r, principal)
     await session.commit()
     return {"id": r.id, "status": r.status}
 
