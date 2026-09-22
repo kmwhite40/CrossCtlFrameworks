@@ -68,6 +68,7 @@ from ...onboarding import onboarding_state
 from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
 from ...ssp.odp import render as render_template
+from ...ssp.odp_defs import odp_definitions_for_project
 from ...ssp.platforms import (
     NO_PLATFORM,
     PLATFORMS,
@@ -1287,15 +1288,13 @@ async def ssp_detail(
     ordered = [d for d in ssp_constants.DOMAIN_ORDER if d in by_domain]
     ordered += [d for d in by_domain if d not in ssp_constants.DOMAIN_ORDER]
 
-    # ODP fill-in slots (reference) and the canned statement library.
-    odp_map: dict[str, Any] = {
-        row[0]: row[1]
-        for row in (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringControl.odp_definitions)
-            )
-        ).all()
-    }
+    # ODP fill-in slots (reference) and the canned statement library. Resolved
+    # per framework by ssp/odp_defs.py -- the ScoringControl join this replaces
+    # is the CMMC L2 matrix, so an 800-53 project's parameters rendered as bare
+    # keys with no label, guidance or choice list.
+    odp_map = await odp_definitions_for_project(
+        session, proj, [e.control_id for e in entries]
+    )
     template_rows = (
         (await session.execute(select(StatementTemplate).order_by(StatementTemplate.sort_order)))
         .scalars()
@@ -1433,12 +1432,8 @@ async def ssp_save_entry(
     # other change) is reflected immediately — the previous chip-only response
     # left the form showing stale narratives, so applies looked like no-ops.
     odp_definitions = (
-        await session.execute(
-            select(ScoringControl.odp_definitions).where(
-                ScoringControl.control_id == entry.control_id
-            )
-        )
-    ).scalar()
+        await odp_definitions_for_project(session, proj, [entry.control_id])
+    ).get(entry.control_id)
     template_rows = (
         (await session.execute(select(StatementTemplate).order_by(StatementTemplate.sort_order)))
         .scalars()

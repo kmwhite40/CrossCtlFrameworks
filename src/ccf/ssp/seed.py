@@ -244,7 +244,14 @@ async def seed_80053_project(
     level = level.lower()
 
     cat = catalog or load_oscal_catalog()
-    entries, _odp_defs = build_80053_entries(cat, level)
+    # The definitions are deliberately NOT persisted here. ``ssp/odp_defs.py``
+    # resolves them from the parsed catalog at read time, so the catalog stays
+    # the single authority for what a parameter means and no stored copy can go
+    # stale against the next revision. This row owns only the value slots
+    # (``odp_values``), scaffolded unset below. The discarded name used to read
+    # as an oversight -- it was: nothing consumed the definitions at all, and
+    # every 800-53 parameter reached a human as a bare key.
+    entries, _odp_definitions = build_80053_entries(cat, level)
 
     existing_ids = set(
         (
