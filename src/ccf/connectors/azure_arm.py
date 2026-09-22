@@ -26,7 +26,10 @@ claims none of them:
 ``password_generations_prohibited`` are all identity/Purview signals
 (Conditional Access grants and session controls, the authentication methods
 policy, the unified audit log retention policy). None of them is readable from
-ARM, and all of them are already captured under ``msgraph``.
+ARM. ``mfa_enforced`` and ``inactivity_period`` are captured under ``msgraph``;
+the other four were advertised in Graph's ``PARAMETER_MAP`` and captured by
+nothing, so ``fix/connector-capture-parity`` removed them from it. Either way
+they are identity, and identity is Graph's to claim if anyone claims it.
 
 ``audit_retention_period`` is the one worth naming explicitly, because ARM *can*
 answer something adjacent: a Log Analytics workspace's ``retentionInDays``. That

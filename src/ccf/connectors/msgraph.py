@@ -13,8 +13,32 @@ The OAuth + fetch plumbing is real and works once an app registration with the
 appropriate application permissions (e.g. ``Policy.Read.All``) is configured.
 The value→ODP mapping is deliberately conservative: we only emit a captured
 parameter when the live signal maps cleanly to a requirement, and return ``[]``
-on any error. Everything else is advertised in :attr:`PARAMETER_MAP` as intended
-coverage for the UI, not asserted.
+on any error.
+
+``PARAMETER_MAP`` describes what this connector captures — not what it might
+------------------------------------------------------------------------------
+``connectors/base.py`` defines ``PARAMETER_MAP`` as what a connector *would*
+pull once credentials are configured, and ``api/routes/ssp.py`` returns it for
+an unconfigured connector so the UI can show exactly that. It is a claim made
+to an operator about the product, so it may not carry an aspiration.
+
+This map used to advertise six keys while ``capture()`` emitted two.
+``session_termination_condition``, ``nonlocal_maintenance_mfa``,
+``audit_retention_period`` and ``password_generations_prohibited`` were
+"intended coverage for the UI" — which is indistinguishable, to the operator
+reading the screen, from coverage. They are removed rather than implemented:
+each needs a Graph source this connector does not read (the authentication
+methods policy, the Purview unified-audit retention policy), and adding four
+integrations is not a parity fix. Re-adding a key means adding the sub-capture
+in the same change, because ``tests/test_connector_capture_parity.py`` drives
+``capture()`` against a stubbed transport and asserts the emitted keys equal
+this map's keys.
+
+Both emitted ids are 800-171 (``3.5.3``, ``3.1.10``), which is the namespace an
+``m365`` project's entries actually carry — measured: 8 projects, 880 entries,
+all ``3.x.y``, zero 800-53. ``nist_id`` is the join key
+``governance/automation.py`` matches against ``SSPControlEntry.nist_id``, so a
+capture in the other namespace would be stored and silently never rendered.
 """
 
 from __future__ import annotations
@@ -53,14 +77,12 @@ class MsGraphConnector(ConfigConnector):
     #: ``@odata.nextLink`` cannot spin forever.
     _MAX_PAGES: ClassVar[int] = 50
 
-    # ODP key → the Graph signal it is (or will be) derived from.
+    # ODP key → the Graph signal it IS derived from. Every key here is one
+    # ``capture()`` actually emits; see the module docstring on why this map
+    # may not carry an aspiration.
     PARAMETER_MAP: ClassVar[dict[str, str]] = {
         "mfa_enforced": "Conditional Access grant requiring multi-factor authentication",
         "inactivity_period": "Conditional Access sign-in frequency (session controls)",
-        "session_termination_condition": "Conditional Access sign-in frequency / persistent browser",  # noqa: E501
-        "nonlocal_maintenance_mfa": "authenticationMethodsPolicy / Conditional Access MFA grant",
-        "audit_retention_period": "Purview Audit (unified audit log) retention policy",
-        "password_generations_prohibited": "Entra ID password / authentication methods policy",
     }
 
     def is_configured(self) -> bool:
