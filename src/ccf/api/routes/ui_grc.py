@@ -39,7 +39,12 @@ from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ..auth_deps import require_role
 from ..deps import get_session
-from .grc import _MOCK_DISCOVERY, CONNECTOR_TYPES
+from .grc import (
+    _MOCK_DISCOVERY,
+    CONNECTOR_TYPES,
+    _emit_access_decision,
+    _load_access_request,
+)
 from .ui import _principal_org, templates
 
 router = APIRouter(include_in_schema=False)
@@ -168,12 +173,30 @@ async def trust_access_decide(
     request: Request,
     approve: str = Form("1"),
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
-    r = await session.get(TrustAccessRequest, req_id)
-    if r is not None:
-        r.status = "approved" if approve == "1" else "denied"
-        r.decided_at = _now()
-        await session.commit()
+    """Admin only, and the same record as the API twin.
+
+    The role is a literal rather than ``grc.TRUST_ADMIN_ROLES``:
+    ``tests/test_role_names_are_real`` resolves every ``require_role``
+    argument per file and refuses what it cannot read, and an imported
+    constant is exactly that. The two paths are held to the same roles
+    behaviourally instead -- ``tests/test_trust_rbac`` refuses the same caller
+    on both.
+
+    This handler previously set the status and nothing else: no bus event and
+    no ``decided_by``, so the same decision made through the UI left no record
+    of who made it. It also loaded the row with a bare ``session.get``, which
+    relies entirely on RLS for tenant scoping -- unlike the list query above
+    it. Both now go through the API's ``_load_access_request`` /
+    ``_emit_access_decision``, so the two paths cannot drift apart again.
+    """
+    r = await _load_access_request(session, req_id, principal)
+    r.status = "approved" if approve == "1" else "denied"
+    r.decided_by = principal.email
+    r.decided_at = _now()
+    await _emit_access_decision(session, r, principal)
+    await session.commit()
     return RedirectResponse("/trust", status_code=303)
 
 
@@ -183,7 +206,10 @@ async def trust_save(
     headline: str = Form(""),
     summary: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    _principal: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
+    """Admin only: this is the content of the page the organization presents
+    as its security posture. ``GET /trust`` stays open to any org member."""
     org = _principal_org(request)
     t = (
         await session.execute(select(TrustProfile).where(TrustProfile.organization_id == org))

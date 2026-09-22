@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..catalog.canonical import canonicalize
 from ..models_packs import (
     CompliancePack,
     CompliancePackVersion,
@@ -171,14 +172,32 @@ async def install_pack(
 async def coverage(
     session: AsyncSession, *, pack: CompliancePack, system_id: int
 ) -> dict[str, Any]:
-    """Coverage of a pack's controls by a system's implementations."""
+    """Coverage of a pack's controls by a system's implementations.
+
+    Both sides of the comparison are canonicalized, the same contract
+    :mod:`ccf.capability.service` documents: ``controls.identifier`` is
+    zero-padded in the real 800-53 catalog (``AC-01``, and 3747 of the dev
+    catalog's 5430 rows carry that form) while a pack manifest declares the
+    canonical unpadded id (``AC-2``). A raw string compare matched nothing, so
+    against the real catalog every pack control reported as a gap and
+    ``coverage_pct`` was 0.
+
+    A pack ``control_id`` that does not canonicalize is *not* an 800-53 id at
+    all -- the bundled packs deliberately declare native namespaces
+    (``AIG-1``, ``CSA-RLS``, ``PS.1``), and ``catalog._validate_control_ids``
+    only insists on canonical ids for posture *rules*, not for a pack's own
+    control list. Such an id is neither a gap by default nor covered by
+    default: it falls back to exact catalog identity, which is the only
+    meaning it can have outside the canonical key space. It is also listed in
+    ``unparseable_control_ids`` so an operator is told which rows were matched
+    by identity alone and would therefore miss a padded catalog row.
+    """
     from ..models import Control, ControlImplementation  # noqa: PLC0415
 
     pack_controls = (
         await session.execute(select(PackControl).where(PackControl.pack_id == pack.id))
     ).scalars().all()
 
-    # Map system implementations by normalized control identifier.
     rows = (
         await session.execute(
             select(Control.identifier, ControlImplementation.status)
@@ -187,12 +206,31 @@ async def coverage(
         )
     ).all()
     satisfied_states = {"implemented", "inherited"}
-    impl = {str(ident): status for ident, status in rows}
 
-    covered = []
-    gaps = []
+    # Two indexes over this system's implementations. ``by_canonical`` is the
+    # authoritative one; ``by_identifier`` serves only the ids that cannot
+    # canonicalize. A catalog can carry two spellings of one control (``AC-01``
+    # and ``AC-1``), so a satisfied row is never shadowed by an unsatisfied
+    # duplicate that happened to be read second.
+    by_canonical: dict[str, str] = {}
+    by_identifier: dict[str, str] = {}
+    for ident, status in rows:
+        identifier = str(ident)
+        by_identifier[identifier] = status
+        c = canonicalize(identifier)
+        if c is not None and by_canonical.get(c.value) not in satisfied_states:
+            by_canonical[c.value] = status
+
+    covered: list[str] = []
+    gaps: list[str] = []
+    unparseable: list[str] = []
     for pc in pack_controls:
-        status = impl.get(pc.control_id)
+        c = canonicalize(pc.control_id)
+        if c is None:
+            unparseable.append(pc.control_id)
+            status = by_identifier.get(pc.control_id)
+        else:
+            status = by_canonical.get(c.value)
         if status in satisfied_states:
             covered.append(pc.control_id)
         else:
@@ -205,6 +243,7 @@ async def coverage(
         "covered": len(covered),
         "coverage_pct": round(100 * len(covered) / total, 1) if total else 0.0,
         "gaps": gaps,
+        "unparseable_control_ids": unparseable,
     }
 
 
