@@ -23,10 +23,23 @@
 <div class="cols-2">
   <section class="card">
     <div class="card__header"><div class="card__title">Framework status</div></div>
-    <div class="card__body stack" style="gap:6px">
-      {% for b in (t.framework_badges if t else []) %}
-      <div class="row between"><span>{{ b.framework }}</span><span class="chip chip--info">{{ b.status }}</span></div>
+    <div class="card__body stack" style="gap:10px">
+      {# Badges render exactly as typed, in the order they were typed. The
+         corroboration state is added beside each one and never replaces,
+         reorders, edits or hides it. #}
+      {% for c in (corroboration.badges if corroboration else []) %}
+      <div class="stack" style="gap:2px">
+        <div class="row between"><span>{{ c.framework }}</span><span class="chip chip--info">{{ c.status }}</span></div>
+        <div class="row" style="gap:6px;align-items:baseline">
+          <span class="chip {% if c.state=='corroborated' %}chip--ok{% elif c.state=='contradicted' %}chip--warn{% else %}chip--ghost{% endif %}">{{ c.label }}</span>
+          <span class="dim" style="font-size:12px">{{ c.detail }}</span>
+        </div>
+      </div>
       {% else %}<div class="dim">No framework badges yet. Add via <span class="mono">PUT /api/trust/profile</span>.</div>{% endfor %}
+      {% if corroboration and corroboration.expiry_notice %}
+      <div class="row" style="gap:6px;align-items:baseline"><span class="chip chip--warn">lapsed authorization</span><span class="dim" style="font-size:12px">{{ corroboration.expiry_notice }}</span></div>
+      {% endif %}
+      {% if corroboration %}<div class="dim" style="font-size:11px">{{ corroboration.loose_match_note }}</div>{% endif %}
     </div>
   </section>
   <section class="card">

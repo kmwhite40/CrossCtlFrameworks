@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...config import get_settings, is_dev_env
-from ...governance import bus, control_tests
+from ...governance import bus, control_tests, trust_corroboration
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, System, Task
 from ...models_grc import (
@@ -131,6 +131,12 @@ class TrustProfileIn(BaseModel):
     approved_policies: list[Any] | None = None
     approved_evidence: list[Any] | None = None
     faq: list[dict[str, str]] | None = None
+    #: Recorded and **not yet honoured** by any code. Setting it changes
+    #: nothing: ``/trust`` is session-gated by ``_PUBLIC_PREFIXES`` and does
+    #: not consult this flag, and neither does the package export. Publishing
+    #: is a decision that has not been taken; the field is kept settable so
+    #: the intent survives, and inert so it cannot silently start gating
+    #: something. Do not wire it up without taking that decision first.
     published: bool | None = None
 
 
@@ -196,13 +202,29 @@ async def trust_package(
     """
     t = await _get_trust(session, principal.org_id)
     data = _trust_out(t)
+    # The artifact must not be able to claim more than the screen its
+    # operator looked at, so it carries the same corroboration states the
+    # ``/trust`` page renders -- from the same service, not a second copy of
+    # the rules. ``tests/test_trust_corroboration.py`` compares the two.
+    corroboration = await trust_corroboration.corroborate_badges(
+        session, t.framework_badges, org_id=principal.org_id
+    )
+    data["corroboration"] = corroboration.as_export()
     if fmt == "md":
         lines = [f"# {data['headline'] or 'Security & Compliance'}", ""]
         if data["summary"]:
             lines += [data["summary"], ""]
         lines.append("## Framework status")
-        for b in data["framework_badges"] or []:
-            lines.append(f"- **{b.get('framework')}** — {b.get('status')}")
+        for b, c in zip(
+            data["framework_badges"] or [], data["corroboration"]["badges"], strict=False
+        ):
+            lines.append(
+                f"- **{b.get('framework')}** — {b.get('status')}  \n"
+                f"  _{c['label']}_ — {c['detail']}"
+            )
+        if data["corroboration"]["expiry_notice"]:
+            lines.append(f"\n> {data['corroboration']['expiry_notice']}")
+        lines.append(f"\n_{data['corroboration']['note']}_")
         lines.append("\n## Approved reports")
         lines += [f"- {r}" for r in (data["approved_reports"] or [])]
         lines.append("\n## FAQ")
