@@ -568,8 +568,8 @@
 
   <section>
     <div class="sec-head">
-      <h2>In flight</h2>
-      <span class="sec-note">not yet in the main line</span>
+      <h2>The CR26 certification profile</h2>
+      <span class="sec-note">all merged</span>
     </div>
 
     <div class="items">
@@ -646,6 +646,117 @@
 
   <section>
     <div class="sec-head">
+      <h2>What a filed document is allowed to say</h2>
+      <span class="sec-note">six defects found and closed</span>
+    </div>
+    <p class="lede">
+      A compliance document can pass every schema check and still assert something untrue.
+      That class of defect cannot be caught by validation, so it is hunted deliberately:
+      each value the platform writes is audited against &ldquo;is this true?&rdquo; rather than
+      &ldquo;does this validate?&rdquo;. Six were found and closed this cycle. Each is stated
+      here with what it would have put in front of an assessor, because the guarantee is
+      only worth what the evidence behind it is.
+    </p>
+
+    <div class="items">
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>A document cannot claim evidence nobody captured</h3>
+          <p>An implementation statement omits its manual-evidence caveat only when this
+          organization&rsquo;s own connector has completed a recent, non-empty sync. The check
+          previously asked whether Concord <em>ships</em> a connector for the declared
+          platform &mdash; so a customer who had configured nothing still produced clean,
+          uncaveated statements, while a customer on a platform with no connector had every
+          statement flagged. The safe direction was inverted for the two most-used platforms.</p>
+          <p>One consequence is visible and deliberate: coverage percentages fell for tenants
+          without a healthy connector. Their posture did not change; the number stopped
+          overstating it.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>A platform is never guessed</h3>
+          <p>&ldquo;No cloud platform&rdquo; is one of four answers the intake questionnaire
+          offers. A customer who chose it &mdash; or who runs anything outside the three
+          supported platforms &mdash; previously received a system security plan describing
+          Microsoft 365, naming Entra ID, Purview and Intune as the mechanisms implementing
+          their controls. Six separate defaults resolved an unknown platform to a real
+          product name.</p>
+          <p>&ldquo;None&rdquo; is now a platform in its own right, with an empty service
+          catalogue, so nothing platform-specific can be drafted for it. An unrecognised
+          platform stays distinct from a declared absence: the first means the platform does
+          not know, the second means the customer said so.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Machine-drafted text is always marked as machine-drafted</h3>
+          <p>Under the platform&rsquo;s own rule, a draft marker in stored narrative is the only
+          durable record that text has not been human-reviewed. The seeder &mdash; which writes
+          the first narrative for every control &mdash; did not write that marker. On a freshly
+          seeded plan, 27 of 110 entries carried it; the other 83 were machine text that the
+          interface displayed as human-authored.</p>
+          <p>Every producer now marks its output. A newly seeded plan therefore shows the
+          AI-assisted badge on every control and scores lower on completeness until reviewed
+          &mdash; correct, because it genuinely is unreviewed.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>The generator cannot overwrite human work silently</h3>
+          <p>Regenerating implementation statements replaced every narrative in a plan,
+          including text a person had written and cleared, and reported only how many entries
+          it touched. Human-cleared narrative is now preserved by default and the affected
+          controls are named. Replacing it is still possible, deliberately, and every control
+          affected is listed &mdash; destroying human work on request is legitimate; doing it
+          without a record is not.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Where this system stands, in six steps</h3>
+          <p>Forty surfaces grouped by product area tell a new customer nothing about where to
+          start. Each system now carries an ordered path &mdash; intake, evidence connection,
+          the security plan, closing gaps, producing the package, bringing in an assessor
+          &mdash; with each step&rsquo;s state computed from the records themselves and the
+          remaining work named rather than counted.</p>
+          <p>A step reports <span class="mono">unknown</span> when the platform cannot see
+          enough to judge, which is never shown as done. Steps move backwards: a lapsed
+          connector or an expired engagement takes its step with it, because a progress bar
+          that only rises would be false the day something expires.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Independent assessors, scoped and time-bound</h3>
+          <p>A third-party assessment organization is modelled as what it is &mdash; a firm
+          external to the provider, engaged for one system over one period. It never receives
+          an internal account, which is what independence requires. An engagement carries the
+          relationship; credentials hang off it, so a token can rotate or a second assessor
+          can join without a second identity, and ending the engagement ends every credential
+          under it at once.</p>
+          <p>A credential stops working when its engagement ends, whatever its own expiry
+          says. Where the provider and the assessor share a mail domain the platform records
+          what it observed and never blocks &mdash; independence is a matter of ownership and
+          contracts that no field here can settle.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
       <h2>What the build will not claim</h2>
       <span class="sec-note">read this before a customer conversation</span>
     </div>
@@ -664,6 +775,21 @@
           no connector at all. Everything else is human-attested or ingested evidence.</p>
           <p>The spine that machine evidence lands on is built and tested — adding a provider
           is now additive work rather than architecture.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-limit">Limit</span>
+        <div>
+          <h3>Plans written before this cycle may name the wrong platform</h3>
+          <p>Until the platform default was fixed, an unrecognised or absent cloud platform
+          resolved to Microsoft 365. A plan written then is now indistinguishable from one
+          legitimately on that platform, and rewriting it would be a second guess on top of
+          the first.</p>
+          <p>The intake answer is retained separately from the plan, so a readiness check
+          reports every plan whose platform disagrees with what its system declared. The
+          decision is left to a person; the platform names the candidates and does not act
+          on them.</p>
         </div>
       </div>
 
