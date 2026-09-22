@@ -51,9 +51,14 @@ def is_draft_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
     Deliberately kept strict (``startswith(DRAFT_PREFIX)``, the full literal
     WITH its trailing space) rather than widened the way
     ``ssp.completeness.is_draft_or_placeholder`` was: every producer of this
-    marker (``statements.py``/``platforms.py``/``nist80053.py``/
+    marker (``statements.py``; ``platforms.py``'s ``sample_statement`` and
+    ``customer_responsibility_statement``; ``nist80053.py``;
     ``governance/automation.py``) always writes the space, so the strict form
-    never misses machine-drafted content -- widening it would instead let a
+    never misses machine-drafted content. That claim was only half true until
+    ``sample_statement`` -- the seeder's producer, called for every control
+    -- was made to write the marker at all: before that, every seeded
+    narrative without a customer-responsibility lead-in read here as
+    human-cleared. Widening it would instead let a
     human's own hand-typed ``"[DRAFT]"`` register as "AI-sourced" here (this
     predicate drives the UI's AI-provenance badges, ``ui.py``'s and
     ``reports.py``'s ``is_draft_entry``/``ai_sourced_map``), which is a false

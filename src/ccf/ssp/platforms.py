@@ -396,7 +396,17 @@ def services_for(platform: str | None, domain: str | None) -> str:
 
 
 def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, str]) -> str:
-    """Compose a platform-specific narrative for one determination part."""
+    """Compose a platform-specific narrative for one determination part.
+
+    Prefixed with the draft indicator on every return path, like
+    :func:`customer_responsibility_statement`: "sample" text is machine-composed
+    by definition, and under CISO-02 :data:`~ccf.ssp.constants.DRAFT_PREFIX`
+    in the stored text is the only durable record of that. This is the
+    function ``ccf.ssp.seed._narratives`` calls for every control, so a path
+    that omitted the marker made the seeder's text read as human-cleared to
+    :func:`ccf.ssp.statements.is_draft_narrative` -- the AI-provenance badge
+    and ``generate_statements``' preserve rule both key off it.
+    """
     plat = normalize_platform(platform)
     obj = (part.get("text") or "").strip().rstrip(".")
     if plat is None or not _SERVICES.get(plat):
@@ -408,7 +418,7 @@ def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, 
             if obj
             else "The organization is responsible for meeting this objective."
         )
-        return f"{lead} {catalog_absence_note(platform)}"
+        return f"{constants.DRAFT_PREFIX}{lead} {catalog_absence_note(platform)}"
     label = PLATFORMS[plat]
     services = services_for(plat, rec.domain)
     if obj:
@@ -423,7 +433,7 @@ def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, 
     note = _fips_key_custody_note(plat, rec.domain)
     if note:
         body += f" {note}"
-    return body
+    return f"{constants.DRAFT_PREFIX}{body}"
 
 
 def customer_responsibility_statement(platform: str | None, rec: ScoringControl) -> str:
