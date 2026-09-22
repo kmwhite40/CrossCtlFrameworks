@@ -21,13 +21,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...assessment.engine.objectives import strip_dedup_suffix
 from ...auth import Principal
 from ...boundary.summary import BoundarySummary, system_boundary_summary
 from ...catalog.canonical import canonical_to_oscal_id, canonicalize
-from ...constants import POAM_UNRESOLVED_STATUSES
+from ...constants import (
+    NOT_APPLICABLE,
+    NOT_ASSESSED,
+    OTHER_THAN_SATISFIED,
+    POAM_UNRESOLVED_STATUSES,
+    SATISFIED,
+    UNKNOWN,
+    normalize_finding,
+)
 from ...models import (
     POAM,
     Assessment,
+    AssessmentControlResult,
     AssessmentResult,
     Control,
     ControlImplementation,
@@ -65,13 +75,31 @@ _OSCAL_POAM_STATE = {
 }
 _OSCAL_SEVERITY = {"low": "low", "moderate": "moderate", "high": "high", "critical": "critical"}
 
-# AssessmentResult.finding -> OSCAL finding target.status.state. "not_applicable"
-# has no direct OSCAL state — it is encoded as "not-satisfied" plus an
-# "applicability" prop (see build_sar_doc) rather than dropped.
+# Canonical finding (ccf.constants) -> OSCAL finding target.status.state.
+#
+# Keyed on the CANONICAL vocabulary, not on any one source's raw spelling, so
+# the single map serves both grains the SAR now emits: control-level
+# (``AssessmentResult.finding``, a three-value DB enum) and objective-level
+# (``AssessmentObjectiveProposal.verdict``, projected into
+# ``AssessmentControlResult.objective_findings``, which adds ``not_satisfied``
+# and ``insufficient_evidence``). Every raw value goes through
+# ``normalize_finding`` first; the DB enum's three values are identity-mapped
+# there, so the control-level path is unchanged.
+#
+# OSCAL 1.1 defines exactly two states for a finding target — "satisfied" and
+# "not-satisfied" — so every canonical value that is neither a pass nor a
+# plain failure lands on "not-satisfied" and carries a prop saying which one
+# it was (see ``_finding_status_props``). That is the pattern
+# "not_applicable" has always used here; the alternative, inventing a third
+# state token, is not conformant, and the alternative for
+# ``insufficient_evidence`` in particular — calling it "satisfied" — would be
+# a false claim to an assessor.
 _OSCAL_FINDING_STATE = {
-    "satisfied": "satisfied",
-    "other_than_satisfied": "not-satisfied",
-    "not_applicable": "not-satisfied",
+    SATISFIED: "satisfied",
+    OTHER_THAN_SATISFIED: "not-satisfied",
+    NOT_APPLICABLE: "not-satisfied",
+    NOT_ASSESSED: "not-satisfied",
+    UNKNOWN: "not-satisfied",
 }
 
 # Both OSCAL exports must cite the same catalog the project is actually built
@@ -138,6 +166,64 @@ def _oscal_control_id(identifier: str | None) -> str:
     raw = identifier or ""
     canon = canonicalize(raw)
     return canonical_to_oscal_id(canon.value) if canon is not None else raw.lower()
+
+
+def _finding_status_props(raw_finding: str | None) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """An OSCAL finding ``status`` plus the props that keep it honest.
+
+    ``raw_finding`` is whatever the source column holds — a
+    ``ccf.finding_status`` enum value, an ``AssessmentControlResult.finding``
+    string, or an engine objective verdict — and is normalized ONCE here (see
+    ``_OSCAL_FINDING_STATE``) so no caller has to know which vocabulary it is
+    holding.
+
+    OSCAL has two finding states, so three canonical determinations collapse
+    onto "not-satisfied". A prop is what keeps them distinguishable in the
+    delivered document:
+
+    - ``not_applicable`` -> ``applicability: not-applicable`` (unchanged; the
+      SAR has always emitted this).
+    - ``not_assessed`` / ``unknown`` -> ``determination: <the raw value>``,
+      which is how ``insufficient_evidence`` survives the collapse. Without
+      it, "the evidence did not settle this objective" and "this objective
+      failed" are the same sentence in the artifact an assessor reads.
+
+    A plain ``satisfied`` or ``other_than_satisfied`` gets no prop: the state
+    already says everything, and a qualifier on an unqualified determination
+    is noise an assessor has to rule out.
+    """
+    canonical = normalize_finding(raw_finding)
+    props: list[dict[str, str]] = []
+    if canonical == NOT_APPLICABLE:
+        props.append({"name": "applicability", "value": "not-applicable"})
+    elif canonical in (NOT_ASSESSED, UNKNOWN):
+        # The raw spelling, not the canonical bucket: "insufficient_evidence"
+        # and "not_assessed" both normalize to NOT_ASSESSED but mean
+        # different things to an assessor ("we could not tell" vs "nobody
+        # looked"), and the raw column is the only place that survives.
+        raw = (raw_finding or NOT_ASSESSED).strip().lower().replace("_", "-")
+        props.append({"name": "determination", "value": _oscal_token(raw)})
+    return {"state": _OSCAL_FINDING_STATE[canonical]}, props
+
+
+def _statement_id(oscal_cid: str, label: str | None) -> str:
+    """The OSCAL statement-id for one assessment objective under ``oscal_cid``.
+
+    The same ``<control-id>_smt.<token>`` shape ``build_ssp_doc`` already
+    emits for SSP sub-statements, so a SAR finding and the SSP statement it
+    speaks to are addressable by the same id.
+
+    ``strip_dedup_suffix`` runs BEFORE ``_oscal_token``, not after: the token
+    rules would quietly turn the ETL's ``#row417`` de-dup artifact into
+    ``row417``, which reads as part of the catalog item path. A label that is
+    nothing BUT the suffix, or empty, degrades to the whole-statement id
+    rather than to ``_unspecified`` — targeting the statement is honest about
+    the grain; inventing a label is not.
+    """
+    token = _oscal_token(strip_dedup_suffix(label or ""))
+    if not label or not strip_dedup_suffix(label).strip():
+        return f"{oscal_cid}_smt"
+    return f"{oscal_cid}_smt.{token}"
 
 
 def _placeholder(what: str) -> str:
@@ -776,12 +862,76 @@ async def sar_export(
     return await build_sar_doc(session, assessment)
 
 
+async def _objective_findings_by_control(
+    session: AsyncSession, assessment_id: int
+) -> dict[str, list[dict[str, Any]]]:
+    """Objective-grain findings for one assessment, keyed by OSCAL control id.
+
+    ``AssessmentControlResult.control_id`` is a ``String(32)`` documented as
+    keyed to ``scoring_controls`` (CMMC practice ids like ``AC.L2-3.1.1``) —
+    but ``ccf.assessment.engine.service`` writes 800-53 canonical ids
+    (``AC-2``) into the same column when an assessor accepts a proposal. The
+    column carries two vocabularies, and a third spelling on top of that
+    (the ingested catalog is inconsistently zero-padded, so ``AC-02`` and
+    ``AC-2`` are both real).
+
+    Both sides of this join therefore go through ``_oscal_control_id``, the
+    same function the ``AssessmentResult`` side already uses:
+    ``canonicalize`` folds the 800-53 forms onto one id (``AC-02`` and
+    ``AC-2`` -> ``ac-2``) and returns ``None`` for a CMMC id, which then
+    lowercases verbatim (``AC.L2-3.1.1`` -> ``ac.l2-3.1.1``). One
+    normalizer, both vocabularies — deliberately not a second one that would
+    have to be kept in step with ``canonicalize``'s idea of what an 800-53
+    id is.
+
+    A control with no stored objective findings is simply absent from the
+    result, which is what makes the control-level fallback the default for
+    every assessment predating the engine.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(AssessmentControlResult)
+                .where(AssessmentControlResult.assessment_id == assessment_id)
+                .order_by(AssessmentControlResult.sort_order, AssessmentControlResult.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    by_cid: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        parts = [p for p in (row.objective_findings or []) if isinstance(p, dict)]
+        if not parts:
+            continue
+        # setdefault + extend, not assignment: two rows CAN fold onto one
+        # OSCAL id (the padded and unpadded spellings of one control), and
+        # dropping one of them would silently lose objectives from the SAR.
+        by_cid.setdefault(_oscal_control_id(row.control_id), []).extend(parts)
+    return by_cid
+
+
 async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[str, Any]:
     """Build an OSCAL ``assessment-results`` document for ``assessment``:
-    control-level findings from its ``AssessmentResult`` rows, evidence-backed
+    findings from its ``AssessmentResult`` rows, evidence-backed
     observations, and open-POA&M risks. Mirrors ``build_ssp_doc``/
     ``build_poam_doc`` — no OSCAL assessment-plan (SAP) is fabricated; the
-    ``import-ap`` is an honest placeholder."""
+    ``import-ap`` is an honest placeholder.
+
+    Findings are emitted at OBJECTIVE grain wherever the assessment has
+    objective findings for a control (``AssessmentControlResult
+    .objective_findings``, which the assessment engine writes on acceptance
+    and the assessor UI maintains), each targeting
+    ``<control-id>_smt.<label>`` — the same sub-statement id shape
+    ``build_ssp_doc`` emits. A control with no objective findings keeps the
+    single whole-statement finding built from its ``AssessmentResult`` row,
+    so assessments that predate the engine are unchanged.
+
+    This closes a real divergence rather than adding detail: the docx SAR
+    (``ccf.assessment.sar.generate_sar_docx``) has always rendered objective
+    grain from that column, so the *machine-readable* artifact — the one an
+    assessor ingests — was the coarser of the two SARs Concord ships.
+    """
     results = (
         (
             await session.execute(
@@ -846,26 +996,83 @@ async def build_sar_doc(session: AsyncSession, assessment: Assessment) -> dict[s
         if e.implementation_id is not None:
             obs_uuids_by_impl.setdefault(e.implementation_id, []).append(obs_uuid)
 
-    # Findings: one per AssessmentResult.
+    # Findings: one per assessment objective where the assessment has them,
+    # else one per AssessmentResult (the pre-engine grain).
+    objectives_by_cid = await _objective_findings_by_control(session, assessment.id)
     findings: list[dict[str, Any]] = []
     for r in results:
         impl = r.implementation
         control = impl.control if impl else None
         oscal_cid = oscal_cid_by_impl[r.implementation_id]
         control_title = (control.control_name if control else "") or ""
-        finding: dict[str, Any] = {
+        related = obs_uuids_by_impl.get(r.implementation_id, [])
+        parts = objectives_by_cid.get(oscal_cid) or []
+
+        if parts:
+            # Objective grain supersedes the control-level finding rather than
+            # sitting beside it: emitting both would put two OSCAL findings in
+            # one document asserting different things about the same control,
+            # and nothing in the schema would flag the contradiction.
+            seen_targets: set[str] = set()
+            for part in parts:
+                label = str(part.get("label") or "")
+                target_id = _statement_id(oscal_cid, label)
+                # Stripping the ``#rowN`` suffix can collide a de-duplicated
+                # label with the one it was de-duplicated FROM. Two findings
+                # on one target-id is worse than a suffixed id: it is two
+                # determinations about the same objective. Disambiguate on
+                # position, which at least does not pretend to be an item
+                # path from the catalog.
+                if target_id in seen_targets:
+                    target_id = f"{target_id}-{len(seen_targets) + 1}"
+                seen_targets.add(target_id)
+
+                display = strip_dedup_suffix(label).strip()
+                status, props = _finding_status_props(part.get("finding"))
+                objective_text = str(part.get("text") or "")
+                finding: dict[str, Any] = {
+                    "uuid": str(uuid.uuid4()),
+                    "title": (
+                        f"{oscal_cid} [{display}]: {control_title}"
+                        if display
+                        else f"{oscal_cid}: {control_title}"
+                    ),
+                    # The assessor-citable rationale for THIS objective where
+                    # the acceptance projection carried one, else the
+                    # objective's own text — never an empty description,
+                    # which reads as a finding with nothing behind it.
+                    "description": str(part.get("rationale") or "") or objective_text,
+                    "target": {
+                        "type": "statement-id",
+                        "target-id": target_id,
+                        "status": status,
+                    },
+                }
+                if props:
+                    finding["props"] = props
+                if related:
+                    # Evidence is linked to the implementation, not to an
+                    # individual objective, so every objective finding for
+                    # this control cites the same observations. Attaching
+                    # them to none of the objective findings would drop the
+                    # evidence link from the document entirely.
+                    finding["related-observations"] = [{"observation-uuid": u} for u in related]
+                findings.append(finding)
+            continue
+
+        status, props = _finding_status_props(r.finding)
+        finding = {
             "uuid": str(uuid.uuid4()),
             "title": f"{oscal_cid}: {control_title}",
             "description": r.rationale or "",
             "target": {
                 "type": "statement-id",
                 "target-id": f"{oscal_cid}_smt",
-                "status": {"state": _OSCAL_FINDING_STATE[r.finding]},
+                "status": status,
             },
         }
-        if r.finding == "not_applicable":
-            finding["props"] = [{"name": "applicability", "value": "not-applicable"}]
-        related = obs_uuids_by_impl.get(r.implementation_id, [])
+        if props:
+            finding["props"] = props
         if related:
             finding["related-observations"] = [{"observation-uuid": u} for u in related]
         findings.append(finding)

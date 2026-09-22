@@ -71,6 +71,32 @@ def _is_deduplicated_identifier(identifier: str) -> bool:
     return bool(_DEDUPED_IDENTIFIER_RE.search(identifier))
 
 
+def strip_dedup_suffix(label: str) -> str:
+    """Remove the loader's ``#rowN`` de-dup suffix from an already-stored label.
+
+    :func:`_is_deduplicated_identifier` keeps the suffix from ever becoming a
+    label in the first place, but it only guards labels this module derives.
+    ``AssessmentControlResult.objective_findings`` is a JSONB column written
+    by several paths over several years (``ccf.assessment.seed``, the
+    assessor UI, this engine), so a stored label predating that guard can
+    still carry the suffix -- and every one of those labels is now an OSCAL
+    statement-id in the SAR.
+
+    Sanitizing alone is not enough and is worse than doing nothing: OSCAL's
+    token rules strip the ``#`` but keep the digits, so ``AC-02a.#row417``
+    becomes the *plausible-looking* item path ``AC-02a.row417``. A physical
+    spreadsheet row number is then indistinguishable, to an assessor, from
+    part of the catalog's own vocabulary. Stripping the whole suffix is the
+    only option that neither invents an item path nor leaks the ordinal.
+
+    Exported (rather than left private) so ``ccf.api.routes.oscal`` shares
+    THIS regex: a second copy of the pattern in the export path is exactly
+    how the two would drift apart the next time ``ccf.etl.pipeline`` changes
+    the suffix it writes.
+    """
+    return _DEDUPED_IDENTIFIER_RE.sub("", label)
+
+
 @dataclass(slots=True)
 class Objective:
     """One assessment objective, as read from the catalog."""
