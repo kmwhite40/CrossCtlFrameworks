@@ -14,6 +14,9 @@ import pytest
 
 from ccf.models import ScoringControl
 from ccf.ssp.platforms import (
+    CLOUD_PLATFORMS,
+    NO_CATALOG_NOTE,
+    NO_PLATFORM,
     PLATFORM_CHOICES,
     customer_responsibility_statement,
     sample_statement,
@@ -38,7 +41,7 @@ def _rec(domain: str = "SC", **kw: object) -> ScoringControl:
     return ScoringControl(**base)
 
 
-@pytest.mark.parametrize("platform", PLATFORM_CHOICES)
+@pytest.mark.parametrize("platform", CLOUD_PLATFORMS)
 def test_sc_statement_names_fips_module_and_key_custody(platform: str) -> None:
     text = sample_statement(platform, _rec(domain="SC"), SC_PART)
     assert "FIPS 140-2" in text
@@ -46,7 +49,7 @@ def test_sc_statement_names_fips_module_and_key_custody(platform: str) -> None:
     assert "key custody" in text.lower() or "key-custody" in text.lower()
 
 
-@pytest.mark.parametrize("platform", PLATFORM_CHOICES)
+@pytest.mark.parametrize("platform", CLOUD_PLATFORMS)
 def test_sc_statement_does_not_fabricate_a_cert_number(platform: str) -> None:
     """No made-up FIPS certificate number — a clearly-marked placeholder instead,
     using the same bracket convention as unresolved ODPs (see ssp/odp.py /
@@ -58,7 +61,7 @@ def test_sc_statement_does_not_fabricate_a_cert_number(platform: str) -> None:
     assert not re.search(r"(?:cert(?:ificate)?\.?\s*#?\s*)\d{2,}", text, re.IGNORECASE)
 
 
-@pytest.mark.parametrize("platform", PLATFORM_CHOICES)
+@pytest.mark.parametrize("platform", CLOUD_PLATFORMS)
 def test_sc_customer_responsibility_statement_names_fips_module(platform: str) -> None:
     text = customer_responsibility_statement(platform, _rec(domain="SC"))
     assert "FIPS 140-2" in text
@@ -129,3 +132,35 @@ def test_fips_note_differs_per_platform() -> None:
     assert "Azure Key Vault" in azure_text
     assert "Microsoft" in m365_text
     assert aws_text != azure_text != m365_text
+
+
+# --- the fourth platform: "no cloud platform declared" ----------------------
+#
+# The three FR-08 tests above are parametrized over CLOUD_PLATFORMS, not
+# PLATFORM_CHOICES, because naming a FIPS-validated cryptographic module is a
+# property of a cloud *product*. NO_PLATFORM has no product and therefore no
+# module Concord can name, and the tests below pin that the absence is stated
+# rather than filled in -- so narrowing the parametrization above cannot
+# quietly drop the fourth platform from coverage.
+
+
+def test_no_platform_is_a_real_choice() -> None:
+    assert NO_PLATFORM in PLATFORM_CHOICES
+    assert NO_PLATFORM not in CLOUD_PLATFORMS
+    assert set(CLOUD_PLATFORMS) | {NO_PLATFORM} == set(PLATFORM_CHOICES)
+
+
+def test_no_platform_sc_statement_names_no_fips_module_and_says_why() -> None:
+    """Fabricating a validated-module claim for a system with no platform would
+    be exactly the kind of false statement FR-08 exists to prevent."""
+    text = sample_statement(NO_PLATFORM, _rec(domain="SC"), SC_PART)
+    assert "FIPS 140-2" not in text
+    assert NO_CATALOG_NOTE in text
+
+
+def test_no_platform_customer_responsibility_statement_claims_no_provider() -> None:
+    text = customer_responsibility_statement(NO_PLATFORM, _rec(domain="SC"))
+    assert text.startswith("[DRAFT] ")
+    assert "FIPS 140-2" not in text
+    assert "no provider implements any part of this requirement" in text
+    assert NO_CATALOG_NOTE in text

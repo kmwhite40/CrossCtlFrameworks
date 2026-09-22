@@ -1099,7 +1099,13 @@ class SSPProject(Base):
     )
     customer_name: Mapped[str] = mapped_column(String(255))
     system_name: Mapped[str | None] = mapped_column(String(255))
-    platform: Mapped[str] = mapped_column(String(32), default="m365")
+    #: SSP authoring platform (ccf.ssp.platforms.PLATFORMS). The Python-side
+    #: default is "none" -- "no cloud platform declared" -- because a project
+    #: created without one has declared nothing, and the previous "m365"
+    #: default silently made that claim on the customer's behalf. No migration
+    #: accompanies this: the default is client-side and the column stays
+    #: NOT NULL, because "none" is a value rather than an absence.
+    platform: Mapped[str] = mapped_column(String(32), default="none")
     framework: Mapped[str] = mapped_column(
         String(32), default="cmmc-800-171", server_default="cmmc-800-171"
     )

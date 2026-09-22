@@ -22,7 +22,12 @@ from ..catalog.oscal import OscalCatalog, load_oscal_catalog
 from ..models import ScoringControl, SSPControlEntry, SSPProject, System
 from . import constants
 from .nist80053 import build_80053_entries
-from .platforms import customer_responsibility_statement, normalize_platform, sample_statement
+from .platforms import (
+    NO_PLATFORM,
+    customer_responsibility_statement,
+    normalize_platform,
+    sample_statement,
+)
 
 # Column names of SSPControlEntry that build_80053_entries populates — guards
 # against passing any extra keys the model doesn't have.
@@ -41,6 +46,25 @@ _ENTRY_COLUMNS = {
 }
 
 _FIPS_ORDER = {"low": 0, "moderate": 1, "high": 2}
+
+
+def _drafting_platform(platform: str | None) -> str:
+    """The platform code to draft narratives for — a read path, so it renders.
+
+    ``normalize_platform`` answers ``None`` for a value that is not a
+    :data:`~ccf.ssp.platforms.PLATFORMS` code. Substituting
+    :data:`~ccf.ssp.platforms.NO_PLATFORM` here would collapse "we do not know
+    what they have" into "they told us they have nothing" (spec §2.1), so an
+    unrecognized value is carried through unchanged and the statement
+    composers name it as unrecognized rather than draft for it. Only a genuine
+    absence -- no value at all -- becomes ``NO_PLATFORM``, which is what an
+    ``SSPProject`` row stores anyway, its ``platform`` column being NOT NULL.
+
+    This is where the fourth hardcoded default lived: the old
+    ``normalize_platform(platform or project.platform or "m365")`` put one
+    inside an ``or`` chain, where it read as a harmless fallback.
+    """
+    return normalize_platform(platform) or (platform or NO_PLATFORM)
 
 
 def _needs_customer_lead_in(rec: ScoringControl, platform: str) -> bool:
@@ -110,7 +134,7 @@ def build_entries(
     platform: str,
     project_metadata: dict[str, Any] | None = None,
 ) -> SSPControlEntry:
-    plat = normalize_platform(platform)
+    plat = _drafting_platform(platform)
     return SSPControlEntry(
         control_id=rec.control_id,
         nist_id=rec.nist_id,
@@ -141,7 +165,7 @@ async def seed_project_entries(
     entries are regenerated for ``platform`` while the assessor's implementation
     status is preserved.
     """
-    plat = normalize_platform(platform or project.platform or "m365")
+    plat = _drafting_platform(platform or project.platform)
     project_metadata = project.metadata_json or {}
     controls = (
         (await session.execute(select(ScoringControl).order_by(ScoringControl.sort_order)))

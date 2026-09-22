@@ -68,9 +68,9 @@ from ...scoring.engine import STATES
 from ...ssp import constants as ssp_constants
 from ...ssp.odp import render as render_template
 from ...ssp.platforms import (
-    GOV_ENVIRONMENTS,
+    NO_PLATFORM,
     PLATFORMS,
-    normalize_platform,
+    environment_for,
     platform_label,
     services_for,
 )
@@ -82,7 +82,7 @@ from ..limiter import limiter
 from ..login_service import LoginResult, authenticate, revoke_sessions_for_request
 from .diff import diff_workbook
 from .scoring import compute_summary
-from .ssp import FRAMEWORKS
+from .ssp import FRAMEWORKS, require_platform
 from .systems import require_system_in_scope
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
@@ -1186,7 +1186,7 @@ async def ssp_create(
     customer_name: str = Form(...),
     system_id: str | None = Form(None),
     system_name: str | None = Form(None),
-    platform: str = Form("m365"),
+    platform: str = Form(NO_PLATFORM),
     framework: str = Form("cmmc-800-171"),
     prepared_by: str | None = Form(None),
     version: str = Form("0.1"),
@@ -1195,6 +1195,7 @@ async def ssp_create(
 ) -> RedirectResponse:
     if not customer_name.strip() or framework not in FRAMEWORKS:
         return RedirectResponse("/ssp", status_code=303)
+    stored_platform = require_platform(platform)
     org = _principal_org(request)
     sid = int(system_id) if system_id and system_id.isdigit() else None
     sname = system_name
@@ -1214,7 +1215,7 @@ async def ssp_create(
         system_id=sid,
         customer_name=customer_name.strip(),
         system_name=(sname or None),
-        platform=normalize_platform(platform),
+        platform=stored_platform,
         framework=framework,
         prepared_by=(prepared_by or None),
         version=version or "0.1",
@@ -1242,9 +1243,10 @@ async def ssp_regenerate(
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     """Switch the target platform and regenerate every control's sample statement."""
+    stored_platform = require_platform(platform)
     proj = await _scoped_project(session, project_id, _principal_org(request))
     if proj is not None:
-        proj.platform = normalize_platform(platform)
+        proj.platform = stored_platform
         await session.flush()
         await seed_project_entries(session, proj, overwrite=True, platform=proj.platform)
     return RedirectResponse(f"/ssp/{project_id}", status_code=303)
@@ -1400,11 +1402,13 @@ async def ssp_save_entry(
             )
         ).scalar_one_or_none()
         if tmpl is not None:
-            plat = normalize_platform(proj.platform)
+            # Raw, not normalized first: each helper reports an unrecognized
+            # value as itself, and resolving it here would lose the string they
+            # need in order to say what was declared.
             context = {
-                "environment": GOV_ENVIRONMENTS.get(plat, platform_label(plat)),
-                "platform": platform_label(plat),
-                "services": services_for(plat, entry.domain),
+                "environment": environment_for(proj.platform),
+                "platform": platform_label(proj.platform),
+                "services": services_for(proj.platform, entry.domain),
             }
             text, _missing = render_template(tmpl.body, odp_values, context)
             narratives.append({"label": tmpl.title, "text": text})

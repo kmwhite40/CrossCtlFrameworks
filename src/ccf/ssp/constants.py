@@ -9,6 +9,11 @@ from __future__ import annotations
 # Prefix marking machine-drafted narrative content that a human must review.
 DRAFT_PREFIX = "[DRAFT] "
 
+# Declared here rather than imported from ssp/platforms.py, which imports THIS
+# module — the value is the intake questionnaire's own answer string and is
+# asserted identical to ``ccf.ssp.platforms.NO_PLATFORM`` by the platform tests.
+NO_PLATFORM = "none"
+
 # CMMC 2.0 Level 2 domain → (NIST 800-171 §, human name).
 DOMAINS: dict[str, tuple[str, str]] = {
     "AC": ("3.1", "Access Control"),
@@ -154,10 +159,21 @@ GENERIC_ROLE_FLAG = "Generic Role — No Named Party on File"
 
 
 def platform_responsibility(platform: str, domain: str | None) -> str | None:
-    """Responsibility bucket ('inherited' | 'shared') for a non-M365 platform's
-    domain, from the domain-level coverage table, or ``None`` if this
+    """Responsibility bucket ('inherited' | 'shared' | 'customer') for a non-M365
+    platform's domain, from the domain-level coverage table, or ``None`` if this
     platform/domain combination has no per-control or per-domain data (see
-    :func:`needs_manual_responsibility_assignment`)."""
+    :func:`needs_manual_responsibility_assignment`).
+
+    :data:`~ccf.ssp.platforms.NO_PLATFORM` is answered outright rather than
+    from the table: with no cloud provider nothing can be inherited or shared,
+    so every domain is the organization's own — which is *known*, not missing,
+    and must not be flagged for manual assignment. This is the same reasoning
+    ``ccf.governance.automation._platform_state`` applies to the identical
+    case, so a "none" system's SPRS responsibility and its SSP control
+    origination cannot disagree.
+    """
+    if platform == NO_PLATFORM:
+        return "customer"
     return PLATFORM_DOMAIN_RESPONSIBILITY.get(platform, {}).get((domain or "").upper())
 
 

@@ -22,6 +22,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
 from . import constants
+from .platforms import platform_label
 
 ACCENT = RGBColor(0x1F, 0x3A, 0x5F)  # deep navy
 HEADER_FILL = "1F3A5F"
@@ -150,7 +151,9 @@ def _cover(doc: Any, project: Mapping[str, Any]) -> None:
         ("Organization", project.get("customer_name") or ""),
         ("Information System", project.get("system_name") or ""),
         ("CMMC Model / Level", "CMMC 2.0 — Level 2 (NIST SP 800-171 Rev. 2, 110 requirements)"),
-        ("Cloud Platform", project.get("platform") or ""),
+        # Label, not code: "Cloud Platform: none" in a filed document reads
+        # as a blank. platform_label() also covers the absent case honestly.
+        ("Cloud Platform", platform_label(project.get("platform"))),
         ("Document Version", project.get("version") or "0.1"),
         ("Date", project.get("document_date") or ""),
         ("Prepared By", project.get("prepared_by") or ""),
@@ -231,7 +234,7 @@ def _system_characterization(doc: Any, project: Mapping[str, Any]) -> None:
         [
             ("Information System Name", project.get("system_name") or ""),
             ("System Type", meta.get("system_type") or ""),
-            ("Cloud Platform / Environment", project.get("platform") or ""),
+            ("Cloud Platform / Environment", platform_label(project.get("platform"))),
             ("Operational Status", meta.get("operational_status") or "Operational"),
         ],
     )

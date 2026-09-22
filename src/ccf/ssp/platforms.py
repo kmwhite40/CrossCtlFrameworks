@@ -4,6 +4,13 @@ Lets an SSP project target a deployment platform — Microsoft 365, Microsoft
 Azure (Gov), or AWS GovCloud (US) — and seed each control's narrative with a
 tailorable draft that references the services that platform actually uses for
 that CMMC domain. The drafts remain fully editable in the SSP editor.
+
+:data:`NO_PLATFORM` is the fourth, equally real member: the intake
+questionnaire offers "none" as one of its four answers to "Primary cloud
+platform?", and a customer who picks it has *told us something*, not left a
+field blank. It carries an honest label and an **empty** service catalog, so a
+statement generator asking "what services implement AC here" gets nothing and
+must say so rather than borrow another platform's answer.
 """
 
 from __future__ import annotations
@@ -17,14 +24,30 @@ from . import constants
 if TYPE_CHECKING:  # pragma: no cover
     from ..models import ScoringControl
 
-DEFAULT_PLATFORM = "m365"
+#: The platform code meaning "this customer declared no cloud platform".
+#:
+#: A *value*, not an absence: it is one of the four answers the intake
+#: questionnaire offers, and the column stays ``NOT NULL`` because of it. Never
+#: use it for "we do not know what they have" — see :func:`normalize_platform`.
+NO_PLATFORM = "none"
 
 # code → human label shown in the UI / document.
 PLATFORMS: dict[str, str] = {
     "m365": "Microsoft 365 (Entra ID / Purview / Intune)",
     "azure": "Microsoft Azure (Gov)",
     "aws_govcloud": "AWS GovCloud (US)",
+    # Worded so no reader could mistake it for a product. Everything about this
+    # entry exists to remove the pressure that made a default look reasonable:
+    # ``normalize_platform`` used to have to return *something*, and the only
+    # somethings available were real product names.
+    NO_PLATFORM: "No cloud platform declared",
 }
+
+#: The platforms that are an actual cloud product — everything in
+#: :data:`PLATFORMS` except :data:`NO_PLATFORM`. Anything asserting a property
+#: every *product* has (a service catalog, a FIPS-validated module, a
+#: government environment) must iterate this, not ``PLATFORMS``.
+CLOUD_PLATFORMS: tuple[str, ...] = tuple(p for p in PLATFORMS if p != NO_PLATFORM)
 
 # Government-cloud environment names used in customer-responsibility drafts.
 #
@@ -42,6 +65,10 @@ GOV_ENVIRONMENTS: dict[str, str] = {
     "m365": "Microsoft 365 (tenant tier not confirmed)",
     "azure": "Microsoft Azure Government",
     "aws_govcloud": "AWS GovCloud (US)",
+    # Not a government cloud, and not a blank: the customer said there is no
+    # cloud platform. Phrased to read correctly in the sentences that embed it
+    # ("... implements Control AC-2 on {environment} by configuring ...").
+    NO_PLATFORM: "an environment with no declared cloud platform",
 }
 
 # The one intake questionnaire cloud_platform code (see
@@ -107,6 +134,39 @@ MANUAL_EVIDENCE_MARKER = "[MANUAL-EVIDENCE-REQUIRED"
 
 PLATFORM_CHOICES = tuple(PLATFORMS)
 
+# What a drafted statement may say in place of a service name when there is no
+# catalog to read one from — either because the customer declared no cloud
+# platform, or because the platform they declared is one Concord does not know.
+# Never "the platform's native security services": for a system with no
+# platform there are none, and for an unrecognized one Concord cannot say what
+# they are. The bracket convention is ssp/odp.py's, so ssp/completeness.py
+# already counts it as unresolved and a human is asked to resolve it.
+NO_SERVICES_TEXT = "[ORGANIZATION-DEFINED: the mechanisms that implement this requirement]"
+
+# The sentence a drafted statement carries instead of a mechanism, whenever
+# there is no service catalog behind it. It exists so the absence is *stated*:
+# a narrative that simply stops naming services is indistinguishable from one
+# whose author thought none were needed.
+NO_CATALOG_NOTE = (
+    "Concord has no platform service catalog to draft from for this system, so no product "
+    "or service is named here; the organization must describe the mechanisms that implement "
+    "this requirement."
+)
+
+# The same absence for the other two reasons. Worded to match what the guided
+# onboarding path already tells a customer at step 2 ("Concord does not
+# recognize the declared platform ..."), so the two surfaces agree.
+UNRECOGNIZED_PLATFORM_NOTE = (
+    "Concord does not recognize the declared platform {declared!r}, so it cannot name the "
+    "services that implement this requirement and names none here; the organization must "
+    "describe the mechanisms it uses."
+)
+NO_PLATFORM_ON_RECORD_NOTE = (
+    "No platform is on record for this system, so Concord cannot name the services that "
+    "implement this requirement and names none here; the organization must describe the "
+    "mechanisms it uses."
+)
+
 # Representative services / mechanisms per platform, per CMMC domain. Drafts are
 # meant as a credible starting point an assessor edits — not authoritative.
 _SERVICES: dict[str, dict[str, str]] = {
@@ -151,6 +211,10 @@ _SERVICES: dict[str, dict[str, str]] = {
         "Private Link, and enforced TLS",
         "SI": "Microsoft Defender for Cloud, Defender for Servers, and Azure Update Manager",
     },
+    # Deliberately empty: nothing platform-specific can be drafted for a system
+    # that declared no cloud platform, and an empty table is what makes that
+    # structurally true rather than a rule someone must remember.
+    NO_PLATFORM: {},
     "aws_govcloud": {
         "AC": "AWS IAM and IAM Identity Center with service control policies and permission "
         "boundaries",
@@ -201,28 +265,85 @@ _FIPS_KEY_CUSTODY: dict[str, str] = {
 }
 
 
-def _fips_key_custody_note(platform: str, domain: str | None) -> str:
+def _fips_key_custody_note(platform: str | None, domain: str | None) -> str:
     """Return the platform's FIPS-validated-module/key-custody sentence for
     SC-family statements, or "" for every other control family."""
     if (domain or "").upper() != "SC":
         return ""
-    return _FIPS_KEY_CUSTODY.get(platform, "")
+    return _FIPS_KEY_CUSTODY.get(platform or "", "")
 
 
-def normalize_platform(platform: str | None) -> str:
-    return platform if platform in PLATFORMS else DEFAULT_PLATFORM
+def normalize_platform(platform: str | None) -> str | None:
+    """The :data:`PLATFORMS` code for ``platform``, or ``None`` if there is none.
+
+    ``None`` means *Concord does not recognize this* — a typo, a value from a
+    future questionnaire, or a platform (GCP, Oracle, on-premises) Concord does
+    not support. It is emphatically **not** :data:`NO_PLATFORM`, which means
+    *the customer told us they have no cloud platform*. Collapsing the first
+    into the second would repeat the defect this module was fixed for one layer
+    over: silence presented as an answer.
+
+    The return type is what makes that unavoidable. Every caller now has to
+    decide what an unrecognized value means for it, and ``mypy`` fails the
+    caller that forgets — the same reasoning as ``coverage``'s keyword-only
+    ``connector_backed``: a forgotten caller should be an error, not a silent
+    false claim. Callers divide into write paths, which must refuse the value
+    (422) rather than store a platform nobody chose, and read paths, which must
+    say what was declared and draft nothing platform-specific for it.
+    """
+    return platform if platform in PLATFORMS else None
+
+
+def _declared(platform: str | None) -> str:
+    return (platform or "").strip()
+
+
+def catalog_absence_note(platform: str | None) -> str:
+    """Why a drafted statement names no product or service, in this caller's case.
+
+    Three distinct absences, never collapsed into one (spec §2.1): the customer
+    declared no cloud platform; the customer declared one Concord does not
+    recognize; nothing is on record at all. A narrative that merely stops
+    naming services is indistinguishable from one whose author thought none
+    were needed, so the reason is always stated.
+    """
+    plat = normalize_platform(platform)
+    if plat == NO_PLATFORM:
+        return NO_CATALOG_NOTE
+    declared = _declared(platform)
+    if declared:
+        return UNRECOGNIZED_PLATFORM_NOTE.format(declared=declared)
+    return NO_PLATFORM_ON_RECORD_NOTE
 
 
 def platform_label(platform: str | None) -> str:
-    return PLATFORMS.get(normalize_platform(platform), PLATFORMS[DEFAULT_PLATFORM])
+    """A human label for ``platform`` that never names a product it is not.
+
+    An unrecognized code renders as itself, quoted — "say what was declared",
+    never substitute. Before this, every unrecognized code rendered as
+    "Microsoft 365 (Entra ID / Purview / Intune)".
+    """
+    plat = normalize_platform(platform)
+    if plat is not None:
+        return PLATFORMS[plat]
+    declared = _declared(platform)
+    return f"Unrecognized platform: {declared}" if declared else "No platform on record"
 
 
 def connector_key_for_platform(platform: str | None) -> str | None:
     """The ``ccf.connectors`` registry key that can capture this SSP platform.
 
     ``None`` when Concord ships no connector for the platform at all (Azure
-    today) — the platform's service catalog stays usable for drafting, but
-    statements built from it can never be auto-evidenced.
+    today, and :data:`NO_PLATFORM`, which has nothing to connect to) — the
+    platform's service catalog stays usable for drafting, but statements built
+    from it can never be auto-evidenced.
+
+    ``None`` is *also* what an unrecognized code yields, and the two are not
+    the same fact: "Concord ships no connector for this platform" versus
+    "Concord does not know what this platform is". A caller that must tell a
+    customer *why* there is nothing to connect — ``ccf.onboarding``'s step 2 —
+    must therefore resolve the platform itself and read
+    :data:`PLATFORM_CONNECTOR_KEYS` directly rather than call this.
 
     A non-``None`` key answers only the *support* question: Concord has code
     that could capture this platform. It says nothing about whether any
@@ -230,7 +351,10 @@ def connector_key_for_platform(platform: str | None) -> str | None:
     decide whether a statement carries the manual-evidence caveat. Use
     :func:`ccf.governance.automation.platform_capture_is_live` for that.
     """
-    return PLATFORM_CONNECTOR_KEYS.get(normalize_platform(platform))
+    plat = normalize_platform(platform)
+    if plat is None:
+        return None
+    return PLATFORM_CONNECTOR_KEYS.get(plat)
 
 
 def environment_for(platform: str | None, cloud_platform: str | None = None) -> str:
@@ -243,21 +367,49 @@ def environment_for(platform: str | None, cloud_platform: str | None = None) -> 
     never asserted without confirmation (FR-07).
     """
     plat = normalize_platform(platform)
+    if plat is None:
+        declared = _declared(platform)
+        return (
+            f"an environment whose declared platform ({declared}) Concord does not recognize"
+            if declared
+            else "an environment with no platform on record"
+        )
     if plat == "m365" and cloud_platform == M365_GCC_HIGH_CLOUD_CODE:
         return "Microsoft 365 Government (GCC High)"
-    return GOV_ENVIRONMENTS.get(plat, platform_label(plat))
+    return GOV_ENVIRONMENTS.get(plat, PLATFORMS[plat])
 
 
 def services_for(platform: str | None, domain: str | None) -> str:
-    table = _SERVICES.get(normalize_platform(platform), {})
+    """The services that implement ``domain`` on ``platform``, as draft prose.
+
+    A platform with an **empty** catalog (:data:`NO_PLATFORM`) yields the
+    organization-defined placeholder, never the "the platform's native security
+    services" fallback: that fallback means "this platform has services, we
+    just have no per-domain entry for this one", which is false when there is
+    no platform at all.
+    """
+    plat = normalize_platform(platform)
+    table = _SERVICES.get(plat, {}) if plat is not None else {}
+    if not table:
+        return NO_SERVICES_TEXT
     return table.get((domain or "").upper(), "the platform's native security services")
 
 
 def sample_statement(platform: str | None, rec: ScoringControl, part: dict[str, str]) -> str:
     """Compose a platform-specific narrative for one determination part."""
     plat = normalize_platform(platform)
-    label = PLATFORMS[plat]
     obj = (part.get("text") or "").strip().rstrip(".")
+    if plat is None or not _SERVICES.get(plat):
+        # Nothing platform-specific may be drafted. Say the objective, say why
+        # no mechanism is named, and stop — borrowing another platform's
+        # catalog here is the whole defect this module was fixed for.
+        lead = (
+            f"The organization satisfies this objective by ensuring that {obj}."
+            if obj
+            else "The organization is responsible for meeting this objective."
+        )
+        return f"{lead} {catalog_absence_note(platform)}"
+    label = PLATFORMS[plat]
     services = services_for(plat, rec.domain)
     if obj:
         body = (
@@ -282,9 +434,30 @@ def customer_responsibility_statement(platform: str | None, rec: ScoringControl)
     with the draft indicator so a human reviews and finalizes it.
     """
     plat = normalize_platform(platform)
+    obj = (rec.requirement or rec.title or "this requirement").strip().rstrip(".")
+    if plat is None:
+        # Unrecognized, which is not the same as none: Concord cannot say what
+        # the provider covers, so it says that rather than assign the whole
+        # requirement to the organization on a guess.
+        return (
+            f"{constants.DRAFT_PREFIX}The organization is responsible for satisfying {obj}, "
+            f"except for any part a provider implements for it — which Concord cannot "
+            f"determine for this system. {catalog_absence_note(platform)}"
+        )
+    if plat == NO_PLATFORM:
+        # With no cloud platform there is no provider, so nothing is inherited
+        # and the whole requirement falls to the organization — the same
+        # reasoning ``ccf.governance.automation._platform_state`` applies when
+        # it derives "customer" for this case.
+        return (
+            f"{constants.DRAFT_PREFIX}This system declared no cloud platform, so no provider "
+            f"implements any part of this requirement for it: the organization is responsible "
+            f"for satisfying {obj} in full. Organization-defined parameters and configuration "
+            f"settings are established by the System Owner and evidenced in the system's own "
+            f"configuration records. {NO_CATALOG_NOTE}"
+        )
     env = GOV_ENVIRONMENTS[plat]
     services = services_for(plat, rec.domain)
-    obj = (rec.requirement or rec.title or "this requirement").strip().rstrip(".")
     text = (
         f"{constants.DRAFT_PREFIX}As a customer responsibility within {env}, the organization "
         f"configures and maintains {services} to satisfy {obj}. Organization-defined parameters "

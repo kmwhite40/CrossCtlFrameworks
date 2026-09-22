@@ -37,6 +37,7 @@ from ...models import (
 )
 from ...models_evidence import EvidenceObject
 from ...oscal import validate_document
+from ...ssp.platforms import platform_label
 from ..auth_deps import get_principal
 from ..deps import get_session
 
@@ -586,8 +587,11 @@ async def build_ssp_doc(session: AsyncSession, proj: SSPProject) -> dict[str, An
                     {"identifier-type": "https://ietf.org/rfc/rfc4122", "id": str(proj.id)}
                 ],
                 "system-name": proj.system_name or proj.customer_name,
+                # The label, never the raw code: "(none)" in a filed OSCAL
+                # document reads as a missing value, which is the exact
+                # ambiguity 'none' as a platform exists to remove.
                 "description": f"CMMC Level 2 enclave for {proj.customer_name} "
-                f"({proj.platform}).",
+                f"({platform_label(proj.platform)}).",
                 "security-sensitivity-level": _meta_str(fips.get("overall"), "fips199.overall"),
                 "system-information": {
                     "information-types": _oscal_information_types(meta, summary)
