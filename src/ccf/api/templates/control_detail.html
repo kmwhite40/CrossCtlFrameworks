@@ -78,6 +78,71 @@
     </div>
     {% endif %}
 
+    {# Capability-derived status beside the authored one.
+
+       The ontology derives a status per control from the capabilities the
+       organization actually operates. It is an annotation, never a claim:
+       nothing here writes `status`, and where the two disagree BOTH are shown
+       so the operator can decide which is wrong.
+
+       Three states, kept visibly distinct:
+         * diverges  -- authored and derived disagree; the contributing
+                        capabilities are named, because there is no capability
+                        page to link to and an unattributed "derived: partial"
+                        is an unexplainable number;
+         * agrees    -- capabilities back the authored status;
+         * no cover  -- NO capability says anything about this control. This is
+                        deliberately NOT "not implemented": the rollup returns
+                        nothing rather than asserting a negative, and printing
+                        a status here would invent one. #}
+    {% if derivations %}
+    <div class="card" style="margin-top:16px">
+      <div class="card__header">
+        <div class="card__title">Capability-derived status</div>
+        {% if divergent %}
+          <span class="chip chip--warn">{{ divergent | length }} of {{ derivations | length }} diverge</span>
+        {% else %}
+          <span class="chip chip--ok">No divergence</span>
+        {% endif %}
+      </div>
+      <div class="card__subtitle" style="padding:0 18px 10px">
+        Derived from the capabilities bound to each system &mdash; an annotation beside the authored status, never a replacement for it.
+      </div>
+      <div class="table-wrap"><table class="data">
+        <thead><tr><th>System</th><th>Authored</th><th>Derived</th><th>Derived from</th></tr></thead>
+        <tbody>
+          {% for d in derivations %}
+          <tr>
+            <td>{{ d.system_name }}</td>
+            <td><span class="chip">{{ d.authored_status | replace('_', ' ') }}</span></td>
+            <td>
+              {% if d.state == no_coverage_state %}
+                <span class="dim">No capability covers this control</span>
+              {% elif d.divergent %}
+                <span class="chip chip--warn">{{ d.derived_status | replace('_', ' ') }}</span>
+              {% else %}
+                <span class="chip chip--ok">{{ d.derived_status | replace('_', ' ') }}</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if d.state == no_coverage_state %}
+                <span class="dim">&mdash; nothing to derive from, so nothing is claimed either way.</span>
+              {% else %}
+                {% for c in d.contributors %}
+                  <span class="chip" title="capability key: {{ c.key }}">{{ c.label }}{% if c.status %} &middot; {{ c.status | replace('_', ' ') }}{% endif %}</span>
+                {% else %}
+                  <span class="dim">Derivation recorded no contributors.</span>
+                {% endfor %}
+                {% if d.derived_at %}<div class="dim" style="font-size:12px;margin-top:4px">as of {{ d.derived_at.strftime('%Y-%m-%d') }}</div>{% endif %}
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table></div>
+    </div>
+    {% endif %}
+
     {% if supporting_ksis %}
     <div class="card" style="margin-top:16px">
       <div class="card__header"><div class="card__title">FedRAMP 20x KSIs supported by this control</div>
