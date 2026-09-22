@@ -156,7 +156,7 @@ def _posture_manifest(pack_id: str, rule_key: str) -> dict:
         "name": pack_id,
         "version": "1.0.0",
         "schema_version": "1",
-        "controls": [{"control_id": "AC-2", "title": "Account Management"}],
+        "controls": [{"control_id": "ZP-2", "title": "Account Management"}],
         "rules": [
             {
                 "key": rule_key,
@@ -166,7 +166,7 @@ def _posture_manifest(pack_id: str, rule_key: str) -> dict:
                     "resource_type": "entra_user",
                     "endpoint": "/v1.0/users?$select=id,userPrincipalName,userType",
                     "expected": "no guest account exists",
-                    "control_ids": ["AC-2"],
+                    "control_ids": ["ZP-2"],
                     "predicate": {"op": "not_equals", "path": "userType", "value": "Guest"},
                 },
             }
@@ -303,18 +303,18 @@ async def test_coverage_matches_a_padded_catalog_against_canonical_pack_ids() ->
         org_name="PackCovPadded",
         pack_id="cov-padded",
         catalog_identifiers=[
-            ("AC-01", "implemented"),
-            ("AC-02", "inherited"),
-            ("AC-03", "planned"),  # a genuine gap -- present but not satisfied
+            ("ZP-01", "implemented"),
+            ("ZP-02", "inherited"),
+            ("ZP-03", "planned"),  # a genuine gap -- present but not satisfied
         ],
-        pack_control_ids=["AC-1", "AC-2", "AC-3"],
+        pack_control_ids=["ZP-1", "ZP-2", "ZP-3"],
     )
     try:
         out = await _coverage_of(pack_row_id, sys_id)
         assert out["total_controls"] == 3
         assert out["covered"] == 2, out
         assert out["coverage_pct"] == 66.7, out
-        assert out["gaps"] == ["AC-3"], out  # still reported -- not papered over
+        assert out["gaps"] == ["ZP-3"], out  # still reported -- not papered over
         assert out["unparseable_control_ids"] == []
     finally:
         async with session_scope() as s:
@@ -367,9 +367,9 @@ async def test_an_unparseable_pack_control_id_is_reported_and_matched_by_identit
         catalog_identifiers=[
             ("AIG-90", "implemented"),
             ("PS.90", "planned"),
-            ("AC-095", "implemented"),  # padded, as production spells it
+            ("ZP-095", "implemented"),  # padded, as production spells it
         ],
-        pack_control_ids=["AIG-90", "PS.90", "CSA-RLS-90", "AC-95"],
+        pack_control_ids=["AIG-90", "PS.90", "CSA-RLS-90", "ZP-95"],
     )
     try:
         out = await _coverage_of(pack_row_id, sys_id)
