@@ -27,10 +27,13 @@ No DB migration — this is app-layer normalization only.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from ccf.analytics.findings import canonical_finding_counts, system_finding_rollup
 from ccf.config import get_settings
@@ -153,11 +156,30 @@ def test_canonical_finding_counts_empty_iterable_zero_fills_all_buckets() -> Non
 # --- system_finding_rollup (DB-backed cross-source rollup) --------------------
 
 
-async def _seed_system(tag: str) -> tuple[int, int, int, int]:
-    """One system with a Control/ControlImplementation and a ScoringControl.
+@asynccontextmanager
+async def _seeded_system(tag: str) -> AsyncIterator[tuple[int, int, int, int]]:
+    """One system with a Control/ControlImplementation and a ScoringControl,
+    removed again on the way out.
 
     ``tag`` keeps names/identifiers unique across tests sharing a persistent
     test DB (no per-test reset — see ``clean_migrated_db`` in conftest.py).
+
+    The ``try``/``finally`` is not housekeeping. ``clean_migrated_db`` resets
+    the schema once per *session*, so a row left here is visible to every
+    later module, and ``scoring_controls`` is not tenant working data: it is
+    the fixed 110-row CMMC practice matrix, ``control_id`` unique, that
+    ``tests/test_scoring_ssp.py`` asserts an EXACT count against three times
+    over. The two rows this helper used to leave behind turned those into
+    ``assert 112 == 110`` whenever both modules ran in one session -- a
+    failure in a file that is correct, caused by a file that passes.
+
+    Seeding is therefore only reachable THROUGH the cleanup: a future test
+    cannot take the rows without also giving them back. Everything scoped to
+    the system is deleted, most-dependent first so no delete trips a foreign
+    key, including the rows the *caller* attaches to it (assessments,
+    findings, scoring statuses) -- the caller is what makes the system worth
+    seeding, and leaving its rows for the next module is the same defect one
+    table over.
     """
     async with session_scope() as s:
         org = Organization(name=f"FindingVocabOrg-{tag}")
@@ -175,99 +197,126 @@ async def _seed_system(tag: str) -> tuple[int, int, int, int]:
         )
         s.add(sc)
         await s.flush()
-        return sysm.id, ctl.id, impl.id, sc.id
+        ids = (sysm.id, ctl.id, impl.id, sc.id)
+        org_id = org.id
+
+    try:
+        yield ids
+    finally:
+        system_id, control_id, impl_id, scoring_control_id = ids
+        assessments = select(Assessment.id).where(Assessment.system_id == system_id)
+        async with session_scope() as s:
+            await s.execute(
+                delete(AssessmentResult).where(AssessmentResult.assessment_id.in_(assessments))
+            )
+            await s.execute(
+                delete(AssessmentControlResult).where(
+                    AssessmentControlResult.assessment_id.in_(assessments)
+                )
+            )
+            await s.execute(delete(Assessment).where(Assessment.system_id == system_id))
+            await s.execute(delete(ScoringStatus).where(ScoringStatus.system_id == system_id))
+            await s.execute(
+                delete(ScoringControl).where(ScoringControl.id == scoring_control_id)
+            )
+            await s.execute(
+                delete(ControlImplementation).where(ControlImplementation.id == impl_id)
+            )
+            await s.execute(delete(Control).where(Control.id == control_id))
+            await s.execute(delete(System).where(System.id == system_id))
+            await s.execute(delete(Organization).where(Organization.id == org_id))
 
 
 @pytest.mark.asyncio
 async def test_system_finding_rollup_combines_mixed_vocabulary_sources() -> None:
-    system_id, _ctl_id, impl_id, scoring_control_id = await _seed_system("mixed")
+    async with _seeded_system("mixed") as (system_id, _ctl_id, impl_id, scoring_control_id):
+        async with session_scope() as s:
+            assessment = Assessment(system_id=system_id, name="FV Assessment", kind="self")
+            s.add(assessment)
+            await s.flush()
 
-    async with session_scope() as s:
-        assessment = Assessment(system_id=system_id, name="FV Assessment", kind="self")
-        s.add(assessment)
-        await s.flush()
-
-        # AssessmentResult (DB enum) — one satisfied, one other_than_satisfied.
-        s.add_all(
-            [
-                AssessmentResult(
-                    assessment_id=assessment.id, implementation_id=impl_id, finding="satisfied"
-                ),
-            ]
-        )
-
-        # AssessmentControlResult (free string) — a differently-sourced
-        # 'other_than_satisfied' plus one not_assessed.
-        s.add_all(
-            [
-                AssessmentControlResult(
-                    assessment_id=assessment.id,
-                    control_id="AC.L2-3.1.1-fv-mixed",
-                    finding="other_than_satisfied",
-                ),
-                AssessmentControlResult(
-                    assessment_id=assessment.id,
-                    control_id="AC.L2-3.1.2-fv-mixed",
-                    finding="not_assessed",
-                ),
-            ]
-        )
-
-        # ScoringStatus (free string, SPRS vocabulary) — 'not_implemented' is
-        # a *different spelling* of the same canonical "other_than_satisfied"
-        # bucket as the AssessmentControlResult row above.
-        s.add(
-            ScoringStatus(
-                system_id=system_id, scoring_control_id=scoring_control_id, state="not_implemented"
+            # AssessmentResult (DB enum) — one satisfied, one other_than_satisfied.
+            s.add_all(
+                [
+                    AssessmentResult(
+                        assessment_id=assessment.id, implementation_id=impl_id, finding="satisfied"
+                    ),
+                ]
             )
-        )
 
-    async with session_scope() as s:
-        rollup = await system_finding_rollup(s, system_id)
+            # AssessmentControlResult (free string) — a differently-sourced
+            # 'other_than_satisfied' plus one not_assessed.
+            s.add_all(
+                [
+                    AssessmentControlResult(
+                        assessment_id=assessment.id,
+                        control_id="AC.L2-3.1.1-fv-mixed",
+                        finding="other_than_satisfied",
+                    ),
+                    AssessmentControlResult(
+                        assessment_id=assessment.id,
+                        control_id="AC.L2-3.1.2-fv-mixed",
+                        finding="not_assessed",
+                    ),
+                ]
+            )
 
-    assert rollup["system_id"] == system_id
-    assert rollup["total"] == 4
-    canonical = rollup["canonical"]
-    # satisfied: 1 (AssessmentResult)
-    assert canonical[SATISFIED] == 1
-    # other_than_satisfied: 1 (AssessmentControlResult) + 1 (ScoringStatus,
-    # different spelling) == 2 — the whole point of the normalization.
-    assert canonical[OTHER_THAN_SATISFIED] == 2
-    assert canonical[NOT_ASSESSED] == 1
-    assert canonical[NOT_APPLICABLE] == 0
-    assert sum(canonical.values()) == rollup["total"]
-
-    # Per-source storage is untouched: raw AssessmentControlResult.finding
-    # values are exactly what was written, not normalized in place.
-    async with session_scope() as s:
-        raw_findings = (
-            (
-                await s.execute(
-                    select(AssessmentControlResult.finding).where(
-                        AssessmentControlResult.assessment_id == assessment.id
-                    )
+            # ScoringStatus (free string, SPRS vocabulary) — 'not_implemented' is
+            # a *different spelling* of the same canonical "other_than_satisfied"
+            # bucket as the AssessmentControlResult row above.
+            s.add(
+                ScoringStatus(
+                    system_id=system_id,
+                    scoring_control_id=scoring_control_id,
+                    state="not_implemented",
                 )
             )
-            .scalars()
-            .all()
-        )
-    assert set(raw_findings) == {"other_than_satisfied", "not_assessed"}
 
-    # Per-source breakdown in the rollup output still shows each source's own
-    # (already-normalized-per-bucket) counts, for visibility.
-    by_source = rollup["by_source"]
-    assert by_source["assessment_results"][SATISFIED] == 1
-    assert by_source["assessment_control_results"][OTHER_THAN_SATISFIED] == 1
-    assert by_source["assessment_control_results"][NOT_ASSESSED] == 1
-    assert by_source["scoring_statuses"][OTHER_THAN_SATISFIED] == 1
+        async with session_scope() as s:
+            rollup = await system_finding_rollup(s, system_id)
+
+        assert rollup["system_id"] == system_id
+        assert rollup["total"] == 4
+        canonical = rollup["canonical"]
+        # satisfied: 1 (AssessmentResult)
+        assert canonical[SATISFIED] == 1
+        # other_than_satisfied: 1 (AssessmentControlResult) + 1 (ScoringStatus,
+        # different spelling) == 2 — the whole point of the normalization.
+        assert canonical[OTHER_THAN_SATISFIED] == 2
+        assert canonical[NOT_ASSESSED] == 1
+        assert canonical[NOT_APPLICABLE] == 0
+        assert sum(canonical.values()) == rollup["total"]
+
+        # Per-source storage is untouched: raw AssessmentControlResult.finding
+        # values are exactly what was written, not normalized in place.
+        async with session_scope() as s:
+            raw_findings = (
+                (
+                    await s.execute(
+                        select(AssessmentControlResult.finding).where(
+                            AssessmentControlResult.assessment_id == assessment.id
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert set(raw_findings) == {"other_than_satisfied", "not_assessed"}
+
+        # Per-source breakdown in the rollup output still shows each source's own
+        # (already-normalized-per-bucket) counts, for visibility.
+        by_source = rollup["by_source"]
+        assert by_source["assessment_results"][SATISFIED] == 1
+        assert by_source["assessment_control_results"][OTHER_THAN_SATISFIED] == 1
+        assert by_source["assessment_control_results"][NOT_ASSESSED] == 1
+        assert by_source["scoring_statuses"][OTHER_THAN_SATISFIED] == 1
 
 
 @pytest.mark.asyncio
 async def test_system_finding_rollup_empty_system_all_zero() -> None:
-    system_id, _ctl_id, _impl_id, _scoring_control_id = await _seed_system("empty")
+    async with _seeded_system("empty") as (system_id, _ctl_id, _impl_id, _scoring_control_id):
+        async with session_scope() as s:
+            rollup = await system_finding_rollup(s, system_id)
 
-    async with session_scope() as s:
-        rollup = await system_finding_rollup(s, system_id)
-
-    assert rollup["total"] == 0
-    assert all(v == 0 for v in rollup["canonical"].values())
+        assert rollup["total"] == 0
+        assert all(v == 0 for v in rollup["canonical"].values())
