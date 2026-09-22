@@ -130,6 +130,26 @@ This is the rule pack coverage was just given for unparseable pack ids
 (`2a40109`): identity is the only honest fallback, and what was matched that
 way is reported.
 
+**Correction (implementation, 2026-09-22): as written, this rule produced a
+false number and was amended.** Measured, **2264 of FedRAMP High's 2673 rows
+do not canonicalize** — and every one of them decomposes a control the
+platform placed correctly (`AC-01_ODP[01]`, `CM-02(02)[01]`,
+`AU-06(07)#row906`). Literal §6 would have reported "2264 rows we could not
+place" when the answer was short by nothing, and the section's own
+justification — *"a number quietly short by that many"* — would not have been
+true of a single entry.
+
+A row is `unmapped` only when it **also** cannot be attached to a member.
+Attachment goes through `controls.sequence_control`, the column the ETL
+already populates from the workbook, run through the **same** `canonicalize` —
+no second normaliser (§2). Where `sequence_control` is null or is not itself a
+control id, the row stays unmapped and is reported rather than guessed at.
+
+Result: **0 unmapped for Low, 2 for Moderate, 9 for High**, and the nine are
+real signal rather than noise. Membership is unchanged — still
+`canonicalize(identifier)` and nothing else — so 157/323/409, the 87-control
+uplift and `removed == ['CM-2(2)']` all stand.
+
 ---
 
 ## 7. A system with no baseline
