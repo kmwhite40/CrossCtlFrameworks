@@ -760,3 +760,171 @@ async def test_an_unknown_source_token_raises_rather_than_reaching_boto3() -> No
     assert "ec2.describe_instances" not in conn._readers()
     with pytest.raises(UnknownAwsSourceError, match=re.escape("ec2.describe_instances")):
         await conn._fetch("ec2.describe_instances")
+
+
+# ── the boto3 readers: the seam between transport and judgement ──────────────
+#
+# The evaluators above never touch boto3, which is the point. These cover the
+# other side: the readers that turn an AWS client into the rows an evaluator
+# sees. Without them the NoSuchEntity mapping and the IsLogging merge are code
+# paths no test ever reaches, and a test that never reaches a path cannot fail
+# when that path is wrong.
+
+
+class _FakeError(Exception):
+    """Shaped like a botocore ClientError: the code lives in ``response``."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.response = {"Error": {"Code": code, "Message": code}}
+
+
+class _FakeIam:
+    def __init__(self, *, policy_error: Exception | None = None) -> None:
+        self._policy_error = policy_error
+
+    def get_account_summary(self) -> dict[str, Any]:
+        return SUMMARY_MFA_ON
+
+    def get_account_password_policy(self) -> dict[str, Any]:
+        if self._policy_error is not None:
+            raise self._policy_error
+        return POLICY_COMPLIANT
+
+    def get_paginator(self, operation: str) -> Any:
+        pages = {
+            "list_users": [
+                {"Users": [{"UserName": "svc-etl"}]},
+                {"Users": [{"UserName": "svc-legacy"}, {"UserName": ""}]},
+            ],
+            "list_access_keys": [{"AccessKeyMetadata": [FRESH_KEY]}],
+        }[operation]
+
+        class _Paginator:
+            def paginate(self, **_: Any) -> list[dict[str, Any]]:
+                return pages
+
+        return _Paginator()
+
+
+def _with_iam(monkeypatch: pytest.MonkeyPatch, iam: _FakeIam) -> AwsGovCloudConnector:
+    monkeypatch.setattr(AwsGovCloudConnector, "_iam", lambda self: iam)
+    return AwsGovCloudConnector(credential=CRED)
+
+
+def test_the_password_policy_reader_maps_only_no_such_entity_to_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"There is no policy" and "I could not look" must not collapse into one
+    answer: the first is a fail, the second an unrunnable check."""
+    conn = _with_iam(monkeypatch, _FakeIam(policy_error=_FakeError("NoSuchEntity")))
+    assert conn._read_password_policy() == []
+
+    conn = _with_iam(monkeypatch, _FakeIam(policy_error=_FakeError("AccessDenied")))
+    with pytest.raises(_FakeError):
+        conn._read_password_policy()
+
+    conn = _with_iam(monkeypatch, _FakeIam())
+    assert conn._read_password_policy() == [POLICY_COMPLIANT]
+
+
+def test_the_account_summary_reader_returns_the_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _with_iam(monkeypatch, _FakeIam())._read_account_summary() == [SUMMARY_MFA_ON]
+
+
+def test_the_access_key_reader_flattens_every_users_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Paginated on both calls; a user with no name is skipped rather than
+    queried with an empty UserName."""
+    keys = _with_iam(monkeypatch, _FakeIam())._read_access_keys()
+    assert len(keys) == 2  # two named users, one key page each
+
+
+class _FakeCloudTrail:
+    def __init__(self, *, status_error_for: str | None = None) -> None:
+        self.status_error_for = status_error_for
+        self.describe_kwargs: dict[str, Any] = {}
+
+    def describe_trails(self, **kwargs: Any) -> dict[str, Any]:
+        self.describe_kwargs = kwargs
+        return {
+            "trailList": [
+                {k: v for k, v in TRAIL_MULTI_REGION_LOGGING.items() if k != "IsLogging"},
+                {k: v for k, v in TRAIL_SINGLE_REGION.items() if k != "IsLogging"},
+            ]
+        }
+
+    def get_trail_status(self, Name: str) -> dict[str, Any]:  # noqa: N803 - boto3 casing
+        if self.status_error_for and self.status_error_for in Name:
+            raise _FakeError("ThrottlingException")
+        return {"IsLogging": True, "LatestDeliveryTime": "2026-09-22T00:00:00Z"}
+
+
+def _with_cloudtrail(
+    monkeypatch: pytest.MonkeyPatch, client: _FakeCloudTrail
+) -> AwsGovCloudConnector:
+    class _Session:
+        def client(self, service: str, region_name: str | None = None) -> Any:
+            assert service == "cloudtrail"
+            return client
+
+    monkeypatch.setattr(AwsGovCloudConnector, "_session", lambda self: _Session())
+    return AwsGovCloudConnector(credential=CRED)
+
+
+def test_the_trail_reader_merges_logging_status_and_skips_shadow_trails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeCloudTrail()
+    rows = _with_cloudtrail(monkeypatch, client)._read_cloudtrail_trails()
+    # A multi-region trail is shadowed into every other region; counting those
+    # would report one trail many times.
+    assert client.describe_kwargs == {"includeShadowTrails": False}
+    assert [r["IsLogging"] for r in rows] == [True, True]
+    # describe_trails alone would have passed a trail somebody stopped.
+    assert "IsLogging" not in TRAIL_MULTI_REGION_UNKNOWN
+
+
+def test_a_trail_whose_status_cannot_be_read_carries_no_guess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absent, not guessed: the evaluator turns absence into manual review,
+    and a guessed True or False would be an assertion never observed."""
+    client = _FakeCloudTrail(status_error_for="org-audit")
+    rows = _with_cloudtrail(monkeypatch, client)._read_cloudtrail_trails()
+    assert "IsLogging" not in rows[0]
+    assert rows[1]["IsLogging"] is True
+    # End to end: that row reaches the evaluator as "unknown".
+    findings = aws_checks.evaluate_cloudtrail_multi_region(rows, account_id=ACCOUNT)
+    assert findings[0].verdict == "manual_review_required"
+
+
+async def test_an_empty_tuple_makes_no_aws_calls_at_all(
+    aws_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scanning nothing must cost nothing.
+
+    Written after a mutation survived: deleting scan()'s ``if not resolved``
+    early return changed no verdict, because iterating an empty tuple already
+    produces no outcomes -- but it did leave an STS call being made to label
+    findings that were never going to exist. "Returns []" was therefore not
+    the whole property; "touches no AWS API" is.
+    """
+    _wire_readers(monkeypatch)
+    calls: list[str] = []
+
+    async def spy_account(self: Any) -> str:
+        calls.append("sts")
+        return ACCOUNT
+
+    async def spy_fetch(self: Any, endpoint: str) -> list[dict[str, Any]]:
+        calls.append(endpoint)
+        return []
+
+    monkeypatch.setattr(AwsGovCloudConnector, "_account_id", spy_account)
+    monkeypatch.setattr(AwsGovCloudConnector, "_fetch", spy_fetch)
+    assert await AwsGovCloudConnector(credential=CRED).scan(checks=()) == []
+    assert calls == []
