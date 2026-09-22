@@ -265,10 +265,12 @@ async def _step_connect_evidence(
 
     The done signal is
     :func:`ccf.governance.control_tests.organization_capture_is_live` and
-    nothing else. That function owns the whole ladder -- no row, not
-    ``configured``, never synced, a stale sync, and a sync that discovered
-    nothing all mean *not* backed -- and restating any rung of it here would
-    give the product two answers to "does this connector work".
+    nothing else. That function owns the whole rule -- no row, not
+    ``configured``, never synced, a stale sync, a sync that discovered nothing,
+    no recent ``CaptureSnapshot``, and a capture made under a host profile
+    rather than this tenant's credential all mean *not* backed -- and restating
+    any rung of it here would give the product two answers to "does this
+    connector work".
 
     The now-removed ``has_capture_connector`` answered a different question
     (does Concord *ship* a connector for this platform), and a step built on it
@@ -325,11 +327,17 @@ async def _step_connect_evidence(
     if registered:
         return Step(
             key=key, number=number, label=label, state=IN_PROGRESS,
+            # Deliberately NOT an exhaustive list of the rungs: enumerating
+            # them here is what let this sentence go stale and tell a customer
+            # one of four things, all of them false, about a connector that had
+            # synced fine but produced no capture artifact.
             detail=(
-                f"A {connector_key} connector is registered but is not "
-                f"capturing: it is either not finished being configured, has "
-                f"never completed a sync, last synced too long ago, or synced "
-                f"and discovered nothing. Open it to see which."
+                f"A {connector_key} connector is registered but has not "
+                f"recently captured your organization's own configuration: it "
+                f"may not be finished being configured, may not have completed "
+                f"a recent non-empty sync, may have produced no recent capture, "
+                f"or may be authenticating as the host rather than as your "
+                f"organization. Open it to see which."
             ),
             href=href,
         )
