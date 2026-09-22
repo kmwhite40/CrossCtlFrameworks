@@ -85,6 +85,22 @@ framework per system in that vocabulary. The match is on the org's systems as a
 whole, not per framework — and the rendered text says so, rather than implying
 a precision the data does not have.
 
+**Correction (implementation, 2026-09-22): two readings of this section were
+too literal and were narrowed.** Both were found by building it, and both are
+the §2.1 defect aimed at the strongest possible claim.
+
+1. **A NULL `ato_expires_on` is not a lapse.** Read literally, a system
+   Concord records as `ato_status='authorized'` with no expiry on file would
+   make an "Authorized" badge `contradicted` — Concord reporting *its own
+   authorization record* as disagreeing with the badge that record supports.
+   `contradicted` must never do that. The rule is
+   `ato_status='authorized' AND (ato_expires_on IS NULL OR ato_expires_on >= today)`.
+2. **An organization with no systems at all is `unsupported`, never
+   `contradicted`.** §2.2 as written has no qualification, but applied to an
+   empty table it prints "does not match platform records" at a tenant that
+   has told Concord nothing. `contradicted` requires system rows whose own
+   `ato_status` asserts non-authorization — the measured `none` × 14 case.
+
 **An expired authorization is surfaced even when no badge claims it.** A
 badge reading "Authorized" over a system whose `ato_expires_on` has passed is
 `contradicted`, and a page with no badge at all still reports the expiry,
