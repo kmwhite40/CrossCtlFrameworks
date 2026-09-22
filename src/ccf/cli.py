@@ -1555,6 +1555,13 @@ def packs_coverage(
         f"[cyan]{out['pack_key']}[/cyan] on system {system_id}: "
         f"{out['coverage_pct']}% ({out['covered']}/{out['total_controls']})"
     )
+    if out.get("unparseable_control_ids"):
+        # Matched by exact catalog identity, not canonically -- an operator
+        # needs to know these would miss a zero-padded catalog row.
+        console.print(
+            "[yellow]not canonical 800-53 ids, matched by exact identity: "
+            f"{', '.join(out['unparseable_control_ids'])}[/yellow]"
+        )
 
 
 @packs_app.command(name="test")
