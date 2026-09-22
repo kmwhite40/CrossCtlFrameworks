@@ -1,6 +1,6 @@
 """Canonical finding-status vocabulary shared across finding sources (ISSM-13/DATA-05).
 
-A control's "finding" status is modeled three different ways in the schema:
+A control's "finding" status is modeled four different ways in the schema:
 
 - ``AssessmentResult.finding`` — a DB enum (``ccf.finding_status``):
   ``satisfied | other_than_satisfied | not_applicable``. No ``not_assessed``
@@ -12,6 +12,19 @@ A control's "finding" status is modeled three different ways in the schema:
   used to drive SPRS scoring (``ccf.scoring.engine.STATES``):
   ``not_assessed | not_implemented | planned | partial | implemented |
   inherited | not_applicable``.
+- ``AssessmentObjectiveProposal.verdict`` — the assessment engine's
+  *objective*-grain vocabulary
+  (``ccf.models_assessment_engine.OBJECTIVE_VERDICTS``):
+  ``satisfied | not_satisfied | not_applicable | insufficient_evidence``.
+  Two of those four have no equivalent anywhere above, and they are the two
+  that matter: ``not_satisfied`` is the 800-53A spelling of the same
+  determination the other sources spell ``other_than_satisfied``, and
+  ``insufficient_evidence`` is a verdict the other three cannot express at
+  all. They are reconciled in ``_FINDING_ALIASES`` below rather than by a
+  fourth ad-hoc mapping at each call site — objective verdicts now reach the
+  OSCAL SAR (``ccf.api.routes.oscal.build_sar_doc``), and a per-call-site
+  mapping is exactly how a verdict the engine could not settle would end up
+  asserted as satisfied in a federal artifact.
 
 None of the three columns changes here — that would be a breaking DB/enum
 migration and is explicitly out of scope. This module defines ONE canonical
@@ -65,6 +78,29 @@ _FINDING_ALIASES: dict[str, str] = {
     "not_implemented": OTHER_THAN_SATISFIED,
     "planned": OTHER_THAN_SATISFIED,
     "partial": OTHER_THAN_SATISFIED,
+    # AssessmentObjectiveProposal.verdict (the engine's objective-grain
+    # vocabulary; see the module docstring). Only the two spellings absent
+    # above need an entry -- "satisfied" and "not_applicable" are already
+    # canonical.
+    #
+    # "not_satisfied" is 800-53A's spelling of the determination 800-171A
+    # spells "other_than_satisfied". Same finding, different standard's word
+    # for it; without this it fell through to UNKNOWN and a real failure
+    # disappeared from every cross-source rollup.
+    "not_satisfied": OTHER_THAN_SATISFIED,
+    # "insufficient_evidence" means the evidence did not settle the
+    # objective -- see ccf.assessment.engine.rollup, which is explicit that
+    # this is NOT the control failing ("conflating them would manufacture
+    # POA&Ms out of missing evidence"). So it cannot be OTHER_THAN_SATISFIED,
+    # and it obviously cannot be SATISFIED: claiming an objective met on
+    # evidence that did not establish it is a false statement to an assessor.
+    # NOT_ASSESSED is the canonical bucket this set already carries for "no
+    # determination reached", which is precisely what happened -- the reason
+    # no determination was reached (nobody looked / the evidence was
+    # inconclusive) is a per-source distinction the raw column keeps, and
+    # which ccf.api.routes.oscal carries into the SAR as its own prop rather
+    # than losing it here.
+    "insufficient_evidence": NOT_ASSESSED,
 }
 
 
