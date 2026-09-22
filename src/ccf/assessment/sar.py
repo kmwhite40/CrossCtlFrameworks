@@ -11,17 +11,30 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
+from ..models_assessment_engine import OBJECTIVE_VERDICTS
 from ..ssp import constants
+from .seed import FINDINGS
 
 ACCENT = RGBColor(0x1F, 0x3A, 0x5F)
 HEADER_FILL = "1F3A5F"
 LABEL_FILL = "E8EDF3"
 
-_FINDING_LABEL = {
-    "satisfied": "Satisfied",
-    "other_than_satisfied": "Other Than Satisfied",
-    "not_applicable": "Not Applicable",
-    "not_assessed": "Not Assessed",
+#: Every value ``AssessmentControlResult.objective_findings[*]["finding"]`` can
+#: hold, deduplicated in first-seen order. The column is free JSONB with TWO
+#: producers: the seeder and the assessor form write ``seed.FINDINGS``, the
+#: assessment engine writes ``OBJECTIVE_VERDICTS`` on acceptance. Since the
+#: assessor form offers the union of both (``api.routes.ui
+#: ._OBJECTIVE_FINDINGS``), an assessor can select either vocabulary too.
+#: Derived from the two constants rather than restated, so a future member of
+#: either is labelled here without a second edit.
+OBJECTIVE_FINDINGS: tuple[str, ...] = tuple(dict.fromkeys((*FINDINGS, *OBJECTIVE_VERDICTS)))
+
+#: Display text per finding, derived from the vocabularies above. Title-casing
+#: the token reproduces exactly the hand-written labels this map used to carry
+#: ("other_than_satisfied" -> "Other Than Satisfied"), and now covers
+#: ``not_satisfied`` and ``insufficient_evidence``, which it did not.
+_FINDING_LABEL: dict[str, str] = {
+    key: key.replace("_", " ").title() for key in OBJECTIVE_FINDINGS
 }
 _FINDING_FILL = {
     "satisfied": "E3F4E9",
@@ -29,6 +42,25 @@ _FINDING_FILL = {
     "not_applicable": "ECEFF3",
     "not_assessed": "FFF6E3",
 }
+
+
+def _finding_label(value: object) -> str:
+    """Display text for one finding -- never the empty string.
+
+    A value outside :data:`OBJECTIVE_FINDINGS` is reachable: the column has no
+    DB constraint, the assessor form deliberately preserves a stored value it
+    does not recognize, and a legacy import or a producer added after this
+    module can write anything. Such a value is printed VERBATIM and flagged,
+    rather than mapped onto a default determination: this document is a SAR an
+    assessor ingests, and silently reading an unknown value as "Not Assessed"
+    (or as nothing at all, which is what the blank default did) would assert a
+    determination the data does not carry. The raw token keeps the rendered
+    document traceable back to the row that produced it.
+    """
+    key = str(value or "").strip()
+    if not key:
+        return "Unrecorded (no determination)"
+    return _FINDING_LABEL.get(key, f"Unrecognized determination ({key})")
 
 
 def _shade(cell: Any, fill: str) -> None:
@@ -156,7 +188,7 @@ def _detail(doc: Any, results: Sequence[Mapping[str, Any]]) -> None:
             table = doc.add_table(rows=4 + len(obj), cols=2)
             table.style = "Table Grid"
             cells = [
-                ("Finding", _FINDING_LABEL.get(finding, finding)),
+                ("Finding", _finding_label(finding)),
                 ("Examine", r.get("examine_note") or "—"),
                 ("Interview", r.get("interview_note") or "—"),
                 ("Test", r.get("test_note") or "—"),
@@ -171,7 +203,7 @@ def _detail(doc: Any, results: Sequence[Mapping[str, Any]]) -> None:
                 _shade(lc, LABEL_FILL)
                 lbl = part.get("label", "")
                 _runs(lc, f"Part [{lbl}]" if lbl else "Statement", bold=True)
-                pf = _FINDING_LABEL.get(part.get("finding", "not_assessed"), "")
+                pf = _finding_label(part.get("finding", "not_assessed"))
                 _runs(table.cell(k, 1), f"[{pf}] {part.get('text', '')}".strip())
 
             extra: list[str] = []
