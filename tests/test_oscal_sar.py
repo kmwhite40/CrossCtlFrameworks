@@ -296,6 +296,47 @@ async def test_sar_out_of_org_is_404() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sar_route_org_check_rejects_a_foreign_principal_without_rls() -> None:
+    """The route's OWN org check, exercised at its own layer.
+
+    ``test_sar_out_of_org_is_404`` above asserts the right end-to-end result,
+    but it cannot fail when only the route's explicit org check is removed:
+    ``ccf.assessments`` carries a ``tenant_isolation`` RLS policy, so the
+    outsider's request 404s at the query first (confirmed by mutation —
+    deleting the check left that test passing). RLS is documented in
+    ``ccf.api.deps.get_session`` as a backstop *beneath* the app-layer
+    scoping, so the app-layer scoping is pinned here with the RLS backstop out
+    of the way: an unscoped ``session_scope`` session plus a principal from
+    another organization.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.oscal import sar_export  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    owner_org_id, _sys_id, assessment_id = await _build_fixture("SAR Layer Owner Org")
+    async with session_scope() as s:
+        other_org = Organization(name="SAR Layer Other Org")
+        s.add(other_org)
+        await s.flush()
+        other_org_id = other_org.id
+
+    async with session_scope() as s:
+        outsider = Principal(
+            user_id=None, email="outsider@sar-layer.test", org_id=other_org_id, role="admin"
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            await sar_export(assessment_id, session=s, principal=outsider)
+        assert excinfo.value.status_code == 404
+
+        insider = Principal(
+            user_id=None, email="insider@sar-layer.test", org_id=owner_org_id, role="admin"
+        )
+        doc = await sar_export(assessment_id, session=s, principal=insider)
+        assert "assessment-results" in doc
+
+
+@pytest.mark.asyncio
 async def test_sar_empty_results_validates_official() -> None:
     # An assessment with ZERO AssessmentResults (e.g. just opened) must still
     # produce a schema-valid SAR: reviewed-controls has no include-controls
