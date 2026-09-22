@@ -189,6 +189,21 @@ Mutation check: render a stage into any seeder and the test must fail.
    in use, so it needs its own measurement of what currently compares against
    them. Recorded here rather than fixed silently.
 
+   **Closed (2026-09-22, `fix/certification-enum-validate`).** The measurement
+   was made: outside `models.py`, `constants.py` and `migrations/`, nothing in
+   `src/ccf` compares against, filters on, or writes either column (one hit,
+   a docstring in `cr26/cpo.py`), so the raise-instead-of-empty behaviour had
+   zero call sites to alter. Both columns now carry `validate_strings=True`,
+   declared the way `pipeline_stage` declares it, and the divergence described
+   above no longer exists: all three certification-shaped columns on `System`
+   refuse an unknown string at the Python enum and at the Postgres enum. No
+   migration -- the Postgres enum types already refused the values. Tested per
+   column in `tests/test_certification_enum_validate.py`, with the same
+   bare-`StatementError`-wrapping-`LookupError` assertion `pipeline_stage`
+   uses so the test cannot pass on the database's refusal. A reader who
+   stops at the paragraph above must not carry away the state that shipped
+   this hole.
+
 ---
 
 ## 6. Out of scope

@@ -363,12 +363,24 @@ class System(Base):
     #: CR26 Certification Class. INDEPENDENT of ``baseline`` -- see
     #: ``ccf.constants.CERTIFICATION_CLASSES``. Never derive one from the other.
     #: Null means "not CR26-certified", correct for every Rev5-lane row.
+    #: ``validate_strings=True`` for the reason given on ``pipeline_stage``.
     certification_class: Mapped[str | None] = mapped_column(
-        Enum(*CERTIFICATION_CLASSES, name="certification_class", schema="ccf")
+        Enum(
+            *CERTIFICATION_CLASSES,
+            name="certification_class",
+            schema="ccf",
+            validate_strings=True,
+        )
     )
     #: Program or agency-sponsored certification path. Null when not applicable.
+    #: ``validate_strings=True`` for the reason given on ``pipeline_stage``.
     certification_path: Mapped[str | None] = mapped_column(
-        Enum(*CERTIFICATION_PATHS, name="certification_path", schema="ccf")
+        Enum(
+            *CERTIFICATION_PATHS,
+            name="certification_path",
+            schema="ccf",
+            validate_strings=True,
+        )
     )
     #: Where CONCORD understands this system to be in its pipeline -- an
     #: operator's own note, NOT a status FedRAMP conferred and not what the
@@ -381,12 +393,15 @@ class System(Base):
     #: Null means "nobody has said", correct for every row until an operator
     #: says otherwise -- no platform signal can populate this.
     #:
-    #: ``validate_strings=True``, unlike the two columns above: spec §5.6
+    #: ``validate_strings=True``, as on the two columns above: spec §5.6
     #: requires a cross-regime value such as ``"rev5:persistent-validation"``
     #: to be refused at the Python enum AND the Postgres enum. SQLAlchemy's
     #: ``Enum`` passes an unknown *string* straight through to the database by
     #: default (``_db_value_for_elem``), so without this the Python belt named
-    #: by the spec would not exist and only Postgres would object.
+    #: by the spec would not exist and only Postgres would object. This column
+    #: got the guard first (feat/pipeline-stage); ``certification_class`` and
+    #: ``certification_path`` shipped without it and were brought level so the
+    #: three certification-shaped columns on this model behave the same way.
     pipeline_stage: Mapped[str | None] = mapped_column(
         Enum(
             *PIPELINE_STAGES,
