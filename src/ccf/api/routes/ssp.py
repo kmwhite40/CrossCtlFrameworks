@@ -86,10 +86,12 @@ AUTHOR_ROLES = ("admin", "control_owner")
 #:
 #: Narrower than :data:`AUTHOR_ROLES` because these are not edits. ``delete``
 #: removes the project; ``reseed`` regenerates sample statements over it; and
-#: ``auto-statements`` assigns ``part_narratives`` for *every* entry
-#: unconditionally (``governance/automation.py``), so one call replaces a
-#: project's worth of human-authored narrative. Editing a control is the
-#: control owner's job; discarding the plan's content is not.
+#: ``auto-statements`` regenerates every machine-drafted narrative and, with
+#: ``overwrite_authored=true``, replaces the human-authored ones too
+#: (``governance/automation.py``), so one call can still replace a project's
+#: worth of human-authored narrative -- on request now, and named in the
+#: result, but irreversibly. Editing a control is the control owner's job;
+#: discarding the plan's content is not.
 DESTRUCTIVE_ROLES = ("admin",)
 
 _BASELINE_LABELS = {"low": "Low", "moderate": "Moderate", "high": "High"}
@@ -450,14 +452,23 @@ async def auto_statements(
     style: str = "standard",
     include_captured: bool = True,
     mark_draft: bool = True,
+    overwrite_authored: bool = False,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*DESTRUCTIVE_ROLES)),
 ) -> dict[str, Any]:
     """(Re)compose every control's implementation statement from the derivation.
 
     Options: ``style`` (concise|standard|detailed), ``use_ai`` (Claude drafting
-    when configured), ``include_captured`` (fold in live connector captures), and
-    ``mark_draft`` (prefix customer/shared statements with [DRAFT]).
+    when configured), ``include_captured`` (fold in live connector captures),
+    ``mark_draft`` (prefix customer/shared statements with [DRAFT]), and
+    ``overwrite_authored`` (also replace narratives a human has cleared -- the
+    ones without the [DRAFT] marker; off by default, and irreversible).
+
+    The response names the control ids whose human-authored narrative was
+    left alone (``preserved_authored``) and, under ``overwrite_authored``,
+    the ones it replaced (``replaced_authored``), so the operator can see
+    exactly what the generator did and did not touch. See
+    :func:`ccf.governance.automation.generate_statements`.
     """
     if style not in STYLES:
         raise HTTPException(422, f"style must be one of {', '.join(STYLES)}")
@@ -479,6 +490,7 @@ async def auto_statements(
         style=style,
         include_captured=include_captured,
         mark_draft=mark_draft,
+        overwrite_authored=overwrite_authored,
     )
     await session.commit()
     return result

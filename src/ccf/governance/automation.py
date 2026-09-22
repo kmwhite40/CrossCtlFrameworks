@@ -464,7 +464,18 @@ async def generate_ssp(
             e.implementation_status = ov["implementation_status"]
     await session.flush()
     # Auto-compose the implementation statements from the derivation.
-    await generate_statements(session, project=proj, profile=profile)
+    #
+    # ``overwrite_authored=True`` on purpose. ``seed_project_entries`` has just
+    # written sample text into every entry, and ``ssp.seed._narratives`` writes
+    # it WITHOUT ``DRAFT_PREFIX`` for a control fully inherited on the
+    # platform (only the customer-responsibility lead-in is marked) -- so to
+    # ``is_draft_narrative`` those entries look human-cleared. They are not:
+    # this project did not exist a moment ago, and no human has touched it.
+    # Under the default the inherited controls would keep the seed sample
+    # instead of the composed statement. Nothing authored is lost here, and
+    # the result (with its ``replaced_authored`` list) is deliberately not
+    # surfaced, because it would name seed text as if it were a person's.
+    await generate_statements(session, project=proj, profile=profile, overwrite_authored=True)
     await bus.emit(
         session,
         verb="generated",
@@ -525,6 +536,17 @@ async def platform_capture_is_live(
     )
 
 
+def _has_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
+    """Is there any narrative text on this entry at all?
+
+    ``None``, ``[]`` and parts whose text is empty or whitespace all count as
+    nothing there. This is the emptiness question only -- *whose* text it is
+    (machine or human) is :func:`ccf.ssp.statements.is_draft_narrative`'s
+    question, and this module asks that one rather than answering it twice.
+    """
+    return any(((part or {}).get("text") or "").strip() for part in part_narratives or [])
+
+
 async def generate_statements(
     session: AsyncSession,
     *,
@@ -534,11 +556,45 @@ async def generate_statements(
     style: str = "standard",
     include_captured: bool = True,
     mark_draft: bool = True,
+    overwrite_authored: bool = False,
 ) -> dict[str, Any]:
     """Compose each entry's implementation statement from the derivation + config.
 
     Reflects responsibility/inheritance source, environment, services, filled
     ODP values, and live captured config; optionally drafts via AI when enabled.
+
+    Per entry, what is already stored decides what happens to it:
+
+    * nothing there (``None``, empty, or only blank parts) -- generate;
+    * a narrative that :func:`ccf.ssp.statements.is_draft_narrative` -- it is
+      machine text (CISO-02: ``DRAFT_PREFIX`` in the stored text is the only
+      durable record that no human has cleared it), so regenerate it, which is
+      the point of this function;
+    * a narrative WITHOUT the marker -- a human has cleared it. It is
+      **preserved**, and its control id is reported in ``preserved_authored``.
+      With ``overwrite_authored=True`` it is replaced instead, and its control
+      id is reported in ``replaced_authored``. Either way the operator gets
+      the control ids, not a count: the lesson from ``ccf.cr26.sdr`` is that a
+      part is never dropped without naming the control, because a count gives
+      the operator nothing to act on.
+
+    Silence was the defect. This used to assign ``part_narratives`` for every
+    entry unconditionally, so one ``POST .../auto-statements`` replaced a
+    project's worth of human-authored narrative and reported only how many
+    entries it had touched.
+
+    Recovery of a replaced narrative is out of scope here: the old text is not
+    snapshotted anywhere. ``SSPProject.revision_history`` exists but records
+    project-level versions only (``api/routes/ssp.py`` ``add_revision``) and is
+    not wired to entry-level edits; wiring it properly is its own change.
+    Until then ``overwrite_authored`` is irreversible, which is why it is
+    opt-in, keyword-only, and reports every control it applied to.
+
+    Returns ``entries`` (entries considered -- every entry of the project,
+    whether or not it was written), ``drafts``, ``ai_used``,
+    ``manual_evidence_required`` (all counted over the entries actually
+    written), ``preserved_authored`` and ``replaced_authored`` (control ids,
+    in entry order).
     """
     # The declared answer first, then the project's stored platform. An
     # unrecognized declared code is carried through *as itself* rather than
@@ -656,7 +712,17 @@ async def generate_statements(
     )
     ai_ready = use_ai and ai.is_configured()
     drafts = ai_used = manual_evidence_required = 0
+    preserved_authored: list[str] = []
+    replaced_authored: list[str] = []
     for e in entries:
+        # Decided before anything is composed, so a preserved entry is not
+        # touched at all: not its narrative, not its counts, and not the
+        # implementation-status downgrade the manual-evidence branch applies.
+        if _has_narrative(e.part_narratives) and not stmt.is_draft_narrative(e.part_narratives):
+            if not overwrite_authored:
+                preserved_authored.append(e.control_id)
+                continue
+            replaced_authored.append(e.control_id)
         row = derivation.get(e.control_id) or {}
         responsibility = row.get("responsibility", "customer")
         services = services_for(ssp_plat, e.domain)
@@ -766,6 +832,8 @@ async def generate_statements(
         "drafts": drafts,
         "ai_used": ai_used,
         "manual_evidence_required": manual_evidence_required,
+        "preserved_authored": preserved_authored,
+        "replaced_authored": replaced_authored,
     }
 
 

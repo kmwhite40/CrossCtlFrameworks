@@ -195,9 +195,10 @@ async def test_read_only_roles_cannot_write(role: str, spec: dict[str, Any]) -> 
 @pytest.mark.parametrize("spec", ADMIN_ONLY_WRITES, ids=_ADMIN_IDS)
 async def test_control_owner_cannot_destroy_or_replace(spec: dict[str, Any]) -> None:
     """Deleting a project, reseeding it, and recomposing every statement all
-    discard human-authored narrative wholesale -- ``auto_statements`` assigns
-    ``part_narratives`` unconditionally for every entry -- so they sit with
-    delete rather than with ordinary editing."""
+    can discard human-authored narrative wholesale -- ``auto_statements`` does
+    so on ``overwrite_authored=true``, irreversibly (it preserves and names
+    authored narratives by default; see ``tests/test_auto_statements_preserve.py``)
+    -- so they sit with delete rather than with ordinary editing."""
     tag = _tag()
     token, org_id = await _mk_user(
         f"co-destroy-{tag}@ssp-rbac.test", f"SSP RBAC CO Destroy Org {tag}", "control_owner"
