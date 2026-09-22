@@ -227,23 +227,26 @@ async def test_step2_is_unknown_for_an_unrecognized_platform() -> None:
 
 
 @pytest.mark.asyncio
-async def test_step2_is_not_available_on_azure_and_differs_from_not_started() -> None:
-    """Spec §8.4. Concord ships no capture connector for Azure, so step 2 is
-    not work the customer has failed to do -- and it must be visibly distinct
-    from both "not started" and "done", or the page shows a permanently red
-    step for something nobody can act on."""
+async def test_step2_is_real_work_on_azure_now_that_a_connector_exists() -> None:
+    """Spec §8.4, updated by ``feat/azure-gov-connector``.
+
+    Azure used to be the platform Concord shipped no connector for, so step 2
+    was ``not_available`` -- not work the customer had failed to do. The ARM
+    connector makes it work they genuinely have not started, and reporting
+    "nothing to connect" would now tell an Azure customer their SSP cannot be
+    evidenced automatically when it can.
+    """
     tag = _tag()
     org_id, sys_id = await _mk(tag)
     try:
         async with session_scope() as s:
             s.add(SystemProfile(system_id=sys_id, cloud_platform="azure_gov"))
         step = (await _steps(sys_id))["connect_evidence"]
-        assert step.state == NOT_AVAILABLE
-        assert step.state != NOT_STARTED
+        assert step.state == NOT_STARTED
+        assert step.state != NOT_AVAILABLE
         assert step.state != DONE
-        # Distinct to a reader, not only to the code: the reader sees the chip.
-        assert ONBOARDING_CHIPS[NOT_AVAILABLE] != ONBOARDING_CHIPS[NOT_STARTED]
-        assert ONBOARDING_CHIPS[NOT_AVAILABLE] != ONBOARDING_CHIPS[DONE]
+        # And the sentence names the connector they can actually go configure.
+        assert "azure_arm" in step.detail
     finally:
         await _drop(org_id, sys_id)
 
@@ -251,13 +254,25 @@ async def test_step2_is_not_available_on_azure_and_differs_from_not_started() ->
 @pytest.mark.asyncio
 async def test_step2_is_not_available_when_the_customer_declared_no_cloud() -> None:
     """``cloud_platform='none'`` is a real questionnaire answer, and it is the
-    customer spec §4.1 refuses to show a permanently red step 2 to."""
+    customer spec §4.1 refuses to show a permanently red step 2 to.
+
+    Now the *only* way to reach ``not_available`` from a recognized answer,
+    since every platform Concord recognizes has a connector -- so the
+    chip-distinctness this state exists for is asserted here rather than on
+    the Azure case that used to carry it.
+    """
     tag = _tag()
     org_id, sys_id = await _mk(tag)
     try:
         async with session_scope() as s:
             s.add(SystemProfile(system_id=sys_id, cloud_platform="none"))
-        assert (await _steps(sys_id))["connect_evidence"].state == NOT_AVAILABLE
+        step = (await _steps(sys_id))["connect_evidence"]
+        assert step.state == NOT_AVAILABLE
+        assert step.state != NOT_STARTED
+        assert step.state != DONE
+        # Distinct to a reader, not only to the code: the reader sees the chip.
+        assert ONBOARDING_CHIPS[NOT_AVAILABLE] != ONBOARDING_CHIPS[NOT_STARTED]
+        assert ONBOARDING_CHIPS[NOT_AVAILABLE] != ONBOARDING_CHIPS[DONE]
     finally:
         await _drop(org_id, sys_id)
 
@@ -1049,8 +1064,11 @@ async def test_page_renders_all_six_steps_with_their_chips() -> None:
             # and Jinja autoescaping is what keeps them safe in the page.
             assert str(escape(step.detail)) in body
             assert ONBOARDING_CHIPS[step.state] in body
-        # The Azure system's step 2 renders as not available, not as failure.
-        assert ONBOARDING_STATE_LABELS[NOT_AVAILABLE] in body
+        # The Azure system's step 2 now renders as work not started -- Concord
+        # ships an ARM connector for it (``feat/azure-gov-connector``), so
+        # "not available" would be the wrong thing to show this customer.
+        assert ONBOARDING_STATE_LABELS[NOT_STARTED] in body
+        assert ONBOARDING_STATE_LABELS[NOT_AVAILABLE] not in body
         # The counts that were already on the page are still there -- they are
         # the evidence behind the steps, not a display the path replaces.
         assert "Boundary &amp; inventory" in body

@@ -1,7 +1,6 @@
 """FR-06 / FR-07: cloud-environment fidelity in SSP generation.
 
-FR-06 — a platform with no live capture connector (Azure, or anything else not
-wired up — connectors today are M365/Graph + AWS GovCloud only, see
+FR-06 — a platform with no live capture connector (anything not wired up in
 ``ccf.ssp.platforms.PLATFORM_CONNECTOR_KEYS``) must not have its auto-composed
 statements read as auto-evidenced. Nor may a platform that Concord *does* ship
 a connector for, when the tenant has never captured anything with it — see
@@ -57,7 +56,9 @@ from ccf.models_grc import ConnectorConfig
 from ccf.ssp.constants import GENERIC_ROLE_FLAG
 from ccf.ssp.platforms import (
     GOV_ENVIRONMENTS,
+    MANUAL_EVIDENCE_MARKER,
     MANUAL_EVIDENCE_NOTE,
+    NO_TENANT_CAPTURE_NOTE,
     environment_for,
 )
 from ccf.ssp.seed import seed_project_entries
@@ -230,6 +231,15 @@ def _all_narrative_text(entries: list[SSPControlEntry]) -> str:
 
 @pytest.mark.asyncio
 async def test_azure_gov_statements_are_flagged_manual_evidence_required() -> None:
+    """An Azure Gov tenant that has captured nothing is still flagged.
+
+    The *reason* changed when the ARM connector landed
+    (``feat/azure-gov-connector``): Concord now ships a connector for this
+    platform, so "no automated capture connector exists for this platform"
+    would be a false sentence to put in a customer's SSP. The obligation on
+    the reviewer is identical, which is what ``MANUAL_EVIDENCE_MARKER`` -- the
+    substring common to both notes -- pins here.
+    """
     async with _seeded_system("Azure Fidelity Org 1", "AZFLAG", "azure_gov") as (
         _proj,
         _cov,
@@ -241,10 +251,11 @@ async def test_azure_gov_statements_are_flagged_manual_evidence_required() -> No
         # otherwise read as already evidenced — carries the explicit flag.
         for e in entries:
             entry_text = "\n".join((p.get("text") or "") for p in e.part_narratives or [])
-            assert MANUAL_EVIDENCE_NOTE in entry_text, (
+            assert MANUAL_EVIDENCE_MARKER in entry_text, (
                 f"{e.control_id} narrative missing manual-evidence flag: {entry_text!r}"
             )
-        assert "no automated capture connector exists for this platform" in text
+            assert NO_TENANT_CAPTURE_NOTE in entry_text
+        assert "no automated capture connector exists for this platform" not in text
 
 
 @pytest.mark.asyncio
@@ -255,8 +266,9 @@ async def test_azure_gov_platform_inherited_state_excluded_from_covered() -> Non
         _entries,
     ):
         # PE derives "inherited" for azure (PLATFORM_DOMAIN_RESPONSIBILITY), but
-        # with no Azure capture connector that must not silently count as
-        # "covered".
+        # with nothing actually captured for this tenant that must not silently
+        # count as "covered" -- Concord shipping an Azure connector is a fact
+        # about Concord, not about this org's subscription.
         assert cov["by_state"].get("inherited", 0) >= 1
         assert cov["covered"] == 0
         assert cov["manual_evidence_required"] >= 1

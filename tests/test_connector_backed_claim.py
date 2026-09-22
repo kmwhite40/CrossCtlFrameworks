@@ -509,7 +509,11 @@ def test_platform_connector_keys_are_real_registry_keys() -> None:
     assert mapped <= registry, f"unknown connector keys in mapping: {sorted(mapped - registry)}"
     assert PLATFORM_CONNECTOR_KEYS["m365"] == "msgraph"
     assert connector_key_for_platform("aws_govcloud") == "aws_govcloud"
-    assert connector_key_for_platform("azure") is None
+    # Azure Government is ARM, not Graph. Pinned to the ARM key specifically:
+    # both connectors authenticate against the same Microsoft tenant, so
+    # pointing this entry at "msgraph" would compile, pass a registry check,
+    # and let an identity-only capture evidence an infrastructure claim.
+    assert connector_key_for_platform("azure") == "azure_arm"
 
 
 def test_mapping_keys_are_real_ssp_platforms() -> None:
@@ -520,14 +524,25 @@ def test_mapping_keys_are_real_ssp_platforms() -> None:
     assert "puppetdb" not in set(PLATFORM_CONNECTOR_KEYS.values())
 
 
-# --- 6. A platform with no connector at all stays flagged -------------------
+# --- 6. Another platform's connector never evidences this one ---------------
 
 
 @pytest.mark.asyncio
-async def test_azure_stays_flagged_whatever_the_org_has_configured() -> None:
-    """Azure has no capture connector in Concord at all, so no amount of
-    configured connectors for other platforms can make it evidenced — and the
-    reason rendered is the platform one, not the tenant one."""
+async def test_azure_stays_flagged_when_only_another_platforms_connector_is_live() -> None:
+    """A healthy ``msgraph`` connector does not evidence Azure.
+
+    Azure Government is captured by ``azure_arm``, and the two connectors
+    authenticate against the *same* Microsoft tenant — which is exactly why
+    this is the plausible way an Azure infrastructure claim could get evidenced
+    by something that only ever looked at identity. The org here has a
+    configured, freshly-synced Graph connector with a fresh capture artifact
+    and still gets the caveat.
+
+    The reason rendered is the tenant one now, not the platform one: Concord
+    does ship an Azure connector, this org simply has not captured with it.
+    Before ``feat/azure-gov-connector`` this case asserted the opposite note,
+    which was then the true one.
+    """
     async with _tenant(
         "Azure With Other Connectors Org",
         "AZOTHER",
@@ -542,7 +557,7 @@ async def test_azure_stays_flagged_whatever_the_org_has_configured() -> None:
     ) as (cov, entries):
         assert entries
         for control_id, text in _texts(entries).items():
-            assert MANUAL_EVIDENCE_NOTE in text, f"{control_id} unflagged on Azure: {text!r}"
-            assert NO_TENANT_CAPTURE_NOTE not in text
+            assert NO_TENANT_CAPTURE_NOTE in text, f"{control_id} unflagged on Azure: {text!r}"
+            assert MANUAL_EVIDENCE_NOTE not in text
         assert cov["covered"] == 0
         assert cov["manual_evidence_required"] >= 1
