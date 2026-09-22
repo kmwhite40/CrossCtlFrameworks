@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .providers import m365
+from .providers import aws, m365
 from .types import PostureCheck
 
 
@@ -43,12 +43,17 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     m365.MFA_REGISTERED.key: (),
     m365.LEGACY_AUTH_BLOCKED.key: (),
     m365.STALE_ACCOUNTS.key: ("threshold_days",),
+    aws.ROOT_MFA_ENABLED.key: (),
+    aws.PASSWORD_POLICY.key: (),
+    aws.ACCESS_KEY_ROTATION.key: ("threshold_days",),
+    aws.CLOUDTRAIL_MULTI_REGION.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.
 #: Sourced from the provider module so the wording lives in exactly one place.
 EXPECTED_TEMPLATES: dict[str, str] = {
     m365.STALE_ACCOUNTS.key: m365.STALE_ACCOUNTS_EXPECTED,
+    aws.ACCESS_KEY_ROTATION.key: aws.ACCESS_KEY_ROTATION_EXPECTED,
 }
 
 #: Parameter name -> validator. Every parameter needs one: an unvalidated

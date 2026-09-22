@@ -11,18 +11,45 @@ credential never captures under another org's or a shared account's identity.
 The provider calls live behind ``_session`` — a single, clearly-marked
 integration seam — so wiring real credentials is additive and does not change
 the interface the API depends on.
+
+``scan()`` assesses the account against the posture checks in
+:mod:`ccf.posture.providers.aws`. The division of labour is the one the Graph
+connector established: transport and credentials live here, judgement lives in
+the provider module, and every evaluator there is pure so it is testable
+without an AWS account. The source tokens this connector dispatches on are not
+URLs — AWS has none — which has a consequence for pack-declared checks that
+the provider module's docstring states plainly rather than leaving implied.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture.providers import aws as aws_checks
+from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
+from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
 log = get_logger(__name__)
+
+
+class UnknownAwsSourceError(RuntimeError):
+    """A check named a data source this connector has no reader for.
+
+    Raised rather than ignored. The token in ``ENDPOINTS`` is a key into a
+    fixed dispatch table, never a value handed to boto3, so an unrecognised
+    one cannot become an arbitrary AWS call made with the organization's own
+    credentials -- it stops here and the check reports as unrunnable. The one
+    way to reach this in practice is a pack-declared (Form B) rule naming
+    ``provider: aws_govcloud``; see ``posture.providers.aws``'s docstring on
+    why those cannot be supported, stated there rather than left implied.
+    """
+
 
 # GovCloud regions live in the aws-us-gov partition; boto3 resolves endpoints
 # (sts.<region>.amazonaws.com in-partition) automatically from the region name.
@@ -173,3 +200,283 @@ class AwsGovCloudConnector(ConfigConnector):
                 confidence="high",
             )
         ]
+
+    # ── posture scanning ────────────────────────────────────────────────────
+
+    def _readers(self) -> dict[str, Callable[[], list[dict[str, Any]]]]:
+        """Source token -> the (blocking) boto3 reader that answers it.
+
+        A fixed dispatch table, deliberately. ``ENDPOINTS`` for this provider
+        holds ``<service>.<operation>`` tokens rather than URLs, and the only
+        thing a token is ever used for is a lookup here -- never a service or
+        operation name passed through to boto3. A token with no entry raises
+        :class:`UnknownAwsSourceError`, so the blast radius of an unexpected
+        one is a single unrunnable check rather than an arbitrary AWS API call
+        under this organization's credentials.
+
+        A test asserts every registered AWS endpoint has a reader here, so a
+        check cannot be registered into a source nothing can read.
+        """
+        return {
+            aws_checks.ENDPOINTS[aws_checks.ROOT_MFA_ENABLED.key]: self._read_account_summary,
+            aws_checks.ENDPOINTS[aws_checks.PASSWORD_POLICY.key]: self._read_password_policy,
+            aws_checks.ENDPOINTS[aws_checks.ACCESS_KEY_ROTATION.key]: self._read_access_keys,
+            aws_checks.ENDPOINTS[
+                aws_checks.CLOUDTRAIL_MULTI_REGION.key
+            ]: self._read_cloudtrail_trails,
+        }
+
+    def _iam(self) -> Any:
+        return self._session().client("iam", region_name=self._region())
+
+    def _read_account_summary(self) -> list[dict[str, Any]]:
+        """``iam.get_account_summary`` — the account's identity counters."""
+        return [self._iam().get_account_summary()]
+
+    @staticmethod
+    def _is_no_such_entity(error: Exception) -> bool:
+        """Is this the IAM error meaning "that thing does not exist"?
+
+        Duck-typed on the botocore error shape rather than importing
+        ``botocore.exceptions``: boto3 is an optional dependency here (see
+        ``_boto3_available``), and importing its internals at module scope
+        would make this module unimportable in a deployment that never uses
+        AWS. The error code is read from the response envelope, which is the
+        documented, stable location.
+        """
+        response = getattr(error, "response", None)
+        if not isinstance(response, dict):
+            return False
+        code = (response.get("Error") or {}).get("Code")
+        return code in ("NoSuchEntity", "NoSuchEntityException")
+
+    def _read_password_policy(self) -> list[dict[str, Any]]:
+        """``iam.get_account_password_policy`` — empty ONLY when none exists.
+
+        IAM raises ``NoSuchEntity`` for an account with no password policy.
+        That one error becomes ``[]``, which the evaluator reads as a ``fail``
+        (AWS's permissive default is in force). Every other error propagates,
+        so "there is no policy" and "I could not look" never collapse into the
+        same answer.
+        """
+        try:
+            return [self._iam().get_account_password_policy()]
+        except Exception as e:
+            if self._is_no_such_entity(e):
+                return []
+            raise
+
+    def _read_access_keys(self) -> list[dict[str, Any]]:
+        """``iam.list_access_keys`` for every user, flattened into one fleet.
+
+        Both calls are paginated through boto3's paginators: an account whose
+        users or keys spill past one page would otherwise be silently
+        short-read, and the unread rows are exactly as likely to be the stale
+        ones.
+        """
+        iam = self._iam()
+        keys: list[dict[str, Any]] = []
+        for page in iam.get_paginator("list_users").paginate():
+            for user in page.get("Users", []) or []:
+                name = user.get("UserName")
+                if not name:
+                    continue
+                for key_page in iam.get_paginator("list_access_keys").paginate(UserName=name):
+                    keys.extend(key_page.get("AccessKeyMetadata", []) or [])
+        return keys
+
+    def _read_cloudtrail_trails(self) -> list[dict[str, Any]]:
+        """``cloudtrail.describe_trails``, with each trail's logging status merged.
+
+        ``describe_trails`` says a trail is *configured*; it does not say the
+        trail is *running*. A multi-region trail that somebody stopped would
+        satisfy a configuration-only check while recording nothing, which is
+        the failure AU-12 is about -- so ``get_trail_status`` is called per
+        trail and ``IsLogging`` merged onto the row.
+
+        ``includeShadowTrails=False`` because a multi-region trail appears as a
+        shadow copy in every other region; counting those would report one
+        trail many times.
+
+        A trail whose status call fails is returned *without* an ``IsLogging``
+        key rather than with a guessed one. The evaluator treats that as
+        unknown (``manual_review_required``), never as stopped and never as
+        running.
+        """
+        client = self._session().client("cloudtrail", region_name=self._region())
+        trails = client.describe_trails(includeShadowTrails=False).get("trailList", []) or []
+        rows: list[dict[str, Any]] = []
+        for trail in trails:
+            row = dict(trail)
+            name = trail.get("TrailARN") or trail.get("Name")
+            try:
+                row["IsLogging"] = bool(client.get_trail_status(Name=name).get("IsLogging"))
+            except Exception as e:
+                log.warning(
+                    "connector.aws.trail_status_unreadable",
+                    trail=str(name)[:200],
+                    error=str(e)[:200],
+                )
+            rows.append(row)
+        return rows
+
+    async def _fetch(self, endpoint: str) -> list[dict[str, Any]]:
+        """The rows for one source token, read off the event loop."""
+        reader = self._readers().get(endpoint)
+        if reader is None:
+            raise UnknownAwsSourceError(endpoint)
+        return await asyncio.to_thread(reader)
+
+    async def _account_id(self) -> str:
+        """Which account these findings are about — never empty.
+
+        A singleton finding whose ``resource_id`` is blank tells an operator
+        nothing about *where* to go and fix it. Prefers an account id the
+        credential already carries (no API call); otherwise asks STS once for
+        the whole scan rather than once per check.
+        """
+        declared = (self.credential or {}).get("account_id")
+        if isinstance(declared, str) and declared:
+            return declared
+
+        def _call() -> str:
+            sts = self._session().client("sts", region_name=self._region())
+            return str(sts.get_caller_identity().get("Account") or "unknown")
+
+        return await asyncio.to_thread(_call)
+
+    async def scan(
+        self, checks: tuple[ResolvedCheck, ...] | None = None
+    ) -> list[CheckOutcome]:
+        """Assess this account against its resolved posture checks.
+
+        ``checks`` is ``None`` for a caller that predates declared checks, in
+        which case the platform registry is used and behaviour is unchanged.
+        An empty tuple scans nothing and must NOT fall back to the registry --
+        it means this tenant has nothing to scan. See ``ConfigConnector.scan``.
+
+        Never raises: an unconfigured org, a missing credential, or a provider
+        error all produce results (or none) rather than an exception, because
+        ``ConfigConnector.scan``'s contract says so and ``scan_for_system``
+        does not expect one.
+        """
+        if not self.is_configured():
+            return []
+        resolved = resolve_checks_from_registry(self.key) if checks is None else tuple(checks)
+        if not resolved:
+            return []
+        try:
+            account_id = await self._account_id()
+        except Exception as e:
+            # Not fatal to the scan: the checks each report their own failure
+            # below if the credential is genuinely broken, and a singleton
+            # finding is still more useful labelled "unknown" than not emitted.
+            log.warning("connector.aws.account_id_unreadable", error=str(e)[:200])
+            account_id = "unknown"
+        now = datetime.now(UTC)
+        outcomes: list[CheckOutcome] = []
+        for rc in resolved:
+            # Per-check isolation: one service permission gap -- or one
+            # malformed row -- must not discard the checks that did run,
+            # matching capture()'s per-sub-capture try and the Graph
+            # connector's scan. Fetch and evaluation each get their own try,
+            # so an exception from either produces an unrunnable outcome for
+            # THIS check rather than escaping and discarding every outcome
+            # collected so far.
+            try:
+                rows = await self._fetch(rc.endpoint)
+            except Exception as e:
+                outcomes.append(self._unrunnable(rc.check, e, account_id=account_id))
+                continue
+            try:
+                outcomes.append(
+                    self._evaluate(rc, rows, account_id=account_id, now=now)
+                )
+            except Exception as e:
+                # A check that silently stops producing results is
+                # indistinguishable from one that passes, so it reports.
+                outcomes.append(self._unrunnable(rc.check, e, account_id=account_id))
+        return outcomes
+
+    def _evaluate(
+        self,
+        rc: ResolvedCheck,
+        rows: list[dict[str, Any]],
+        *,
+        account_id: str,
+        now: datetime,
+    ) -> CheckOutcome:
+        """Judge one check's rows via its evaluator.
+
+        Dispatches on ``evaluator_key`` rather than the check's own key,
+        because a pack that parameterized a platform check (Form A) runs under
+        the pack's key while still using the platform's logic.
+
+        The evaluators take different keyword arguments -- the account-scoped
+        ones need to know which account, the rotation check needs a clock --
+        so each is called with what it declares rather than forcing a uniform
+        signature most checks would ignore. Declared parameters are merged on
+        top, which is what makes a pack's ``threshold_days`` take effect.
+        """
+        key = rc.evaluator_key or rc.check.key
+        evaluator = aws_checks.EVALUATORS[key]
+        kwargs: dict[str, Any] = dict(rc.parameters or {})
+        if key in aws_checks.ACCOUNT_SCOPED:
+            kwargs["account_id"] = account_id
+        if key == aws_checks.ACCESS_KEY_ROTATION.key:
+            kwargs["now"] = now
+        findings = evaluator(rows, **kwargs)
+        return CheckOutcome.from_findings(rc.check, tuple(findings))
+
+    def _unrunnable(
+        self, check: PostureCheck, error: Exception, *, account_id: str
+    ) -> CheckOutcome:
+        """A check that could not run — never a clean account.
+
+        The rollup maps zero findings to ``not_applicable``, so returning
+        nothing here would hide a missing IAM permission behind a
+        benign-looking verdict. One finding carries ``manual_review_required``
+        and names the reason, which puts it where an operator looks.
+        """
+        observed = self._describe_failure(check, error)
+        log.warning(
+            "connector.aws.check_unrunnable", check=check.key, error=str(error)[:200]
+        )
+        return CheckOutcome.from_findings(
+            check,
+            (
+                ResourceFinding(
+                    resource_id=account_id,
+                    resource_type=check.resource_type,
+                    verdict="manual_review_required",
+                    observed=observed,
+                    detail={"error": str(error)[:300]},
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _describe_failure(check: PostureCheck, error: Exception) -> str:
+        """A human-readable reason a check could not run.
+
+        Only an authorization failure names the required permissions. Every
+        other failure class is described by what it actually is, so an
+        operator is never told to grant an IAM action that was never the
+        problem — the judgement ``msgraph._describe_failure`` makes for a 429
+        or a timeout.
+        """
+        if isinstance(error, UnknownAwsSourceError):
+            return (
+                f"this check reads {str(error)!r}, which the AWS connector has no "
+                "reader for; tenant-declared AWS checks are not supported"
+            )
+        response = getattr(error, "response", None)
+        code = ""
+        if isinstance(response, dict):
+            code = str((response.get("Error") or {}).get("Code") or "")
+        if code in ("AccessDenied", "AccessDeniedException", "UnauthorizedOperation"):
+            needed = ", ".join(check.required_permissions) or "unknown permissions"
+            return f"{code}: could not read AWS; requires {needed}"
+        if code:
+            return f"AWS returned {code}; could not evaluate this check"
+        return f"could not evaluate this check ({type(error).__name__})"
