@@ -68,9 +68,17 @@
         <div class="row" style="gap:10px;align-items:flex-start">
           <span class="chip chip--ghost" style="margin-top:4px">[{{ part.label or '—' }}]</span>
           <div style="flex:1;font-size:13px">{{ part.text }}</div>
-          <select class="select" name="obj::{{ part.label }}" style="width:170px">
-            {% for key, label, cls in finding_meta %}
-              <option value="{{ key }}" {% if part.finding==key %}selected{% endif %}>{{ label }}</option>
+          {# Objective grain: a wider vocabulary than the control select above.
+             The engine writes not_satisfied / insufficient_evidence into this
+             column, and options built from finding_meta could not show them --
+             the browser then submitted the first option and the save wrote
+             not_assessed over a real verdict. objective_finding_options() is
+             the same function the save handler validates against, and always
+             contains what this row actually holds. #}
+          {% set objective_finding = part.get('finding') or 'not_assessed' %}
+          <select class="select" name="obj::{{ part.label }}" style="width:210px">
+            {% for key, label, cls in objective_finding_options(objective_finding) %}
+              <option value="{{ key }}" {% if objective_finding==key %}selected{% endif %}>{{ label }}</option>
             {% endfor %}
           </select>
         </div>
