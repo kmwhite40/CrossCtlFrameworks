@@ -465,16 +465,17 @@ async def generate_ssp(
     await session.flush()
     # Auto-compose the implementation statements from the derivation.
     #
-    # ``overwrite_authored=True`` on purpose. ``seed_project_entries`` has just
-    # written sample text into every entry, and ``ssp.seed._narratives`` writes
-    # it WITHOUT ``DRAFT_PREFIX`` for a control fully inherited on the
-    # platform (only the customer-responsibility lead-in is marked) -- so to
-    # ``is_draft_narrative`` those entries look human-cleared. They are not:
-    # this project did not exist a moment ago, and no human has touched it.
-    # Under the default the inherited controls would keep the seed sample
-    # instead of the composed statement. Nothing authored is lost here, and
-    # the result (with its ``replaced_authored`` list) is deliberately not
-    # surfaced, because it would name seed text as if it were a person's.
+    # ``overwrite_authored=True`` on purpose, as defence in depth.
+    # ``seed_project_entries`` has just written sample text into every entry.
+    # ``sample_statement`` marks that text with ``DRAFT_PREFIX`` on every
+    # path, so under the default preserve rule ``is_draft_narrative`` would
+    # already regenerate all of it -- but this override does not depend on
+    # that: this project did not exist a moment ago and no human has touched
+    # it, so there is nothing authored to preserve, and if a future producer
+    # ever again writes unmarked seed text the composed statement still wins
+    # here. Nothing authored is lost, and the result (with its
+    # ``replaced_authored`` list) is deliberately not surfaced, because it
+    # could only ever name seed text as if it were a person's.
     await generate_statements(session, project=proj, profile=profile, overwrite_authored=True)
     await bus.emit(
         session,

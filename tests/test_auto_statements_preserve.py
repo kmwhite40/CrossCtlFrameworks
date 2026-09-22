@@ -254,11 +254,22 @@ async def test_generate_ssp_still_fills_every_entry() -> None:
     """``generate_ssp`` seeds the project, then composes every statement.
 
     The seeder (``ssp.seed._narratives``) writes sample text into every new
-    entry, and ``sample_statement`` writes it WITHOUT ``DRAFT_PREFIX`` -- so a
-    control fully inherited on the platform (m365 "Microsoft Coverage", no
-    customer lead-in) looks, to ``is_draft_narrative``, exactly like a human
-    narrative. A fresh project has no human in it, so ``generate_ssp`` must
-    still compose that entry. The PE control here is that case.
+    entry. When this test was written ``sample_statement`` wrote it WITHOUT
+    ``DRAFT_PREFIX``, so a control fully inherited on the platform (m365
+    "Microsoft Coverage", no customer lead-in) looked, to
+    ``is_draft_narrative``, exactly like a human narrative, and only
+    ``generate_ssp``'s explicit ``overwrite_authored=True`` made it compose
+    that entry -- removing the override (mutation M4) failed this test. The PE
+    control here is that case.
+
+    ``fix/seeder-draft-marker`` made ``sample_statement`` write the marker on
+    both of its return paths, so seed text is now draft-marked and the
+    default preserve rule regenerates it anyway. The override stays, as
+    defence in depth on a project that has no human in it, but it is no
+    longer the only thing making this test pass: M4 now SURVIVES (measured:
+    14 passed with the override removed). This test still pins the property
+    that matters -- a fresh project's every entry is composed -- whichever of
+    the two mechanisms delivers it.
     """
     prefix = f"P{_tag()}"
     ac_id, pe_id = f"AC.{prefix}-3.1.1", f"PE.{prefix}-3.10.1"
@@ -311,9 +322,9 @@ async def test_generate_ssp_still_fills_every_entry() -> None:
             assert parts[0]["label"] == "Implementation", (control_id, parts)
             assert (parts[0].get("text") or "").strip(), (control_id, parts)
         # Not a fixture artefact: the composed statement for a customer control
-        # on an uncaptured tenant is draft-marked, which the seed lead-in also
-        # is -- so assert the property that distinguishes them: the seed's
-        # unmarked PE sample is gone.
+        # on an uncaptured tenant is draft-marked, and so is every seed part --
+        # so assert the property that distinguishes them: the seed's PE sample
+        # text is gone.
         assert "The organization satisfies this objective" not in _text(stored[pe_id])
         assert is_draft_narrative(stored[ac_id])
     finally:

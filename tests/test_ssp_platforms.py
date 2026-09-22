@@ -84,13 +84,17 @@ def test_non_sc_customer_responsibility_statement_has_no_fips_language(domain: s
 
 def test_non_sc_sample_statement_byte_identical_to_before() -> None:
     """Regression pin: an AC statement's text is exactly what platforms.py produced
-    before the SC-only FIPS addition (no incidental whitespace/format changes)."""
+    before the SC-only FIPS addition (no incidental whitespace/format changes) --
+    now behind the draft marker. The literal used to begin at "The organization",
+    which pinned the seeder's unmarked output as correct (the CISO-02 provenance
+    defect ``tests/test_seeder_draft_marker.py`` is about); the body after the
+    marker is byte-identical to what it was."""
     rec = _rec(domain="AC", m365_implementation_statement=None)
     text = sample_statement("aws_govcloud", rec, AC_PART)
     expected = (
-        "The organization satisfies this objective by ensuring that authorized users are "
-        "identified and access is limited, implemented through AWS IAM and IAM Identity Center "
-        "with service control policies and permission boundaries on AWS GovCloud (US)."
+        "[DRAFT] The organization satisfies this objective by ensuring that authorized users "
+        "are identified and access is limited, implemented through AWS IAM and IAM Identity "
+        "Center with service control policies and permission boundaries on AWS GovCloud (US)."
     )
     assert text == expected
 
