@@ -15,13 +15,59 @@ from __future__ import annotations
 from typing import Any
 
 from ..catalog.canonical import canonicalize
-from ..catalog.oscal import OscalCatalog
+from ..catalog.oscal import OscalCatalog, OscalControl
 from . import constants
+from .odp import ODP
+
+#: ``ODP.source`` for a parameter that came out of the 800-53r5 catalog, so a
+#: rendered definition says which document defined the blank. The CMMC/800-171
+#: producer (``ssp/odp.py``) stamps its own.
+ODP_SOURCE_80053 = "NIST SP 800-53r5"
 
 
 def family_of(canonical_id: str) -> str:
     """The family code of a canonical 800-53 control id (``"AC-2(1)"`` -> ``"AC"``)."""
     return canonical_id.split("-", 1)[0].upper()
+
+
+def odp_definitions_for(oc: OscalControl) -> list[dict[str, Any]]:
+    """The ODP fill-prompt definitions for one catalog control.
+
+    Built through :class:`ccf.ssp.odp.ODP` -- the single dataclass that defines
+    this shape -- rather than as an ad-hoc dict. This module used to emit
+    ``{"id", "label", "guidance", "choices"}`` while every consumer reads
+    ``key`` (``ssp/completeness.py``'s unfilled-parameter gate, and
+    ``_ssp_entry.html``'s ``odp::{{ odp.key }}`` field names). One shape, one
+    spelling, produced in one place, so the two cannot drift apart again.
+
+    ``key`` is the OSCAL parameter id because that is exactly what
+    :func:`build_80053_entries` scaffolds into the entry's ``odp_values`` and
+    what the editor posts back -- the prompt and the stored value must share a
+    key or the value can never be read back or counted as filled.
+
+    Nothing is invented: a parameter with no guidelines gets ``guidance=None``
+    and a parameter with no ``select.choice[]`` gets ``choices=[]`` and stays
+    an assignment. ``suggested`` is always ``None`` -- the 800-53 catalog
+    offers no example value, and fabricating one would put an unreviewed
+    number in front of a human as if NIST had proposed it.
+    """
+    out: list[dict[str, Any]] = []
+    for p in oc.params:
+        choices = list(p.choices)
+        label = (p.label or "").strip()
+        out.append(
+            ODP(
+                # Two catalog params carry no label at all (SC-36, SI-7(1));
+                # fall back to the identifier rather than render a blank prompt.
+                key=p.id,
+                label=label or p.id,
+                kind="selection" if choices else "assignment",
+                choices=choices,
+                guidance=(p.guidance or "").strip() or None,
+                source=ODP_SOURCE_80053,
+            ).to_dict()
+        )
+    return out
 
 
 def build_80053_entries(
@@ -34,9 +80,14 @@ def build_80053_entries(
 
     Returns ``(entries, odp_defs_by_control)`` where each entry dict has keys
     matching the ``SSPControlEntry`` columns, and ``odp_defs_by_control[cid]``
-    is a list of ``{"id", "label", "guidance", "choices"}`` dicts (one per
-    catalog param) for rendering ODP fill prompts — the entry's own
-    ``odp_values`` holds only ``id -> value`` (scaffolded ``None``).
+    is the list :func:`odp_definitions_for` produces (one ``ccf.ssp.odp.ODP``
+    dict per catalog param) for rendering ODP fill prompts — the entry's own
+    ``odp_values`` holds only ``key -> value`` (scaffolded ``None``).
+
+    The second element is reference data derived from the catalog, not entry
+    content: nothing persists it. ``ssp/odp_defs.py`` resolves it again at read
+    time for the API, the editor and the completeness gate, so the catalog
+    stays the single authority for what a parameter means.
     """
     roles = named_roles or {}
     ids = [
@@ -93,9 +144,6 @@ def build_80053_entries(
                 "sort_order": order,
             }
         )
-        odp_defs_by_control[cid] = [
-            {"id": p.id, "label": p.label, "guidance": p.guidance, "choices": p.choices}
-            for p in oc.params
-        ]
+        odp_defs_by_control[cid] = odp_definitions_for(oc)
 
     return entries, odp_defs_by_control

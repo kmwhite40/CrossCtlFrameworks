@@ -24,7 +24,6 @@ from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
 from ...governance import automation
 from ...models import (
-    ScoringControl,
     SSPControlEntry,
     SSPProject,
     StatementTemplate,
@@ -36,6 +35,7 @@ from ...ssp.completeness_query import project_completeness
 from ...ssp.generator import generate_ssp_docx
 from ...ssp.nist80053_docx import render_80053_docx
 from ...ssp.odp import render as render_template
+from ...ssp.odp_defs import odp_definitions_for_project
 from ...ssp.platforms import (
     NO_PLATFORM,
     PLATFORMS,
@@ -311,15 +311,13 @@ async def get_project(
         .all()
     )
     # Attach each control's organization-defined parameter slots (reference data
-    # from the scoring catalog) so the editor can render fill-in-the-blank fields.
-    odp_map: dict[str, Any] = {
-        row[0]: row[1]
-        for row in (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringControl.odp_definitions)
-            )
-        ).all()
-    }
+    # — the scoring matrix for CMMC, the parsed OSCAL catalog for 800-53) so the
+    # editor can render fill-in-the-blank fields. This used to be an inline
+    # ScoringControl join, which is the CMMC L2 matrix and therefore matched no
+    # 800-53 control id at all; ssp/odp_defs.py resolves both frameworks.
+    odp_map = await odp_definitions_for_project(
+        session, proj, [e.control_id for e in entries]
+    )
     out_entries = []
     for e in entries:
         d = entry_to_dict(e)

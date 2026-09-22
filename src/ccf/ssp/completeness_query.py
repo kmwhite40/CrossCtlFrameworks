@@ -28,12 +28,12 @@ from ..models import (
     Control,
     ControlImplementation,
     Evidence,
-    ScoringControl,
     SSPControlEntry,
     SSPProject,
     System,
 )
 from . import completeness as ssp_completeness
+from .odp_defs import odp_definitions_for_project
 from .seed import entry_to_dict
 
 
@@ -62,14 +62,14 @@ async def project_completeness(session: AsyncSession, project: SSPProject) -> di
         .scalars()
         .all()
     )
-    odp_map: dict[str, Any] = {
-        row[0]: row[1]
-        for row in (
-            await session.execute(
-                select(ScoringControl.control_id, ScoringControl.odp_definitions)
-            )
-        ).all()
-    }
+    # Reference data, resolved per framework (ssp/odp_defs.py): the CMMC
+    # scoring matrix, or the parsed OSCAL catalog for 800-53. The inline
+    # ScoringControl join this replaces could only ever match a CMMC id, so an
+    # 800-53 project's "unfilled parameter(s)" gap could not fire at all --
+    # ``defined`` was always empty and the gate measured nothing.
+    odp_map = await odp_definitions_for_project(
+        session, project, [e.control_id for e in entries]
+    )
 
     # Real evidence linkage: a control counts as evidenced when its system's
     # ControlImplementation (matched by catalog identifier == this entry's
