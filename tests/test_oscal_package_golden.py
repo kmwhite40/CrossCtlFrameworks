@@ -208,7 +208,7 @@ async def test_golden_e2e_sar_and_authorization_package() -> None:
     assert len(sar_result["observations"]) >= 1
     assert len(sar_result["risks"]) >= 1
 
-    # --- 6. Authorization package: ZIP with all 5 members --------------
+    # --- 6. Authorization package: ZIP with all 6 members --------------
     async with _client() as c:
         pkg_resp = await c.get(f"/api/oscal/package/{sys_id}")
     assert pkg_resp.status_code == 200
@@ -216,8 +216,13 @@ async def test_golden_e2e_sar_and_authorization_package() -> None:
 
     zf = zipfile.ZipFile(io.BytesIO(pkg_resp.content))
     names = set(zf.namelist())
+    # This fixture's assessment carries real results, so the derived plan has a
+    # control scope and is bundled. An assessment with no recorded coverage
+    # yields a plan reviewing nothing and is deliberately left out instead --
+    # tests/test_oscal_package.py pins both sides.
     assert names == {
         "ssp.json",
+        "sap.json",
         "sar.json",
         "poam.json",
         "component-definition.json",
@@ -225,7 +230,7 @@ async def test_golden_e2e_sar_and_authorization_package() -> None:
     }
 
     docs: dict[str, dict] = {}
-    for name in ("ssp.json", "sar.json", "poam.json", "component-definition.json"):
+    for name in ("ssp.json", "sap.json", "sar.json", "poam.json", "component-definition.json"):
         doc = json.loads(zf.read(name))
         report = validate_document(doc)
         assert report.mode == "official", (name, report.warnings)

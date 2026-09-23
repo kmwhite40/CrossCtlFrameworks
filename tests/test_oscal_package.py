@@ -17,12 +17,23 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import POAM, Assessment, Organization, SSPProject, System, User
+from ccf.models import (
+    POAM,
+    Assessment,
+    AssessmentResult,
+    Control,
+    ControlImplementation,
+    Organization,
+    SSPProject,
+    System,
+    User,
+)
 from ccf.oscal import validate_document
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -102,6 +113,15 @@ async def test_package_export_populated_system_returns_all_artifacts() -> None:
         doc = json.loads(zf.read(name))
         report = validate_document(doc)
         assert report.ok, (name, report.errors)
+
+    # This fixture's assessment has no AssessmentResult rows, so the plan Concord
+    # would derive reviews nothing. `_import_ap` already refuses to cite such a
+    # plan from the SAR for exactly that reason; bundling it here would put a
+    # document asserting an empty assessment scope into an authorization package.
+    assert "sap.json" not in names
+    readme = zf.read("README.txt").decode()
+    assert "sap.json: ABSENT" in readme
+    assert "no recorded control coverage" in readme
 
 
 @pytest.mark.asyncio
@@ -213,3 +233,98 @@ async def test_package_route_org_check_rejects_a_foreign_principal_without_rls()
         with pytest.raises(HTTPException) as excinfo:
             await package_export(sys_id, session=s, principal=outsider)
         assert excinfo.value.status_code == 404
+
+
+async def _assessment_with_recorded_coverage(org_name: str) -> int:
+    """A system whose assessment actually covers controls, so a plan has scope."""
+    async with session_scope() as s:
+        org = Organization(name=org_name)
+        s.add(org)
+        await s.flush()
+        sysrow = System(organization_id=org.id, name=f"{org_name} system")
+        s.add(sysrow)
+        await s.flush()
+        s.add(
+            SSPProject(
+                organization_id=org.id,
+                system_id=sysrow.id,
+                customer_name=f"{org_name} Co",
+                system_name=f"{org_name} Sys",
+            )
+        )
+
+        # Control.identifier is globally unique, so get-or-create rather than
+        # insert: eleven other modules seed this same family.
+        impls = []
+        for identifier in ("AC-2", "AU-2"):
+            ctrl = (
+                await s.execute(select(Control).where(Control.identifier == identifier))
+            ).scalar_one_or_none()
+            if ctrl is None:
+                ctrl = Control(identifier=identifier, control_name=f"{identifier} control title")
+                s.add(ctrl)
+                await s.flush()
+            impl = ControlImplementation(
+                system_id=sysrow.id, control_id=ctrl.id, status="implemented"
+            )
+            s.add(impl)
+            await s.flush()
+            impls.append(impl)
+
+        assessment = Assessment(
+            system_id=sysrow.id,
+            name=f"{org_name} internal assessment",
+            kind="internal",
+            assessor="Jane 3PAO",
+            started_on=date.today() - timedelta(days=10),
+            finished_on=date.today(),
+            summary="Internal control assessment.",
+        )
+        s.add(assessment)
+        await s.flush()
+        for impl, finding in zip(impls, ("satisfied", "other_than_satisfied"), strict=True):
+            s.add(
+                AssessmentResult(
+                    assessment_id=assessment.id,
+                    implementation_id=impl.id,
+                    finding=finding,
+                    rationale=f"{finding} rationale",
+                    observed_on=date.today(),
+                )
+            )
+        await s.flush()
+        return sysrow.id
+
+
+@pytest.mark.asyncio
+async def test_package_bundles_the_assessment_plan_when_the_assessment_has_scope() -> None:
+    """The SAP is the one FedRAMP core artifact the package never carried.
+
+    It has been built and schema-validated since the SAR shipped, and served at
+    its own route, but `build_package_zip` wrote SSP, SAR, POA&M and
+    component-definition and stopped -- so the downloadable authorization
+    package was missing a document a reviewer expects to find in it.
+    """
+    sys_id = await _assessment_with_recorded_coverage("Package Plan Org")
+
+    transport = ASGITransport(app=create_app())
+    async with AsyncClient(transport=transport, base_url="http://t") as c:
+        resp = await c.get(f"/api/oscal/package/{sys_id}")
+
+    assert resp.status_code == 200
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    names = set(zf.namelist())
+    assert "sap.json" in names, sorted(names)
+
+    doc = json.loads(zf.read("sap.json"))
+    report = validate_document(doc)
+    assert report.ok, report.errors
+
+    # It must be a plan with a scope, not an empty one that merely validates.
+    selections = doc["assessment-plan"]["reviewed-controls"]["control-selections"]
+    assert selections[0].get("include-controls"), selections
+
+    readme = zf.read("README.txt").decode()
+    assert "sap.json: present" in readme
+    # The manifest sentence names the members; it must not keep listing four.
+    assert "SAP" in readme
