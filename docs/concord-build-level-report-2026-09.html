@@ -227,15 +227,15 @@
 
   <dl class="ledger">
     <div class="cell"><dt>Migration head</dt><dd>0083</dd></div>
-    <div class="cell"><dt>Tests passing</dt><dd>3,134</dd></div>
-    <div class="cell"><dt>API endpoints</dt><dd>492</dd></div>
-    <div class="cell"><dt>Tenant tables</dt><dd>138</dd></div>
+    <div class="cell"><dt>Tests passing</dt><dd>3,511</dd></div>
+    <div class="cell"><dt>API endpoints</dt><dd>498</dd></div>
+    <div class="cell"><dt>Tenant tables</dt><dd>139</dd></div>
   </dl>
 
   <section>
     <div class="sec-head">
       <h2>Where the build stands</h2>
-      <span class="sec-note">as of head 5cb5f53</span>
+      <span class="sec-note">as of head c4b6a1b</span>
     </div>
     <p class="lede">
       Concord is feature-complete across the authorization lifecycle: a customer can define
@@ -757,6 +757,103 @@
 
   <section>
     <div class="sec-head">
+      <h2>What the platform can prove about itself</h2>
+      <span class="sec-note">measured, not reviewed</span>
+    </div>
+    <p class="lede">
+      Tenant isolation and tamper evidence are the two properties a compliance platform
+      cannot ask to be taken on trust. Both were audited by deleting each guard and
+      re-running the suite &mdash; because reading the code had already missed these twice.
+      What that found is stated here in full, including what it says about the tests that
+      were supposed to be watching.
+    </p>
+
+    <div class="items">
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Half the tenant-isolation tests could not fail</h3>
+          <p>A route&rsquo;s own organization check, exercised only over HTTP, cannot be shown to
+          exist: the database&rsquo;s row-level security refuses the foreign row first, so deleting
+          the application check leaves the test green. Of 38 cross-tenant tests, <strong>19 were
+          proving the database worked rather than the code</strong> &mdash; and three separate tests
+          all passed when the shared system-scoping guard was removed.</p>
+          <p>Each is now pinned where the guard actually lives, on a session with row-level
+          security bypassed &mdash; the path the command line, scheduler and workers use. Two
+          exports had no cross-tenant test at all.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Fifty routes now check the tenant themselves</h3>
+          <p>Twenty-six routes that took a record id relied entirely on the database policy;
+          eleven more trusted an organization named by the caller in a request body rather
+          than the authenticated one; thirteen server-rendered pages had no check at all.
+          Every one is now guarded in the application, with the database policy as the
+          backstop it was designed to be rather than the only line.</p>
+          <p>Among them: a document download that returned bytes on an existence check alone,
+          and an assessment engagement that could name another organization&rsquo;s system &mdash;
+          recording a third-party assessor&rsquo;s scope over a system nobody authorized.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>The tamper-evidence chain was forking on ordinary traffic</h3>
+          <p>The audit log is append-only and hash-chained, and verification had been failing
+          intermittently for long enough that a test comment called it <em>&ldquo;the one accepted
+          full-suite flake.&rdquo;</em> It was neither flaky nor a test problem. A tenant policy added
+          to the audit table filtered the query that reads the chain&rsquo;s head, so a writer that
+          could not see the true head linked its row to the beginning of the chain. Two
+          organizations writing in the same window was enough.</p>
+          <p>Two further causes surfaced only by measuring after the first was fixed:
+          simultaneous writes both reading the head before either committed, and two events in
+          one transaction. Verification detects a real alteration as before &mdash; including a
+          forged row that hashes itself correctly and only fails to link, which is the one shape
+          a content check cannot catch and the exact shape these defects produced.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>Every audit event now names the tenant it belongs to</h3>
+          <p>The non-HTTP audit path never recorded an organization, and a record without one
+          is deliberately visible to every tenant &mdash; so events from the external portal,
+          compliance packs, waivers, patching, enforcement, AI governance and identity
+          provisioning were readable across organizations.</p>
+          <p>All 35 recording sites were classified individually rather than patched wholesale.
+          Thirty-three belong to a tenant; two are genuinely deployment-wide and stay visible to
+          everyone, because a customer whose catalog moves beneath them is owed that record. The
+          fault was not that a blank means &ldquo;everyone&rdquo; &mdash; it is that blank was also the
+          default, so &ldquo;this belongs to no one&rdquo; and &ldquo;someone forgot&rdquo; were the same
+          value. Omitting it is now an error the compiler catches.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>The production configuration was never exercised</h3>
+          <p>The test suite runs with the environment set to <span class="mono">test</span>,
+          which the platform treats as development &mdash; so the production branch of eight
+          security gates had no coverage: the strict-transport header, five session-cookie
+          <span class="mono">Secure</span> flags, and two mock paths meant to be unavailable
+          outside development. A gate written the ordinary way passed with the gate deleted.</p>
+          <p>The readiness check had drifted further: it carried its own idea of what
+          &ldquo;development&rdquo; means and reported <em>&ldquo;open access is expected&rdquo;</em> about a
+          deployment every other part of the platform was treating as production. One
+          definition now, and the production side of each gate is tested.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
       <h2>What the build will not claim</h2>
       <span class="sec-note">read this before a customer conversation</span>
     </div>
@@ -769,13 +866,15 @@
       <div class="item">
         <span class="tag t-limit">Limit</span>
         <div>
-          <h3>Live machine evidence is two providers deep</h3>
-          <p>Five automated posture checks across Microsoft 365 / Graph and PuppetDB. AWS
-          GovCloud captures configuration but has no checks evaluating it; Azure and GCP have
-          no connector at all. Everything else is human-attested or ingested evidence.</p>
-          <p>The spine that machine evidence lands on is built and tested — adding a provider
-          is now additive work rather than architecture.</p>
-        </div>
+          <h3>Live machine evidence is three providers deep</h3>
+          <p>Nine automated posture checks: five across Microsoft 365 / Graph and PuppetDB, and
+          four over AWS GovCloud, which previously captured configuration that nothing
+          evaluated. Azure Government now has a capture connector; Google Cloud does not, and a
+          GCP customer&rsquo;s plan says so rather than borrowing another provider&rsquo;s catalogue.</p>
+          <p>A claim of automated evidence now requires that this organization&rsquo;s own connector
+          completed a recent, non-empty capture &mdash; not merely that a connector exists for the
+          platform. Everything else is human-attested or ingested evidence, and says so.</p>
+</div>
       </div>
 
       <div class="item">
@@ -865,11 +964,10 @@
       order:
     </p>
     <ul class="plain">
-      <li><strong>Provider breadth</strong> — Azure Government and GCP connectors, and posture checks over the AWS GovCloud capture that already exists. This is the single change that most moves the continuous-verification story.</li>
-      <li><strong>Gap assessment and Trust Center depth</strong> — now possible, because the ontology finally gives them something to compare and something to publish.</li>
-      <li><strong>Assessment depth</strong> — objective-level SAR findings, a generated OSCAL assessment plan, and a FedRAMP Rev 5 baseline overlay with assigned parameter values.</li>
       <li><strong>Identity and crypto hardening</strong> — MFA and PIV-CAC, SSO hardening, KMS-backed key rotation and FIPS-validated cryptography.</li>
-      <li><strong>Marketplace status reporting</strong> — what the FedRAMP Marketplace itself says about a system, which waits on a register this platform can read. FedRAMP has published no status vocabulary, so nothing here claims one; the ruleset covers Classes, Paths and the 120-day downgrade notice but never lists status values. What each system carries today is Concord's own pipeline stage — an operator's note on where this platform understands the system to be, worded after FedRAMP's still-unadopted draft RFC so it reads naturally, and barred by test from reaching any filed deliverable.</li>
+      <li><strong>Marketplace status reporting</strong> &mdash; blocked on a source, not on engineering. FedRAMP publishes no status vocabulary this platform can read, and the five-per-regime lists exist only in an unadopted draft RFC. What each system carries instead is Concord&rsquo;s own pipeline stage, barred by test from any filed deliverable.</li>
+      <li><strong>Google Cloud</strong> &mdash; Azure Government now has a capture connector; GCP does not, and a GCP customer&rsquo;s system security plan correctly declares no cloud platform rather than borrowing another provider&rsquo;s. Supporting it means a service catalogue and a responsibility model, not a connector alone.</li>
+      <li><strong>FedRAMP-assigned parameter values</strong> &mdash; the Rev 5 baseline overlay. Every organization-defined parameter now carries its label, guidance and choices from the catalog, and an assessor can see which are unset. What does not exist anywhere in the data is FedRAMP&rsquo;s own assigned values: the workbook&rsquo;s FedRAMP columns are membership markers, and one cell says plainly that a provider &ldquo;may use FedRAMP value&rdquo; without carrying one. It needs FedRAMP&rsquo;s published OSCAL baselines ingested as a new source.</li>
       <li><strong>Integrations</strong> — eMASS, Jira, and wiring the typed AI action path to the organization's own gateway.</li>
     </ul>
 
@@ -883,9 +981,9 @@
 
   <footer>
     <p>Build level at <span class="mono">main</span> head
-    <span class="mono">5cb5f53</span>. Migration head <span class="mono">0083</span>,
-    single Alembic head. ruff, mypy strict and bandit clean across 298 source files.
-    3,134 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
+    <span class="mono">c4b6a1b</span>. Migration head <span class="mono">0083</span>,
+    single Alembic head. ruff, mypy strict and bandit clean across 306 source files.
+    3,511 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
     <p>Counts in this report are measured from the repository at that commit, not quoted
     from prior documents. Where a figure in the README disagrees, the README is the stale
     one.</p>
