@@ -32,10 +32,19 @@ class PackError(ValueError):
     """Raised on an invalid pack or install operation."""
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 — avoid import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
 
 
 def _posture_rule_keys(manifest: dict[str, Any]) -> set[str]:
@@ -161,7 +170,8 @@ async def install_pack(
                  "mappings": len(manifest.get("mappings", [])),
                  "version": pack.version}))
     await _audit(
-        session, actor=actor or "system", action="create", entity_type="compliance_pack",
+        session, organization_id=org_id,
+        actor=actor or "system", action="create", entity_type="compliance_pack",
         entity_id=str(pack.id),
         diff={"event": action, "pack": key, "version": pack.version, "sha": sha},
     )

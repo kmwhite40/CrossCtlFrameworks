@@ -130,10 +130,19 @@ def _backoff_seconds(consecutive_failures: int) -> int:
     return int(min(doubled, _BACKOFF_MAX_SECONDS))
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 - avoids an import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
 
 
 def _result(source: PackSource, status: str, **extra: Any) -> dict[str, Any]:
@@ -347,6 +356,7 @@ async def _apply(
     await session.flush()
     await _audit(
         session,
+        organization_id=source.organization_id,
         actor=actor,
         action="update",
         entity_type="pack_source",
@@ -396,6 +406,7 @@ async def adopt_pending(
     await session.flush()
     await _audit(
         session,
+        organization_id=source.organization_id,
         actor=actor,
         action="update",
         entity_type="pack_source",

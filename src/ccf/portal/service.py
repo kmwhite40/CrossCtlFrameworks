@@ -45,10 +45,19 @@ def _gen_token() -> str:
     return secrets.token_urlsafe(_TOKEN_BYTES)
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 — avoid import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
 
 
 async def _clamp(session: AsyncSession, grant: ExternalAccessGrant) -> None:
@@ -226,7 +235,8 @@ async def create_engagement(
     session.add(engagement)
     await session.flush()
     await _audit(
-        session, actor=actor or "system", action="create",
+        session, organization_id=org_id,
+        actor=actor or "system", action="create",
         entity_type="assessment_engagement", entity_id=str(engagement.id),
         diff={"org": org_id, "system": system_id, "principal": assessor_principal_id,
               "period_from": period_from.isoformat(), "period_to": period_to.isoformat()},
@@ -281,7 +291,8 @@ async def revoke_engagement(
     for gid in grant_ids:
         await revoke_grant(session, gid, actor=actor)
     await _audit(
-        session, actor=actor or "system", action="delete",
+        session, organization_id=engagement.organization_id,
+        actor=actor or "system", action="delete",
         entity_type="assessment_engagement", entity_id=str(engagement_id),
         diff={"revoked_at": engagement.revoked_at.isoformat(), "grants_revoked": len(grant_ids)},
     )
@@ -406,7 +417,8 @@ async def create_grant(
         detail += f" expiry capped at engagement period_to {expires_at.isoformat()}"
     await record_access(session, grant, action="issued", detail=detail)
     await _audit(
-        session, actor=actor or "system", action="create", entity_type="external_grant",
+        session, organization_id=org_id,
+        actor=actor or "system", action="create", entity_type="external_grant",
         entity_id=str(grant.id),
         diff={"org": org_id, "kind": kind, "packages": pkg_ids, "evidence": ev_ids,
               "engagement": engagement_id, "expiry_capped": capped},
@@ -434,7 +446,8 @@ async def revoke_grant(session: AsyncSession, grant_id: int, *, actor: str | Non
     grant.revoked = True
     await record_access(session, grant, action="revoked")
     await _audit(
-        session, actor=actor or "system", action="delete", entity_type="external_grant",
+        session, organization_id=grant.organization_id,
+        actor=actor or "system", action="delete", entity_type="external_grant",
         entity_id=str(grant.id), diff={"revoked": True},
     )
     await session.flush()

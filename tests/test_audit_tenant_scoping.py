@@ -160,8 +160,13 @@ async def test_audit_list_row_isolates_by_tenant_but_shows_system_rows() -> None
             )
             await s.flush()
 
-        # A system/global event (organization_id stays NULL — mirrors the
-        # non-HTTP-mutation callers of record_event, e.g. OIDC JIT provisioning).
+        # A genuinely platform-wide event: organization_id is None, which is
+        # what ``record_event`` writes for a deployment-wide operation (adopting
+        # a catalog revision, pruning posture detail across every org). Passed
+        # explicitly -- ``record_event`` takes the column as a required argument
+        # since ``fix/audit-event-org-scoping``, because a tenant-scoped event
+        # that silently defaulted to NULL was published to every tenant by the
+        # ``organization_id IS NULL`` clause this test's next assertion relies on.
         await record_event(
             s,
             actor="system-marker@audit-scope.test",
@@ -169,6 +174,7 @@ async def test_audit_list_row_isolates_by_tenant_but_shows_system_rows() -> None
             entity_type="rls-cov-audit",
             entity_id="AuditScopeSystemMarker",
             diff={},
+            organization_id=None,
         )
 
     async def _by_actor(c: AsyncClient, token: str, actor: str) -> list[dict[str, object]]:

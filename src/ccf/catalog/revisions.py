@@ -353,8 +353,21 @@ async def adopt_revision(
     row.adoption_impact = impact.to_dict()
     # record_event maintains the prev_hash/row_hash chain. Building an AuditLog
     # by hand would append an unchained row and silently defeat tamper-evidence.
+    #
+    # GENUINELY GLOBAL: organization_id stays None on purpose. A CatalogRevision
+    # carries no organization_id and has no RLS (see ccf.models.CatalogRevision)
+    # -- adoption moves a single deployment-wide pointer, and its impact is
+    # computed across every org's content precisely because it is not one
+    # tenant's change. Under migration 0044's tenant_isolation policy a NULL-org
+    # row is visible to every tenant, which is the correct reading here: each
+    # org must be able to see that the catalog beneath it moved, and who moved
+    # it. Note the session this runs on IS tenant-clamped -- it is the adopting
+    # admin's request session -- so deriving the org from the session would be
+    # actively wrong: it would hide a platform-wide change from every org except
+    # whichever admin happened to adopt it, and assert the change was theirs.
     await record_event(
         session,
+        organization_id=None,
         actor=actor,
         action="adopt",
         entity_type="catalog_revision",

@@ -42,10 +42,19 @@ class PatchingError(ValueError):
     """A refusal. Raised rather than returned so no caller can ignore it."""
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 - avoids an import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
     # record_event flushes its own row; this flushes the caller's pending
     # business objects alongside it, which this module's callers rely on.
     await session.flush()
@@ -207,6 +216,7 @@ async def create_campaign(
     await session.flush()
     await _audit(
         session,
+        organization_id=campaign.organization_id,
         actor=actor,
         action="create",
         entity_type="patch_campaign",
@@ -334,6 +344,7 @@ async def complete_wave(
     await session.flush()
     await _audit(
         session,
+        organization_id=campaign.organization_id,
         actor=actor,
         action="update",
         entity_type="patch_wave",

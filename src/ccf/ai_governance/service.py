@@ -66,10 +66,19 @@ def score_agent(agent: AiAgent) -> dict[str, Any]:
     return {"score": score, "rating": rating_for(score), "factors": factors}
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 — avoid import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
 
 
 async def risk_assess(
@@ -85,7 +94,8 @@ async def risk_assess(
     )
     session.add(assessment)
     await _audit(
-        session, actor=actor or "system", action="update", entity_type="ai_agent",
+        session, organization_id=agent.organization_id,
+        actor=actor or "system", action="update", entity_type="ai_agent",
         entity_id=str(agent.id),
         diff={"event": "risk_assess", "score": result["score"], "rating": result["rating"]},
     )
@@ -106,7 +116,8 @@ async def review_agent(
     )
     session.add(approval)
     await _audit(
-        session, actor=reviewer or "reviewer", action="update", entity_type="ai_agent",
+        session, organization_id=agent.organization_id,
+        actor=reviewer or "reviewer", action="update", entity_type="ai_agent",
         entity_id=str(agent.id), diff={"event": "review", "decision": decision},
     )
     await session.flush()
@@ -123,7 +134,8 @@ async def engage_kill_switch(
     )
     session.add(event)
     await _audit(
-        session, actor=actor or "operator", action="update", entity_type="ai_agent",
+        session, organization_id=agent.organization_id,
+        actor=actor or "operator", action="update", entity_type="ai_agent",
         entity_id=str(agent.id), diff={"event": "kill_switch", "reason": reason},
     )
     await session.flush()

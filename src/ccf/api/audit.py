@@ -114,12 +114,41 @@ async def record_event(
     entity_type: str,
     entity_id: str | None,
     diff: dict[str, Any],
+    organization_id: int | None,
 ) -> None:
     """Append one entry to the tamper-evident audit chain within ``session``.
 
     For events that don't originate from an auto-audited mutating HTTP request
     (e.g. OIDC/JIT provisioning during a GET callback, or role changes). Uses the
     same ``prev_hash``/``row_hash`` chaining as the middleware. Caller owns commit.
+
+    ``organization_id`` is the tenant the event belongs to, and it is a REQUIRED
+    keyword with no default: every caller must classify its own event. Like the
+    middleware's, it is a SCOPING column only (DATA-06) and never enters
+    ``content``/the hash payload, so setting it leaves existing chains and
+    ``/api/audit/verify`` valid.
+
+    ``None`` does not mean "unknown" or "not set" -- it means **platform-wide**,
+    and it is not a safe default. Migration 0044's ``tenant_isolation`` predicate
+    is ``current_tenant() IS NULL OR organization_id IS NULL OR organization_id =
+    current_tenant()``: the middle clause deliberately publishes a NULL-org row
+    to *every* tenant, so that genuinely deployment-wide events (adopting a
+    catalog revision, pruning posture detail across all orgs) stay readable
+    everywhere. A tenant-scoped event that lands ``None`` is therefore not
+    merely unscoped -- it is broadcast to every organization on the deployment,
+    readable through ``/api/audit`` by any scoped admin or assessor. That was
+    live for every caller of this function until this parameter existed.
+
+    Deliberately NOT derived from the session's RLS tenant, tempting as that is
+    (the clamp is right there, and it would make a forgotten call site harmless).
+    It would be wrong in both directions. ``ccf.catalog.revisions.adopt_revision``
+    runs on the adopting admin's *tenant-clamped* request session but changes the
+    catalog for the whole deployment, so derivation would hide a platform-wide
+    change from every other tenant; conversely OIDC/JIT provisioning and SCIM run
+    on an *unscoped* session -- there is no principal yet -- while provisioning a
+    user into a known org, so derivation would broadcast them. The tenant an
+    event is *about* is not reliably the tenant its session is clamped to, and
+    only the call site knows which.
 
     The chain-head lookup runs under :func:`ccf.db.unscoped_read`. Unlike the
     middleware, which opens its own session and resets it to unscoped, this
@@ -157,7 +186,12 @@ async def record_event(
                 select(AuditLog.row_hash).order_by(AuditLog.id.desc()).limit(1)
             )
         ).scalar_one_or_none() or _GENESIS
-    entry = AuditLog(**content, prev_hash=prev, row_hash=row_hash(prev, content))
+    entry = AuditLog(
+        **content,
+        organization_id=organization_id,
+        prev_hash=prev,
+        row_hash=row_hash(prev, content),
+    )
     session.add(entry)
     await session.flush([entry])
 

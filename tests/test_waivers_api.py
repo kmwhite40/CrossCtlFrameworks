@@ -283,6 +283,19 @@ async def test_every_transition_is_audited_through_the_hash_chain() -> None:
         # The chain is what makes the trail tamper-evident; a hand-built row
         # would have neither hash.
         assert all(r.row_hash for r in rows)
+        # ...and all three are scoped to the waiver's own tenant. These requests
+        # run as the global SYSTEM principal (auth is disabled here), whose
+        # ``org_id`` is None -- so a route that took the audit event's org from
+        # the principal instead of the waiver would leave every row NULL, and
+        # migration 0044's ``tenant_isolation`` policy reads NULL as "visible to
+        # every tenant". This tenant's waiver decisions would be published to
+        # all of them.
+        org_id = (
+            await session.execute(
+                select(System.organization_id).where(System.id == system_id)
+            )
+        ).scalar_one()
+        assert [r.organization_id for r in rows] == [org_id, org_id, org_id]
 
 
 # ── separation of duties, as a pure rule ─────────────────────────────────────

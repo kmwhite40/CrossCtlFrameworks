@@ -387,6 +387,12 @@ async def test_a_real_prune_writes_an_audit_record() -> None:
         # hash at all; record_event must always populate both.
         assert row.row_hash is not None
         assert row.prev_hash is not None
+        # The prune takes no org_id and deletes across every organization, so
+        # the event belongs to no tenant. NULL is what keeps it readable by all
+        # of them under migration 0044's tenant_isolation policy; naming any one
+        # org here would both hide a deployment-wide deletion from the rest and
+        # claim their detail was pruned on that org's behalf.
+        assert row.organization_id is None
 
 
 @pytest.mark.asyncio
