@@ -20,7 +20,9 @@ originally trusted a client-supplied ``organization_id`` outright (no
 Three closes, exercised here:
 
 1. The router derives organization from the authenticated principal, not a
-   client-supplied field (``prep.py::_scoped_organization_id``).
+   client-supplied field: a scoped caller naming another organization is
+   refused 403 (``prep.py::_scoped_organization_id`` ->
+   ``auth_deps.resolve_caller_org``).
 2. ``jobs.enqueue`` refuses to open a run whose declared org does not own the
    named source (``sources.resolve_source_organization_id`` +
    ``SourceOwnershipMismatch``).
@@ -297,8 +299,10 @@ async def test_retrieve_ignores_a_scoped_principals_claimed_cross_tenant_organiz
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An org-A caller naming org B's organization_id must never see org B's
-    prepared evidence -- the caller's own organization always wins, silently
-    (logged, not rejected -- see prep.py's _scoped_organization_id).
+    prepared evidence. The property this test was written to pin is unchanged;
+    only the shape of the refusal is -- it used to be a silent redirect to the
+    caller's own org (logged, not rejected), and is now a 403 from
+    ``resolve_caller_org``.
 
     Exercised through the real authenticated HTTP path (bearer token ->
     SET ROLE ccf_app), not session_scope(), so this also stands as the
@@ -317,19 +321,27 @@ async def test_retrieve_ignores_a_scoped_principals_claimed_cross_tenant_organiz
             params={"organization_id": org_b, "control": "IA-2"},
             headers=_auth(token_a),
         )
-    assert response.status_code == 200
-    results = response.json()["results"]
-    assert results == [], "org A must not see org B's prepared evidence"
-    assert not any(victim_text in str(r) for r in results)
+    assert response.status_code == 403, response.text
+    assert victim_text not in response.text, "org A must not see org B's prepared evidence"
 
 
 async def test_retrieve_still_returns_the_callers_own_organizations_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The override is a redirect to the caller's real org, not a black hole:
-    org A's own prepared evidence is still reachable (proving the endpoint
-    stays useful for the case that matters -- a caller retrieving their own
-    data -- rather than only "provably closed for attackers").
+    """The guard is not a black hole: org A's own prepared evidence is still
+    reachable, so the endpoint stays useful for the case that matters -- a
+    caller retrieving their own data -- rather than only "provably closed for
+    attackers". That half is exactly what this test was written to pin.
+
+    It used to pin it by naming ``999_999`` and asserting the caller's own org
+    won anyway. A **nonexistent** org id is now refused 403, the same as a real
+    foreign one, and deliberately so: ``resolve_caller_org`` decides from
+    ``principal.org_id`` alone, before any lookup, so the two responses are
+    byte-identical and the refusal discloses nothing about which org ids exist.
+    Answering 200 for an id that does not exist would have required looking it
+    up, and would have made "does org N exist?" answerable by anyone with an
+    account. Both halves are asserted here so the useful case cannot quietly
+    break while the refusal stays green.
     """
     token_a, org_a = await _mk_user("own-a@prep-tenant.test", "Prep Tenant Own Org A")
     own_text = "Administrators authenticate with multifactor authentication for IA-2."
@@ -337,9 +349,12 @@ async def test_retrieve_still_returns_the_callers_own_organizations_data(
     monkeypatch.setattr(gateway, "embed", _fake_embed([0.9] * 1024))
 
     async with _client() as client:
-        # Even naming a bogus/foreign organization_id in the query -- the
-        # caller's own org still wins.
         response = await client.get(
+            "/api/prep/retrieve",
+            params={"organization_id": org_a, "control": "IA-2"},
+            headers=_auth(token_a),
+        )
+        missing = await client.get(
             "/api/prep/retrieve",
             params={"organization_id": 999_999, "control": "IA-2"},
             headers=_auth(token_a),
@@ -348,6 +363,9 @@ async def test_retrieve_still_returns_the_callers_own_organizations_data(
     results = response.json()["results"]
     assert len(results) == 1
     assert results[0]["content"] == own_text
+    # An org id that does not exist is refused like any other org that is not
+    # the caller's -- decided before any lookup, so it discloses nothing.
+    assert missing.status_code == 403, missing.text
 
 
 # --- Laundering: enqueue refuses a cross-tenant source ----------------------

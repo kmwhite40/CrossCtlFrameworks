@@ -443,3 +443,53 @@ def mini_workbook(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
     wb.save(path)
     return path
+
+
+#: The environment a production deployment actually runs with. ``CCF_ENV``
+#: alone is not enough: ``config.enforce_secure_config`` refuses startup
+#: outside dev unless auth is on, the session secret is not the default, and
+#: CORS is not wildcard -- so an app built with only ``CCF_ENV=production``
+#: would never come up, and a test written that way would pass for the wrong
+#: reason.
+_PRODUCTION_ENV = {
+    "CCF_ENV": "production",
+    "CCF_AUTH_ENABLED": "true",
+    "CCF_AUTH_SESSION_SECRET": "test-secret",
+    # A JSON list: pydantic-settings parses list fields from the env as JSON.
+    "CCF_API_CORS_ORIGINS": '["https://concord.example"]',
+}
+
+
+@pytest.fixture
+def production_env() -> Iterator[None]:
+    """Run the test on the **production** side of every ``is_dev_env`` gate.
+
+    Line 39 of this file sets ``CCF_ENV=test`` process-wide, and
+    ``config._DEV_ENVS`` counts ``test`` as a development environment -- so by
+    default the entire suite exercises only the permissive branch of every
+    gate in ``config.is_dev_env``: the session/portal/SSO cookies' ``Secure``
+    attribute, the HSTS header, and the two connector mock-sync refusals. A
+    test of any of those written the ordinary way passes with the gate
+    deleted, because the gate is never on.
+
+    Shared here rather than re-declared per module: two modules had grown
+    their own copy, and they had already drifted (one set ``CCF_ENV`` only,
+    which is not enough to start the app -- see ``_PRODUCTION_ENV``).
+
+    ``get_settings`` is ``lru_cache``d, so the cache is cleared on both sides.
+    Anything that reads settings at *import* time (``ui.py`` binds
+    ``templates.env.globals["settings"]`` once at module import) is not
+    affected by this fixture and must not be tested through it.
+    """
+    previous = {k: os.environ.get(k) for k in _PRODUCTION_ENV}
+    os.environ.update(_PRODUCTION_ENV)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        for k, v in previous.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        get_settings.cache_clear()

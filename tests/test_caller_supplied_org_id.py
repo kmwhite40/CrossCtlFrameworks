@@ -40,6 +40,7 @@ from sqlalchemy import delete, select
 
 from ccf.api.auth_deps import resolve_caller_org
 from ccf.api.main import create_app
+from ccf.api.routes.users import UserCreate
 from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
@@ -131,6 +132,18 @@ async def _cleanup(*org_ids: int) -> None:
         await s.execute(delete(System).where(System.organization_id.in_(org_ids)))
         await s.execute(delete(User).where(User.organization_id.in_(org_ids)))
         await s.execute(delete(Organization).where(Organization.id.in_(org_ids)))
+
+
+async def _systems_named(name: str) -> list[int]:
+    """System ids with this exact name, read unscoped so RLS cannot hide one.
+
+    A refusal test that only asserts the status code would pass against a
+    handler that refused *after* writing; this reads the table back.
+    """
+    async with session_scope() as s:
+        return list(
+            (await s.execute(select(System.id).where(System.name == name))).scalars().all()
+        )
 
 
 async def _seed_expired_evidence(org_id: int, title: str) -> None:
@@ -718,3 +731,282 @@ def test_resolve_caller_org_rule() -> None:
     # Global principal: the supplied value is honoured, including None.
     assert resolve_caller_org(None, 8) == 8
     assert resolve_caller_org(None, None) is None
+
+
+# --- the seven routes that used to substitute instead of refusing -----------
+#
+# These were **safe** -- the principal won, so no cross-tenant data moved. What
+# they did was answer success to a question nobody asked: ``POST /api/systems``
+# returned ``201 {"organization_id": org_a}`` to a request that named ``org_b``,
+# with nothing in the response saying the organization had been changed. A
+# caller that believed the response filed the system under the wrong tenant in
+# its own records; a caller that named another org by mistake never found out.
+#
+# Each test asserts the caller's **own** organization still succeeds first, so
+# the 403 is provably the org guard and not a seeding failure, and asserts that
+# the refused request wrote nothing.
+
+
+@pytest.mark.asyncio
+async def test_create_system_refuses_a_foreign_organization_id_in_the_body() -> None:
+    tag = _tag()
+    token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    try:
+        async with _client() as c:
+            mine = await c.post(
+                "/api/systems",
+                json={"organization_id": org_a, "name": f"Own System {tag}"},
+                headers=_auth(token_a),
+            )
+            assert mine.status_code == 201, mine.text
+            assert mine.json()["organization_id"] == org_a
+
+            refused = await c.post(
+                "/api/systems",
+                json={"organization_id": org_b, "name": f"Spoofed System {tag}"},
+                headers=_auth(token_a),
+            )
+        assert refused.status_code == 403, refused.text
+        assert await _systems_named(f"Spoofed System {tag}") == []
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_ui_create_system_form_refuses_a_foreign_organization_id() -> None:
+    """The server-rendered twin: the same substitution reached through a form
+    field rather than a JSON body, which an id-in-path sweep cannot see."""
+    tag = _tag()
+    token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    try:
+        async with _client() as c:
+            mine = await c.post(
+                "/systems/new",
+                data={"organization_id": str(org_a), "name": f"Own Form System {tag}"},
+                headers=_auth(token_a),
+            )
+            assert mine.status_code == 303, mine.text
+            assert len(await _systems_named(f"Own Form System {tag}")) == 1
+
+            refused = await c.post(
+                "/systems/new",
+                data={"organization_id": str(org_b), "name": f"Spoofed Form System {tag}"},
+                headers=_auth(token_a),
+            )
+        assert refused.status_code == 403, refused.text
+        assert await _systems_named(f"Spoofed Form System {tag}") == []
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_create_user_refuses_a_foreign_organization_id_in_the_body() -> None:
+    """``users.py::create_user`` is the site ``prep.py`` cited as "the existing
+    convention" for substituting. It was three uncommented lines."""
+    tag = _tag()
+    token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    try:
+        async with _client() as c:
+            mine = await c.post(
+                "/api/users",
+                json={"organization_id": org_a, "email": f"own-{tag}@caller-org.example"},
+                headers=_auth(token_a),
+            )
+            assert mine.status_code == 201, mine.text
+
+            refused = await c.post(
+                "/api/users",
+                json={"organization_id": org_b, "email": f"spoofed-{tag}@caller-org.example"},
+                headers=_auth(token_a),
+            )
+        assert refused.status_code == 403, refused.text
+        async with session_scope() as s:
+            found = (
+                await s.execute(
+                    select(User).where(User.email == f"spoofed-{tag}@caller-org.example")
+                )
+            ).scalars().all()
+        assert found == [], "a refused create_user still wrote a user"
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_list_users_refuses_a_foreign_organization_id_in_the_query_string() -> None:
+    tag = _tag()
+    token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    try:
+        async with _client() as c:
+            mine = await c.get(
+                "/api/users", params={"organization_id": org_a}, headers=_auth(token_a)
+            )
+            assert mine.status_code == 200, mine.text
+            assert {u["organization_id"] for u in mine.json()} == {org_a}
+
+            refused = await c.get(
+                "/api/users", params={"organization_id": org_b}, headers=_auth(token_a)
+            )
+        assert refused.status_code == 403, refused.text
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_report_build_refuses_a_foreign_organization_id_in_the_query_string() -> None:
+    """A report is a document someone files. One silently rescoped to a
+    different organization than the one requested is the worst kind to hand a
+    reader: it is internally consistent and answers the wrong question."""
+    tag = _tag()
+    token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    try:
+        async with _client() as c:
+            mine = await c.get(
+                "/api/reports/build",
+                params={"organization_id": org_a, "fmt": "json"},
+                headers=_auth(token_a),
+            )
+            assert mine.status_code == 200, mine.text
+
+            refused = await c.get(
+                "/api/reports/build",
+                params={"organization_id": org_b, "fmt": "json"},
+                headers=_auth(token_a),
+            )
+        assert refused.status_code == 403, refused.text
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_intake_refuses_a_foreign_organization_id_in_the_body() -> None:
+    """``automation.intake_system`` creates a ``System`` **and** a profile and
+    then derives controls against it, so a substituted organization here is a
+    whole derived control baseline filed under a tenant nobody named."""
+    tag = _tag()
+    token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    try:
+        async with _client() as c:
+            refused = await c.post(
+                "/api/intake/systems",
+                json={
+                    "system_name": f"Spoofed Intake {tag}",
+                    "organization_id": org_b,
+                    "generate_ssp": False,
+                },
+                headers=_auth(token_a),
+            )
+        assert refused.status_code == 403, refused.text
+        assert await _systems_named(f"Spoofed Intake {tag}") == []
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_converted_resolvers_admit_the_owner_and_refuse_an_outsider() -> None:
+    """``automation._resolve_org`` and ``prep._scoped_organization_id`` at the
+    layer they live in, on an unscoped ``session_scope()`` where RLS is not
+    filtering -- so the refusal is provably the app-layer check.
+
+    The owning org is asserted to resolve first in each case. ``_resolve_org``
+    keeps a fallback for a **global** principal that named no org at all
+    (``System.organization_id`` needs a concrete value), which is asserted
+    separately so the conversion cannot have quietly removed it.
+    """
+    from ccf.api.routes.automation import _resolve_org  # noqa: PLC0415
+    from ccf.api.routes.prep import _scoped_organization_id  # noqa: PLC0415
+
+    tag = _tag()
+    _token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    owner = Principal(user_id=None, email=f"owner-{tag}@caller-org.test", org_id=org_b,
+                      role="admin")
+    outsider = Principal(user_id=None, email=f"outsider-{tag}@caller-org.test", org_id=org_a,
+                         role="admin")
+    cli = Principal(user_id=None, email="cli@concord", org_id=None, role="admin")
+    try:
+        async with session_scope() as s:
+            assert await _resolve_org(s, owner, org_b) == org_b
+            assert await _resolve_org(s, owner, None) == org_b
+            assert await _resolve_org(s, cli, org_b) == org_b
+            # A global principal that names nothing still gets a concrete org.
+            assert isinstance(await _resolve_org(s, cli, None), int)
+            for foreign in (org_b, _NO_SUCH_ORG):
+                with pytest.raises(HTTPException) as exc:
+                    await _resolve_org(s, outsider, foreign)
+                assert exc.value.status_code == 403
+
+        assert _scoped_organization_id(org_b, owner) == org_b
+        assert _scoped_organization_id(org_b, cli) == org_b
+        for foreign in (org_b, _NO_SUCH_ORG):
+            with pytest.raises(HTTPException) as exc:
+                _scoped_organization_id(foreign, outsider)
+            assert exc.value.status_code == 403
+    finally:
+        await _cleanup(org_a, org_b)
+
+
+@pytest.mark.asyncio
+async def test_global_principal_still_works_on_every_converted_route() -> None:
+    """``principal.org_id is None`` is the CLI/ETL/scheduler path. Six of the
+    seven conversions run on it, and breaking it would be a self-inflicted
+    outage in the only way an operator names an organization at all -- so it is
+    asserted directly, per route, rather than inferred from
+    ``resolve_caller_org``'s truth table.
+    """
+    from ccf.api.routes.prep import _scoped_organization_id  # noqa: PLC0415
+    from ccf.api.routes.reports import build_report  # noqa: PLC0415
+    from ccf.api.routes.systems import create_system  # noqa: PLC0415
+    from ccf.api.routes.users import create_user, list_users  # noqa: PLC0415
+    from ccf.schemas import SystemCreate  # noqa: PLC0415
+
+    tag = _tag()
+    _token_a, org_a = await _mk_tenant(tag, "a")
+    _token_b, org_b = await _mk_tenant(tag, "b")
+    cli = Principal(user_id=None, email="cli@concord", org_id=None, role="admin")
+    try:
+        async with session_scope() as s:  # unscoped: RLS is not filtering here
+            made = await create_system(
+                SystemCreate(organization_id=org_b, name=f"CLI System {tag}"),
+                session=s,
+                principal=cli,
+            )
+            assert made.organization_id == org_b, "the CLI's named org was not honoured"
+
+            user = await create_user(
+                UserCreate(organization_id=org_b, email=f"cli-{tag}@caller-org.example"),
+                session=s,
+                principal=cli,
+            )
+            assert user["id"]
+
+            listed = await list_users(session=s, organization_id=org_b, principal=cli)
+            assert {u["organization_id"] for u in listed} == {org_b}
+            # And still scoped to what it asked for -- not a blanket bypass.
+            assert all(u["organization_id"] == org_b for u in listed)
+
+            # Every ``Query(...)`` default has to be passed explicitly when a
+            # handler is called outside FastAPI -- an omitted one arrives as the
+            # ``Query`` object itself, not as ``None``.
+            report = await build_report(
+                session=s,
+                principal=cli,
+                organization_id=str(org_b),
+                system_id=None,
+                baseline=None,
+                framework=None,
+                family=None,
+                fmt="json",
+                filename=None,
+            )
+            assert isinstance(report, dict)
+
+        # ``_scoped_organization_id`` covers both prep routes' resolution.
+        assert _scoped_organization_id(org_a, cli) == org_a
+    finally:
+        await _cleanup(org_a, org_b)

@@ -183,9 +183,9 @@ def resolve_caller_org(principal_org: int | None, requested_org: int | None) -> 
     org answers a 200 to a question nobody asked -- the request named org B and
     got org A's data back, with nothing in the response saying so. A caller
     naming another tenant is either a bug or an attack; a bug deserves to be
-    told, and an attack deserves nothing. (``prep.py::_scoped_organization_id``
-    and ``users.py::create_user`` still substitute-and-log; see this branch's
-    notes -- they are safe, but they are the older convention.)
+    told, and an attack deserves nothing. Every route that reads a
+    caller-supplied organization now routes through here; there is no
+    substitute-and-log path left.
 
     **403, not 404.** The repo's 404-vs-403 rule
     (``tests/test_waivers_api_rbac.py``) is about *resources*: another tenant's

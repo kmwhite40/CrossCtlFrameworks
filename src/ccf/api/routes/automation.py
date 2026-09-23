@@ -31,7 +31,7 @@ from ...models import (
     System,
     SystemProfile,
 )
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, resolve_caller_org
 from ..deps import get_session
 from .systems import require_system_in_scope
 
@@ -59,10 +59,18 @@ class IntakeIn(ProfileIn):
 
 
 async def _resolve_org(session: AsyncSession, principal: Principal, org_id: int | None) -> int:
-    if principal.org_id is not None:
-        return principal.org_id
-    if org_id is not None:
-        return org_id
+    """The organization an intake runs against.
+
+    ``resolve_caller_org`` decides the scoped/global question: a scoped
+    principal naming another organization is refused, and a global one's
+    supplied value is honoured. Only when nobody named an organization at all
+    -- which ``resolve_caller_org`` can return ``None`` for solely on the
+    global path -- does the fallback below apply, because ``System`` needs a
+    concrete ``organization_id``.
+    """
+    resolved = resolve_caller_org(principal.org_id, org_id)
+    if resolved is not None:
+        return resolved
     latest = (
         await session.execute(select(Organization).order_by(Organization.id.desc()).limit(1))
     ).scalar_one_or_none()

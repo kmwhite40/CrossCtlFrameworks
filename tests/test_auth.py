@@ -144,13 +144,17 @@ async def test_auth_enforcement_rbac_and_tenant_isolation(auth_on: None) -> None
         assert (await c.post("/api/scoring/seed", headers=hb)).status_code == 403
         assert (await c.post("/api/scoring/seed", headers=ha)).status_code == 200
 
-        # Create-system is forced into the principal's org (ignores spoofed org id).
-        created = (
-            await c.post(
-                "/api/systems", json={"organization_id": org_b, "name": "Forced"}, headers=ha
-            )
-        ).json()
-        assert created["organization_id"] == org_a
+        # Create-system refuses a spoofed org id rather than substituting the
+        # principal's own. It used to answer 201 {"organization_id": org_a} to
+        # a request that named org_b -- safe, but a success response asserting
+        # something the caller never asked for. Nothing is created.
+        forced = await c.post(
+            "/api/systems", json={"organization_id": org_b, "name": "Forced"}, headers=ha
+        )
+        assert forced.status_code == 403, forced.text
+        assert "Forced" not in {
+            s["name"] for s in (await c.get("/api/systems", headers=ha)).json()
+        }
 
         # SSP project tenant isolation: B cannot see A's project.
         proj = (

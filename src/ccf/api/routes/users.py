@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...models import User
-from ..auth_deps import get_principal, require_role
+from ..auth_deps import get_principal, require_role, resolve_caller_org
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -50,7 +50,7 @@ async def list_users(
     principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
     stmt = select(User).order_by(User.email)
-    org_filter = principal.org_id if principal.org_id is not None else organization_id
+    org_filter = resolve_caller_org(principal.org_id, organization_id)
     if org_filter is not None:
         stmt = stmt.where(User.organization_id == org_filter)
     rows = (await session.execute(stmt)).scalars().all()
@@ -74,8 +74,11 @@ async def create_user(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     data = body.model_dump()
-    if principal.org_id is not None:
-        data["organization_id"] = principal.org_id
+    # These three lines were the "existing convention" ``prep.py`` cited for
+    # substituting silently. They were never a decision -- uncommented, and
+    # creating a user in an organization the request did not name is the least
+    # forgivable place to be quiet about it.
+    data["organization_id"] = resolve_caller_org(principal.org_id, data["organization_id"])
     obj = User(**data)
     session.add(obj)
     await session.commit()

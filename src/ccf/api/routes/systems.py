@@ -37,7 +37,7 @@ from ...schemas import (
     SystemCreate,
     SystemOut,
 )
-from ..auth_deps import get_principal, require_role
+from ..auth_deps import get_principal, require_role, resolve_caller_org
 from ..deps import get_session
 
 # Severities that block authorization while an open weakness exists.
@@ -86,9 +86,11 @@ async def create_system(
     principal: Principal = Depends(get_principal),
 ) -> SystemOut:
     data = body.model_dump(exclude_none=True)
-    # Tenant principals may only create systems within their own organization.
-    if principal.org_id is not None:
-        data["organization_id"] = principal.org_id
+    # A scoped principal naming another organization is refused, not quietly
+    # redirected into its own: substituting would answer ``201`` with
+    # ``{"organization_id": <the caller's org>}`` to a request that named a
+    # different one, asserting something the caller never asked for.
+    data["organization_id"] = resolve_caller_org(principal.org_id, data["organization_id"])
     obj = System(**data)
     session.add(obj)
     await session.commit()
