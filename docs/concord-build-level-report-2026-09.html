@@ -234,15 +234,15 @@
 
   <dl class="ledger">
     <div class="cell"><dt>Migration head</dt><dd>0083</dd></div>
-    <div class="cell"><dt>Tests passing</dt><dd>3,511</dd></div>
-    <div class="cell"><dt>API endpoints</dt><dd>498</dd></div>
+    <div class="cell"><dt>Tests passing</dt><dd>3,550</dd></div>
+    <div class="cell"><dt>API endpoints</dt><dd>494</dd></div>
     <div class="cell"><dt>Tenant tables</dt><dd>139</dd></div>
   </dl>
 
   <section>
     <div class="sec-head">
       <h2>Where the build stands</h2>
-      <span class="sec-note">as of head c4b6a1b</span>
+      <span class="sec-note">as of head 513e486</span>
     </div>
     <p class="lede">
       Concord is feature-complete across the authorization lifecycle: a customer can define
@@ -266,11 +266,12 @@
     </p>
 
     <div class="evidence">
-      <div><span>Static analysis</span><span><b>Clean.</b> ruff across <span class="mono">src</span> and <span class="mono">tests</span>; mypy strict across 289 source files, no issues.</span></div>
-      <div><span>Schema</span><span><b>One head</b> — <span class="mono">0078_cr26_certification</span>. 78 Alembic migrations, no divergence.</span></div>
-      <div><span>Test suite</span><span><b>2,537 passing, 1 skipped</b> in 3m34s, run against a real PostgreSQL instance rather than a mock. The single skip needs a browser driver that is not installed locally.</span></div>
-      <div><span>Tenant isolation</span><span><b>137 tables</b> under database-enforced row-level security, with a positive-control test that fails the build when a new table escapes it.</span></div>
-      <div><span>Code base</span><span>63,190 lines of application code against 61,992 lines of tests — near 1:1.</span></div>
+      <div><span>Static analysis</span><span><b>Clean.</b> ruff across <span class="mono">src</span> and <span class="mono">tests</span>; mypy strict across 306 source files, no issues.</span></div>
+      <div><span>Schema</span><span><b>One head</b> — <span class="mono">0083_3pao_engagements</span>. 83 Alembic migrations, no divergence.</span></div>
+      <div><span>Test suite</span><span><b>3,550 passing, 1 skipped</b> in 5m39s, run against a real PostgreSQL instance rather than a mock. The single skip needs a browser driver that is not installed locally.</span></div>
+      <div><span>Tenant isolation</span><span><b>139 tables</b> under database-enforced row-level security, with a positive-control test that fails the build when a new table escapes it.</span></div>
+      <div><span>Code base</span><span>74,795 lines of application code against 93,392 lines of tests — more test than product.</span></div>
+      <div><span>Interface</span><span><b>Monochrome chrome.</b> Colour is reserved for status, so a reader never has to learn which colours mean something. 54 server-rendered pages, one shell, no build step and no JavaScript bundle. Contrast is asserted in both themes rather than eyeballed, and a page cannot reference a style that does not exist.</span></div>
     </div>
   </section>
 
@@ -988,9 +989,9 @@
 
   <footer>
     <p>Build level at <span class="mono">main</span> head
-    <span class="mono">c4b6a1b</span>. Migration head <span class="mono">0083</span>,
+    <span class="mono">513e486</span>. Migration head <span class="mono">0083</span>,
     single Alembic head. ruff, mypy strict and bandit clean across 306 source files.
-    3,511 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
+    3,550 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
     <p>Counts in this report are measured from the repository at that commit, not quoted
     from prior documents. Where a figure in the README disagrees, the README is the stale
     one.</p>
