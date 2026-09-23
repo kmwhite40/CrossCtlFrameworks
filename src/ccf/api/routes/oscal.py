@@ -1438,8 +1438,8 @@ async def package_export(
 
 async def build_package_zip(session: AsyncSession, sys: System, *, now_iso: str) -> bytes:
     """Assemble the in-memory authorization-package ZIP for ``sys``: the most
-    recent SSP project's ``ssp.json`` and the most recent assessment's
-    ``sar.json`` when present, always ``poam.json`` and
+    recent SSP project's ``ssp.json``, the most recent assessment's ``sap.json``
+    and ``sar.json`` when present, always ``poam.json`` and
     ``component-definition.json``, plus a ``README.txt`` manifest noting which
     artifacts are present/absent. Never calls ``datetime.now`` itself —
     ``now_iso`` is passed in so the manifest timestamp matches the caller's."""
@@ -1478,10 +1478,35 @@ async def build_package_zip(session: AsyncSession, sys: System, *, now_iso: str)
             manifest_lines.append("ssp.json: ABSENT — no SSP project on record")
 
         if assessment is not None:
+            # Plan before results, the order a reviewer reads them in.
+            #
+            # The plan is bundled only when it has a scope. `build_sap_doc`
+            # returns a schema-valid document either way -- with no
+            # `AssessmentResult` rows it omits `include-controls` (minItems 1)
+            # and says so in a remark -- so validity is not the test here.
+            # `_import_ap` already refuses to cite such a plan from the SAR,
+            # for the reason that applies identically to a package: a plan
+            # reviewing nothing asserts an assessment scope nobody defined.
+            #
+            # The condition is read off the BUILT document rather than
+            # re-derived from the results, so the file the package ships is the
+            # same one the decision was made about.
+            sap_doc = await build_sap_doc(session, assessment)
+            selections = sap_doc["assessment-plan"]["reviewed-controls"]["control-selections"]
+            if any(sel.get("include-controls") for sel in selections):
+                zf.writestr("sap.json", json.dumps(sap_doc, indent=2))
+                manifest_lines.append("sap.json: present")
+            else:
+                manifest_lines.append(
+                    "sap.json: ABSENT — the assessment on record has no recorded "
+                    "control coverage, so a derived plan would review no controls"
+                )
+
             sar_doc = await build_sar_doc(session, assessment)
             zf.writestr("sar.json", json.dumps(sar_doc, indent=2))
             manifest_lines.append("sar.json: present")
         else:
+            manifest_lines.append("sap.json: ABSENT — no assessment on record")
             manifest_lines.append("sar.json: ABSENT — no assessment on record")
 
         # OSCAL requires poam-items minItems 1, so an empty POA&M array is an
@@ -1502,8 +1527,8 @@ async def build_package_zip(session: AsyncSession, sys: System, *, now_iso: str)
 
         manifest_lines.append("")
         manifest_lines.append(
-            "This is a machine-readable OSCAL authorization package (SSP + SAR + "
-            "POA&M + component-definition)."
+            "This is a machine-readable OSCAL authorization package (SSP + SAP + "
+            "SAR + POA&M + component-definition)."
         )
         zf.writestr("README.txt", "\n".join(manifest_lines) + "\n")
 

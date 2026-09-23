@@ -149,9 +149,13 @@ async def test_scim_deactivate_blocks_reprovisioning() -> None:
 
 @pytest.mark.asyncio
 async def test_scim_api_requires_token_and_provisions(monkeypatch) -> None:
-    await _org("ScimApiOrg")
+    org_id = await _org("ScimApiOrg")
     monkeypatch.setenv("CCF_SCIM_ENABLED", "true")
     monkeypatch.setenv("CCF_SCIM_BEARER_TOKEN", "s3cr3t")
+    # Name the tenant. This module creates several organizations, and SCIM now
+    # refuses to guess which one a deployment-wide token provisions into rather
+    # than taking the oldest -- see tests/test_scim_tenancy.py.
+    monkeypatch.setenv("CCF_SCIM_ORGANIZATION_ID", str(org_id))
     get_settings.cache_clear()
     try:
         async with _client() as c:

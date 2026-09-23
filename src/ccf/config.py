@@ -189,6 +189,12 @@ class Settings(BaseSettings):
     auth_jit_provisioning: bool = Field(default=True)
     scim_enabled: bool = Field(default=False)
     scim_bearer_token: str | None = Field(default=None)
+    # The organization SCIM provisions into. The bearer token is deployment-wide
+    # and carries no tenant, so on a multi-tenant deployment nothing in the
+    # request says which organization the IdP behind it represents. Set this
+    # explicitly there; provisioning refuses rather than guesses when it is
+    # unset and more than one organization exists.
+    scim_organization_id: int | None = Field(default=None)
 
     # FedRAMP 20x: when true, the OSCAL-shaped package export is structurally
     # validated against Concord's OSCAL-subset checks before it is returned

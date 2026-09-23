@@ -35,8 +35,13 @@ likely wrong expression (``principal.org_id``):
 
 * ``identity/provisioning`` runs on sessions that are never tenant-clamped --
   the OIDC callback has no principal yet and SCIM authenticates with a bearer
-  token -- and looks its user up by a globally-unique email, so the SCIM
-  token's org and the user's own org are separate values that can disagree.
+  token. **This used to be the clearest case where the two values disagreed**,
+  because SCIM looked its user up by a globally-unique email with no org
+  predicate and would update another tenant's account. That write is now
+  refused (``ProvisioningConflictError``), so for SCIM the two values are
+  provably equal and the mutation this module exists to catch can no longer
+  fail there; the OIDC callback, which still resolves its org separately from
+  the account, remains the live case.
 * ``packs/sync`` adoption and ``packs/service`` installation take the tenant
   from the ``PackSource`` row, on an unscoped scheduler/CLI session.
 * ``self_assurance`` audits to the "Concord Platform" organization, never the
@@ -499,20 +504,23 @@ async def test_portal_revocation_event_carries_the_grants_own_org() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scim_event_carries_the_users_own_org_not_the_tokens() -> None:
-    """The clearest case where caller and entity really are different values.
+async def test_scim_refuses_the_call_that_made_caller_and_owner_differ() -> None:
+    """This test used to pin the audit org for a cross-tenant SCIM update.
 
-    ``ccf.identity.provisioning`` runs on sessions that are never tenant-clamped
-    -- SCIM authenticates with a bearer token, not a user -- so the only two
-    candidate answers are the ``org_id`` the caller passed and the user's own
-    ``organization_id``. They are separate values: ``User.email`` is globally
-    unique and ``scim_create_or_update_user`` looks the account up by email
-    across the whole deployment, so a SCIM call made against org A that matches
-    an account already owned by org B updates **B's** user.
+    Its premise was real: ``scim_create_or_update_user`` looked the account up
+    by a globally-unique email with no org predicate, on a session that is
+    never tenant-clamped, so a call made against org A really did update org
+    B's user -- and the event was correctly filed under B, the tenant that owns
+    the account, rather than under the caller.
 
-    The event must then be B's. Stamping it with the caller's ``org_id`` would
-    file an account change under a tenant that does not own the account -- and
-    hide it from the tenant that does.
+    That was the right answer to the wrong question. The write itself was the
+    defect: one deployment-wide SCIM token could rename and deactivate any
+    tenant's user. It now raises ``ProvisioningConflictError`` (409 at the
+    route), so caller and owner can no longer differ here at all.
+
+    What this pins now is the refusal, and that the refused call leaves no
+    trace on the victim -- neither a field change nor an event filed under
+    their organization.
     """
     token_org = await _org("scim-caller")
     owner_org = await _org("scim-owner")
@@ -520,22 +528,59 @@ async def test_scim_event_carries_the_users_own_org_not_the_tokens() -> None:
     email = f"scim-{next(_SEQ)}@audit-org-sub.test"
 
     async with session_scope() as s:
-        s.add(User(email=email, organization_id=owner_org, role="viewer", active=True))
+        s.add(
+            User(
+                email=email,
+                organization_id=owner_org,
+                role="viewer",
+                active=True,
+                full_name="Owner Original Name",
+            )
+        )
+
+    async with session_scope() as s:
+        with pytest.raises(provisioning.ProvisioningConflictError):
+            await provisioning.scim_create_or_update_user(
+                s,
+                org_id=token_org,
+                payload={"userName": email, "active": False, "name": {"formatted": "Renamed"}},
+            )
+
+    async with session_scope() as s:
+        user = (await s.execute(select(User).where(User.email == email))).scalar_one()
+        assert user.organization_id == owner_org
+        assert user.full_name == "Owner Original Name"
+        assert user.active is True
+        user_id = user.id
+
+    # No event under either organization: the caller's, because nothing
+    # happened, and the owner's, because nothing happened TO them either.
+    # The plural helper, because the singular one asserts exactly one row.
+    assert await _audit_orgs("identity", str(user_id)) == []
+
+
+@pytest.mark.asyncio
+async def test_a_scim_event_is_still_filed_under_the_account_owner() -> None:
+    """The rule the test above used to carry, on the path that still reaches it.
+
+    ``_audit`` stamps ``user.organization_id`` rather than the caller's
+    ``org_id``. Those two are now provably equal for SCIM -- the conflict check
+    rejects every call where they would differ -- so this can no longer fail by
+    mutating that one expression, and it is kept as defence in depth rather
+    than deleted: ``provision_from_oidc`` shares the helper, and a future
+    per-tenant SCIM token would make the two values independent again.
+    """
+    org_id = await _org("scim-same-org")
+    email = f"scim-same-{next(_SEQ)}@audit-org-sub.test"
 
     async with session_scope() as s:
         user, created = await provisioning.scim_create_or_update_user(
-            s,
-            org_id=token_org,
-            payload={"userName": email, "active": True, "name": {"formatted": "Renamed"}},
+            s, org_id=org_id, payload={"userName": email, "active": True}
         )
-        assert created is False, "the account must already exist for the two orgs to differ"
-        assert user.organization_id == owner_org
+        assert created is True
         user_id = user.id
 
-    assert await _audit_org("identity", str(user_id)) == owner_org, (
-        "the SCIM event was filed under the caller's organization, not the "
-        "organization that owns the account"
-    )
+    assert await _audit_org("identity", str(user_id)) == org_id
 
 
 @pytest.mark.asyncio
