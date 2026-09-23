@@ -47,6 +47,20 @@ def _set_session_cookie(response: Response, user_id: int, session_version: int =
 
 
 async def _default_org_id(session: AsyncSession) -> int:
+    """The oldest organization, created if the deployment has none.
+
+    **Only the OIDC single-sign-on callback still uses this.** SCIM moved to
+    ``_scim_target_org``, which refuses to guess when a deployment has several
+    organizations, because a deployment-wide SCIM token names no tenant and
+    guessing wrote real users into real tenants on no evidence.
+
+    The SSO callback has the same ambiguity and is deliberately NOT changed
+    here: it decides which organization a *person signing in* is provisioned
+    into, so narrowing it is an authentication change that can lock users out
+    of a working deployment, and it needs its own measurement of who currently
+    lands where. Recorded rather than silently fixed -- the same split the
+    live-capture change drew around control tests.
+    """
     org = (
         await session.execute(select(Organization).order_by(Organization.id).limit(1))
     ).scalar_one_or_none()
@@ -217,11 +231,19 @@ async def delete_mapping(
 # --- SCIM v2 -----------------------------------------------------------------
 
 
-async def _scim_org(authorization: str = Header(default="")) -> int | None:
-    """Guard SCIM routes with the configured bearer token; returns a sentinel org.
+async def _scim_org(
+    authorization: str = Header(default=""),
+    session: AsyncSession = Depends(get_session),
+) -> int:
+    """Authorize a SCIM request and resolve the ONE organization it may touch.
 
-    The concrete org is resolved per-request against the default org so SCIM works
-    on a fresh deployment; here we only enforce the token + enabled flag.
+    This used to authorize and then return ``None``, leaving each route to work
+    out its own org -- which in practice meant the create path took the oldest
+    organization and every other path took the org of whichever row the caller
+    named. The token is deployment-wide and carries no tenant, and SCIM requests
+    run with no principal, so ``get_session`` binds no tenant and RLS treats
+    them as bypass. Nothing beneath these routes is scoped; the scope has to be
+    decided here, once, and applied by every route.
     """
     s = get_settings()
     if not s.scim_enabled or not s.scim_bearer_token:
@@ -232,15 +254,61 @@ async def _scim_org(authorization: str = Header(default="")) -> int | None:
     # it byte-by-byte to an attacker able to measure response latency.
     if not hmac.compare_digest(token, s.scim_bearer_token):
         raise HTTPException(401, "invalid SCIM token")
-    return None
+    return await _scim_target_org(session, s.scim_organization_id)
+
+
+async def _scim_target_org(session: AsyncSession, configured: int | None) -> int:
+    """The organization SCIM provisions into, or a refusal saying why it cannot.
+
+    Three cases, and the third is the point:
+
+    * **Configured** -- honour it, after checking it exists. A typo that
+      silently fell back to some other tenant would be the same defect again.
+    * **Exactly one organization** -- unambiguous, so no configuration needed;
+      this keeps single-tenant and fresh deployments working as before, and a
+      deployment with none gets one created as it always did.
+    * **Several, none configured** -- refuse. Nothing in the request says which
+      tenant the IdP behind this token represents, and provisioning a real user
+      into a real tenant on a guess is not recoverable by the guesser. This is
+      the rule ``ssp/seed.py`` already applies to a system with no baseline.
+    """
+    if configured is not None:
+        org = await session.get(Organization, configured)
+        if org is None:
+            raise HTTPException(
+                500,
+                f"CCF_SCIM_ORGANIZATION_ID={configured} does not match any organization",
+            )
+        return org.id
+
+    orgs = (
+        await session.execute(select(Organization).order_by(Organization.id).limit(2))
+    ).scalars().all()
+    if len(orgs) == 1:
+        return orgs[0].id
+    if not orgs:
+        org = Organization(name="Default Organization")
+        session.add(org)
+        await session.flush()
+        return org.id
+    raise HTTPException(
+        500,
+        "SCIM target organization is ambiguous: this deployment has more than one "
+        "organization and CCF_SCIM_ORGANIZATION_ID is not set, so nothing in the "
+        "request says which one this token provisions into",
+    )
 
 
 @router.get("/api/scim/v2/Users")
 async def scim_list_users(
-    _guard: int | None = Depends(_scim_org),
+    org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    users = (await session.execute(select(User).order_by(User.id))).scalars().all()
+    users = (
+        await session.execute(
+            select(User).where(User.organization_id == org_id).order_by(User.id)
+        )
+    ).scalars().all()
     return {
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
         "totalResults": len(users),
@@ -251,14 +319,16 @@ async def scim_list_users(
 @router.post("/api/scim/v2/Users", status_code=201)
 async def scim_create_user(
     payload: dict[str, Any],
-    _guard: int | None = Depends(_scim_org),
+    org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    org_id = await _default_org_id(session)
     try:
         user, _created = await provisioning.scim_create_or_update_user(
             session, org_id=org_id, payload=payload
         )
+    except provisioning.ProvisioningConflictError as e:
+        # SCIM's own answer for "this value already exists elsewhere".
+        raise HTTPException(409, str(e)) from e
     except provisioning.ProvisioningError as e:
         raise HTTPException(400, str(e)) from e
     await session.commit()
@@ -268,13 +338,23 @@ async def scim_create_user(
 @router.get("/api/scim/v2/Users/{user_id}")
 async def scim_get_user(
     user_id: int,
-    _guard: int | None = Depends(_scim_org),
+    org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    user = await session.get(User, user_id)
-    if user is None:
-        raise HTTPException(404, "user not found")
+    user = await _scim_user_in_org(session, user_id, org_id)
     return provisioning.scim_user_resource(user)
+
+
+async def _scim_user_in_org(session: AsyncSession, user_id: int, org_id: int) -> User:
+    """A user of ``org_id``, or 404 -- never a user of some other tenant.
+
+    404 rather than 403 on purpose: to a token that may not touch this tenant,
+    whether the id exists at all is not information to give back.
+    """
+    user = await session.get(User, user_id)
+    if user is None or user.organization_id != org_id:
+        raise HTTPException(404, "user not found")
+    return user
 
 
 def _scim_active(payload: dict[str, Any]) -> bool | None:
@@ -296,13 +376,12 @@ def _scim_active(payload: dict[str, Any]) -> bool | None:
 async def scim_update_user(
     user_id: int,
     payload: dict[str, Any],
-    _guard: int | None = Depends(_scim_org),
+    org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
-    user = await session.get(User, user_id)
-    if user is None:
-        raise HTTPException(404, "user not found")
-    org_id = user.organization_id
+    # The org comes from the token, not from the row: reading it off the target
+    # user made the victim's own organization the authority for writing to it.
+    user = await _scim_user_in_org(session, user_id, org_id)
     active = _scim_active(payload)
     if active is False:
         await provisioning.scim_deactivate_user(session, org_id=org_id, user=user)
@@ -318,21 +397,18 @@ async def scim_update_user(
 @router.delete("/api/scim/v2/Users/{user_id}", status_code=204)
 async def scim_delete_user(
     user_id: int,
-    _guard: int | None = Depends(_scim_org),
+    org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> Response:
-    user = await session.get(User, user_id)
-    if user is not None:
-        await provisioning.scim_deactivate_user(
-            session, org_id=user.organization_id, user=user
-        )
-        await session.commit()
+    user = await _scim_user_in_org(session, user_id, org_id)
+    await provisioning.scim_deactivate_user(session, org_id=org_id, user=user)
+    await session.commit()
     return Response(status_code=204)
 
 
 @router.get("/api/scim/v2/Groups")
 async def scim_list_groups(
-    _guard: int | None = Depends(_scim_org),
+    _org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     groups = (

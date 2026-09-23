@@ -25,6 +25,16 @@ class ProvisioningError(ValueError):
     """Raised when an account cannot be provisioned or a login is disallowed."""
 
 
+class ProvisioningConflictError(ProvisioningError):
+    """The email belongs to a different organization than the caller provisions into.
+
+    ``User.email`` is globally unique, so an address that already exists in
+    another tenant cannot be created here and must never be updated in place --
+    that is a cross-tenant write. SCIM's own answer to this is 409 with
+    ``scimType: uniqueness``, which is what the route returns.
+    """
+
+
 def extract_groups(claims: dict[str, Any]) -> list[str]:
     """Pull group/role membership out of OIDC claims (best-effort, tolerant)."""
     out: list[str] = []
@@ -214,9 +224,18 @@ async def scim_create_or_update_user(
     name = (payload.get("name") or {}).get("formatted") or payload.get("displayName")
     active = payload.get("active", True)
 
+    # Deliberately NOT scoped to ``org_id``. SCIM runs with RLS cleared and
+    # ``User.email`` is globally unique, so a scoped lookup would miss a foreign
+    # tenant's row and then fail the INSERT on the unique index -- turning a
+    # cross-tenant write into an opaque 500. Look globally, then refuse.
     user = (
         await session.execute(select(User).where(User.email == email))
     ).scalar_one_or_none()
+    if user is not None and user.organization_id != org_id:
+        raise ProvisioningConflictError(
+            f"{email} already belongs to another organization; SCIM will not "
+            "modify a user outside the organization it provisions into"
+        )
     created = False
     if user is None:
         user = User(organization_id=org_id, email=email, full_name=name, active=bool(active))
