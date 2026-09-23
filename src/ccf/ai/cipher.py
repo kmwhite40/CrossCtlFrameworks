@@ -75,16 +75,33 @@ class LocalKeyProvider(KeyProvider):
         return AESGCM(self._kek).decrypt(nonce, blob, b"ccf-dek")
 
 
-class CredentialCipher:
-    """Envelope-encrypts/decrypts credential strings via a :class:`KeyProvider`."""
+#: Default associated data. Kept as the literal the first release wrote so
+#: every credential already in a database still decrypts.
+AAD_CREDENTIAL = b"ccf-cred"
 
-    def __init__(self, key_provider: KeyProvider) -> None:
+#: TOTP shared secrets. A distinct context so a ciphertext lifted from the
+#: credential store does not decrypt as an authenticator secret, or the
+#: reverse: AES-GCM authenticates this value, so getting it wrong fails the
+#: tag rather than returning the wrong plaintext.
+AAD_MFA = b"ccf-mfa"
+
+
+class CredentialCipher:
+    """Envelope-encrypts/decrypts strings via a :class:`KeyProvider`.
+
+    ``aad`` names what the ciphertext is *for*. Two stores sharing one key and
+    one context are two stores whose values are interchangeable, which is the
+    same class of confusion ``_portal_secret`` exists to prevent one layer up.
+    """
+
+    def __init__(self, key_provider: KeyProvider, *, aad: bytes = AAD_CREDENTIAL) -> None:
         self._kp = key_provider
+        self._aad = aad
 
     def encrypt(self, plaintext: str) -> str:
         dek, wrapped = self._kp.generate_data_key()
         nonce = os.urandom(_NONCE_LEN)
-        ct = AESGCM(dek).encrypt(nonce, plaintext.encode("utf-8"), b"ccf-cred")
+        ct = AESGCM(dek).encrypt(nonce, plaintext.encode("utf-8"), self._aad)
         wl = len(wrapped)
         blob = bytes([_VERSION]) + wl.to_bytes(2, "big") + wrapped + nonce + ct
         return base64.urlsafe_b64encode(blob).decode("ascii")
@@ -101,7 +118,7 @@ class CredentialCipher:
         off += _NONCE_LEN
         ct = blob[off:]
         dek = self._kp.unwrap_data_key(wrapped)
-        return AESGCM(dek).decrypt(nonce, ct, b"ccf-cred").decode("utf-8")
+        return AESGCM(dek).decrypt(nonce, ct, self._aad).decode("utf-8")
 
 
 def mask(secret: str) -> str:
@@ -112,7 +129,7 @@ def mask(secret: str) -> str:
     return f"…{tail}"
 
 
-def build_cipher(settings: Settings) -> CredentialCipher:
+def build_cipher(settings: Settings, *, aad: bytes = AAD_CREDENTIAL) -> CredentialCipher:
     """Construct the configured cipher, or raise if credential storage is unavailable."""
     provider = getattr(settings, "ai_credential_key_provider", "local")
     if provider == "local":
@@ -122,7 +139,7 @@ def build_cipher(settings: Settings) -> CredentialCipher:
                 "AI credential storage is disabled: set CCF_AI_CREDENTIAL_MASTER_KEY "
                 "(local key provider) or configure a KMS key provider"
             )
-        return CredentialCipher(LocalKeyProvider(master))
+        return CredentialCipher(LocalKeyProvider(master), aad=aad)
     # aws_kms / azure_kv / gcp_sm / vault providers plug in here.
     raise CredentialStorageError(
         f"AI credential key provider '{provider}' is not implemented yet"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import time
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -16,7 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from ... import onboarding
+from ... import mfa, onboarding
 from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
@@ -28,6 +29,7 @@ from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
+from ...identity import mfa_service
 from ...models import (
     POAM,
     Assessment,
@@ -79,10 +81,26 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
-from ..auth_deps import SESSION_COOKIE, get_principal, require_role, resolve_caller_org
+from ..audit import record_event
+from ..auth_deps import (
+    MFA_PENDING_COOKIE,
+    SESSION_COOKIE,
+    get_principal,
+    require_role,
+    resolve_caller_org,
+)
 from ..deps import get_session
 from ..limiter import limiter
-from ..login_service import LoginResult, authenticate, revoke_sessions_for_request
+from ..login_service import (
+    MFA_PENDING_TTL_SECONDS,
+    LoginResult,
+    authenticate,
+    complete_login,
+    mint_mfa_pending,
+    read_mfa_pending,
+    record_failed_factor,
+    revoke_sessions_for_request,
+)
 from .diff import diff_workbook
 from .scoring import compute_summary
 from .ssp import FRAMEWORKS, require_platform
@@ -642,6 +660,147 @@ async def settings_page(request: Request) -> HTMLResponse:
             "active": "settings",
         },
     )
+
+
+@router.get("/settings/security", response_class=HTMLResponse)
+async def security_settings_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+    enrolled: str | None = Query(None),
+    error: str | None = Query(None),
+) -> HTMLResponse:
+    """Where a person turns a second factor on.
+
+    The API endpoints under ``/api/auth/mfa`` do the same work for a client
+    that has one; this exists because the browser is how an actual user enrols,
+    and a feature reachable only by curl is not shipped.
+    """
+    user = await session.get(User, principal.user_id) if principal.user_id else None
+    cred = (
+        await mfa_service.credential_for(session, principal.user_id)
+        if principal.user_id
+        else None
+    )
+    return templates.TemplateResponse(
+        request,
+        "settings_security.html",
+        {
+            "active": "settings",
+            "active_mfa": cred is not None and cred.activated_at is not None,
+            "pending_mfa": cred is not None and cred.activated_at is None,
+            "required": (
+                await mfa_service.policy_requires_enrolment(session, user) if user else False
+            ),
+            "recovery_remaining": (
+                await mfa_service.unused_recovery_code_count(session, principal.user_id)
+                if principal.user_id
+                else 0
+            ),
+            # Never carried here: the codes are rendered once, by the handler
+            # that generated them, and never survive a redirect -- a value in a
+            # session store or a query string is a value in a log.
+            "recovery_codes": None,
+            "enrolled": enrolled,
+            "error": error,
+        },
+    )
+
+
+@router.post("/settings/security/enroll")
+async def security_enroll(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> Response:
+    user = await session.get(User, principal.user_id) if principal.user_id else None
+    if user is None:
+        return RedirectResponse("/login", status_code=303)
+    try:
+        secret, uri = await mfa_service.begin_enrolment(session, user)
+    except ValueError:
+        return RedirectResponse("/settings/security?error=active", status_code=303)
+    await session.commit()
+    # Rendered directly rather than redirected to: the secret is shown once and
+    # must not travel in a URL, where it would land in history and access logs.
+    return templates.TemplateResponse(
+        request,
+        "settings_security.html",
+        {
+            "active": "settings",
+            "active_mfa": False,
+            "pending_mfa": True,
+            "required": await mfa_service.policy_requires_enrolment(session, user),
+            "recovery_remaining": 0,
+            "secret": secret,
+            "manual_entry": mfa.format_for_manual_entry(secret),
+            "otpauth_uri": uri,
+        },
+    )
+
+
+@router.post("/settings/security/activate")
+async def security_activate(
+    request: Request,
+    code: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> Response:
+    user = await session.get(User, principal.user_id) if principal.user_id else None
+    if user is None:
+        return RedirectResponse("/login", status_code=303)
+    codes = await mfa_service.activate(session, user, code, now=time.time())
+    if codes is None:
+        return RedirectResponse("/settings/security?error=code", status_code=303)
+    await record_event(
+        session,
+        actor=user.email,
+        action="mfa_activate",
+        entity_type="identity",
+        entity_id=str(user.id),
+        diff={"event": "mfa_activate"},
+        organization_id=user.organization_id,
+    )
+    await session.commit()
+    # Shown here and nowhere else -- only digests are stored.
+    return templates.TemplateResponse(
+        request,
+        "settings_security.html",
+        {
+            "active": "settings",
+            "active_mfa": True,
+            "pending_mfa": False,
+            "required": await mfa_service.policy_requires_enrolment(session, user),
+            "recovery_remaining": len(codes),
+            "recovery_codes": codes,
+        },
+    )
+
+
+@router.post("/settings/security/disable")
+async def security_disable(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> RedirectResponse:
+    user = await session.get(User, principal.user_id) if principal.user_id else None
+    if user is None:
+        return RedirectResponse("/login", status_code=303)
+    if await mfa_service.policy_requires_enrolment(session, user):
+        return RedirectResponse("/settings/security?error=required", status_code=303)
+    cred = await mfa_service.credential_for(session, user.id)
+    if cred is not None:
+        await session.delete(cred)
+        await record_event(
+            session,
+            actor=user.email,
+            action="mfa_disable",
+            entity_type="identity",
+            entity_id=str(user.id),
+            diff={"event": "mfa_disable"},
+            organization_id=user.organization_id,
+        )
+        await session.commit()
+    return RedirectResponse("/settings/security", status_code=303)
 
 
 @router.get("/systems/{system_id}", response_class=HTMLResponse)
@@ -1681,8 +1840,93 @@ async def login_submit(
     user, result = await authenticate(session, email, password)
     if result is LoginResult.LOCKED:
         return RedirectResponse("/login?error=locked", status_code=303)
-    if user is None:
+    settings = get_settings()
+    if result is LoginResult.MFA_REQUIRED and user is not None:
+        # No session cookie here. The pending cookie is signed with a derived
+        # key (login_service._mfa_pending_secret), so presenting it under the
+        # session cookie's name fails signature verification rather than
+        # depending on a reader remembering to check an audience claim.
+        pending = RedirectResponse("/login/mfa", status_code=303)
+        pending.set_cookie(
+            MFA_PENDING_COOKIE,
+            mint_mfa_pending(user),
+            max_age=MFA_PENDING_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=not is_dev_env(settings),
+        )
+        return pending
+    # Tested against OK rather than ``user is None``: MFA_REQUIRED carries a
+    # user too, and a truthiness check here would sign them straight in.
+    if result is not LoginResult.OK or user is None:
         return RedirectResponse("/login?error=1", status_code=303)
+    resp = RedirectResponse("/", status_code=303)
+    resp.set_cookie(
+        SESSION_COOKIE,
+        sign_session(
+            user.id,
+            settings.auth_session_secret,
+            ttl_hours=settings.auth_session_ttl_hours,
+            session_version=user.session_version or 0,
+        ),
+        max_age=settings.auth_session_ttl_hours * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=not is_dev_env(settings),
+    )
+    return resp
+
+
+@router.get("/login/mfa")
+async def login_mfa_page(request: Request, error: str | None = Query(None)) -> Response:
+    """The code prompt. Reachable only with a valid pending cookie."""
+    if read_mfa_pending(request.cookies.get(MFA_PENDING_COOKIE) or "") is None:
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "login_mfa.html",
+        {"error": bool(error), "locked": error == "locked"},
+    )
+
+
+@router.post("/login/mfa")
+@limiter.limit("10/minute")
+async def login_mfa_submit(
+    request: Request,
+    code: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    claims = read_mfa_pending(request.cookies.get(MFA_PENDING_COOKIE) or "")
+    if claims is None:
+        return RedirectResponse("/login?error=1", status_code=303)
+    user_id, session_version = claims
+    user = await session.get(User, user_id)
+    if user is None or not user.active or (user.session_version or 0) != session_version:
+        return RedirectResponse("/login?error=1", status_code=303)
+    if user.locked_until is not None and user.locked_until > datetime.now(UTC):
+        return RedirectResponse("/login?error=locked", status_code=303)
+
+    now = time.time()
+    method = "totp"
+    ok = await mfa_service.verify_code(session, user.id, code, now=now)
+    if not ok:
+        method = "recovery_code"
+        ok = await mfa_service.consume_recovery_code(session, user.id, code)
+    if not ok:
+        failed = await record_failed_factor(session, user)
+        where = "/login?error=locked" if failed is LoginResult.LOCKED else "/login/mfa?error=1"
+        return RedirectResponse(where, status_code=303)
+
+    await record_event(
+        session,
+        actor=user.email,
+        action="mfa_verify",
+        entity_type="identity",
+        entity_id=str(user.id),
+        diff={"event": "mfa_verify", "method": method},
+        organization_id=user.organization_id,
+    )
+    await complete_login(session, user)
     settings = get_settings()
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(
@@ -1698,6 +1942,7 @@ async def login_submit(
         samesite="lax",
         secure=not is_dev_env(settings),
     )
+    resp.delete_cookie(MFA_PENDING_COOKIE)
     return resp
 
 

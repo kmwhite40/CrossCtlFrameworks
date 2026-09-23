@@ -100,3 +100,67 @@ class ScimProvisioningEvent(Base):
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class UserMfaCredential(Base):
+    """One user's TOTP authenticator (IA-2(1)).
+
+    Spec: ``docs/superpowers/specs/2026-09-23-mfa-totp-design.md``.
+
+    At most one row per user, enforced by a unique constraint rather than by
+    convention: two active authenticators would mean two independent replay
+    windows, so ``last_used_step`` would stop meaning what §6 says it means.
+
+    ``activated_at`` is the gate, not the row's existence. Enrolment writes a
+    row immediately -- the secret has to survive the round trip to the
+    authenticator app -- but a credential that has never produced a correct
+    code challenges nobody. Without that split, a user who scans and then loses
+    the tab is locked out of their own account by a secret they never proved
+    they held.
+
+    ``secret_encrypted`` is an envelope-encrypted blob, never the base32 secret.
+    """
+
+    __tablename__ = "user_mfa_credentials"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="CASCADE"), index=True
+    )
+    secret_encrypted: Mapped[str] = mapped_column(Text)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The RFC 6238 step most recently spent. Refusing this step and every
+    #: earlier one is what makes an observed code useless for the rest of its
+    #: window; see ``ccf.mfa.verify``.
+    last_used_step: Mapped[int | None] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (UniqueConstraint("user_id", name="uq_user_mfa_credential"),)
+
+
+class UserMfaRecoveryCode(Base):
+    """A single-use code for a user who has lost their authenticator.
+
+    Stored as a SHA-256 digest, deliberately not a PBKDF2 hash -- see
+    ``ccf.mfa.hash_recovery_code``, which carries the reasoning.
+
+    ``used_at`` rather than deletion: an administrator asking "did somebody get
+    in without their authenticator, and when" is asking an audit question, and
+    a deleted row cannot answer it.
+    """
+
+    __tablename__ = "user_mfa_recovery_codes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.users.id", ondelete="CASCADE"), index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

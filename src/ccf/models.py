@@ -288,6 +288,17 @@ class Organization(Base):
     # CASCADE to systems/users never fires; NULL means active. Callers must
     # filter ``deleted_at IS NULL`` in list/get queries — see systems.py.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # IA-2(1): who must hold a second factor. 'optional' (default) challenges
+    # only users who chose to enrol; 'admins' and 'all' require enrolment of
+    # those in scope. A user in scope with no authenticator is NOT refused --
+    # they sign in and must enrol before doing anything else, because refusing
+    # would let an organization lock every one of its own users out by changing
+    # a dropdown, with no way back in. See the MFA design spec §8.
+    mfa_policy: Mapped[str] = mapped_column(
+        Enum("optional", "admins", "all", name="mfa_policy", schema="ccf"),
+        server_default="optional",
+        default="optional",
+    )
 
     systems: Mapped[list[System]] = relationship(back_populates="organization")
     users: Mapped[list[User]] = relationship(back_populates="organization")

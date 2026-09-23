@@ -136,7 +136,8 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         # 0073 flaw remediation. patch_waves is parent-chained through
         # patch_campaigns, like control_test_resource_results.
         "remediation_policies", "patch_campaigns", "patch_waves",
-        "trust_profiles", "users", "vendor_questionnaires", "vendors",
+        "trust_profiles", "user_mfa_credentials", "user_mfa_recovery_codes", "users",
+        "vendor_questionnaires", "vendors",
         # 0070 waivers -- tenant-owned with its own organization_id, so
         # policied directly rather than through a parent chain.
         "waivers", "webhooks",
@@ -183,7 +184,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 139
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 141
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
