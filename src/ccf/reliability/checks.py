@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import get_settings
+from ..config import _DEFAULT_SESSION_SECRET, get_settings, is_dev_env
 
 PASS, WARN, FAIL = "pass", "warn", "fail"
 
@@ -233,7 +233,16 @@ async def _check_background(_s: AsyncSession) -> Check:
 async def _check_auth_posture(_s: AsyncSession) -> Check:
     """Warn/fail on insecure auth defaults outside a dev environment (go-live gate)."""
     settings = get_settings()
-    if (settings.env or "dev").lower() in ("dev", "local", "test"):
+    # ``is_dev_env`` / ``_DEFAULT_SESSION_SECRET``, not a second copy of the
+    # dev-env list and the default-secret literal. This check had drifted from
+    # both: it spelled the list out again and defaulted a missing ``env`` to
+    # ``"dev"``, where ``is_dev_env`` defaults it to ``""`` -- i.e. to the
+    # production side. A deployment with ``CCF_ENV=""`` therefore got
+    # "Dev environment — open access is expected" from the *go-live gate*
+    # while every cookie, the HSTS header and ``enforce_secure_config`` all
+    # treated it as production. A readiness check that disagrees with the
+    # runtime about which environment it is in is worse than no check.
+    if is_dev_env(settings):
         return Check(
             "auth_posture", PASS, f"Dev environment ({settings.env}) — open access is expected."
         )
@@ -242,7 +251,7 @@ async def _check_auth_posture(_s: AsyncSession) -> Check:
             "auth_posture", FAIL, f"Auth is DISABLED in a '{settings.env}' environment.",
             "Set CCF_AUTH_ENABLED=true before serving federal data.",
         )
-    if settings.auth_session_secret == "dev-insecure-change-me":
+    if settings.auth_session_secret == _DEFAULT_SESSION_SECRET:
         return Check(
             "auth_posture", FAIL, "Auth enabled but using the default session secret.",
             "Set CCF_AUTH_SESSION_SECRET to a strong, secret value.",

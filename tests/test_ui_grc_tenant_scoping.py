@@ -96,25 +96,6 @@ def auth_enabled() -> Iterator[None]:
     get_settings.cache_clear()
 
 
-@pytest.fixture
-def production_env() -> Iterator[None]:
-    """A non-development environment.
-
-    ``tests/conftest.py`` sets ``CCF_ENV=test`` process-wide and ``is_dev_env``
-    treats ``test`` as a development environment, so the whole suite runs on the
-    permissive side of the ``0eadea4`` gate by default.
-    """
-    prev = os.environ.get("CCF_ENV")
-    os.environ["CCF_ENV"] = "production"
-    get_settings.cache_clear()
-    yield
-    if prev is None:
-        os.environ.pop("CCF_ENV", None)
-    else:
-        os.environ["CCF_ENV"] = prev
-    get_settings.cache_clear()
-
-
 async def _org(created: list[int], name: str) -> int:
     async with session_scope() as s:
         org = Organization(name=name, description="ui_grc scoping test")

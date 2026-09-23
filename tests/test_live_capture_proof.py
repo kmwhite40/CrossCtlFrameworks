@@ -507,38 +507,6 @@ async def test_a_real_capture_still_evidences_with_no_caveat() -> None:
 # --- §4.4 The mock sync is development-only ---------------------------------
 
 
-@pytest.fixture
-def _production_env() -> AsyncIterator[None]:
-    """A non-dev environment the app will actually start in.
-
-    ``enforce_secure_config`` refuses startup outside dev unless auth is on,
-    the session secret is not the default, and CORS is not wildcard -- so all
-    three have to be real here, not just ``CCF_ENV``.
-    """
-    previous = {
-        k: os.environ.get(k)
-        for k in (
-            "CCF_ENV",
-            "CCF_AUTH_ENABLED",
-            "CCF_AUTH_SESSION_SECRET",
-            "CCF_API_CORS_ORIGINS",
-        )
-    }
-    os.environ["CCF_ENV"] = "production"
-    os.environ["CCF_AUTH_ENABLED"] = "true"
-    os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"
-    # A JSON list: pydantic-settings parses list fields from the env as JSON.
-    os.environ["CCF_API_CORS_ORIGINS"] = '["https://concord.example"]'
-    get_settings.cache_clear()
-    yield
-    for k, v in previous.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
-    get_settings.cache_clear()
-
-
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("_auth_enabled")
 async def test_the_mock_sync_still_works_in_development() -> None:
@@ -560,7 +528,7 @@ async def test_the_mock_sync_still_works_in_development() -> None:
 
 @pytest.mark.asyncio
 async def test_the_mock_sync_is_refused_outside_development(
-    _production_env: None,
+    production_env: None,
 ) -> None:
     """Defence in depth (spec §2.2): rung 2 already means a mock sync evidences
     nothing, but a future write path to those columns must not reopen this --
