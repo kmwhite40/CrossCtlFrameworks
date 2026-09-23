@@ -298,3 +298,77 @@ async def test_unauthenticated_refused() -> None:
     async with _client() as c:
         r = await c.get("/api/waivers")
         assert r.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_waiver_org_predicates_reject_a_foreign_principal_without_rls() -> None:
+    """``_load``'s and ``create_waiver``'s OWN org predicates, at their own layer.
+
+    ``test_cross_tenant_waiver_is_not_found`` and
+    ``test_cross_tenant_system_is_not_found_on_create`` above assert the right
+    end-to-end results, but neither can fail when only the explicit predicate
+    is removed: ``ccf.waivers`` and ``ccf.systems`` both carry a
+    ``tenant_isolation`` RLS policy and ``ccf.api.deps.get_session`` binds the
+    RLS tenant from the principal, so the outsider's request 404s at the query
+    before either check is reached (confirmed by mutation -- deleting each
+    predicate left the whole waiver suite passing).
+
+    RLS is documented in ``ccf.api.deps.get_session`` as a backstop *beneath*
+    the app-layer scoping, and the unscoped ``session_scope()`` the CLI and
+    scheduler use bypasses it by design, so both predicates are pinned here
+    where they are the only defense. The owning org is asserted first in each
+    case, so the 404 is provably the org check.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.waivers import WaiverIn, _load, create_waiver  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    tag = _tag()
+    _token_a, sys_a = await _mk_user_and_system(
+        f"owner-layer-{tag}@waivers-rbac.test", f"Waivers RBAC Layer OrgA {tag}",
+        "admin", f"Layer OrgA Sys {tag}",
+    )
+    _token_b, sys_b = await _mk_user_and_system(
+        f"outsider-layer-{tag}@waivers-rbac.test", f"Waivers RBAC Layer OrgB {tag}",
+        "admin", f"Layer OrgB Sys {tag}",
+    )
+    async with session_scope() as s:  # unscoped: RLS is not filtering here
+        row_a = await s.get(System, sys_a)
+        row_b = await s.get(System, sys_b)
+        assert row_a is not None and row_b is not None
+        org_a, org_b = row_a.organization_id, row_b.organization_id
+
+        owner = Principal(
+            user_id=None, email=f"owner-layer-{tag}@waivers-rbac.test",
+            org_id=org_a, role="admin",
+        )
+        outsider = Principal(
+            user_id=None, email=f"outsider-layer-{tag}@waivers-rbac.test",
+            org_id=org_b, role="admin",
+        )
+
+        # create_waiver's system predicate: the owner may waive on its own
+        # system, the outsider may not -- and learns nothing from the 404.
+        created = await create_waiver(
+            WaiverIn(**_body(sys_a)),  # type: ignore[arg-type]
+            session=s,
+            principal=owner,
+        )
+        waiver_id = created["id"]
+
+        with pytest.raises(HTTPException) as exc_create:
+            await create_waiver(
+                WaiverIn(**_body(sys_a)),  # type: ignore[arg-type]
+                session=s,
+                principal=outsider,
+            )
+        assert exc_create.value.status_code == 404
+
+        # _load's waiver predicate, on the row the owner just created.
+        found = await _load(s, waiver_id, owner)
+        assert found.id == waiver_id  # the owning org is not locked out
+
+        with pytest.raises(HTTPException) as exc_load:
+            await _load(s, waiver_id, outsider)
+        assert exc_load.value.status_code == 404  # 404, not 403 -- no id disclosure

@@ -339,3 +339,55 @@ async def test_inventory_component_id_cross_system_422() -> None:
             headers=_auth(token),
         )
         assert ok.status_code == 201
+
+
+@pytest.mark.asyncio
+async def test_require_system_in_scope_rejects_a_foreign_principal_without_rls() -> None:
+    """``systems.require_system_in_scope``'s OWN org predicate, at its own layer.
+
+    ``test_cross_tenant_not_visible_or_mutable`` above asserts the right
+    end-to-end result, but it cannot fail when only the explicit predicate is
+    removed: ``ccf.systems`` carries a ``tenant_isolation`` RLS policy and
+    ``ccf.api.deps.get_session`` binds the RLS tenant from the principal, so
+    the outsider's request 404s at the query before the helper's own check is
+    reached. Confirmed by mutation -- deleting the predicate left that test,
+    ``test_boundary_ui.py::test_cross_tenant_system_404`` and
+    ``test_guided_onboarding.py::test_page_404s_for_a_system_outside_the_principals_org``
+    all passing, i.e. the single most widely shared system-scoping guard in
+    the API had no test that could fail.
+
+    RLS is documented in ``ccf.api.deps.get_session`` as a backstop *beneath*
+    the app-layer scoping, and the unscoped ``session_scope()`` the CLI and
+    scheduler use bypasses it by design, so the predicate is pinned here where
+    it is the only defense. The owning org is asserted first, so the 404 is
+    provably the org check and not the row being unreachable.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.systems import require_system_in_scope  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    _token_a, sys_a = await _mk_user_and_system(
+        "layera@boundary-api.test", "Boundary API Layer A", "admin", "Layer A Sys"
+    )
+    _token_b, sys_b = await _mk_user_and_system(
+        "layerb@boundary-api.test", "Boundary API Layer B", "admin", "Layer B Sys"
+    )
+    async with session_scope() as s:  # unscoped: RLS is not filtering here
+        row_a = await s.get(System, sys_a)
+        row_b = await s.get(System, sys_b)
+        assert row_a is not None and row_b is not None
+        org_a, org_b = row_a.organization_id, row_b.organization_id
+
+        owner = Principal(
+            user_id=None, email="layera@boundary-api.test", org_id=org_a, role="admin"
+        )
+        found = await require_system_in_scope(s, sys_a, owner)
+        assert found.id == sys_a  # the owning org is not locked out
+
+        outsider = Principal(
+            user_id=None, email="layerb@boundary-api.test", org_id=org_b, role="admin"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await require_system_in_scope(s, sys_a, outsider)
+        assert exc.value.status_code == 404  # 404, not 403 -- no id disclosure
