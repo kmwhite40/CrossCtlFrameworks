@@ -68,6 +68,7 @@ from ccf.governance.trust_corroboration import (
 from ccf.models import Organization, System, User
 from ccf.models_grc import TrustProfile
 from ccf.models_packages import AuthorizationPackage
+from tests import theme_tokens
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -676,3 +677,132 @@ async def test_a_non_dict_badge_row_is_skipped_not_raised() -> None:
         assert [b.framework for b in result.badges] == ["CMMC L2"]
     finally:
         await _cleanup(org)
+
+
+# ── the chips those states are rendered as ──────────────────────────────────
+#
+# The three states above are only ever read as a chip and a word. §2 of
+# ``docs/superpowers/specs/2026-09-23-ui-shell-redesign.md`` makes the
+# consequence explicit: a restyle that merges two variants is a correctness
+# regression wearing a visual change, because the reader would be told
+# something this module refused to say.
+#
+# So the distinctness assertion this file already carries for the *labels* is
+# extended here to the *paint* -- every pair of variants, in both themes,
+# measured off the real stylesheet rather than eyeballed. The onboarding path's
+# five states and the two assessment vocabularies draw from the same seven
+# variants, so one sweep covers all of them.
+
+#: The chip each Trust Center state renders as, mirroring ``trust.html``.
+TRUST_STATE_CHIPS = {
+    CORROBORATED: "chip--ok",
+    CONTRADICTED: "chip--warn",
+    UNSUPPORTED: "chip--ghost",
+}
+
+
+def test_no_two_trust_states_share_a_chip_or_a_label() -> None:
+    assert set(TRUST_STATE_CHIPS) == set(STATE_LABELS)
+    assert len(set(TRUST_STATE_CHIPS.values())) == len(TRUST_STATE_CHIPS)
+    assert len(set(STATE_LABELS.values())) == len(STATE_LABELS)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "systems", "claim"),
+    [
+        (CORROBORATED, (("authorized", 365), ("none", None)), "Authorized"),
+        (CONTRADICTED, (("none", None), ("none", None)), "Authorized"),
+        (UNSUPPORTED, (), "In progress"),
+    ],
+)
+async def test_the_page_renders_each_state_as_the_chip_this_file_pins(
+    state: str, systems: tuple[tuple[str, int | None], ...], claim: str
+) -> None:
+    """The mapping above is only evidence if the rendered page agrees with it.
+
+    Rendered over HTTP, not matched against ``trust.html``'s source: a test
+    that greps the template for the string it is asserting proves the template
+    contains a string, not that a reader is shown the right chip.
+    """
+    tag = next(_SEQ)
+    badge = {"framework": "FedRAMP Moderate", "status": claim}
+    org, token, _pid = await _seed(tag=tag, badges=[badge], systems=systems)
+    try:
+        async with session_scope() as s:
+            result = await corroborate_badges(s, [badge], org_id=org)
+        assert [b.state for b in result.badges] == [state]
+
+        async with _client() as c:
+            page = await c.get("/trust", headers=_auth(token))
+        assert page.status_code == 200, page.text
+        label = _esc(STATE_LABELS[state])
+        chip = TRUST_STATE_CHIPS[state]
+        # The chip class and the label are on the same element, so the reader
+        # sees the paint this file pins beside the words it pins.
+        assert f'class="chip {chip}">{label}</span>' in page.text, page.text[:0] or (
+            f"{state} did not render as .{chip} with {label!r}"
+        )
+        for other, other_chip in TRUST_STATE_CHIPS.items():
+            if other != state:
+                assert (
+                    f'class="chip {other_chip}">{_esc(STATE_LABELS[other])}</span>'
+                    not in page.text
+                ), f"{other} leaked onto a page whose only badge is {state}"
+    finally:
+        await _cleanup(org)
+
+
+@pytest.mark.parametrize("theme", theme_tokens.THEMES)
+def test_no_two_chip_variants_are_visually_identical(theme: str) -> None:
+    """Every ordered pair of the seven variants, in both themes.
+
+    A chip is read by its fill and its label, so the pair is distinct if either
+    differs perceptibly. CIEDE2000 1.0 is the just-noticeable difference, so
+    the 10.0 floor is an order of magnitude above "someone might notice" -- it
+    is here to catch a merge, not to legislate taste. A failure names the two
+    variants, the colours and the distance.
+    """
+    paints = theme_tokens.chip_paint(theme)
+    assert set(paints) == set(theme_tokens.CHIP_CLASSES)
+    failures = []
+    for a, b in itertools.combinations(paints.values(), 2):
+        fill = theme_tokens.delta_e(a.background, b.background)
+        label = theme_tokens.delta_e(a.text, b.text)
+        if max(fill, label) < 10.0:
+            failures.append(
+                f"{theme}: .{a.name} and .{b.name} are visually identical — "
+                f"fill {theme_tokens.hexed(a.background)} vs "
+                f"{theme_tokens.hexed(b.background)} (ΔE {fill:.1f}), "
+                f"label {theme_tokens.hexed(a.text)} vs "
+                f"{theme_tokens.hexed(b.text)} (ΔE {label:.1f})"
+            )
+    assert not failures, "\n".join(failures)
+
+
+@pytest.mark.parametrize("theme", theme_tokens.THEMES)
+def test_the_states_that_must_never_read_alike_do_not(theme: str) -> None:
+    """The pairs the specs name by hand, checked as colours rather than classes.
+
+    ``unknown`` against ``done`` and ``not_started`` (guided onboarding §8.2);
+    ``corroborated`` against ``contradicted`` (this file's subject); and
+    ``warn`` against ``err``, the merge §2 calls out by name.
+    """
+    paints = theme_tokens.chip_paint(theme)
+    named_pairs = (
+        ("chip--info", "chip--ok"),       # unknown vs done
+        ("chip--info", "chip--err"),      # unknown vs not_started
+        ("chip--ok", "chip--warn"),       # corroborated vs contradicted
+        ("chip--warn", "chip--err"),      # the merge §2 names
+        ("chip--ghost", "chip"),          # unsupported vs a plain neutral tag
+        ("chip--brand", "chip--info"),    # two blues, until --info became teal
+    )
+    for left, right in named_pairs:
+        a, b = paints[left], paints[right]
+        distance = max(
+            theme_tokens.delta_e(a.background, b.background),
+            theme_tokens.delta_e(a.text, b.text),
+        )
+        assert distance >= 10.0, (
+            f"{theme}: .{left} and .{right} are only ΔE {distance:.1f} apart"
+        )

@@ -1,10 +1,21 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="color-scheme" content="light dark" />
+  <meta name="color-scheme" content="dark light" />
   <title>{% block title %}Concord{% endblock %}</title>
+  {#- Theme applied before first paint. app.js is deferred, so without this the
+      page would paint light and then flip. Inline, not a file: a round trip
+      here is the flash. CSP already allows 'unsafe-inline' for scripts. -#}
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('concord:theme');
+        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+      } catch (e) { /* private mode: the markup default (dark) stands */ }
+    })();
+  </script>
   <link rel="icon" type="image/svg+xml" href="/static/img/logo-mark.svg?v={{ asset_v }}" />
   <link rel="icon" type="image/png" href="/static/img/favicon.png?v={{ asset_v }}" />
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png?v={{ asset_v }}" />
@@ -18,16 +29,20 @@
 <a class="skip-link" href="#main">Skip to content</a>
 
 {#- ─────────────────────────────────────────────────────────────────────────
-    Information architecture. One source of truth drives the global nav, the
-    mega menus, the section nav, and the mobile menu. `members` are the route
-    `active` keys that belong to a product area; `links` are that area's
-    sub-navigation (a `key` marks the active section link).
+    Information architecture. One source of truth drives the sidebar, the
+    section nav and the command palette. `members` are the route `active` keys
+    that belong to a product area; `links` are that area's sub-navigation (a
+    `key` marks the active link).
+
+    Membership and ordering are NOT a presentation decision and are unchanged
+    by the sidebar redesign — if the grouping is wrong that is a separate
+    change with its own evidence.
    ───────────────────────────────────────────────────────────────────────── -#}
 {#- Primary navigation, organized by the authorization lifecycle:
     define compliance → authorize systems → operate the program → report. -#}
 {% set nav_groups = [
-  {'key':'dashboard','label':'Dashboard','href':'/dashboard','members':['dashboard'],'links':[]},
-  {'key':'compliance','label':'Compliance','href':'/posture',
+  {'key':'dashboard','label':'Dashboard','href':'/dashboard','icon':'layout-dashboard','members':['dashboard'],'links':[]},
+  {'key':'compliance','label':'Compliance','href':'/posture','icon':'shield-check',
    'members':['posture','controls','frameworks','coverage','mappings','search','worksheets','diff','packs'],
    'links':[
      {'key':'posture','label':'Overview','href':'/posture','desc':'Compliance posture across frameworks.'},
@@ -39,7 +54,7 @@
      {'key':'search','label':'Search','href':'/search','desc':'Full-text search across the catalog.'},
      {'key':'worksheets','label':'Worksheets','href':'/worksheets','desc':'View the source workbook tabs.'},
      {'key':'diff','label':'Workbook diff','href':'/diff','desc':'Compare workbook versions.'}]},
-  {'key':'authorization','label':'Authorization','href':'/systems',
+  {'key':'authorization','label':'Authorization','href':'/systems','icon':'file-check',
    'members':['systems','intake','ssp','assessments','scoring','fedramp20x','assurance'],
    'links':[
      {'key':'systems','label':'Systems','href':'/systems','desc':'Systems, ownership, and boundaries.'},
@@ -50,7 +65,7 @@
      {'key':'scoring','label':'Live scoring','href':'/scoring','desc':'Score controls in real time.'},
      {'key':'fedramp20x','label':'FedRAMP 20x / KSI','href':'/fedramp20x','desc':'Key Security Indicators, validation, and 20x readiness.'},
      {'key':'assurance','label':'Assurance graph','href':'/assurance','desc':'Authorization digital twin + impact analysis.'}]},
-  {'key':'operations','label':'Operations','href':'/governance',
+  {'key':'operations','label':'Operations','href':'/governance','icon':'activity',
    'members':['governance','evidence','ingestions','evidence_repo','scans','controltests','poams','risks','connectors','personnel','questionnaires','ai_agents','auditws','regulatory','tasks','diagrams'],
    'links':[
      {'key':'governance','label':'Overview','href':'/governance','desc':'Command center for day-to-day compliance work.'},
@@ -68,7 +83,7 @@
      {'key':'regulatory','label':'Regulatory change','href':'/regulatory','desc':'Track framework and regulatory updates.'},
      {'key':'tasks','label':'Tasks','href':'/governance#tasks','desc':'Assign and track tasks.'},
      {'key':'diagrams','label':'Diagrams','href':'/governance#diagrams','desc':'Boundary and data-flow diagrams.'}]},
-  {'key':'insights','label':'Insights','href':'/reports',
+  {'key':'insights','label':'Insights','href':'/reports','icon':'bar-chart-3',
    'members':['reports','executive','queries','trust','portaladmin','audit','reliability','selfassurance','catalogintegrity'],
    'links':[
      {'key':'reports','label':'Reports','href':'/reports','desc':'Generate and export compliance reports.'},
@@ -87,129 +102,131 @@
   {'label':'FedRAMP 20x','href':'/fedramp20x'},
   {'label':'AI Gov','href':'/ai-agents'}
 ] %}
+{#- The workspace destinations the chrome has always carried outside the
+    lifecycle groups. They keep their home at the foot of the rail. -#}
+{% set nav_workspace = [
+  {'key':'users','label':'Users','href':'/users'},
+  {'key':'settings','label':'Settings','href':'/settings'},
+  {'key':'apidocs','label':'API docs','href':'/docs'}
+] %}
 {% set ns = namespace(cur=none) %}
 {% for g in nav_groups %}{% if active in g.members %}{% set ns.cur = g %}{% endif %}{% endfor %}
 
-<header class="globalnav" role="banner">
-  <nav class="globalnav__inner" aria-label="Global navigation">
-    <a href="/" class="globalnav__brand">
+<div class="appshell">
+  <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+    <a href="/" class="sidebar__brand">
       <img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="26" height="26" />
       <span>Concord</span>
     </a>
 
-    <div class="globalnav__links">
-      {% for g in nav_groups %}
-      <div class="gnav-item{% if g.links %} gnav-item--has-menu{% endif %}">
-        <a class="gnav-link" href="{{ g.href }}"
-           {% if g.links %}aria-haspopup="true" aria-expanded="false"{% endif %}
-           {% if ns.cur and ns.cur.key == g.key %}aria-current="page"{% endif %}>{{ g.label }}</a>
+    <div class="sidebar__scroll">
+      <nav class="sidebar__pinned" aria-label="Quick access">
+        {% for p in nav_pinned %}<a href="{{ p.href }}">{{ p.label }}</a>{% endfor %}
+      </nav>
+
+      <nav aria-label="Sections">
+        {% for g in nav_groups %}
+        {%- set g_here = (active in g.members) or (g.links | selectattr('key','equalto',active) | list | length > 0) -%}
         {% if g.links %}
-        <div class="megamenu" role="menu" aria-label="{{ g.label }}">
-          <div class="megamenu__inner">
-            <p class="megamenu__title">{{ g.label }}</p>
-            <div class="megamenu__grid">
-              {% for l in g.links %}
-              <a class="megamenu__item" role="menuitem" href="{{ l.href }}">
-                <span class="megamenu__item-label">{{ l.label }}</span>
-                <span class="megamenu__item-desc">{{ l.desc }}</span>
-              </a>
-              {% endfor %}
-            </div>
+        <details class="sidebar__group" {% if g_here %}open{% endif %}>
+          <summary class="sidebar__heading">
+            {{ g.label }}<i data-lucide="chevron-right" class="sidebar__caret"></i>
+          </summary>
+          <div class="sidebar__items">
+            {% for l in g.links %}
+            <a class="sidebar__link" href="{{ l.href }}" title="{{ l.desc }}"
+               {% if l.key == active %}aria-current="page"{% endif %}><span>{{ l.label }}</span></a>
+            {% endfor %}
+          </div>
+        </details>
+        {% else %}
+        <div class="sidebar__group">
+          <div class="sidebar__items">
+            <a class="sidebar__link" href="{{ g.href }}"
+               {% if g_here %}aria-current="page"{% endif %}>
+              <i data-lucide="{{ g.icon }}"></i><span>{{ g.label }}</span></a>
           </div>
         </div>
         {% endif %}
-      </div>
-      {% endfor %}
+        {% endfor %}
+      </nav>
     </div>
 
-    <div class="globalnav__tools">
-      <nav class="globalnav__pinned" aria-label="Quick access">
-        {% for p in nav_pinned %}<a href="{{ p.href }}">{{ p.label }}</a>{% endfor %}
-      </nav>
-      <button type="button" class="globalnav__icon" onclick="openPalette()" aria-label="Search Concord" title="Search  ⌘K">
-        <i data-lucide="search"></i>
+    <div class="sidebar__footer">
+      <button type="button" class="sidebar__profile" aria-haspopup="true" aria-expanded="false"
+              aria-controls="workspace-menu" onclick="toggleWorkspaceMenu(this)">
+        <span class="sidebar__avatar" aria-hidden="true">C</span>
+        <span class="sidebar__who">
+          <strong>Concord workspace</strong>
+          <small>{% if settings.readonly %}Read-only{% else %}Signed in{% endif %}</small>
+        </span>
       </button>
-      <button type="button" class="globalnav__icon" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
-        <i data-lucide="sun-moon"></i>
-      </button>
-      <div class="gnav-item gnav-item--menu-right">
-        <button type="button" class="globalnav__profile" aria-haspopup="true" aria-expanded="false" aria-label="Workspace and profile">C</button>
-        <div class="megamenu megamenu--right" role="menu" aria-label="Workspace">
-          <div class="megamenu__inner">
-            <p class="megamenu__title">Workspace</p>
-            <div class="menu-list">
-              <a class="menu-list__item" role="menuitem" href="/systems">Systems</a>
-              <a class="menu-list__item" role="menuitem" href="/users">Users</a>
-              <a class="menu-list__item" role="menuitem" href="/settings">Settings</a>
-              <a class="menu-list__item" role="menuitem" href="/docs">API docs</a>
-              <button type="button" class="menu-list__item" role="menuitem" onclick="toggleTheme()">Toggle theme</button>
-              {% if settings.readonly %}<span class="menu-list__note">Read-only workspace</span>{% endif %}
-            </div>
-          </div>
+      <div class="sidebar__menu" id="workspace-menu" role="menu" aria-label="Workspace">
+        <div class="menu-list">
+          {% for w in nav_workspace %}
+          <a class="menu-list__item" role="menuitem" href="{{ w.href }}"
+             {% if w.key == active %}aria-current="page"{% endif %}>{{ w.label }}</a>
+          {% endfor %}
+          <button type="button" class="menu-list__item" role="menuitem" onclick="toggleTheme()">Toggle theme</button>
+          {% if settings.readonly %}<span class="menu-list__note">Read-only workspace</span>{% endif %}
         </div>
       </div>
-      <button type="button" class="globalnav__burger" aria-label="Open menu" aria-expanded="false" aria-controls="mobilenav" onclick="toggleMobileNav()">
+    </div>
+  </aside>
+
+  <button type="button" class="sidebar__scrim" tabindex="-1" aria-label="Close navigation" onclick="closeMobileNav()"></button>
+
+  <div class="appshell__body">
+    <header class="topbar" role="banner">
+      <button type="button" class="topbar__burger" aria-label="Open navigation" aria-expanded="false"
+              aria-controls="sidebar" onclick="toggleMobileNav()">
         <i data-lucide="menu"></i>
       </button>
-    </div>
-  </nav>
-</header>
+      <button type="button" class="topbar__search" onclick="openPalette()" aria-label="Search Concord">
+        <i data-lucide="search"></i>
+        <span>Search systems, controls, evidence…</span>
+        <kbd>⌘K</kbd>
+      </button>
+      <div class="topbar__tools">
+        <button type="button" class="topbar__icon" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
+          <i data-lucide="sun-moon"></i>
+        </button>
+      </div>
+    </header>
 
-{#- Section navigation — auto-rendered for the current product area. A page may
-    override this block to supply its own section nav. -#}
-{% block section_nav %}
-{% if ns.cur and ns.cur.links %}
-<nav class="sectionnav" aria-label="Section navigation">
-  <div class="sectionnav__inner">
-    <span class="sectionnav__title">{{ ns.cur.label }}</span>
-    {% for l in ns.cur.links %}
-    <a class="sectionnav__link" href="{{ l.href }}"
-       {% if l.key == active %}aria-current="page"{% endif %}>{{ l.label }}</a>
-    {% endfor %}
-  </div>
-</nav>
-{% endif %}
-{% endblock %}
+    {#- Section navigation — auto-rendered for the current product area. A page
+        may override this block to supply its own section nav. -#}
+    {% block section_nav %}
+    {% if ns.cur and ns.cur.links %}
+    <nav class="sectionnav" aria-label="Section navigation">
+      <div class="sectionnav__inner">
+        <span class="sectionnav__title">{{ ns.cur.label }}</span>
+        {% for l in ns.cur.links %}
+        <a class="sectionnav__link" href="{{ l.href }}"
+           {% if l.key == active %}aria-current="page"{% endif %}>{{ l.label }}</a>
+        {% endfor %}
+      </div>
+    </nav>
+    {% endif %}
+    {% endblock %}
 
-{#- Mobile navigation — slide-down, grouped by product area. -#}
-<div id="mobilenav" class="mobilenav" hidden>
-  <div class="mobilenav__panel" role="dialog" aria-modal="true" aria-label="Menu">
-    {% for g in nav_groups %}
-    <div class="mobilenav__group">
-      <a class="mobilenav__head" href="{{ g.href }}">{{ g.label }}</a>
-      {% for l in g.links %}
-      <a class="mobilenav__link" href="{{ l.href }}">{{ l.label }}</a>
-      {% endfor %}
-    </div>
-    {% endfor %}
-    <div class="mobilenav__group">
-      <span class="mobilenav__head mobilenav__head--muted">Quick access</span>
-      {% for p in nav_pinned %}<a class="mobilenav__link" href="{{ p.href }}">{{ p.label }}</a>{% endfor %}
-    </div>
-    <div class="mobilenav__group">
-      <span class="mobilenav__head mobilenav__head--muted">Workspace</span>
-      <a class="mobilenav__link" href="/users">Users</a>
-      <a class="mobilenav__link" href="/settings">Settings</a>
-      <a class="mobilenav__link" href="/docs">API docs</a>
-    </div>
+    <main class="main" id="main" tabindex="-1">
+      {% block breadcrumbs %}{% endblock %}
+
+      <section class="page-hero {% block hero_class %}{% endblock %}">
+        {% set _eyebrow %}{% block hero_eyebrow %}{{ ns.cur.label if ns.cur else '' }}{% endblock %}{% endset %}
+        {% if _eyebrow|trim %}<p class="eyebrow">{{ _eyebrow }}</p>{% endif %}
+        <h1 class="page-hero__title page__title">{% block hero_title %}{% block heading %}{% endblock %}{% endblock %}</h1>
+        <div class="page-hero__copy">{% block hero_subtitle %}{% block subtitle %}{% endblock %}{% endblock %}</div>
+        <div class="page-hero__actions">{% block hero_actions %}{% block actions %}{% endblock %}{% endblock %}</div>
+      </section>
+
+      <div class="page">
+        {% block content %}{% endblock %}
+      </div>
+    </main>
   </div>
 </div>
-
-<main class="main" id="main" tabindex="-1">
-  {% block breadcrumbs %}{% endblock %}
-
-  <section class="page-hero">
-    {% set _eyebrow %}{% block hero_eyebrow %}{{ ns.cur.label if ns.cur else '' }}{% endblock %}{% endset %}
-    {% if _eyebrow|trim %}<p class="eyebrow">{{ _eyebrow }}</p>{% endif %}
-    <h1 class="page-hero__title page__title">{% block hero_title %}{% block heading %}{% endblock %}{% endblock %}</h1>
-    <div class="page-hero__copy">{% block hero_subtitle %}{% block subtitle %}{% endblock %}{% endblock %}</div>
-    <div class="page-hero__actions">{% block hero_actions %}{% block actions %}{% endblock %}{% endblock %}</div>
-  </section>
-
-  <div class="page">
-    {% block content %}{% endblock %}
-  </div>
-</main>
 
 <!-- Command palette -->
 <div id="cmd-backdrop" class="cmd-backdrop" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">

@@ -1,49 +1,53 @@
 /* Concord — UI behavior layer */
 
 (() => {
-  // ── Theme toggle (persisted, light-first) ──────────────
-  const stored = localStorage.getItem('concord:theme') || 'light';
-  document.documentElement.setAttribute('data-theme', stored);
+  // ── Theme (persisted, DARK-FIRST) ──────────────────────
+  // base.html applies the stored theme inline before first paint; this keeps
+  // the two in step and is the only writer of the stored value. An unset
+  // preference -- and an unreadable localStorage -- both mean dark.
+  const THEME_KEY = 'concord:theme';
+  function storedTheme() {
+    try { return localStorage.getItem(THEME_KEY); } catch (e) { return null; }
+  }
+  document.documentElement.setAttribute('data-theme', storedTheme() === 'light' ? 'light' : 'dark');
   window.toggleTheme = () => {
-    const cur = document.documentElement.getAttribute('data-theme') || 'light';
-    const next = cur === 'light' ? 'dark' : 'light';
+    const cur = document.documentElement.getAttribute('data-theme') || 'dark';
+    const next = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('concord:theme', next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* private mode */ }
   };
 
-  // ── Deprecated sidebar API — kept as a harmless no-op ──
-  // The permanent left rail was replaced by top navigation. Any lingering
-  // references to toggleSidebar() must not throw.
-  window.toggleSidebar = () => {};
-
-  // ── Mobile navigation ──────────────────────────────────
+  // ── Navigation rail ────────────────────────────────────
+  // One <nav>: at desktop width it is the permanent rail, below 1024px the
+  // same element slides in as a drawer. There is no second copy of the
+  // navigation to fall out of step with the first.
   function setMobileNav(open) {
-    const nav = document.getElementById('mobilenav');
-    const burger = document.querySelector('.globalnav__burger');
-    if (!nav) return;
-    nav.hidden = !open;
-    burger?.setAttribute('aria-expanded', String(open));
-    document.body.style.overflow = open ? 'hidden' : '';
-    if (open) nav.querySelector('a')?.focus();
+    const rail = document.getElementById('sidebar');
+    if (!rail) return;
+    if (open) document.body.setAttribute('data-nav', 'open');
+    else document.body.removeAttribute('data-nav');
+    document.querySelector('.topbar__burger')?.setAttribute('aria-expanded', String(open));
+    if (open) rail.querySelector('a, button')?.focus();
   }
-  window.toggleMobileNav = () => setMobileNav(document.getElementById('mobilenav')?.hidden);
+  window.toggleMobileNav = () => setMobileNav(document.body.getAttribute('data-nav') !== 'open');
   window.closeMobileNav = () => setMobileNav(false);
+  // Deprecated alias — older inline handlers must not throw.
+  window.toggleSidebar = () => window.toggleMobileNav();
 
-  // ── Mega menus (hover via CSS; keyboard + escape here) ──
+  // ── Workspace menu (bottom of the rail) ────────────────
   function closeAllMenus() {
-    document.querySelectorAll('.megamenu[data-open="true"]').forEach((m) => {
+    document.querySelectorAll('.sidebar__menu[data-open="true"]').forEach((m) => {
       m.removeAttribute('data-open');
-      m.closest('.gnav-item')?.querySelector('[aria-haspopup]')?.setAttribute('aria-expanded', 'false');
+      document.querySelector(`[aria-controls="${m.id}"]`)?.setAttribute('aria-expanded', 'false');
     });
   }
-  function toggleMenu(trigger) {
-    const item = trigger.closest('.gnav-item');
-    const menu = item?.querySelector('.megamenu');
+  window.toggleWorkspaceMenu = (trigger) => {
+    const menu = document.getElementById(trigger.getAttribute('aria-controls'));
     if (!menu) return;
     const isOpen = menu.getAttribute('data-open') === 'true';
     closeAllMenus();
     if (!isOpen) { menu.setAttribute('data-open', 'true'); trigger.setAttribute('aria-expanded', 'true'); }
-  }
+  };
 
   // ── Toasts ─────────────────────────────────────────────
   const toastRoot = () => {
@@ -98,6 +102,9 @@
       { label: 'Search',      href: '/search',      hint: '/' },
       { label: 'Settings',    href: '/settings',    hint: '' },
       { label: 'API docs',    href: '/docs',        hint: '' },
+      { label: 'Executive dashboard', href: '/executive', hint: '' },
+      { label: 'FedRAMP 20x / KSI',   href: '/fedramp20x', hint: '' },
+      { label: 'AI governance',       href: '/ai-agents',  hint: '' },
     ],
     selected: 0,
   };
@@ -142,7 +149,10 @@
     } else if (e.key === 'Escape') {
       if (palette.open) closePalette();
       closeAllMenus();
-      if (!document.getElementById('mobilenav')?.hidden) { setMobileNav(false); document.querySelector('.globalnav__burger')?.focus(); }
+      if (document.body.getAttribute('data-nav') === 'open') {
+        setMobileNav(false);
+        document.querySelector('.topbar__burger')?.focus();
+      }
     }
     if (palette.open) {
       const root = document.getElementById('cmd-root');
@@ -170,24 +180,15 @@
       if (e.target.id === 'cmd-backdrop') closePalette();
     });
 
-    // Mega-menu triggers: click toggles (keyboard/touch); hover is CSS-driven.
-    document.querySelectorAll('.gnav-item [aria-haspopup]').forEach((trigger) => {
-      trigger.addEventListener('click', (e) => {
-        // Let the top-level link still navigate on a second activation only if
-        // already open; first activation reveals the menu.
-        if (trigger.tagName === 'A' && trigger.getAttribute('aria-expanded') === 'true') return;
-        e.preventDefault();
-        toggleMenu(trigger);
-      });
+    // Close the workspace menu when the click lands outside the rail's foot.
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.sidebar__footer')) closeAllMenus();
     });
 
-    // Close menus when focus/click leaves the nav.
-    document.addEventListener('click', (e) => { if (!e.target.closest('.gnav-item')) closeAllMenus(); });
-
-    // Close the mobile menu after choosing a destination or tapping the scrim.
-    const mnav = document.getElementById('mobilenav');
-    mnav?.addEventListener('click', (e) => {
-      if (e.target === mnav || e.target.closest('a')) setMobileNav(false);
+    // Choosing a destination closes the drawer; the rail stays put on desktop,
+    // where the drawer is never open in the first place.
+    document.getElementById('sidebar')?.addEventListener('click', (e) => {
+      if (e.target.closest('a')) setMobileNav(false);
     });
   });
 })();
