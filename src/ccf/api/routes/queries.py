@@ -3,7 +3,8 @@
 Deterministic, parameterized query templates over the authorization data. The API
 (`/api/queries`) lists templates and runs/exports them; the UI (`/queries`) is a
 pick-a-template → fill-params → results-table → export-CSV surface. Results are
-tenant-scoped to the caller's org.
+tenant-scoped to the caller's org: a caller-supplied ``organization_id``
+may only confirm the principal's own org, never name a different one.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...queries import REGISTRY, export_csv, list_templates, run_query
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, resolve_caller_org
 from ..deps import get_session
 from .ui import _principal_org, templates
 
@@ -31,7 +32,18 @@ class RunIn(BaseModel):
 
 
 def _org(request: Request, body_org: int | None) -> int | None:
-    return body_org if body_org is not None else _principal_org(request)
+    """The org these templates run against.
+
+    A body/query ``organization_id`` used to *win* over the authenticated
+    principal here, so a tenant caller could name any org and have every
+    template -- and its CSV export -- run against it. Postgres RLS happened to
+    return nothing (``deps.get_session`` binds the tenant, and every table
+    these templates read carries a ``tenant_isolation`` policy), but that is
+    the backstop, not the check: ``run_query`` itself had no org predicate of
+    its own, which an unscoped ``session_scope()`` shows immediately.
+    ``resolve_caller_org`` is now that check.
+    """
+    return resolve_caller_org(_principal_org(request), body_org)
 
 
 @router.get("")
@@ -90,7 +102,7 @@ async def queries_page(
     run: str = "",
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    org_id = organization_id if organization_id is not None else _principal_org(request)
+    org_id = _org(request, organization_id)
     selected = REGISTRY.get(key)
     result = None
     values: dict[str, str] = {}

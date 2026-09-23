@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, overload
 
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -152,6 +152,63 @@ def org_systems_subq(principal: Principal) -> Any:
     return select(System.id).where(
         System.organization_id == principal.org_id, System.deleted_at.is_(None)
     )
+
+
+@overload
+def resolve_caller_org(principal_org: int | None, requested_org: int) -> int: ...
+
+
+@overload
+def resolve_caller_org(principal_org: int | None, requested_org: None) -> int | None: ...
+
+
+@overload
+def resolve_caller_org(principal_org: int | None, requested_org: int | None) -> int | None: ...
+
+
+def resolve_caller_org(principal_org: int | None, requested_org: int | None) -> int | None:
+    """The organization a request runs against, given the one the caller *named*.
+
+    Tenant identity comes from the authenticated principal, never from a body
+    field, query string, form field or header. Where the caller is bound to an
+    org (``principal_org`` is set), a supplied ``organization_id`` may only
+    *confirm* it: an equal value is accepted, an absent one defaults to the
+    caller's own, and a **different** one is refused. Where the principal is
+    global (``principal_org is None`` -- the CLI/ETL/scheduler path, and every
+    request when ``CCF_AUTH_ENABLED=false``) the supplied value is honoured
+    as-is: that is the superuser path ``require_role`` already short-circuits
+    for, and the only way an operator names an org at all.
+
+    **Refused, not silently substituted.** Quietly swapping in the caller's own
+    org answers a 200 to a question nobody asked -- the request named org B and
+    got org A's data back, with nothing in the response saying so. A caller
+    naming another tenant is either a bug or an attack; a bug deserves to be
+    told, and an attack deserves nothing. (``prep.py::_scoped_organization_id``
+    and ``users.py::create_user`` still substitute-and-log; see this branch's
+    notes -- they are safe, but they are the older convention.)
+
+    **403, not 404.** The repo's 404-vs-403 rule
+    (``tests/test_waivers_api_rbac.py``) is about *resources*: another tenant's
+    row is 404 because confirming its id exists is itself a disclosure. This
+    refusal is decided from ``principal_org`` alone, before any lookup, so a
+    real foreign org id and an invented one produce byte-identical responses --
+    it discloses nothing about what exists. What it does report is exactly a
+    permission the caller lacks: acting on behalf of an organization that is
+    not its own. That is a 403.
+
+    Overloaded so that a route whose ``organization_id`` is a *required*
+    ``int`` keeps an ``int`` (never ``int | None``) out of this call: the only
+    way ``None`` is returned is when ``None`` was passed in, and a required
+    parameter cannot be. Without that, every such call site would need a cast,
+    and a cast is where a real ``None`` would later hide.
+    """
+    if principal_org is None:
+        return requested_org
+    if requested_org is not None and requested_org != principal_org:
+        raise HTTPException(
+            403, "organization_id does not match the authenticated organization"
+        )
+    return principal_org
 
 
 def require_role(*roles: str) -> Callable[..., Awaitable[Principal]]:

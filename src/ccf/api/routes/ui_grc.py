@@ -37,7 +37,7 @@ from ...models_grc import (
 )
 from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
-from ..auth_deps import require_role
+from ..auth_deps import require_role, resolve_caller_org
 from ..deps import get_session
 from .grc import (
     _MOCK_DISCOVERY,
@@ -1213,7 +1213,10 @@ async def portal_admin_page(
     organization_id: int | None = None,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    org_id = organization_id if organization_id is not None else _principal_org(request)
+    # The server-rendered twin of ``portal.list_grants_endpoint``: the query
+    # parameter used to win over the principal, so a tenant admin could render
+    # another org's grant table by changing the URL.
+    org_id = resolve_caller_org(_principal_org(request), organization_id)
     context = await _portal_admin_context(request, session, org_id)
     return templates.TemplateResponse(request, "portal_admin.html", context)
 
@@ -1233,9 +1236,12 @@ async def portal_admin_create(
 ) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
 
+    # The server-rendered twin of ``portal.create_grant_endpoint``: the form
+    # field named the tenant the grant was issued against.
+    org_id = resolve_caller_org(_principal_org(request), organization_id)
     try:
         grant = await create_grant(
-            session, org_id=organization_id, principal_name=principal_name, kind=kind,
+            session, org_id=org_id, principal_name=principal_name, kind=kind,
             package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
             label=label or None, actor=_actor(request),
         )
@@ -1248,7 +1254,7 @@ async def portal_admin_create(
     issued_token = grant.token or ""
     await session.commit()
     context = await _portal_admin_context(
-        request, session, organization_id, issued_token=issued_token
+        request, session, org_id, issued_token=issued_token
     )
     return templates.TemplateResponse(request, "portal_admin.html", context)
 
@@ -1260,8 +1266,21 @@ async def portal_admin_revoke(
     organization_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    from ...models_portal import ExternalAccessGrant  # noqa: PLC0415
     from ...portal import revoke_grant  # noqa: PLC0415
 
+    # Two separate checks, and both are needed. The form's ``organization_id``
+    # only decides where the redirect lands, so guarding it alone would be
+    # theatre: a caller can name its OWN org and still pass any ``grant_id``.
+    # ``revoke_grant`` takes the id unscoped, so the path id needs the same
+    # predicate ``portal.revoke_grant_endpoint`` got at 2a2137f -- 404 there,
+    # because a grant id's existence is itself a disclosure; 403 here, because
+    # naming a foreign org discloses nothing (see ``resolve_caller_org``).
+    org = resolve_caller_org(_principal_org(request), organization_id)
+    if org is not None:
+        row = await session.get(ExternalAccessGrant, grant_id)
+        if row is None or row.organization_id != org:
+            raise HTTPException(status_code=404, detail="grant not found")
     await revoke_grant(session, grant_id, actor=_actor(request))
     await session.commit()
     return RedirectResponse(f"/admin/portal?organization_id={organization_id}", status_code=303)

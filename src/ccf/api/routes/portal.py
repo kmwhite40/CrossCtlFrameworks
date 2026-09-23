@@ -44,7 +44,7 @@ from ...portal import (
     revoke_engagement,
     revoke_grant,
 )
-from ..auth_deps import require_role
+from ..auth_deps import require_role, resolve_caller_org
 from ..deps import get_session
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
@@ -121,14 +121,20 @@ class PrincipalIn(BaseModel):
 async def create_principal_endpoint(
     body: PrincipalIn,
     session: AsyncSession = Depends(get_session),
-    _principal: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     """Create an external principal on its own — an engagement names one
     before any grant exists, so it cannot only be created as a side effect of
-    issuing a grant."""
+    issuing a grant.
+
+    ``require_role("admin")`` is a *tenant* role, not an org gate, so the
+    body's ``organization_id`` was the only thing deciding which tenant the
+    row landed in. ``resolve_caller_org`` makes the principal decide.
+    """
+    org_id = resolve_caller_org(principal.org_id, body.organization_id)
     try:
         row = await create_principal(
-            session, org_id=body.organization_id, name=body.name, kind=body.kind,
+            session, org_id=org_id, name=body.name, kind=body.kind,
             email=body.email, organization_name=body.organization_name,
         )
     except ValueError as exc:  # unknown ``kind`` — a vocabulary error, not a server fault
@@ -176,9 +182,10 @@ async def create_engagement_endpoint(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    org_id = resolve_caller_org(principal.org_id, body.organization_id)
     try:
         row = await create_engagement(
-            session, org_id=body.organization_id, system_id=body.system_id,
+            session, org_id=org_id, system_id=body.system_id,
             assessor_principal_id=body.assessor_principal_id,
             period_from=body.period_from, period_to=body.period_to,
             authorized_by=body.authorized_by or principal.email, actor=principal.email,
@@ -193,9 +200,13 @@ async def create_engagement_endpoint(
 async def list_engagements_endpoint(
     organization_id: int,
     session: AsyncSession = Depends(get_session),
-    _principal: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> list[dict[str, Any]]:
-    return [_engagement_out(row) for row in await list_engagements(session, org_id=organization_id)]
+    """List one org's 3PAO engagements — the caller's own. See
+    ``resolve_caller_org``: the query parameter may confirm the principal's
+    org, never name another."""
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    return [_engagement_out(row) for row in await list_engagements(session, org_id=org_id)]
 
 
 @router.post("/engagements/{engagement_id}/revoke")
@@ -242,9 +253,16 @@ async def create_grant_endpoint(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    # A portal grant is a bearer credential into an org's authorization package
+    # and evidence. Issuing one is exactly the operation that must not accept
+    # its tenant from the request body — ``require_role("admin")`` is a tenant
+    # role and does not gate the org. (Before this, the insert was refused by
+    # the RLS WITH CHECK instead, surfacing as a 500, not an authorization
+    # answer.) ``revoke`` was scoped at 2a2137f; this closes the issuing half.
+    org_id = resolve_caller_org(principal.org_id, body.organization_id)
     try:
         grant = await create_grant(
-            session, org_id=body.organization_id, principal_name=body.principal_name,
+            session, org_id=org_id, principal_name=body.principal_name,
             kind=body.kind, email=body.email, organization_name=body.organization_name,
             package_ids=body.package_ids, evidence_ids=body.evidence_ids,
             ttl_days=body.ttl_days, label=body.label,
@@ -270,9 +288,12 @@ async def create_grant_endpoint(
 async def list_grants_endpoint(
     organization_id: int,
     session: AsyncSession = Depends(get_session),
-    _principal: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> list[dict[str, Any]]:
-    grants = await list_grants(session, org_id=organization_id)
+    """List one org's outstanding grants — the caller's own. See
+    ``resolve_caller_org``."""
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    grants = await list_grants(session, org_id=org_id)
     return [
         {"id": g.id, "kind": g.kind, "label": g.label, "engagement_id": g.engagement_id,
          "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at}
