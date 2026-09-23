@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session, verify_session
 from ...config import get_settings, is_dev_env
+from ...models_portal import AssessmentEngagement, ExternalAccessGrant
 from ...portal import (
     add_comment,
     create_engagement,
@@ -203,7 +204,17 @@ async def revoke_engagement_endpoint(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """End the engagement, and with it every grant issued under it."""
+    """End the engagement, and with it every grant issued under it.
+
+    ``require_role("admin")`` is not an org gate -- ``admin`` is a tenant role,
+    and only a global principal short-circuits it -- so one org's admin could
+    revoke another org's 3PAO engagement. 404, not 403: the id's existence is
+    itself a disclosure.
+    """
+    if principal.org_id is not None:
+        row = await session.get(AssessmentEngagement, engagement_id)
+        if row is None or row.organization_id != principal.org_id:
+            raise HTTPException(status_code=404, detail="engagement not found")
     ok = await revoke_engagement(session, engagement_id, actor=principal.email)
     await session.commit()
     if not ok:
@@ -275,6 +286,12 @@ async def revoke_grant_endpoint(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    """Revoke one external-access grant. Role-gated AND org-scoped -- see
+    ``revoke_engagement_endpoint`` for why the role alone is not enough."""
+    if principal.org_id is not None:
+        row = await session.get(ExternalAccessGrant, grant_id)
+        if row is None or row.organization_id != principal.org_id:
+            raise HTTPException(status_code=404, detail="grant not found")
     ok = await revoke_grant(session, grant_id, actor=principal.email)
     await session.commit()
     if not ok:
