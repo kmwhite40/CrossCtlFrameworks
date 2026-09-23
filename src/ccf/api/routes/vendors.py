@@ -107,7 +107,10 @@ async def update_vendor(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    v = (await session.execute(select(Vendor).where(Vendor.id == vendor_id))).scalar_one_or_none()
+    stmt = select(Vendor).where(Vendor.id == vendor_id)
+    if principal.org_id is not None:
+        stmt = stmt.where(Vendor.organization_id == principal.org_id)
+    v = (await session.execute(stmt)).scalar_one_or_none()
     if v is None:
         raise HTTPException(404, "vendor not found")
     for k, val in body.model_dump(exclude_none=True).items():

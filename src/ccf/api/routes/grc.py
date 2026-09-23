@@ -407,9 +407,10 @@ async def update_regulatory(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    r = (
-        await session.execute(select(RegulatoryUpdate).where(RegulatoryUpdate.id == reg_id))
-    ).scalar_one_or_none()
+    stmt = select(RegulatoryUpdate).where(RegulatoryUpdate.id == reg_id)
+    if principal.org_id is not None:
+        stmt = stmt.where(RegulatoryUpdate.organization_id == principal.org_id)
+    r = (await session.execute(stmt)).scalar_one_or_none()
     if r is None:
         raise HTTPException(404, "not found")
     for k, v in body.model_dump(exclude_none=True).items():
@@ -526,13 +527,16 @@ async def get_engagement(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    e = (
-        await session.execute(
-            select(AuditEngagement)
-            .options(selectinload(AuditEngagement.requests), selectinload(AuditEngagement.findings))
-            .where(AuditEngagement.id == eng_id)
-        )
-    ).scalar_one_or_none()
+    stmt = (
+        select(AuditEngagement)
+        .options(selectinload(AuditEngagement.requests), selectinload(AuditEngagement.findings))
+        .where(AuditEngagement.id == eng_id)
+    )
+    # ``add_finding`` below already scopes the same parent; this read did not,
+    # and it returns the engagement's whole request + finding tree.
+    if principal.org_id is not None:
+        stmt = stmt.where(AuditEngagement.organization_id == principal.org_id)
+    e = (await session.execute(stmt)).scalar_one_or_none()
     if e is None:
         raise HTTPException(404, "engagement not found")
     return {
@@ -565,7 +569,10 @@ async def add_request(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    if (await session.get(AuditEngagement, eng_id)) is None:
+    engagement = await session.get(AuditEngagement, eng_id)
+    if engagement is None or (
+        principal.org_id is not None and engagement.organization_id != principal.org_id
+    ):
         raise HTTPException(404, "engagement not found")
     r = AuditRequest(engagement_id=eng_id, **body.model_dump())
     session.add(r)
@@ -583,6 +590,12 @@ async def update_request(
     r = await session.get(AuditRequest, req_id)
     if r is None:
         raise HTTPException(404, "request not found")
+    # ``audit_requests`` carries no ``organization_id``; it inherits the tenant
+    # from its engagement, so that is where the predicate goes.
+    if principal.org_id is not None:
+        parent = await session.get(AuditEngagement, r.engagement_id)
+        if parent is None or parent.organization_id != principal.org_id:
+            raise HTTPException(404, "request not found")
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(r, k, v)
     await session.commit()
@@ -1053,6 +1066,11 @@ async def test_results(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:
+    # ``control_test_results`` has no ``organization_id`` of its own; the tenant
+    # lives on the parent test, matching ``evaluate_control_test`` above.
+    t = await session.get(ControlTest, test_id)
+    if t is None or (principal.org_id is not None and t.organization_id != principal.org_id):
+        raise HTTPException(404, "control test not found")
     rows = (
         (
             await session.execute(

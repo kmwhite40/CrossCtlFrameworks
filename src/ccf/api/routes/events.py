@@ -84,9 +84,10 @@ async def delete_webhook(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> None:
-    w = (
-        await session.execute(select(Webhook).where(Webhook.id == webhook_id))
-    ).scalar_one_or_none()
+    stmt = select(Webhook).where(Webhook.id == webhook_id)
+    if principal.org_id is not None:
+        stmt = stmt.where(Webhook.organization_id == principal.org_id)
+    w = (await session.execute(stmt)).scalar_one_or_none()
     if w is None:
         raise HTTPException(404, "webhook not found")
     await session.delete(w)

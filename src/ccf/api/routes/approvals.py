@@ -46,14 +46,17 @@ async def get_approval(
     entity_type: str,
     entity_id: str,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    a = (
-        await session.execute(
-            select(Approval).where(
-                Approval.entity_type == entity_type, Approval.entity_id == entity_id
-            )
-        )
-    ).scalar_one_or_none()
+    stmt = select(Approval).where(
+        Approval.entity_type == entity_type, Approval.entity_id == entity_id
+    )
+    if principal.org_id is not None:
+        stmt = stmt.where(Approval.organization_id == principal.org_id)
+    a = (await session.execute(stmt)).scalar_one_or_none()
+    # A miss is reported as "draft" rather than 404 -- unchanged, and it is also
+    # what another tenant's approval must look like: the state of their review
+    # (who approved it, when, the rejection note) is theirs, not this caller's.
     if a is None:
         return {"entity_type": entity_type, "entity_id": entity_id, "state": "draft"}
     return approvals.out(a)

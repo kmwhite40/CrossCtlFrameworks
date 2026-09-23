@@ -58,9 +58,10 @@ async def mark_read(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    n = (
-        await session.execute(select(Notification).where(Notification.id == notification_id))
-    ).scalar_one_or_none()
+    stmt = select(Notification).where(Notification.id == notification_id)
+    if principal.org_id is not None:
+        stmt = stmt.where(Notification.organization_id == principal.org_id)
+    n = (await session.execute(stmt)).scalar_one_or_none()
     if n is None:
         raise HTTPException(404, "notification not found")
     if n.read_at is None:
