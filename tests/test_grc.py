@@ -134,3 +134,63 @@ async def test_add_finding_rejects_cross_org_engagement() -> None:
         os.environ.pop("CCF_AUTH_ENABLED", None)
         os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_add_finding_org_check_rejects_a_foreign_principal_without_rls() -> None:
+    """``add_finding``'s OWN engagement org predicate, at its own layer.
+
+    ``test_add_finding_rejects_cross_org_engagement`` above asserts the right
+    end-to-end result, but it cannot fail when only the explicit predicate is
+    removed: ``ccf.audit_engagements`` carries a ``tenant_isolation`` RLS
+    policy and ``ccf.api.deps.get_session`` binds the RLS tenant from the
+    principal, so org A's request 404s at the ``session.get`` before the
+    route's own check is reached (confirmed by mutation -- deleting the
+    predicate left that test passing).
+
+    RLS is documented in ``ccf.api.deps.get_session`` as a backstop *beneath*
+    the app-layer scoping, and the unscoped ``session_scope()`` the CLI and
+    scheduler use bypasses it by design, so the predicate is pinned here where
+    it is the only defense. The owning org is asserted first, so the 404 is
+    provably the org check.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.grc import FindingIn, add_finding  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    _token_a, org_a = await _mk_admin("a@grc-findings-layer-a.example", "GRC Findings Layer A")
+    _token_b, org_b = await _mk_admin("b@grc-findings-layer-b.example", "GRC Findings Layer B")
+
+    async with session_scope() as s:
+        eng_b = AuditEngagement(organization_id=org_b, name="Layer Org B engagement")
+        s.add(eng_b)
+        await s.flush()
+        eng_b_id = eng_b.id
+
+    async with session_scope() as s:  # unscoped: RLS is not filtering here
+        assert await s.get(AuditEngagement, eng_b_id) is not None, (
+            "session must not be RLS-filtered"
+        )
+        owner = Principal(
+            user_id=None, email="b@grc-findings-layer-b.example", org_id=org_b, role="admin"
+        )
+        created = await add_finding(
+            eng_b_id,
+            FindingIn(title="Legit layer finding", severity="high"),
+            session=s,
+            principal=owner,
+        )
+        assert created["id"] is not None  # the owning org is not locked out
+
+        outsider = Principal(
+            user_id=None, email="a@grc-findings-layer-a.example", org_id=org_a, role="admin"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await add_finding(
+                eng_b_id,
+                FindingIn(title="Cross-org layer attempt", severity="high"),
+                session=s,
+                principal=outsider,
+            )
+        assert exc.value.status_code == 404  # 404, not 403 -- no id disclosure

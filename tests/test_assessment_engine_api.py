@@ -680,3 +680,53 @@ async def test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_o
             )
         ).scalars().all()
         assert leaked == [], "no proposal should have been opened against the victim's assessment"
+
+
+@pytest.mark.asyncio
+async def test_require_proposal_app_check_rejects_a_foreign_principal_indep_of_rls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_require_proposal``'s OWN org predicate, isolated from RLS.
+
+    ``test_an_org_a_principal_cannot_read_an_org_b_proposal`` /
+    ``..._cannot_accept_...`` above (and
+    ``test_calibration_api.py::test_an_org_a_principal_cannot_reject_an_org_b_proposal``)
+    assert the right end-to-end results, but none of them can fail when only
+    this predicate is deleted: ``ccf.assessment_control_proposals`` carries a
+    ``tenant_isolation`` RLS policy and ``ccf.api.deps.get_session`` binds the
+    RLS tenant from the principal, so the outsider's request 404s at the query
+    first. Confirmed by mutation -- deleting the predicate left every one of
+    them passing.
+
+    Same reasoning and shape as
+    ``test_create_proposal_app_check_rejects_cross_tenant_assessment_indep_of_rls``
+    above, which pins ``create_proposal``'s check: a ``session_scope()``
+    session runs under the bootstrap role (RLS bypass), so the proposal row is
+    returned to whoever asks and only this predicate can refuse it.
+    """
+    _token_a, org_a = await _mk_user("reqprop-a@ae-tenant.test", "AE Tenant ReqProp A")
+    _token_b, org_b = await _mk_user("reqprop-b@ae-tenant.test", "AE Tenant ReqProp B")
+    assessment_b = await _assessment_for(org_b, "reqprop-victim")
+    proposal_b = await _evaluated_proposal(assessment_b, monkeypatch)
+
+    async with session_scope() as s:  # bootstrap role -- RLS bypassed, cannot help here
+        assert (
+            await s.execute(
+                select(AssessmentControlProposal).where(
+                    AssessmentControlProposal.id == proposal_b
+                )
+            )
+        ).scalar_one_or_none() is not None, "session must not be RLS-filtered"
+
+        owner = Principal(
+            user_id=None, email="owner@ae-tenant.test", org_id=org_b, role="viewer"
+        )
+        found = await assessment_engine._require_proposal(s, proposal_b, owner)
+        assert found.id == proposal_b  # the owning org is not locked out
+
+        outsider = Principal(
+            user_id=None, email="attacker@ae-tenant.test", org_id=org_a, role="viewer"
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await assessment_engine._require_proposal(s, proposal_b, outsider)
+        assert exc_info.value.status_code == 404  # 404, not 403 -- no id disclosure

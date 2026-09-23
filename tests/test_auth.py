@@ -233,3 +233,68 @@ async def test_oscal_and_reports_are_org_scoped(auth_on: None) -> None:
             await c.get(f"/api/reports/build?system_id={sys_a}", headers=hb)
         ).status_code == 404
         assert (await c.get("/api/reports/build")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_report_builder_org_check_rejects_a_foreign_principal_without_rls() -> None:
+    """``build_report``'s OWN system org predicate, at its own layer.
+
+    ``test_oscal_and_reports_are_org_scoped`` above asserts the right
+    end-to-end result for the report builder, but it cannot fail when only the
+    explicit predicate is removed: ``ccf.systems`` carries a
+    ``tenant_isolation`` RLS policy and ``ccf.api.deps.get_session`` binds the
+    RLS tenant from the principal, so org B's request 404s at the query before
+    the route's own check is reached (confirmed by mutation -- deleting the
+    predicate left that test passing).
+
+    RLS is documented in ``ccf.api.deps.get_session`` as a backstop *beneath*
+    the app-layer scoping, and the unscoped ``session_scope()`` the CLI and
+    scheduler use bypasses it by design, so the predicate is pinned here where
+    it is the only defense. The owning org is asserted first, so the 404 is
+    provably the org check. The two OSCAL halves of that test are pinned the
+    same way in ``tests/test_oscal_builders.py``.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.reports import build_report  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    org_a, _token_a = await _mk_user("admin@reports-layer-a.test", "ReportsLayerOrgA", "admin")
+    org_b, _token_b = await _mk_user("admin@reports-layer-b.test", "ReportsLayerOrgB", "admin")
+    sys_a = await _mk_system(org_a, "ReportsLayerA-Enclave")
+
+    async with session_scope() as s:  # unscoped: RLS is not filtering here
+        assert await s.get(System, sys_a) is not None, "session must not be RLS-filtered"
+
+        owner = Principal(
+            user_id=None, email="admin@reports-layer-a.test", org_id=org_a, role="admin"
+        )
+        report = await build_report(
+            session=s,
+            principal=owner,
+            organization_id=None,
+            system_id=str(sys_a),
+            baseline=None,
+            framework=None,
+            family=None,
+            fmt="json",
+            filename=None,
+        )
+        assert report is not None  # the owning org still gets its report
+
+        outsider = Principal(
+            user_id=None, email="admin@reports-layer-b.test", org_id=org_b, role="admin"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await build_report(
+                session=s,
+                principal=outsider,
+                organization_id=None,
+                system_id=str(sys_a),
+                baseline=None,
+                framework=None,
+                family=None,
+                fmt="json",
+                filename=None,
+            )
+        assert exc.value.status_code == 404
