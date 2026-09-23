@@ -62,7 +62,7 @@
         <td class="dim" style="font-size:12px">{{ p.source or '—' }}</td>
         <td style="min-width:130px">
           {% if r.milestone_total %}
-            <div class="bar-row"><div class="bar-row__track"><div style="height:100%;width:{{ r.progress }}%;background:var(--brand-500,#6f7bff)"></div></div></div>
+            <div class="bar-row"><div class="bar-row__track"><div style="height:100%;width:{{ r.progress }}%;background:var(--accent)"></div></div></div>
             <span class="dim" style="font-size:11px">{{ r.milestone_done }}/{{ r.milestone_total }} · {{ r.progress }}%</span>
           {% else %}<span class="dim" style="font-size:12px">—</span>{% endif %}
         </td>

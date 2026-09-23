@@ -280,7 +280,7 @@ def test_every_colour_token_has_an_explicit_dark_value() -> None:
         for name in root
         if name.startswith(("--font-", "--space-", "--radius"))
         or name in {"--topnav-h", "--sectionnav-h", "--sidebar-w", "--maxw",
-                    "--shadow-glow", "--glow"}
+                    "--shadow-glow", "--glow", "--stack-gap"}
     }
     aliases = {name for name, value in root.items() if "var(" in value}
     colourish = set(root) - theme_invariant - aliases
@@ -524,8 +524,97 @@ def test_the_measured_palette_is_reported_in_full() -> None:
         for name, value in tokens.items():
             if name.startswith(("--font", "--space", "--radius", "--shadow")) or name in (
                 "--topnav-h", "--sectionnav-h", "--sidebar-w", "--maxw", "--ring",
-                "--topbar-h", "--glow", "--shadow-glow",
+                "--topbar-h", "--glow", "--shadow-glow", "--stack-gap",
             ):
                 continue
             parse_color(value, tokens)  # raises with the token's name on failure
     assert LIGHT != DARK
+
+
+# ── a name that resolves to nothing renders as nothing ───────────────────────
+
+#: Classes that are hooks for something other than this stylesheet. ``mermaid``
+#: is the diagram library's own selector, and it styles the element itself.
+CLASSES_STYLED_ELSEWHERE = frozenset({"mermaid"})
+
+
+def _local_blocks(src: str) -> str:
+    """The template's own ``<style>`` content, which is as real as app.css."""
+    return "".join(re.findall(r"<style[^>]*>(.*?)</style>", src, re.S))
+
+
+def _templates() -> list[Path]:
+    return sorted((SRC / "templates").glob("*.html"))
+
+
+def test_no_page_references_a_css_variable_that_is_never_defined() -> None:
+    """``var(--x)`` where ``--x`` does not exist is silently nothing.
+
+    This is the quietest rendering defect there is: no error, no warning, the
+    property just does not apply. ``--radius-md`` was referenced by three
+    templates and defined by none, so every tile using it rendered square for
+    as long as it had existed, and the suite was green throughout.
+
+    A ``var(--x, fallback)`` is still counted, because relying on a fallback
+    for a token the design system is supposed to own is the same bug wearing a
+    seatbelt -- the fallback is a second, unthemed source of truth.
+    """
+    css = read_css()
+    defined = set(re.findall(r"(--[\w-]+)\s*:", css))
+    failures = []
+    for path in [SRC / "static" / "css" / "app.css", *_templates()]:
+        src = path.read_text(encoding="utf-8")
+        known = defined | set(re.findall(r"(--[\w-]+)\s*:", _local_blocks(src)))
+        for name in sorted(set(re.findall(r"var\(\s*(--[\w-]+)", src))):
+            if name not in known:
+                failures.append(f"{path.name}: var({name}) is defined nowhere")
+    assert not failures, "\n".join(failures)
+
+
+def test_no_page_references_a_css_class_that_is_never_defined() -> None:
+    """A ``class=`` naming nothing renders unstyled, and looks like a bug.
+
+    ``fedramp20x.html`` rendered eight headline readiness figures through
+    ``stat-grid``/``stat__value``, which this stylesheet has never defined,
+    while ``.kpi`` -- the component that exists for exactly that -- sat unused.
+    The page was not broken in any way a test or a server log would show.
+    """
+    css = read_css()
+    defined = set(re.findall(r"\.([a-zA-Z][\w-]*)", css))
+    failures = []
+    for path in _templates():
+        src = path.read_text(encoding="utf-8")
+        known = defined | set(re.findall(r"\.([a-zA-Z][\w-]*)", _local_blocks(src)))
+        for attr in re.findall(r'class="([^"{}]*)"', src):
+            for name in attr.split():
+                if name not in known and name not in CLASSES_STYLED_ELSEWHERE:
+                    failures.append(f"{path.name}: .{name} is defined nowhere")
+    assert not failures, "\n".join(sorted(set(failures)))
+
+
+def test_the_categorical_chip_is_the_only_neutral_one_that_is_filled() -> None:
+    """``chip--brand`` names a thing; it does not report a state.
+
+    It labels a framework code, a connector type, a count. So when the accent
+    went monochrome it was the one chip that could follow, and it now has to
+    hold off two other neutrals -- the plain chip and the ghost -- without a
+    hue to do it with. Lightness is the only axis left, which is why it is a
+    solid fill rather than the tint every status chip uses.
+
+    The pairwise ΔE floor is asserted in ``test_trust_corroboration.py``. This
+    pins the reason, so a well-meant change back to a tint fails here with an
+    explanation rather than there with a number.
+    """
+    for theme in THEMES:
+        paints = chip_paint(theme)
+        tag, plain = paints["chip--brand"], paints["chip"]
+        surface = parse_color(tokens_for(theme)["--bg-elevated"], tokens_for(theme))
+        assert contrast(tag.text, tag.background) >= AA_BODY, (
+            f"{theme}: chip--brand label {hexed(tag.text)} on "
+            f"{hexed(tag.background)} is below AA"
+        )
+        # It must be a fill, not a tint: a tint composites toward the card and
+        # lands next to the plain chip, which is where the collision comes from.
+        assert contrast(tag.background, surface) > contrast(
+            plain.background, surface
+        ), f"{theme}: chip--brand no longer stands off the card more than .chip"

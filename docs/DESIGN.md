@@ -1,80 +1,98 @@
-# Concord — Design System (indigo glassmorphism)
+# Concord — design system
 
-A single, app-specific visual language for the CMMC/NIST compliance command
-console: a deep indigo/violet gradient canvas with **frosted-glass panels**,
-periwinkle (`--brand`) and teal (`--accent`) accents, soft glows, and Open Sans
-type — modern, calm, and legible over the dark surface.
+Monochrome chrome, semantic colour. The application is greyscale everywhere
+except where a colour reports a state, because this product's job is to say
+what is true about a control, and colour that means nothing competes with
+colour that does.
 
-All tokens and class names live in [`src/ccf/api/static/css/app.css`](../src/ccf/api/static/css/app.css)
-and are a **stable contract** consumed by the Jinja templates — restyle the
-*values*, never rename the tokens/classes.
+All tokens and class names live in
+[`src/ccf/api/static/css/app.css`](../src/ccf/api/static/css/app.css) and are a
+**stable contract** consumed by 54 Jinja templates. Restyle the *values*, never
+rename the tokens or classes.
 
-## Aesthetic direction
+There is no build step and no `package.json`. The stylesheet is hand-authored
+and served as-is; `htmx`, `Alpine`, `Lucide` and `Mermaid` are vendored.
 
-| Element | Decision | Why |
+## The rule that decides everything else
+
+**Colour is reserved for status.** Action, active, link and focus are ink, not
+a hue. An accent that competes with a status chip is one more thing a reader
+has to learn *not* to read as meaning, and this product renders claims a
+federal regulator will act on.
+
+Two consequences worth stating, because both look like mistakes otherwise:
+
+- **Links carry an underline**, not a colour. Once the accent is ink, colour no
+  longer distinguishes a link from the text beside it (WCAG 1.4.1), so the
+  underline is the only remaining signal and is not decoration.
+- **`chip--brand` is a solid neutral fill**, while every status chip is a tint.
+  It labels a framework code, a connector type, a count — it names a thing, it
+  does not report a state. Three neutral chips cannot be told apart by hue, so
+  it separates from the plain and the ghost chip on *lightness*, which a tint
+  cannot do: a tint composites toward the card and lands on top of them.
+
+## Themes
+
+`data-theme` on `<html>`, **dark by default**, persisted to storage. 109 root
+tokens, 42 dark overrides, 107 distinct. Geometry, type and layout metrics are
+deliberately theme-invariant and are not restated in the dark block; a second
+copy of `--radius: 10px` is a second thing to keep in sync.
+
+| Role | Light | Dark |
 |---|---|---|
-| Surface | Indigo/violet gradient `#0c1024`→`#080a18` with radial brand/teal pools | Modern, atmospheric depth |
-| Panels | Frosted glass: translucent fill + `backdrop-blur(20px)` + hairline border + inner highlight, `--radius-lg` (18px) | The signature "glass" look |
-| Primary | **Periwinkle** `--brand-500 #6f7bff` | Active nav, primary buttons, links, focus, brand mark |
-| Accent | **Teal** `--accent-500 #2dd4bf` | Secondary highlights / data |
-| Status | semantic chips + optional `.led--ok/warn/err/live` dots | At-a-glance health |
+| Page / card / inset | `#f2f2f3` · `#ffffff` · `#e7e7e9` | `#0a0a0b` · `#161618` · `#242428` |
+| Text / secondary / muted | `#18181b` · `#51515a` · `#5f5f68` | `#f2f2f3` · `#b2b2b9` · `#9a9aa2` |
+| Accent (action, active, focus) | `#18181b` | `#fafafa` |
+| Categorical tag fill | `#26262c` on white | `#52525a` |
 
-Dominant indigo + glass, with periwinkle/teal accents and semantic green/amber/red.
+Neutrals are true greys. The previous scheme tinted every surface toward blue
+(`--bg: #f4f5f8`, `--bg-elevated: #161b25`), which is what read as "blue and
+black" far more than the accent did.
+
+## Colour that means something
+
+| Token | Carries |
+|---|---|
+| `--success` / `--warning` / `--danger` | pass, attention, fail |
+| `--info` | deliberately **teal**, not a second blue — it must hold off `--success` as well as the accent |
+| `--sev-critical/high/moderate/low/none` | the severity ramp: five ordered steps, so it cannot fold into four statuses without losing one |
+
+The severity ramp is data-viz colour and lived as hex literals inside
+`dashboard.html`, which meant it never followed the theme. It is tokenised in
+both themes now.
 
 ## Type
 
-| Role | Family | Usage |
-|---|---|---|
-| Display | **Open Sans** (`--font-display`) | Page titles, card titles, KPI/metric numbers |
-| Body | **Open Sans** (`--font-body`) | Prose, controls, buttons |
-| Mono | **Open Sans** (`--font-mono`) | Telemetry labels, table headers, control IDs, metadata |
+System stack, no webfont and no network dependency. `--font-display` for page
+and card titles and KPI values, `--font-body` for everything else,
+`--font-mono` for control IDs and telemetry. Numerals are tabular wherever they
+are compared down a column.
 
-A single family (**Open Sans**) is used throughout; the three `--font-*` tokens
-remain so a future tier change is a one-line edit. Numerals are **tabular**
-wherever data lives (metrics, tables, chips). The heavy, uppercase,
-letter-spaced **micro-label** (mono token) is the signature texture — use
-`.label`, `.kpi__label`, `.card__subtitle`, and `<th>` for it.
+## Contrast is a requirement, not a preference
 
-## Tokens (the contract)
+AA in **both** themes: 4.5:1 body text, 3:1 large text, UI boundaries and
+meaningful fills. A compliance platform that publishes other people's control
+evidence should not fail its own accessibility controls.
 
-- Color ramps: `--brand-50…700` (periwinkle), `--accent-400…600` (teal),
-  `--ok/warn/err/info-500/700` (+ `-50` translucent fills).
-- Surface/text: `--bg-0/1`, `--panel`, `--text`, `--text-dim`, `--text-mute`,
-  `--glass`, `--glass-2`, `--glass-border(-2)`, `--hairline`, `--field-bg`.
-- Geometry: `--radius-sm/(lg/xl)`, `--shadow-xs…lg`, `--glow`, `--glow-signal`,
-  `--ring`, `--sidebar-w`, `--topbar-h`.
-- Legacy aliases `--ink-25…950` map onto the surface ramp so older inline styles
-  keep working. **Prefer the semantic names in new markup.**
+None of this is asserted by eye. `tests/theme_tokens.py` resolves the real
+stylesheet, and `tests/test_ui_shell.py` measures every foreground/background
+pair the tokens produce, failing with the pair and the ratio.
 
-A `[data-theme="light"]` block re-points the surface/text tokens for a
-graphite-on-paper variant; components inherit it automatically.
+## What the tests pin
 
-## Reusable patterns
+- Every one of the 54 pages renders the shell, in both themes.
+- **No two chip variants are visually identical** — every ordered pair, both
+  themes, CIEDE2000 floor of 10. The worst surviving pair is 15.3.
+- No page references a **CSS variable or class that is defined nowhere**. Both
+  are silent: the property simply does not apply and nothing logs it.
+  `--radius-md` was referenced by three templates and defined by none, so every
+  tile using it rendered square for as long as it existed, with a green suite.
+- Every colour token has an explicit dark value, and no theme-invariant token
+  is restated in the dark block.
 
-- **Panel**: `.card` (`.card--elevated`) with `.card__header/__title/__subtitle/__body/__footer`.
-- **Brand mark**: the Concord logo (`static/img/logo*.png`) renders as the
-  topbar `.topbar__brand-mark`, the landing nav `.lp-mark` + floating
-  `.lp-logo` hero, and the favicon / apple-touch-icon.
-- **Metric/KPI**: `.kpi` → `.kpi__label` (mono) + `.kpi__value` + `.kpi__meta` + optional `.kpi__trend` icon chip; a teal→periwinkle accent rail runs down the left edge.
-- **Status**: `.chip--ok/warn/err/info/brand/ghost` (mono) and `.led--ok/warn/err/live` dots; `--live` pulses for real-time elements.
-- **Telemetry label**: `.label` — mono, uppercase, `0.14em` tracking, muted.
-- **Tables**: wrap in `.table-wrap`; mono uppercase `<th>`, brand row-hover, brand ID links, `.mono` cells for identifiers.
-- **Buttons**: `.btn--primary` (periwinkle), `.btn--secondary` (outline), `.btn--ghost`; `.btn--sm` / `.btn--lg`.
-- **Inputs**: `.input` / `.select` + `.field-group` (mono label).
-- **Layout**: `.cols-2/3/4`, `.grid-cards`, `.stack`, `.row`, `.layout-split-l/r` (responsive split views), `.between`.
+## Out of scope
 
-## Motion
-
-One orchestrated page-load moment: `.page > *` rises in with a small stagger.
-Live elements use the LED pulse. The landing page layers an ambient scene
-(rising light beams, perspective grid floor, a gently floating logo). Everything
-is disabled under `prefers-reduced-motion`. Keep app transitions ≤ 200ms and
-CSS-only.
-
-## Conventions for new components
-
-1. Compose from the existing tokens + classes; add a token before a hardcoded color.
-2. Labels/IDs/units → `--font-mono`; numbers → tabular; headings/metrics → `--font-display`.
-3. Periwinkle (`--brand`) is structure/authority; **teal (`--accent`) is rationed** for highlights, with semantic green/amber/red reserved for live/critical status.
-4. Hairline borders + small radii; the glass blur is the signature — avoid competing heavy shadows.
-5. Verify both `data-theme` values and `prefers-reduced-motion`.
+The landing page (`landing.html`) and the printable questionnaire report
+(`questionnaire_report.html`) are standalone documents with their own local
+design systems. The landing page is monochrome with a single mint accent — a
+deliberate brand choice, in a different register from the application chrome.

@@ -15,14 +15,14 @@
     <form method="post" action="/login" class="card card--elevated" style="width:min(400px,94vw)">
       <div class="card__body stack" style="gap:16px">
         <div class="row" style="gap:11px">
-          <span class="topbar__brand-mark">C</span>
+          <img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="26" height="26" />
           <div>
-            <div style="font-size:18px;font-weight:700;color:#fff">Concord</div>
+            <div style="font-size:18px;font-weight:700;color:var(--text)">Concord</div>
             <div class="dim" style="font-size:12px">Compliance platform</div>
           </div>
         </div>
         <div>
-          <h1 style="font-size:20px;font-weight:700;color:#fff;margin:0 0 2px">Sign in</h1>
+          <h1 style="font-size:20px;font-weight:700;color:var(--text);margin:0 0 2px">Sign in</h1>
           <p class="dim" style="font-size:13px;margin:0">Use your Concord account credentials.</p>
         </div>
         {% if error %}
