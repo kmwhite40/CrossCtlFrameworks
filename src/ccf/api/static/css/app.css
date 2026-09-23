@@ -27,10 +27,10 @@
   --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
 
   /* ── Surfaces / text ────────────────────────────────── */
-  --bg: #f4f5f8;
+  --bg: #f2f2f3;
   --bg-elevated: #ffffff;
-  --bg-subtle: #fafbfc;
-  --bg-inset: #eceef2;
+  --bg-subtle: #fafafa;
+  --bg-inset: #e7e7e9;
 
   /* Shell surfaces. Separate tokens because the sidebar and the top bar are
      the two surfaces that must stay legible when the page behind them does
@@ -38,47 +38,68 @@
   --shell-bg: #ffffff;
   --shell-border: rgba(0,0,0,.10);
 
-  --text: #17181c;             /* 15.4:1 on --bg, 16.8:1 on --bg-elevated */
-  --text-secondary: #4f5566;   /* 7.44:1 on --bg-elevated — WCAG AA */
-  --text-muted: #666c7c;       /* 4.52:1 on --bg-inset, the worst surface it lands on */
-  --text-inverse: #ffffff;     /* on --accent: 5.42:1 */
+  --text: #18181b;             /* 17.72:1 on --bg-elevated */
+  --text-secondary: #51515a;   /* 7.85:1 on --bg-elevated — WCAG AA */
+  --text-muted: #5f5f68;       /* 5.12:1 on --bg-inset, the worst surface it lands on */
+  --text-inverse: #ffffff;     /* on --accent: 17.72:1 */
 
   --border: rgba(0,0,0,.09);          /* decorative hairline */
   --border-strong: rgba(0,0,0,.44);   /* 3.17:1 on --bg-inset, its worst surface — WCAG 1.4.11 */
 
-  /* ── Accent (blue only for action/active/link/focus) ── */
-  --accent: #0066d6;
-  --accent-hover: #0a72e8;
-  --accent-pressed: #0057b8;
-  --accent-soft: rgba(0,102,214,.12);
-  --accent-ink: #0a58c2;       /* text on --accent-soft: 5.53:1 */
+  /* ── Accent — monochrome. Action/active/link/focus are ink, never a
+     second hue. Colour in this product is reserved for status, so an
+     accent that competed with a chip was one more thing a reader had to
+     learn not to read as meaning. ── */
+  --accent: #18181b;
+  --accent-hover: #34343b;
+  --accent-pressed: #000000;
+  --accent-soft: rgba(24,24,27,.07);
+  --accent-ink: #26262c;       /* text on --accent-soft: 13.06:1 */
+
+  /* Categorical tag (`chip--brand`): a framework code, a connector type, a
+     count. It names a thing, it does not report a state — so it is the one
+     chip that is deliberately neutral. It separates from the plain and the
+     ghost chip on LIGHTNESS, which is why it is solid rather than tinted;
+     three neutrals cannot be told apart by hue. */
+  --tag-bg: #26262c;
+  --tag-ink: #ffffff;
 
   --success: #17803d; --success-soft: rgba(23,122,48,.12);
   --warning: #b06500; --warning-soft: rgba(176,101,0,.14);
   --danger:  #c7231a; --danger-soft:  rgba(199,35,26,.12);
   /* --info is deliberately teal, not a second blue: chip--brand and chip--info
-     are two different states and were 0.8 ΔE apart while both were blue. */
+     are two different states and were 0.8 ΔE apart while both were blue.
+     chip--brand is now neutral, so that particular collision is gone — but
+     teal stays, because --info must also hold off --success and --accent. */
   --info:    #0e7490; --info-soft:    rgba(14,116,144,.14);
 
   /* Text-on-tint variants. Every chip's text colour is one of these — none is
      hard-coded in a rule any more, so a theme has one place to change. */
+  /* ── Severity ramp (chart + badge fills; ordered, five steps) ── */
+  --sev-critical: #c7231a;
+  --sev-high:     #d1620a;
+  --sev-moderate: #a5760b;
+  --sev-low:      #17803d;
+  --sev-none:     #5f5f68;
+
   --info-ink: #0a5a6b;     /* 6.43:1 on --info-soft over a card */
   --danger-ink: #b42318;   /* 5.41:1 */
   --success-ink: #146c2b;  /* 5.54:1 */
   --warning-ink: #8a5100;  /* 5.40:1 */
 
   /* ── Geometry / elevation ───────────────────────────── */
-  --radius-sm: 8px; --radius: 10px; --radius-lg: 14px; --radius-xl: 18px; --radius-2xl: 24px;
-  --shadow-xs: 0 1px 2px rgba(16,20,32,.05);
-  --shadow-sm: 0 2px 10px rgba(16,20,32,.06);
-  --shadow-md: 0 10px 28px rgba(16,20,32,.09);
-  --shadow-lg: 0 24px 60px rgba(16,20,32,.14);
+  --radius-sm: 8px; --radius: 10px; --radius-md: 12px; --radius-lg: 14px; --radius-xl: 18px; --radius-2xl: 24px;
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.05);
+  --shadow-sm: 0 2px 10px rgba(0,0,0,.06);
+  --shadow-md: 0 10px 28px rgba(0,0,0,.09);
+  --shadow-lg: 0 24px 60px rgba(0,0,0,.13);
 
+  --stack-gap: 20px;
   --topnav-h: 60px;
   --sectionnav-h: 44px;
   --sidebar-w: 264px;
   --maxw: 1440px;
-  --ring: 0 0 0 4px rgba(0,102,214,.20);
+  --ring: 0 0 0 4px rgba(24,24,27,.16);
 
   /* ── Legacy aliases — keep older template inline refs alive ──
      All var()-valued on purpose: an alias re-resolves per theme, so it can
@@ -139,7 +160,7 @@ body {
 .skip-link:focus { transform: translateY(0); }
 
 .label { font-size: 13px; font-weight: 500; color: var(--text-secondary); letter-spacing: 0; text-transform: none; }
-.eyebrow { font-size: 15px; font-weight: 600; letter-spacing: 0; color: var(--accent); margin: 0 0 14px; }
+.eyebrow { font-size: 15px; font-weight: 600; letter-spacing: 0; color: var(--text-secondary); margin: 0 0 14px; }
 
 /* quiet status dot (no glow / pulse) */
 .led { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
@@ -332,7 +353,7 @@ details[open] > .sidebar__heading .sidebar__caret { transform: rotate(90deg); }
 .page__subtitle { color: var(--text-secondary); font-size: 17px; margin-top: 8px; max-width: 84ch; line-height: 1.5; }
 .breadcrumbs { max-width: var(--maxw); margin: var(--space-5) auto calc(var(--space-2) * -1); padding: 0 var(--space-8); display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
 .breadcrumbs a { color: var(--text-secondary); text-decoration: none; }
-.breadcrumbs a:hover { color: var(--accent); }
+.breadcrumbs a:hover { color: var(--text); text-decoration: underline; text-underline-offset: 3px; }
 .breadcrumbs svg { width: 14px; height: 14px; }
 .display { font-family: var(--font-display); font-weight: 700; letter-spacing: -.03em; }
 
@@ -397,7 +418,7 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: end; }
 .filters > .btn { align-self: end; }
 .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
-.stack > * + * { margin-top: 20px; }
+.stack > * + * { margin-top: var(--stack-gap); }
 .grid-cards > *, .cols-2 > *, .cols-3 > *, .cols-4 > *, .grid-2-1 > *, .grid-1-1 > *,
 .layout-split-l > *, .layout-split-r > *, .filters > * { margin-top: 0; }
 /* Flex/grid overflow guard: without min-width:0, items with intrinsic content
@@ -458,7 +479,7 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
    ════════════════════════════════════════════════════════════ */
 .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--bg-inset); color: var(--text); border: 1px solid transparent; white-space: nowrap; }
 .chip svg { width: 12px; height: 12px; }
-.chip--brand { background: var(--accent-soft);  color: var(--accent-ink); }
+.chip--brand { background: var(--tag-bg);       color: var(--tag-ink); }
 .chip--ok    { background: var(--success-soft); color: var(--success-ink); }
 .chip--warn  { background: var(--warning-soft); color: var(--warning-ink); }
 .chip--err   { background: var(--danger-soft);  color: var(--danger-ink); }
@@ -467,6 +488,31 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
    (`not_assessed`, `not_available`), so it may not borrow the base chip's
    fill OR its text colour — it had both, and read as the same thing. */
 .chip--ghost { background: transparent; border-color: var(--border-strong); color: var(--text-muted); font-weight: 500; }
+
+/* ════════════════════════════════════════════════════════════
+   CHARTS
+   These style the macros in `_charts.html`. They lived in dashboard.html's
+   own <style> block, which worked only because the dashboard was the single
+   page importing the partial -- include it anywhere else and every donut,
+   gauge and sparkline rendered unstyled, with no error to say why.
+   ════════════════════════════════════════════════════════════ */
+.chart-donut { position: relative; display: inline-grid; place-items: center; flex: none; }
+.chart-donut__center { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; text-align: center; }
+.chart-donut__value { font-family: var(--font-display, inherit); font-size: 22px; font-weight: 700; letter-spacing: -.03em; color: var(--text); line-height: 1; }
+.chart-donut__cap { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+.chart-gauge { position: relative; display: inline-grid; place-items: center; flex: none; }
+.chart-gauge__label { position: absolute; font-size: 13px; font-weight: 700; color: var(--text); }
+.chart-legend { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.chart-legend__item { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.chart-legend__dot { width: 9px; height: 9px; border-radius: 3px; flex: none; align-self: center; }
+.chart-legend__val { font-weight: 700; color: var(--text); min-width: 30px; }
+.chart-legend__lab { color: var(--text-secondary); }
+.chart-spark { display: block; width: 100%; margin-top: 10px; }
+.chart-spark--empty { display: grid; place-items: center; font-size: 12px; color: var(--text-secondary); }
+.chart-bars { display: flex; align-items: flex-end; gap: 10px; padding-top: 8px; }
+.chart-bars__col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; }
+.chart-bars__bar { width: 100%; max-width: 30px; border-radius: 6px 6px 0 0; min-height: 3px; transition: height .5s cubic-bezier(.4,0,.2,1); }
+.chart-bars__lab { font-size: 11px; color: var(--text-secondary); }
 
 /* ════════════════════════════════════════════════════════════
    TABLES
@@ -484,8 +530,12 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .table-wrap table tbody tr, table.data tbody tr { transition: background .12s; }
 .table-wrap table tbody tr:hover td, table.data tbody tr:hover td { background: rgba(0,0,0,.025); }
 .table-wrap table tbody tr:last-child td, table.data tbody tr:last-child td { border-bottom: none; }
-.table-wrap table a[href], table.data a[href] { color: var(--accent); text-decoration: none; font-weight: 500; }
-.table-wrap table a[href]:hover, table.data a[href]:hover { text-decoration: underline; }
+.table-wrap table a[href], table.data a[href] {
+  color: var(--accent); font-weight: 500;
+  text-decoration: underline; text-decoration-thickness: 1px;
+  text-underline-offset: 3px; text-decoration-color: var(--border-strong);
+}
+.table-wrap table a[href]:hover, table.data a[href]:hover { text-decoration-color: currentColor; }
 .table-wrap table .mono, table.data .mono { font-size: 13px; }
 
 /* ════════════════════════════════════════════════════════════
@@ -582,32 +632,46 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 7px; border-r
    ════════════════════════════════════════════════════════════ */
 html[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b0e14;
-  --bg-elevated: #161b25;
-  --bg-subtle: #10141c;
-  --bg-inset: #222836;
+  --bg: #0a0a0b;
+  --bg-elevated: #161618;
+  --bg-subtle: #101012;
+  --bg-inset: #242428;
 
-  --shell-bg: #10141c;
+  --shell-bg: #101012;
   --shell-border: rgba(255,255,255,.10);
 
-  --text: #eef1f7;             /* 15.2:1 on --bg-elevated */
-  --text-secondary: #aeb7c7;   /* 8.54:1 */
-  --text-muted: #949dae;       /* 5.40:1 on --bg-inset, the worst surface it lands on */
-  --text-inverse: #0a0f18;     /* on --accent: 7.31:1 — white would have been 3.0:1 */
+  --text: #f2f2f3;             /* 16.15:1 on --bg-elevated */
+  --text-secondary: #b2b2b9;   /* 8.57:1 on --bg-elevated */
+  --text-muted: #9a9aa2;       /* 5.54:1 on --bg-inset, the worst surface it lands on */
+  --text-inverse: #0a0a0b;     /* on --accent: 18.96:1 */
 
   --border: rgba(255,255,255,.12);
   --border-strong: rgba(255,255,255,.34);
 
-  --accent: #4da3ff;
-  --accent-hover: #6fb5ff;
-  --accent-pressed: #2b8cf0;
-  --accent-soft: rgba(77,163,255,.16);
-  --accent-ink: #8cc4ff;
+  --accent: #fafafa;
+  --accent-hover: #ffffff;
+  --accent-pressed: #d6d6db;
+  --accent-soft: rgba(250,250,250,.10);
+  --accent-ink: #f2f2f3;
+
+  /* The light theme's tag is solid near-black on a pale card; inverting it
+     to solid near-white here would collide with --accent, which IS white in
+     this theme (the primary button, the focus ring). So the dark tag is a
+     raised grey instead — the same "strongest neutral" role, expressed in
+     the direction this theme has room for. */
+  --tag-bg: #52525a;
+  --tag-ink: #fafafa;
 
   --success: #32d583; --success-soft: rgba(50,213,131,.16);
   --warning: #fdb022; --warning-soft: rgba(253,176,34,.16);
   --danger:  #ff6b6b; --danger-soft:  rgba(255,107,107,.16);
   --info:    #22d3ee; --info-soft:    rgba(34,211,238,.16);
+
+  --sev-critical: #ff6b6b;
+  --sev-high:     #fb923c;
+  --sev-moderate: #fbbf24;
+  --sev-low:      #32d583;
+  --sev-none:     #9a9aa2;
 
   --info-ink: #5fe0f2;
   --danger-ink: #ff9f97;
@@ -618,7 +682,7 @@ html[data-theme="dark"] {
   --shadow-sm: 0 2px 10px rgba(0,0,0,.55);
   --shadow-md: 0 10px 28px rgba(0,0,0,.6);
   --shadow-lg: 0 24px 60px rgba(0,0,0,.7);
-  --ring: 0 0 0 4px rgba(77,163,255,.32);
+  --ring: 0 0 0 4px rgba(250,250,250,.22);
 }
 html[data-theme="dark"] .table-wrap table tbody tr:hover td,
 html[data-theme="dark"] table.data tbody tr:hover td { background: rgba(255,255,255,.04); }
