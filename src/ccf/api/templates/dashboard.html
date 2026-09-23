@@ -10,6 +10,9 @@
   {% else %}<span class="ovw-badge ovw-badge--low">Getting started</span>{% endif %}
 {% endmacro %}
 {% block title %}Overview · Concord{% endblock %}
+{#- The banner hero base.html offers. Opt-in, so the other 53 pages keep the
+    plain one; no content moves. §5 of the UI shell spec. -#}
+{% block hero_class %}page-hero--banner{% endblock %}
 {% block heading %}Platform overview{% endblock %}
 {% block subtitle %}
   <p class="page__subtitle">Compliance readiness, vulnerability response, and continuous-monitoring operations — at a glance.</p>
