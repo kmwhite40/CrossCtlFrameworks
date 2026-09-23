@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Security · Concord{% endblock %}
+{% block heading %}Security{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle">Two-factor authentication for your own account.</p>
+{% endblock %}
+{% block content %}
+
+{% if error == "code" %}
+<div class="chip chip--err" style="margin-bottom:16px;padding:8px 12px" role="alert">
+  That code did not match. The authenticator was not turned on.
+</div>
+{% elif error == "required" %}
+<div class="chip chip--err" style="margin-bottom:16px;padding:8px 12px" role="alert">
+  Your organization requires a second factor, so it cannot be removed.
+</div>
+{% elif error == "active" %}
+<div class="chip chip--err" style="margin-bottom:16px;padding:8px 12px" role="alert">
+  This account already has an active authenticator. Remove it before enrolling again.
+</div>
+{% endif %}
+
+{% if recovery_codes %}
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Recovery codes</div>
+    <div class="card__subtitle">Shown once. Store them somewhere you can reach without your phone.</div>
+  </div>
+  <div class="card__body">
+    <p class="dim" style="font-size:13px;margin:0 0 12px">
+      Each code signs you in once if you lose your authenticator. Concord stores
+      only a digest of them, so this list cannot be shown again.
+    </p>
+    <div class="mono" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px">
+      {% for code in recovery_codes %}<div>{{ code }}</div>{% endfor %}
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if secret %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Set up your authenticator</div>
+    <div class="card__subtitle">Add the key below, then enter the code it shows.</div>
+  </div>
+  <div class="card__body stack" style="--stack-gap:14px">
+    <div>
+      <div class="label">Setup key</div>
+      <div class="mono" style="font-size:16px;letter-spacing:.04em">{{ manual_entry }}</div>
+      <p class="dim" style="font-size:12px;margin:6px 0 0">
+        Time-based, six digits, 30-second interval.
+      </p>
+    </div>
+    <div>
+      <div class="label">Or open this link on the device with your authenticator</div>
+      <div class="mono" style="font-size:12px;overflow-wrap:anywhere">{{ otpauth_uri }}</div>
+    </div>
+    <form method="post" action="/settings/security/activate" class="row" style="gap:10px;align-items:flex-end">
+      <label class="field-group" style="flex:0 0 200px">
+        <span class="dim" style="font-size:12px">Code from the app</span>
+        <input class="input mono" type="text" name="code" inputmode="numeric"
+               autocomplete="one-time-code" required autofocus>
+      </label>
+      <button class="btn btn--primary" type="submit">Turn on</button>
+    </form>
+  </div>
+</section>
+{% endif %}
+
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">Two-factor authentication</div>
+    <span class="chip {{ 'chip--ok' if active_mfa else 'chip--ghost' }}">
+      {{ 'On' if active_mfa else 'Off' }}
+    </span>
+  </div>
+  <div class="card__body stack" style="--stack-gap:14px">
+    {% if active_mfa %}
+      <p style="margin:0">
+        An authenticator app is required when you sign in with a password.
+        {{ recovery_remaining }} unused recovery code(s) remain.
+      </p>
+      {% if required %}
+        <p class="dim" style="font-size:13px;margin:0">
+          Your organization requires a second factor, so this cannot be removed.
+        </p>
+      {% else %}
+        <form method="post" action="/settings/security/disable">
+          <button class="btn btn--secondary" type="submit">Remove authenticator</button>
+        </form>
+      {% endif %}
+    {% elif not secret %}
+      <p style="margin:0">
+        {% if required %}
+          Your organization requires a second factor. Set one up to finish securing this account.
+        {% else %}
+          A code from an authenticator app will be asked for after your password.
+        {% endif %}
+      </p>
+      <p class="dim" style="font-size:13px;margin:0">
+        Single sign-on accounts are not affected. Your identity provider handles
+        their second factor, and API tokens are unchanged.
+      </p>
+      <form method="post" action="/settings/security/enroll">
+        <button class="btn btn--primary" type="submit">
+          {{ 'Set up again' if pending_mfa else 'Set up authenticator' }}
+        </button>
+      </form>
+    {% endif %}
+  </div>
+</section>
+
+{% endblock %}

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Verification code · Concord</title>
+  <link rel="stylesheet" href="/static/css/app.css?v={{ asset_v }}" />
+</head>
+<body>
+  <main style="min-height:100vh;display:grid;place-items:center;padding:24px">
+    <form method="post" action="/login/mfa" class="card card--elevated" style="width:min(400px,94vw)">
+      <div class="card__body stack" style="gap:16px">
+        <div class="row" style="gap:11px">
+          <img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="26" height="26" />
+          <div>
+            <div style="font-size:18px;font-weight:700;color:var(--text)">Concord</div>
+            <div class="dim" style="font-size:12px">Compliance platform</div>
+          </div>
+        </div>
+        <div>
+          <h1 style="font-size:20px;font-weight:700;color:var(--text);margin:0 0 2px">Verification code</h1>
+          <p class="dim" style="font-size:13px;margin:0">
+            Enter the six-digit code from your authenticator app. You can use a
+            recovery code instead if you do not have it with you.
+          </p>
+        </div>
+        {% if error %}
+        <div class="chip chip--err" style="width:100%;justify-content:flex-start;padding:8px 12px" role="alert">
+          {% if locked %}
+          Too many failed attempts. This account is temporarily locked — try again later.
+          {% else %}
+          That code was not correct.
+          {% endif %}
+        </div>
+        {% endif %}
+        <label class="field-group">
+          <span class="dim" style="font-size:12px">Code</span>
+          {#- inputmode numeric but type text: a recovery code is accepted in the
+              same field, and type=number would refuse it. -#}
+          <input class="input mono" type="text" name="code" inputmode="numeric"
+                 autocomplete="one-time-code" autocapitalize="off" spellcheck="false"
+                 required autofocus>
+        </label>
+        <button class="btn btn--primary" type="submit" style="justify-content:center">Verify</button>
+        <p class="dim" style="font-size:12px;margin:0">
+          <a href="/login">Start over</a>
+        </p>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

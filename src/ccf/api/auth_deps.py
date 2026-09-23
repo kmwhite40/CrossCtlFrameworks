@@ -18,6 +18,13 @@ from ..models import System, User
 
 SESSION_COOKIE = "concord_session"
 
+#: The half-authenticated cookie set between a correct password and a correct
+#: code. Named separately from ``SESSION_COOKIE`` so the two are never confused
+#: in a template or a test -- though the real defence is that it is signed with
+#: a derived key (``login_service._mfa_pending_secret``) and therefore does not
+#: verify as a session however it is renamed.
+MFA_PENDING_COOKIE = "concord_mfa_pending"
+
 # Paths reachable without authentication even when auth is enabled. Matched on
 # segment boundaries by ``is_public_path`` — never as a bare string prefix.
 _PUBLIC_PREFIXES = (
