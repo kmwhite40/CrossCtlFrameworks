@@ -33,6 +33,7 @@ from ...models import (
 )
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api", tags=["automation"])
 
@@ -130,11 +131,7 @@ async def upsert_profile(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    system = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if system is None:
-        raise HTTPException(404, "system not found")
+    await require_system_in_scope(session, system_id, principal)
     profile = await _get_profile(session, system_id)
     data = body.model_dump()
     if profile is None:
@@ -156,11 +153,7 @@ async def derive(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Re-run derivation from the saved profile (idempotent)."""
-    system = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if system is None:
-        raise HTTPException(404, "system not found")
+    system = await require_system_in_scope(session, system_id, principal)
     profile = await _get_profile(session, system_id)
     if profile is None:
         raise HTTPException(400, "system has no profile; complete the questionnaire first")
@@ -183,6 +176,11 @@ async def coverage(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Coverage rollup (responsibility / state) from the derivation snapshot."""
+    # Scope first: ``system_id`` comes straight off the path and the profile
+    # lookup below has no org predicate of its own (``system_profiles`` has no
+    # ``organization_id``), so an unscoped session -- CLI, scheduler, worker --
+    # would otherwise serve another tenant's derivation snapshot.
+    system = await require_system_in_scope(session, system_id, principal)
     profile = await _get_profile(session, system_id)
     if profile is None:
         raise HTTPException(404, "system has no profile")
@@ -190,12 +188,9 @@ async def coverage(
     # anything for this platform" question is IO, so it is answered here and
     # passed in. The system is loaded only for its organization_id --
     # ConnectorConfig is org-scoped, not system-scoped.
-    system = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
     connector_backed = await automation.platform_capture_is_live(
         session,
-        organization_id=system.organization_id if system else None,
+        organization_id=system.organization_id,
         platform=automation.PLATFORM_TO_SSP.get(profile.cloud_platform or "", ""),
     )
     return {
@@ -211,11 +206,7 @@ async def generate_ssp(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Auto-generate an SSP project seeded from the profile's derivation."""
-    system = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if system is None:
-        raise HTTPException(404, "system not found")
+    system = await require_system_in_scope(session, system_id, principal)
     profile = await _get_profile(session, system_id)
     if profile is None or not profile.derivation:
         raise HTTPException(400, "derive the system profile first")
@@ -233,6 +224,7 @@ async def impact(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """How each control affects the SPRS score, ranked by recoverable points."""
+    await require_system_in_scope(session, system_id, principal)
     return await automation.control_impact(session, system_id)
 
 
@@ -243,6 +235,7 @@ async def evidence_requirements(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Derived evidence checklist for the system's non-inherited controls."""
+    await require_system_in_scope(session, system_id, principal)
     profile = await _get_profile(session, system_id)
     if profile is None:
         raise HTTPException(404, "system has no profile")
@@ -329,11 +322,7 @@ async def authorization_package(
     principal: Principal = Depends(get_principal),
 ) -> Response:
     """Assemble a submission package (zip): coverage, profile, and POA&M."""
-    system = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if system is None:
-        raise HTTPException(404, "system not found")
+    system = await require_system_in_scope(session, system_id, principal)
     profile = await _get_profile(session, system_id)
 
     buf = io.BytesIO()
@@ -516,26 +505,25 @@ async def list_framework_controls(
     code: str,
     limit: int = 500,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    total = (
-        await session.execute(
-            select(func.count(FrameworkControl.id)).where(
-                FrameworkControl.framework_code == code.upper()
-            )
-        )
-    ).scalar_one()
-    rows = (
-        (
-            await session.execute(
-                select(FrameworkControl)
-                .where(FrameworkControl.framework_code == code.upper())
-                .order_by(FrameworkControl.identifier)
-                .limit(min(limit, 2000))
-            )
-        )
-        .scalars()
-        .all()
+    # ``framework_controls`` is NOT global reference data: rows are uploaded per
+    # tenant by ``upload_framework_controls`` with ``org_id=principal.org_id``,
+    # so the code in the path must not reach another org's catalog.
+    count_stmt = select(func.count(FrameworkControl.id)).where(
+        FrameworkControl.framework_code == code.upper()
     )
+    stmt = (
+        select(FrameworkControl)
+        .where(FrameworkControl.framework_code == code.upper())
+        .order_by(FrameworkControl.identifier)
+        .limit(min(limit, 2000))
+    )
+    if principal.org_id is not None:
+        count_stmt = count_stmt.where(FrameworkControl.organization_id == principal.org_id)
+        stmt = stmt.where(FrameworkControl.organization_id == principal.org_id)
+    total = (await session.execute(count_stmt)).scalar_one()
+    rows = (await session.execute(stmt)).scalars().all()
     return {
         "framework": code.upper(),
         "total": total,

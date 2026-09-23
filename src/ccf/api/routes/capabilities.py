@@ -37,6 +37,7 @@ from ...models_capability import (
 )
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api", tags=["capabilities"])
 
@@ -438,6 +439,7 @@ async def derive_status(
     Never writes ``status`` and never creates a row — see
     :mod:`ccf.capability.derive`.
     """
+    await require_system_in_scope(session, system_id, principal)
     n = await derive_for_system(session, system_id=system_id)
     await session.commit()
     return {"system_id": system_id, "rows_annotated": n}

@@ -36,6 +36,7 @@ from ...enforcement.service import (
 from ...models_enforcement import RemediationPlan
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api", tags=["enforcement"])
 
@@ -129,12 +130,15 @@ async def create(
     environment itself, but *does* reach the tenant: the provider issues one
     read call per remediable resource to capture reversal data, after the
     blast-radius refusal in ``build_steps`` -- so this is role-gated rather
-    than merely authenticated, the same as approve/apply/reverse.
+    than merely authenticated, the same as approve/apply/reverse. The role gate
+    is not an org gate: ``require_role`` admits any tenant's enforcer, so the
+    system id off the path is scoped explicitly before the provider is reached.
 
     A refused plan comes back **201 with status "refused"**, not an error: the
     refusal and its reason are a stored decision an operator should be able to
     read, and an HTTP error would discard the row's id.
     """
+    await require_system_in_scope(session, system_id, principal)
     try:
         plan = await create_plan(
             session,

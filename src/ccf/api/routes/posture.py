@@ -29,6 +29,7 @@ from ...posture.drift import latest_drift, resource_timeline
 from ...posture.latest import latest_result_ids
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/posture", tags=["posture"])
 
@@ -142,6 +143,7 @@ async def scan_system(
     """Scan one system with one connector, recording per-resource findings."""
     from ...posture.scan import scan_for_system  # noqa: PLC0415
 
+    await require_system_in_scope(session, system_id, principal)
     try:
         out = await scan_for_system(
             session,
@@ -211,6 +213,7 @@ async def control_effective_verdict(
     """Which verdict should be believed for this control on this system."""
     from ...posture.scan import effective_verdict  # noqa: PLC0415
 
+    await require_system_in_scope(session, system_id, principal)
     return await effective_verdict(session, system_id=system_id, control_id=control_id)
 
 
