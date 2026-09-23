@@ -110,6 +110,7 @@ async def _append_as(org_id: int, tag: str) -> None:
             entity_type=_ENTITY,
             entity_id=tag,
             diff={"tag": tag},
+            organization_id=org_id,
         )
         await s.commit()
 
@@ -117,14 +118,16 @@ async def _append_as(org_id: int, tag: str) -> None:
 async def _append_via_middleware(org_id: int, tag: int) -> None:
     """One audit row written by the real ``audit_middleware``, scoped to ``org_id``.
 
-    This is the only append path that sets ``organization_id`` -- the middleware
-    resolves it from the request principal. ``record_event`` leaves it NULL, and
-    the ``tenant_isolation`` predicate lets *every* tenant see NULL-org rows, so
-    a chain built only from ``record_event`` calls would be fully visible to any
-    clamped session and could not show the RLS-clamped head read at all. The
-    middleware is driven directly (same technique as
+    The middleware resolves ``organization_id`` from the request principal.
+    (``record_event`` now takes it as a required argument too, which
+    ``_append_as`` passes -- until ``fix/audit-event-org-scoping`` it left the
+    column NULL, and since the ``tenant_isolation`` predicate lets *every*
+    tenant see NULL-org rows, a chain built only from ``record_event`` calls was
+    fully visible to any clamped session and could not show the RLS-clamped head
+    read at all.) The middleware is driven directly (same technique as
     ``tests/test_audit_reentry.py``) rather than over HTTP so the row's org is
-    exactly the one this test names.
+    exactly the one this test names, and it keeps the interleaved row on a path
+    this module does not otherwise exercise.
     """
     path = f"/api/{_MW_ENTITY}/{tag}"
     principal = Principal(
@@ -274,6 +277,7 @@ async def test_two_tenants_appending_concurrently_do_not_fork_the_chain() -> Non
                 entity_type=_ENTITY,
                 entity_id=tag,
                 diff={"tag": tag},
+                organization_id=org_id,
             )
             # Hold the transaction open: this is the window in which an
             # unserialized second appender reads a head that is about to change.
@@ -324,6 +328,7 @@ async def test_two_events_in_one_transaction_chain_to_each_other() -> None:
                     entity_type=_ENTITY,
                     entity_id=tag,
                     diff={"tag": tag},
+                    organization_id=org_a,
                 )
             await s.commit()
 
@@ -493,6 +498,7 @@ async def test_recording_an_event_leaves_the_caller_session_still_clamped() -> N
                 entity_type=_ENTITY,
                 entity_id="clamp",
                 diff={"tag": "clamp"},
+                organization_id=org_a,
             )
 
             visible_after = (
