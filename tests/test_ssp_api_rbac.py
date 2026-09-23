@@ -394,6 +394,53 @@ async def test_another_tenants_project_is_still_404_not_403() -> None:
 
 
 @pytest.mark.asyncio
+async def test_require_project_org_check_rejects_a_foreign_principal_without_rls() -> None:
+    """``_require_project``'s OWN org predicate, exercised at its own layer.
+
+    ``test_another_tenants_project_is_still_404_not_403`` above asserts the
+    right end-to-end result, but it cannot fail when only the explicit
+    predicate is removed: ``ccf.ssp_projects`` carries a ``tenant_isolation``
+    RLS policy and ``ccf.api.deps.get_session`` binds the RLS tenant from the
+    principal, so the outsider's request 404s at the query before
+    ``_require_project``'s own check is reached (confirmed by mutation --
+    deleting the predicate left that test passing).
+
+    RLS is documented in ``ccf.api.deps.get_session`` as a backstop *beneath*
+    the app-layer scoping, and the unscoped ``session_scope()`` the CLI and
+    scheduler use bypasses it by design, so the predicate is pinned here where
+    it is the only defense. The owning org is asserted first, so the 404 is
+    provably the org check and not the row being unreachable.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.ssp import _require_project  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    tag = _tag()
+    _owner_token, org_a = await _mk_user(
+        f"owner-layer-{tag}@ssp-rbac.test", f"SSP RBAC Layer OrgA {tag}", "admin"
+    )
+    _outsider_token, org_b = await _mk_user(
+        f"outsider-layer-{tag}@ssp-rbac.test", f"SSP RBAC Layer OrgB {tag}", "admin"
+    )
+    proj_id = await _project(org_a)
+
+    async with session_scope() as s:  # unscoped: RLS is not filtering here
+        owner = Principal(
+            user_id=None, email=f"owner-layer-{tag}@ssp-rbac.test", org_id=org_a, role="admin"
+        )
+        found = await _require_project(s, proj_id, owner)
+        assert found.id == proj_id  # the owning org is not locked out
+
+        outsider = Principal(
+            user_id=None, email=f"outsider-layer-{tag}@ssp-rbac.test", org_id=org_b, role="admin"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await _require_project(s, proj_id, outsider)
+        assert exc.value.status_code == 404  # 404, not 403 -- no id disclosure
+
+
+@pytest.mark.asyncio
 async def test_a_read_only_outsider_learns_nothing_from_the_status_code() -> None:
     """A refused role gets the same 403 for a real foreign project and for an
     id that does not exist at all, so the gate is not an existence oracle in

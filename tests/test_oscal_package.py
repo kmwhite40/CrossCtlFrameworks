@@ -175,3 +175,41 @@ async def test_package_export_out_of_org_is_404() -> None:
         os.environ.pop("CCF_AUTH_ENABLED", None)
         os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_package_route_org_check_rejects_a_foreign_principal_without_rls() -> None:
+    """The route's OWN org check, exercised at its own layer.
+
+    ``test_package_export_out_of_org_is_404`` above asserts the right
+    end-to-end result, but it cannot fail when only the route's explicit org
+    check is removed: ``ccf.systems`` carries a ``tenant_isolation`` RLS
+    policy, so the outsider's request 404s at the query first (confirmed by
+    mutation -- deleting the check left that test passing). RLS is documented
+    in ``ccf.api.deps.get_session`` as a backstop *beneath* the app-layer
+    scoping, so the app-layer scoping is pinned here with the RLS backstop out
+    of the way: an unscoped ``session_scope`` session plus a principal from
+    another organization. Mirrors
+    ``test_oscal_sar.py::test_sar_route_org_check_rejects_a_foreign_principal_without_rls``.
+    """
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes.oscal import package_export  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    owner_org_id, sys_id = await _make_org_system("Package Layer Owner Org")
+    other_org_id, _other_sys_id = await _make_org_system("Package Layer Other Org")
+
+    async with session_scope() as s:
+        insider = Principal(
+            user_id=None, email="insider@package-layer.test", org_id=owner_org_id, role="admin"
+        )
+        resp = await package_export(sys_id, session=s, principal=insider)
+        assert resp.media_type == "application/zip"  # the owning org still gets its package
+
+        outsider = Principal(
+            user_id=None, email="outsider@package-layer.test", org_id=other_org_id, role="admin"
+        )
+        with pytest.raises(HTTPException) as excinfo:
+            await package_export(sys_id, session=s, principal=outsider)
+        assert excinfo.value.status_code == 404
