@@ -46,7 +46,8 @@ async def _audit(session: AsyncSession, **kw: Any) -> None:
     from ..api.audit import record_event  # noqa: PLC0415 - avoids an import cycle
 
     await record_event(session, **kw)
-    # record_event adds without flushing and the session does not autoflush.
+    # record_event flushes its own row; this flushes the caller's pending
+    # business objects alongside it, which this module's callers rely on.
     await session.flush()
 
 

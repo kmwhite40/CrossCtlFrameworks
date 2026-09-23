@@ -57,6 +57,42 @@ async def set_session_tenant(session: AsyncSession, tenant_id: int | None) -> No
         await session.execute(text("SET ROLE ccf_app"))
 
 
+@asynccontextmanager
+async def unscoped_read(session: AsyncSession) -> AsyncIterator[None]:
+    """Temporarily drop this session's RLS tenant clamp, then put it back.
+
+    For the rare read that must see the whole table from inside a request
+    session that :func:`ccf.api.deps.get_session` has clamped to one tenant --
+    today only the audit hash chain's "what is the latest row overall?" lookup
+    in :func:`ccf.api.audit.record_event`. That chain is a GLOBAL, whole-table
+    invariant (``/api/audit/verify`` walks every row from genesis), so reading
+    its head through the ``tenant_isolation`` policy added in migration 0044
+    returns the latest row *this tenant can see* and silently forks the chain.
+
+    The clamp is restored in a ``finally``, and the restore is read back off the
+    connection itself (``current_setting('ccf.tenant_id')``) rather than passed
+    in, so a caller cannot restore the wrong tenant. If the restore itself
+    fails the exception propagates: a session that cannot be re-clamped must
+    fail its request, never continue unscoped. No-op on SQLite (Reader build),
+    where there is no RLS to suspend.
+
+    Keep the body to a read. An error inside it aborts the transaction, which
+    makes the restoring ``SET ROLE`` fail too.
+    """
+    if get_engine().dialect.name != "postgresql":
+        yield
+        return
+    raw = (
+        await session.execute(text("SELECT current_setting('ccf.tenant_id', true)"))
+    ).scalar()
+    tenant = int(raw) if raw else None
+    await set_session_tenant(session, None)
+    try:
+        yield
+    finally:
+        await set_session_tenant(session, tenant)
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
