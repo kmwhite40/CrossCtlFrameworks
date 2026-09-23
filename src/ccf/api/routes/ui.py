@@ -79,7 +79,7 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
-from ..auth_deps import SESSION_COOKIE, get_principal, require_role
+from ..auth_deps import SESSION_COOKIE, get_principal, require_role, resolve_caller_org
 from ..deps import get_session
 from ..limiter import limiter
 from ..login_service import LoginResult, authenticate, revoke_sessions_for_request
@@ -503,11 +503,13 @@ async def create_system(
     baseline: str | None = Form(None),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    org = _principal_org(request)
+    # Resolved before the name check: whether the caller may act for this
+    # organization does not depend on an unrelated form field being filled in.
+    org_id = resolve_caller_org(_principal_org(request), organization_id)
     if name.strip():
         session.add(
             System(
-                organization_id=(org if org is not None else organization_id),
+                organization_id=org_id,
                 name=name.strip(),
                 description=(description or None),
                 baseline=(baseline or None),

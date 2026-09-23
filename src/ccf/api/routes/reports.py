@@ -32,7 +32,7 @@ from ...models import (
 )
 from ...reporting import report_to_docx, report_to_xlsx
 from ...ssp.statements import is_draft_narrative
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, resolve_caller_org
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -99,9 +99,11 @@ async def build_report(
     organization_id_i = _opt_int("organization_id", organization_id)
     system_id_i = _opt_int("system_id", system_id)
     # Org-scope the request: a tenant-scoped caller may only report on their own
-    # organization's data (global/auth-off principals are unscoped).
-    if principal.org_id is not None:
-        organization_id_i = principal.org_id
+    # organization's data (global/auth-off principals are unscoped). Naming
+    # another organization is refused -- a report is a document someone files,
+    # and one silently rescoped to a different organization than the one asked
+    # for is the worst thing to hand a reader.
+    organization_id_i = resolve_caller_org(principal.org_id, organization_id_i)
     framework = _opt_str(framework)
     family = _opt_str(family)
     filename = _opt_str(filename)

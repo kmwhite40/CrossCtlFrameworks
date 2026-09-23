@@ -5,14 +5,21 @@ identifiers rather than blocking on a run that may take minutes. Retrieval is
 synchronous and read-only.
 
 **Tenant scoping.** Every endpoint here derives its organization from the
-authenticated principal, not from anything the caller supplies in the request:
-a scoped (org-bound) principal's own organization always wins over an
-``organization_id`` in the body/query, exactly as ``users.py::create_user``
-already does for its own NOT-NULL ``organization_id`` column — a mismatch is
-logged, not rejected, matching that same existing precedent rather than
-inventing a new one. Only an *unscoped* principal's request uses the supplied
-``organization_id`` as-is, which is an intended administrative capability
-(consistent with the rest of the API), not a loophole for an ordinary user.
+authenticated principal, not from anything the caller supplies in the request.
+A scoped (org-bound) principal's supplied ``organization_id`` may only
+*confirm* its own: an equal value is accepted, and a **different** one is
+refused ``403`` by ``auth_deps.resolve_caller_org``. Only an *unscoped*
+principal's request uses the supplied ``organization_id`` as-is, which is an
+intended administrative capability (consistent with the rest of the API), not
+a loophole for an ordinary user.
+
+This used to substitute the principal's organization silently, and cited
+``users.py::create_user`` as the codebase's convention for doing so. That was
+three uncommented lines, not a decision -- and they now refuse too. The
+load-bearing half of the old argument survives and points the other way:
+``PrepRun.organization_id`` is NOT NULL and must resolve to **one** concrete
+value, which is a reason to reject an ambiguous request rather than to pick
+one of the two answers and not say which.
 
 One case is worth stating plainly rather than leaving implicit: with
 ``CCF_AUTH_ENABLED=false`` (the default), every principal resolves to the
@@ -32,44 +39,41 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
-from ...logging import get_logger
 from ...models_prep import PREP_SOURCE_KINDS, PREP_STAGES
 from ...prep import jobs as prep_jobs
 from ...prep import pipeline
 from ...prep.retriever import retrieve
 from ...prep.sources import SourceMissing
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, resolve_caller_org
 from ..deps import get_session
-
-log = get_logger(__name__)
 
 router = APIRouter(prefix="/api/prep", tags=["prep"])
 
 
 def _scoped_organization_id(requested: int, principal: Principal) -> int:
-    """Resolve the organization a request actually runs against.
+    """Resolve the organization a prep request actually runs against.
 
-    A scoped principal's own organization always wins over ``requested`` —
-    mirrors ``users.py::create_user``, the existing convention in this
-    codebase for a NOT NULL ``organization_id`` that must resolve to one
-    concrete value (unlike ``evidence_repo.py``'s nullable column, whose
-    "pass principal.org_id through even if None" pattern cannot apply here: a
-    None would violate PrepRun's NOT NULL constraint, and retrieval's vector
-    half needs one concrete org to resolve AI-provider credentials for). A
-    mismatch is logged rather than rejected, matching that same precedent
-    exactly rather than inventing a third behavior. An unscoped principal
-    (including SYSTEM_PRINCIPAL under CCF_AUTH_ENABLED=false) has no
-    organization of its own to prefer, so ``requested`` is used as-is.
+    Delegates the whole decision to ``auth_deps.resolve_caller_org``: a scoped
+    principal's supplied value may only confirm its own organization, a
+    different one is refused ``403``, and an unscoped principal (including
+    SYSTEM_PRINCIPAL under ``CCF_AUTH_ENABLED=false``) has no organization of
+    its own to prefer, so ``requested`` is used as-is.
+
+    Kept as a named function rather than inlined at the two call sites for the
+    one thing that *is* specific to prep: ``requested`` is a required ``int``
+    here and the result is written to a NOT NULL column, so this signature
+    pins ``int`` in, ``int`` out. ``evidence_repo.py``'s "pass
+    ``principal.org_id`` through even if ``None``" pattern cannot apply --
+    a ``None`` would violate ``PrepRun``'s constraint, and retrieval's vector
+    half needs one concrete org to resolve AI-provider credentials for.
+
+    It used to substitute the principal's organization and merely log the
+    mismatch, citing ``users.py::create_user`` as the existing convention.
+    That was three uncommented lines rather than a decision, and they now
+    refuse too. "Must resolve to one concrete value" was the real argument and
+    it argues for rejecting the ambiguity, not for silently picking a side.
     """
-    if principal.org_id is None:
-        return requested
-    if principal.org_id != requested:
-        log.warning(
-            "prep.organization_id_override",
-            requested_organization_id=requested,
-            principal_organization_id=principal.org_id,
-        )
-    return principal.org_id
+    return resolve_caller_org(principal.org_id, requested)
 
 
 class PrepRunRequest(BaseModel):
