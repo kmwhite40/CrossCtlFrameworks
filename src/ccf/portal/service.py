@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth import hash_token
 from ..constants import EXTERNAL_PRINCIPAL_KINDS
 from ..db import set_session_tenant
-from ..models import Organization, User
+from ..models import Organization, System, User
 from ..models_evidence import EvidenceObject
 from ..models_packages import AuthorizationPackage
 from ..models_portal import (
@@ -186,6 +186,10 @@ async def create_engagement(
     ``assessor``: an engagement is the one place the vocabulary of §2 carries a
     rule, and a customer or vendor principal here would be an assessment
     credential issued to a party that is not an assessor.
+
+    The system must belong to this tenant too. Both ids the caller supplies are
+    checked against ``org_id`` here, for the same reason: the row is a federal
+    assessment record, and either id from another tenant makes it a false one.
     """
     principal = await session.get(ExternalPrincipal, assessor_principal_id)
     if principal is None or principal.organization_id != org_id:
@@ -197,6 +201,18 @@ async def create_engagement(
             f"external principal {assessor_principal_id} is kind {principal.kind!r}; "
             "an assessment engagement requires kind 'assessor'"
         )
+
+    # ``system_id`` is written, never read, by the rest of this function, so a
+    # foreign one reaches the row untouched: RLS refuses reads, and there was
+    # no read to refuse. The row would then assert that this tenant's assessor
+    # assesses a system this tenant does not own, and §6 resolves the grant's
+    # packages through it. Checked here as the same org-consistency invariant
+    # ``assessor_principal_id`` above and ``engagement_id`` in ``create_grant``
+    # already carry; the route additionally applies the canonical
+    # ``require_system_in_scope`` (404 + soft-delete) before calling in.
+    system = await session.get(System, system_id)
+    if system is None or system.organization_id != org_id:
+        raise ValueError(f"system {system_id} not found in organization {org_id}")
 
     engagement = AssessmentEngagement(
         organization_id=org_id,

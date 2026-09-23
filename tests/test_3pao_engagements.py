@@ -529,6 +529,170 @@ async def test_engagement_requires_an_assessor_principal(orgs: list[int]) -> Non
             )
 
 
+@pytest.mark.asyncio
+async def test_engagement_cannot_name_another_organizations_system(
+    orgs: list[int],
+) -> None:
+    """The service's OWN system-vs-org check, exercised where RLS cannot mask it.
+
+    ``system_id`` is written and never read by ``create_engagement``, so RLS has
+    no query to refuse: before this check, a tenant admin could record an
+    engagement **in their own org** naming another organization's system. The
+    row then asserts that this tenant's assessor assesses a system this tenant
+    does not own, and §6 resolves that grant's packages through it.
+
+    Run on an unscoped ``session_scope()`` session (tenant cleared, RLS
+    bypassed) so the refusal is provably the org check and not the row being
+    unreachable -- and the OWNING org is asserted first, so a check that
+    refused everything would fail here too.
+    """
+    tag = _tag()
+    owner = await _org(orgs, f"3PAO System Owner Org {tag}")
+    outsider = await _org(orgs, f"3PAO System Outsider Org {tag}")
+    system = await _system(owner, f"Owned Sys {tag}")
+
+    owner_assessor = await _assessor(owner, f"Owner 3PAO {tag}")
+    outsider_assessor = await _assessor(outsider, f"Outsider 3PAO {tag}")
+
+    now = datetime.now(UTC)
+
+    # The owning org records the engagement normally.
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        allowed = await portal.create_engagement(
+            s, org_id=owner, system_id=system, assessor_principal_id=owner_assessor,
+            period_from=now, period_to=now + timedelta(days=30),
+        )
+        assert allowed.system_id == system
+        assert allowed.organization_id == owner
+
+    # The other tenant cannot, even though its own principal is valid and the
+    # row it would write carries its own organization_id.
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        with pytest.raises(ValueError, match=f"system {system} not found in organization"):
+            await portal.create_engagement(
+                s, org_id=outsider, system_id=system,
+                assessor_principal_id=outsider_assessor,
+                period_from=now, period_to=now + timedelta(days=30),
+            )
+
+    # A system id that exists nowhere is refused by the same check.
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        with pytest.raises(ValueError, match="not found in organization"):
+            await portal.create_engagement(
+                s, org_id=outsider, system_id=10_000_000,
+                assessor_principal_id=outsider_assessor,
+                period_from=now, period_to=now + timedelta(days=30),
+            )
+
+    # Nothing crossed the boundary.
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        leaked = (
+            await s.execute(
+                text(
+                    "SELECT count(*) FROM ccf.assessment_engagements e "
+                    "JOIN ccf.systems sy ON sy.id = e.system_id "
+                    "WHERE e.organization_id <> sy.organization_id"
+                )
+            )
+        ).scalar_one()
+    assert leaked == 0, "an engagement records a system its organization does not own"
+
+
+@pytest.mark.asyncio
+async def test_engagement_route_404s_a_foreign_system(
+    orgs: list[int], auth_enabled: None
+) -> None:
+    """At the HTTP boundary the canonical guard answers, so a foreign system is
+    404 (another tenant's resource is not there), not 422.
+
+    The owning tenant's admin is asserted first, so the 404 is the system's org
+    and not the route refusing everything.
+    """
+    tag = _tag()
+    owner = await _org(orgs, f"3PAO Route Owner Org {tag}")
+    outsider = await _org(orgs, f"3PAO Route Outsider Org {tag}")
+    system = await _system(owner, f"Route Owned Sys {tag}")
+    owner_assessor = await _assessor(owner, f"Route Owner 3PAO {tag}")
+    outsider_assessor = await _assessor(outsider, f"Route Outsider 3PAO {tag}")
+
+    owner_admin = await _user(owner, f"route-owner-{tag}@3pao.test", "admin")
+    outsider_admin = await _user(outsider, f"route-outsider-{tag}@3pao.test", "admin")
+
+    now = datetime.now(UTC)
+    body = {
+        "period_from": now.isoformat(),
+        "period_to": (now + timedelta(days=30)).isoformat(),
+    }
+
+    async with _client() as c:
+        ok = await c.post(
+            "/api/admin/portal/engagements",
+            json={"organization_id": owner, "system_id": system,
+                  "assessor_principal_id": owner_assessor, **body},
+            headers=_auth(owner_admin),
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["system_id"] == system
+
+        denied = await c.post(
+            "/api/admin/portal/engagements",
+            json={"organization_id": outsider, "system_id": system,
+                  "assessor_principal_id": outsider_assessor, **body},
+            headers=_auth(outsider_admin),
+        )
+        assert denied.status_code == 404, denied.text
+        assert "system not found" in denied.text
+
+
+@pytest.mark.asyncio
+async def test_engagement_route_keeps_working_for_a_global_principal(
+    orgs: list[int],
+) -> None:
+    """A global principal (no org) still records engagements for any tenant --
+    and the service check still refuses the cross-tenant pairing it alone could
+    otherwise write, because ``require_system_in_scope`` does not scope a
+    principal that has no org.
+    """
+    tag = _tag()
+    owner = await _org(orgs, f"3PAO Global Owner Org {tag}")
+    outsider = await _org(orgs, f"3PAO Global Outsider Org {tag}")
+    system = await _system(owner, f"Global Owned Sys {tag}")
+    owner_assessor = await _assessor(owner, f"Global Owner 3PAO {tag}")
+    outsider_assessor = await _assessor(outsider, f"Global Outsider 3PAO {tag}")
+
+    now = datetime.now(UTC)
+    body = {
+        "period_from": now.isoformat(),
+        "period_to": (now + timedelta(days=30)).isoformat(),
+    }
+
+    # No ``auth_enabled`` fixture here: these routes run as SYSTEM_PRINCIPAL,
+    # which is global.
+    async with _client() as c:
+        ok = await c.post(
+            "/api/admin/portal/engagements",
+            json={"organization_id": owner, "system_id": system,
+                  "assessor_principal_id": owner_assessor, **body},
+            headers={},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["organization_id"] == owner
+        assert ok.json()["system_id"] == system
+
+        crossed = await c.post(
+            "/api/admin/portal/engagements",
+            json={"organization_id": outsider, "system_id": system,
+                  "assessor_principal_id": outsider_assessor, **body},
+            headers={},
+        )
+        assert crossed.status_code == 422, crossed.text
+        assert "not found in organization" in crossed.json()["detail"]
+
+
 # --- §6: scope follows the system -------------------------------------------
 
 

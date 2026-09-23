@@ -46,6 +46,7 @@ from ...portal import (
 )
 from ..auth_deps import require_role, resolve_caller_org
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 TEMPLATES_DIR = Path(__file__).resolve().parents[1] / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -183,6 +184,14 @@ async def create_engagement_endpoint(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     org_id = resolve_caller_org(principal.org_id, body.organization_id)
+    # The engagement names a system rather than reading one, so RLS never sees
+    # a query to refuse and a foreign ``system_id`` would land in the row. The
+    # canonical guard gives this route the same answer every other
+    # system-taking route gives: 404 for another tenant's system, and for a
+    # soft-deleted one. (The service re-checks system-vs-``org_id`` for callers
+    # that have no Principal, and for a global principal, whose org is whatever
+    # the body named.)
+    await require_system_in_scope(session, body.system_id, principal)
     try:
         row = await create_engagement(
             session, org_id=org_id, system_id=body.system_id,
