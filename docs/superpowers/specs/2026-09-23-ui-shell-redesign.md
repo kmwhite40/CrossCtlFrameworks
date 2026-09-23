@@ -54,6 +54,14 @@ regression wearing a visual change.
 Measured: `:root` defines **52** tokens; `[data-theme="dark"]` overrides
 **21**. So **31 tokens have no dark value** and currently inherit light ones.
 
+**Correction (implementation, 2026-09-23): these counts were wrong.** The
+author's grep matched only properties at a particular indentation. Measured
+properly, `:root` declares **86** and the file carries **91** distinct. Of the
+86, **35 were already `var()` aliases** that re-resolve per theme for free, so
+the literal-valued tokens with no dark override number **30**, not 31. The
+section's substance held and the work was done against the measured 30 — but
+the numbers in §1 and §3 as originally written are not reproducible.
+
 Dark is the less-exercised theme today. Flipping the default makes those 31
 the defaults users see, so each needs a value chosen and checked — not copied.
 
