@@ -93,9 +93,15 @@ async def download(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> Response:
-    a = (
-        await session.execute(select(Artifact).where(Artifact.id == artifact_id))
-    ).scalar_one_or_none()
+    stmt = select(Artifact).where(Artifact.id == artifact_id)
+    # The route returns raw stored bytes on an existence check, so it needs its
+    # own org predicate: RLS is only bound on the request path (``get_session``),
+    # and every other caller -- CLI, scheduler, workers, an unscoped
+    # ``session_scope()`` -- runs with the tenant context cleared. 404 rather
+    # than 403: another tenant's artifact does not exist to this caller.
+    if principal.org_id is not None:
+        stmt = stmt.where(Artifact.organization_id == principal.org_id)
+    a = (await session.execute(stmt)).scalar_one_or_none()
     if a is None or a.content is None:
         raise HTTPException(404, "artifact not found")
     return Response(

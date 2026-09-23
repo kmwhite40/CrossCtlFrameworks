@@ -94,8 +94,12 @@ async def create_policy(
 async def get_policy(
     policy_id: int,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    p = (await session.execute(select(Policy).where(Policy.id == policy_id))).scalar_one_or_none()
+    stmt = select(Policy).where(Policy.id == policy_id)
+    if principal.org_id is not None:
+        stmt = stmt.where(Policy.organization_id == principal.org_id)
+    p = (await session.execute(stmt)).scalar_one_or_none()
     if p is None:
         raise HTTPException(404, "policy not found")
     versions = (
