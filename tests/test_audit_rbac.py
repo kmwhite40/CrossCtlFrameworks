@@ -222,12 +222,22 @@ async def test_verify_ok_true_for_org_scoped_admin_over_interleaved_multi_org_ch
     The table is cleared first so this test's ``ok is True`` assertion is
     deterministic regardless of full-suite run order: ``verify_chain`` walks
     the *entire* ``audit_log`` table from genesis, and this suite has a
-    separate, pre-existing, already-documented source of full-suite-order
-    non-determinism around the audit chain (``test-suite-async-flakiness``;
-    also why ``test_enterprise.py::test_audit_chain_verifies_and_detects_tampering``
-    is the one accepted full-suite flake) that is unrelated to and unaffected
-    by this fix. Resetting to a clean, fully-controlled chain here isolates
-    FINDING 1's regression from that separate issue.
+    separate source of full-suite-order sensitivity.
+
+    **That separate source was not flakiness and not async.** It was recorded
+    here as ``test-suite-async-flakiness`` and as "the one accepted full-suite
+    flake" affecting
+    ``test_enterprise.py::test_audit_chain_verifies_and_detects_tampering``.
+    It was a real defect in the tamper-evidence chain, fixed at
+    ``de7a0e4``: RLS clamped ``record_event``'s head read, so a writer that
+    could not see the true head chained onto genesis and forked the chain on
+    ordinary multi-tenant traffic. Order only decided whether a fork landed
+    before the assertion.
+
+    The note is kept, corrected, because filing a tamper-evidence failure as a
+    flake is what let it survive. Resetting to a clean chain here is still
+    right -- ``verify_chain`` walks the whole table -- but it isolates this
+    test from other tests' rows, not from a known defect.
     """
     token_a, org_a = await _mk_user_with_org(
         "admin-a@audit-rbac-chain.test", "Audit RBAC Chain Org A", "admin"
