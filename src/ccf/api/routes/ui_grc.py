@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
+from ...config import get_settings, is_dev_env
 from ...evidence import service as evidence_service
 from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
 from ...ingest import parse_scan, reconcile_findings
@@ -285,13 +286,25 @@ async def regulatory_create(
 @router.post("/regulatory/{upd_id}/update")
 async def regulatory_update(
     upd_id: int,
+    request: Request,
+    *,
     applicability: str = Form(""),
     status: str = Form(""),
     owner: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    # The handler took no principal at all, so ``upd_id`` addressed every
+    # tenant's regulatory updates: a tenant could rewrite another's
+    # applicability, status and owner by posting to an id. ``regulatory_page``
+    # above already carries this predicate on the read.
+    #
+    # A foreign row falls into the same silent no-op branch a missing one
+    # always has, rather than 404-ing: this route redirects to the listing for
+    # an unknown id, and answering differently for a real-but-foreign id would
+    # turn the write path into an existence oracle it is not today.
+    org = _principal_org(request)
     u = await session.get(RegulatoryUpdate, upd_id)
-    if u is not None:
+    if u is not None and (org is None or u.organization_id == org):
         if applicability:
             u.applicability = applicability
         if status:
@@ -344,10 +357,28 @@ async def connectors_create(
 
 @router.post("/connectors/{cfg_id}/sync")
 async def connectors_sync(
-    cfg_id: int, session: AsyncSession = Depends(get_session)
+    cfg_id: int, request: Request, session: AsyncSession = Depends(get_session)
 ) -> RedirectResponse:
+    """Server-rendered twin of ``grc.sync_connector`` — and it was missed twice.
+
+    ``0eadea4`` gated the mock sync to development environments because it
+    writes exactly the four columns ``connector_backing_state`` reads, with no
+    credential, and so could manufacture an "evidenced by automated capture"
+    claim for an SSP. That gate went on the JSON route only; this one kept
+    writing those columns in every environment. It also took no principal,
+    while its sibling ``connector_detail`` below is scoped — so ``cfg_id``
+    addressed another tenant's connector.
+    """
+    if not is_dev_env(get_settings()):
+        raise HTTPException(
+            503,
+            "connector sync is a development-only mock and is disabled in this "
+            "environment; connectors capture through the scheduled collection "
+            "cycle using this organization's own bound credential",
+        )
+    org = _principal_org(request)
     c = await session.get(ConnectorConfig, cfg_id)
-    if c is not None:
+    if c is not None and (org is None or c.organization_id == org):
         discovered = _MOCK_DISCOVERY.get(c.connector_type, 100)
         c.objects_discovered = discovered
         c.evidence_produced = max(1, discovered // 10)
@@ -466,6 +497,26 @@ async def control_test_detail(
     )
 
 
+async def _audit_engagement_in_scope(
+    session: AsyncSession, eng_id: int, org: int | None
+) -> AuditEngagement:
+    """The engagement ``eng_id`` names, iff ``org`` may see it (None = global).
+
+    Its two write handlers below took ``eng_id`` straight from the path and
+    never loaded the parent at all, so a PBC request or an audit finding could
+    be written into another tenant's engagement. 404 rather than 403: the
+    engagement's existence is itself the disclosure, and it matches what
+    ``grc.add_request`` / ``grc.add_finding`` already answer.
+    """
+    stmt = select(AuditEngagement).where(AuditEngagement.id == eng_id)
+    if org is not None:
+        stmt = stmt.where(AuditEngagement.organization_id == org)
+    engagement = (await session.execute(stmt)).scalar_one_or_none()
+    if engagement is None:
+        raise HTTPException(404, "engagement not found")
+    return engagement
+
+
 # ── Audit Workspace ──────────────────────────────────────────────────────────
 @router.get("/audit-workspace", response_class=HTMLResponse)
 async def audit_workspace_page(
@@ -506,13 +557,17 @@ async def audit_engagement_create(
 async def audit_engagement_detail(
     eng_id: int, request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    e = (
-        await session.execute(
-            select(AuditEngagement)
-            .options(selectinload(AuditEngagement.requests), selectinload(AuditEngagement.findings))
-            .where(AuditEngagement.id == eng_id)
-        )
-    ).scalar_one_or_none()
+    # The twin of ``grc.get_engagement``, which got this predicate already:
+    # the page renders the engagement's whole request and finding tree.
+    org = _principal_org(request)
+    stmt = (
+        select(AuditEngagement)
+        .options(selectinload(AuditEngagement.requests), selectinload(AuditEngagement.findings))
+        .where(AuditEngagement.id == eng_id)
+    )
+    if org is not None:
+        stmt = stmt.where(AuditEngagement.organization_id == org)
+    e = (await session.execute(stmt)).scalar_one_or_none()
     if e is None:
         raise HTTPException(404, "engagement not found")
     return templates.TemplateResponse(request, "audit_detail.html", {"active": "auditws", "e": e})
@@ -526,6 +581,10 @@ async def audit_add_request(
     due_on: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    # The parent engagement was never fetched, so ``eng_id`` wrote a PBC item
+    # straight into another tenant's audit. 404 for a foreign parent, matching
+    # ``grc.add_request``.
+    await _audit_engagement_in_scope(session, eng_id, _principal_org(request))
     due = None
     if due_on:
         with contextlib.suppress(ValueError):
@@ -543,7 +602,20 @@ async def audit_add_finding(
     severity: str = Form("moderate"),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    session.add(AuditFinding(engagement_id=eng_id, title=title, severity=severity))
+    engagement = await _audit_engagement_in_scope(session, eng_id, _principal_org(request))
+    # ISSM-04: mirror the parent engagement's org, exactly as ``grc.add_finding``
+    # does. This handler left ``organization_id`` NULL, so a finding raised
+    # through the UI fell out of every org-scoped filter of the findings table
+    # while its API twin's did not. The column already exists (migration for
+    # ISSM-04); nothing new is needed on the schema.
+    session.add(
+        AuditFinding(
+            engagement_id=eng_id,
+            organization_id=engagement.organization_id,
+            title=title,
+            severity=severity,
+        )
+    )
     await session.commit()
     return RedirectResponse(f"/audit-workspace/{eng_id}", status_code=303)
 
@@ -764,6 +836,9 @@ async def questionnaire_create(
 async def questionnaire_detail(
     qid: int, request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
+    # ``questionnaire_export`` below already carries this predicate on the same
+    # row; this page renders the same vendor answers without it.
+    org = _principal_org(request)
     q = (
         await session.execute(
             select(VendorQuestionnaire)
@@ -771,7 +846,7 @@ async def questionnaire_detail(
             .where(VendorQuestionnaire.id == qid)
         )
     ).scalar_one_or_none()
-    if q is None:
+    if q is None or (org is not None and q.organization_id != org):
         raise HTTPException(404, "questionnaire not found")
     return templates.TemplateResponse(
         request, "questionnaire_detail.html", {"active": "questionnaires", "q": q}
@@ -840,15 +915,27 @@ async def questionnaire_export(
 async def questionnaire_answer(
     qid: int,
     rid: int,
+    request: Request,
+    *,
     answer: str = Form(...),
     detail: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    # No principal at all: ``qid``/``rid`` reached any tenant's questionnaire,
+    # so another org's vendor answers could be rewritten and its score with
+    # them. Scoped through the parent, which is where the org lives --
+    # ``QuestionnaireResponse`` has no ``organization_id`` of its own.
+    #
+    # As in ``regulatory_update``, a foreign row takes the same silent no-op
+    # branch a missing one already takes; this route does not 404 on an unknown
+    # id and must not start disclosing which ids are real.
+    org = _principal_org(request)
+    q = await session.get(VendorQuestionnaire, qid)
     r = await session.get(QuestionnaireResponse, rid)
-    if r is not None and r.questionnaire_id == qid:
+    in_scope = q is not None and (org is None or q.organization_id == org)
+    if in_scope and r is not None and r.questionnaire_id == qid:
         r.answer = answer
         r.detail = detail or None
-        q = await session.get(VendorQuestionnaire, qid)
         if q is not None and q.status in ("draft", "sent"):
             q.status = "in_progress"
         await session.commit()
@@ -862,6 +949,12 @@ async def questionnaire_review(
     open_tasks: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    # Not on the reported list, but the third unscoped handler on this same
+    # row and the most consequential: it writes ``risk_rating`` onto the
+    # **vendor**, marks the questionnaire reviewed under this caller's name,
+    # and opens tasks against the other tenant's vendor. Guarding only the read
+    # and the answer path would have been half a matched pair.
+    org = _principal_org(request)
     q = (
         await session.execute(
             select(VendorQuestionnaire)
@@ -869,7 +962,7 @@ async def questionnaire_review(
             .where(VendorQuestionnaire.id == qid)
         )
     ).scalar_one_or_none()
-    if q is None:
+    if q is None or (org is not None and q.organization_id != org):
         raise HTTPException(404, "questionnaire not found")
     scored = tprm.score_responses(
         [
