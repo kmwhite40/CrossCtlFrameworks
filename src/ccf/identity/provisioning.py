@@ -61,13 +61,29 @@ async def resolve_role(
 
 
 async def _audit(
-    session: AsyncSession, *, actor: str, action: str, entity_id: str | None, diff: dict[str, Any]
+    session: AsyncSession,
+    *,
+    actor: str,
+    action: str,
+    entity_id: str | None,
+    diff: dict[str, Any],
+    organization_id: int | None,
 ) -> None:
+    """Append an identity audit event (see :func:`ccf.api.audit.record_event`).
+
+    Every caller here has the target user's organization in hand, and must pass
+    it: this module runs on sessions that are *not* tenant-clamped -- the OIDC
+    callback has no principal yet, and the SCIM endpoints authenticate with a
+    bearer token rather than a user -- so nothing downstream could infer the
+    tenant. Left NULL these rows would be visible to every organization under
+    migration 0044's ``tenant_isolation`` policy, publishing one tenant's JIT
+    provisioning, role changes and deactivations to all of them.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 — lazy to avoid import cycle
 
     await record_event(
         session, actor=actor, action=action, entity_type="identity",
-        entity_id=entity_id, diff=diff,
+        entity_id=entity_id, diff=diff, organization_id=organization_id,
     )
 
 
@@ -128,7 +144,8 @@ async def provision_from_oidc(
         await session.flush()
         created = True
         await _audit(
-            session, actor=email, action="create", entity_id=str(user.id),
+            session, organization_id=user.organization_id,
+            actor=email, action="create", entity_id=str(user.id),
             diff={"event": "jit_provision", "email": email, "role": user.role, "groups": groups},
         )
 
@@ -140,7 +157,8 @@ async def provision_from_oidc(
         old = user.role
         user.role = mapped_role
         await _audit(
-            session, actor=email, action="update", entity_id=str(user.id),
+            session, organization_id=user.organization_id,
+            actor=email, action="update", entity_id=str(user.id),
             diff={"event": "role_change", "from": old, "to": mapped_role, "groups": groups},
         )
 
@@ -221,7 +239,8 @@ async def scim_create_or_update_user(
         )
     )
     await _audit(
-        session, actor="scim", action="create" if created else "update", entity_id=str(user.id),
+        session, organization_id=user.organization_id,
+        actor="scim", action="create" if created else "update", entity_id=str(user.id),
         diff={"event": "scim_provision", "email": email, "active": bool(active)},
     )
     await session.flush()
@@ -237,7 +256,8 @@ async def scim_deactivate_user(session: AsyncSession, *, org_id: int, user: User
         )
     )
     await _audit(
-        session, actor="scim", action="update", entity_id=str(user.id),
+        session, organization_id=user.organization_id,
+        actor="scim", action="update", entity_id=str(user.id),
         diff={"event": "scim_deactivate", "email": user.email},
     )
     await session.flush()

@@ -178,6 +178,10 @@ async def create_waiver(
     await session.flush()
     await record_event(
         session,
+        # The waiver's own org, resolved above from the principal with the
+        # system as fallback -- not ``principal.org_id``, which is None for a
+        # global principal and would publish this tenant's waiver to all of them.
+        organization_id=w.organization_id,
         actor=principal.email,
         action="create",
         entity_type="waiver",
@@ -255,6 +259,7 @@ async def approve_waiver(
     await session.flush()
     await record_event(
         session,
+        organization_id=w.organization_id,
         actor=principal.email,
         action="update",
         entity_type="waiver",
@@ -278,6 +283,7 @@ async def revoke_waiver(
     await session.flush()
     await record_event(
         session,
+        organization_id=w.organization_id,
         actor=principal.email,
         action="update",
         entity_type="waiver",

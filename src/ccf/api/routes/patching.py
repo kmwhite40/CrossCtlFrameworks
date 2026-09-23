@@ -221,6 +221,7 @@ async def set_policy(
     await session.flush()
     await record_event(
         session,
+        organization_id=row.organization_id,
         actor=principal.email,
         action="update",
         entity_type="remediation_policy",

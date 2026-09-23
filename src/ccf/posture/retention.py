@@ -167,6 +167,13 @@ async def prune_resource_detail(
 
     await record_event(
         session,
+        # GENUINELY GLOBAL: this prune takes no org_id and deletes across every
+        # organization (see the docstring above) -- the reported count spans all
+        # of them. Naming any single org here would be a false statement about
+        # whose evidence was pruned. NULL keeps the row visible to every tenant
+        # under migration 0044's tenant_isolation policy, which is what a
+        # deployment-wide deletion of their detail owes them.
+        organization_id=None,
         actor=actor,
         action="delete",
         entity_type="posture_resource_detail",

@@ -51,10 +51,19 @@ def _effective_requires_approval(action: ActionDef, settings: Any) -> bool:
     return action.requires_approval or bool(settings.ai_require_human_approval)
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 — avoid import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
 
 
 async def _violation(
@@ -64,7 +73,8 @@ async def _violation(
         AiGuardrailViolation(organization_id=org_id, run_id=run_id, kind=kind, detail=detail)
     )
     await _audit(
-        session, actor="ai", action="update", entity_type="ai_guardrail",
+        session, organization_id=org_id,
+        actor="ai", action="update", entity_type="ai_guardrail",
         entity_id=str(run_id) if run_id else None,
         diff={"guardrail": kind, "detail": detail},
     )
@@ -268,7 +278,8 @@ async def run_action(
             detail=f"citation-required action '{action_key}' produced no citations",
         )
     await _audit(
-        session, actor=actor or "ai", action="create", entity_type="ai_action",
+        session, organization_id=org_id,
+        actor=actor or "ai", action="create", entity_type="ai_action",
         entity_id=str(run.id),
         diff={"action": action_key, "target": f"{entity_type}:{entity_id}",
               "status": run.status, "input_hash": run.input_hash, "output_hash": run.output_hash},
@@ -395,7 +406,8 @@ async def approve_run(
     run.decided_at = datetime.now(UTC)
     session.add(AiActionReview(run_id=run.id, reviewer=reviewer, decision="approved"))
     await _audit(
-        session, actor=reviewer or "reviewer", action="update", entity_type="ai_action",
+        session, organization_id=run.organization_id,
+        actor=reviewer or "reviewer", action="update", entity_type="ai_action",
         entity_id=str(run.id),
         diff={"disposition": "approved", "mutation": mutation, "action": run.action_key},
     )
@@ -433,7 +445,8 @@ async def reject_run(
     run.decided_at = datetime.now(UTC)
     session.add(AiActionReview(run_id=run.id, reviewer=reviewer, decision="rejected", note=note))
     await _audit(
-        session, actor=reviewer or "reviewer", action="update", entity_type="ai_action",
+        session, organization_id=run.organization_id,
+        actor=reviewer or "reviewer", action="update", entity_type="ai_action",
         entity_id=str(run.id), diff={"disposition": "rejected", "note": note},
     )
     await session.flush()

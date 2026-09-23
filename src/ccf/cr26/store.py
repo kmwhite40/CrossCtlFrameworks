@@ -62,10 +62,19 @@ from .validation import CR26_KINDS, schema_path, validate_document
 DELIVERABLE_KINDS: tuple[str, ...] = tuple(k for k in CR26_KINDS if k != "common")
 
 
-async def _audit(session: AsyncSession, **kw: Any) -> None:
+async def _audit(
+    session: AsyncSession, *, organization_id: int | None, **kw: Any
+) -> None:
+    """Append a tenant-scoped audit event (see :func:`ccf.api.audit.record_event`).
+
+    ``organization_id`` is required with no default, deliberately: NULL means
+    "platform-wide, visible to every tenant" under migration 0044's
+    ``tenant_isolation`` policy, so a call site that forgets it would publish
+    this event to every organization rather than merely leave it unscoped.
+    """
     from ..api.audit import record_event  # noqa: PLC0415 — avoid import cycle
 
-    await record_event(session, **kw)
+    await record_event(session, organization_id=organization_id, **kw)
 
 
 def _manifest() -> dict[str, Any]:
@@ -199,6 +208,9 @@ async def put_document(
         diff["document_instance"] = document_key
     await _audit(
         session,
+        # The tenant comes from the system, exactly as ``row.organization_id``
+        # above does -- never from a caller-supplied value.
+        organization_id=system.organization_id,
         actor=updated_by or "system",
         action="create" if created else "update",
         entity_type="cr26_document",
