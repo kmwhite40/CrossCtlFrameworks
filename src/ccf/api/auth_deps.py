@@ -31,6 +31,7 @@ _PUBLIC_PREFIXES = (
     "/api/auth",
     "/auth/login",
     "/auth/callback",
+    "/auth/piv",  # PIV/CAC sign-in: reached before a session exists
     "/auth/logout",
     "/api/scim",  # SCIM uses its own bearer token, not the user session
     "/api/portal",  # external portal API — the grant token is the credential

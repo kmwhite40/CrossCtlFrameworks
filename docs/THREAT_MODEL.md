@@ -109,6 +109,56 @@ Values written before `0084` carry no key id and use the original
 stronger derivation when rewrapped. A deployment that never rotates keeps
 working unchanged.
 
+### PIV / CAC, and the header that must not be trusted
+
+Concord does **not** terminate TLS and does not validate a certificate chain.
+Path validation against the Federal Common Policy CA, with revocation
+checking, belongs in the terminator (nginx, an ALB, Envoy). Concord reads the
+result the terminator reports.
+
+That result arrives in HTTP headers, **and a header is forgeable by anyone who
+can reach the application directly**. A deployment that exposes Concord on a
+path not passing through the terminator, while `CCF_PIV_ENABLED` is on, is one
+`curl` away from authenticating as any linked user.
+
+So the configuration is fail-closed in three places, and an operator should
+know all three:
+
+1. `CCF_PIV_ENABLED` defaults false. Nothing reads the headers until it is on.
+2. `CCF_PIV_TRUSTED_PROXIES` must list the terminator's address. **An empty
+   list refuses to enable** rather than trusting every peer.
+3. The peer checked is the *immediate connection address*, never
+   `X-Forwarded-For` — that is a header too.
+
+Concord also parses the certificate itself rather than trusting a subject-DN
+string, and takes identity from the SAN `userPrincipalName`. A certificate with
+no UPN is refused; it does not fall back to the DN, whose format varies by
+terminator and which is ambiguous to compare.
+
+**A certificate never creates an account.** Holding a valid card says the
+government issued someone a credential, not that they should have an account in
+this tenant. An administrator links the certificate to a user; a valid,
+unlinked certificate is refused with a message that says so, distinguishable
+from an invalid one.
+
+### Single sign-on
+
+The OIDC client sends a PKCE `S256` challenge, and refuses any endpoint in the
+issuer's discovery document that is not HTTPS on the issuer's own host — the
+client secret is POSTed to `token_endpoint`, so a document naming a foreign
+host would collect it.
+
+An `email_verified: false` claim is refused. An **absent** claim is allowed by
+default, because the claim is optional in OIDC and treating absence as
+unverified would break deployments whose provider omits it; set
+`CCF_OIDC_REQUIRE_EMAIL_VERIFIED` where the provider is known to send it.
+
+On a deployment with more than one organization, `CCF_OIDC_ORGANIZATION_ID`
+must name the tenant that newly provisioned single-sign-on users are created
+in. Without it, creation is refused rather than defaulting to the oldest
+organization. Existing users are unaffected — their organization is on their
+own row.
+
 ## Known accepted risks (dev preview)
 
 1. The app authenticates to Postgres as the bootstrap superuser and `SET ROLE`s

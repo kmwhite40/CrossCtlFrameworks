@@ -27,11 +27,12 @@ from __future__ import annotations
 import itertools
 import os
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
@@ -191,6 +192,58 @@ async def test_ui_login_session_cookie_is_secure_in_production(
     _assert_secure(response, "concord_session")
 
 
+# --- api/routes/ui.py -- the half-authenticated MFA cookie -------------------
+
+
+@pytest.mark.asyncio
+async def test_mfa_pending_cookie_is_secure_in_production(
+    production_env: None,
+    seeded_user: tuple[int, int, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cookie carried between a correct password and a correct code.
+
+    It is not a session, but it is one code away from being one: a value
+    readable off a plaintext hop lets an attacker who also has the code -- or
+    who can phish one -- complete somebody else's sign-in. It was added with
+    the second factor and had no gate of its own until this test.
+    """
+    from ccf.identity.mfa_service import begin_enrolment  # noqa: PLC0415
+
+    # Storing an authenticator secret needs the credential key, the same one
+    # the AI and connector stores use. That coupling is deliberate -- you
+    # cannot store a shared secret without a key -- and is recorded in the MFA
+    # design spec, because the setting's name does not suggest it gates
+    # authentication.
+    monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "prod-gate-test-key-0123456789")
+    get_settings.cache_clear()
+
+    org_id, user_id, email = seeded_user
+    # Enrol and activate directly: this test is about the cookie, not the flow.
+    async with session_scope() as s:
+        user = await s.get(User, user_id)
+        assert user is not None
+        await begin_enrolment(s, user)
+    async with session_scope() as s:
+        from ccf.models_identity import UserMfaCredential  # noqa: PLC0415
+
+        cred = (
+            await s.execute(
+                select(UserMfaCredential).where(UserMfaCredential.user_id == user_id)
+            )
+        ).scalar_one()
+        cred.activated_at = datetime.now(UTC)
+
+    async with _client() as c:
+        response = await c.post("/login", data={"email": email, "password": "pw"})
+    assert response.status_code == 303, response.text
+    assert response.headers["location"] == "/login/mfa"
+    _assert_secure(response, "concord_mfa_pending")
+    # And no session cookie was minted on the way.
+    assert not _set_cookie_headers(response, "concord_session")
+    assert org_id  # the fixture cleans up by org
+
+
 # --- api/routes/portal.py:445 -- the external portal grant cookie ------------
 
 
@@ -247,7 +300,7 @@ async def test_sso_state_cookie_is_secure_in_production(
     against it, so a value readable off a plaintext hop is a forgeable login."""
     from ccf.api.routes import identity as identity_routes  # noqa: PLC0415
 
-    async def _url(state: str) -> str:
+    async def _url(state: str, *, code_verifier: str) -> str:
         return f"https://idp.example/authorize?state={state}"
 
     monkeypatch.setattr(identity_routes, "authorization_url", _url)
@@ -257,6 +310,10 @@ async def test_sso_state_cookie_is_secure_in_production(
     assert response.status_code == 303, response.text
     assert response.headers["location"].startswith("https://idp.example/")
     _assert_secure(response, "concord_oidc_state")
+    # The PKCE verifier is a secret held between the authorization request and
+    # the exchange. A value readable off a plaintext hop defeats the whole
+    # point of sending a challenge, so it is gated exactly like the state.
+    _assert_secure(response, "concord_oidc_verifier")
 
 
 @pytest.mark.asyncio
@@ -271,8 +328,21 @@ async def test_sso_callback_session_cookie_is_secure_in_production(
     tag = _tag()
     email = f"sso-{tag}@gates.test"
 
-    async def _exchange(code: str) -> dict[str, Any]:
-        return {"email": email, "sub": f"sub-{tag}"}
+    # This test provisions a new user, and JIT creation now refuses when the
+    # deployment has several organizations and none is named -- the tenant
+    # would otherwise be invented. Earlier modules in a full run leave
+    # organizations behind, so the target is stated rather than left to the
+    # "oldest organization" rule this change removed.
+    async with session_scope() as s:
+        org = Organization(name=f"ProdGate SSO Org {tag}")
+        s.add(org)
+        await s.flush()
+        sso_org_id = org.id
+    monkeypatch.setenv("CCF_OIDC_ORGANIZATION_ID", str(sso_org_id))
+    get_settings.cache_clear()
+
+    async def _exchange(code: str, *, code_verifier: str) -> dict[str, Any]:
+        return {"email": email, "sub": f"sub-{tag}", "email_verified": True}
 
     monkeypatch.setattr(identity_routes, "exchange_code", _exchange)
 
@@ -281,16 +351,17 @@ async def test_sso_callback_session_cookie_is_secure_in_production(
             response = await c.get(
                 "/auth/callback",
                 params={"code": "any-code", "state": "s"},
-                cookies={"concord_oidc_state": "s"},
+                cookies={
+                    "concord_oidc_state": "s",
+                    "concord_oidc_verifier": "v" * 64,
+                },
             )
         assert response.status_code == 303, response.text
         _assert_secure(response, "concord_session")
     finally:
-        # ``_default_org_id`` reuses the lowest-id existing organization
-        # rather than creating one, so only the JIT-provisioned user is ours
-        # to remove.
         async with session_scope() as s:
             await s.execute(delete(User).where(User.email == email))
+            await s.execute(delete(Organization).where(Organization.id == sso_org_id))
 
 
 # --- reliability/checks.py -- the go-live gate must agree with is_dev_env ----

@@ -40,6 +40,7 @@ from ccf.config import get_settings
         "/portal",
         "/auth/login",
         "/auth/callback",
+        "/auth/piv",  # PIV/CAC sign-in: reached before a session exists
     ],
 )
 def test_genuinely_public_paths_stay_public(path: str) -> None:
