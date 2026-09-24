@@ -95,6 +95,10 @@ async def activate(
 
     cred.activated_at = datetime.now(UTC)
     cred.last_used_step = step
+    # Any codes still live belong to a previous authenticator: activating a new
+    # one retires them, so a re-enrolment does not leave two disjoint sets of
+    # working bypass credentials.
+    await revoke_recovery_codes(session, user.id)
     codes = mfa.generate_recovery_codes()
     for code_value in codes:
         session.add(
@@ -127,12 +131,47 @@ async def verify_code(session: AsyncSession, user_id: int, code: str, *, now: fl
     return True
 
 
+async def revoke_recovery_codes(session: AsyncSession, user_id: int) -> int:
+    """Retire every unused recovery code for a user. Returns how many.
+
+    Called when the authenticator they belong to goes away -- disabled, or
+    replaced at re-enrolment. Rotating a second factor has to rotate the
+    credentials that bypass it, or a code that leaked before the rotation is
+    still a way in afterwards.
+
+    Marked ``revoked_at``, never ``used_at``: the second means somebody signed
+    in with it, and writing it here would answer an audit question wrongly.
+    """
+    rows = (
+        await session.execute(
+            select(UserMfaRecoveryCode).where(
+                UserMfaRecoveryCode.user_id == user_id,
+                UserMfaRecoveryCode.used_at.is_(None),
+                UserMfaRecoveryCode.revoked_at.is_(None),
+            )
+        )
+    ).scalars().all()
+    now = datetime.now(UTC)
+    for row in rows:
+        row.revoked_at = now
+    await session.flush()
+    return len(rows)
+
+
 async def consume_recovery_code(session: AsyncSession, user_id: int, code: str) -> bool:
     """Spend one single-use recovery code.
 
     Marked used rather than deleted: "did somebody sign in without their
     authenticator, and when" is an audit question a deleted row cannot answer.
+
+    Refuses outright when the user has no ACTIVE authenticator. Revocation on
+    disable is the primary fix; this is the second rung, so a row that escapes
+    it by any route -- a direct database edit, a future write path, a partially
+    applied migration -- still cannot produce a session for an account whose
+    second factor is gone.
     """
+    if not await is_challenged(session, user_id):
+        return False
     digest = mfa.hash_recovery_code(code)
     row = (
         await session.execute(
@@ -140,6 +179,7 @@ async def consume_recovery_code(session: AsyncSession, user_id: int, code: str) 
                 UserMfaRecoveryCode.user_id == user_id,
                 UserMfaRecoveryCode.code_hash == digest,
                 UserMfaRecoveryCode.used_at.is_(None),
+                UserMfaRecoveryCode.revoked_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -156,6 +196,7 @@ async def unused_recovery_code_count(session: AsyncSession, user_id: int) -> int
             select(UserMfaRecoveryCode.id).where(
                 UserMfaRecoveryCode.user_id == user_id,
                 UserMfaRecoveryCode.used_at.is_(None),
+                UserMfaRecoveryCode.revoked_at.is_(None),
             )
         )
     ).scalars().all()
@@ -163,11 +204,18 @@ async def unused_recovery_code_count(session: AsyncSession, user_id: int) -> int
 
 
 async def policy_requires_enrolment(session: AsyncSession, user: User) -> bool:
-    """Whether this user's organization obliges them to hold an authenticator.
+    """Whether this user's organization SAYS they should hold an authenticator.
 
-    Returning True does not refuse the login -- see the spec §8. It means the
-    user must enrol before doing anything else. An organization that could lock
-    all of its own users out by changing a dropdown has no way back in.
+    **Advisory.** Callers display this, and two of them refuse to remove an
+    authenticator it covers. Nothing here or above gates a session, a route or
+    a redirect: a user in scope who has not enrolled signs in with a password
+    alone and reaches everything.
+
+    The docstring used to say the user "must enrol before doing anything
+    else". That was the design intent and was never built, which made this
+    function read as a control it is not. Enforcement is its own change --
+    it needs a decision about which routes stay reachable while unenrolled,
+    or an organization locks all of its own users out by changing a dropdown.
     """
     org = await session.get(Organization, user.organization_id)
     policy = getattr(org, "mfa_policy", "optional") if org is not None else "optional"

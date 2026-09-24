@@ -124,6 +124,33 @@ class PayloadAuthenticationError(CredentialStorageError):
     """
 
 
+class KmsUnavailableError(CredentialStorageError):
+    """KMS refused or could not be reached, and this code cannot tell which.
+
+    Throttling, a network failure, an access denial, a disabled key and a
+    genuinely foreign ciphertext all arrive here as one exception. Naming one
+    of them -- and prescribing a setting the KMS provider does not read --
+    would assert something this code has not established, and would send an
+    operator to fix a key that was never the problem.
+
+    Distinguishing a throttle from an access denial means reading botocore
+    error codes, which is a real improvement and a separate change. What is
+    fixed here is the false claim.
+    """
+
+    def __init__(self, kid: str | None, cause: Exception) -> None:
+        self.key_id = kid
+        self.cause = cause
+        named = f" (key {kid})" if kid else ""
+        super().__init__(
+            f"AWS KMS could not decrypt this value{named}: {type(cause).__name__}: "
+            f"{cause}. This may be throttling, a network failure, a permission "
+            "or key-state problem, or a ciphertext this KMS key did not wrap -- "
+            "KMS does not distinguish them here. Retry before concluding the "
+            "key is wrong."
+        )
+
+
 class UnknownKeyError(CredentialStorageError):
     """This blob needs a key this deployment does not have configured.
 
@@ -317,7 +344,18 @@ class KmsKeyProvider(KeyProvider):
                 EncryptionContext=self.ENCRYPTION_CONTEXT,
             )
         except Exception as e:
-            raise UnknownKeyError(kid) from e
+            # NOT UnknownKeyError. That error names one cause and prescribes
+            # `ai_credential_previous_keys`, which this provider never reads --
+            # so a throttle, a network blip, an access denial or a disabled key
+            # all produced "add it to ai_credential_previous_keys to read it",
+            # telling an operator a rotation failed on a missing key when the
+            # key was fine and a retry would have worked.
+            #
+            # KMS resolves the key from the blob itself, so this provider
+            # cannot distinguish "wrong key" from "KMS said no". It says what
+            # it knows and carries the underlying error, exactly as
+            # PayloadAuthenticationError does for the ambiguity one layer down.
+            raise KmsUnavailableError(kid, e) from e
         return bytes(resp["Plaintext"])
 
 

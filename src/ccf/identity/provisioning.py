@@ -157,7 +157,6 @@ async def provision_from_oidc(
         )
 
     groups = extract_groups(claims)
-    mapped_role = await resolve_role(session, org_id, groups, default_role)
     now = datetime.now(UTC)
 
     ident = (
@@ -180,11 +179,15 @@ async def provision_from_oidc(
     if user is None:
         if not jit:
             raise ProvisioningError("no matching account and JIT provisioning disabled")
+        # A user being created belongs to `org_id`, so its mappings are the
+        # right ones -- the same rule as the existing-user branch below, which
+        # resolves against the row's own organization.
+        create_role = await resolve_role(session, org_id, groups, default_role)
         user = User(
             organization_id=org_id,
             email=email,
             full_name=claims.get("name"),
-            role=mapped_role if mapped_role in VALID_ROLES else DEFAULT_ROLE,
+            role=create_role if create_role in VALID_ROLES else DEFAULT_ROLE,
             active=True,
         )
         session.add(user)
@@ -198,6 +201,16 @@ async def provision_from_oidc(
 
     if not user.active:
         raise ProvisioningError("account is deactivated")
+
+    # Resolved against the USER'S OWN organization, and only once the user is
+    # known. It used to be resolved against the configured single-sign-on
+    # organization before the lookup, and then written onto whatever tenant's
+    # row the globally-unique email landed on -- so an admin of one tenant
+    # creating a mapping in their own organization, which is entirely
+    # legitimate for them, promoted a user of another tenant who carried that
+    # group claim. A group mapping governs its own organization's users and
+    # nobody else's.
+    mapped_role = await resolve_role(session, user.organization_id, groups, default_role)
 
     # Apply role mapping when groups resolve to a different role than currently set.
     if groups and mapped_role in VALID_ROLES and user.role != mapped_role:

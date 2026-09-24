@@ -257,3 +257,35 @@ async def test_scim_delete_does_not_deactivate_another_organizations_user(_scim)
     async with session_scope() as s:
         user = (await s.execute(select(User).where(User.id == victim))).scalar_one()
         assert user.active is True
+
+
+@pytest.mark.asyncio
+async def test_scim_groups_does_not_list_another_organizations_mappings(_scim) -> None:
+    """The fifth door, missed when the other four were fixed.
+
+    This file's own section header above names "the read, update and delete
+    paths ... (or no filter at all)" -- and the one route matching "no filter at
+    all" was the one left uncovered. `scim_list_groups` bound the resolved
+    organization to `_org_id` and discarded it, on a session RLS treats as
+    bypass.
+
+    An IdP group name is not nothing: it carries a tenant's internal
+    organizational structure, and the mapping says which of those groups
+    confers admin.
+    """
+    from ccf.models_identity import GroupRoleMapping  # noqa: PLC0415
+
+    other = await _org("SCIM Groups Other")
+    mine = await _org("SCIM Groups Mine")
+    async with session_scope() as s:
+        s.add(GroupRoleMapping(organization_id=other, group="OTHER-TENANT-GROUP", role="admin"))
+        s.add(GroupRoleMapping(organization_id=mine, group="MY-GROUP", role="viewer"))
+    _scim(mine)
+
+    async with _client() as c:
+        resp = await c.get("/api/scim/v2/Groups", headers=HDR)
+
+    assert resp.status_code == 200, resp.text
+    names = {r["displayName"] for r in resp.json()["Resources"]}
+    assert "MY-GROUP" in names
+    assert "OTHER-TENANT-GROUP" not in names, names

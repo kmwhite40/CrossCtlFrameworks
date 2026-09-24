@@ -369,3 +369,91 @@ async def test_a_configured_organization_is_honoured_and_a_bad_one_is_refused() 
         with pytest.raises(HTTPException) as caught:
             await _sso_provisioning_org(s, 987_654)
     assert "does not match any organization" in str(caught.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_one_tenants_group_mapping_cannot_promote_another_tenants_user() -> None:
+    """The role is the field that decides what somebody can do.
+
+    `provision_from_oidc` resolved the role against the CONFIGURED
+    single-sign-on organization, then resolved the USER by globally-unique
+    email across every tenant, then wrote the role onto whatever row it landed
+    on. So an admin of org A creating a group mapping in their own org --
+    entirely legitimate for them -- promoted a user of org B who carried that
+    group claim.
+
+    `_sso_provisioning_org`'s docstring says an existing user "signs in
+    unchanged. Their organization is on their own row, and nothing here touches
+    it." True of `organization_id`. It was false of `role`.
+    """
+    from ccf.models_identity import GroupRoleMapping  # noqa: PLC0415
+
+    async with session_scope() as s:
+        a = Organization(name="SSO Role A")
+        b = Organization(name="SSO Role B")
+        s.add_all([a, b])
+        await s.flush()
+        # Org A's own mapping, created by org A's admin. Legitimate.
+        s.add(GroupRoleMapping(organization_id=a.id, group="cloud-admins", role="admin"))
+        victim = User(
+            organization_id=b.id, email="victim@roles.gov", role="viewer", active=True
+        )
+        s.add(victim)
+        await s.flush()
+        a_id, b_id, victim_id = a.id, b.id, victim.id
+
+    async with session_scope() as s:
+        user, created = await provisioning.provision_from_oidc(
+            s,
+            claims={
+                "sub": "victim-subject",
+                "email": "victim@roles.gov",
+                "email_verified": True,
+                "groups": ["cloud-admins"],
+            },
+            # The configured SSO organization is A -- and the account is B's.
+            org_id=a_id,
+        )
+        assert created is False
+        assert user.organization_id == b_id
+
+    async with session_scope() as s:
+        after = (await s.execute(select(User).where(User.id == victim_id))).scalar_one()
+        assert after.organization_id == b_id
+        assert after.role == "viewer", (
+            f"org {a_id}'s group mapping promoted a user of org {b_id} to {after.role}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_group_mapping_still_promotes_a_user_of_its_own_organization() -> None:
+    """The positive control: a fix that ignores every mapping is not a fix."""
+    from ccf.models_identity import GroupRoleMapping  # noqa: PLC0415
+
+    async with session_scope() as s:
+        org = Organization(name="SSO Role Own")
+        s.add(org)
+        await s.flush()
+        s.add(GroupRoleMapping(organization_id=org.id, group="own-admins", role="admin"))
+        user = User(
+            organization_id=org.id, email="own@roles.gov", role="viewer", active=True
+        )
+        s.add(user)
+        await s.flush()
+        org_id, user_id = org.id, user.id
+
+    async with session_scope() as s:
+        await provisioning.provision_from_oidc(
+            s,
+            claims={
+                "sub": "own-subject",
+                "email": "own@roles.gov",
+                "email_verified": True,
+                "groups": ["own-admins"],
+            },
+            org_id=org_id,
+        )
+
+    async with session_scope() as s:
+        after = (await s.execute(select(User).where(User.id == user_id))).scalar_one()
+        assert after.role == "admin", "a mapping did not govern its own organization"

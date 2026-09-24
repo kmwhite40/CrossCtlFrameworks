@@ -288,12 +288,25 @@ class Organization(Base):
     # CASCADE to systems/users never fires; NULL means active. Callers must
     # filter ``deleted_at IS NULL`` in list/get queries — see systems.py.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # IA-2(1): who must hold a second factor. 'optional' (default) challenges
-    # only users who chose to enrol; 'admins' and 'all' require enrolment of
-    # those in scope. A user in scope with no authenticator is NOT refused --
-    # they sign in and must enrol before doing anything else, because refusing
-    # would let an organization lock every one of its own users out by changing
-    # a dropdown, with no way back in. See the MFA design spec §8.
+    # IA-2(1): who SHOULD hold a second factor.
+    #
+    # **Advisory, not enforced, and nothing writes it yet.** Read in six
+    # places: four display it, and two refuse to REMOVE an authenticator a
+    # policy covers. Nothing gates a session, a route or a redirect, so a user
+    # in scope who has not enrolled signs in with a password alone and reaches
+    # everything. There is also no API, CLI or form that sets this column --
+    # only direct SQL.
+    #
+    # Recorded here rather than smoothed over, the same way TrustProfile's
+    # `published` flag is: a column that looks like a control and enforces
+    # nothing is worse than one that plainly does nothing, because somebody
+    # will report it as satisfying IA-2(1). It does not.
+    #
+    # The original comment claimed a user in scope "must enrol before doing
+    # anything else". That was the intent in the design spec and was never
+    # built. Enforcement is its own change: it needs a decision about which
+    # routes stay reachable while unenrolled, or an organization locks every
+    # one of its own users out by changing a dropdown.
     mfa_policy: Mapped[str] = mapped_column(
         Enum("optional", "admins", "all", name="mfa_policy", schema="ccf"),
         server_default="optional",
