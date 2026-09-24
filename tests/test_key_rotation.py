@@ -463,3 +463,49 @@ def test_build_cipher_wires_the_aws_kms_provider(monkeypatch: pytest.MonkeyPatch
         assert isinstance(c._kp, KmsKeyProvider)
     finally:
         get_settings.cache_clear()
+
+
+def test_an_mfa_secret_written_before_the_format_change_still_decrypts(keys) -> None:
+    """A seam between two changes made a day apart.
+
+    The authenticator store shipped while ``encrypt`` wrote version 1; the
+    rotation work moved new writes to version 2. Any secret enrolled in between
+    is a v1 blob **in the MFA context**, and every v1 test above uses the
+    credential context. If the legacy path were context-blind, a user's
+    authenticator would stop working the day the deployment upgraded -- and
+    they would be locked out of their own account by a format change.
+    """
+    keys(KEY_A)
+    legacy = _version_one_blob(KEY_A, "JBSWY3DPEHPK3PXP", AAD_MFA)
+    assert token_key_id(legacy) is None
+    assert build_cipher(get_settings(), aad=AAD_MFA).decrypt(legacy) == "JBSWY3DPEHPK3PXP"
+
+
+def test_a_version_one_mfa_secret_does_not_decrypt_in_the_credential_store(keys) -> None:
+    """And the contexts still separate at version 1, not only at version 2."""
+    keys(KEY_A)
+    legacy = _version_one_blob(KEY_A, "JBSWY3DPEHPK3PXP", AAD_MFA)
+    with pytest.raises(CredentialStorageError):
+        build_cipher(get_settings(), aad=AAD_CREDENTIAL).decrypt(legacy)
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_moves_a_version_one_mfa_secret_to_the_current_key(keys) -> None:
+    """The upgrade path for that same user, end to end."""
+    keys(KEY_A)
+    legacy = _version_one_blob(KEY_A, "OLDENROLMENT2345", AAD_MFA)
+    _org_id, cred_id = await _seed_mfa_row(legacy)
+
+    keys(KEY_B, previous=[KEY_A])
+    async with session_scope() as s:
+        report = await rewrap_all(s)
+    assert not any(row_id == cred_id for _t, row_id, _k in report.unreadable), report.unreadable
+
+    async with session_scope() as s:
+        cred = await s.get(UserMfaCredential, cred_id)
+        assert cred is not None
+        assert token_key_id(cred.secret_encrypted) == key_id(KEY_B)
+        assert (
+            build_cipher(get_settings(), aad=AAD_MFA).decrypt(cred.secret_encrypted)
+            == "OLDENROLMENT2345"
+        )
