@@ -5,12 +5,13 @@ from __future__ import annotations
 import base64
 
 import pytest
-from cryptography.exceptions import InvalidTag
 
 from ccf.ai.cipher import (
     CredentialCipher,
     CredentialStorageError,
     LocalKeyProvider,
+    PayloadAuthenticationError,
+    UnknownKeyError,
     build_cipher,
     mask,
 )
@@ -40,14 +41,26 @@ def test_tamper_is_detected() -> None:
     raw = bytearray(base64.urlsafe_b64decode(token))
     raw[-1] ^= 0x01  # flip a ciphertext bit
     tampered = base64.urlsafe_b64encode(bytes(raw)).decode()
-    with pytest.raises(InvalidTag):  # AES-GCM auth tag rejects tampering
+    # The AES-GCM tag still rejects it; the exception is now Concord's own
+    # subclass rather than the library's `InvalidTag`, so the API routes that
+    # already catch `CredentialStorageError` return a clean error instead of a
+    # 500 from an uncaught cryptography exception. Nothing in `src` caught
+    # `InvalidTag`.
+    with pytest.raises(PayloadAuthenticationError):
         c.decrypt(tampered)
 
 
 def test_wrong_master_key_cannot_decrypt() -> None:
+    """Now refused before any decrypt is attempted.
+
+    A stored value names the key that wrapped it, so a provider without that
+    key says so by key id rather than failing an authentication tag. The
+    guarantee the test exists for -- a wrong key cannot read the value -- is
+    unchanged and the failure is now diagnosable.
+    """
     token = _cipher().encrypt("secret-value")
     other = CredentialCipher(LocalKeyProvider("a-different-master-key-32-chars!!"))
-    with pytest.raises(InvalidTag):
+    with pytest.raises(UnknownKeyError):
         other.decrypt(token)
 
 

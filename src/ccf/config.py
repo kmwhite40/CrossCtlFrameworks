@@ -134,6 +134,11 @@ class Settings(BaseSettings):
     # (fail-closed) rather than storing keys unwrapped.
     ai_credential_key_provider: str = Field(default="local")  # local|aws_kms|azure_kv|gcp_sm|vault
     ai_credential_master_key: str | None = Field(default=None)
+    # Decrypt-only predecessors, for rotation. Set this to the OLD key when
+    # introducing a new master key, run `ccf keys rewrap`, then remove it.
+    # Stored values name the key that wrapped them, so nothing has to be
+    # re-entered and nothing is orphaned while both are configured.
+    ai_credential_previous_keys: list[str] = Field(default_factory=list)
 
     # Authentication / RBAC / multi-tenancy. Off by default so local dev and the
     # read-only reader stay open; turn on for shared/production deployments.

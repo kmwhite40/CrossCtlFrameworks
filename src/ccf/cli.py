@@ -294,6 +294,63 @@ def conmon_scan() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="keys-status")
+def keys_status() -> None:
+    """Show the current key id and how many stored values still need rewrapping."""
+
+    async def _run() -> None:
+        from .ai.cipher import build_cipher, token_key_id  # noqa: PLC0415
+        from .ai.rotation import ENCRYPTED_COLUMNS  # noqa: PLC0415
+
+        settings = get_settings()
+        current = build_cipher(settings)
+        console.print(f"current key id: [bold]{current.current_key_id}[/bold]")
+        async with session_scope() as session:
+            for spec in ENCRYPTED_COLUMNS:
+                rows = (await session.execute(select(spec.model))).scalars().all()
+                by_key: dict[str, int] = {}
+                for row in rows:
+                    token = getattr(row, spec.column, None)
+                    if not token:
+                        continue
+                    kid = token_key_id(token) or "v1 (no key id)"
+                    by_key[kid] = by_key.get(kid, 0) + 1
+                console.print(f"  {spec.label}: {by_key or 'no encrypted rows'}")
+
+    asyncio.run(_run())
+
+
+@app.command(name="keys-rewrap")
+def keys_rewrap() -> None:
+    """Re-encrypt every stored secret under the current key.
+
+    Rotation procedure: set CCF_AI_CREDENTIAL_PREVIOUS_KEYS to the OLD key,
+    set CCF_AI_CREDENTIAL_MASTER_KEY to the new one, run this, confirm it
+    reports nothing unreadable, then drop the old key from the environment.
+    Running it twice moves nothing.
+    """
+
+    async def _run() -> None:
+        from .ai.rotation import rewrap_all  # noqa: PLC0415
+
+        async with session_scope() as session:
+            report = await rewrap_all(session)
+        console.print(
+            f"[green]rewrapped[/green] {report.rewrapped}, "
+            f"already current {report.already_current}"
+        )
+        for table, row_id, kid in report.unreadable:
+            console.print(
+                f"[red]unreadable[/red] {table} id={row_id} needs key "
+                f"{kid or 'unknown (pre-key-id)'} — add it to "
+                "CCF_AI_CREDENTIAL_PREVIOUS_KEYS and run again"
+            )
+        if not report.ok:
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
 @app.command(name="notify-digest")
 def notify_digest() -> None:
     """Run the org-level alert digest (ATO expiry, catalog drift, reviews due)."""

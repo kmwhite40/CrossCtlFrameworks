@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import mfa
-from ..ai.cipher import AAD_MFA, build_cipher
+from ..ai.cipher import AAD_MFA, CredentialCipher, build_cipher
 from ..config import get_settings
 from ..models import Organization, User
 from ..models_identity import UserMfaCredential, UserMfaRecoveryCode
@@ -26,7 +26,7 @@ from ..models_identity import UserMfaCredential, UserMfaRecoveryCode
 ISSUER = "Concord"
 
 
-def _cipher() -> object:
+def _cipher() -> CredentialCipher:
     """The envelope cipher, bound to the MFA context rather than the credential one."""
     return build_cipher(get_settings(), aad=AAD_MFA)
 
@@ -70,7 +70,7 @@ async def begin_enrolment(session: AsyncSession, user: User) -> tuple[str, str]:
         UserMfaCredential(
             organization_id=user.organization_id,
             user_id=user.id,
-            secret_encrypted=_cipher().encrypt(secret),  # type: ignore[attr-defined]
+            secret_encrypted=_cipher().encrypt(secret),
         )
     )
     await session.flush()
@@ -88,7 +88,7 @@ async def activate(
     cred = await credential_for(session, user.id)
     if cred is None or cred.activated_at is not None:
         return None
-    secret = _cipher().decrypt(cred.secret_encrypted)  # type: ignore[attr-defined]
+    secret = _cipher().decrypt(cred.secret_encrypted)
     step = mfa.verify(secret, code, now=now, last_used_step=cred.last_used_step)
     if step is None:
         return None
@@ -118,7 +118,7 @@ async def verify_code(session: AsyncSession, user_id: int, code: str, *, now: fl
     cred = await credential_for(session, user_id)
     if cred is None or cred.activated_at is None:
         return False
-    secret = _cipher().decrypt(cred.secret_encrypted)  # type: ignore[attr-defined]
+    secret = _cipher().decrypt(cred.secret_encrypted)
     step = mfa.verify(secret, code, now=now, last_used_step=cred.last_used_step)
     if step is None:
         return False
