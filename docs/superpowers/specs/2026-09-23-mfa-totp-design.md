@@ -175,22 +175,29 @@ in with a recovery code" is a fact an administrator should be able to see.
 
 ## 8. Enforcement policy
 
-**Correction (independent review, 2026-09-24): this section describes
-behaviour that was not built.** `Organization.mfa_policy` exists and is
-advisory. It is read in six places -- four display it, two refuse to *remove*
-an authenticator it covers -- and it gates no session, route or redirect. A
-user in scope who has not enrolled signs in with a password alone and reaches
-everything. Nothing writes the column either: no API, no CLI, no form.
+**Correction (independent review, 2026-09-24): this section described
+behaviour that had not been built, and now is.** `Organization.mfa_policy`
+shipped with no writer and no gate: read in six places, four of which displayed
+it and two of which refused to *remove* an authenticator, and nothing gated a
+session or a route. A user in scope signed in with a password alone and reached
+everything while the status endpoint reported `required_by_policy: true`. For
+an IA-2(1) claim that is a control reporting itself as configured and not
+existing.
 
-The column and its readers now say so at every site, the way `TrustProfile
-.published` does. A column that looks like a control and enforces nothing is
-worse than one that plainly does nothing, because somebody will report it as
-satisfying IA-2(1). It does not.
+Built the same day the review found it, both halves together, because a writer
+without a gate would have been worse:
 
-Enforcement is its own change. The section below is the design it should
-follow, and the reason it was not done in one line is the reason it needs its
-own: deciding which routes stay reachable while a user is unenrolled is the
-whole problem, and getting it wrong locks an organization out of itself.
+- **The gate** is in `auth_gate_middleware`. A user in scope with no active
+  authenticator is routed to `/settings/security`, never refused. The
+  allowlist (`_MFA_ENROLMENT_PATHS`) keeps the enrolment page, the enrolment
+  API and logout reachable throughout -- a gate that missed them would lock an
+  organization out of itself the moment an admin set the policy. That risk is
+  the reason it was deferred the first time, and it is the case a test pins.
+- **Session cookies only.** An API token is not interactive and the design
+  excluded it; gating it would break every integration the day a policy
+  changed.
+- **The writer** is `PUT /api/identity/mfa-policy`, admin-only. The column was
+  previously settable only by direct SQL.
 
 
 

@@ -835,3 +835,156 @@ async def test_a_live_code_with_no_authenticator_is_still_refused() -> None:
         assert await mfa_service.consume_recovery_code(s, user_id, codes[0]) is False, (
             "a recovery code was spent for an account with no authenticator"
         )
+
+
+# ── the policy, which until now was a control that enforced nothing ─────────
+
+
+async def _admin_cookie(user_id: int) -> str:
+    return sign_session(user_id, get_settings().auth_session_secret, ttl_hours=8)
+
+
+@pytest.mark.asyncio
+async def test_a_user_in_scope_without_an_authenticator_is_routed_to_enrolment() -> None:
+    """`mfa_policy` used to gate nothing at all.
+
+    It was read in six places -- four displayed it, two refused to remove an
+    authenticator -- and no session, route or redirect depended on it. An
+    organization could set `all` and every unenrolled user reached everything,
+    while the status endpoint reported `required_by_policy: true`. For an
+    IA-2(1) claim that is a control reporting itself as configured and not
+    existing.
+    """
+    _org_id, user_id, _email = await _user("gate-required", policy="all")
+    cookie = await _admin_cookie(user_id)
+
+    async with _client() as c:
+        page = await c.get("/dashboard", cookies={SESSION_COOKIE: cookie})
+        api = await c.get("/api/identity/mfa-policy", cookies={SESSION_COOKIE: cookie})
+
+    assert page.status_code == 303
+    assert page.headers["location"].startswith("/settings/security")
+    assert api.status_code == 403
+    assert "second factor" in api.text
+
+
+@pytest.mark.asyncio
+async def test_the_enrolment_page_stays_reachable_so_nobody_is_locked_out() -> None:
+    """The reason this was left unbuilt the first time.
+
+    A gate whose allowlist missed the enrolment page would lock an
+    organization out of itself the moment an admin set the policy, with no way
+    back in. The user is routed to enrolment, never refused.
+    """
+    org_id, user_id, _email = await _user("gate-not-locked-out", policy="all")
+    cookie = await _admin_cookie(user_id)
+
+    async with _client() as c:
+        page = await c.get("/settings/security", cookies={SESSION_COOKIE: cookie})
+        begin = await c.post("/api/auth/mfa/enroll", cookies={SESSION_COOKIE: cookie})
+
+    assert page.status_code == 200, page.text
+    assert begin.status_code == 200, begin.text
+
+    # And enrolling clears the gate.
+    secret = begin.json()["secret"]
+    async with _client() as c:
+        activated = await c.post(
+            "/api/auth/mfa/activate",
+            json={"code": mfa.hotp(secret, mfa.timestep(time.time()))},
+            cookies={SESSION_COOKIE: cookie},
+        )
+        assert activated.status_code == 200, activated.text
+        after = await c.get("/api/identity/mfa-policy", cookies={SESSION_COOKIE: cookie})
+    assert after.status_code == 200, after.text
+    assert org_id
+
+
+@pytest.mark.asyncio
+async def test_logging_out_stays_reachable_while_enrolment_is_outstanding() -> None:
+    """Asserted on its own cookie, because logout revokes sessions -- reusing
+    the cookie afterwards tests the revocation, not the gate."""
+    _org_id, user_id, _email = await _user("gate-logout", policy="all")
+    cookie = await _admin_cookie(user_id)
+    async with _client() as c:
+        out = await c.get("/logout", cookies={SESSION_COOKIE: cookie})
+    assert out.status_code in (200, 303)
+    if out.status_code == 303:
+        assert "/settings/security" not in out.headers.get("location", "")
+
+
+@pytest.mark.asyncio
+async def test_an_api_token_is_not_gated() -> None:
+    """Deliberate, and the reason the gate keys off the session cookie.
+
+    A bearer token is not interactive -- no human is present to challenge --
+    and the MFA design excluded it. Gating it here would break every
+    integration the day a policy changed.
+    """
+    from ccf.auth import new_api_token  # noqa: PLC0415
+
+    _org_id, user_id, _email = await _user("gate-api-token", policy="all")
+    async with session_scope() as s:
+        user = await s.get(User, user_id)
+        assert user is not None
+        token = new_api_token()
+        user.api_token = token
+
+    async with _client() as c:
+        resp = await c.get(
+            "/api/identity/mfa-policy", headers={"Authorization": f"Bearer {token}"}
+        )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_user_out_of_scope_of_the_policy_is_untouched() -> None:
+    """The positive control: a gate that stops everyone is not a gate."""
+    _org_id, user_id, _email = await _user("gate-optional", policy="optional")
+    cookie = await _admin_cookie(user_id)
+    async with _client() as c:
+        resp = await c.get("/api/identity/mfa-policy", cookies={SESSION_COOKIE: cookie})
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_admins_policy_scopes_the_gate_to_admins() -> None:
+    _org_id, viewer_id, _e = await _user("gate-viewer", role="viewer", policy="admins")
+    cookie = await _admin_cookie(viewer_id)
+    async with _client() as c:
+        resp = await c.get("/api/identity/mfa-policy", cookies={SESSION_COOKIE: cookie})
+    # Gated? No -- a viewer is out of scope of an "admins" policy. The 403 here
+    # would be the role check, not the gate, so assert it is not the gate's.
+    assert "second factor" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_an_admin_can_set_the_policy_and_it_takes_effect() -> None:
+    """Until this endpoint existed the column was settable only by direct SQL."""
+    org_id, admin_id, _email = await _user("policy-writer", policy="optional")
+    secret = await _enrol(org_id, admin_id, active=False)
+    await _activate(admin_id, secret)  # so the admin is not gated by their own change
+    cookie = await _admin_cookie(admin_id)
+
+    _o2, other_id, _e2 = await _user("policy-subject", policy="optional")
+
+    async with _client() as c:
+        set_resp = await c.put(
+            "/api/identity/mfa-policy",
+            json={"policy": "all"},
+            cookies={SESSION_COOKIE: cookie},
+        )
+        assert set_resp.status_code == 200, set_resp.text
+        assert set_resp.json()["policy"] == "all"
+
+        bad = await c.put(
+            "/api/identity/mfa-policy",
+            json={"policy": "mandatory"},
+            cookies={SESSION_COOKIE: cookie},
+        )
+    assert bad.status_code == 422
+
+    async with session_scope() as s:
+        org = await s.get(Organization, org_id)
+        assert org is not None and org.mfa_policy == "all"
+    assert other_id

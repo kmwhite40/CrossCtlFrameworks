@@ -11,6 +11,7 @@ at the end of a step.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -24,6 +25,10 @@ from ..models_identity import UserMfaCredential, UserMfaRecoveryCode
 
 #: Shown in the authenticator app's account list.
 ISSUER = "Concord"
+
+#: The roles an ``admins`` policy covers. One definition, read by both the
+#: display predicate and the gate.
+_PRIVILEGED_ROLES = frozenset({"admin", "owner"})
 
 
 def _cipher() -> CredentialCipher:
@@ -203,24 +208,107 @@ async def unused_recovery_code_count(session: AsyncSession, user_id: int) -> int
     return len(rows)
 
 
+#: Organization policies, cached briefly. The gate runs on EVERY authenticated
+#: request, and the first version cost three queries there -- measured at 3x on
+#: a request-heavy test module, which is a cost real page loads pay too.
+#:
+#: A policy changes almost never, and the writer clears this on every change,
+#: so within one process the cache is exact. Across processes a change takes up
+#: to the TTL to apply. That is the accepted cost, and it is bounded: the
+#: window only ever delays *starting* to require enrolment, never delays
+#: revoking a session or honouring a lockout.
+_POLICY_TTL_SECONDS = 30.0
+_policy_cache: dict[int, tuple[float, str]] = {}
+
+#: Does ANY organization on this deployment require a second factor?
+#:
+#: The gate runs on every authenticated request, and on a deployment where
+#: nobody has turned the policy on -- which is every deployment until somebody
+#: does, and every test module -- this one cached boolean makes it free. One
+#: cheap EXISTS refreshed on the same TTL, instead of a per-user lookup that
+#: could only ever answer "no".
+#: A one-slot dict rather than a module global, so updating it needs no
+#: ``global`` statement.
+_any_policy: dict[str, tuple[float, bool]] = {}
+
+
+def forget_policy(organization_id: int) -> None:
+    """Drop cached policy state. Called by the writer, so a change is immediate."""
+    _policy_cache.pop(organization_id, None)
+    _any_policy.clear()
+
+
+async def _any_organization_requires_mfa(session: AsyncSession) -> bool:
+    now = time.monotonic()
+    hit = _any_policy.get("v")
+    if hit is not None and now - hit[0] < _POLICY_TTL_SECONDS:
+        return hit[1]
+    found = (
+        await session.execute(
+            select(Organization.id).where(Organization.mfa_policy != "optional").limit(1)
+        )
+    ).first()
+    _any_policy["v"] = (now, found is not None)
+    return found is not None
+
+
+async def _policy_for(session: AsyncSession, organization_id: int) -> str:
+    now = time.monotonic()
+    hit = _policy_cache.get(organization_id)
+    if hit is not None and now - hit[0] < _POLICY_TTL_SECONDS:
+        return hit[1]
+    org = await session.get(Organization, organization_id)
+    policy = str(getattr(org, "mfa_policy", "optional") or "optional") if org else "optional"
+    _policy_cache[organization_id] = (now, policy)
+    return policy
+
+
+async def enrolment_outstanding(
+    session: AsyncSession, user_id: int | None, *, organization_id: int | None, role: str
+) -> bool:
+    """Is this user obliged to hold an authenticator and does not?
+
+    The question the gate asks, on every authenticated request -- so the shape
+    is chosen for the common case being free rather than for reading tidily:
+
+    * ``optional`` (the default, and what nearly every deployment runs) returns
+      without touching the database at all beyond a cached policy read.
+    * ``admins`` returns the same way for anyone who is not one, because the
+      caller's role is already on the principal.
+    * Only a user actually in scope costs a query, and it is one.
+
+    The first version loaded the user, then the organization, then the
+    credential: three round trips on every page load.
+    """
+    if user_id is None or organization_id is None:
+        return False
+    # The whole-deployment short circuit: one cached EXISTS, and nothing else
+    # runs until somebody actually turns a policy on.
+    if not await _any_organization_requires_mfa(session):
+        return False
+    policy = await _policy_for(session, organization_id)
+    if policy == "optional":
+        return False
+    if policy == "admins" and role not in _PRIVILEGED_ROLES:
+        return False
+    return not await is_challenged(session, user_id)
+
+
 async def policy_requires_enrolment(session: AsyncSession, user: User) -> bool:
-    """Whether this user's organization SAYS they should hold an authenticator.
+    """Whether this user's organization obliges them to hold an authenticator.
 
-    **Advisory.** Callers display this, and two of them refuse to remove an
-    authenticator it covers. Nothing here or above gates a session, a route or
-    a redirect: a user in scope who has not enrolled signs in with a password
-    alone and reaches everything.
+    What the policy SAYS. Pages display this; the gate asks
+    :func:`enrolment_outstanding`, which also checks whether they actually
+    have one.
 
-    The docstring used to say the user "must enrol before doing anything
-    else". That was the design intent and was never built, which made this
-    function read as a control it is not. Enforcement is its own change --
-    it needs a decision about which routes stay reachable while unenrolled,
-    or an organization locks all of its own users out by changing a dropdown.
+    A user in scope is routed to enrolment, not refused -- an organization
+    that could lock all of its own users out by changing a dropdown would have
+    no way back in.
     """
     org = await session.get(Organization, user.organization_id)
     policy = getattr(org, "mfa_policy", "optional") if org is not None else "optional"
     if policy == "all":
         return True
     if policy == "admins":
-        return (user.role or "") in {"admin", "owner"}
+        return (user.role or "") in _PRIVILEGED_ROLES
     return False

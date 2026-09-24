@@ -288,25 +288,21 @@ class Organization(Base):
     # CASCADE to systems/users never fires; NULL means active. Callers must
     # filter ``deleted_at IS NULL`` in list/get queries — see systems.py.
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # IA-2(1): who SHOULD hold a second factor.
+    # IA-2(1): who must hold a second factor.
     #
-    # **Advisory, not enforced, and nothing writes it yet.** Read in six
-    # places: four display it, and two refuse to REMOVE an authenticator a
-    # policy covers. Nothing gates a session, a route or a redirect, so a user
-    # in scope who has not enrolled signs in with a password alone and reaches
-    # everything. There is also no API, CLI or form that sets this column --
-    # only direct SQL.
+    # Enforced by `auth_gate_middleware`: a user in scope with no active
+    # authenticator is ROUTED TO ENROLMENT, never refused. Refusing would let
+    # an organization lock every one of its own users out by changing a
+    # dropdown, which is why `_MFA_ENROLMENT_PATHS` keeps the enrolment page,
+    # the enrolment API and logout reachable throughout.
     #
-    # Recorded here rather than smoothed over, the same way TrustProfile's
-    # `published` flag is: a column that looks like a control and enforces
-    # nothing is worse than one that plainly does nothing, because somebody
-    # will report it as satisfying IA-2(1). It does not.
+    # Session cookies only. An API token is not interactive, so gating it
+    # would break every integration the day a policy changed.
     #
-    # The original comment claimed a user in scope "must enrol before doing
-    # anything else". That was the intent in the design spec and was never
-    # built. Enforcement is its own change: it needs a decision about which
-    # routes stay reachable while unenrolled, or an organization locks every
-    # one of its own users out by changing a dropdown.
+    # Set through `PUT /api/identity/mfa-policy` (admin). It shipped as a
+    # column with no writer and no gate -- a control that reported itself as
+    # configured and did nothing -- and both halves were fixed together,
+    # because a writer without a gate would have been worse.
     mfa_policy: Mapped[str] = mapped_column(
         Enum("optional", "admins", "all", name="mfa_policy", schema="ccf"),
         server_default="optional",
