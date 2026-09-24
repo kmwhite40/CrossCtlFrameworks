@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import itertools
+from datetime import UTC, datetime
 
 import pytest
 from alembic import command
@@ -96,7 +97,19 @@ def _client(peer: str = "10.1.2.3") -> AsyncClient:
 
 @pytest.fixture
 def piv_on(monkeypatch: pytest.MonkeyPatch):
+    """PIV configured, **and real authentication turned on**.
+
+    Without `CCF_AUTH_ENABLED`, `require_role("admin")` resolves every caller
+    to `SYSTEM_PRINCIPAL`, whose `org_id` is None -- and every organization
+    predicate in the linking routes is written `if principal.org_id is not
+    None`, so all of them become no-ops. Four cross-tenant assertions here
+    passed against the wrong behaviour until this was added: the same shape as
+    the RLS masking that made nineteen cross-tenant tests unable to fail.
+    """
+
     def apply(*, trusted: str | None = TRUSTED, enabled: bool = True) -> None:
+        monkeypatch.setenv("CCF_AUTH_ENABLED", "true")
+        monkeypatch.setenv("CCF_AUTH_SESSION_SECRET", "piv-test-secret")
         monkeypatch.setenv("CCF_PIV_ENABLED", "true" if enabled else "false")
         if trusted is None:
             monkeypatch.setenv("CCF_PIV_TRUSTED_PROXIES", "[]")
@@ -358,3 +371,342 @@ async def test_the_identity_resolves_to_its_own_users_organization(piv_on) -> No
         )
         assert user.id == user_id
         assert user.organization_id == org_id
+
+
+# ── linking a certificate to an account ─────────────────────────────────────
+#
+# Found by reviewing the seams between this feature and the rest, not by
+# reviewing the feature: every piece above was correct, and nothing in the
+# application could create the link they all depend on. `/auth/piv` could only
+# ever answer "valid but not linked", so the whole path was unreachable.
+
+
+async def _admin(org_id: int) -> str:
+    """An admin bearer token for ``org_id``.
+
+    The token is minted here and returned, never read back off a reloaded row:
+    ``api_token`` is write-only (IA-09) and only the hash persists, so a
+    reloaded user reports ``None`` and reusing it authenticates as nobody --
+    a 401 indistinguishable from a successful scoping refusal.
+    """
+    from ccf.auth import hash_password, new_api_token  # noqa: PLC0415
+
+    async with session_scope() as s:
+        user = User(
+            organization_id=org_id,
+            email=f"admin-{next(_SEQ)}@piv.test",
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+        )
+        s.add(user)
+        token = new_api_token()
+        user.api_token = token
+        await s.flush()
+        return token
+
+
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _org_and_user(label: str) -> tuple[int, int]:
+    async with session_scope() as s:
+        org = Organization(name=f"PIV Link {label} {next(_SEQ)}")
+        s.add(org)
+        await s.flush()
+        user = User(
+            organization_id=org.id,
+            email=f"{label}-{next(_SEQ)}@piv.test",
+            role="viewer",
+            active=True,
+        )
+        s.add(user)
+        await s.flush()
+        return org.id, user.id
+
+
+@pytest.mark.asyncio
+async def test_an_admin_links_a_certificate_and_it_then_signs_the_user_in(piv_on) -> None:
+    """The end-to-end path the feature exists for, which nothing could reach."""
+    org_id, user_id = await _org_and_user("happy")
+    token = await _admin(org_id)
+    upn = f"linkme-{next(_SEQ)}@mil"
+    pem = _certificate(upn=upn, email="holder@agency.gov")
+
+    async with _client() as c:
+        created = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_id, "certificate_pem": pem},
+            headers=_auth(token),
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["subject"] == upn
+
+        signed_in = await c.get("/auth/piv", headers=_headers(pem))
+
+    assert signed_in.status_code == 303, signed_in.text
+    assert SESSION_COOKIE in signed_in.cookies
+
+
+@pytest.mark.asyncio
+async def test_an_admin_cannot_link_a_certificate_to_another_tenants_user(piv_on) -> None:
+    """The SCIM lesson, applied before it could become the SCIM defect.
+
+    Linking is the one write that grants sign-in as a specific account, so an
+    admin of one tenant reaching a user in another would be account takeover
+    with an audit trail saying it was authorised.
+    """
+    _mine_org, _mine_user = await _org_and_user("mine")
+    victim_org, victim_user = await _org_and_user("victim")
+    token = await _admin(_mine_org)
+    upn = f"crosstenant-{next(_SEQ)}@mil"
+
+    async with _client() as c:
+        resp = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": victim_user, "certificate_pem": _certificate(upn=upn)},
+            headers=_auth(token),
+        )
+
+    # 404, not 403: whether that id exists in another tenant is not information
+    # to hand back.
+    assert resp.status_code == 404, resp.text
+    async with session_scope() as s:
+        assert (
+            await s.execute(
+                select(ExternalIdentity).where(ExternalIdentity.subject == upn)
+            )
+        ).scalar_one_or_none() is None
+    assert victim_org  # named for the reader
+
+
+@pytest.mark.asyncio
+async def test_a_certificate_already_linked_elsewhere_is_refused_without_naming_who(
+    piv_on,
+) -> None:
+    """`subject` is unique across the deployment, so naming the holder would
+    tell an administrator of one tenant about a user in another."""
+    org_a, user_a = await _org_and_user("holder")
+    org_b, user_b = await _org_and_user("claimant")
+    upn = f"contested-{next(_SEQ)}@mil"
+    pem = _certificate(upn=upn)
+
+    async with _client() as c:
+        first = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_a, "certificate_pem": pem},
+            headers=_auth(await _admin(org_a)),
+        )
+        assert first.status_code == 201, first.text
+
+        second = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_b, "certificate_pem": pem},
+            headers=_auth(await _admin(org_b)),
+        )
+
+    assert second.status_code == 409
+    body = second.text
+    assert str(user_a) not in body
+    assert "@piv.test" not in body
+
+
+@pytest.mark.asyncio
+async def test_linking_the_same_certificate_to_the_same_user_twice_is_idempotent(
+    piv_on,
+) -> None:
+    org_id, user_id = await _org_and_user("idempotent")
+    token = await _admin(org_id)
+    pem = _certificate(upn=f"twice-{next(_SEQ)}@mil")
+
+    async with _client() as c:
+        first = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_id, "certificate_pem": pem},
+            headers=_auth(token),
+        )
+        second = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_id, "certificate_pem": pem},
+            headers=_auth(token),
+        )
+    assert first.status_code == 201
+    assert second.status_code in (200, 201)
+    assert second.json()["id"] == first.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_certificate_with_no_upn_cannot_be_linked(piv_on) -> None:
+    """The same refusal the login path makes, at the point of linking -- so an
+    administrator finds out now rather than when somebody cannot sign in."""
+    org_id, user_id = await _org_and_user("noupn")
+
+    async with _client() as c:
+        resp = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_id, "certificate_pem": _certificate(email="x@y.gov")},
+            headers=_auth(await _admin(org_id)),
+        )
+    assert resp.status_code == 422
+    assert "userPrincipalName" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_listing_shows_only_this_organizations_links(piv_on) -> None:
+    org_a, user_a = await _org_and_user("list-a")
+    org_b, user_b = await _org_and_user("list-b")
+    upn_a, upn_b = f"list-a-{next(_SEQ)}@mil", f"list-b-{next(_SEQ)}@mil"
+
+    async with _client() as c:
+        for org, user, upn in ((org_a, user_a, upn_a), (org_b, user_b, upn_b)):
+            r = await c.post(
+                "/api/identity/piv-links",
+                json={"user_id": user, "certificate_pem": _certificate(upn=upn)},
+                headers=_auth(await _admin(org)),
+            )
+            assert r.status_code == 201, r.text
+
+        listed = await c.get("/api/identity/piv-links", headers=_auth(await _admin(org_a)))
+
+    subjects = {row["subject"] for row in listed.json()}
+    assert upn_a in subjects
+    assert upn_b not in subjects, "another tenant's link was listed"
+
+
+@pytest.mark.asyncio
+async def test_unlinking_stops_the_certificate_signing_in(piv_on) -> None:
+    org_id, user_id = await _org_and_user("unlink")
+    token = await _admin(org_id)
+    upn = f"unlink-{next(_SEQ)}@mil"
+    pem = _certificate(upn=upn)
+
+    async with _client() as c:
+        created = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_id, "certificate_pem": pem},
+            headers=_auth(token),
+        )
+        link_id = created.json()["id"]
+        assert (await c.get("/auth/piv", headers=_headers(pem))).status_code == 303
+
+        removed = await c.delete(f"/api/identity/piv-links/{link_id}", headers=_auth(token))
+        assert removed.status_code == 204
+
+        after = await c.get("/auth/piv", headers=_headers(pem))
+    assert after.status_code == 403
+    assert SESSION_COOKIE not in after.cookies
+
+
+@pytest.mark.asyncio
+async def test_an_admin_cannot_unlink_another_tenants_link(piv_on) -> None:
+    org_a, user_a = await _org_and_user("del-a")
+    org_b, _user_b = await _org_and_user("del-b")
+    upn = f"del-{next(_SEQ)}@mil"
+
+    async with _client() as c:
+        created = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_a, "certificate_pem": _certificate(upn=upn)},
+            headers=_auth(await _admin(org_a)),
+        )
+        link_id = created.json()["id"]
+        resp = await c.delete(
+            f"/api/identity/piv-links/{link_id}", headers=_auth(await _admin(org_b))
+        )
+
+    assert resp.status_code == 404
+    async with session_scope() as s:
+        assert await s.get(ExternalIdentity, link_id) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_non_admin_cannot_link_a_certificate(piv_on) -> None:
+    """Not self-service: a user who could link their own could link it to
+    somebody else's account."""
+    from ccf.auth import hash_password, new_api_token  # noqa: PLC0415
+
+    org_id, user_id = await _org_and_user("viewer")
+    async with session_scope() as s:
+        viewer = User(
+            organization_id=org_id,
+            email=f"viewer-{next(_SEQ)}@piv.test",
+            role="viewer",
+            active=True,
+            password_hash=hash_password("pw"),
+        )
+        s.add(viewer)
+        token = new_api_token()
+        viewer.api_token = token
+        await s.flush()
+
+    async with _client() as c:
+        resp = await c.post(
+            "/api/identity/piv-links",
+            json={"user_id": user_id, "certificate_pem": _certificate(upn="v@mil")},
+            headers=_auth(token),
+        )
+    assert resp.status_code in (401, 403), resp.text
+
+
+# ── the seam with the second factor ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_certificate_sign_in_does_not_additionally_challenge_for_a_code(
+    piv_on, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deliberate, and pinned here because nothing else says so.
+
+    A PIV or CAC credential is **already** multi-factor: the card is something
+    you have and the PIN is something you know, checked by the card itself
+    before it will sign. Demanding a TOTP code on top would add a third factor
+    of a weaker kind, and would strand any card holder whose phone is not with
+    them at a terminal.
+
+    The same decision was made explicitly for single sign-on -- the identity
+    provider owns that second factor -- and is recorded in the MFA design spec.
+    It was NOT recorded for this path, which is how it came to be a property
+    nobody had decided. This test is that decision.
+
+    What would make it wrong is the platform *claiming* otherwise. Nothing
+    derives a compliance statement from ``Organization.mfa_policy``; it is read
+    in exactly one place, to tell a user to enrol. If that ever changes, the
+    claim has to account for this path.
+    """
+    monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "piv-mfa-seam-key-0123456789")
+    get_settings.cache_clear()
+
+    upn = f"mfa-seam-{next(_SEQ)}@mil"
+    org_id, user_id = await _linked_user(upn)
+
+    # Give the user an ACTIVE authenticator, so the password path would demand
+    # a code from them.
+    from ccf.identity.mfa_service import begin_enrolment, is_challenged  # noqa: PLC0415
+    from ccf.models_identity import UserMfaCredential  # noqa: PLC0415
+
+    async with session_scope() as s:
+        user = await s.get(User, user_id)
+        assert user is not None
+        await begin_enrolment(s, user)
+    async with session_scope() as s:
+        cred = (
+            await s.execute(
+                select(UserMfaCredential).where(UserMfaCredential.user_id == user_id)
+            )
+        ).scalar_one()
+        cred.activated_at = datetime.now(UTC)
+
+    # The positive control: without it, "no code was demanded" would be
+    # satisfied by an account that has no authenticator at all.
+    async with session_scope() as s:
+        assert await is_challenged(s, user_id) is True
+
+    async with _client() as c:
+        resp = await c.get("/auth/piv", headers=_headers(_certificate(upn=upn)))
+
+    assert resp.status_code == 303, resp.text
+    assert resp.headers["location"] == "/"
+    assert SESSION_COOKIE in resp.cookies
+    assert "concord_mfa_pending" not in resp.cookies
+    assert org_id  # named for the reader
