@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session
@@ -28,7 +29,8 @@ from ...identity.oidc import (
     new_state,
 )
 from ...models import Organization, User
-from ...models_identity import GroupRoleMapping, IdentityProvider
+from ...models_identity import ExternalIdentity, GroupRoleMapping, IdentityProvider
+from ..audit import record_event
 from ..auth_deps import SESSION_COOKIE, get_principal, require_role
 from ..deps import get_session
 from ..login_service import revoke_sessions_for_request
@@ -212,6 +214,155 @@ async def piv_login(
     resp = RedirectResponse("/", status_code=303)
     _set_session_cookie(resp, user.id, user.session_version or 0)
     return resp
+
+
+class PivLinkIn(BaseModel):
+    """Either a PEM certificate or the UPN read off one.
+
+    The PEM is the preferred form: an administrator pastes what the card
+    actually presents rather than retyping a UPN, and Concord extracts the same
+    field the login path will compare against. A subject typed by hand that
+    differs by one character produces a link that silently never matches.
+    """
+
+    user_id: int
+    certificate_pem: str | None = None
+    subject: str | None = None
+
+
+@router.post("/api/identity/piv-links", status_code=201)
+async def create_piv_link(
+    body: PivLinkIn,
+    principal: Principal = Depends(require_role("admin")),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Link a PIV/CAC certificate to a user, so that certificate can sign in.
+
+    Without this the sign-in path can only ever answer "valid but not linked":
+    nothing else in the application creates an identity with this provider.
+
+    Deliberately not self-service. A user who could link their own certificate
+    could link it to somebody else's account.
+    """
+    if body.certificate_pem:
+        try:
+            subject = piv.identity_from_pem(body.certificate_pem).subject
+        except piv.PivError as e:
+            raise HTTPException(422, str(e)) from e
+    elif body.subject:
+        subject = body.subject.strip()
+    else:
+        raise HTTPException(422, "provide certificate_pem or subject")
+    if not subject:
+        raise HTTPException(422, "the certificate carries an empty subject")
+
+    user = await session.get(User, body.user_id)
+    # Scoped to the caller's organization, and 404 rather than 403 for a user
+    # outside it: whether an id exists in another tenant is not information to
+    # return. This is the shape the SCIM routes were fixed into.
+    if user is None or (
+        principal.org_id is not None and user.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "user not found")
+
+    # This lookup runs on a tenant-bound session, so it can only ever see links
+    # in the caller's own organization -- it answers "is this already linked
+    # HERE", which makes a repeat call idempotent.
+    existing = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == provisioning.PIV_PROVIDER,
+                ExternalIdentity.subject == subject,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        if existing.user_id == body.user_id:
+            return _piv_link_out(existing)
+        raise HTTPException(409, "that certificate is already linked to an account")
+
+    ident = ExternalIdentity(
+        organization_id=user.organization_id,
+        user_id=user.id,
+        provider=provisioning.PIV_PROVIDER,
+        subject=subject,
+    )
+    session.add(ident)
+    try:
+        await session.flush()
+    except IntegrityError as e:
+        # The uniqueness of `subject` is GLOBAL while the lookup above is
+        # tenant-scoped, so a certificate held in another organization is
+        # invisible to the check and only the constraint catches it. Reported
+        # as the same 409, and deliberately without naming the holder: saying
+        # who would tell an administrator of one tenant about a user in
+        # another, which is precisely what the scoping is for.
+        await session.rollback()
+        raise HTTPException(
+            409, "that certificate is already linked to an account"
+        ) from e
+    await record_event(
+        session,
+        actor=principal.email or "admin",
+        action="create",
+        entity_type="identity",
+        entity_id=str(user.id),
+        diff={"event": "piv_link", "subject": subject},
+        organization_id=user.organization_id,
+    )
+    await session.commit()
+    return _piv_link_out(ident)
+
+
+def _piv_link_out(ident: ExternalIdentity) -> dict[str, Any]:
+    return {
+        "id": ident.id,
+        "user_id": ident.user_id,
+        "subject": ident.subject,
+        "last_login_at": ident.last_login_at.isoformat() if ident.last_login_at else None,
+    }
+
+
+@router.get("/api/identity/piv-links")
+async def list_piv_links(
+    principal: Principal = Depends(require_role("admin")),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict[str, Any]]:
+    stmt = select(ExternalIdentity).where(
+        ExternalIdentity.provider == provisioning.PIV_PROVIDER
+    )
+    if principal.org_id is not None:
+        stmt = stmt.where(ExternalIdentity.organization_id == principal.org_id)
+    rows = (await session.execute(stmt.order_by(ExternalIdentity.id))).scalars().all()
+    return [_piv_link_out(r) for r in rows]
+
+
+@router.delete("/api/identity/piv-links/{link_id}", status_code=204)
+async def delete_piv_link(
+    link_id: int,
+    principal: Principal = Depends(require_role("admin")),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    ident = await session.get(ExternalIdentity, link_id)
+    if (
+        ident is None
+        or ident.provider != provisioning.PIV_PROVIDER
+        or (principal.org_id is not None and ident.organization_id != principal.org_id)
+    ):
+        raise HTTPException(404, "link not found")
+    user_id, subject, org_id = ident.user_id, ident.subject, ident.organization_id
+    await session.delete(ident)
+    await record_event(
+        session,
+        actor=principal.email or "admin",
+        action="delete",
+        entity_type="identity",
+        entity_id=str(user_id),
+        diff={"event": "piv_unlink", "subject": subject},
+        organization_id=org_id,
+    )
+    await session.commit()
+    return Response(status_code=204)
 
 
 @router.get("/auth/callback")

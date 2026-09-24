@@ -73,6 +73,49 @@ certificate is valid and unlinked.
 `ExternalIdentity` already carries `UniqueConstraint("provider", "subject")`, so
 this needs **no migration**.
 
+## 4.1 A certificate is not additionally challenged for a code
+
+**Added 2026-09-24, after review.** The original spec did not mention the
+second factor at all, so this was a property nobody had decided.
+
+A PIV or CAC credential is already multi-factor: the card is something you
+have, the PIN is something you know, and the card checks the PIN itself before
+it will sign. Demanding a TOTP code on top adds a third factor of a weaker
+kind, and strands a card holder whose phone is not with them at a terminal.
+
+So certificate sign-in mints a session directly, as single sign-on does — and
+for the same reason recorded in the MFA spec: the stronger authentication has
+already happened somewhere Concord trusts.
+
+What would make this wrong is the platform claiming otherwise. Nothing derives
+a compliance statement from `Organization.mfa_policy`; it is read in exactly
+one place, to tell a user to enrol. **If that ever changes, the claim has to
+account for this path**, or it will assert a coverage it does not have.
+
+## 4.2 Linking is a feature, not a manual step
+
+**Added 2026-09-24, after review.** §4 said "an administrator links the
+identity" and §5 scoped out *self-service* linking. Between those two
+sentences, administrator linking was built by nobody: the only code creating an
+`ExternalIdentity` was the single-sign-on path, so `/auth/piv` could only ever
+answer "valid but not linked" and the whole feature was unreachable.
+
+`POST/GET/DELETE /api/identity/piv-links`, admin-only and organization-scoped.
+It takes a PEM in preference to a typed subject, so the administrator pastes
+what the card presents and Concord extracts the same field the login path will
+compare — a hand-typed UPN that differs by one character produces a link that
+silently never matches.
+
+Two things the scoping has to get right, both of which failed first:
+
+- **An admin of one tenant must not link a certificate to another tenant's
+  user**, which would be account takeover with an audit trail saying it was
+  authorised. Answered 404, not 403.
+- **`subject` is globally unique while the session is tenant-bound**, so a
+  certificate already linked in another organization is invisible to the
+  pre-check and only the database constraint catches it. Both paths report the
+  same 409, and neither names the holder.
+
 ## 5. What this does not do
 
 - **No chain validation, no revocation checking, no OCSP** (§1). The terminator
