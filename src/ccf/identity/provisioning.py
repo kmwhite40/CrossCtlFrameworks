@@ -18,6 +18,7 @@ from ..models import User
 from ..models_identity import ExternalIdentity, GroupRoleMapping, ScimProvisioningEvent
 
 VALID_ROLES = {"admin", "control_owner", "assessor", "viewer"}
+PIV_PROVIDER = "piv"
 DEFAULT_ROLE = "viewer"
 
 
@@ -45,6 +46,34 @@ def extract_groups(claims: dict[str, Any]) -> list[str]:
         elif isinstance(val, list):
             out.extend(str(v) for v in val)
     return out
+
+
+def email_verification_ok(claims: dict[str, Any], *, require: bool) -> bool:
+    """Whether this email claim may create or claim a local account.
+
+    ``provision_from_oidc`` falls back to matching on ``User.email`` and then
+    writes a permanent ``ExternalIdentity`` link. So an identity-provider
+    subject presenting somebody else's address was handed that account and kept
+    it. Nothing read ``email_verified`` at all.
+
+    Three states, and the middle one is the point:
+
+    * ``email_verified: true``  -> allowed.
+    * ``email_verified: false`` -> **refused**, always. That is the provider
+      stating a fact about the address, not omitting one.
+    * **absent** -> allowed unless ``require`` is set. The claim is optional in
+      OIDC, and treating absence as "unverified" would break every deployment
+      whose provider does not send it -- absence of evidence read as evidence
+      of absence, which is a defect this programme keeps finding. A deployment
+      that knows its provider sends the claim sets
+      ``oidc_require_email_verified``.
+    """
+    raw = claims.get("email_verified")
+    if raw is None:
+        return not require
+    if isinstance(raw, str):
+        return raw.strip().lower() == "true"
+    return bool(raw)
 
 
 def domain_allowed(email: str, allowed_domains: list[str] | None) -> bool:
@@ -106,6 +135,7 @@ async def provision_from_oidc(
     default_role: str = DEFAULT_ROLE,
     jit: bool = True,
     provider: str = "oidc",
+    require_email_verified: bool = False,
 ) -> tuple[User, bool]:
     """Resolve (and, if enabled, JIT-create) a local user from OIDC claims.
 
@@ -118,6 +148,13 @@ async def provision_from_oidc(
         raise ProvisioningError("OIDC claims missing required 'email'/'sub'")
     if not domain_allowed(email, allowed_domains):
         raise ProvisioningError(f"email domain not allowed: {email}")
+    if not email_verification_ok(claims, require=require_email_verified):
+        # Checked before ANY lookup: the account this would otherwise reach is
+        # somebody else's, and the link it would write is permanent.
+        raise ProvisioningError(
+            f"the identity provider has not verified {email}; it cannot be used "
+            "to create or sign in to an account"
+        )
 
     groups = extract_groups(claims)
     mapped_role = await resolve_role(session, org_id, groups, default_role)
@@ -212,6 +249,48 @@ def _scim_email(payload: dict[str, Any]) -> str | None:
     if emails and isinstance(emails[0], dict) and emails[0].get("value"):
         return str(emails[0]["value"]).strip().lower()
     return None
+
+
+async def user_for_certificate(session: AsyncSession, identity: Any) -> User:
+    """Resolve a PIV/CAC certificate to an existing account. Never creates one.
+
+    Holding a valid card says the federal government issued someone a
+    credential. It does not say that person should have an account in this
+    tenant, so there is no just-in-time provisioning on this path -- unlike
+    OIDC, where an administrator has chosen to federate a directory whose
+    membership already means something here.
+
+    The link is an ``ExternalIdentity`` with ``provider="piv"``, which an
+    administrator creates. A user who could link their own certificate could
+    link it to somebody else's account.
+    """
+    from .piv import PivNotLinkedError  # noqa: PLC0415  (circular at module level)
+
+    ident = (
+        await session.execute(
+            select(ExternalIdentity).where(
+                ExternalIdentity.provider == PIV_PROVIDER,
+                ExternalIdentity.subject == identity.subject,
+            )
+        )
+    ).scalar_one_or_none()
+    if ident is None:
+        raise PivNotLinkedError(
+            f"this certificate ({identity.subject}) is valid but is not linked to "
+            "a Concord account; an administrator must link it"
+        )
+    user = await session.get(User, ident.user_id)
+    if user is None:
+        raise PivNotLinkedError(
+            f"this certificate ({identity.subject}) is linked to an account that "
+            "no longer exists"
+        )
+    if not user.active:
+        raise ProvisioningError("account is deactivated")
+
+    ident.last_login_at = datetime.now(UTC)
+    await session.flush()
+    return user
 
 
 async def scim_create_or_update_user(
