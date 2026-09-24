@@ -234,7 +234,7 @@
 
   <dl class="ledger">
     <div class="cell"><dt>Migration head</dt><dd>0084</dd></div>
-    <div class="cell"><dt>Tests passing</dt><dd>3,609</dd></div>
+    <div class="cell"><dt>Tests passing</dt><dd>3,660</dd></div>
     <div class="cell"><dt>API endpoints</dt><dd>494</dd></div>
     <div class="cell"><dt>Tenant tables</dt><dd>141</dd></div>
   </dl>
@@ -242,7 +242,7 @@
   <section>
     <div class="sec-head">
       <h2>Where the build stands</h2>
-      <span class="sec-note">as of head 17ed8c7</span>
+      <span class="sec-note">as of head bd2caef</span>
     </div>
     <p class="lede">
       Concord is feature-complete across the authorization lifecycle: a customer can define
@@ -268,7 +268,7 @@
     <div class="evidence">
       <div><span>Static analysis</span><span><b>Clean.</b> ruff across <span class="mono">src</span> and <span class="mono">tests</span>; mypy strict across 306 source files, no issues.</span></div>
       <div><span>Schema</span><span><b>One head</b> — <span class="mono">0084_mfa_totp</span>. 84 Alembic migrations, no divergence.</span></div>
-      <div><span>Test suite</span><span><b>3,609 passing, 1 skipped</b> in 10m54s, run against a real PostgreSQL instance rather than a mock. The single skip needs a browser driver that is not installed locally.</span></div>
+      <div><span>Test suite</span><span><b>3,660 passing, 1 skipped</b> in 10m27s, run against a real PostgreSQL instance rather than a mock. The single skip needs a browser driver that is not installed locally.</span></div>
       <div><span>Tenant isolation</span><span><b>141 tables</b> under database-enforced row-level security, with a positive-control test that fails the build when a new table escapes it.</span></div>
       <div><span>Code base</span><span>74,795 lines of application code against 93,392 lines of tests — more test than product.</span></div>
       <div><span>Interface</span><span><b>Monochrome chrome.</b> Colour is reserved for status, so a reader never has to learn which colours mean something. 54 server-rendered pages, one shell, no build step and no JavaScript bundle. Contrast is asserted in both themes rather than eyeballed, and a page cannot reference a style that does not exist.</span></div>
@@ -414,7 +414,7 @@
       </div>
       <div class="cap">
         <h3>Identity</h3>
-        <p>OIDC single sign-on with just-in-time provisioning and SCIM, session and bearer authentication, TOTP two-factor on password sign-in, and separation-of-duties RBAC on writes.</p>
+        <p>OIDC single sign-on with just-in-time provisioning and SCIM, PIV/CAC sign-in behind a TLS terminator, session and bearer authentication, TOTP two-factor on password sign-in, and separation-of-duties RBAC on writes.</p>
       </div>
       <div class="cap">
         <h3>Tamper evidence</h3>
@@ -971,8 +971,17 @@
       The foundations were built first precisely so this list is additive. In rough dependency
       order:
     </p>
+    <p class="lede">
+      Identity and crypto hardening, which led this list in the previous edition, is done.
+      Two-factor authentication ships for password sign-in; PIV/CAC sign-in reads the identity a
+      TLS terminator established, and refuses to read it from any peer an operator has not named;
+      the credential master key can be rotated without re-entering a single secret, and a key
+      provider backed by AWS KMS is available for deployments that would rather not hold key
+      material at all. The cryptographic algorithms &mdash; PBKDF2-HMAC-SHA256 at 210,000 rounds,
+      AES-256-GCM, HMAC-SHA256 &mdash; were already FIPS-approved; what validation additionally
+      requires is a validated module, which is a deployment choice rather than a code change.
+    </p>
     <ul class="plain">
-      <li><strong>Identity and crypto hardening</strong> — two-factor authentication now ships for password sign-in: TOTP, a per-organization policy, single-use recovery codes, and failed codes that share the account-lockout budget with failed passwords. What remains in this line is PIV-CAC, which is terminated at the edge and is deployment infrastructure before it is application code, and a KMS-backed key provider. Rotation itself now works: stored values name the key that wrapped them, a decrypt-only predecessor list keeps everything readable while a new key takes over, and an operator command re-encrypts every stored secret onto the current key and reports anything it cannot read. Key derivation moved from a single unsalted hash to PBKDF2-HMAC-SHA256 at 600,000 rounds. What is still absent is a provider backed by a managed key service rather than a configured secret; the abstraction for one already exists. The algorithms themselves, PBKDF2-HMAC-SHA256 at 210,000 rounds and AES-256-GCM, are already FIPS-approved; what validation additionally requires is a validated cryptographic module, which is a deployment choice rather than a code change.</li>
       <li><strong>Marketplace status reporting</strong> &mdash; blocked on a source, not on engineering. FedRAMP publishes no status vocabulary this platform can read, and the five-per-regime lists exist only in an unadopted draft RFC. What each system carries instead is Concord&rsquo;s own pipeline stage, barred by test from any filed deliverable.</li>
       <li><strong>Google Cloud</strong> &mdash; Azure Government now has a capture connector; GCP does not, and a GCP customer&rsquo;s system security plan correctly declares no cloud platform rather than borrowing another provider&rsquo;s. Supporting it means a service catalogue and a responsibility model, not a connector alone.</li>
       <li><strong>FedRAMP-assigned parameter values</strong> &mdash; the Rev 5 baseline overlay. Every organization-defined parameter now carries its label, guidance and choices from the catalog, and an assessor can see which are unset. What does not exist anywhere in the data is FedRAMP&rsquo;s own assigned values: the workbook&rsquo;s FedRAMP columns are membership markers, and one cell says plainly that a provider &ldquo;may use FedRAMP value&rdquo; without carrying one. It needs FedRAMP&rsquo;s published OSCAL baselines ingested as a new source.</li>
@@ -989,9 +998,9 @@
 
   <footer>
     <p>Build level at <span class="mono">main</span> head
-    <span class="mono">17ed8c7</span>. Migration head <span class="mono">0084</span>,
+    <span class="mono">bd2caef</span>. Migration head <span class="mono">0084</span>,
     single Alembic head. ruff, mypy strict and bandit clean across 306 source files.
-    3,609 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
+    3,660 tests passing, 1 skipped, against a real PostgreSQL instance.</p>
     <p>Counts in this report are measured from the repository at that commit, not quoted
     from prior documents. Where a figure in the README disagrees, the README is the stale
     one.</p>
