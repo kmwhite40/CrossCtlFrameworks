@@ -39,8 +39,9 @@
 The FastAPI service serves its own server-rendered marketing **landing page**
 at `/` (Jinja, `landing.html`) as the public front door; the HTMX application
 lives at `/dashboard` and the rest of the `/*` routes. The Concord brand logo
-ships as a static asset under `static/img/` (used for the topbar mark, landing
-hero, and favicon). `web/landing/` is a **separate, optional** Next.js 14
+ships as a static asset under `static/img/` (used for the sidebar brand mark,
+the sign-in page, the landing hero, and the favicon; the top bar it was
+originally drawn for was removed in the sidebar redesign). `web/landing/` is a **separate, optional** Next.js 14
 marketing site retained for standalone hosting — it is independent of the
 FastAPI service.
 
@@ -284,15 +285,23 @@ Built on the reference catalog + operational tables:
   policy, enforced on every path since they have no worker/CLI bypass of this
   kind. See `models_assessment_engine.py` for the same RLS and AI-action
   notes next to the table definitions.
-- **RLS coverage** (migration `0064`, 2026-08-12 RLS-coverage design): 125 of
-  the 140 tables in the `ccf` schema carry a `tenant_isolation` policy —
-  every tenant-owned table has one. The remaining fifteen are global
+- **RLS coverage** (migration `0064`, 2026-08-12 RLS-coverage design): 141 of
+  the 160 tables in the `ccf` schema carry a `tenant_isolation` policy —
+  every tenant-owned table has one. The remaining nineteen are global
   reference data with no tenant dimension and are named explicitly rather
-  than exempted by omission: `controls`, `frameworks`, `control_families`,
-  `framework_mappings`, `worksheets`, `worksheet_rows`, `ingestion_runs`,
-  `catalog_sources`, `catalog_checks`, `catalog_integrity_reports`,
-  `scoring_controls`, `statement_templates`, `ksis`, `ai_action_definitions`,
-  and `alembic_version` — none carries an `organization_id` column.
+  than exempted by omission: `ai_action_definitions`, `alembic_version`,
+  `catalog_checks`, `catalog_integrity_reports`, `catalog_revisions`,
+  `catalog_sources`, `cci_assessment_overlay`, `cci_control_refs`,
+  `cci_items`, `control_families`, `controls`, `framework_mappings`,
+  `frameworks`, `ingestion_runs`, `ksis`, `scoring_controls`,
+  `statement_templates`, `worksheet_rows`, and `worksheets` — none carries an
+  `organization_id` column.
+
+  Both counts are derived from the two tests below rather than maintained
+  here, because the previous edition of this paragraph had drifted to "125 of
+  140" with fifteen names, four short of the real list — and a paragraph whose
+  whole claim is that the exemptions are named explicitly cannot be four
+  short of them.
   `tests/test_rls_registry_no_gap.py` asserts both sides of this split live
   against the schema, so a future tenant-owned table added without a policy
   fails CI immediately rather than shipping unnoticed. **RLS here is defence

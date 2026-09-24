@@ -10,7 +10,10 @@
 
 ## Reference layer (`ccf`)
 
-- **`frameworks(id, code, name, family, description)`** — 26 canonical codes.
+- **`frameworks(id, code, name, family, description)`** — 35 canonical codes
+  defined in `src/ccf/etl/frameworks.py`, plus an `OTHER` catch-all the
+  classifier assigns to a column it cannot place. Counted from that list; the
+  previous figure, 26, predated roughly a third of them.
 - **`control_families(id, code, name, category)`** — NIST AC / AU / ...
 - **`controls(id, identifier unique, family_id fk, …, audit_payload jsonb, search_vector tsvector, source_row, loaded_at)`**.
 - **`framework_mappings(id, control_id fk, framework_id fk, column_key, value)`** — tall table, unique `(control_id, column_key)`.
