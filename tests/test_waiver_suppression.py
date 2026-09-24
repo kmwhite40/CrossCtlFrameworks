@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -19,7 +19,22 @@ from ccf.posture.scan import effective_verdict
 from ccf.posture.types import ResourceFinding
 
 _SEQ = itertools.count()
-TODAY = datetime.now(UTC).date()
+
+
+def today() -> date:
+    """UTC today, read when a test runs -- never captured at import.
+
+    This used to be a module constant. ``waivers.is_active`` compares a
+    waiver's ``expires_on`` against a date the production path computes when it
+    is called, so a constant captured at collection time is a different day
+    from the one the code uses as soon as a suite run crosses midnight UTC.
+
+    That is not hypothetical: it failed exactly that way on 2026-09-24 at
+    00:0x UTC, in a run whose length had just grown past the boundary. A test
+    that cannot pass during one hour of the day is a test that will be
+    rerun-until-green rather than believed.
+    """
+    return datetime.now(UTC).date()
 
 
 def _findings(*ids: str, verdict: str = "fail") -> list[ResourceFinding]:
@@ -182,7 +197,7 @@ async def test_an_expired_waiver_lets_the_alert_fire_again() -> None:
     """No action taken -- only the clock moved."""
     async with session_scope() as session:
         org, sys_, test = await _fixture(session)
-        await _waive(session, org, sys_, expires_on=TODAY - timedelta(days=1))
+        await _waive(session, org, sys_, expires_on=today() - timedelta(days=1))
         await record_result(
             session, test, status="fail", detail="1 failing",
             evaluated=1, failing=1, resources=_findings("res-0"),
@@ -195,7 +210,7 @@ async def test_an_expired_waiver_lets_the_alert_fire_again() -> None:
 async def test_a_waiver_expiring_today_still_suppresses() -> None:
     async with session_scope() as session:
         org, sys_, test = await _fixture(session)
-        await _waive(session, org, sys_, expires_on=TODAY)
+        await _waive(session, org, sys_, expires_on=today())
         await record_result(
             session, test, status="fail", detail="1 failing",
             evaluated=1, failing=1, resources=_findings("res-0"),

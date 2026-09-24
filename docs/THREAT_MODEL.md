@@ -76,6 +76,39 @@ OIDC/IdP federation and DB-enforced RLS remain on the roadmap.
 - Secrets: compose uses cleartext `ccf:ccf`; production must inject
   credentials via Docker secrets / Vault / cloud secret manager.
 
+### Application-level secret storage
+
+Three columns hold secrets the application itself encrypts, rather than
+relying on disk encryption: `ai_provider_configs.encrypted_credential`,
+`connector_configs.encrypted_credential`, and
+`user_mfa_credentials.secret_encrypted`. The third gates **authentication**,
+not only integrations.
+
+Each value gets its own AES-256-GCM data key, wrapped by a key-encryption key
+derived from `CCF_AI_CREDENTIAL_MASTER_KEY` (PBKDF2-HMAC-SHA256, 600,000
+rounds). The associated data separates the two stores, so a ciphertext lifted
+from one does not decrypt in the other.
+
+**Rotating the master key** (as of `0084`; before that, changing it orphaned
+every stored value with a tag failure that named nothing):
+
+1. Set `CCF_AI_CREDENTIAL_PREVIOUS_KEYS` to a JSON array containing the **old**
+   key, and `CCF_AI_CREDENTIAL_MASTER_KEY` to the new one. Both are now live:
+   new writes use the new key, existing rows still read.
+2. Run `ccf keys-rewrap`. It moves every stored value onto the current key and
+   reports anything it could not read, with the key id to restore.
+3. Confirm with `ccf keys-status`, then remove the old key from the
+   environment.
+
+Rewrapping is never lazy. A read path that re-encrypts can fail or roll back
+while an operator believes rotation finished, and it makes "is it done?"
+unanswerable — what remains is whichever rows nobody happened to read.
+
+Values written before `0084` carry no key id and use the original
+`sha256(master_key)` derivation. They are still read, and they move to the
+stronger derivation when rewrapped. A deployment that never rotates keeps
+working unchanged.
+
 ## Known accepted risks (dev preview)
 
 1. The app authenticates to Postgres as the bootstrap superuser and `SET ROLE`s
