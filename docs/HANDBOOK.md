@@ -1,6 +1,11 @@
-# Concord — engineering and operations handbook
+# Concord — handbook
 
-**For:** engineers joining this codebase, and anyone running a deployment.
+Two parts, for two readers.
+
+- **[Part I — Engineering and operations](#part-i--engineering-and-operations)**,
+  for engineers joining this codebase and anyone running a deployment.
+- **[Part II — Working in Concord](#part-ii--working-in-concord)**, for the
+  people doing compliance work in the product.
 
 This is the one document to read first. It covers what Concord is, how to run
 it, how the code is shaped, **the invariants that will bite you**, and how work
@@ -10,6 +15,8 @@ Measured at `main` on 2026-09-24. Where this document quotes a number, it was
 counted, not remembered.
 
 ---
+
+# Part I — Engineering and operations
 
 ## 1. What Concord is
 
@@ -276,3 +283,173 @@ documentation as much as to generated documents.
 **If a figure in one of these disagrees with the repository, the repository
 wins and the document is stale.** Several were, and were corrected rather than
 worked around.
+
+
+---
+
+# Part II — Working in Concord
+
+**For:** compliance staff, system owners, control owners and security leads who
+use Concord to get a system authorized and keep it that way. No engineering
+knowledge assumed.
+
+---
+
+## 9. Who you are in the system
+
+Four roles. Yours decides what you can change, not what you can see.
+
+| Role | Can |
+|---|---|
+| **viewer** | Read everything in your organization. Change nothing. |
+| **control_owner** | Everything a viewer can, plus write the control implementations, evidence and POA&Ms you own. |
+| **assessor** | Record assessment results and findings. The role a 3PAO's people hold. |
+| **admin** | All of the above, plus users, connectors, settings and external portal access. |
+
+You only ever see your own organization's data. That is enforced twice — in the
+application and in the database — so a link to another organization's record
+does not resolve, it 404s.
+
+---
+
+## 10. The five areas, and what each is for
+
+The left rail groups everything by where you are in the authorization
+lifecycle. If you are hunting for a page, work out which of these you are doing.
+
+| Area | You are answering |
+|---|---|
+| **Dashboard** | "Where does my programme stand this morning?" |
+| **Compliance** | "What does compliance mean for us?" — controls, frameworks, coverage, crosswalks, packs |
+| **Authorization** | "Is this system authorized?" — intake, SSP builder, assessments, scoring, FedRAMP 20x |
+| **Operations** | "What is happening today?" — evidence, control tests, POA&Ms, risks, connectors, personnel, vendors, the audit workspace |
+| **Insights** | "What do I tell someone else?" — reports, the executive dashboard, trust center, external portal, audit trail |
+
+Three destinations are pinned above the groups because people need them from
+anywhere: **Executive**, **FedRAMP 20x** and **AI governance**. Users, Settings
+and the API docs sit at the foot of the rail.
+
+---
+
+## 11. Your first system, in six steps
+
+Open a system and Concord shows you a guided path. Each step is a door: it
+takes you to the page where that work actually happens.
+
+1. **Answer the intake questionnaire.** Who owns the system, what it handles,
+   which cloud platform it runs on. Everything downstream is derived from these
+   answers, so this is the one step worth slowing down for.
+2. **Connect your evidence sources.** A connector captures configuration from
+   your cloud or identity provider automatically. If Concord ships no connector
+   for your platform, this step says so rather than sitting red forever — you
+   are not failing a step there is nothing to do.
+3. **Generate and refine the SSP.** Concord drafts a system security plan from
+   your intake answers and the control catalog. It drafts; you confirm.
+4. **Close the gaps.** Controls with no implementation, no evidence, or an
+   implementation nobody has written up.
+5. **Produce the package.** The machine-readable authorization package: system
+   security plan, assessment plan, assessment report, plan of action and
+   milestones, and component definition, as one download.
+6. **Bring in your 3PAO.** Issue the assessor scoped, expiring access to the
+   package and the evidence behind it.
+
+### Reading a step's state
+
+| State | Means |
+|---|---|
+| **done** | Concord can see the work finished. It never guesses this one. |
+| **in progress** | Started, not complete. |
+| **not started** | Nothing on record, and there is something to do. |
+| **unknown** | Concord cannot tell. **Not the same as "not started"** — it is a statement about what Concord knows, not about you. |
+| **not available** | Nothing to do here for this system, e.g. no connector exists for your platform. |
+
+That distinction between *unknown* and *not started* runs through the whole
+product. A blank where Concord has no information never renders as a failure on
+your part.
+
+---
+
+## 12. The day-to-day loops
+
+Once a system is authorized, four things recur.
+
+**Evidence.** Upload or capture it, review it, and it is versioned. Evidence
+expires; the dashboard tells you what is going stale before an assessor finds
+it. Connector-captured evidence refreshes itself — that is the point of
+connecting a source.
+
+**Control tests.** Assertions checked continuously against captured
+configuration. A test reports per-resource findings, not one verdict per
+control, so "mostly passing" is visible rather than rounded to a fail.
+
+**POA&Ms.** A finding that is not fixed today becomes a plan of action with an
+owner and a date. Statuses are `open`, `in_progress`, `completed`,
+`risk_accepted` and `closed`. Scan imports open and close them automatically as
+findings come and go.
+
+**Tasks and alerts.** The governance overview is the work queue: what is
+assigned to you, what is overdue, what changed in a framework you follow.
+
+---
+
+## 13. When something fails and you accept it
+
+This is the part worth reading carefully, because it is the part people get
+wrong.
+
+A **waiver** records that your authorizing official accepted a finding. It goes
+`requested` → `approved`, and can be `revoked`. An approved waiver **suppresses
+the consequence — the alert, the task, the POA&M — and never the evidence.**
+
+The finding stays recorded. The control still reports as failing. The
+assessment still shows it. What stops is the daily noise, because somebody
+senior decided this risk is accepted.
+
+Two things follow that surprise people:
+
+- **A waiver never makes a failure read as a pass.** If it did, your own
+  reporting would be lying to you.
+- **A waiver expires.** An expired one stops suppressing and the alerts return,
+  with nothing having changed except the date. That is deliberate: an accepted
+  risk that nobody revisits is an accepted risk nobody is managing.
+
+Partial waivers work too — accept one failing resource, and the others still
+alert.
+
+---
+
+## 14. Working with an external assessor
+
+Your 3PAO does not get an account in your organization. They get a scoped,
+expiring credential into an external portal that shows only what you shared.
+
+Concord distinguishes three kinds of external party: **customer**, **assessor**
+and **vendor**. An assessor is tied to an *engagement* — this firm, assessing
+this system, for this period — so "who were they and what were they entitled to
+see" is answerable afterwards.
+
+Revoking access, or an engagement ending, cuts it off immediately. Those are
+different reasons and the portal says which.
+
+---
+
+## 15. What Concord will not do for you
+
+Worth knowing up front, because it is deliberate and it is what makes the
+output defensible.
+
+- **It will not invent a fact to fill a field.** Where it cannot support a
+  value, it omits it and names what is missing, rather than approximating.
+  A blank with a reason beside it is the product working.
+- **It marks its own drafts.** Machine-written narrative carries a `[DRAFT]`
+  marker until a person edits it. Your reviewers can tell which sentences
+  nobody has read.
+- **It does not claim evidence it has not seen.** If no connector captured
+  anything for a system, its documents say the evidence is manual — even where
+  Concord ships a connector for that platform, if *your* tenant is not
+  capturing with it.
+- **It will not tell you a control passes because a risk was accepted.**
+  See §13.
+
+If a page shows you less than you expected, look for the sentence explaining
+why. There is almost always one, and it is usually the answer.
