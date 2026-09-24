@@ -14,6 +14,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from ..auth import SYSTEM_PRINCIPAL, Principal, hash_token, read_session
 from ..config import get_settings
 from ..db import get_session_factory, set_session_tenant
+from ..identity import mfa_service
 from ..models import System, User
 
 SESSION_COOKIE = "concord_session"
@@ -230,6 +231,22 @@ def require_role(*roles: str) -> Callable[..., Awaitable[Principal]]:
     return _dep
 
 
+#: Reachable while a required authenticator is still outstanding. Everything
+#: here is either how you enrol or how you leave -- an allowlist that missed
+#: the enrolment page would lock an organization out of itself the moment an
+#: admin set the policy, with no way back in.
+_MFA_ENROLMENT_PATHS = (
+    "/settings/security",   # the page and its enrol/activate/disable posts
+    "/api/auth/mfa",        # the same three steps over the API
+    "/logout",
+    "/api/auth/logout",
+)
+
+
+def is_mfa_enrolment_path(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in _MFA_ENROLMENT_PATHS)
+
+
 async def auth_gate_middleware(
     request: Request, call_next: RequestResponseEndpoint
 ) -> Response:
@@ -243,12 +260,51 @@ async def auth_gate_middleware(
     path = request.url.path
     if not is_public_path(path):
         factory = get_session_factory()
+        # ONE session for both questions. The gate below used to sit outside
+        # this block and query a session whose context manager had already
+        # exited, so every gated request took a fresh connection per query --
+        # connection churn that cost far more than the queries did.
         async with factory() as session:
             await set_session_tenant(session, None)
             principal = await _lookup_principal(request, session)
-        if principal is None:
-            if path.startswith("/api"):
-                return JSONResponse({"detail": "authentication required"}, status_code=401)
-            return RedirectResponse("/login", status_code=303)
-        request.state.principal = principal
+            if principal is None:
+                if path.startswith("/api"):
+                    return JSONResponse(
+                        {"detail": "authentication required"}, status_code=401
+                    )
+                return RedirectResponse("/login", status_code=303)
+            request.state.principal = principal
+
+            # IA-2(1): an organization that requires a second factor gets one.
+            #
+            # Session cookies only. An API token is not interactive -- there is
+            # no human present to challenge -- and the MFA design excluded it
+            # deliberately; gating it here would break every integration the
+            # day a policy changed.
+            #
+            # The user is NOT refused, they are routed to enrolment. Refusing
+            # would let an organization lock every one of its own users out by
+            # changing a dropdown, which is why this was left unbuilt before.
+            if (
+                request.cookies.get(SESSION_COOKIE)
+                and not is_mfa_enrolment_path(path)
+                and await mfa_service.enrolment_outstanding(
+                    session,
+                    principal.user_id,
+                    organization_id=principal.org_id,
+                    role=principal.role,
+                )
+            ):
+                if path.startswith("/api"):
+                    return JSONResponse(
+                        {
+                            "detail": "your organization requires a second "
+                            "factor; enrol at /settings/security before using "
+                            "this API with a session cookie"
+                        },
+                        status_code=403,
+                    )
+                return RedirectResponse(
+                    "/settings/security?enrol=required", status_code=303
+                )
     return await call_next(request)

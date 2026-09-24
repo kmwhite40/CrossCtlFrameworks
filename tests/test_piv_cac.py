@@ -669,14 +669,18 @@ async def test_a_certificate_sign_in_does_not_additionally_challenge_for_a_code(
     It was NOT recorded for this path, which is how it came to be a property
     nobody had decided. This test is that decision.
 
-    What would make it wrong is the platform *claiming* otherwise. Nothing
-    derives a compliance statement from ``Organization.mfa_policy``: it is read
-    in six places, four of which display it and two of which refuse to REMOVE
-    an authenticator, and it gates no session or route at all. If a compliance
-    claim is ever derived from it, that claim has to account for this path.
+    ``Organization.mfa_policy`` now DOES gate sessions
+    (``auth_gate_middleware``), so this matters more than when it was written:
+    a policy of ``all`` routes an unenrolled user to enrolment on every page.
+    It keys off the session cookie, and a certificate sign-in mints one -- so a
+    card holder whose organization requires a second factor is sent to enrol in
+    TOTP as well.
 
-    (The count in this docstring said "exactly one place" and was wrong when
-    written -- found by an independent review, 2026-09-24.)
+    That is the conservative direction and is left alone deliberately: the gate
+    cannot tell which credential minted the cookie, and guessing would be the
+    weaker default. Narrowing it to exempt certificate holders is a real
+    improvement and its own change, needing the session to record how it was
+    established.
     """
     monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "piv-mfa-seam-key-0123456789")
     get_settings.cache_clear()

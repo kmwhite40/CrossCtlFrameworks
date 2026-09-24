@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session
 from ...config import get_settings, is_dev_env
-from ...identity import piv, provisioning
+from ...identity import mfa_service, piv, provisioning
 from ...identity.oidc import (
     authorization_url,
     exchange_code,
@@ -214,6 +214,63 @@ async def piv_login(
     resp = RedirectResponse("/", status_code=303)
     _set_session_cookie(resp, user.id, user.session_version or 0)
     return resp
+
+
+MFA_POLICIES = ("optional", "admins", "all")
+
+
+class MfaPolicyIn(BaseModel):
+    policy: str
+
+
+@router.get("/api/identity/mfa-policy")
+async def get_mfa_policy(
+    principal: Principal = Depends(require_role("admin")),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    org = await session.get(Organization, principal.org_id) if principal.org_id else None
+    return {
+        "policy": getattr(org, "mfa_policy", "optional") if org else "optional",
+        "options": list(MFA_POLICIES),
+    }
+
+
+@router.put("/api/identity/mfa-policy")
+async def set_mfa_policy(
+    body: MfaPolicyIn,
+    principal: Principal = Depends(require_role("admin")),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Set who in this organization must hold a second factor.
+
+    Until this existed the column was settable only by direct SQL, which made
+    it a control nobody could turn on -- and it enforced nothing either, so it
+    read as configured while doing nothing. Both halves are fixed together
+    deliberately: a writer without a gate would be worse, not better.
+    """
+    if body.policy not in MFA_POLICIES:
+        raise HTTPException(422, f"policy must be one of: {', '.join(MFA_POLICIES)}")
+    if principal.org_id is None:
+        raise HTTPException(400, "a global principal has no organization to set a policy on")
+    org = await session.get(Organization, principal.org_id)
+    if org is None:
+        raise HTTPException(404, "organization not found")
+    before = org.mfa_policy
+    org.mfa_policy = body.policy
+    # The gate caches policies for a few seconds so it costs nothing on the
+    # common path; clearing here makes a change immediate in this process.
+    mfa_service.forget_policy(org.id)
+    await record_event(
+        session,
+        actor=principal.email or "admin",
+        action="update",
+        entity_type="identity",
+        entity_id=str(org.id),
+        diff={"event": "mfa_policy", "from": before, "to": body.policy},
+        organization_id=org.id,
+    )
+    await session.commit()
+    return {"policy": org.mfa_policy}
 
 
 class PivLinkIn(BaseModel):
