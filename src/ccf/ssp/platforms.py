@@ -122,10 +122,16 @@ CONNECTOR_PLATFORMS: frozenset[str] = frozenset(PLATFORM_CONNECTOR_KEYS)
 # a human to attach evidence before the control counts as covered.
 #
 # Every platform in PLATFORMS except NO_PLATFORM now has a connector, so in
-# practice this note is reached only by NO_PLATFORM and by an unrecognized
-# platform code. It is kept, and kept accurate, because that is exactly when it
-# is true: the alternative note (NO_TENANT_CAPTURE_NOTE) would tell a customer
-# with no cloud platform to go configure a connector that does not exist.
+# practice this note was once reached only by NO_PLATFORM and by an
+# unrecognized platform code. **That stopped being true when Google Cloud was
+# added (2026-09-24): it is a recognized, real cloud platform with no capture
+# connector**, a class that did not exist before, and it reaches this note too.
+#
+# The note is right for all three, which is why the selection in
+# ``governance/automation.py`` keys off ``connector_key_for_platform`` rather
+# than off recognition: the alternative note (NO_TENANT_CAPTURE_NOTE) tells the
+# reader to go configure a connector, and for a platform Concord ships none for
+# that is an instruction nobody can follow.
 MANUAL_EVIDENCE_NOTE = (
     "[MANUAL-EVIDENCE-REQUIRED — NO CONNECTOR: no automated capture connector "
     "exists for this platform; a human must attach evidence before this control "
@@ -156,6 +162,33 @@ NO_TENANT_CAPTURE_NOTE = (
 # The substring common to both notes — what a reader/report keys off to find a
 # statement that is flagged as needing manual evidence, whatever the reason.
 MANUAL_EVIDENCE_MARKER = "[MANUAL-EVIDENCE-REQUIRED"
+
+def manual_evidence_note_for(platform: str | None) -> str:
+    """Which of the two accurate reasons to state when a platform is unbacked.
+
+    Both notes require manual evidence; only one of them is true of any given
+    platform, and the difference is what the reader is told to do about it:
+
+    * **No connector exists for this platform at all** -- NO_PLATFORM, an
+      unrecognized code, or a recognized platform Concord ships no connector
+      for (Google Cloud, since 2026-09-24). Telling this reader to configure a
+      connector would be an instruction nobody can follow.
+    * **A connector exists and this tenant has not captured with it** -- the
+      reader has something to go and do.
+
+    Keyed off the connector mapping rather than off recognition, because those
+    stopped being the same question the day a recognized platform arrived
+    without a connector. A named function rather than an expression at the call
+    site so a test can exercise the real decision instead of restating it --
+    a test that mirrors the logic it checks agrees with itself and catches
+    nothing.
+    """
+    return (
+        MANUAL_EVIDENCE_NOTE
+        if connector_key_for_platform(platform) is None
+        else NO_TENANT_CAPTURE_NOTE
+    )
+
 
 PLATFORM_CHOICES = tuple(PLATFORMS)
 

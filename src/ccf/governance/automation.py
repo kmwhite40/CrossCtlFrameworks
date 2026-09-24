@@ -36,11 +36,10 @@ from ..scoring.engine import deduction_for, score_system
 from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
 from ..ssp.platforms import (
-    MANUAL_EVIDENCE_NOTE,
     NO_PLATFORM,
-    NO_TENANT_CAPTURE_NOTE,
     connector_key_for_platform,
     environment_for,
+    manual_evidence_note_for,
     services_for,
 )
 from ..ssp.seed import seed_project_entries
@@ -628,13 +627,9 @@ async def generate_statements(
     connector_backed = await platform_capture_is_live(
         session, organization_id=project.organization_id, platform=ssp_plat
     )
-    # Which of the two accurate reasons to state when it is not backed: the
-    # platform has no connector at all, or this tenant has not captured with it.
-    manual_evidence_note = (
-        MANUAL_EVIDENCE_NOTE
-        if connector_key_for_platform(ssp_plat) is None
-        else NO_TENANT_CAPTURE_NOTE
-    )
+    # Which of the two accurate reasons to state when it is not backed. The
+    # rule lives beside the notes themselves; see manual_evidence_note_for.
+    manual_evidence_note = manual_evidence_note_for(ssp_plat)
     derivation = profile.derivation or {}
 
     # Live captured config indexed by NIST id (from the connector collection loop).

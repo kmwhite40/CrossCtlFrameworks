@@ -23,6 +23,7 @@ from ccf.ssp.platforms import (
     PLATFORMS,
     connector_key_for_platform,
     customer_responsibility_statement,
+    manual_evidence_note_for,
     normalize_platform,
     platform_label,
     sample_statement,
@@ -169,3 +170,59 @@ def test_gcp_is_recognised_and_labelled_as_a_product() -> None:
     label = platform_label(GCP)
     assert "Google Cloud" in label
     assert "does not recognize" not in label
+
+
+# ── the output, not just the input ──────────────────────────────────────────
+#
+# The tests above assert that `gcp` maps to no connector. That is the INPUT to
+# the manual-evidence decision, not the decision. A claim was published saying
+# a Google Cloud system's evidence claim correctly reports manual evidence;
+# this is the check that the claim is true.
+
+
+def test_a_gcp_system_is_told_no_connector_exists_not_that_it_failed_to_configure_one() -> None:
+    """Both notes require manual evidence; only one of them is true here.
+
+    NO TENANT CAPTURE tells the reader to configure a connector that has
+    recently captured under their own credential. Concord ships none for Google
+    Cloud, so that would be an instruction nobody can follow -- the caveat
+    correctly added and then given a false reason, which is the exact failure
+    the note's own comment warns about.
+    """
+    from ccf.ssp.platforms import (  # noqa: PLC0415
+        MANUAL_EVIDENCE_MARKER,
+        MANUAL_EVIDENCE_NOTE,
+    )
+
+    note = manual_evidence_note_for(GCP)
+    assert note == MANUAL_EVIDENCE_NOTE
+    assert "NO CONNECTOR" in note
+    assert "NO TENANT CAPTURE" not in note
+    # And it is still findable by whatever keys off the shared marker.
+    assert MANUAL_EVIDENCE_MARKER in note
+
+
+def test_a_platform_that_does_have_a_connector_is_told_the_other_thing() -> None:
+    """The positive control: a check that only ever returns one note is not a
+    check. AWS GovCloud ships a connector, so an unbacked AWS system is a
+    tenant that has not captured -- a different fact with a different fix."""
+    from ccf.ssp.platforms import NO_TENANT_CAPTURE_NOTE  # noqa: PLC0415
+
+    note = manual_evidence_note_for("aws_govcloud")
+    assert note == NO_TENANT_CAPTURE_NOTE
+    assert "NO TENANT CAPTURE" in note
+
+
+@pytest.mark.parametrize("platform", CLOUD_PLATFORMS)
+def test_every_cloud_platform_gets_a_note_that_is_true_of_it(platform: str) -> None:
+    """Derived from CLOUD_PLATFORMS, so a platform added later with no
+    connector fails here rather than telling its customers to configure one
+    that does not exist."""
+    from ccf.ssp.platforms import MANUAL_EVIDENCE_MARKER  # noqa: PLC0415
+
+    note = manual_evidence_note_for(platform)
+    assert MANUAL_EVIDENCE_MARKER in note
+    has_connector = connector_key_for_platform(platform) is not None
+    assert ("NO TENANT CAPTURE" in note) is has_connector, (
+        f"{platform} has_connector={has_connector} but was given: {note[:60]}"
+    )
