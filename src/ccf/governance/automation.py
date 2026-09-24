@@ -62,7 +62,7 @@ QUESTIONNAIRE: list[dict[str, Any]] = [
         "prompt": "Primary cloud platform?",
         "type": "single",
         "field": "cloud_platform",
-        "options": ["m365_gcc_high", "azure_gov", "aws_govcloud", "none"],
+        "options": ["m365_gcc_high", "azure_gov", "aws_govcloud", "gcp", "none"],
     },
     {
         "id": "identity_model",
@@ -129,7 +129,11 @@ PLATFORM_TO_SSP = {
     "m365_gcc_high": "m365",
     "azure_gov": "azure",
     "aws_govcloud": "aws_govcloud",
-    # The questionnaire's fourth answer. Without this entry it fell through to
+    # One code on both sides, unlike the Microsoft and Azure answers: the
+    # questionnaire asks about Assured Workloads and the SSP platform is the
+    # same thing, so there is nothing to translate.
+    "gcp": "gcp",
+    # The questionnaire's last answer. Without this entry it fell through to
     # the default beside every unrecognized string, and a customer who told us
     # they run no cloud received a Microsoft 365 SSP.
     "none": NO_PLATFORM,

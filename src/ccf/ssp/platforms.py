@@ -36,6 +36,7 @@ PLATFORMS: dict[str, str] = {
     "m365": "Microsoft 365 (Entra ID / Purview / Intune)",
     "azure": "Microsoft Azure (Gov)",
     "aws_govcloud": "AWS GovCloud (US)",
+    "gcp": "Google Cloud (Assured Workloads)",
     # Worded so no reader could mistake it for a product. Everything about this
     # entry exists to remove the pressure that made a default look reasonable:
     # ``normalize_platform`` used to have to return *something*, and the only
@@ -65,6 +66,10 @@ GOV_ENVIRONMENTS: dict[str, str] = {
     "m365": "Microsoft 365 (tenant tier not confirmed)",
     "azure": "Microsoft Azure Government",
     "aws_govcloud": "AWS GovCloud (US)",
+    # Assured Workloads is the control package, not a separate cloud, so the
+    # environment names the package rather than implying a distinct region the
+    # way "GovCloud" does.
+    "gcp": "Google Cloud with Assured Workloads",
     # Not a government cloud, and not a blank: the customer said there is no
     # cloud platform. Phrased to read correctly in the sentences that embed it
     # ("... implements Control AC-2 on {environment} by configuring ...").
@@ -254,6 +259,36 @@ _SERVICES: dict[str, dict[str, str]] = {
         "AWS Certificate Manager, and enforced TLS",
         "SI": "Amazon Inspector, Amazon GuardDuty, AWS Systems Manager Patch Manager, and AWS WAF",
     },
+    "gcp": {
+        "AC": "Cloud IAM with Organization Policy constraints, IAM Conditions, and "
+        "Privileged Access Manager",
+        "AT": "the organization's awareness program, with completion evidence retained in "
+        "the Google Cloud organization",
+        "AU": "Cloud Audit Logs, Cloud Logging log sinks, and Google Security Operations",
+        "CA": "Security Command Center compliance monitoring and Assured Workloads controls",
+        "CM": "Organization Policy Service, VM Manager OS Config, and Infrastructure Manager "
+        "with Terraform",
+        "IA": "Cloud Identity multifactor authentication with Titan security keys, Workload "
+        "Identity Federation, and Secret Manager",
+        "IR": "Security Command Center threat detection with Google Security Operations "
+        "playbooks",
+        "MA": "VM Manager OS patch management and Artifact Registry",
+        "MP": "default and customer-managed encryption at rest with Cloud KMS, and Cloud "
+        "Storage retention policies with Bucket Lock",
+        # Deliberately worded like the m365 entry rather than the azure/aws ones:
+        # they name a FedRAMP level, and this module sees only the platform
+        # code. Authorization scope varies by service and by Assured Workloads
+        # configuration, so a level asserted here would be a claim Concord
+        # cannot confirm -- the defect the FIPS certificate placeholder exists
+        # to avoid, one field over.
+        "PE": "physical safeguards inherited from Google Cloud's FedRAMP-authorized "
+        "datacenters, with customer-managed facility controls for endpoints",
+        "PS": "Cloud Identity lifecycle management and IAM Recommender access reviews",
+        "RA": "Security Command Center vulnerability findings and Artifact Analysis",
+        "SC": "VPC Service Controls, Cloud Armor, Cloud NAT and firewall policies, Cloud KMS, "
+        "Certificate Authority Service, and enforced TLS",
+        "SI": "Security Command Center, Artifact Analysis, and VM Manager patch deployment",
+    },
 }
 
 
@@ -281,6 +316,12 @@ _FIPS_KEY_CUSTODY: dict[str, str] = {
         "Cryptographic protection relies on AWS KMS FIPS 140-2 validated endpoints; "
         "key custody is [ORGANIZATION-DEFINED: FIPS 140-2 certificate number and KMS "
         "customer-managed-key custody owner]."
+    ),
+    "gcp": (
+        "Cryptographic protection relies on Cloud KMS with FIPS 140-2 validated "
+        "modules, with Cloud HSM available for hardware-backed keys; key custody "
+        "is [ORGANIZATION-DEFINED: FIPS 140-2 certificate number and Cloud KMS "
+        "customer-managed-encryption-key custody owner]."
     ),
 }
 

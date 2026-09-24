@@ -132,6 +132,18 @@ PLATFORM_DOMAIN_RESPONSIBILITY: dict[str, dict[str, str]] = {
         "CM": "shared",
         "SI": "shared",
     },
+    # Same shape as the other hyperscalers: physical is the provider's, and the
+    # rest of these families are genuinely split. Assured Workloads changes
+    # which personnel and regions may touch the data; it does not move the
+    # responsibility line.
+    "gcp": {
+        "PE": "inherited",
+        "MA": "shared",
+        "SC": "shared",
+        "AU": "shared",
+        "CM": "shared",
+        "SI": "shared",
+    },
 }
 
 # Responsibility bucket -> control origination, reusing CONTROL_ORIGINATION_OPTIONS.

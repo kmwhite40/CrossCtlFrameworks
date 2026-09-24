@@ -53,6 +53,13 @@ from ccf.ssp.platforms import (
 from ccf.ssp.seed import seed_project_entries
 from ccf.ssp.statements import is_draft_narrative
 
+#: A platform code Concord genuinely does not support, used wherever these
+#: tests need an *unrecognized* value. It was ``"gcp"`` until Google Cloud
+#: became a real platform, at which point every assertion using it would have
+#: been testing the opposite of what it says.
+UNSUPPORTED_PLATFORM = "oracle_cloud"
+
+
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 _SEQ = itertools.count()
@@ -118,13 +125,13 @@ def test_absence_note_path_carries_the_marker(part: dict[str, str]) -> None:
 def test_absence_note_path_for_an_unrecognized_platform_carries_the_marker() -> None:
     """The same path, reached the other way: ``normalize_platform`` returns
     ``None`` for a code Concord does not know."""
-    text = sample_statement("gcp", _rec(), _PART)
+    text = sample_statement(UNSUPPORTED_PLATFORM, _rec(), _PART)
     assert text.startswith(DRAFT_PREFIX), text
     assert text.count(DRAFT_PREFIX) == 1, text
-    assert UNRECOGNIZED_PLATFORM_NOTE.format(declared="gcp") in text
+    assert UNRECOGNIZED_PLATFORM_NOTE.format(declared=UNSUPPORTED_PLATFORM) in text
 
 
-@pytest.mark.parametrize("platform", [*PLATFORM_CHOICES, "gcp"])
+@pytest.mark.parametrize("platform", [*PLATFORM_CHOICES, UNSUPPORTED_PLATFORM])
 def test_customer_responsibility_statement_is_unchanged(platform: str) -> None:
     """Already marked before this fix, on all three of its paths; still marked,
     still exactly once, still at position 0. The byte-for-byte pin for the
