@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     # drop-ins. With no master key configured, credential storage is disabled
     # (fail-closed) rather than storing keys unwrapped.
     ai_credential_key_provider: str = Field(default="local")  # local|aws_kms|azure_kv|gcp_sm|vault
+    # aws_kms provider: the KMS key that wraps data keys. Its material never
+    # enters this process, and rotating the KMS key itself is KMS's job.
+    ai_credential_kms_key_id: str | None = Field(default=None)
+    ai_credential_kms_region: str | None = Field(default=None)
     ai_credential_master_key: str | None = Field(default=None)
     # Decrypt-only predecessors, for rotation. Set this to the OLD key when
     # introducing a new master key, run `ccf keys rewrap`, then remove it.
@@ -191,6 +195,26 @@ class Settings(BaseSettings):
     oidc_client_secret: str | None = Field(default=None)
     oidc_redirect_uri: str | None = Field(default=None)
     oidc_allowed_domains: list[str] = Field(default_factory=list)
+    # Refuse an email claim the provider has not verified. An explicit
+    # `email_verified: false` is refused whatever this is set to; this makes an
+    # ABSENT claim refused too, for deployments that know their provider sends
+    # it. Default false, because treating absence as "unverified" would break
+    # every deployment whose provider omits the optional claim.
+    oidc_require_email_verified: bool = Field(default=False)
+    # The organization a newly provisioned single-sign-on user is created in.
+    # Required when the deployment has more than one; an existing user's
+    # organization comes from their own row and is unaffected.
+    oidc_organization_id: int | None = Field(default=None)
+
+    # --- PIV / CAC (mutual TLS terminated upstream) ---
+    # Off by default. When on, `piv_trusted_proxies` MUST list the terminator's
+    # address(es): these are HTTP headers, and trusting them from any peer is a
+    # complete authentication bypass. An empty list refuses to enable rather
+    # than trusting everything -- the permissive reading of "unset" is the bug.
+    piv_enabled: bool = Field(default=False)
+    piv_trusted_proxies: list[str] = Field(default_factory=list)
+    piv_cert_header: str = Field(default="x-ssl-client-cert")
+    piv_verify_header: str = Field(default="x-ssl-client-verify")
     auth_jit_provisioning: bool = Field(default=True)
     scim_enabled: bool = Field(default=False)
     scim_bearer_token: str | None = Field(default=None)

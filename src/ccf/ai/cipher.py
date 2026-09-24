@@ -33,7 +33,7 @@ import hmac
 import os
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -241,6 +241,86 @@ AAD_CREDENTIAL = b"ccf-cred"
 AAD_MFA = b"ccf-mfa"
 
 
+class KmsKeyProvider(KeyProvider):
+    """KEK held by AWS KMS. The key material never enters this process.
+
+    This is what the ``KeyProvider`` abstraction was written for, and the
+    reason the local provider's rotation work came first: the envelope format
+    already records a key id, so moving a deployment from the local provider to
+    this one is the same ``ccf keys-rewrap`` sweep as any other rotation.
+
+    **Rotation of the KMS key itself is KMS's job**, not this class's. A KMS key
+    with automatic rotation enabled re-wraps under new material while
+    ``Decrypt`` keeps reading old ciphertext, and nothing here has to know. The
+    key id below identifies *which KMS key was configured*, so a deployment
+    moving between two distinct KMS keys still gets a rewrap it can verify.
+
+    ``EncryptionContext`` is KMS's associated data. It binds a wrapped data key
+    to this application, so a ciphertext lifted from another system that shares
+    the KMS key does not unwrap here.
+    """
+
+    #: Mirrors the local provider's AAD on the wrap operation.
+    ENCRYPTION_CONTEXT: ClassVar[dict[str, str]] = {"application": "concord", "purpose": "dek"}
+
+    def __init__(self, kms_key_id: str, *, region: str | None = None, client: Any = None) -> None:
+        if not kms_key_id:
+            raise CredentialStorageError(
+                "ai_credential_kms_key_id must be set to use the aws_kms key provider"
+            )
+        self._kms_key_id = kms_key_id
+        self._region = region
+        self._client = client
+
+    @property
+    def current_key_id(self) -> str:
+        """Derived from the configured KMS key identifier, same shape as local.
+
+        A one-way function of the ARN rather than the ARN itself: the envelope
+        header is stored beside the ciphertext and an account id is not a thing
+        to write into every row.
+        """
+        return hmac.new(
+            self._kms_key_id.encode("utf-8"), _KEY_ID_LABEL, hashlib.sha256
+        ).hexdigest()[: _KEY_ID_LEN * 2]
+
+    def _kms(self) -> Any:
+        if self._client is not None:
+            return self._client
+        try:
+            import boto3  # noqa: PLC0415
+        except ImportError as e:  # pragma: no cover - depends on the install extra
+            raise CredentialStorageError(
+                "the aws_kms key provider needs boto3; install the aws extra"
+            ) from e
+        self._client = boto3.client("kms", region_name=self._region)
+        return self._client
+
+    def generate_data_key(self) -> tuple[bytes, bytes]:
+        resp = self._kms().generate_data_key(
+            KeyId=self._kms_key_id,
+            KeySpec="AES_256",
+            EncryptionContext=self.ENCRYPTION_CONTEXT,
+        )
+        return resp["Plaintext"], resp["CiphertextBlob"]
+
+    def unwrap_data_key(self, wrapped_dek: bytes, *, kid: str | None = None) -> bytes:
+        """``kid`` is informational here: KMS resolves the key from the blob.
+
+        A blob wrapped by a KMS key this caller is not permitted to use fails at
+        KMS with an access error rather than silently returning the wrong thing,
+        which is the same fail-closed direction as the local provider.
+        """
+        try:
+            resp = self._kms().decrypt(
+                CiphertextBlob=wrapped_dek,
+                EncryptionContext=self.ENCRYPTION_CONTEXT,
+            )
+        except Exception as e:
+            raise UnknownKeyError(kid) from e
+        return bytes(resp["Plaintext"])
+
+
 class CredentialCipher:
     """Envelope-encrypts/decrypts strings via a :class:`KeyProvider`.
 
@@ -361,7 +441,15 @@ def build_cipher(settings: Settings, *, aad: bytes = AAD_CREDENTIAL) -> Credenti
             )
         previous = getattr(settings, "ai_credential_previous_keys", None) or []
         return CredentialCipher(LocalKeyProvider(master, previous_keys=previous), aad=aad)
-    # aws_kms / azure_kv / gcp_sm / vault providers plug in here.
+    if provider == "aws_kms":
+        return CredentialCipher(
+            KmsKeyProvider(
+                getattr(settings, "ai_credential_kms_key_id", None) or "",
+                region=getattr(settings, "ai_credential_kms_region", None),
+            ),
+            aad=aad,
+        )
+    # azure_kv / gcp_sm / vault plug in here, the same way.
     raise CredentialStorageError(
         f"AI credential key provider '{provider}' is not implemented yet"
     )

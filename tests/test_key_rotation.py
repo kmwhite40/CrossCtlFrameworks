@@ -330,3 +330,136 @@ def test_a_local_provider_deduplicates_the_current_key_from_its_predecessors() -
     provider = LocalKeyProvider(KEY_A, previous_keys=[KEY_A, KEY_B, KEY_B])
     c = CredentialCipher(provider)
     assert c.decrypt(c.encrypt("fine")) == "fine"
+
+
+# ── the KMS provider ────────────────────────────────────────────────────────
+
+
+class _FakeKms:
+    """Enough of the KMS API to exercise the provider, with the AWS semantics
+    that matter: the encryption context must match on decrypt, and a blob this
+    key did not wrap is an error rather than wrong plaintext."""
+
+    def __init__(self, key_arn: str = "arn:aws:kms:us-gov-west-1:1:key/abc") -> None:
+        self.key_arn = key_arn
+        self._wrapped: dict[bytes, tuple[bytes, dict[str, str]]] = {}
+        self.generate_calls = 0
+        self.decrypt_calls = 0
+
+    def generate_data_key(self, *, KeyId: str, KeySpec: str, EncryptionContext: dict) -> dict:  # noqa: N803
+        assert KeySpec == "AES_256"
+        assert KeyId == self.key_arn
+        self.generate_calls += 1
+        plaintext = os.urandom(32)
+        blob = b"blob-" + os.urandom(8)
+        self._wrapped[blob] = (plaintext, dict(EncryptionContext))
+        return {"Plaintext": plaintext, "CiphertextBlob": blob}
+
+    def decrypt(self, *, CiphertextBlob: bytes, EncryptionContext: dict) -> dict:  # noqa: N803
+        self.decrypt_calls += 1
+        entry = self._wrapped.get(bytes(CiphertextBlob))
+        if entry is None:
+            raise RuntimeError("InvalidCiphertextException")
+        plaintext, context = entry
+        if context != EncryptionContext:
+            raise RuntimeError("InvalidCiphertextException: encryption context mismatch")
+        return {"Plaintext": plaintext}
+
+
+def _kms_cipher(kms: _FakeKms, *, aad: bytes = AAD_CREDENTIAL) -> CredentialCipher:
+    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+
+    return CredentialCipher(KmsKeyProvider(kms.key_arn, client=kms), aad=aad)
+
+
+def test_the_kms_provider_round_trips_without_holding_key_material() -> None:
+    kms = _FakeKms()
+    c = _kms_cipher(kms)
+    token = c.decrypt(c.encrypt("kms-secret"))
+    assert token == "kms-secret"
+    assert kms.generate_calls == 1
+    assert kms.decrypt_calls == 1
+
+
+def test_the_kms_provider_binds_an_encryption_context() -> None:
+    """KMS's associated data. Without it, a wrapped key lifted from another
+    system sharing the KMS key would unwrap here."""
+    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+
+    kms = _FakeKms()
+    provider = KmsKeyProvider(kms.key_arn, client=kms)
+    _plain, blob = provider.generate_data_key()
+
+    # The same blob under a different context is refused by KMS itself, which
+    # raises its own error -- the provider is not involved at this level.
+    with pytest.raises(RuntimeError, match="encryption context"):
+        kms.decrypt(CiphertextBlob=blob, EncryptionContext={"application": "something-else"})
+
+    # And the provider maps that AWS-side refusal onto Concord's own error, so
+    # a caller sees the same failure whichever provider is configured.
+    provider.ENCRYPTION_CONTEXT = {"application": "tampered"}  # type: ignore[misc]
+    with pytest.raises(UnknownKeyError):
+        provider.unwrap_data_key(blob)
+
+    # The context the provider actually sends is the one that works.
+    assert KmsKeyProvider(kms.key_arn, client=kms).unwrap_data_key(blob) == _plain
+
+
+def test_a_blob_the_kms_key_did_not_wrap_is_refused_not_guessed() -> None:
+    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+
+    provider = KmsKeyProvider("arn:aws:kms:us-gov-west-1:1:key/abc", client=_FakeKms())
+    with pytest.raises(UnknownKeyError):
+        provider.unwrap_data_key(b"not-a-blob-this-key-made")
+
+
+def test_the_kms_key_id_identifies_the_configured_key_without_printing_it() -> None:
+    """The envelope header sits beside every row; an account id is not a thing
+    to write into all of them."""
+    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+
+    arn = "arn:aws:kms:us-gov-west-1:123456789012:key/abc"
+    provider = KmsKeyProvider(arn, client=_FakeKms(arn))
+    kid = provider.current_key_id
+    assert len(kid) == 16
+    assert "123456789012" not in kid
+    assert KmsKeyProvider(arn, client=_FakeKms(arn)).current_key_id == kid
+    other = "arn:aws:kms:us-gov-west-1:123456789012:key/def"
+    assert KmsKeyProvider(other, client=_FakeKms(other)).current_key_id != kid
+
+
+def test_moving_from_the_local_provider_to_kms_is_an_ordinary_rewrap(keys) -> None:
+    """The point of doing the local provider's rotation first: the envelope
+    already records a key id, so switching providers is the same sweep."""
+    keys(KEY_A)
+    local_token = build_cipher(get_settings()).encrypt("migrate-me")
+    assert token_key_id(local_token) == key_id(KEY_A)
+
+    kms = _FakeKms()
+    kms_cipher = _kms_cipher(kms)
+    # Decrypt with the local cipher, encrypt with KMS -- exactly what the sweep
+    # does, minus the database.
+    moved = kms_cipher.encrypt(build_cipher(get_settings()).decrypt(local_token))
+    assert kms_cipher.decrypt(moved) == "migrate-me"
+    assert token_key_id(moved) != token_key_id(local_token)
+
+
+def test_the_kms_provider_refuses_to_start_without_a_key_id() -> None:
+    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+
+    with pytest.raises(CredentialStorageError):
+        KmsKeyProvider("")
+
+
+def test_build_cipher_wires_the_aws_kms_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Previously this raised 'not implemented yet'."""
+    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+
+    monkeypatch.setenv("CCF_AI_CREDENTIAL_KEY_PROVIDER", "aws_kms")
+    monkeypatch.setenv("CCF_AI_CREDENTIAL_KMS_KEY_ID", "arn:aws:kms:us-gov-west-1:1:key/abc")
+    get_settings.cache_clear()
+    try:
+        c = build_cipher(get_settings())
+        assert isinstance(c._kp, KmsKeyProvider)
+    finally:
+        get_settings.cache_clear()

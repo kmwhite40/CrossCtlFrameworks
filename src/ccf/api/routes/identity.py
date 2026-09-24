@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hmac
 from typing import Any
+from urllib.parse import unquote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
@@ -19,8 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session
 from ...config import get_settings, is_dev_env
-from ...identity import provisioning
-from ...identity.oidc import authorization_url, exchange_code, new_state
+from ...identity import piv, provisioning
+from ...identity.oidc import (
+    authorization_url,
+    exchange_code,
+    new_code_verifier,
+    new_state,
+)
 from ...models import Organization, User
 from ...models_identity import GroupRoleMapping, IdentityProvider
 from ..auth_deps import SESSION_COOKIE, get_principal, require_role
@@ -30,6 +36,11 @@ from ..login_service import revoke_sessions_for_request
 router = APIRouter(tags=["identity"])
 
 _STATE_COOKIE = "concord_oidc_state"
+
+#: The PKCE verifier, kept beside the state with the same flags and lifetime.
+#: It is checked by the provider, not by us -- our part is only to keep it
+#: secret between the authorization request and the exchange.
+_VERIFIER_COOKIE = "concord_oidc_verifier"
 
 
 def _set_session_cookie(response: Response, user_id: int, session_version: int = 0) -> None:
@@ -43,6 +54,52 @@ def _set_session_cookie(response: Response, user_id: int, session_version: int =
     response.set_cookie(
         SESSION_COOKIE, token, max_age=s.auth_session_ttl_hours * 3600,
         httponly=True, samesite="lax", secure=not is_dev_env(s),
+    )
+
+
+async def _sso_provisioning_org(session: AsyncSession, configured: int | None) -> int:
+    """The organization a NEW single-sign-on user would be created in.
+
+    ``_default_org_id`` returned ``ORDER BY id LIMIT 1`` -- whichever
+    organization happened to exist first. On a multi-tenant deployment that
+    silently put a new user into somebody else's tenant, with that tenant's
+    data.
+
+    This was recorded rather than fixed when SCIM was narrowed, because
+    narrowing authentication can lock people out. That reasoning holds for
+    **signing in** and not for **creating an account**:
+
+    * An existing user signs in unchanged. Their organization is on their own
+      row, and nothing here touches it -- ``provision_from_oidc`` uses this
+      value only when it creates.
+    * Creating a user requires knowing the tenant, and on a multi-tenant
+      deployment nothing in the request says which.
+
+    So this refuses only the case where a tenant would have to be invented.
+    Nobody who could previously get in is locked out.
+    """
+    if configured is not None:
+        org = await session.get(Organization, configured)
+        if org is None:
+            raise HTTPException(
+                500, f"CCF_OIDC_ORGANIZATION_ID={configured} does not match any organization"
+            )
+        return org.id
+    orgs = (
+        await session.execute(select(Organization).order_by(Organization.id).limit(2))
+    ).scalars().all()
+    if len(orgs) == 1:
+        return orgs[0].id
+    if not orgs:
+        org = Organization(name="Default Organization")
+        session.add(org)
+        await session.flush()
+        return org.id
+    raise HTTPException(
+        500,
+        "this deployment has more than one organization and CCF_OIDC_ORGANIZATION_ID "
+        "is not set, so there is nothing to say which tenant a newly provisioned "
+        "single-sign-on user belongs to",
     )
 
 
@@ -82,14 +139,78 @@ async def sso_login() -> RedirectResponse:
         return RedirectResponse("/login", status_code=303)
     try:
         state = new_state()
-        url = await authorization_url(state)
+        verifier = new_code_verifier()
+        url = await authorization_url(state, code_verifier=verifier)
     except Exception as e:
         raise HTTPException(503, "OIDC login is unavailable") from e
     resp = RedirectResponse(url, status_code=303)
-    resp.set_cookie(
-        _STATE_COOKIE, state, httponly=True, samesite="lax", max_age=600,
-        secure=not is_dev_env(s),
-    )
+    for name, value in ((_STATE_COOKIE, state), (_VERIFIER_COOKIE, verifier)):
+        resp.set_cookie(
+            name, value, httponly=True, samesite="lax", max_age=600,
+            secure=not is_dev_env(s),
+        )
+    return resp
+
+
+@router.get("/auth/piv")
+async def piv_login(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Sign in with a PIV or CAC credential the TLS terminator already validated.
+
+    Concord does not terminate TLS and does not validate the chain; see the
+    design spec. It reads what the terminator reported, **and only from a peer
+    an operator has listed**. The peer is the immediate connection address, not
+    ``X-Forwarded-For``, because that is a header and forgeable by exactly the
+    argument that makes this check necessary.
+    """
+    s = get_settings()
+    if not s.piv_enabled:
+        return RedirectResponse("/login", status_code=303)
+    if not s.piv_trusted_proxies:
+        # An empty list is the closed case, not the open one. "No restriction
+        # configured, so allow" is how this becomes an authentication bypass.
+        raise HTTPException(
+            500,
+            "PIV is enabled but CCF_PIV_TRUSTED_PROXIES is empty; Concord will not "
+            "read client-certificate headers from an unrestricted set of peers",
+        )
+
+    peer = request.client.host if request.client else None
+    if not piv.peer_is_trusted(peer, s.piv_trusted_proxies):
+        # Not a 403 naming the reason: to a caller who is not behind the
+        # terminator, whether PIV exists at all is not information to give.
+        raise HTTPException(404, "not found")
+
+    if (request.headers.get(s.piv_verify_header) or "").strip().upper() != piv.VERIFY_SUCCESS:
+        raise HTTPException(401, "the client certificate was not verified upstream")
+
+    pem = request.headers.get(s.piv_cert_header) or ""
+    if not pem:
+        raise HTTPException(401, "no client certificate was presented")
+    # nginx passes the PEM URL-encoded or with tabs for newlines depending on
+    # the directive used; normalise the common shapes rather than requiring one.
+    pem = unquote(pem).replace("\t", "\n")
+
+    try:
+        identity = piv.identity_from_pem(pem)
+    except piv.PivError as e:
+        raise HTTPException(401, str(e)) from e
+
+    try:
+        user = await provisioning.user_for_certificate(session, identity)
+    except piv.PivNotLinkedError as e:
+        # Deliberately distinguishable from "invalid": an administrator has to
+        # tell "we do not accept this card" from "this card is fine and nobody
+        # has an account for it", and those have different fixes.
+        raise HTTPException(403, str(e)) from e
+    except provisioning.ProvisioningError as e:
+        raise HTTPException(403, str(e)) from e
+
+    await session.commit()
+    resp = RedirectResponse("/", status_code=303)
+    _set_session_cookie(resp, user.id, user.session_version or 0)
     return resp
 
 
@@ -103,13 +224,14 @@ async def sso_callback(
     s = get_settings()
     if not s.oidc_enabled:
         return RedirectResponse("/login", status_code=303)
-    if not code or state != request.cookies.get(_STATE_COOKIE):
+    verifier = request.cookies.get(_VERIFIER_COOKIE) or ""
+    if not code or not verifier or state != request.cookies.get(_STATE_COOKIE):
         raise HTTPException(400, "invalid OIDC state or missing code")
     try:
-        claims = await exchange_code(code)
+        claims = await exchange_code(code, code_verifier=verifier)
     except Exception as e:
         raise HTTPException(502, "OIDC token exchange failed") from e
-    org_id = await _default_org_id(session)
+    org_id = await _sso_provisioning_org(session, s.oidc_organization_id)
     try:
         user, _created = await provisioning.provision_from_oidc(
             session,
@@ -117,6 +239,7 @@ async def sso_callback(
             org_id=org_id,
             allowed_domains=s.oidc_allowed_domains,
             jit=s.auth_jit_provisioning,
+            require_email_verified=s.oidc_require_email_verified,
         )
     except provisioning.ProvisioningError as e:
         await session.rollback()
@@ -124,6 +247,7 @@ async def sso_callback(
     await session.commit()
     resp = RedirectResponse("/", status_code=303)
     resp.delete_cookie(_STATE_COOKIE)
+    resp.delete_cookie(_VERIFIER_COOKIE)
     _set_session_cookie(resp, user.id, user.session_version or 0)
     return resp
 
