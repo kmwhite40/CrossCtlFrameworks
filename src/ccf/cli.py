@@ -299,11 +299,22 @@ def keys_status() -> None:
     """Show the current key id and how many stored values still need rewrapping."""
 
     async def _run() -> None:
-        from .ai.cipher import build_cipher, token_key_id  # noqa: PLC0415
+        from .ai.cipher import (  # noqa: PLC0415
+            CredentialStorageError,
+            build_cipher,
+            token_key_id,
+        )
         from .ai.rotation import ENCRYPTED_COLUMNS  # noqa: PLC0415
 
         settings = get_settings()
-        current = build_cipher(settings)
+        try:
+            current = build_cipher(settings)
+        except CredentialStorageError as e:
+            # A status command reporting a stack trace is a status command
+            # nobody reads. This is an ordinary state on a deployment that
+            # stores no secrets, so it is an answer, not a crash.
+            console.print(f"[yellow]no key configured[/yellow] — {e}")
+            raise typer.Exit(code=1) from None
         console.print(f"current key id: [bold]{current.current_key_id}[/bold]")
         async with session_scope() as session:
             for spec in ENCRYPTED_COLUMNS:
@@ -331,10 +342,15 @@ def keys_rewrap() -> None:
     """
 
     async def _run() -> None:
+        from .ai.cipher import CredentialStorageError  # noqa: PLC0415
         from .ai.rotation import rewrap_all  # noqa: PLC0415
 
-        async with session_scope() as session:
-            report = await rewrap_all(session)
+        try:
+            async with session_scope() as session:
+                report = await rewrap_all(session)
+        except CredentialStorageError as e:
+            console.print(f"[red]cannot rewrap[/red] — {e}")
+            raise typer.Exit(code=1) from None
         console.print(
             f"[green]rewrapped[/green] {report.rewrapped}, "
             f"already current {report.already_current}"
