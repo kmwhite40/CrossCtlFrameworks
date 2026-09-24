@@ -8,14 +8,15 @@ workbook into Postgres, normalizes the 5,400 SP 800-53A Rev. 5 assessment object
 and their 550+ cross-framework mappings, and exposes the data through a FastAPI
 service with an HTMX + Alpine web UI, a Typer CLI, and a REST API.
 
-The interface is a calm, editorial, **top-navigation** shell (no permanent
-sidebar): a global nav with per-area mega menus organized into five
-authorization-lifecycle buckets — **Dashboard · Compliance · Authorization ·
-Operations · Insights** — a contextual section nav, and an editorial hero on
-every page. It is **light-first** with a neutral graphite
-dark mode, built on a small design-token system in
-[`app.css`](src/ccf/api/static/css/app.css) — system typography, a single blue
-accent, soft shadows, no chrome-heavy glassmorphism.
+The interface is a **left sidebar** shell, grouped into authorization-lifecycle
+sections, with a contextual section nav and a page hero. It is **dark by
+default** and **monochrome**: colour is reserved for status, so a reader never
+has to learn which colours mean something. Built on a design-token system in
+[`app.css`](src/ccf/api/static/css/app.css) with system typography and no
+build step — see [`docs/DESIGN.md`](docs/DESIGN.md).
+
+**New here? Start with the [engineering and operations handbook](docs/HANDBOOK.md)** —
+how to run it, how the code is shaped, and the invariants that will bite you.
 
 
 ---
@@ -34,10 +35,12 @@ accent, soft shadows, no chrome-heavy glassmorphism.
 - **Provides a compliance-ops layer** — organizations, systems (FIPS-199 +
   FedRAMP baseline + ATO status), per-system control implementations,
   evidence, assessments, POA&Ms, risks, and an `audit_log`.
-- **Enforces access & tenancy** — session-cookie + bearer-token auth,
-  separation-of-duties RBAC on writes, PostgreSQL **row-level security** on every
-  tenant-owned table, and a SHA-256 **audit hash-chain** over all mutations.
-- **Serves a UI** at `/` — a top-navigation shell (global nav → section nav →
+- **Enforces access & tenancy** — session-cookie and bearer-token auth, OIDC
+  single sign-on with SCIM provisioning, **TOTP two-factor** on password
+  sign-in, **PIV/CAC** sign-in behind a TLS terminator, separation-of-duties
+  RBAC on writes, PostgreSQL **row-level security** on every tenant-owned
+  table, and a SHA-256 **audit hash-chain** over all mutations.
+- **Serves a UI** at `/` — a left-sidebar shell (rail → section nav →
   page hero) with dashboards, a faceted control browser, per-control detail with
   grouped cross-framework mappings, a framework catalog, a cross-framework
   mapping search, a generic worksheet viewer, and Postgres full-text search.
