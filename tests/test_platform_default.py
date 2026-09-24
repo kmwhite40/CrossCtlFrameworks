@@ -69,6 +69,13 @@ from ccf.ssp.platforms import (
 )
 from ccf.ssp.seed import _drafting_platform as drafting_platform
 
+#: A platform code Concord genuinely does not support, used wherever these
+#: tests need an *unrecognized* value. It was ``"gcp"`` until Google Cloud
+#: became a real platform, at which point every assertion using it would have
+#: been testing the opposite of what it says.
+UNSUPPORTED_PLATFORM = "oracle_cloud"
+
+
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 
@@ -266,33 +273,33 @@ async def test_unrecognized_platform_stays_distinct_from_none_in_state() -> None
     can stand in for the other.
     """
     assert normalize_platform("none") == NO_PLATFORM
-    assert normalize_platform("gcp") is None
+    assert normalize_platform(UNSUPPORTED_PLATFORM) is None
     assert normalize_platform("") is None
     assert normalize_platform(None) is None
     # ... and NO_PLATFORM is a real, storable platform while an unrecognized
     # code is not.
     assert NO_PLATFORM in PLATFORMS
-    assert "gcp" not in PLATFORMS
+    assert UNSUPPORTED_PLATFORM not in PLATFORMS
 
 
 def test_unrecognized_platform_stays_distinct_from_none_in_what_the_customer_is_told() -> None:
     none_label = platform_label(NO_PLATFORM)
-    unknown_label = platform_label("gcp")
+    unknown_label = platform_label(UNSUPPORTED_PLATFORM)
     assert none_label != unknown_label
     assert none_label == "No cloud platform declared"
-    assert "gcp" in unknown_label
+    assert UNSUPPORTED_PLATFORM in unknown_label
 
     none_env = environment_for(NO_PLATFORM)
-    unknown_env = environment_for("gcp")
+    unknown_env = environment_for(UNSUPPORTED_PLATFORM)
     assert none_env != unknown_env
-    assert "gcp" in unknown_env
+    assert UNSUPPORTED_PLATFORM in unknown_env
     assert "does not recognize" in unknown_env
 
     none_note = catalog_absence_note(NO_PLATFORM)
-    unknown_note = catalog_absence_note("gcp")
+    unknown_note = catalog_absence_note(UNSUPPORTED_PLATFORM)
     absent_note = catalog_absence_note(None)
     assert len({none_note, unknown_note, absent_note}) == 3
-    assert "does not recognize" in unknown_note and "gcp" in unknown_note
+    assert "does not recognize" in unknown_note and UNSUPPORTED_PLATFORM in unknown_note
     # The unrecognized wording matches what guided onboarding step 2 already
     # tells the same customer, so the two surfaces do not disagree.
     assert "does not recognize the declared platform" in unknown_note
@@ -379,7 +386,7 @@ async def test_no_other_platforms_service_names_are_drafted_for_none() -> None:
 
 
 def test_read_helpers_never_substitute_a_product_for_an_unknown_platform() -> None:
-    for unknown in ("gcp", "oracle_cloud", "M365", "", None):
+    for unknown in (UNSUPPORTED_PLATFORM, "oracle_cloud", "M365", "", None):
         label = platform_label(unknown)
         env = environment_for(unknown)
         services = services_for(unknown, "AC")
@@ -401,14 +408,14 @@ def test_connector_key_is_none_for_both_none_and_unrecognized() -> None:
     statement about the customer's platform.
     """
     assert connector_key_for_platform(NO_PLATFORM) is None
-    assert connector_key_for_platform("gcp") is None
+    assert connector_key_for_platform(UNSUPPORTED_PLATFORM) is None
     assert connector_key_for_platform("m365") == "msgraph"
 
 
 def test_seed_drafts_for_an_unrecognized_platform_without_resolving_it() -> None:
     """``ssp/seed.py`` is a read path: it renders, it does not refuse -- and it
     does not quietly turn an unrecognized value into NO_PLATFORM."""
-    assert drafting_platform("gcp") == "gcp"
+    assert drafting_platform(UNSUPPORTED_PLATFORM) == UNSUPPORTED_PLATFORM
     assert drafting_platform(None) == NO_PLATFORM
     assert drafting_platform("") == NO_PLATFORM
     assert drafting_platform("azure_gov") == "azure_gov"  # not an SSP code: carried through
@@ -506,7 +513,7 @@ async def test_api_create_project_refuses_an_unrecognized_platform(
         async with _client() as c:
             r = await c.post(
                 "/api/ssp/projects",
-                json={"customer_name": "Coercion Co", "platform": "gcp"},
+                json={"customer_name": "Coercion Co", "platform": UNSUPPORTED_PLATFORM},
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert r.status_code == 422, r.text
@@ -556,11 +563,13 @@ async def test_api_update_and_reseed_refuse_an_unrecognized_platform(
         headers = {"Authorization": f"Bearer {token}"}
         async with _client() as c:
             patched = await c.patch(
-                f"/api/ssp/projects/{proj_id}", json={"platform": "gcp"}, headers=headers
+                f"/api/ssp/projects/{proj_id}",
+                json={"platform": UNSUPPORTED_PLATFORM},
+                headers=headers,
             )
             reseeded = await c.post(
                 f"/api/ssp/projects/{proj_id}/reseed",
-                params={"platform": "gcp"},
+                params={"platform": UNSUPPORTED_PLATFORM},
                 headers=headers,
             )
         assert patched.status_code == 422, patched.text
@@ -590,9 +599,11 @@ async def test_ui_forms_refuse_an_unrecognized_platform() -> None:
         async with _client() as c:
             created = await c.post(
                 "/ssp/new",
-                data={"customer_name": "UI Coercion Co", "platform": "gcp"},
+                data={"customer_name": "UI Coercion Co", "platform": UNSUPPORTED_PLATFORM},
             )
-            regenerated = await c.post(f"/ssp/{proj_id}/regenerate", data={"platform": "gcp"})
+            regenerated = await c.post(
+                f"/ssp/{proj_id}/regenerate", data={"platform": UNSUPPORTED_PLATFORM}
+            )
         assert created.status_code == 422, created.text
         assert regenerated.status_code == 422, regenerated.text
         assert await _stored_platform(proj_id) == "aws_govcloud"
@@ -706,8 +717,14 @@ def test_questionnaire_answers_map_exactly_as_before() -> None:
     assert PLATFORM_TO_SSP["m365_gcc_high"] == "m365"
     assert PLATFORM_TO_SSP["azure_gov"] == "azure"
     assert PLATFORM_TO_SSP["aws_govcloud"] == "aws_govcloud"
+    # One code on both sides, unlike the Microsoft and Azure answers: the
+    # questionnaire asks about Assured Workloads and the SSP platform is the
+    # same thing.
+    assert PLATFORM_TO_SSP["gcp"] == "gcp"
     assert PLATFORM_TO_SSP["none"] == NO_PLATFORM
-    assert set(PLATFORM_TO_SSP) == {"m365_gcc_high", "azure_gov", "aws_govcloud", "none"}
+    assert set(PLATFORM_TO_SSP) == {
+        "m365_gcc_high", "azure_gov", "aws_govcloud", "gcp", "none",
+    }
     # Every questionnaire option now has a translation, which is the whole
     # point: the fourth used to fall into the default beside every typo.
     options = next(
@@ -744,3 +761,21 @@ async def test_a_project_created_without_a_platform_stores_none() -> None:
         assert await _stored_platform(proj_id) == NO_PLATFORM
     finally:
         await _purge_org(org_id)
+
+
+def test_the_unsupported_exemplar_is_still_unsupported() -> None:
+    """Guards every assertion in this file that uses ``UNSUPPORTED_PLATFORM``.
+
+    Those tests prove that an unrecognized platform is refused on write,
+    labelled honestly on read, and never drafted for. They are only meaningful
+    while the code they use is genuinely unrecognized -- and the previous one,
+    ``"gcp"``, stopped being so the day Google Cloud was added. Without this,
+    that change would have turned a dozen assertions into vacuous passes
+    against a supported platform.
+    """
+    assert UNSUPPORTED_PLATFORM not in PLATFORMS, (
+        f"{UNSUPPORTED_PLATFORM!r} is now a supported platform, so every "
+        "assertion in this file that uses it is testing the opposite of what "
+        "it claims; pick a different unsupported code"
+    )
+    assert normalize_platform(UNSUPPORTED_PLATFORM) is None
