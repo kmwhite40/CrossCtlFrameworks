@@ -175,6 +175,25 @@ in with a recovery code" is a fact an administrator should be able to see.
 
 ## 8. Enforcement policy
 
+**Correction (independent review, 2026-09-24): this section describes
+behaviour that was not built.** `Organization.mfa_policy` exists and is
+advisory. It is read in six places -- four display it, two refuse to *remove*
+an authenticator it covers -- and it gates no session, route or redirect. A
+user in scope who has not enrolled signs in with a password alone and reaches
+everything. Nothing writes the column either: no API, no CLI, no form.
+
+The column and its readers now say so at every site, the way `TrustProfile
+.published` does. A column that looks like a control and enforces nothing is
+worse than one that plainly does nothing, because somebody will report it as
+satisfying IA-2(1). It does not.
+
+Enforcement is its own change. The section below is the design it should
+follow, and the reason it was not done in one line is the reason it needs its
+own: deciding which routes stay reachable while a user is unenrolled is the
+whole problem, and getting it wrong locks an organization out of itself.
+
+
+
 Per organization, on `Organization`: `optional` (default), `admins`, `all`.
 
 A user in scope of the policy who has no active credential is **not locked

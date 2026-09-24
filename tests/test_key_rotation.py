@@ -297,10 +297,31 @@ async def test_a_row_whose_key_is_unknown_is_reported_and_left_alone(keys) -> No
 
 
 def test_every_encrypted_column_in_the_schema_is_in_the_sweep() -> None:
-    """A fourth encrypted column added later and not listed would be silently
-    left behind on an old key. Derived from the models, not from a hand-list."""
-    import ccf.models  # noqa: PLC0415, F401
+    """A fourth encrypted column added later must fail here, not ship unswept.
+
+    The previous version read ``Base.registry.mappers``, which holds only
+    mappers whose module has been **imported**. ``ccf.models`` imports seven
+    siblings and neither ``models_ai_actions`` nor ``models_identity``; those
+    two were in the registry only because ``ccf.ai.rotation`` imports them,
+    i.e. only because they were already in ENCRYPTED_COLUMNS. The test compared
+    the sweep list against a set the sweep list itself had populated, and an
+    encrypted column added to any un-imported module passed green -- the exact
+    scenario the docstring promised to catch. Confirmed by adding one to
+    ``models_tprm``.
+
+    So the modules are discovered from the filesystem and imported first.
+    """
+    import importlib  # noqa: PLC0415
+    import pkgutil  # noqa: PLC0415
+
+    import ccf  # noqa: PLC0415
     from ccf.models import Base  # noqa: PLC0415
+
+    # Import every module that could define a mapper, so the registry is the
+    # whole schema rather than whatever this test file happened to pull in.
+    for mod in pkgutil.iter_modules(ccf.__path__):
+        if mod.name.startswith("models"):
+            importlib.import_module(f"ccf.{mod.name}")
 
     found = {
         (mapper.class_.__name__, column.key)
@@ -310,8 +331,30 @@ def test_every_encrypted_column_in_the_schema_is_in_the_sweep() -> None:
     }
     swept = {(spec.model.__name__, spec.column) for spec in ENCRYPTED_COLUMNS}
     assert found == swept, (
-        f"encrypted columns not covered by the rotation sweep: {sorted(found - swept)}"
+        f"encrypted columns not covered by the rotation sweep: {sorted(found - swept)}; "
+        f"listed but not found in any model: {sorted(swept - found)}"
     )
+
+
+def test_the_registry_scan_actually_sees_modules_the_sweep_does_not_import() -> None:
+    """The positive control for the test above.
+
+    Without it, the discovery loop could quietly import nothing and the
+    comparison would be vacuous again in a different way. ``models_tprm`` is a
+    module neither ``ccf.models`` nor ``ccf.ai.rotation`` pulls in.
+    """
+    import importlib  # noqa: PLC0415
+    import pkgutil  # noqa: PLC0415
+
+    import ccf  # noqa: PLC0415
+    from ccf.models import Base  # noqa: PLC0415
+
+    names = {m.name for m in pkgutil.iter_modules(ccf.__path__) if m.name.startswith("models")}
+    assert "models_tprm" in names, "the discovery loop would not reach models_tprm"
+    for mod in names:
+        importlib.import_module(f"ccf.{mod}")
+    seen = {mapper.class_.__module__.rsplit(".", 1)[-1] for mapper in Base.registry.mappers}
+    assert "models_tprm" in seen, "a module outside the sweep's imports was never registered"
 
 
 @pytest.mark.asyncio
@@ -395,10 +438,15 @@ def test_the_kms_provider_binds_an_encryption_context() -> None:
     with pytest.raises(RuntimeError, match="encryption context"):
         kms.decrypt(CiphertextBlob=blob, EncryptionContext={"application": "something-else"})
 
-    # And the provider maps that AWS-side refusal onto Concord's own error, so
-    # a caller sees the same failure whichever provider is configured.
+    # And the provider maps that AWS-side refusal onto Concord's own error.
+    # KmsUnavailableError rather than UnknownKeyError: KMS resolves the key
+    # from the blob, so a context mismatch and a foreign ciphertext and an
+    # outage are one exception here, and naming the key as missing would be a
+    # claim this code cannot make.
+    from ccf.ai.cipher import KmsUnavailableError  # noqa: PLC0415
+
     provider.ENCRYPTION_CONTEXT = {"application": "tampered"}  # type: ignore[misc]
-    with pytest.raises(UnknownKeyError):
+    with pytest.raises(KmsUnavailableError):
         provider.unwrap_data_key(blob)
 
     # The context the provider actually sends is the one that works.
@@ -406,11 +454,63 @@ def test_the_kms_provider_binds_an_encryption_context() -> None:
 
 
 def test_a_blob_the_kms_key_did_not_wrap_is_refused_not_guessed() -> None:
-    from ccf.ai.cipher import KmsKeyProvider  # noqa: PLC0415
+    from ccf.ai.cipher import KmsKeyProvider, KmsUnavailableError  # noqa: PLC0415
 
     provider = KmsKeyProvider("arn:aws:kms:us-gov-west-1:1:key/abc", client=_FakeKms())
-    with pytest.raises(UnknownKeyError):
+    with pytest.raises(KmsUnavailableError):
         provider.unwrap_data_key(b"not-a-blob-this-key-made")
+
+
+def test_a_kms_outage_is_not_reported_as_a_missing_local_key() -> None:
+    """The message, not just the type -- the type was never the problem.
+
+    Every KMS failure raised `UnknownKeyError`, whose text names one cause and
+    prescribes `ai_credential_previous_keys`: a setting the KMS provider does
+    not read. So a throttle during `ccf keys-rewrap`, or during any sign-in
+    that decrypts a TOTP secret, told an operator a rotation had failed on a
+    missing key when the key was fine and a retry would have worked.
+    """
+    from ccf.ai.cipher import KmsKeyProvider, KmsUnavailableError  # noqa: PLC0415
+
+    class _Throttled(_FakeKms):
+        def decrypt(self, **_kw: object) -> dict:
+            raise RuntimeError("ThrottlingException: Rate exceeded")
+
+    kms = _Throttled()
+    provider = KmsKeyProvider(kms.key_arn, client=kms)
+    with pytest.raises(KmsUnavailableError) as caught:
+        provider.unwrap_data_key(b"any-blob")
+
+    text = str(caught.value)
+    assert "ai_credential_previous_keys" not in text, (
+        "a KMS failure prescribed a setting the KMS provider never reads"
+    )
+    assert "ThrottlingException" in text, "the underlying cause was swallowed"
+    assert "Retry" in text
+    # And it is not the error that means "restore a key you removed".
+    assert not isinstance(caught.value, UnknownKeyError)
+
+
+def test_a_kms_outage_does_not_report_rows_as_orphaned(keys) -> None:
+    """`rewrap_all` files an unreadable row with the key id to restore. A KMS
+    outage must not put rows on that list: the key is not missing, and an
+    operator told to restore it would go looking for something that is there.
+    """
+    from ccf.ai.cipher import (  # noqa: PLC0415
+        CredentialCipher,
+        KmsKeyProvider,
+        KmsUnavailableError,
+    )
+
+    class _Throttled(_FakeKms):
+        def decrypt(self, **_kw: object) -> dict:
+            raise RuntimeError("ThrottlingException: Rate exceeded")
+
+    kms = _Throttled()
+    c = CredentialCipher(KmsKeyProvider(kms.key_arn, client=kms))
+    token = c.encrypt("value")
+    with pytest.raises(KmsUnavailableError):
+        c.decrypt(token)
 
 
 def test_the_kms_key_id_identifies_the_configured_key_without_printing_it() -> None:

@@ -683,11 +683,19 @@ async def scim_delete_user(
 
 @router.get("/api/scim/v2/Groups")
 async def scim_list_groups(
-    _org_id: int = Depends(_scim_org),
+    org_id: int = Depends(_scim_org),
     session: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
+    # Scoped like every other SCIM route. This one bound the resolved
+    # organization to `_org_id` and discarded it -- the underscore was the
+    # tell -- so a deployment-wide token listed every tenant's IdP group names
+    # and which of them confer admin.
     groups = (
-        await session.execute(select(GroupRoleMapping).order_by(GroupRoleMapping.group))
+        await session.execute(
+            select(GroupRoleMapping)
+            .where(GroupRoleMapping.organization_id == org_id)
+            .order_by(GroupRoleMapping.group)
+        )
     ).scalars().all()
     return {
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],

@@ -790,13 +790,16 @@ async def security_disable(
     cred = await mfa_service.credential_for(session, user.id)
     if cred is not None:
         await session.delete(cred)
+        # See the API path: the codes are keyed on the user and nothing
+        # cascades, so they have to be retired explicitly.
+        revoked = await mfa_service.revoke_recovery_codes(session, user.id)
         await record_event(
             session,
             actor=user.email,
             action="mfa_disable",
             entity_type="identity",
             entity_id=str(user.id),
-            diff={"event": "mfa_disable"},
+            diff={"event": "mfa_disable", "recovery_codes_revoked": revoked},
             organization_id=user.organization_id,
         )
         await session.commit()

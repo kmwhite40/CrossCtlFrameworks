@@ -670,9 +670,13 @@ async def test_a_certificate_sign_in_does_not_additionally_challenge_for_a_code(
     nobody had decided. This test is that decision.
 
     What would make it wrong is the platform *claiming* otherwise. Nothing
-    derives a compliance statement from ``Organization.mfa_policy``; it is read
-    in exactly one place, to tell a user to enrol. If that ever changes, the
-    claim has to account for this path.
+    derives a compliance statement from ``Organization.mfa_policy``: it is read
+    in six places, four of which display it and two of which refuse to REMOVE
+    an authenticator, and it gates no session or route at all. If a compliance
+    claim is ever derived from it, that claim has to account for this path.
+
+    (The count in this docstring said "exactly one place" and was wrong when
+    written -- found by an independent review, 2026-09-24.)
     """
     monkeypatch.setenv("CCF_AI_CREDENTIAL_MASTER_KEY", "piv-mfa-seam-key-0123456789")
     get_settings.cache_clear()

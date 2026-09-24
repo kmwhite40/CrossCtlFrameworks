@@ -20,7 +20,14 @@ from ..config import get_settings
 from ..models_ai_actions import AiProviderConfig
 from ..models_grc import ConnectorConfig
 from ..models_identity import UserMfaCredential
-from .cipher import AAD_CREDENTIAL, AAD_MFA, UnknownKeyError, build_cipher, token_key_id
+from .cipher import (
+    AAD_CREDENTIAL,
+    AAD_MFA,
+    KmsUnavailableError,
+    UnknownKeyError,
+    build_cipher,
+    token_key_id,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -86,6 +93,11 @@ async def rewrap_all(session: AsyncSession) -> RewrapReport:
             except UnknownKeyError as e:
                 report.unreadable.append((spec.label, row.id, e.missing_key_id))
                 continue
+            except KmsUnavailableError:
+                # Not an unreadable row: KMS could not answer, which a retry
+                # may fix. Reporting it beside genuinely orphaned rows would
+                # tell an operator to restore a key that was never missing.
+                raise
             except Exception:
                 report.unreadable.append((spec.label, row.id, token_key_id(token)))
                 continue

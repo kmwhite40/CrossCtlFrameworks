@@ -163,4 +163,9 @@ class UserMfaRecoveryCode(Base):
     )
     code_hash: Mapped[str] = mapped_column(String(64), index=True)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Retired without being used -- the authenticator it belonged to was
+    #: disabled or replaced. Distinct from ``used_at`` on purpose: that column
+    #: answers "did somebody sign in without their authenticator, and when",
+    #: and setting it on a code nobody used would answer it wrongly.
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

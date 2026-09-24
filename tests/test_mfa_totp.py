@@ -673,3 +673,165 @@ async def test_a_code_cannot_be_replayed_over_http() -> None:
             json={"mfa_token": second.json()["mfa_token"], "code": code},
         )
     assert replayed.status_code == 401, "the same code was accepted twice"
+
+
+# ── disabling the authenticator, which shipped untested on both surfaces ────
+
+
+async def _activate(user_id: int, secret: str) -> list[str]:
+    """Activate an enrolled credential and return its recovery codes."""
+    async with session_scope() as s:
+        user = await s.get(User, user_id)
+        assert user is not None
+        codes = await mfa_service.activate(
+            s, user, mfa.hotp(secret, mfa.timestep(1_700_000_000.0)), now=1_700_000_000.0
+        )
+    assert codes is not None
+    return codes
+
+
+@pytest.mark.asyncio
+async def test_disabling_the_authenticator_revokes_its_recovery_codes() -> None:
+    """A recovery code outlived the authenticator it was minted for.
+
+    `mfa_disable` deleted `UserMfaCredential` and left `UserMfaRecoveryCode`
+    untouched -- the codes are keyed on the user, not the credential, and there
+    is no cascade between them. `consume_recovery_code` checked neither. So a
+    code that leaked before somebody rotated their second factor still signed
+    them in afterwards, and the status endpoint counted the dead codes in
+    `recovery_codes_remaining`.
+
+    Rotating a second factor has to rotate the credentials that bypass it.
+    """
+    org_id, user_id, email = await _user("revoke-on-disable", policy="optional")
+    secret = await _enrol(org_id, user_id, active=False)
+    assert await _activate(user_id, secret), "the fixture must issue codes"
+    settings = get_settings()
+    cookie = sign_session(user_id, settings.auth_session_secret, ttl_hours=8)
+
+    async with _client() as c:
+        removed = await c.delete("/api/auth/mfa", cookies={SESSION_COOKIE: cookie})
+        assert removed.status_code == 204, removed.text
+
+        # No authenticator now, so a password alone signs in -- and the old
+        # recovery code must not be an alternative route to a session.
+        status = await c.get("/api/auth/mfa", cookies={SESSION_COOKIE: cookie})
+        assert status.json()["recovery_codes_remaining"] == 0, status.text
+
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(UserMfaRecoveryCode).where(UserMfaRecoveryCode.user_id == user_id)
+            )
+        ).scalars().all()
+        assert rows, "the codes must still exist -- revoked is not deleted"
+        assert all(r.revoked_at is not None for r in rows), (
+            "a recovery code survived the authenticator it belonged to"
+        )
+        assert all(r.used_at is None for r in rows), (
+            "revoking a code must not record it as having been used to sign in"
+        )
+    assert email  # named for the reader
+
+
+@pytest.mark.asyncio
+async def test_a_code_from_a_retired_authenticator_cannot_sign_anyone_in() -> None:
+    """The end-to-end version, which is the one an attacker has.
+
+    Enrol, activate, disable, re-enrol with a fresh secret and a disjoint set
+    of codes -- then present one of the FIRST set.
+    """
+    org_id, user_id, email = await _user("retired-code", policy="optional")
+    first_secret = await _enrol(org_id, user_id, active=False)
+    old_codes = await _activate(user_id, first_secret)
+    settings = get_settings()
+    cookie = sign_session(user_id, settings.auth_session_secret, ttl_hours=8)
+
+    async with _client() as c:
+        assert (
+            await c.delete("/api/auth/mfa", cookies={SESSION_COOKIE: cookie})
+        ).status_code == 204
+
+    second_secret = await _enrol(org_id, user_id, active=False)
+    new_codes = await _activate(user_id, second_secret)
+    assert not set(old_codes) & set(new_codes), "the two sets must be disjoint"
+
+    async with _client() as c:
+        login = await c.post(
+            "/api/auth/login", json={"email": email, "password": "correct-horse-battery"}
+        )
+        assert login.json()["mfa_required"] is True
+        replayed = await c.post(
+            "/api/auth/mfa/verify",
+            json={"mfa_token": login.json()["mfa_token"], "code": old_codes[0]},
+        )
+    assert replayed.status_code == 401, (
+        "a recovery code from a retired authenticator was accepted"
+    )
+
+    # And the count a user is shown reflects only the live set.
+    async with _client() as c:
+        status = await c.get("/api/auth/mfa", cookies={SESSION_COOKIE: cookie})
+    assert status.json()["recovery_codes_remaining"] == len(new_codes)
+
+
+@pytest.mark.asyncio
+async def test_a_new_code_from_the_current_authenticator_still_works() -> None:
+    """A fix that revokes everything is not a fix."""
+    org_id, user_id, email = await _user("live-code", policy="optional")
+    secret = await _enrol(org_id, user_id, active=False)
+    codes = await _activate(user_id, secret)
+
+    async with _client() as c:
+        login = await c.post(
+            "/api/auth/login", json={"email": email, "password": "correct-horse-battery"}
+        )
+        used = await c.post(
+            "/api/auth/mfa/verify",
+            json={"mfa_token": login.json()["mfa_token"], "code": codes[0]},
+        )
+    assert used.status_code == 200, used.text
+    assert used.json()["mfa_method"] == "recovery_code"
+
+
+@pytest.mark.asyncio
+async def test_a_live_code_with_no_authenticator_is_still_refused() -> None:
+    """The second rung, exercised on the state it exists for.
+
+    Revoking on disable is the primary fix, and it makes this state
+    unreachable through the application -- which is exactly why removing this
+    guard leaves every other test green. So the state is constructed directly:
+    a live, unrevoked code belonging to a user with no credential, as a partial
+    migration, a direct database edit or a future write path could leave it.
+
+    Without this, the guard would be a survivor nobody could kill, and the next
+    reader would be entitled to delete it as dead code.
+    """
+    org_id, user_id, _email = await _user("orphan-code", policy="optional")
+    secret = await _enrol(org_id, user_id, active=False)
+    codes = await _activate(user_id, secret)
+
+    # Delete the credential WITHOUT revoking, which the routes no longer do.
+    async with session_scope() as s:
+        cred = (
+            await s.execute(
+                select(UserMfaCredential).where(UserMfaCredential.user_id == user_id)
+            )
+        ).scalar_one()
+        await s.delete(cred)
+
+    async with session_scope() as s:
+        live = (
+            await s.execute(
+                select(UserMfaRecoveryCode).where(
+                    UserMfaRecoveryCode.user_id == user_id,
+                    UserMfaRecoveryCode.used_at.is_(None),
+                    UserMfaRecoveryCode.revoked_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        assert live, "the fixture must leave a live code, or this proves nothing"
+
+        assert await mfa_service.consume_recovery_code(s, user_id, codes[0]) is False, (
+            "a recovery code was spent for an account with no authenticator"
+        )
