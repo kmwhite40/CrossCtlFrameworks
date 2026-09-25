@@ -47,6 +47,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,8 @@ import httpx
 import pytest
 from alembic import command
 from alembic.config import Config
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from sqlalchemy import delete, select
 
 from ccf.config import get_settings
@@ -61,6 +64,7 @@ from ccf.connectors import list_connectors
 from ccf.connectors.aws import AwsGovCloudConnector
 from ccf.connectors.azure_arm import AzureArmConnector
 from ccf.connectors.base import ConfigConnector
+from ccf.connectors.gcp import GcpConnector
 from ccf.connectors.msgraph import MsGraphConnector
 from ccf.db import session_scope
 from ccf.governance.automation import (
@@ -280,6 +284,76 @@ def _aws_connector(monkeypatch: pytest.MonkeyPatch) -> AwsGovCloudConnector:
     )
 
 
+#: An RSA key generated once per session, so the GCP harness signs a real JWT
+#: assertion rather than stubbing the signer out. Signing is the step that
+#: turns a credential into a token, and a harness that skipped it would pass
+#: for a connector whose key handling was broken.
+@lru_cache(maxsize=1)
+def _gcp_private_key_pem() -> str:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+
+
+def _gcp_handler(request: httpx.Request) -> httpx.Response:
+    """The token exchange plus the three reads ``gcp.capture`` makes."""
+    url = str(request.url)
+    if request.method == "POST" and "oauth2.googleapis.com/token" in url:
+        # Assert the assertion is really signed and carries the grant, so a
+        # connector that stopped signing fails here rather than silently.
+        body = request.content.decode()
+        assert "grant_type=urn" in body and "assertion=" in body, body
+        return httpx.Response(200, json={"access_token": "gcp-token", "expires_in": 3599})
+    if "storage.googleapis.com/storage/v1/b" in url:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {"name": "b-cmek", "encryption": {"defaultKmsKeyName": "projects/p/k"}},
+                    # No CMEK: a fixture whose every member is usable cannot
+                    # tell a mapper that counts from one that does not.
+                    {"name": "b-google-managed"},
+                ]
+            },
+        )
+    if "logging.googleapis.com" in url and url.endswith("/buckets"):
+        return httpx.Response(
+            200,
+            json={
+                "buckets": [
+                    {"name": "_Default", "retentionDays": 3650},
+                    {"name": "short", "retentionDays": 30},
+                    {"name": "no-retention-field"},
+                ]
+            },
+        )
+    if "orgpolicy.googleapis.com" in url:
+        return httpx.Response(
+            200,
+            json={
+                "policies": [
+                    {"name": "projects/p/policies/compute.requireOsLogin"},
+                    {"name": "projects/p/policies/storage.uniformBucketLevelAccess"},
+                ]
+            },
+        )
+    return httpx.Response(404, json={"error": f"unstubbed: {url}"})
+
+
+def _gcp_connector(monkeypatch: pytest.MonkeyPatch) -> GcpConnector:
+    _stub_httpx(monkeypatch, _gcp_handler)
+    return GcpConnector(
+        credential={
+            "project_id": "proj-1",
+            "client_email": "cap@proj-1.iam.gserviceaccount.com",
+            "private_key": _gcp_private_key_pem(),
+        }
+    )
+
+
 def _msgraph_connector(monkeypatch: pytest.MonkeyPatch) -> MsGraphConnector:
     _stub_httpx(monkeypatch, _graph_handler)
     return MsGraphConnector(
@@ -307,6 +381,7 @@ HARNESSES: dict[str, Callable[[pytest.MonkeyPatch], ConfigConnector]] = {
     "aws_govcloud": _aws_connector,
     "msgraph": _msgraph_connector,
     "azure_arm": _azure_arm_connector,
+    "gcp": _gcp_connector,
 }
 
 
@@ -447,8 +522,19 @@ def test_an_unconfigured_connector_still_advertises_a_populated_map(key: str) ->
 #: That is NOT true of ``msgraph`` and ``azure_arm``, which capture the SAME
 #: Microsoft tenant -- see ``connectors/azure_arm.py``'s scope boundary. They
 #: must share nothing, and the assertion below holds them to it.
+#: ``gcp`` is a third cloud and the same reasoning applies to it: an SSP
+#: project declares one platform, and two connectors are two ``CaptureSnapshot``
+#: rows attributed to the connector that read them. An ODP means the same thing
+#: whichever cloud answered it -- "encryption at rest" is one question -- so
+#: sharing the key is the point, not a collision.
 DELIBERATE_OVERLAPS: dict[frozenset[str], set[str]] = {
     frozenset({"aws_govcloud", "azure_arm"}): {"encryption_at_rest"},
+    frozenset({"aws_govcloud", "gcp"}): {"encryption_at_rest"},
+    frozenset({"azure_arm", "gcp"}): {
+        "configuration_baseline_enforcement",
+        "encryption_at_rest",
+        "log_retention_period",
+    },
 }
 
 
