@@ -287,18 +287,51 @@ async def test_connector_and_control_test_detail_pages_render() -> None:
         conn_id, test_id = conn.id, test.id
         await control_tests.record_result(s, test, status="fail", detail="drift detected")
 
-    transport = ASGITransport(app=create_app())
-    async with AsyncClient(transport=transport, base_url="http://t") as client:
-        r_conn = await client.get(f"/connectors/{conn_id}")
-        assert r_conn.status_code == 200
-        assert "Prod AWS GovCloud" in r_conn.text and "Objects discovered" in r_conn.text
+    # The connector pages are organization-scoped: a credential is bound to an
+    # org, so an org-less caller now gets a 400 and an explanation rather than
+    # every tenant's connectors. This test therefore has to be somebody.
+    import os
 
-        r_test = await client.get(f"/control-tests/{test_id}")
-        assert r_test.status_code == 200
-        assert "Detail render test" in r_test.text and "drift detected" in r_test.text
+    from ccf.auth import hash_password, new_api_token
+    from ccf.models import User
 
-        assert (await client.get("/connectors/999999")).status_code == 404
-        assert (await client.get("/control-tests/999999")).status_code == 404
+    async with session_scope() as s:
+        admin = User(
+            email="detail-pages@detail-pages-org.test",
+            organization_id=org_id,
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        s.add(admin)
+        await s.flush()
+        token = admin.api_token
+
+    os.environ["CCF_AUTH_ENABLED"] = "true"
+    os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"
+    get_settings.cache_clear()
+    try:
+        transport = ASGITransport(app=create_app())
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://t",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as client:
+            r_conn = await client.get(f"/connectors/{conn_id}")
+            assert r_conn.status_code == 200
+            assert "Prod AWS GovCloud" in r_conn.text and "Objects discovered" in r_conn.text
+
+            r_test = await client.get(f"/control-tests/{test_id}")
+            assert r_test.status_code == 200
+            assert "Detail render test" in r_test.text and "drift detected" in r_test.text
+
+            assert (await client.get("/connectors/999999")).status_code == 404
+            assert (await client.get("/control-tests/999999")).status_code == 404
+    finally:
+        os.environ.pop("CCF_AUTH_ENABLED", None)
+        os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio

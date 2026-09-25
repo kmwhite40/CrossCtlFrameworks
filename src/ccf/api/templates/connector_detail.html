@@ -9,6 +9,67 @@
 </div>
 {% endblock %}
 {% block content %}
+{% if request.query_params.get('error') %}
+<div class="chip chip--err" style="margin-bottom:16px"><i data-lucide="alert-triangle"></i> {{ request.query_params.get('error') }}</div>
+{% elif request.query_params.get('saved') %}
+<div class="chip chip--ok" style="margin-bottom:16px"><i data-lucide="check"></i> Credential saved.</div>
+{% elif request.query_params.get('tested') %}
+<div class="chip chip--ok" style="margin-bottom:16px"><i data-lucide="check"></i> Connected.</div>
+{% endif %}
+
+{% if spec %}
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Credential · {{ spec.label }}</div>
+    {% if c.key_last4 %}<span class="chip chip--ok">stored {{ c.key_last4 }}</span>
+    {% else %}<span class="chip chip--warn">not configured</span>{% endif %}
+  </div>
+  <div class="card__body">
+    {% if spec.doc %}<p class="dim" style="margin:0 0 16px;max-width:70ch;font-size:13px">{{ spec.doc }}</p>{% endif %}
+    <p class="dim" style="margin:0 0 16px;max-width:70ch;font-size:13px">
+      Held for this organization only, encrypted at rest. A secret is never shown again —
+      leave a secret field blank to keep the stored value.
+    </p>
+    <form method="post" action="/connectors/{{ c.id }}/credential">
+      {% for field in spec.fields %}
+      <label class="label" for="cred-{{ field.name }}" style="display:block;margin-bottom:4px">{{ field.label }}</label>
+      {% if field.multiline %}
+      <textarea class="input" id="cred-{{ field.name }}" name="{{ field.name }}" rows="5"
+                style="width:100%;margin-bottom:4px;font-family:var(--font-mono)"
+                autocomplete="off" spellcheck="false"></textarea>
+      {% else %}
+      <input class="input" id="cred-{{ field.name }}" name="{{ field.name }}"
+             type="{% if field.secret %}password{% else %}text{% endif %}"
+             style="width:100%;margin-bottom:4px" autocomplete="off" spellcheck="false">
+      {% endif %}
+      {% if field.help %}<p class="dim" style="margin:0 0 14px;font-size:12px">{{ field.help }}</p>
+      {% else %}<div style="margin-bottom:14px"></div>{% endif %}
+      {% endfor %}
+
+      {% if spec.config_fields %}
+      <div style="border-top:1px solid var(--border);margin:8px 0 16px;padding-top:16px">
+        {% for field in spec.config_fields %}
+        <label class="label" for="cfg-{{ field.name }}" style="display:block;margin-bottom:4px">{{ field.label }}</label>
+        <input class="input" id="cfg-{{ field.name }}" name="{{ field.name }}" type="text"
+               value="{{ c.config.get(field.name, '') if c.config else '' }}"
+               style="width:100%;margin-bottom:4px">
+        {% if field.help %}<p class="dim" style="margin:0 0 14px;font-size:12px">{{ field.help }}</p>
+        {% else %}<div style="margin-bottom:14px"></div>{% endif %}
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <button class="btn btn--primary" type="submit"><i data-lucide="key"></i> Save credential</button>
+    </form>
+    {% if c.key_last4 %}
+    <form method="post" action="/connectors/{{ c.id }}/test" style="margin-top:12px">
+      <button class="btn btn--ghost" type="submit"><i data-lucide="plug"></i> Test connection</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
 
 <div class="cols-4" style="margin-bottom:16px">
   <div class="kpi"><div class="kpi__label">Status</div><div class="kpi__value"><span class="chip {% if c.status=='configured' %}chip--ok{% elif c.status=='error' %}chip--err{% else %}chip{% endif %}">{{ c.status|replace('_',' ') }}</span></div></div>
