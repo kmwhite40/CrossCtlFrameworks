@@ -69,6 +69,33 @@ class GraphPaginationTruncatedError(RuntimeError):
     """
 
 
+
+def _aad_reason(error: Exception) -> str:
+    """Entra's own explanation, not httpx's description of the status line.
+
+    A failed token request answers with ``{"error": ..., "error_description":
+    "AADSTS90002: Tenant '...' not found..."}``, and the AADSTS code is the
+    part an operator can act on -- it distinguishes a wrong tenant from a
+    wrong secret from a missing consent grant. ``str(exc)`` on the raised
+    HTTPStatusError yields only "Client error '400 Bad Request' for url ...",
+    which says none of that and sent the reader to a MDN page about HTTP
+    status codes.
+    """
+    response = getattr(error, "response", None)
+    if response is not None:
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001 - a non-JSON body is not exceptional here
+            body = None
+        if isinstance(body, dict):
+            description = body.get("error_description") or body.get("error")
+            if description:
+                # The description carries a correlation id and timestamp on its
+                # own lines; the first is the sentence that matters.
+                return str(description).splitlines()[0][:400]
+    return str(error)[:400]
+
+
 class MsGraphConnector(ConfigConnector):
     key = "msgraph"
     label = "Microsoft 365 Government (Graph)"
@@ -239,7 +266,7 @@ class MsGraphConnector(ConfigConnector):
                 "graph_endpoint": s.graph_base_url,
             }
         except Exception as e:
-            return {"connected": False, "reason": str(e)[:200]}
+            return {"connected": False, "reason": _aad_reason(e)}
 
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():

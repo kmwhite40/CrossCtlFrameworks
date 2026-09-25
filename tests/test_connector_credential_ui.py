@@ -328,3 +328,81 @@ async def test_a_successful_test_clears_the_previous_error(
         cfg = await s.get(ConnectorConfig, cfg_id)
         assert cfg.status == "configured"
         assert cfg.error_message is None
+
+
+def test_a_failed_token_request_reports_entras_own_code() -> None:
+    """AADSTS codes distinguish a wrong tenant from a wrong secret.
+
+    ``str(HTTPStatusError)`` yields only "Client error '400 Bad Request' for
+    url ...", which says none of that and points the reader at an MDN page
+    about HTTP status codes. The code is in the response body, which was
+    discarded.
+    """
+    import httpx
+
+    from ccf.connectors.msgraph import _aad_reason
+
+    request = httpx.Request("POST", "https://login.microsoftonline.us/t/oauth2/v2.0/token")
+    response = httpx.Response(
+        400,
+        json={
+            "error": "unauthorized_client",
+            "error_description": (
+                "AADSTS700016: Application with identifier '66666666' was not found "
+                "in the directory.\nTrace ID: abc\nTimestamp: 2026-09-25"
+            ),
+        },
+        request=request,
+    )
+    reason = _aad_reason(
+        httpx.HTTPStatusError("Client error '400 Bad Request'", request=request, response=response)
+    )
+    assert reason.startswith("AADSTS700016")
+    assert "Trace ID" not in reason, "only the first line is the actionable sentence"
+
+
+def test_a_transport_failure_without_a_response_still_reports_something() -> None:
+    """No response body to read: the exception text is all there is, and
+    returning an empty reason would render as 'the provider did not say why'."""
+    from ccf.connectors.msgraph import _aad_reason
+
+    assert _aad_reason(OSError("name resolution failed")) == "name resolution failed"
+
+
+@pytest.mark.asyncio
+async def test_verify_routes_a_token_failure_through_the_aad_reader() -> None:
+    """Pins the wiring, not just the helper.
+
+    Testing ``_aad_reason`` alone left ``verify()`` free to go back to
+    ``str(e)``: both mutations had to fail, and only one did. This drives
+    ``verify()`` itself and asserts the AADSTS code survives the trip.
+    """
+    import httpx
+
+    from ccf.connectors.msgraph import MsGraphConnector
+
+    request = httpx.Request("POST", "https://login.microsoftonline.us/t/oauth2/v2.0/token")
+    response = httpx.Response(
+        401,
+        json={
+            "error": "invalid_client",
+            "error_description": "AADSTS7000215: Invalid client secret provided.\nTrace ID: x",
+        },
+        request=request,
+    )
+
+    async def _raise(self, client):
+        raise httpx.HTTPStatusError(
+            "Client error '401 Unauthorized'", request=request, response=response
+        )
+
+    connector = MsGraphConnector(credential=dict(_MSGRAPH))
+    original = MsGraphConnector._token
+    MsGraphConnector._token = _raise
+    try:
+        result = await connector.verify()
+    finally:
+        MsGraphConnector._token = original
+
+    assert result["connected"] is False
+    assert result["reason"].startswith("AADSTS7000215")

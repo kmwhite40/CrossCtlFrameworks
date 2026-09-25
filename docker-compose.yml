@@ -15,6 +15,26 @@ x-ccf-env: &ccf_env
   CCF_LOG_JSON: "false"
   CCF_WORKBOOK_PATH: /data/NIST Cross Mappings Rev. 1.1.xlsx
 
+  # Auth on, because the application is organization-scoped and an org comes
+  # from a principal. With auth off every caller is the system principal with
+  # org_id None, which the connector and AI settings pages now refuse -- a
+  # credential is bound to an organization and there is nothing to bind it to.
+  #
+  # The session secret is a DEV-ONLY default and is overridable from the
+  # environment. `enforce_secure_config` refuses to start production with it,
+  # so this cannot silently become a deployed value.
+  CCF_AUTH_ENABLED: "true"
+  CCF_AUTH_SESSION_SECRET: ${CCF_AUTH_SESSION_SECRET:-dev-only-not-for-any-deployment}
+
+  # Envelope key for stored connector, AI and MFA secrets. Without it the
+  # cipher fails closed and no credential can be saved at all -- correct, but
+  # it made the connector settings page unusable in this stack.
+  #
+  # DEV-ONLY and overridable. Changing it makes every credential already
+  # stored under the old key unreadable: rotate with `ccf keys rewrap` rather
+  # than editing this in place (see ccf.ai.rotation).
+  CCF_AI_CREDENTIAL_MASTER_KEY: ${CCF_AI_CREDENTIAL_MASTER_KEY:-dev-only-master-key-32-chars-xx}
+
 services:
   db:
     image: pgvector/pgvector:pg16
