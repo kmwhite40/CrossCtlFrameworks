@@ -229,6 +229,55 @@ class ConnectorConfig(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+
+# --- Outbound issue-tracker links -------------------------------------------
+class ExternalIssueLink(Base):
+    """Where one Concord record has been filed in an external tracker.
+
+    Push-only by construction: this table records what Concord *sent*, never
+    what the remote system currently says. There is no status column mirroring
+    the remote ticket, because a mirrored status is a second answer to a
+    question a regulator asks Concord, and the moment the two disagree the
+    wrong one is on someone's screen. ``last_error`` describes the last push,
+    not the ticket.
+
+    One link per (organization, provider, entity) -- pushing a POA&M twice
+    updates the ticket it already has rather than filing a second one.
+    """
+
+    __tablename__ = "external_issue_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "provider",
+            "entity_type",
+            "entity_id",
+            name="uq_external_issue_link_entity",
+        ),
+        Index("ix_external_issue_link_entity", "entity_type", "entity_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    #: The kind of Concord record this links, e.g. ``poam``.
+    entity_type: Mapped[str] = mapped_column(String(32))
+    entity_id: Mapped[int] = mapped_column(Integer)
+    #: The outbound integration, e.g. ``jira``.
+    provider: Mapped[str] = mapped_column(String(32), index=True)
+    #: The remote identifier, e.g. a Jira issue key ``ABC-123``.
+    external_id: Mapped[str] = mapped_column(String(64))
+    external_url: Mapped[str] = mapped_column(Text)
+    last_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: ``ok`` or ``failed`` -- the outcome of the most recent push attempt.
+    last_status: Mapped[str] = mapped_column(String(16), default="ok")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 # --- Continuous Control Monitoring: test definitions + results --------------
 class ControlTest(Base):
     """A repeatable test definition for a control (formalizes ConMon)."""
@@ -372,6 +421,7 @@ __all__ = [
     "AuditFinding",
     "AuditRequest",
     "ConnectorConfig",
+    "ExternalIssueLink",
     "ControlTest",
     "ControlTestResult",
     "RegulatoryUpdate",

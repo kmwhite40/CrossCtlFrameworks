@@ -21,9 +21,15 @@ from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_a
 from ...cr26.ver import is_blank
 from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
+from ...integrations import service as integrations_service
+from ...integrations.types import (
+    IntegrationNotConfigured,
+    IntegrationRefused,
+    IntegrationUnavailable,
+)
 from ...logging import get_logger
 from ...models import POAM, ControlImplementation, Evidence, PoamMilestone, System
-from ..auth_deps import get_principal, org_systems_subq
+from ..auth_deps import get_principal, org_systems_subq, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/poams", tags=["poams"])
@@ -624,3 +630,38 @@ async def update_milestone(
     await session.commit()
     await session.refresh(m)
     return _ms_out(m)
+
+
+@router.post("/{pid}/push/jira")
+async def push_poam_to_jira(
+    pid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    """File or update this POA&M's Jira issue. Nothing is ever read back.
+
+    Admin-only: an API token bearing full Jira authority is being spent, and
+    the ticket is visible to everyone in that project -- a POA&M's text can
+    name an unremediated weakness in a federal system, so who may send it out
+    is a narrower question than who may read it here.
+
+    The three refusals are kept distinct in the status code, because they need
+    different actions: 409 means configure Jira, 502 means Jira said no and
+    its reason is in the body, 504 means Jira could not be reached and the
+    same request is worth retrying unchanged.
+    """
+    try:
+        result = await integrations_service.push_poam(session, principal.org_id, pid)
+    except IntegrationNotConfigured as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except IntegrationRefused as exc:
+        raise HTTPException(502, str(exc)) from exc
+    except IntegrationUnavailable as exc:
+        raise HTTPException(504, str(exc)) from exc
+    return {
+        "poam_id": pid,
+        "provider": "jira",
+        "external_id": result.external_id,
+        "url": result.url,
+        "created": result.created,
+    }

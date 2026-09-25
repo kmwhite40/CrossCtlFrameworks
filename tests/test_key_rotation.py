@@ -233,7 +233,17 @@ async def test_the_sweep_moves_a_row_and_is_idempotent(keys) -> None:
         report = await rewrap_all(s)
     # Not `report.ok`: other tests leave rows wrapped under keys this one never
     # configures, and a global assertion would fail on their account.
-    assert not any(row_id == cred_id for _t, row_id, _k in report.unreadable)
+    #
+    # The table is matched as well as the id. `unreadable` carries
+    # `(table, row id, key id)` and ids restart per table, so comparing the id
+    # alone fails whenever any *other* swept table happens to hold an
+    # unreadable row with the same integer -- which is precisely what another
+    # module storing a connector credential under a throwaway master key
+    # produces. That made this test fail on a row it never wrote.
+    assert not any(
+        table == "user_mfa_credentials" and row_id == cred_id
+        for table, row_id, _k in report.unreadable
+    )
     assert report.rewrapped >= 1
 
     async with session_scope() as s:
