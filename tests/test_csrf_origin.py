@@ -157,3 +157,115 @@ async def test_rejection_response_still_carries_security_headers() -> None:
     assert resp.headers.get("x-content-type-options") == "nosniff"
     assert resp.headers.get("x-frame-options") == "DENY"
     assert "content-security-policy" in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_names_the_offending_origin_in_the_log() -> None:
+    """The 403 body is deliberately opaque, so the log has to carry the diagnosis.
+
+    The response says only ``cross-origin request rejected`` and must keep
+    saying only that: echoing the submitted Origin back into a response body
+    reflects attacker-controlled input. That leaves the log as the sole place
+    an operator can learn *why*, and it recorded nothing at all -- so a
+    deployment behind a proxy that rewrites ``Host``, or an app reached through
+    a forwarded port, presented as "every form on the site is broken" with no
+    thread to pull.
+
+    Asserts the served host, the offending origin and the configured trusted
+    list are all present, since the fix needs all three.
+    """
+    import structlog
+
+    from ccf.api.csrf import CsrfOriginMiddleware
+
+    capture = structlog.testing.LogCapture()
+    structlog.configure(processors=[capture])
+    try:
+
+        async def app(scope, receive, send):  # pragma: no cover - never reached
+            raise AssertionError("request should not have reached the app")
+
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        middleware = CsrfOriginMiddleware(app, trusted_origins=("https://app.example.gov",))
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/connectors",
+                "headers": [
+                    (b"host", b"localhost:8088"),
+                    (b"origin", b"https://forwarded-8088.example.dev"),
+                ],
+            },
+            receive,
+            send,
+        )
+    finally:
+        structlog.reset_defaults()
+
+    assert sent[0]["status"] == 403
+    assert b"forwarded-8088" not in sent[1]["body"], "the body must not reflect the origin"
+
+    events = [e for e in capture.entries if e.get("event") == "csrf.origin_rejected"]
+    assert events, "a rejection was not logged"
+    event = events[0]
+    assert event["origin"] == "https://forwarded-8088.example.dev"
+    assert event["served_host"] == "localhost:8088"
+    assert event["trusted_origins"] == ["https://app.example.gov"]
+    assert event["path"] == "/connectors"
+    assert "CCF_CSRF_TRUSTED_ORIGINS" in event["hint"]
+    assert event["log_level"] == "warning"
+
+
+@pytest.mark.asyncio
+async def test_an_allowed_request_logs_no_rejection() -> None:
+    """The warning must mark a real refusal, not fire on every POST.
+
+    A log line that appears on allowed traffic is worse than none: it trains
+    whoever reads it to ignore the one occurrence that matters. This is the
+    mutation that a test asserting only "something was logged" would miss.
+    """
+    import structlog
+
+    from ccf.api.csrf import CsrfOriginMiddleware
+
+    capture = structlog.testing.LogCapture()
+    structlog.configure(processors=[capture])
+    try:
+        reached = []
+
+        async def app(scope, receive, send):
+            reached.append(scope["path"])
+
+        async def send(message):  # pragma: no cover - nothing is sent by us
+            raise AssertionError("middleware should not have responded")
+
+        async def receive():
+            return {"type": "http.request", "body": b""}
+
+        middleware = CsrfOriginMiddleware(app, trusted_origins=())
+        await middleware(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/connectors",
+                "headers": [
+                    (b"host", b"localhost:8088"),
+                    (b"origin", b"http://localhost:8088"),
+                ],
+            },
+            receive,
+            send,
+        )
+    finally:
+        structlog.reset_defaults()
+
+    assert reached == ["/connectors"]
+    assert not [e for e in capture.entries if e.get("event") == "csrf.origin_rejected"]
