@@ -32,6 +32,7 @@ from ..models import (
     SystemProfile,
     Vendor,
 )
+from ..models_grc import ControlTest
 from ..scoring.engine import deduction_for, score_system
 from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
@@ -650,6 +651,37 @@ async def generate_statements(
                 {"odp_key": snap.odp_key, "value": snap.value, "connector": snap.connector}
             )
 
+    # Passing automated tests, by the control they evidence.
+    #
+    # Statements could already fold in captured *configuration* but not
+    # whether the control had been **tested**, so the strongest evidence the
+    # platform holds never reached the document an assessor reads.
+    #
+    # Only passing tests, and only for systems in this project's organization.
+    # A failing test is a finding and belongs in a POA&M; an SSP citing its own
+    # failures as evidence of implementation would be worse than silence.
+    verified_by_control: dict[str, list[dict[str, str]]] = {}
+    for control_id, name, run_at in (
+        await session.execute(
+            select(ControlTest.control_id, ControlTest.name, ControlTest.last_tested_at)
+            .join(System, System.id == ControlTest.system_id)
+            .where(
+                System.organization_id == project.organization_id,
+                System.deleted_at.is_(None),
+                ControlTest.last_status == "pass",
+                ControlTest.control_id.is_not(None),
+            )
+        )
+    ).all():
+        verified_by_control.setdefault(str(control_id), []).append(
+            {
+                "check": str(name),
+                # Dated: machine evidence with no date is a claim about an
+                # unknown moment, and an assessor has to know which.
+                "observed_on": run_at.date().isoformat() if run_at else "",
+            }
+        )
+
     # Real vendors, by name, for the ``crm_ref``/``frequency`` of a
     # vendor-inherited control (source ``vendor:<name>`` — see
     # ``_vendor_inheritance``) — ``authorization`` (e.g. "FedRAMP High
@@ -729,6 +761,7 @@ async def generate_statements(
         responsibility = row.get("responsibility", "customer")
         services = services_for(ssp_plat, e.domain)
         captured = caps_by_nist.get(e.nist_id or "", [])
+        verified = verified_by_control.get(e.control_id or "", [])
         cap_key = _cap_key(e)
         cap_rows = caps_by_control.get(cap_key, []) if cap_key else []
         # Split by status here, not in the resolution layer: capability/service.py
@@ -758,6 +791,7 @@ async def generate_statements(
             services=services,
             odp_values=dict(e.odp_values or {}),
             captured=captured,
+            verified=verified,
             style=style,
             include_captured=include_captured,
             mark_draft=mark_draft,

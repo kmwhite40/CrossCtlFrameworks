@@ -39,6 +39,39 @@ def _params_clause(odp_values: dict[str, str], captured: list[dict[str, str]]) -
     return (" Organization-defined parameters — " + "; ".join(parts) + ".") if parts else ""
 
 
+def _verification_clause(verified: list[dict[str, str]] | None) -> str:
+    """What Concord tested against the live environment, and when.
+
+    An SSP could already fold in *captured configuration* -- a parameter value
+    read from the tenant -- but not whether the control had been **tested**.
+    So a system whose scans proved legacy authentication blocked said nothing
+    about it, and the strongest evidence the platform held never reached the
+    document an assessor reads.
+
+    Only passing tests are cited. A failing one is a finding, and a finding
+    belongs in a POA&M, not in a sentence claiming the control is implemented
+    -- an SSP that cited its own failures as evidence would be worse than one
+    that stayed silent.
+
+    Dated, because machine evidence with no date is a claim about an unknown
+    moment: an assessor has to know whether it was verified today or in March.
+    """
+    if not verified:
+        return ""
+    parts = [
+        f"{v['check']} ({v['observed_on']})"
+        for v in verified
+        if v.get("check") and v.get("observed_on")
+    ]
+    if not parts:
+        return ""
+    return (
+        " Verified by automated testing against the live environment — "
+        + "; ".join(parts)
+        + "."
+    )
+
+
 def is_draft_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
     """True if any part narrative still carries the machine-drafted marker.
 
@@ -268,6 +301,7 @@ def compose(
     services: str,
     odp_values: dict[str, str] | None = None,
     captured: list[dict[str, str]] | None = None,
+    verified: list[dict[str, str]] | None = None,
     style: str = "standard",
     include_captured: bool = True,
     mark_draft: bool = True,
@@ -305,6 +339,10 @@ def compose(
     obj = (requirement or "the control requirement").strip().rstrip(".")
     caps = captured if include_captured else []
     params = "" if style == "concise" else _params_clause(odp_values or {}, caps or [])
+    # Cited at every style, including `concise`: a concise statement may drop
+    # parameter detail, but "we tested this and it passed" is the strongest
+    # thing the platform can say about a control and never noise.
+    verification = _verification_clause(verified if include_captured else [])
     role = _resolved_role(control_id, responsible_role)
     freq = _resolved_frequency(frequency)
     policy = _policy_clause(policy_ref)
@@ -315,7 +353,7 @@ def compose(
         tail = params
         if include_role_freq:
             tail += _role_clause(role) + _frequency_clause(freq)
-        tail += evidence + policy
+        tail += verification + evidence + policy
         text = text + tail
         if needs_review and mark_draft:
             text = DRAFT_PREFIX + text
