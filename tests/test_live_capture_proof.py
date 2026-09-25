@@ -627,13 +627,25 @@ async def test_an_access_key_pair_wins_when_a_profile_is_also_present() -> None:
 async def test_a_profile_backed_credential_for_another_connector_is_unaffected() -> None:
     """The check is named for AWS specifically and must stay that way: no other
     provider accepts a host profile, so a ``profile`` key on an msgraph bundle
-    is not a host identity and must not be treated as one."""
+    is not a host identity and must not be treated as one.
+
+    The bundle is otherwise complete because ``set_credential`` now refuses one
+    that could never authenticate. That is closer to the real case anyway: the
+    stray ``profile`` key has to sit on a credential that genuinely works, or
+    the connector would be non-live for the ordinary reason and this would
+    assert nothing.
+    """
     async with _org_with(
         "MsGraph Profile Key",
         connector_type="msgraph",
         last_sync=_now(),
         captured_at=_now(),
-        credential={"profile": "irrelevant", "client_secret": "x"},
+        credential={
+            "profile": "irrelevant",
+            "tenant_id": "t",
+            "client_id": "c",
+            "client_secret": "x",
+        },
     ) as org_id:
         assert await _is_live(org_id, "msgraph") is True
 

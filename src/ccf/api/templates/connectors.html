@@ -3,12 +3,21 @@
 {% block heading %}Cloud connectors{% endblock %}
 {% block subtitle %}<p class="page__subtitle">Register cloud/SaaS connectors for evidence collection. Sync runs a mock discovery until live credentials are wired.</p>{% endblock %}
 {% block content %}
+{% if no_org %}
+<section class="card">
+  <div class="card__body dim" style="text-align:center;padding:40px">
+    <p style="margin:0 0 8px"><strong>No organization in this session.</strong></p>
+    <p style="margin:0;max-width:60ch;display:inline-block">Connector credentials are held per organization,
+    so there is nothing to scope this page to. Sign in as a member of an organization to configure its connectors.</p>
+  </div>
+</section>
+{% else %}
 
 <section class="card card--elevated" style="margin-bottom:16px">
   <form method="post" action="/connectors" class="card__body filters">
     <input aria-label="e.g. Prod AWS GovCloud" class="input" name="name" required placeholder="e.g. Prod AWS GovCloud">
     <select class="select" name="connector_type" aria-label="Type">
-      {% for t in types %}<option value="{{ t }}">{{ t }}</option>{% endfor %}
+      {% for key, label in types %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
     </select>
     <input aria-label="Environment (us-gov-west-1)" class="input" name="environment" placeholder="Environment (us-gov-west-1…)">
     <button class="btn btn--primary" type="submit"><i data-lucide="plug"></i> Add connector</button>
@@ -33,8 +42,9 @@
       </tr>{% endfor %}
     </tbody>
   </table></div>
-  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No connectors yet. Supported: {{ types|join(', ') }}.</div>{% endif %}
+  {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No connectors yet. Supported: {{ types|map(attribute=1)|join(', ') }}.</div>{% endif %}
 </section>
 
 <script>if(window.lucide)lucide.createIcons();</script>
+{% endif %}
 {% endblock %}

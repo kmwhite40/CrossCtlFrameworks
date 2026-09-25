@@ -42,10 +42,15 @@ from ..auth_deps import require_role, resolve_caller_org
 from ..deps import get_session
 from .grc import (
     _MOCK_DISCOVERY,
-    CONNECTOR_TYPES,
     _emit_access_decision,
     _load_access_request,
 )
+from urllib.parse import quote
+
+from ...ai.cipher import CredentialStorageError
+from ...connectors import credentials as connector_credentials
+from ...connectors import get_connector
+from ...connectors.credential_spec import SPECS, IncompleteCredential, missing_fields, spec_for
 from .ui import _principal_org, templates
 
 router = APIRouter(include_in_schema=False)
@@ -315,20 +320,57 @@ async def regulatory_update(
     return RedirectResponse("/regulatory", status_code=303)
 
 
+
+
+#: The connector types this page offers, derived from the credential registry.
+#:
+#: NOT ``grc.CONNECTOR_TYPES``, which is the demo vocabulary paired with
+#: ``_MOCK_DISCOVERY``: of its ten entries, seven (azure, azure_gov, m365,
+#: m365_gcc_high, aws, github, servicenow) have no connector and no credential
+#: spec, so creating one produced a row that could never capture anything --
+#: while msgraph, azure_arm, puppetdb, msgraph_write and emass, which do work,
+#: could not be created here at all. Deriving the list from ``SPECS`` means a
+#: type is offered exactly when a credential for it can be stored.
+def _configurable_types() -> tuple[tuple[str, str], ...]:
+    """``(connector_type, label)`` for everything with a credential spec."""
+    return tuple((key, spec.label) for key, spec in sorted(SPECS.items()))
+
+
 # ── Connector registry ───────────────────────────────────────────────────────
 @router.get("/connectors", response_class=HTMLResponse)
 async def connectors_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
     org = _principal_org(request)
-    stmt = select(ConnectorConfig).order_by(ConnectorConfig.name)
-    if org is not None:
-        stmt = stmt.where(ConnectorConfig.organization_id == org)
-    rows = (await session.execute(stmt)).scalars().all()
+    # A connector credential is bound to an organization -- `set_credential`
+    # refuses to store one otherwise. This page used to tolerate `None`: it
+    # listed every tenant's connectors unfiltered and created rows with a NULL
+    # organization that could never hold a usable credential. The two halves
+    # of the same feature disagreed about whether an org was required.
+    if org is None:
+        return templates.TemplateResponse(
+            request,
+            "connectors.html",
+            {"active": "connectors", "rows": [], "types": _configurable_types(), "no_org": True},
+            status_code=400,
+        )
+    rows = (
+        await session.execute(
+            select(ConnectorConfig)
+            .where(ConnectorConfig.organization_id == org)
+            .order_by(ConnectorConfig.name)
+        )
+    ).scalars().all()
     return templates.TemplateResponse(
         request,
         "connectors.html",
-        {"active": "connectors", "rows": rows, "types": CONNECTOR_TYPES},
+        {
+            "active": "connectors",
+            "rows": rows,
+            "types": _configurable_types(),
+            "no_org": False,
+            "specs": SPECS,
+        },
     )
 
 
@@ -340,9 +382,15 @@ async def connectors_create(
     environment: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    if connector_type not in CONNECTOR_TYPES:
-        raise HTTPException(422, "invalid connector type")
+    if spec_for(connector_type) is None:
+        raise HTTPException(
+            422,
+            "connector_type must be one of "
+            + ", ".join(key for key, _label in _configurable_types()),
+        )
     org = _principal_org(request)
+    if org is None:
+        raise HTTPException(400, "organization context required to add a connector")
     session.add(
         ConnectorConfig(
             organization_id=org,
@@ -393,8 +441,10 @@ async def connector_detail(
     cfg_id: int, request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
     org = _principal_org(request)
+    if org is None:
+        raise HTTPException(400, "organization context required")
     c = await session.get(ConnectorConfig, cfg_id)
-    if c is None or (org is not None and c.organization_id != org):
+    if c is None or c.organization_id != org:
         raise HTTPException(404, "connector not found")
     cap_stmt = (
         select(CaptureSnapshot)
@@ -402,13 +452,21 @@ async def connector_detail(
         .order_by(CaptureSnapshot.captured_at.desc())
         .limit(50)
     )
-    if org is not None:
-        cap_stmt = cap_stmt.where(CaptureSnapshot.organization_id == org)
+    cap_stmt = cap_stmt.where(CaptureSnapshot.organization_id == org)
     captures = (await session.execute(cap_stmt)).scalars().all()
+    spec = spec_for(c.connector_type)
     return templates.TemplateResponse(
         request,
         "connector_detail.html",
-        {"active": "connectors", "c": c, "captures": captures},
+        {
+            "active": "connectors",
+            "c": c,
+            "captures": captures,
+            "spec": spec,
+            "outstanding": missing_fields(c.connector_type, {})
+            if c.encrypted_credential is None
+            else (),
+        },
     )
 
 
@@ -1377,3 +1435,115 @@ async def portal_admin_revoke(
     await revoke_grant(session, grant_id, actor=_actor(request))
     await session.commit()
     return RedirectResponse(f"/admin/portal?organization_id={organization_id}", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/credential")
+async def connectors_set_credential(
+    cfg_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Store this organization's own credential for a connector.
+
+    The form fields come from the same ``CredentialSpec`` that validates them,
+    so the inputs offered and the values required cannot drift apart. A blank
+    secret field is dropped rather than stored as an empty string: an operator
+    changing only a project key must not have to re-enter a key they cannot
+    read back.
+    """
+    org = _principal_org(request)
+    if org is None:
+        raise HTTPException(400, "organization context required")
+    cfg = await session.get(ConnectorConfig, cfg_id)
+    if cfg is None or cfg.organization_id != org:
+        raise HTTPException(404, "connector not found")
+    spec = spec_for(cfg.connector_type)
+    if spec is None:
+        raise HTTPException(422, f"no credential spec for {cfg.connector_type}")
+
+    form = await request.form()
+    secret = {
+        field.name: str(form.get(field.name) or "").strip()
+        for field in spec.fields
+        if str(form.get(field.name) or "").strip()
+    }
+    # Merge over what is already stored, so a partial edit is an edit and not
+    # a silent wipe of the fields the form did not carry.
+    if cfg.encrypted_credential is not None:
+        existing = await connector_credentials.resolve_credential(
+            session, org, cfg.connector_type
+        )
+        if existing:
+            secret = {**existing, **secret}
+
+    config = dict(cfg.config or {})
+    for field in spec.config_fields:
+        value = str(form.get(field.name) or "").strip()
+        if value:
+            config[field.name] = value
+    cfg.config = config
+
+    try:
+        await connector_credentials.set_credential(
+            session, org, cfg.connector_type, secret, name=cfg.name
+        )
+    except IncompleteCredential as exc:
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote(str(exc))}", status_code=303
+        )
+    except CredentialStorageError as exc:
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote(str(exc))}", status_code=303
+        )
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}?saved=1", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/test")
+async def connectors_test_credential(
+    cfg_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Actually authenticate, and report what the provider said.
+
+    Distinct from the mock sync above, which writes the four columns
+    ``connector_backing_state`` reads and is development-only for that reason.
+    This calls the connector's own ``verify()``, stores nothing, and reports
+    the provider's own refusal -- which is the part an operator can act on.
+    """
+    org = _principal_org(request)
+    if org is None:
+        raise HTTPException(400, "organization context required")
+    cfg = await session.get(ConnectorConfig, cfg_id)
+    if cfg is None or cfg.organization_id != org:
+        raise HTTPException(404, "connector not found")
+
+    secret = await connector_credentials.resolve_credential(session, org, cfg.connector_type)
+    connector = get_connector(cfg.connector_type)
+    if connector is None:
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('no capture connector for this type')}",
+            status_code=303,
+        )
+    connector.credential = secret
+    if not connector.is_configured():
+        outstanding = missing_fields(cfg.connector_type, secret or {})
+        detail = ", ".join(outstanding) if outstanding else "no credential is stored"
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('not configured: ' + detail)}",
+            status_code=303,
+        )
+
+    result = await connector.verify()
+    if result.get("connected"):
+        cfg.status = "configured"
+        cfg.error_message = None
+        await session.commit()
+        return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
+
+    reason = str(result.get("reason") or "the provider did not say why")
+    cfg.status = "error"
+    cfg.error_message = reason[:2000]
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)

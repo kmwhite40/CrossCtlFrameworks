@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai.cipher import build_cipher, mask
+from .credential_spec import IncompleteCredential, missing_fields
 from ..config import get_settings
 from ..models_grc import ConnectorConfig
 
@@ -80,6 +81,16 @@ async def set_credential(
     """
     if org_id is None:
         raise ValueError("a connector credential must be bound to an organization")
+    # Refuse a bundle that could never authenticate, rather than storing it and
+    # reporting `status = "configured"`. Before this, an empty Microsoft secret
+    # was accepted, displayed a key_last4 of `…{}`, marked the connector
+    # configured, and surfaced much later as "capture produced nothing" with
+    # nothing to indicate why.
+    outstanding = missing_fields(connector_type, secret)
+    if outstanding:
+        raise IncompleteCredential(
+            f"{connector_type} credential is missing: {', '.join(outstanding)}"
+        )
     cfg = (
         await session.execute(
             select(ConnectorConfig).where(
