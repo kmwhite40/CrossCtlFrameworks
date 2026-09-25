@@ -10,6 +10,20 @@
     <div class="kpi__label">Avg SPRS score</div>
     <div class="kpi__value">{{ r.avg_sprs_score if r.avg_sprs_score is not none else '—' }}<span class="dim" style="font-size:14px"> / 110</span></div>
   </div>
+  <div class="kpi">
+    <span class="kpi__trend"><i data-lucide="activity"></i></span>
+    <span class="kpi__label">Controls failing</span>
+    <div class="kpi__value" style="color:{{ 'var(--err-500)' if r.control_tests.failing else 'var(--ok-500)' }}">{{ r.control_tests.failing }}<span class="dim" style="font-size:14px"> / {{ r.control_tests.assessed }}</span></div>
+    <div class="dim" style="font-size:12px">
+      {% if r.control_tests.assessed %}
+        {{ r.control_tests.resources_failing }} of {{ r.control_tests.resources_evaluated }} resources ·
+        <a href="/dashboard">gaps</a>
+      {% else %}nothing assessed yet — <a href="/connectors">connect a provider</a>{% endif %}
+    </div>
+    {% if r.control_tests.failing_controls %}
+    <div class="dim" style="font-size:12px;margin-top:6px">{{ r.control_tests.failing_controls|join(', ') }}</div>
+    {% endif %}
+  </div>
   <div class="kpi"><div class="kpi__label">Systems</div><div class="kpi__value">{{ r.systems_total }}</div></div>
   <div class="kpi"><div class="kpi__label">Open POA&amp;Ms</div><div class="kpi__value">{{ r.open_poams }}</div></div>
   <div class="kpi">

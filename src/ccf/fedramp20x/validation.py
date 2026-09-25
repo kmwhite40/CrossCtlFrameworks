@@ -37,6 +37,7 @@ from ..models import (
     KSIValidationResult,
     System,
 )
+from ..models_grc import ControlTest, ControlTestResult
 
 # Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
 # Public because ccf.posture.rollup shares it -- but note the two uses select
@@ -91,6 +92,15 @@ class SystemContext:
     dependencies: list[dict[str, Any]] = field(default_factory=list)
     profile: dict[str, Any] = field(default_factory=dict)
     captures: set[str] = field(default_factory=set)
+    # normalized base control id -> latest automated control-test status.
+    #
+    # KSI rules could previously see an implementation *record* and a capture,
+    # but not whether Concord had actually tested the control against the live
+    # tenant. So a system whose scans proved IA-2(11) satisfied -- FIDO2
+    # enabled, verified against Entra minutes earlier -- still reported that
+    # KSI as failing, because no implementation row claimed it. 39 of 51 KSIs
+    # failed that way on a tenant with real, passing machine evidence.
+    control_tests: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -139,9 +149,27 @@ def evaluate_rule(  # noqa: PLR0911
 
     if kind in ("control_state", "control_any"):
         present = {c: ctx.impl_status.get(c) for c in controls}
+        # A control Concord has tested against the live environment, and that
+        # passed, counts as satisfied alongside a claimed implementation. Only
+        # a pass: a failing test leaves the control exactly as unsatisfied as
+        # it was, and never turns a claimed implementation into a failure --
+        # that is the assessor's call, not a rule's.
+        #
+        # The reference is labelled `:test:pass` so a verdict shows it rested
+        # on machine evidence rather than on someone's claim. An unlabelled
+        # automated claim inside a readiness number is the defect this is
+        # meant to close, not one to introduce.
+        tested_ok = {c for c in controls if ctx.control_tests.get(c) == "pass"}
         refs = [f"{c}:{s}" for c, s in present.items() if s]
-        satisfied = [c for c, s in present.items() if _status_ok(s, states)]
-        missing = [c for c in controls if not _status_ok(present.get(c), states)]
+        refs += [f"{c}:test:pass" for c in sorted(tested_ok)]
+        satisfied = [
+            c for c in controls if _status_ok(present.get(c), states) or c in tested_ok
+        ]
+        missing = [
+            c
+            for c in controls
+            if not _status_ok(present.get(c), states) and c not in tested_ok
+        ]
         need_all = kind == "control_state"
         ok = (len(missing) == 0) if need_all else (len(satisfied) > 0)
         if ok:
@@ -276,6 +304,35 @@ async def build_context(session: AsyncSession, system_id: int) -> SystemContext:
             if _evidence_current(ev, today):
                 ctx.control_evidence[key] = True
                 ctx.evidence_refs.setdefault(key, []).append(_evidence_ref(ev))
+
+    # Automated results per control, folded to the same normalized key the
+    # rules use -- which collapses enhancements: IA-2, IA-2(1) and IA-2(11)
+    # are all `IA-2`.
+    #
+    # A control counts as tested-pass only when **every** test folding to that
+    # key passed. A tenant with FIDO2 enabled (IA-2(11) passing) and six users
+    # without MFA (IA-2 failing) has not satisfied IA-2, and crediting it
+    # because one enhancement passed would put a claim in a readiness number
+    # that the evidence contradicts.
+    #
+    # All-pass rather than last-write-wins: taking the newest result per key
+    # makes the answer depend on the order the checks happened to run, so the
+    # same evidence could credit the control or not from one scan to the next.
+    by_control: dict[str, set[str]] = {}
+    for control_id, status in (
+        await session.execute(
+            select(ControlTest.control_id, ControlTest.last_status)
+            .where(
+                ControlTest.system_id == system_id,
+                ControlTest.control_id.is_not(None),
+                ControlTest.last_status.is_not(None),
+            )
+        )
+    ).all():
+        by_control.setdefault(normalize_control(control_id), set()).add(status)
+    for key, statuses in by_control.items():
+        if statuses == {"pass"}:
+            ctx.control_tests[key] = "pass"
 
     deps = (
         (
