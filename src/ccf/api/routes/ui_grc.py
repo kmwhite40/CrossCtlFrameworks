@@ -41,7 +41,6 @@ from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ..auth_deps import require_role, resolve_caller_org
 from ..deps import get_session
 from .grc import (
-    _MOCK_DISCOVERY,
     _emit_access_decision,
     _load_access_request,
 )
@@ -51,7 +50,15 @@ from ...ai.cipher import CredentialStorageError
 from ...connectors import credentials as connector_credentials
 from ...connectors import get_connector
 from ...connectors.credential_spec import SPECS, IncompleteCredential, missing_fields, spec_for
+from ...posture.checks import checks_for
 from .ui import _principal_org, templates
+
+
+def _principal_email(request: Request) -> str:
+    """Who to attribute a recorded scan result to."""
+    principal = getattr(request.state, 'principal', None)
+    return getattr(principal, 'email', None) or 'ui'
+
 
 router = APIRouter(include_in_schema=False)
 
@@ -391,6 +398,24 @@ async def connectors_create(
     org = _principal_org(request)
     if org is None:
         raise HTTPException(400, "organization context required to add a connector")
+    # One row per (organization, connector type), because that is how the
+    # credential is keyed: `resolve_credential` looks it up by type, so a
+    # second row of the same type can never hold a usable credential of its
+    # own -- it just makes which row owns the one credential ambiguous.
+    existing = (
+        await session.execute(
+            select(ConnectorConfig.id).where(
+                ConnectorConfig.organization_id == org,
+                ConnectorConfig.connector_type == connector_type,
+            )
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(
+            409,
+            f"this organization already has a {connector_type} connector; "
+            "configure that one rather than adding a second",
+        )
     session.add(
         ConnectorConfig(
             organization_id=org,
@@ -407,33 +432,61 @@ async def connectors_create(
 async def connectors_sync(
     cfg_id: int, request: Request, session: AsyncSession = Depends(get_session)
 ) -> RedirectResponse:
-    """Server-rendered twin of ``grc.sync_connector`` — and it was missed twice.
+    """Verify the connector against its provider. Writes no capture counts.
 
-    ``0eadea4`` gated the mock sync to development environments because it
-    writes exactly the four columns ``connector_backing_state`` reads, with no
-    credential, and so could manufacture an "evidenced by automated capture"
-    claim for an SSP. That gate went on the JSON route only; this one kept
-    writing those columns in every environment. It also took no principal,
-    while its sibling ``connector_detail`` below is scoped — so ``cfg_id``
-    addressed another tenant's connector.
+    This used to run a mock discovery: it set ``objects_discovered``,
+    ``evidence_produced``, ``status`` and ``last_sync`` to fixed numbers
+    without contacting anything. Those are exactly the four columns
+    ``connector_backing_state`` reads to decide a control is "evidenced by
+    automated capture", so the button manufactured that claim -- and did, in a
+    real deployment: a connector displayed ``configured, 100 objects, 10
+    evidence`` while its stored credential could not authenticate at all,
+    which read as a working integration and hid the actual error for days.
+
+    Gating it on a credential being *present* was not enough, because a
+    present credential is not a working one. So it now asks the provider.
+    Capture counts are left to real capture (``governance.collection``), and
+    ``last_sync`` is set only when the provider answered.
+
+    ``grc.sync_connector`` remains a development-only mock on the JSON API; it
+    is a separate surface and is named as such there.
     """
-    if not is_dev_env(get_settings()):
-        raise HTTPException(
-            503,
-            "connector sync is a development-only mock and is disabled in this "
-            "environment; connectors capture through the scheduled collection "
-            "cycle using this organization's own bound credential",
-        )
     org = _principal_org(request)
+    if org is None:
+        raise HTTPException(400, "organization context required")
     c = await session.get(ConnectorConfig, cfg_id)
-    if c is not None and (org is None or c.organization_id == org):
-        discovered = _MOCK_DISCOVERY.get(c.connector_type, 100)
-        c.objects_discovered = discovered
-        c.evidence_produced = max(1, discovered // 10)
+    if c is None or c.organization_id != org:
+        raise HTTPException(404, "connector not found")
+
+    secret = await connector_credentials.resolve_credential(session, org, c.connector_type)
+    if not secret:
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error="
+            + quote("this connector has no stored credential"),
+            status_code=303,
+        )
+    connector = get_connector(c.connector_type)
+    if connector is None:
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error="
+            + quote(f"no capture connector exists for {c.connector_type}"),
+            status_code=303,
+        )
+    connector.credential = secret
+
+    result = await connector.verify()
+    if result.get("connected"):
         c.status = "configured"
+        c.error_message = None
         c.last_sync = _now()
         await session.commit()
-    return RedirectResponse("/connectors", status_code=303)
+        return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
+
+    reason = str(result.get("reason") or "the provider did not say why")
+    c.status = "error"
+    c.error_message = reason[:2000]
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
 
 
 @router.get("/connectors/{cfg_id}", response_class=HTMLResponse)
@@ -466,6 +519,14 @@ async def connector_detail(
             "outstanding": missing_fields(c.connector_type, {})
             if c.encrypted_credential is None
             else (),
+            "systems": (
+                await session.execute(
+                    select(System)
+                    .where(System.organization_id == org, System.deleted_at.is_(None))
+                    .order_by(System.name)
+                )
+            ).scalars().all(),
+            "scan_checks": len(checks_for(c.connector_type)),
         },
     )
 
@@ -1485,7 +1546,7 @@ async def connectors_set_credential(
 
     try:
         await connector_credentials.set_credential(
-            session, org, cfg.connector_type, secret, name=cfg.name
+            session, org, cfg.connector_type, secret, name=cfg.name, config=cfg
         )
     except IncompleteCredential as exc:
         return RedirectResponse(
@@ -1547,3 +1608,73 @@ async def connectors_test_credential(
     cfg.error_message = reason[:2000]
     await session.commit()
     return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/scan")
+async def connectors_scan(
+    cfg_id: int,
+    request: Request,
+    system_id: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Run a real posture scan of one system with this connector.
+
+    Nothing like the development sync above, which writes capture counts and
+    touches no provider. This resolves the organization's own credential,
+    runs the checks registered for the connector, and records a control-test
+    result per check with its per-resource findings.
+
+    Reachable from the UI because it previously was not: scanning was CLI and
+    JSON API only, so a deployment could configure a connector, see the mock
+    sync's counts, and reasonably conclude a scan had run when none ever had.
+    """
+    org = _principal_org(request)
+    if org is None:
+        raise HTTPException(400, "organization context required")
+    cfg = await session.get(ConnectorConfig, cfg_id)
+    if cfg is None or cfg.organization_id != org:
+        raise HTTPException(404, "connector not found")
+
+    system = await session.get(System, system_id)
+    if system is None or system.organization_id != org or system.deleted_at is not None:
+        raise HTTPException(404, "system not found")
+
+    if cfg.encrypted_credential is None:
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error="
+            + quote("this connector has no stored credential; nothing to scan with"),
+            status_code=303,
+        )
+
+    from ...posture.scan import scan_for_system  # noqa: PLC0415
+
+    try:
+        out = await scan_for_system(
+            session,
+            system_id=system_id,
+            connector_key=cfg.connector_type,
+            actor=_principal_email(request),
+        )
+    except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+        await session.rollback()
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote(str(exc)[:300])}", status_code=303
+        )
+    await session.commit()
+
+    if not out.get("checks_run"):
+        # "Zero checks" and "everything passed" are different answers and must
+        # not render the same: azure_arm and gcp register no posture checks at
+        # all, so a scan there is a no-op that would otherwise look clean.
+        reason = out.get("reason") or (
+            f"no posture checks are registered for {cfg.connector_type}"
+        )
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('scan ran but did nothing: ' + reason)}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        f"/connectors/{cfg_id}?scanned={out['checks_run']}"
+        f"&failing={out.get('failing_total', 0)}",
+        status_code=303,
+    )

@@ -406,3 +406,287 @@ async def test_verify_routes_a_token_failure_through_the_aad_reader() -> None:
 
     assert result["connected"] is False
     assert result["reason"].startswith("AADSTS7000215")
+
+
+# --- the credential must land on the row you were editing ---------------------
+
+
+@pytest.mark.asyncio
+async def test_a_credential_is_written_to_the_connector_it_was_entered_on() -> None:
+    """It used to be written to whichever row matched the type first.
+
+    `set_credential` looked the row up by (organization, connector_type) and
+    took the first match, ignoring which connector the form belonged to. With
+    two msgraph rows in one organization, a credential entered on the second
+    was silently stored on the first: the row filled in stayed "not
+    configured" and the other one changed underneath. Seen in a real
+    deployment, where it read as "the scan is not populating".
+    """
+    org_id, token = await _org_admin(f"Conn Route {uuid.uuid4().hex[:6]}")
+    first = await _connector(org_id)
+    # Created directly, because the create route now refuses a second of a type.
+    async with session_scope() as s:
+        row = ConnectorConfig(
+            organization_id=org_id, name="second msgraph", connector_type="msgraph"
+        )
+        s.add(row)
+        await s.flush()
+        second = row.id
+
+    async with _client() as c:
+        r = await c.post(
+            f"/connectors/{second}/credential", data=_MSGRAPH, headers=_auth(token)
+        )
+    assert "saved=1" in r.headers["location"]
+
+    async with session_scope() as s:
+        target = await s.get(ConnectorConfig, second)
+        other = await s.get(ConnectorConfig, first)
+        assert target.encrypted_credential is not None, "the edited row got nothing"
+        assert other.encrypted_credential is None, "the other row was written to"
+
+
+@pytest.mark.asyncio
+async def test_a_second_connector_of_the_same_type_is_refused() -> None:
+    """Credentials are keyed by (organization, type), so a second row of a type
+    can never hold its own -- it only makes ownership ambiguous."""
+    org_id, token = await _org_admin(f"Conn Dup {uuid.uuid4().hex[:6]}")
+    async with _client() as c:
+        first = await c.post(
+            "/connectors",
+            data={"name": "one", "connector_type": "msgraph"},
+            headers=_auth(token),
+        )
+        assert first.status_code == 303, "the first of a type must be allowed"
+
+        second = await c.post(
+            "/connectors",
+            data={"name": "two", "connector_type": "msgraph"},
+            headers=_auth(token),
+        )
+    assert second.status_code == 409
+
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(ConnectorConfig).where(
+                    ConnectorConfig.organization_id == org_id,
+                    ConnectorConfig.connector_type == "msgraph",
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+
+
+# --- the development sync must not manufacture capture counts -----------------
+
+
+@pytest.mark.asyncio
+async def test_sync_reports_no_credential_and_writes_nothing() -> None:
+    """Those four columns are what `connector_backing_state` reads to decide a
+    control is evidenced by automated capture."""
+    org_id, token = await _org_admin(f"Conn Mock {uuid.uuid4().hex[:6]}")
+    cfg_id = await _connector(org_id)
+
+    async with _client() as c:
+        r = await c.post(f"/connectors/{cfg_id}/sync", headers=_auth(token))
+    assert r.status_code == 303
+    from urllib.parse import unquote
+
+    assert "no stored credential" in unquote(r.headers["location"])
+
+    async with session_scope() as s:
+        cfg = await s.get(ConnectorConfig, cfg_id)
+        assert cfg.objects_discovered == 0
+        assert cfg.evidence_produced == 0
+        assert cfg.last_sync is None
+
+
+@pytest.mark.asyncio
+async def test_sync_asks_the_provider_and_never_invents_capture_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored credential is not a working one.
+
+    Sync used to write `100 objects / 10 evidence` without contacting
+    anything. Gating it on a credential being *present* was not enough: in a
+    real deployment the credential was present and could not authenticate, and
+    the row still displayed `configured, 100 objects, 10 evidence` -- which
+    read as a working integration and hid the real error. So it asks the
+    provider, and capture counts are left to real capture.
+    """
+    from ccf.connectors.msgraph import MsGraphConnector
+
+    org_id, token = await _org_admin(f"Conn Sync Verify {uuid.uuid4().hex[:6]}")
+    cfg_id = await _connector(org_id)
+    async with _client() as c:
+        await c.post(f"/connectors/{cfg_id}/credential", data=_MSGRAPH, headers=_auth(token))
+
+    async def _refuse(self):
+        return {"connected": False, "reason": "AADSTS700016: Application not found."}
+
+    monkeypatch.setattr(MsGraphConnector, "verify", _refuse)
+    async with _client() as c:
+        r = await c.post(f"/connectors/{cfg_id}/sync", headers=_auth(token))
+
+    from urllib.parse import unquote
+
+    assert "AADSTS700016" in unquote(r.headers["location"])
+    async with session_scope() as s:
+        cfg = await s.get(ConnectorConfig, cfg_id)
+        assert cfg.status == "error"
+        assert "AADSTS700016" in cfg.error_message
+        assert cfg.objects_discovered == 0, "capture counts were invented"
+        assert cfg.evidence_produced == 0
+        assert cfg.last_sync is None, "a failed verify is not a sync"
+
+    async def _ok(self):
+        return {"connected": True, "tenant": "contoso"}
+
+    monkeypatch.setattr(MsGraphConnector, "verify", _ok)
+    async with _client() as c:
+        r = await c.post(f"/connectors/{cfg_id}/sync", headers=_auth(token))
+
+    assert "tested=1" in r.headers["location"]
+    async with session_scope() as s:
+        cfg = await s.get(ConnectorConfig, cfg_id)
+        assert cfg.status == "configured"
+        assert cfg.error_message is None
+        assert cfg.last_sync is not None
+        # Even on success: a verify is not a capture.
+        assert cfg.objects_discovered == 0
+        assert cfg.evidence_produced == 0
+
+
+# --- the scan button ----------------------------------------------------------
+
+
+async def _system(org_id: int, name: str = "Federal") -> int:
+    from ccf.models import System
+
+    async with session_scope() as s:
+        system = System(organization_id=org_id, name=name)
+        s.add(system)
+        await s.flush()
+        return system.id
+
+
+@pytest.mark.asyncio
+async def test_a_scan_runs_the_connectors_checks_and_records_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scanning was CLI and JSON API only, so a deployment could configure a
+    connector, see the development sync's counts, and reasonably conclude a
+    scan had run when none ever had -- control_tests stayed empty."""
+    org_id, token = await _org_admin(f"Conn Scan {uuid.uuid4().hex[:6]}")
+    cfg_id = await _connector(org_id)
+    system_id = await _system(org_id)
+
+    async with _client() as c:
+        await c.post(f"/connectors/{cfg_id}/credential", data=_MSGRAPH, headers=_auth(token))
+
+    seen: dict = {}
+
+    async def _fake_scan(session, *, system_id, connector_key, actor="scan"):
+        seen.update(system_id=system_id, connector_key=connector_key, actor=actor)
+        return {"checks_run": 3, "failing_total": 1, "results": []}
+
+    import ccf.posture.scan as scan_module
+
+    monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
+    async with _client() as c:
+        r = await c.post(
+            f"/connectors/{cfg_id}/scan", data={"system_id": system_id}, headers=_auth(token)
+        )
+
+    assert "scanned=3" in r.headers["location"]
+    assert "failing=1" in r.headers["location"]
+    assert seen["connector_key"] == "msgraph"
+    assert seen["system_id"] == system_id
+
+
+@pytest.mark.asyncio
+async def test_a_scan_that_ran_no_checks_does_not_look_clean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Zero checks registered" and "everything passed" are different answers.
+
+    azure_arm and gcp register no posture checks at all, so a scan there is a
+    no-op that would otherwise render as a successful, green result.
+    """
+    org_id, token = await _org_admin(f"Conn Scan Empty {uuid.uuid4().hex[:6]}")
+    cfg_id = await _connector(org_id, "azure_arm")
+    system_id = await _system(org_id)
+
+    async with _client() as c:
+        await c.post(
+            f"/connectors/{cfg_id}/credential",
+            data={**_MSGRAPH, "subscription_id": "sub-1"},
+            headers=_auth(token),
+        )
+
+    async def _no_checks(session, *, system_id, connector_key, actor="scan"):
+        return {"checks_run": 0, "results": [], "reason": "no checks registered"}
+
+    import ccf.posture.scan as scan_module
+
+    monkeypatch.setattr(scan_module, "scan_for_system", _no_checks)
+    try:
+        async with _client() as c:
+            r = await c.post(
+                f"/connectors/{cfg_id}/scan",
+                data={"system_id": system_id},
+                headers=_auth(token),
+            )
+
+        from urllib.parse import unquote
+
+        location = unquote(r.headers["location"])
+        assert "scanned=" not in location
+        assert "did nothing" in location
+    finally:
+        # Remove the stored credential. The scheduled collection path iterates
+        # "organizations with a bound credential" and would then attempt a real
+        # azure_arm capture against this row, reaching the network -- which the
+        # conftest guard fails, in a different module, with no obvious link back
+        # to here.
+        async with session_scope() as s:
+            row = await s.get(ConnectorConfig, cfg_id)
+            if row is not None:
+                await s.delete(row)
+
+
+@pytest.mark.asyncio
+async def test_a_scan_needs_a_credential_and_an_owned_system() -> None:
+    org_id, token = await _org_admin(f"Conn Scan Guard {uuid.uuid4().hex[:6]}")
+    cfg_id = await _connector(org_id)
+    system_id = await _system(org_id)
+
+    from urllib.parse import unquote
+
+    # No credential yet.
+    async with _client() as c:
+        r = await c.post(
+            f"/connectors/{cfg_id}/scan", data={"system_id": system_id}, headers=_auth(token)
+        )
+    assert "nothing to scan with" in unquote(r.headers["location"])
+
+    # Another organization's system, with a credential in place.
+    _other_id, other_token = await _org_admin(f"Conn Scan Other {uuid.uuid4().hex[:6]}")
+    outsider_system = await _system(_other_id, "Theirs")
+    async with _client() as c:
+        await c.post(f"/connectors/{cfg_id}/credential", data=_MSGRAPH, headers=_auth(token))
+        r = await c.post(
+            f"/connectors/{cfg_id}/scan",
+            data={"system_id": outsider_system},
+            headers=_auth(token),
+        )
+    assert r.status_code == 404
+    # And the outsider cannot drive this connector at all.
+    async with _client() as c:
+        r = await c.post(
+            f"/connectors/{cfg_id}/scan",
+            data={"system_id": outsider_system},
+            headers=_auth(other_token),
+        )
+    assert r.status_code == 404
