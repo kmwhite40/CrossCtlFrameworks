@@ -27,6 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...ai import gateway
+from ...ai.gateway import UnknownProviderError
+from ...ai.providers import SUPPORTED_PROVIDERS
 from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
 from ...models_ai_actions import AiProviderConfig
@@ -37,7 +39,9 @@ from .ui import templates  # shared Jinja env (carries `settings`/`asset_v` glob
 router = APIRouter(prefix="/api/ai-settings", tags=["ai-settings"])
 ui_router = APIRouter(tags=["ai-settings"])
 
-_SUPPORTED_PROVIDERS = ("anthropic", "openai")
+#: Offered by the settings form. Derived, not restated: the page and the
+#: gateway used to carry separate lists that happened to agree.
+_SUPPORTED_PROVIDERS = SUPPORTED_PROVIDERS
 
 
 def _org_id(principal: Principal) -> int:
@@ -94,6 +98,8 @@ async def upsert_provider(
             default_model=body.default_model, allowed_models=body.allowed_models,
             actor=principal.email,
         )
+    except UnknownProviderError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except CredentialStorageError as exc:
         raise HTTPException(400, str(exc)) from exc
     await session.commit()
@@ -112,6 +118,8 @@ async def rotate_provider(
         cfg = await gateway.set_credential(
             session, org_id, provider, api_key=body.api_key, actor=principal.email
         )
+    except UnknownProviderError as exc:
+        raise HTTPException(422, str(exc)) from exc
     except CredentialStorageError as exc:
         raise HTTPException(400, str(exc)) from exc
     await session.commit()
@@ -194,7 +202,7 @@ async def ai_settings_add(
             api_key=api_key or None, enabled=enabled,
             default_model=default_model or None, actor=principal.email,
         )
-    except CredentialStorageError as exc:
+    except (CredentialStorageError, UnknownProviderError) as exc:
         await session.rollback()
         return RedirectResponse(f"/admin/ai-settings?error={exc}", status_code=303)
     await session.commit()
@@ -213,7 +221,7 @@ async def ai_settings_rotate(
         await gateway.set_credential(
             session, org_id, provider, api_key=api_key, actor=principal.email
         )
-    except CredentialStorageError as exc:
+    except (CredentialStorageError, UnknownProviderError) as exc:
         await session.rollback()
         return RedirectResponse(f"/admin/ai-settings?error={exc}", status_code=303)
     await session.commit()

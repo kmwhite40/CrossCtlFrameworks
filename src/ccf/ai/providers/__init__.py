@@ -26,8 +26,19 @@ __all__ = [
     "ProviderError",
     "StructuredGenerationRequest",
     "StructuredGenerationResponse",
+    "SUPPORTED_PROVIDERS",
     "build_provider",
 ]
+
+
+#: Providers this build can actually construct.
+#:
+#: The single source for both the settings page's options and the check in
+#: ``gateway.set_credential``. They were two separate lists that happened to
+#: agree: a provider added here and not there was unofferable, and one added
+#: there and not here stored an *enabled* credential whose every use raised
+#: ``unknown AI provider``.
+SUPPORTED_PROVIDERS: tuple[str, ...] = ("anthropic", "openai")
 
 
 def build_provider(provider: str, api_key: str, *, base_url: str | None = None) -> AIProvider:
