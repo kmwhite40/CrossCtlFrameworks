@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -1811,18 +1812,52 @@ async def intake_submit(
 
     org = _principal_org(request)
     if org is None:
-        latest = (
-            await session.execute(select(Organization).order_by(Organization.id.desc()).limit(1))
-        ).scalar_one_or_none()
-        if latest is None:
-            latest = Organization(name="Default Organization")
-            session.add(latest)
-            await session.flush()
-        org = latest.id
+        # This used to fall back to "the most recently created organization",
+        # creating a Default Organization if there were none. An intake
+        # submitted without a principal therefore wrote a system -- with its
+        # derived baseline and a generated SSP -- into whichever tenant
+        # happened to sort last. A system belongs to an organization; the
+        # absence of one is not a licence to guess which.
+        return templates.TemplateResponse(
+            request,
+            "intake.html",
+            {
+                "active": "intake",
+                "questions": automation_engine.QUESTIONNAIRE,
+                "error": (
+                    "No organization in this session. A system belongs to an "
+                    "organization, so sign in as a member of one to submit intake."
+                ),
+                "system_name": name,
+            },
+            status_code=400,
+        )
 
     system = System(organization_id=org, name=name)
     session.add(system)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError:
+        # `uq_system_org_name` is UNIQUE (organization_id, name). A pre-check
+        # cannot close this race, and the 500 it produced said nothing an
+        # operator could act on -- the same shape as the SCIM external-identity
+        # conflict. Reported as a form error naming the collision instead.
+        await session.rollback()
+        return templates.TemplateResponse(
+            request,
+            "intake.html",
+            {
+                "active": "intake",
+                "questions": automation_engine.QUESTIONNAIRE,
+                "error": (
+                    f"This organization already has a system named {name!r}. "
+                    "Choose a different name, or open the existing system. "
+                    "A deleted system still holds its name."
+                ),
+                "system_name": name,
+            },
+            status_code=409,
+        )
     profile = SystemProfile(system_id=system.id, answers=answers, **prof)
     session.add(profile)
     await session.flush()

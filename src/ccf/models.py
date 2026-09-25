@@ -445,7 +445,18 @@ class System(Base):
         back_populates="system", cascade="all, delete-orphan"
     )
 
-    __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_system_org_name"),)
+    # Unique among *live* systems only: a soft-deleted system used to hold its
+    # name in the organization forever, so re-creating it was impossible and
+    # intake answered the attempt with a 500. See migration 0088_system_name_live_unique.
+    __table_args__ = (
+        Index(
+            "uq_system_org_name_live",
+            "organization_id",
+            "name",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+    )
 
 
 class SystemProfile(Base):

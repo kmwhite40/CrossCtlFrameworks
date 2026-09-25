@@ -6,6 +6,12 @@
 {% endblock %}
 {% block content %}
 
+{% if error %}
+<div class="chip chip--err" style="margin-bottom:16px">
+  <i data-lucide="alert-triangle"></i> {{ error }}
+</div>
+{% endif %}
+
 {% if result %}
 <section class="card card--elevated" style="border-top:3px solid var(--accent);margin-bottom:16px">
   <div class="card__header"><div class="card__title">Derived: {{ system_name }}</div>

@@ -43,13 +43,25 @@ async def _impl_coverage(session: AsyncSession, system_id: int) -> dict[str, int
 
 
 def org_system_subq(org_id: int | None) -> Any:
-    """Subquery of System ids in an org (or all systems when org_id is None).
+    """Subquery of **live** System ids in an org (or all orgs when org_id is None).
 
     Public (not module-private) because ``ccf.analytics.overview`` reuses it to
     scope its own ``_block`` functions to the same org — a scoped dashboard must
     be provably org-filtered in the query itself, not only via RLS.
+
+    Soft-deleted systems are excluded, which they were not. A deleted system
+    kept contributing to every executive number: an organization with one live
+    system reported three, and the headline "worst system" was a system that had
+    been deleted, carrying an SPRS of -203 that set the organization's average.
+    Leadership would have directed remediation at a system that no longer
+    exists while the live one went unmentioned -- and SPRS scores are reported
+    to DoD.
+
+    ``api.auth_deps.org_systems_subq`` already excluded them. Two helpers with
+    the same job and different answers is how this survived: the API surface was
+    right and the analytics surface was not.
     """
-    stmt = select(System.id)
+    stmt = select(System.id).where(System.deleted_at.is_(None))
     if org_id is not None:
         stmt = stmt.where(System.organization_id == org_id)
     return stmt
@@ -59,7 +71,7 @@ async def systems_scorecard(
     session: AsyncSession, *, today: date, org_id: int | None = None
 ) -> list[dict[str, Any]]:
     """Per-system scorecard: SPRS, implementation coverage, POA&M and evidence health."""
-    sys_stmt = select(System).order_by(System.name)
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org_id is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org_id)
     systems = (await session.execute(sys_stmt)).scalars().all()
@@ -263,7 +275,11 @@ async def org_summary(
     )
 
     risk_stmt = select(Risk.status, func.count()).group_by(Risk.status)
-    ato_stmt = select(System.ato_status, func.count()).group_by(System.ato_status)
+    ato_stmt = (
+        select(System.ato_status, func.count())
+        .where(System.deleted_at.is_(None))
+        .group_by(System.ato_status)
+    )
     if org_id is not None:
         risk_stmt = risk_stmt.where(Risk.system_id.in_(org_system_subq(org_id)))
         ato_stmt = ato_stmt.where(System.organization_id == org_id)

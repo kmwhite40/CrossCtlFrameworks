@@ -138,8 +138,10 @@ async def _risk_by_band(session: AsyncSession, org_id: int | None = None) -> dic
     """
     out = dict.fromkeys(_BAND_ORDER, 0)
     stmt = select(Risk.residual_score, Risk.status)
-    if org_id is not None:
-        stmt = stmt.where(Risk.system_id.in_(posture.org_system_subq(org_id)))
+    # Applied unconditionally: `org_system_subq(None)` is every *live*
+    # system, so the global view excludes deleted systems too. Gated on
+    # `org_id is not None`, an unscoped dashboard counted them.
+    stmt = stmt.where(Risk.system_id.in_(posture.org_system_subq(org_id)))
     for score, status in (await session.execute(stmt)).all():
         if status == "closed":
             continue
@@ -154,8 +156,10 @@ async def _mttr_trend(
     from ..models import POAM  # noqa: PLC0415 - local to keep the import surface small
 
     stmt = select(POAM.identified_on, POAM.closed_on).where(POAM.closed_on.is_not(None))
-    if org_id is not None:
-        stmt = stmt.where(POAM.system_id.in_(posture.org_system_subq(org_id)))
+    # Applied unconditionally: `org_system_subq(None)` is every *live*
+    # system, so the global view excludes deleted systems too. Gated on
+    # `org_id is not None`, an unscoped dashboard counted them.
+    stmt = stmt.where(POAM.system_id.in_(posture.org_system_subq(org_id)))
     rows = (await session.execute(stmt)).all()
     now = datetime.now(UTC).date()
     # Build the trailing-`months` window as (year, month) keys.
@@ -214,8 +218,10 @@ async def _control_tests(session: AsyncSession, org_id: int | None = None) -> di
 
 async def _ksi_states(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
     stmt = select(KSIState.status, func.count()).group_by(KSIState.status)
-    if org_id is not None:
-        stmt = stmt.where(KSIState.system_id.in_(posture.org_system_subq(org_id)))
+    # Applied unconditionally: `org_system_subq(None)` is every *live*
+    # system, so the global view excludes deleted systems too. Gated on
+    # `org_id is not None`, an unscoped dashboard counted them.
+    stmt = stmt.where(KSIState.system_id.in_(posture.org_system_subq(org_id)))
     rows = (await session.execute(stmt)).all()
     out = {
         "pass": 0, "warn": 0, "fail": 0, "not_tested": 0,
