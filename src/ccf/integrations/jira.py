@@ -145,6 +145,43 @@ class JiraTracker:
             fields["duedate"] = content.due_on.isoformat()
         return fields
 
+    def content_for(self, poam: Any) -> IssueContent:
+        """Map a POA&M onto the provider-neutral ticket shape.
+
+        The body is assembled from the fields an engineer needs to act, each
+        labelled, and omits any that are unset rather than emitting "None" -- a
+        ticket reading "Remediation plan: None" is worse than one that does not
+        mention a plan, because it looks like a decision was recorded.
+        """
+        sections: list[str] = []
+        if poam.weakness:
+            sections.append(f"Weakness\n{poam.weakness}")
+        if poam.remediation_plan:
+            sections.append(f"Remediation plan\n{poam.remediation_plan}")
+        if poam.resources_required:
+            sections.append(f"Resources required\n{poam.resources_required}")
+        if poam.point_of_contact:
+            sections.append(f"Point of contact: {poam.point_of_contact}")
+        sections.append(
+            f"Filed from Concord POA&M #{poam.id}. "
+            "Concord remains the record of truth for this item's compliance status; "
+            "closing this ticket does not close the POA&M."
+        )
+
+        labels = ["concord", f"poam-{poam.id}"]
+        if poam.severity:
+            labels.append(f"severity-{poam.severity}")
+        if poam.status:
+            labels.append(f"status-{poam.status}")
+
+        return IssueContent(
+            key=f"poam:{poam.id}",
+            title=poam.title,
+            body="\n\n".join(sections),
+            due_on=poam.scheduled_completion or poam.due_on,
+            labels=tuple(labels),
+        )
+
     def browse_url(self, issue_key: str) -> str:
         return f"{self._base}/browse/{issue_key}"
 

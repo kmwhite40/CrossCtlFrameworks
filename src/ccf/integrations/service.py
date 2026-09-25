@@ -17,6 +17,7 @@ order is the point:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -25,85 +26,89 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..connectors.credentials import resolve_credential
 from ..models import POAM, System
 from ..models_grc import ConnectorConfig, ExternalIssueLink
+from .emass import CREDENTIAL_TYPE as EMASS_CREDENTIAL_TYPE
+from .emass import PROVIDER as EMASS_PROVIDER
+from .emass import EmassTarget
 from .jira import CREDENTIAL_TYPE, PROVIDER, JiraTracker
 from .types import (
     IntegrationError,
     IntegrationNotConfigured,
-    IssueContent,
-    IssueTracker,
+    OutboundTarget,
     PushResult,
 )
 
 ENTITY_POAM = "poam"
 
 
-def poam_content(poam: POAM) -> IssueContent:
-    """Map a POA&M onto the provider-neutral ticket shape.
-
-    The body is assembled from the fields an engineer needs to act, each
-    labelled, and omits any that are unset rather than emitting "None" -- a
-    ticket reading "Remediation plan: None" is worse than one that does not
-    mention a plan, because it looks like a decision was recorded.
-    """
-    sections: list[str] = []
-    if poam.weakness:
-        sections.append(f"Weakness\n{poam.weakness}")
-    if poam.remediation_plan:
-        sections.append(f"Remediation plan\n{poam.remediation_plan}")
-    if poam.resources_required:
-        sections.append(f"Resources required\n{poam.resources_required}")
-    if poam.point_of_contact:
-        sections.append(f"Point of contact: {poam.point_of_contact}")
-    sections.append(
-        f"Filed from Concord POA&M #{poam.id}. "
-        "Concord remains the record of truth for this item's compliance status; "
-        "closing this ticket does not close the POA&M."
-    )
-
-    labels = ["concord", f"poam-{poam.id}"]
-    if poam.severity:
-        labels.append(f"severity-{poam.severity}")
-    if poam.status:
-        labels.append(f"status-{poam.status}")
-
-    return IssueContent(
-        key=f"{ENTITY_POAM}:{poam.id}",
-        title=poam.title,
-        body="\n\n".join(sections),
-        due_on=poam.scheduled_completion or poam.due_on,
-        labels=tuple(labels),
-    )
+#: Every outbound target a POA&M can be pushed to.
+PROVIDERS: tuple[str, ...] = (PROVIDER, EMASS_PROVIDER)
 
 
-async def _tracker_for(session: AsyncSession, org_id: int) -> IssueTracker:
-    """Build this organization's Jira tracker, or say precisely what is missing."""
-    secret = await resolve_credential(session, org_id, CREDENTIAL_TYPE)
+async def _config_and_secret(
+    session: AsyncSession, org_id: int, credential_type: str, label: str
+) -> tuple[dict, dict]:
+    secret = await resolve_credential(session, org_id, credential_type)
     if not secret:
         raise IntegrationNotConfigured(
-            "no Jira credential is stored for this organization"
+            f"no {label} credential is stored for this organization"
         )
     cfg = (
         await session.execute(
             select(ConnectorConfig).where(
                 ConnectorConfig.organization_id == org_id,
-                ConnectorConfig.connector_type == CREDENTIAL_TYPE,
+                ConnectorConfig.connector_type == credential_type,
             )
         )
     ).scalars().first()
-    config = dict(cfg.config or {}) if cfg is not None else {}
-    project_key = str(config.get("project_key") or secret.get("project_key") or "")
-    if not project_key:
-        raise IntegrationNotConfigured(
-            "no Jira project key is configured for this organization"
+    return (dict(cfg.config or {}) if cfg is not None else {}), secret
+
+
+async def _tracker_for(
+    session: AsyncSession, org_id: int, provider: str
+) -> OutboundTarget:
+    """Build this organization's target, or say precisely what is missing.
+
+    The non-secret half of the configuration lives on ``ConnectorConfig.config``
+    and the secret half in the enveloped credential, so a project key or an
+    eMASS system id can be changed without re-entering a token.
+    """
+    if provider == PROVIDER:
+        config, secret = await _config_and_secret(session, org_id, CREDENTIAL_TYPE, "Jira")
+        project_key = str(config.get("project_key") or secret.get("project_key") or "")
+        if not project_key:
+            raise IntegrationNotConfigured(
+                "no Jira project key is configured for this organization"
+            )
+        return JiraTracker(
+            base_url=str(secret.get("base_url", "")),
+            email=str(secret.get("email", "")),
+            api_token=str(secret.get("api_token", "")),
+            project_key=project_key,
+            issue_type=str(config.get("issue_type") or "Task"),
+            send_due_date=bool(config.get("send_due_date", False)),
         )
-    return JiraTracker(
-        base_url=str(secret.get("base_url", "")),
-        email=str(secret.get("email", "")),
-        api_token=str(secret.get("api_token", "")),
-        project_key=project_key,
-        issue_type=str(config.get("issue_type") or "Task"),
-        send_due_date=bool(config.get("send_due_date", False)),
-    )
+    if provider == EMASS_PROVIDER:
+        config, secret = await _config_and_secret(
+            session, org_id, EMASS_CREDENTIAL_TYPE, "eMASS"
+        )
+        raw_system = config.get("system_id") or secret.get("system_id") or 0
+        try:
+            system_id = int(raw_system)
+        except (TypeError, ValueError):
+            raise IntegrationNotConfigured(
+                f"the configured eMASS system id is not a number: {raw_system!r}"
+            ) from None
+        if not system_id:
+            raise IntegrationNotConfigured(
+                "no eMASS system id is configured for this organization"
+            )
+        return EmassTarget(
+            base_url=str(secret.get("base_url", "")),
+            api_key=str(secret.get("api_key", "")),
+            user_uid=str(secret.get("user_uid", "")),
+            system_id=system_id,
+        )
+    raise IntegrationNotConfigured(f"unknown outbound provider {provider!r}")
 
 
 async def _owned_poam(session: AsyncSession, org_id: int, poam_id: int) -> POAM:
@@ -145,8 +150,8 @@ async def links_for_entities(
     org_id: int,
     entity_type: str,
     entity_ids: list[int],
-    provider: str,
-) -> dict[int, ExternalIssueLink]:
+    providers: Sequence[str] = PROVIDERS,
+) -> dict[int, dict[str, ExternalIssueLink]]:
     """This organization's links for the given records, keyed by entity id.
 
     Lives here rather than inline in the page route so the organization
@@ -155,19 +160,30 @@ async def links_for_entities(
     issued that way passes whether or not this predicate exists -- it proves
     the policy, not the code.
     """
-    if not entity_ids:
+    if isinstance(providers, str):
+        # A bare string is a Sequence[str], so it would be accepted here and
+        # iterated as characters: `provider IN ('j','i','r','a')` matches
+        # nothing, and the page would silently show no links at all rather
+        # than fail. Refused loudly instead.
+        raise TypeError(
+            f"providers must be a sequence of provider names, got the string {providers!r}"
+        )
+    if not entity_ids or not providers:
         return {}
     rows = (
         await session.execute(
             select(ExternalIssueLink).where(
                 ExternalIssueLink.organization_id == org_id,
                 ExternalIssueLink.entity_type == entity_type,
-                ExternalIssueLink.provider == provider,
+                ExternalIssueLink.provider.in_(tuple(providers)),
                 ExternalIssueLink.entity_id.in_(entity_ids),
             )
         )
     ).scalars().all()
-    return {row.entity_id: row for row in rows}
+    by_entity: dict[int, dict[str, ExternalIssueLink]] = {}
+    for row in rows:
+        by_entity.setdefault(row.entity_id, {})[row.provider] = row
+    return by_entity
 
 
 async def push_poam(
@@ -175,7 +191,8 @@ async def push_poam(
     org_id: int | None,
     poam_id: int,
     *,
-    tracker: IssueTracker | None = None,
+    provider: str = PROVIDER,
+    tracker: OutboundTarget | None = None,
 ) -> PushResult:
     """File or update this POA&M's ticket, and record where it now lives.
 
@@ -188,10 +205,10 @@ async def push_poam(
         )
     poam = await _owned_poam(session, org_id, poam_id)
     if tracker is None:
-        tracker = await _tracker_for(session, org_id)
+        tracker = await _tracker_for(session, org_id, provider)
 
     link = await existing_link(session, org_id, ENTITY_POAM, poam_id, tracker.provider)
-    content = poam_content(poam)
+    content = tracker.content_for(poam)
 
     try:
         if link is None:
@@ -234,8 +251,8 @@ async def push_poam(
 __all__ = [
     "ENTITY_POAM",
     "PROVIDER",
+    "PROVIDERS",
     "existing_link",
     "links_for_entities",
-    "poam_content",
     "push_poam",
 ]

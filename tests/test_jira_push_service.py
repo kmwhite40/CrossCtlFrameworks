@@ -15,18 +15,24 @@ import pytest
 from sqlalchemy import select
 
 from ccf.db import session_scope
-from ccf.integrations.service import (
-    ENTITY_POAM,
-    existing_link,
-    poam_content,
-    push_poam,
-)
+from ccf.integrations.jira import JiraTracker
+from ccf.integrations.service import ENTITY_POAM, existing_link, push_poam
 from ccf.integrations.types import (
     IntegrationNotConfigured,
     IntegrationRefused,
     IssueContent,
     PushResult,
 )
+
+
+def poam_content(poam):
+    """The Jira target's own mapping, exercised directly."""
+    return JiraTracker(
+        base_url="https://acme.atlassian.net",
+        email="svc@acme.test",
+        api_token="t",
+        project_key="SEC",
+    ).content_for(poam)
 from ccf.models import POAM, Organization, System
 from ccf.models_grc import ExternalIssueLink
 
@@ -42,6 +48,9 @@ class _RecordingTracker:
 
     provider = "jira"
     credential_type = "jira"
+
+    def content_for(self, poam):
+        return poam_content(poam)
 
     def __init__(self, *, fail: Exception | None = None) -> None:
         self.created: list[IssueContent] = []
@@ -287,10 +296,10 @@ async def test_the_link_lookup_refuses_another_tenants_row_on_its_own() -> None:
 
     both = [mine_poam, theirs_poam]
     async with session_scope() as s:
-        mine = await links_for_entities(s, mine_id, ENTITY_POAM, both, "jira")
+        mine = await links_for_entities(s, mine_id, ENTITY_POAM, both, ("jira",))
 
     assert set(mine) == {mine_poam}, "another tenant's link came back"
-    assert mine[mine_poam].external_id == "SEC-1"
+    assert mine[mine_poam]["jira"].external_id == "SEC-1"
 
 
 @pytest.mark.asyncio
@@ -299,4 +308,17 @@ async def test_the_link_lookup_issues_no_query_for_an_empty_page() -> None:
     from ccf.integrations.service import links_for_entities
 
     async with session_scope() as s:
-        assert await links_for_entities(s, 1, ENTITY_POAM, [], "jira") == {}
+        assert await links_for_entities(s, 1, ENTITY_POAM, [], ("jira",)) == {}
+
+
+@pytest.mark.asyncio
+async def test_a_bare_provider_string_is_refused_rather_than_iterated() -> None:
+    """`"jira"` is a Sequence[str], so it would be accepted and split into
+    characters -- `provider IN ('j','i','r','a')` matches nothing, and the page
+    would quietly show no links at all. A silent empty result is the worst
+    possible failure here, so it raises."""
+    from ccf.integrations.service import links_for_entities
+
+    async with session_scope() as s:
+        with pytest.raises(TypeError):
+            await links_for_entities(s, 1, ENTITY_POAM, [1], "jira")  # type: ignore[arg-type]

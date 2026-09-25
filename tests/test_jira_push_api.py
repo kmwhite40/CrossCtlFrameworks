@@ -266,3 +266,45 @@ async def test_the_button_is_withheld_until_jira_is_configured() -> None:
 
     assert "data-jira-push" in after.text
     assert f'data-poam="{poam_id}"' in after.text
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_provider_is_a_404_not_a_push_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The path segment is user input and must not reach the dispatcher.
+
+    Asserted by failing the test if the service is called at all -- a route
+    that passed the string through would 409 ("not configured"), which reads
+    like a configuration problem rather than a typo.
+    """
+    poam_id, token = await _org_poam_and_user(f"Jira Unknown {uuid.uuid4().hex[:6]}")
+
+    async def _never(*args, **kwargs):
+        raise AssertionError("the service was reached with an unknown provider")
+
+    monkeypatch.setattr(integrations_service, "push_poam", _never)
+    async with _client() as c:
+        r = await c.post(f"/api/poams/{poam_id}/push/servicenow", headers=_auth(token))
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_provider_in_the_path_is_the_one_pushed_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both providers are exercised, so a route hard-coding one would fail."""
+    poam_id, token = await _org_poam_and_user(f"Jira Dispatch {uuid.uuid4().hex[:6]}")
+    seen: list[str] = []
+
+    async def _record(session, org_id, pid, *, provider, **kwargs):
+        seen.append(provider)
+        return PushResult(external_id="X-1", url="https://example.test/X-1", created=True)
+
+    monkeypatch.setattr(integrations_service, "push_poam", _record)
+    async with _client() as c:
+        for provider in ("jira", "emass"):
+            r = await c.post(f"/api/poams/{poam_id}/push/{provider}", headers=_auth(token))
+            assert r.status_code == 200
+            assert r.json()["provider"] == provider
+    assert seen == ["jira", "emass"]

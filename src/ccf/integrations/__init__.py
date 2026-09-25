@@ -5,6 +5,8 @@ Push-only. See :mod:`ccf.integrations.types` for why nothing reads back.
 
 from __future__ import annotations
 
+from .emass import CREDENTIAL_TYPE as EMASS_CREDENTIAL_TYPE
+from .emass import EmassTarget
 from .jira import CREDENTIAL_TYPE as JIRA_CREDENTIAL_TYPE
 from .jira import JiraTracker
 from .types import (
@@ -24,7 +26,10 @@ from .types import (
 #: credential type absent from that list cannot be created, listed or revoked
 #: through the API, which leaves the feature that needs it unreachable in every
 #: real deployment while every unit test still passes.
-_INTEGRATION_CREDENTIAL_TYPES: tuple[str, ...] = (JIRA_CREDENTIAL_TYPE,)
+_INTEGRATION_CREDENTIAL_TYPES: tuple[str, ...] = (
+    JIRA_CREDENTIAL_TYPE,
+    EMASS_CREDENTIAL_TYPE,
+)
 
 
 def integration_credential_keys() -> tuple[str, ...]:
@@ -39,6 +44,7 @@ __all__ = [
     "IntegrationUnavailable",
     "IssueContent",
     "IssueTracker",
+    "EmassTarget",
     "JiraTracker",
     "PushResult",
     "integration_credential_keys",
