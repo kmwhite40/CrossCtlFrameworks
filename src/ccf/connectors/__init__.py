@@ -11,6 +11,7 @@ from typing import Any
 from .aws import AwsGovCloudConnector
 from .azure_arm import AzureArmConnector
 from .base import CapturedParameter, ConfigConnector
+from .gcp import GcpConnector
 from .msgraph import MsGraphConnector
 from .puppetdb import PuppetDbConnector
 
@@ -18,6 +19,7 @@ _REGISTRY: dict[str, type[ConfigConnector]] = {
     MsGraphConnector.key: MsGraphConnector,
     AwsGovCloudConnector.key: AwsGovCloudConnector,
     AzureArmConnector.key: AzureArmConnector,
+    GcpConnector.key: GcpConnector,
     PuppetDbConnector.key: PuppetDbConnector,
 }
 

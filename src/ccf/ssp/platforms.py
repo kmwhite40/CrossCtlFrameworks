@@ -101,6 +101,9 @@ PLATFORM_CONNECTOR_KEYS: Mapping[str, str] = MappingProxyType(
     {
         "m365": "msgraph",
         "aws_govcloud": "aws_govcloud",
+        # One name on both sides, like AWS: the SSP platform code and the
+        # connector key are the same word.
+        "gcp": "gcp",
         # Azure Government is captured by the ARM connector, NOT by "msgraph":
         # an Azure Gov tenant is usually the same Microsoft tenant Graph
         # authenticates against, and pointing this entry at "msgraph" would let

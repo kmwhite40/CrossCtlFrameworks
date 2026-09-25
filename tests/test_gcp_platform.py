@@ -135,22 +135,22 @@ def test_the_physical_family_names_no_fedramp_level_for_gcp() -> None:
 # ── §5.3 no connector, said out loud ────────────────────────────────────────
 
 
-def test_gcp_has_no_capture_connector_and_says_so() -> None:
-    """Deliberate, not an omission.
-
-    ``connector_backing_state`` answers "does this tenant capture anything",
-    so a platform with no connector flows through it correctly and produces
-    the manual-evidence caveat. A mapping here would claim automated capture
-    that does not exist.
+def test_gcp_has_a_capture_connector() -> None:
+    """It did not, and the platform shipped deliberately unmapped so an
+    evidence claim would say "no connector exists" rather than imply a capture
+    that did not run. The connector exists now, so the mapping is the honest
+    state and the note changes with it -- see the test below.
     """
-    assert GCP not in PLATFORM_CONNECTOR_KEYS
-    assert connector_key_for_platform(GCP) is None
+    assert PLATFORM_CONNECTOR_KEYS[GCP] == "gcp"
+    assert connector_key_for_platform(GCP) == "gcp"
 
 
-def test_the_other_platforms_still_have_theirs() -> None:
-    """So the test above cannot pass by the mapping having been emptied."""
-    assert connector_key_for_platform("m365") == "msgraph"
-    assert connector_key_for_platform("aws_govcloud") == "aws_govcloud"
+def test_every_cloud_platform_now_has_a_connector() -> None:
+    """Google Cloud was the last one without. Derived from CLOUD_PLATFORMS so
+    a platform added later without one fails here and has to decide
+    deliberately, as Google Cloud did for a day."""
+    missing = [p for p in CLOUD_PLATFORMS if connector_key_for_platform(p) is None]
+    assert not missing, f"cloud platforms with no capture connector: {missing}"
 
 
 # ── §5.5 the questionnaire ──────────────────────────────────────────────────
@@ -180,26 +180,35 @@ def test_gcp_is_recognised_and_labelled_as_a_product() -> None:
 # this is the check that the claim is true.
 
 
-def test_a_gcp_system_is_told_no_connector_exists_not_that_it_failed_to_configure_one() -> None:
-    """Both notes require manual evidence; only one of them is true here.
+def test_a_gcp_system_is_now_told_to_configure_the_connector() -> None:
+    """The note follows the connector, which is the whole point of keying the
+    choice off the mapping rather than off recognition.
 
-    NO TENANT CAPTURE tells the reader to configure a connector that has
-    recently captured under their own credential. Concord ships none for Google
-    Cloud, so that would be an instruction nobody can follow -- the caveat
-    correctly added and then given a false reason, which is the exact failure
-    the note's own comment warns about.
+    While Concord shipped none, NO TENANT CAPTURE would have told the reader to
+    configure something that did not exist -- an instruction nobody could
+    follow. One exists now, so that is exactly the right thing to say, and NO
+    CONNECTOR would be the false one.
     """
     from ccf.ssp.platforms import (  # noqa: PLC0415
         MANUAL_EVIDENCE_MARKER,
-        MANUAL_EVIDENCE_NOTE,
+        NO_TENANT_CAPTURE_NOTE,
     )
 
     note = manual_evidence_note_for(GCP)
-    assert note == MANUAL_EVIDENCE_NOTE
-    assert "NO CONNECTOR" in note
-    assert "NO TENANT CAPTURE" not in note
+    assert note == NO_TENANT_CAPTURE_NOTE
+    assert "NO TENANT CAPTURE" in note
+    assert "NO CONNECTOR" not in note
     # And it is still findable by whatever keys off the shared marker.
     assert MANUAL_EVIDENCE_MARKER in note
+
+
+def test_a_platform_with_no_connector_is_still_told_the_other_thing() -> None:
+    """The case Google Cloud used to be, kept under test by the platform that
+    still is one: a system that declared no cloud at all."""
+    from ccf.ssp.platforms import MANUAL_EVIDENCE_NOTE, NO_PLATFORM  # noqa: PLC0415
+
+    assert connector_key_for_platform(NO_PLATFORM) is None
+    assert manual_evidence_note_for(NO_PLATFORM) == MANUAL_EVIDENCE_NOTE
 
 
 def test_a_platform_that_does_have_a_connector_is_told_the_other_thing() -> None:
