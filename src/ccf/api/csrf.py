@@ -30,6 +30,10 @@ from urllib.parse import urlsplit
 
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from ..logging import get_logger
+
+_log = get_logger(__name__)
+
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 
 _DENIED_BODY = b'{"detail":"cross-origin request rejected"}'
@@ -89,13 +93,39 @@ class CsrfOriginMiddleware:
             return
 
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
+        method = scope.get("method", "GET")
+        origin = headers.get("origin")
+        referer = headers.get("referer")
+        host = headers.get("host")
         if not is_allowed_origin(
-            method=scope.get("method", "GET"),
-            origin=headers.get("origin"),
-            referer=headers.get("referer"),
-            host=headers.get("host"),
+            method=method,
+            origin=origin,
+            referer=referer,
+            host=host,
             trusted_origins=self.trusted_origins,
         ):
+            # A rejection here is indistinguishable, from the browser, from the
+            # feature simply being broken: the response says only that the
+            # request was cross-origin, and deliberately does not echo the
+            # offending value back (reflecting attacker-controlled input into a
+            # response body is its own problem). Without this line an operator
+            # behind a proxy that rewrites Host, or reaching the app through a
+            # forwarded port, has nothing to go on. Logged at warning because
+            # every occurrence is either an attack or a misconfiguration.
+            _log.warning(
+                "csrf.origin_rejected",
+                method=method,
+                path=scope.get("path"),
+                origin=origin,
+                referer_host=_host_of(referer) if referer else None,
+                served_host=host,
+                trusted_origins=list(self.trusted_origins),
+                hint=(
+                    "the request's Origin/Referer host is neither the served Host "
+                    "nor a configured origin; if this host is correct, add it to "
+                    "CCF_CSRF_TRUSTED_ORIGINS"
+                ),
+            )
             await send(
                 {
                     "type": "http.response.start",

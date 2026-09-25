@@ -341,15 +341,21 @@ details[open] > .sidebar__heading .sidebar__caret { transform: rotate(90deg); }
    `hero_class` block). It is offered, never imposed: the other 53 pages keep
    the plain hero. §5 of the spec. */
 .page-hero--banner {
-  margin: var(--space-6) var(--space-8) 0; padding: var(--space-8);
+  /* Box model must match `.page`'s content box: it is a *sibling* of `.page`,
+     not a child, so `.page > * + *` never supplies the gap below it and
+     `margin: 0 auto` on `.page` is not inherited. Fixed side margins left the
+     banner short of centre once `.main` exceeded `--maxw`, and a zero bottom
+     margin sat its border flush against the first heading underneath. */
+  width: calc(100% - var(--space-8) * 2);
   max-width: calc(var(--maxw) - var(--space-8) * 2);
+  margin: var(--space-6) auto var(--stack-gap); padding: var(--space-8);
   border: 1px solid var(--border); border-radius: var(--radius-2xl);
   background: linear-gradient(135deg, var(--accent-soft), transparent 58%), var(--bg-elevated);
   box-shadow: var(--shadow-sm);
 }
 .page > * + * { margin-top: 32px; }
 .page__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
-.page__title { font-family: var(--font-display); font-size: 44px; font-weight: 700; letter-spacing: -.035em; color: var(--text); line-height: 1.05; }
+.page__title { font-family: var(--font-display); font-size: 44px; font-weight: 700; letter-spacing: -.035em; color: var(--text); line-height: 1.1; }
 .page__subtitle { color: var(--text-secondary); font-size: 17px; margin-top: 8px; max-width: 84ch; line-height: 1.5; }
 .breadcrumbs { max-width: var(--maxw); margin: var(--space-5) auto calc(var(--space-2) * -1); padding: 0 var(--space-8); display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-muted); }
 .breadcrumbs a { color: var(--text-secondary); text-decoration: none; }
@@ -394,7 +400,7 @@ a.tile:hover, .tile[href]:hover { transform: translateY(-2px); box-shadow: var(-
 }
 a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .kpi__label { font-size: 13px; color: var(--text-secondary); font-weight: 500; text-transform: none; letter-spacing: 0; }
-.kpi__value { margin-top: var(--space-3); font-family: var(--font-display); font-size: clamp(28px, 2.6vw, 40px); line-height: 1; font-weight: 700; letter-spacing: -.035em; color: var(--text); max-width: 100%; overflow-wrap: anywhere; }
+.kpi__value { margin-top: var(--space-3); font-family: var(--font-display); font-size: clamp(28px, 2.6vw, 40px); line-height: 1.1; font-weight: 700; letter-spacing: -.035em; color: var(--text); max-width: 100%; overflow-wrap: anywhere; }
 .kpi__meta { margin-top: 10px; font-size: 14px; color: var(--text-secondary); }
 .kpi__trend { position: absolute; right: var(--space-5); top: var(--space-5); width: 34px; height: 34px; border-radius: var(--radius); display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-ink); border: none; }
 .kpi__trend svg { width: 18px; height: 18px; }
@@ -403,18 +409,18 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
    LAYOUT UTILITIES
    ════════════════════════════════════════════════════════════ */
 .g-1{gap:8px}.g-2{gap:12px}.g-3{gap:16px}.g-4{gap:20px}
-.cols-2{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.cols-3{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
-.cols-4{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
-@container main (max-width:880px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+.cols-2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+.cols-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.cols-4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px}
+@container main (max-width:880px){.cols-2,.cols-3,.cols-4{grid-template-columns:minmax(0,1fr)}}
 .between{justify-content:space-between}
-.layout-split-l { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
-.layout-split-r { display: grid; grid-template-columns: 1fr 360px; gap: 20px; align-items: start; }
-@container main (max-width: 920px) { .layout-split-l, .layout-split-r { grid-template-columns: 1fr; } }
-.grid-2-1 { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; align-items: start; }
-.grid-1-1 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
-@container main (max-width: 900px) { .grid-2-1 { grid-template-columns: 1fr; } }
-@container main (max-width: 720px) { .grid-1-1 { grid-template-columns: 1fr; } }
+.layout-split-l { display: grid; grid-template-columns: 320px minmax(0,1fr); gap: 20px; align-items: start; }
+.layout-split-r { display: grid; grid-template-columns: minmax(0,1fr) 360px; gap: 20px; align-items: start; }
+@container main (max-width: 920px) { .layout-split-l, .layout-split-r { grid-template-columns: minmax(0,1fr); } }
+.grid-2-1 { display: grid; grid-template-columns: minmax(0,2fr) minmax(0,1fr); gap: 20px; align-items: start; }
+.grid-1-1 { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 20px; align-items: start; }
+@container main (max-width: 900px) { .grid-2-1 { grid-template-columns: minmax(0,1fr); } }
+@container main (max-width: 720px) { .grid-1-1 { grid-template-columns: minmax(0,1fr); } }
 .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: end; }
 .filters > .btn { align-self: end; }
 .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
@@ -498,7 +504,7 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
    ════════════════════════════════════════════════════════════ */
 .chart-donut { position: relative; display: inline-grid; place-items: center; flex: none; }
 .chart-donut__center { position: absolute; inset: 0; display: grid; place-items: center; align-content: center; text-align: center; }
-.chart-donut__value { font-family: var(--font-display, inherit); font-size: 22px; font-weight: 700; letter-spacing: -.03em; color: var(--text); line-height: 1; }
+.chart-donut__value { font-family: var(--font-display, inherit); font-size: 22px; font-weight: 700; letter-spacing: -.03em; color: var(--text); line-height: 1.1; }
 .chart-donut__cap { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
 .chart-gauge { position: relative; display: inline-grid; place-items: center; flex: none; }
 .chart-gauge__label { position: absolute; font-size: 13px; font-weight: 700; color: var(--text); }
@@ -610,7 +616,10 @@ kbd { font-family: var(--font-mono); font-size: 11px; padding: 2px 7px; border-r
 @media (max-width: 720px) {
   .topbar { padding: 0 var(--space-4); gap: var(--space-2); }
   .page-hero { padding: var(--space-6) var(--space-4) var(--space-4); }
-  .page-hero--banner { margin: var(--space-4); padding: var(--space-5); max-width: none; }
+  /* `width` must be reset alongside `max-width`: the desktop rule sizes the
+     banner to `.page`'s content box, and leaving that in place here would sit a
+     100%-64px box inside 16px margins, stranding the difference on one side. */
+  .page-hero--banner { width: auto; margin: var(--space-4); padding: var(--space-5); max-width: none; }
   .page { padding: 0 var(--space-4) var(--space-8); }
   .page__title { font-size: 28px; }
   .card__body { padding: var(--space-4); }
