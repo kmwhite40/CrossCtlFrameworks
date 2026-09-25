@@ -435,6 +435,22 @@ def enforce_secure_config(settings: Settings) -> list[str]:
         problems.append("session secret is the insecure default (set CCF_AUTH_SESSION_SECRET)")
     if settings.api_cors_origins == ["*"]:
         problems.append("CORS is wildcard '*' (set CCF_API_CORS_ORIGINS to explicit origins)")
+    # Warnings, not refusals. Neither of these lets a request act as someone it
+    # is not, which is the bar for refusing to start -- but both were invisible,
+    # and the first presented to an operator as "the connector page will not
+    # accept my key" with nothing anywhere saying why.
+    if settings.ai_credential_key_provider == "local" and not settings.ai_credential_master_key:
+        warnings.append(
+            "CCF_AI_CREDENTIAL_MASTER_KEY is unset with the local key provider, so "
+            "credential storage fails closed: no connector, AI provider or MFA "
+            "secret can be saved"
+        )
+    if settings.ai_credential_key_provider == "local":
+        warnings.append(
+            "CCF_AI_CREDENTIAL_KEY_PROVIDER is 'local', so credential key material "
+            "lives in this process's environment; a managed provider (aws_kms) keeps "
+            "it out of the platform"
+        )
     if problems:
         raise RuntimeError(
             f"Refusing to start: insecure configuration for env={env!r}: "

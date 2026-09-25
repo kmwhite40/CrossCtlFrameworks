@@ -114,18 +114,35 @@ async def systems_scorecard(
                 .where(Evidence.expires_on < today)
             )
         ).scalar_one()
+        controls_assessed = sprs["total_controls"] - sprs["state_counts"].get(
+            "not_assessed", 0
+        )
+        # A system nobody has assessed has no score, and must not render one.
+        #
+        # SPRS starts at the baseline and subtracts for unmet controls, so an
+        # unassessed system lands at the floor -- -203 for 800-171. That is the
+        # worst value the scale produces, and it was appearing on the scorecard
+        # as though someone had measured it. The executive summary meanwhile
+        # excluded such a system from `worst_system` (correctly), so the two
+        # views sat on the same page disagreeing: the scorecard showed -203 as
+        # the worst number present while the headline named a different system
+        # at -163.
+        #
+        # The exclusion was right and the rendering was wrong: -203 here is a
+        # claim about posture that no assessment supports. `assessed` carries
+        # the distinction so a view can say "not assessed" instead of guessing.
+        assessed = controls_assessed > 0
         scorecards.append(
             {
                 "system_id": sys.id,
                 "name": sys.name,
                 "baseline": sys.baseline,
                 "ato_status": sys.ato_status,
-                "sprs_score": sprs["score"],
-                "sprs_percentage": sprs["percentage"],
+                "assessed": assessed,
+                "sprs_score": sprs["score"] if assessed else None,
+                "sprs_percentage": sprs["percentage"] if assessed else None,
                 "ssp_present": sprs["ssp_present"],
-                "controls_assessed": sprs["total_controls"] - sprs["state_counts"].get(
-                    "not_assessed", 0
-                ),
+                "controls_assessed": controls_assessed,
                 "impl_total": coverage["total"],
                 "impl_met": coverage["met"],
                 "open_poams": open_poams,
@@ -253,7 +270,9 @@ async def org_summary(
     poams = await poam_aging(session, today=today, org_id=org_id)
     evidence = await evidence_freshness(session, today=today, org_id=org_id)
 
-    scored = [c for c in cards if c["controls_assessed"] > 0]
+    # Same predicate as the `assessed` flag on each card, so a system can
+    # never be scored here while rendering "not assessed" there.
+    scored = [c for c in cards if c["assessed"]]
     avg_sprs = round(sum(c["sprs_score"] for c in scored) / len(scored), 1) if scored else None
 
     # CISO-09: the average masks a failing system — surface the weakest

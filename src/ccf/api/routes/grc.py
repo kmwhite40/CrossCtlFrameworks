@@ -31,6 +31,7 @@ from ...models_grc import (
     TrustAccessRequest,
     TrustProfile,
 )
+from ...connectors.credential_spec import configurable_types
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -809,7 +810,11 @@ async def list_connectors(
     if principal.org_id is not None:
         stmt = stmt.where(ConnectorConfig.organization_id == principal.org_id)
     return {
-        "connector_types": list(CONNECTOR_TYPES),
+        # The types a credential can actually be stored for, not the demo
+        # vocabulary. `CONNECTOR_TYPES` pairs with `_MOCK_DISCOVERY`; seven of
+        # its ten entries have no connector and no credential spec, so a client
+        # creating one got a row that could never capture anything.
+        "connector_types": [key for key, _label in configurable_types()],
         "configs": [_conn_out(c) for c in (await session.execute(stmt)).scalars().all()],
     }
 
@@ -820,8 +825,27 @@ async def create_connector(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    if body.connector_type not in CONNECTOR_TYPES:
-        raise HTTPException(422, f"connector_type must be one of {', '.join(CONNECTOR_TYPES)}")
+    allowed = [key for key, _label in configurable_types()]
+    if body.connector_type not in allowed:
+        raise HTTPException(422, f"connector_type must be one of {', '.join(allowed)}")
+    if principal.org_id is None:
+        raise HTTPException(400, "organization context required to add a connector")
+    # One row per (organization, connector type): the credential is keyed that
+    # way, so a second row of a type can never hold its own.
+    existing = (
+        await session.execute(
+            select(ConnectorConfig.id).where(
+                ConnectorConfig.organization_id == principal.org_id,
+                ConnectorConfig.connector_type == body.connector_type,
+            )
+        )
+    ).first()
+    if existing is not None:
+        raise HTTPException(
+            409,
+            f"this organization already has a {body.connector_type} connector; "
+            "configure that one rather than adding a second",
+        )
     c = ConnectorConfig(organization_id=principal.org_id, **body.model_dump())
     session.add(c)
     await session.commit()
@@ -858,7 +882,10 @@ async def sync_connector(
             "cycle using this organization's own bound credential",
         )
     c = await session.get(ConnectorConfig, cfg_id)
-    if c is None:
+    # Scoped explicitly as well as by RLS. Its UI twin addressed another
+    # tenant's connector by id for exactly this reason, and a test issued over
+    # HTTP cannot tell an app predicate from the database policy.
+    if c is None or (principal.org_id is not None and c.organization_id != principal.org_id):
         raise HTTPException(404, "connector not found")
     discovered = _MOCK_DISCOVERY.get(c.connector_type, 100)
     c.objects_discovered = discovered

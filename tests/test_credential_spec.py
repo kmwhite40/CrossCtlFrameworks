@@ -185,3 +185,33 @@ def test_the_demo_connector_vocabulary_is_no_longer_what_the_page_offers() -> No
         "the connectors page is offering demo types again: "
         f"{sorted(demo_only & offered)}"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_json_api_offers_the_same_types_as_the_page() -> None:
+    """Two surfaces, one answer.
+
+    The JSON API kept offering ``grc.CONNECTOR_TYPES`` after the page moved to
+    the credential registry, so a client could still create a connector of a
+    type with no implementation -- and those rows reach production, which the
+    page's fix did not cover.
+    """
+    from ccf.api.routes.ui_grc import _configurable_types
+    from ccf.connectors.credential_spec import configurable_types
+
+    assert tuple(_configurable_types()) == tuple(configurable_types())
+    offered = {key for key, _label in configurable_types()}
+    assert offered == set(SPECS), "the shared helper disagrees with the registry"
+
+
+def test_the_json_api_no_longer_validates_against_the_demo_vocabulary() -> None:
+    """Pins the wiring, not the helper: the route could still hold its own list."""
+    import inspect
+
+    from ccf.api.routes import grc
+
+    source = inspect.getsource(grc.create_connector)
+    assert "CONNECTOR_TYPES" not in source, (
+        "create_connector still validates against the demo vocabulary"
+    )
+    assert "configurable_types" in source

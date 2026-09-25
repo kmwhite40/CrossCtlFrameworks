@@ -34,7 +34,27 @@ def test_prod_default_secret_refuses_start() -> None:
 
 
 def test_prod_secure_returns_no_problems() -> None:
-    assert enforce_secure_config(_settings()) == []
+    """A secure config does not refuse to start.
+
+    Asserted as "does not raise" rather than "returns []": the return value is
+    the *warning* list, and a production deployment with no credential master
+    key now legitimately warns while remaining safe to start. Conflating the
+    two would make any future warning look like a regression.
+    """
+    assert enforce_secure_config(_settings()) is not None  # did not raise
+
+
+def test_a_fully_configured_production_deployment_warns_about_nothing() -> None:
+    """The other half: with everything set, the warning list is empty."""
+    assert (
+        enforce_secure_config(
+            _settings(
+                ai_credential_master_key="k" * 32,
+                ai_credential_key_provider="aws_kms",
+            )
+        )
+        == []
+    )
 
 
 def test_prod_wildcard_cors_refuses_start() -> None:
@@ -60,3 +80,39 @@ def test_env_test_insecure_is_noop() -> None:
         api_cors_origins=["*"],
     )
     assert enforce_secure_config(s) == []
+
+
+def test_a_missing_credential_master_key_is_warned_about_not_refused() -> None:
+    """Credential storage fails closed without it, and said so nowhere.
+
+    An operator met this as "the connector page will not accept my key": the
+    cipher refused, correctly, and nothing at startup mentioned that the
+    feature was unavailable. Not a refusal to start -- a reader-only
+    deployment legitimately stores no credentials, and nothing here lets a
+    request act as someone it is not, which is the bar for refusing.
+    """
+    warnings = enforce_secure_config(_settings(ai_credential_master_key=None))
+    assert any("CCF_AI_CREDENTIAL_MASTER_KEY is unset" in w for w in warnings)
+    assert any("fails closed" in w for w in warnings)
+
+
+def test_the_local_key_provider_is_warned_about_in_production() -> None:
+    """`local` keeps key material in the process environment."""
+    warnings = enforce_secure_config(_settings(ai_credential_master_key="k" * 32))
+    assert any("'local'" in w and "environment" in w for w in warnings)
+
+
+def test_a_managed_provider_with_a_key_warns_about_neither() -> None:
+    """Both directions, so a guard that warned unconditionally would fail."""
+    warnings = enforce_secure_config(
+        _settings(
+            ai_credential_master_key="k" * 32,
+            ai_credential_key_provider="aws_kms",
+        )
+    )
+    assert not [w for w in warnings if "CREDENTIAL" in w]
+
+
+def test_neither_warning_fires_in_a_development_environment() -> None:
+    """`enforce_secure_config` is a no-op in dev, and must stay one."""
+    assert enforce_secure_config(_settings(env="dev", ai_credential_master_key=None)) == []
