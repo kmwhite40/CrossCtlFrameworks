@@ -132,6 +132,67 @@ DEFAULT_USER_PERMISSIONS_RESTRICTED = PostureCheck(
     required_permissions=("Policy.Read.All",),
 )
 
+
+#: An audit trail is evidence only if it is current. Graph returns the most
+#: recent records first, so a newest record older than this means the tenant
+#: has stopped producing auditable events, the connector has lost the
+#: permission, or retention has already expired them -- each worth a finding.
+AUDIT_RECENCY_DAYS = 7
+
+#: Intune compliance states that are not "this device meets the baseline".
+#: `unknown` and `notApplicable` are excluded rather than failed: a device
+#: Intune has not evaluated has not been shown to be non-compliant, and
+#: scoring it as a failure would invent a finding.
+DEVICE_NONCOMPLIANT_STATES = frozenset(
+    {"noncompliant", "conflict", "error", "inGracePeriod"}
+)
+DEVICE_UNEVALUATED_STATES = frozenset({"unknown", "notApplicable", "configManager"})
+
+#: Risk states meaning nobody has dealt with the user yet. `remediated`,
+#: `dismissed` and `confirmedSafe` are all dispositions -- someone looked.
+RISK_UNRESOLVED_STATES = frozenset({"atRisk", "confirmedCompromised"})
+
+
+SIGNIN_AUDIT_CURRENT = PostureCheck(
+    key="m365.audit.signin_records_current",
+    title="Sign-in audit records are being produced",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=f"a sign-in audit record exists within the last {AUDIT_RECENCY_DAYS} days",
+    control_ids=("AU-2", "AU-12"),
+    required_permissions=("AuditLog.Read.All",),
+)
+
+DIRECTORY_AUDIT_CURRENT = PostureCheck(
+    key="m365.audit.directory_changes_recorded",
+    title="Directory changes are recorded in the audit log",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=f"a directory audit record exists within the last {AUDIT_RECENCY_DAYS} days",
+    control_ids=("AU-2", "AU-3", "AU-12"),
+    required_permissions=("AuditLog.Read.All",),
+)
+
+DEVICE_COMPLIANCE = PostureCheck(
+    key="m365.device.compliance_enforced",
+    title="Managed devices meet their compliance baseline",
+    provider="msgraph",
+    resource_type="managed_device",
+    expected="every evaluated managed device is compliant with its assigned policy",
+    control_ids=("CM-6", "CM-2", "SI-2"),
+    required_permissions=("DeviceManagementManagedDevices.Read.All",),
+)
+
+RISKY_USERS_RESOLVED = PostureCheck(
+    key="m365.identity.risky_users_resolved",
+    title="Flagged risky users have been dealt with",
+    provider="msgraph",
+    resource_type="entra_user",
+    expected="no user remains at risk without a disposition",
+    control_ids=("AC-2(12)", "SI-4", "AU-6"),
+    required_permissions=("IdentityRiskyUser.Read.All",),
+)
+
 CHECKS: tuple[PostureCheck, ...] = (
     MFA_REGISTERED,
     LEGACY_AUTH_BLOCKED,
@@ -140,6 +201,10 @@ CHECKS: tuple[PostureCheck, ...] = (
     PHISHABLE_METHODS_DISABLED,
     GUEST_INVITES_RESTRICTED,
     DEFAULT_USER_PERMISSIONS_RESTRICTED,
+    SIGNIN_AUDIT_CURRENT,
+    DIRECTORY_AUDIT_CURRENT,
+    DEVICE_COMPLIANCE,
+    RISKY_USERS_RESOLVED,
 )
 
 #: Graph collection each check reads, relative to the Graph base URL.
@@ -172,6 +237,19 @@ ENDPOINTS: dict[str, str] = {
     PHISHABLE_METHODS_DISABLED.key: "/v1.0/policies/authenticationMethodsPolicy",
     GUEST_INVITES_RESTRICTED.key: "/v1.0/policies/authorizationPolicy",
     DEFAULT_USER_PERMISSIONS_RESTRICTED.key: "/v1.0/policies/authorizationPolicy",
+    # `$top=1` deliberately: the question is whether a recent record exists,
+    # not what happened. Graph returns these newest-first, so one row answers
+    # it -- and a tenant's sign-in log is the largest collection in Graph.
+    SIGNIN_AUDIT_CURRENT.key: "/v1.0/auditLogs/signIns?$top=1",
+    DIRECTORY_AUDIT_CURRENT.key: "/v1.0/auditLogs/directoryAudits?$top=1",
+    DEVICE_COMPLIANCE.key: (
+        "/v1.0/deviceManagement/managedDevices"
+        "?$select=id,deviceName,complianceState,operatingSystem&$top=500"
+    ),
+    RISKY_USERS_RESOLVED.key: (
+        "/v1.0/identityProtection/riskyUsers"
+        "?$select=id,userPrincipalName,riskLevel,riskState&$top=500"
+    ),
 }
 
 
@@ -511,6 +589,131 @@ def evaluate_default_user_permissions(
     ]
 
 
+
+def _audit_recency(
+    rows: list[dict[str, Any]], *, tenant_id: str, now: datetime, field: str, label: str
+) -> list[ResourceFinding]:
+    """Shared by both audit checks: is the newest record recent enough?
+
+    An empty collection is a failure, not "nothing to assess". A tenant with
+    no audit records in the window is either not producing them, has lost the
+    permission, or has let retention expire them -- and every one of those is
+    the finding AU-2 exists to catch. Treating it as not-applicable would turn
+    the absence of an audit trail into silence.
+    """
+    newest = None
+    for row in rows:
+        stamp = _parse_graph_datetime(row.get(field))
+        if stamp and (newest is None or stamp > newest):
+            newest = stamp
+    if newest is None:
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="fail",
+                observed=f"no {label} record was returned",
+                detail={"records_examined": len(rows)},
+            )
+        ]
+    age = (now - newest).days
+    verdict = "pass" if age <= AUDIT_RECENCY_DAYS else "fail"
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict=verdict,
+            observed=f"most recent {label} record is {age} day(s) old",
+            detail={"newest": newest.isoformat(), "threshold_days": AUDIT_RECENCY_DAYS},
+        )
+    ]
+
+
+def evaluate_signin_audit_current(
+    rows: list[dict[str, Any]], *, tenant_id: str, now: datetime
+) -> list[ResourceFinding]:
+    return _audit_recency(
+        rows, tenant_id=tenant_id, now=now, field="createdDateTime", label="sign-in"
+    )
+
+
+def evaluate_directory_audit_current(
+    rows: list[dict[str, Any]], *, tenant_id: str, now: datetime
+) -> list[ResourceFinding]:
+    return _audit_recency(
+        rows, tenant_id=tenant_id, now=now, field="activityDateTime", label="directory audit"
+    )
+
+
+def evaluate_device_compliance(rows: list[dict[str, Any]]) -> list[ResourceFinding]:
+    """CM-6: every device Intune has evaluated meets its assigned policy.
+
+    A device in an unevaluated state is `not_applicable`, not a failure: it
+    has not been shown to be non-compliant, and scoring it as one would invent
+    a finding against a device nobody has assessed.
+    """
+    findings: list[ResourceFinding] = []
+    for row in rows:
+        state = str(row.get("complianceState") or "unknown")
+        ref = str(row.get("deviceName") or row.get("id") or "unknown device")
+        if state in DEVICE_UNEVALUATED_STATES:
+            verdict, observed = "not_applicable", f"not evaluated ({state})"
+        elif state in DEVICE_NONCOMPLIANT_STATES:
+            verdict, observed = "fail", f"{state} against its assigned policy"
+        else:
+            verdict, observed = "pass", f"compliant ({row.get('operatingSystem') or 'unknown OS'})"
+        findings.append(
+            ResourceFinding(
+                resource_id=str(row.get("id") or ref),
+                resource_type="managed_device",
+                verdict=verdict,
+                observed=f"{ref}: {observed}",
+                detail={"complianceState": state},
+            )
+        )
+    return findings
+
+
+def evaluate_risky_users_resolved(rows: list[dict[str, Any]]) -> list[ResourceFinding]:
+    """AC-2(12): a flagged user has had a disposition, whatever it was.
+
+    `remediated`, `dismissed` and `confirmedSafe` all mean somebody looked --
+    the control is about responding to the signal, not about the verdict.
+    Only a user still `atRisk` or `confirmedCompromised` is outstanding.
+    """
+    findings: list[ResourceFinding] = []
+    for row in rows:
+        state = str(row.get("riskState") or "unknown")
+        level = str(row.get("riskLevel") or "unknown")
+        ref = str(row.get("userPrincipalName") or row.get("id") or "unknown user")
+        outstanding = state in RISK_UNRESOLVED_STATES
+        findings.append(
+            ResourceFinding(
+                resource_id=str(row.get("id") or ref),
+                resource_type="entra_user",
+                verdict="fail" if outstanding else "pass",
+                observed=(
+                    f"{ref}: risk {level}, {state}"
+                    if outstanding
+                    else f"{ref}: {state}"
+                ),
+                detail={"riskState": state, "riskLevel": level},
+            )
+        )
+    return findings
+
+
+#: Checks whose question is answered by the first page. Graph returns audit
+#: collections newest-first, so "is there a recent record" needs one row --
+#: and following the nextLink walked a tenant's whole sign-in log and earned
+#: a 429 on a $top=1 query, which the per-check isolation then reported as
+#: manual_review_required: a rate limit wearing the costume of a finding.
+FIRST_PAGE_ONLY: dict[str, int] = {
+    SIGNIN_AUDIT_CURRENT.key: 1,
+    DIRECTORY_AUDIT_CURRENT.key: 1,
+}
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     MFA_REGISTERED.key: evaluate_mfa_registered,
     LEGACY_AUTH_BLOCKED.key: evaluate_legacy_auth_blocked,
@@ -519,4 +722,8 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     PHISHABLE_METHODS_DISABLED.key: evaluate_phishable_methods_disabled,
     GUEST_INVITES_RESTRICTED.key: evaluate_guest_invites_restricted,
     DEFAULT_USER_PERMISSIONS_RESTRICTED.key: evaluate_default_user_permissions,
+    SIGNIN_AUDIT_CURRENT.key: evaluate_signin_audit_current,
+    DIRECTORY_AUDIT_CURRENT.key: evaluate_directory_audit_current,
+    DEVICE_COMPLIANCE.key: evaluate_device_compliance,
+    RISKY_USERS_RESOLVED.key: evaluate_risky_users_resolved,
 }

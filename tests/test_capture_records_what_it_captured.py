@@ -29,6 +29,32 @@ from ccf.models_grc import ConnectorConfig
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 
+@pytest.fixture(autouse=True)
+async def _remove_connectors_afterwards():
+    """Delete every connector this module created.
+
+    A row with an `encrypted_credential` puts its organization into
+    `orgs_with_bound_credentials`, so the scheduled collection path in
+    `test_connectors.py` then tries to capture from it -- and fails in a
+    different module with nothing pointing back here. This module's whole
+    subject is writing to those rows, so it has to clear them up.
+    """
+    from sqlalchemy import delete
+
+    yield
+    async with session_scope() as s:
+        await s.execute(
+            delete(ConnectorConfig).where(
+                ConnectorConfig.organization_id.in_(
+                    select(Organization.id).where(
+                        Organization.name.like("Capture Org %")
+                        | Organization.name.like("No Cred Org %")
+                    )
+                )
+            )
+        )
+
+
 async def _org_with_connector() -> tuple[int, int]:
     tag = uuid.uuid4().hex[:8]
     async with session_scope() as s:

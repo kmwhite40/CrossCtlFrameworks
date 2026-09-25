@@ -132,6 +132,32 @@ async def _connector_for(
 CONNECTOR_STALE_DAYS_DEFAULT = 30
 
 
+
+class ScanOwnedTestError(ValueError):
+    """A hand-supplied result for a test whose verdict comes from a scan.
+
+    Raised at the HTTP boundary, not inside :func:`record_result`. The threat
+    is a person typing a verdict, and only the routes know their input came
+    from one -- a scan, the scheduler and the tests are all legitimate
+    internal writers. Guarding the writer instead meant inferring the caller
+    from its payload, which refused a scan reporting an empty fleet or a
+    resourceless tenant-level failure: a scan being told its own result was
+    hand-typed.
+
+    A ValueError subclass so callers that already suppress ValueError keep
+    their behaviour.
+    """
+
+
+def scan_owned(test: ControlTest) -> bool:
+    """True when this test's verdict comes from a posture scan.
+
+    A scan-owned test carries a ``check_key``. Its result is evidence, and a
+    typed value replacing it is indistinguishable afterwards.
+    """
+    return bool(test.check_key)
+
+
 def connector_backing_state(
     conn: ConnectorConfig | None, today: date, stale_after_days: int
 ) -> str:
@@ -348,6 +374,28 @@ async def evaluate_test(
     value for its ``odp_key`` is checked (real pass/fail on posture). Otherwise
     it falls back to the connector-freshness heuristic in :func:`_evaluate`.
     """
+    # A posture-scan test is owned by the scan that produced it.
+    #
+    # Such a test carries a `check_key` and no assertion, so it used to fall
+    # through to the connector-freshness heuristic below -- which answers "is
+    # the connector healthy", not "does the control pass". A healthy connector
+    # therefore overwrote a real finding with a pass, recorded it with
+    # `evaluated=0, failing=0`, and raised a "Control test recovered" alert
+    # claiming a failure had been fixed. Observed live: IA-2 (6 of 78 users
+    # without MFA), AC-3 and AC-6 all reported recovered while still failing.
+    #
+    # Re-running one means re-scanning, which the freshness heuristic cannot
+    # do. Reported as unrunnable here rather than silently skipped, so a
+    # scheduler that reaches one says so.
+    if test.check_key:
+        return (
+            test.last_status or "warn",
+            (
+                f"Assessed by posture scan '{test.check_key}', not by connector "
+                "freshness — re-run a scan to refresh this result."
+            ),
+            None,
+        )
     if test.assertion and test.assertion.get("odp_key"):
         snap = await _latest_capture(session, test)
         if snap is None:
@@ -586,6 +634,12 @@ async def record_result(
     """
     if status not in VALIDATION_STATUSES:
         raise ValueError(f"status must be one of {VALIDATION_STATUSES}")
+    # A scan-owned test's verdict comes from evidence, and a hand-typed one is
+    # indistinguishable from it afterwards. Refused rather than recorded: the
+    # same reasoning that stopped the connector-freshness heuristic
+    # overwriting these, and the difference between a platform that reports
+    # what it observed and one that reports what somebody asserted.
+    #
     # Must be captured before the reassignment two lines below -- if this
     # instead read test.last_status after the assignment, it would always
     # equal `status` and the fail/warn -> pass transition would be

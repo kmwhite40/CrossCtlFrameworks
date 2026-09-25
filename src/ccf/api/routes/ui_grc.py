@@ -600,15 +600,39 @@ async def control_tests_run(
     detail: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
+    org = _principal_org(request)
     test = await session.get(ControlTest, test_id)
-    if test is not None:
-        principal = getattr(request.state, "principal", None)
-        actor = getattr(principal, "email", None) or "user"
-        with contextlib.suppress(ValueError):
-            await control_tests.record_result(
-                session, test, status=status, detail=detail or None, actor=actor
-            )
-            await session.commit()
+    # Its sibling `control_test_detail` twelve lines below has always checked
+    # this; the write path did not.
+    if test is None or (org is not None and test.organization_id != org):
+        raise HTTPException(404, "control test not found")
+    if control_tests.scan_owned(test):
+        return RedirectResponse(
+            f"/control-tests/{test_id}?error="
+            + quote(
+                f"'{test.name}' is assessed by posture scan '{test.check_key}'. "
+                "Re-run the scan to change its result."
+            ),
+            status_code=303,
+        )
+    principal = getattr(request.state, "principal", None)
+    actor = getattr(principal, "email", None) or "user"
+    try:
+        await control_tests.record_result(
+            session, test, status=status, detail=detail or None, actor=actor
+        )
+    except control_tests.ScanOwnedTestError as exc:
+        # Reported, not suppressed: someone typing a verdict onto a
+        # scan-owned test has to learn it did not take, or they will believe
+        # the control now passes.
+        return RedirectResponse(
+            f"/control-tests/{test_id}?error={quote(str(exc))}", status_code=303
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            f"/control-tests/{test_id}?error={quote(str(exc))}", status_code=303
+        )
+    await session.commit()
     return RedirectResponse("/control-tests", status_code=303)
 
 
@@ -825,7 +849,13 @@ async def personnel_create(
 async def personnel_offboard(
     pid: int, request: Request, session: AsyncSession = Depends(get_session)
 ) -> RedirectResponse:
+    org = _principal_org(request)
+    # Scoped explicitly as well as by RLS: an HTTP test cannot tell an app
+    # predicate from the database policy, which is how several sibling
+    # routes shipped addressing another tenant's row by id.
     p = await session.get(Person, pid)
+    if p is not None and org is not None and p.organization_id != org:
+        raise HTTPException(404, "person not found")
     if p is not None:
         await personnel.offboard(session, p, actor=_actor(request))
         await session.commit()
@@ -1289,7 +1319,13 @@ async def ai_agents_kill_ui(
     from ...ai_governance import engage_kill_switch  # noqa: PLC0415
     from ...models_ai_agents import AiAgent  # noqa: PLC0415
 
+    org = _principal_org(request)
+    # Scoped explicitly as well as by RLS: an HTTP test cannot tell an app
+    # predicate from the database policy, which is how several sibling
+    # routes shipped addressing another tenant's row by id.
     agent = await session.get(AiAgent, aid)
+    if agent is not None and org is not None and agent.organization_id != org:
+        raise HTTPException(404, "agent not found")
     if agent is not None:
         await engage_kill_switch(session, agent, reason="UI", actor=_actor(request))
         await session.commit()

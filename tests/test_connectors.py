@@ -316,3 +316,4 @@ async def test_collect_all_scheduler_path_only_touches_orgs_with_bound_credentia
             assert rows_b == []
     finally:
         await _cleanup(org_a, org_b)
+
