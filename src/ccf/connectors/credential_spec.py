@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .clouds import AWS_REGION_CHOICES, CLOUD_CHOICES
+
 
 @dataclass(frozen=True)
 class CredentialField:
@@ -36,6 +38,10 @@ class CredentialField:
     secret: bool = False
     help: str = ""
     multiline: bool = False
+    #: ``(value, label)`` pairs. Present means the form renders a select, and
+    #: the first pair is the default -- which is how "US Government unless
+    #: someone deliberately chooses otherwise" is expressed.
+    choices: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -56,6 +62,16 @@ class CredentialSpec:
 
 
 _MICROSOFT_APP_REGISTRATION = (
+    CredentialField(
+        "cloud",
+        "Sovereign cloud",
+        choices=CLOUD_CHOICES,
+        help=(
+            "US Government unless this app registration was issued in a "
+            "commercial tenant. Never required: absent means the deployment's "
+            "configured endpoints, which default to US Government."
+        ),
+    ),
     CredentialField(
         "tenant_id",
         "Directory (tenant) ID",
@@ -136,6 +152,16 @@ SPECS: dict[str, CredentialSpec] = {
                 "profile",
                 "Named profile",
                 help="Alternative to an access key pair, for a host with a shared config.",
+            ),
+            CredentialField(
+                "region",
+                "Region",
+                choices=AWS_REGION_CHOICES,
+                help=(
+                    "GovCloud unless these keys belong to a commercial account. "
+                    "Never required: absent means the deployment's configured "
+                    "region, which defaults to us-gov-west-1."
+                ),
             ),
         ),
         accepts=(("access_key_id", "secret_access_key"), ("profile",)),

@@ -50,6 +50,7 @@ from typing import Any, ClassVar
 import httpx
 
 from ..config import get_settings
+from .clouds import microsoft_endpoints
 from ..logging import get_logger
 from ..posture.declared import evaluate_declared
 from ..posture.providers import m365
@@ -112,6 +113,29 @@ class MsGraphConnector(ConfigConnector):
         "inactivity_period": "Conditional Access sign-in frequency (session controls)",
     }
 
+
+    @property
+    def _endpoints(self):
+        """This organization's own cloud, or the deployment's configured one.
+
+        The sovereign cloud travels with the credential because it is a
+        property of the app registration, not of the instance: one Concord
+        serves a GovCloud tenant and a commercial tenant at once, and each
+        authenticates against its own endpoints. Absent or unrecognised falls
+        back to the deployment settings, which default to US Government.
+        """
+        return microsoft_endpoints((self.credential or {}).get("cloud"))
+
+    @property
+    def _login_url(self) -> str:
+        endpoints = self._endpoints
+        return endpoints.login_url if endpoints else get_settings().graph_login_url
+
+    @property
+    def _graph_base(self) -> str:
+        endpoints = self._endpoints
+        return endpoints.graph_base_url if endpoints else get_settings().graph_base_url
+
     def is_configured(self) -> bool:
         c = self.credential
         return bool(c and c.get("tenant_id") and c.get("client_id") and c.get("client_secret"))
@@ -119,14 +143,14 @@ class MsGraphConnector(ConfigConnector):
     async def _token(self, client: httpx.AsyncClient) -> str | None:
         s = get_settings()
         c = self.credential or {}
-        url = f"{s.graph_login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
+        url = f"{self._login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
         resp = await client.post(
             url,
             data={
                 "grant_type": "client_credentials",
                 "client_id": c.get("client_id"),
                 "client_secret": c.get("client_secret"),
-                "scope": f"{s.graph_base_url}/.default",
+                "scope": f"{self._graph_base}/.default",
             },
         )
         resp.raise_for_status()
@@ -184,7 +208,7 @@ class MsGraphConnector(ConfigConnector):
         URL that may originate from a tenant's declared check) and every
         subsequent one (``@odata.nextLink``, which comes from the response
         body a Graph call returned) -- is resolved through :meth:`_safe_url`
-        against the deployment's *configured* ``graph_base_url`` before the
+        against this organization's *effective* Graph base URL before the
         request goes out. A hostile or compromised response could otherwise
         redirect a paginated, token-bearing fetch off-host on page two just
         as easily as a malicious ``endpoint`` could on page one.
@@ -194,8 +218,7 @@ class MsGraphConnector(ConfigConnector):
         :class:`GraphPaginationTruncatedError` rather than returning a partial
         fleet that would roll up to a false ``pass``.
         """
-        s = get_settings()
-        base = httpx.URL(s.graph_base_url)
+        base = httpx.URL(self._graph_base)
         rows: list[dict[str, Any]] = []
         next_target: str | None = url
         for _ in range(self._MAX_PAGES):
@@ -263,7 +286,7 @@ class MsGraphConnector(ConfigConnector):
             return {
                 "connected": bool(token),
                 "tenant": (self.credential or {}).get("tenant_id"),
-                "graph_endpoint": s.graph_base_url,
+                "graph_endpoint": self._graph_base,
             }
         except Exception as e:
             return {"connected": False, "reason": _aad_reason(e)}
@@ -281,7 +304,7 @@ class MsGraphConnector(ConfigConnector):
                 headers = {"Authorization": f"Bearer {token}"}
                 # Conditional Access sign-in frequency → session/device lock period.
                 r = await client.get(
-                    f"{s.graph_base_url}/v1.0/identity/conditionalAccess/policies",
+                    f"{self._graph_base}/v1.0/identity/conditionalAccess/policies",
                     headers=headers,
                 )
                 r.raise_for_status()
