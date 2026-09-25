@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Compliance workspace · Concord{% endblock %}
+{% block heading %}Compliance workspace{% endblock %}
+{% block subtitle %}<p class="page__subtitle">
+  {% if w.system %}{{ w.system.name }}{% if p and p.baseline %} · FedRAMP {{ p.baseline.title() }} baseline{% endif %}
+  {% else %}Describe a system to begin.{% endif %}
+</p>{% endblock %}
+{% block content %}
+
+{% if not w.steps %}
+<section class="card"><div class="card__body dim" style="text-align:center;padding:48px">
+  <p style="margin:0 0 8px"><strong>No organization in this session.</strong></p>
+  <p style="margin:0">A compliance workspace belongs to an organization. Sign in as a member of one.</p>
+</div></section>
+{% else %}
+
+{% if p and p.total %}
+<section class="card card--elevated" style="margin-bottom:20px">
+  <div class="card__header">
+    <div class="card__title">Posture against the {{ p.baseline }} baseline</div>
+    <span class="chip {% if p.failing %}chip--err{% elif p.assessed_pct %}chip--ok{% else %}chip--warn{% endif %}">
+      {{ p.assessed_pct }}% assessed</span>
+  </div>
+  <div class="card__body">
+    <div class="cols-4" style="margin-bottom:4px">
+      <div><div class="kpi__label">Satisfied</div>
+        <div class="kpi__value" style="color:var(--ok-500)">{{ p.passing|length }}</div>
+        <div class="dim" style="font-size:12px">verified by machine evidence</div></div>
+      <div><div class="kpi__label">Failing</div>
+        <div class="kpi__value" style="color:var(--err-500)">{{ p.failing|length }}</div>
+        <div class="dim" style="font-size:12px">{{ p.failing|join(', ') or '—' }}</div></div>
+      <div><div class="kpi__label">Documented only</div>
+        <div class="kpi__value">{{ p.documented|length }}</div>
+        <div class="dim" style="font-size:12px">claimed, not machine-tested</div></div>
+      <div><div class="kpi__label">Not yet addressed</div>
+        <div class="kpi__value">{{ p.unaddressed|length }}</div>
+        <div class="dim" style="font-size:12px">of {{ p.total }} in the baseline</div></div>
+    </div>
+    <p class="dim" style="margin:14px 0 0;max-width:80ch;font-size:13px">
+      The denominator is the baseline, not the checks Concord happens to run. Coverage of
+      {{ p.total }} controls is what an assessor measures; anything else flatters the number.
+    </p>
+  </div>
+</section>
+{% endif %}
+
+<section class="card" style="margin-bottom:20px">
+  <div class="card__header">
+    <div class="card__title">Steps</div>
+    {% if w.next %}<span class="chip chip--warn">next: {{ w.next.title }}</span>
+    {% else %}<span class="chip chip--ok">all steps complete</span>{% endif %}
+  </div>
+  <div class="card__body" style="padding-top:8px">
+    {% for s in w.steps %}
+    <div style="display:flex;gap:16px;align-items:flex-start;padding:14px 0;
+                border-bottom:{{ '1px solid var(--border)' if not loop.last else 'none' }}">
+      <div style="flex:0 0 26px;text-align:center;padding-top:2px">
+        {% if s.state == 'done' %}<i data-lucide="check-circle-2" style="color:var(--ok-500)"></i>
+        {% elif s.state == 'blocked' %}<i data-lucide="alert-circle" style="color:var(--err-500)"></i>
+        {% else %}<i data-lucide="circle" class="dim"></i>{% endif %}
+      </div>
+      <div style="flex:1 1 auto;min-width:0">
+        <div style="font-weight:600">{{ loop.index }}. {{ s.title }}</div>
+        <div class="dim" style="font-size:13px;margin-top:2px">{{ s.detail }}</div>
+      </div>
+      <div style="flex:0 0 auto">
+        <a class="btn {{ 'btn--primary' if w.next and s.key == w.next.key else 'btn--ghost' }} btn--sm"
+           href="{{ s.href }}">{{ s.action }}</a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{% if p and p.failing %}
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">Controls to correct</div>
+    <span class="chip chip--err">{{ p.failing|length }}</span>
+  </div>
+  <div class="card__body">
+    <p class="dim" style="margin:0 0 12px;font-size:13px">
+      Failing on live evidence. A documented implementation does not survive evidence that
+      the control is not operating.</p>
+    {% for c in p.failing %}<a class="chip chip--err" style="margin:0 6px 6px 0"
+       href="/dashboard">{{ c }}</a>{% endfor %}
+  </div>
+</section>
+{% endif %}
+{% endif %}
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

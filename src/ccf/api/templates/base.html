@@ -41,7 +41,8 @@
 {#- Primary navigation, organized by the authorization lifecycle:
     define compliance → authorize systems → operate the program → report. -#}
 {% set nav_groups = [
-  {'key':'dashboard','label':'Dashboard','href':'/dashboard','icon':'layout-dashboard','members':['dashboard'],'links':[]},
+  {'key':'workspace','label':'Workspace','href':'/workspace','icon':'route','members':['workspace'],'links':[]},
+  {'key':'dashboard','label':'Gaps','href':'/dashboard','icon':'layout-dashboard','members':['dashboard'],'links':[]},
   {'key':'compliance','label':'Compliance','href':'/posture','icon':'shield-check',
    'members':['posture','controls','frameworks','coverage','mappings','search','worksheets','diff','packs'],
    'links':[
