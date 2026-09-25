@@ -49,6 +49,7 @@ from urllib.parse import quote
 from ...ai.cipher import CredentialStorageError
 from ...connectors import credentials as connector_credentials
 from ...connectors import get_connector
+from ...logging import get_logger
 from ...connectors.credential_spec import (
     SPECS,
     IncompleteCredential,
@@ -67,6 +68,8 @@ def _principal_email(request: Request) -> str:
 
 
 router = APIRouter(include_in_schema=False)
+
+log = get_logger(__name__)
 
 #: last_status -> KPI bucket key, for every value with its own bucket.
 #: Everything else (None, or the explicit "not_tested" status) is "untested".
@@ -486,6 +489,16 @@ async def connectors_sync(
         c.error_message = None
         c.last_sync = _now()
         await session.commit()
+
+        # Scan straight away, and land on the gaps. Connecting a provider is
+        # the thing an operator set out to do; "now go and run a scan" is a
+        # second concept they had no reason to learn, and until today there
+        # was no way to run one from the interface at all. A credential that
+        # just authenticated is exactly when the answer is cheapest to get.
+        scanned = await _scan_every_system(session, org, c.connector_type)
+        if scanned:
+            await session.commit()
+            return RedirectResponse("/dashboard?connected=1", status_code=303)
         return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
 
     reason = str(result.get("reason") or "the provider did not say why")
@@ -1502,6 +1515,49 @@ async def portal_admin_revoke(
     await revoke_grant(session, grant_id, actor=_actor(request))
     await session.commit()
     return RedirectResponse(f"/admin/portal?organization_id={organization_id}", status_code=303)
+
+
+
+async def _scan_every_system(session: AsyncSession, org: int, connector_type: str) -> int:
+    """Scan each live system with this connector. Returns systems scanned.
+
+    Best-effort per system: one system's failure must not discard the results
+    of the others, matching the per-check isolation inside the connector. A
+    scan that ran no checks counts as nothing scanned, so a connector with no
+    registered checks does not send anyone to an empty gap report.
+    """
+    systems = (
+        await session.execute(
+            select(System.id).where(
+                System.organization_id == org, System.deleted_at.is_(None)
+            )
+        )
+    ).scalars().all()
+    if not systems:
+        return 0
+
+    from ...posture.scan import scan_for_system  # noqa: PLC0415
+
+    scanned = 0
+    for system_id in systems:
+        try:
+            out = await scan_for_system(
+                session,
+                system_id=system_id,
+                connector_key=connector_type,
+                actor="connector-test",
+            )
+        except Exception as exc:  # noqa: BLE001 - logged, never fatal to the others
+            log.warning(
+                "connector.autoscan_failed",
+                system_id=system_id,
+                connector=connector_type,
+                error=str(exc)[:200],
+            )
+            continue
+        if out.get("checks_run"):
+            scanned += 1
+    return scanned
 
 
 @router.post("/connectors/{cfg_id}/credential")

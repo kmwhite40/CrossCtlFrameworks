@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Compliance gaps · Concord{% endblock %}
+{% block heading %}Compliance gaps{% endblock %}
+{% block subtitle %}<p class="page__subtitle">
+  {% if g.assessed %}
+    {{ g.assessed }} control{{ '' if g.assessed == 1 else 's' }} assessed across
+    {{ g.systems_assessed }} system{{ '' if g.systems_assessed == 1 else 's' }}{% if g.last_assessed %},
+    last {{ g.last_assessed.strftime('%Y-%m-%d %H:%M') }} UTC{% endif %}.
+  {% else %}
+    Nothing has been assessed yet.
+  {% endif %}
+</p>{% endblock %}
+{% block content %}
+
+{% if not g.assessed %}
+<section class="card">
+  <div class="card__body dim" style="text-align:center;padding:48px">
+    <p style="margin:0 0 8px"><strong>No control has been assessed yet.</strong></p>
+    <p style="margin:0 0 20px;max-width:64ch;display:inline-block">
+      Connect a cloud or identity provider and test the credential — Concord scans every
+      system in this organization against the controls that provider evidences, and the
+      gaps appear here.</p>
+    <div><a class="btn btn--primary" href="/connectors"><i data-lucide="plug"></i> Connect a provider</a></div>
+  </div>
+</section>
+{% else %}
+
+<div class="cols-4" style="margin-bottom:20px">
+  <div class="kpi card"><div class="kpi__label">Controls failing</div>
+    <div class="kpi__value" style="color:{{ 'var(--err-500)' if g.failing else 'var(--ok-500)' }}">{{ g.failing }}</div>
+    <div class="dim" style="font-size:12px">of {{ g.assessed }} assessed</div></div>
+  <div class="kpi card"><div class="kpi__label">Resources failing</div>
+    <div class="kpi__value">{{ g.resources_failing }}</div>
+    <div class="dim" style="font-size:12px">of {{ g.resources_evaluated }} evaluated</div></div>
+  <div class="kpi card"><div class="kpi__label">Controls passing</div>
+    <div class="kpi__value" style="color:var(--ok-500)">{{ g.passing }}</div>
+    <div class="dim" style="font-size:12px">no action needed</div></div>
+  <div class="kpi card"><div class="kpi__label">Open remediation</div>
+    <div class="kpi__value">{{ g.open_tasks }}</div>
+    <div class="dim" style="font-size:12px"><a href="/governance">work queue</a></div></div>
+</div>
+
+{% if g.gaps %}
+<section class="card card--elevated" style="margin-bottom:20px">
+  <div class="card__header">
+    <div class="card__title">Gaps to remediate</div>
+    <span class="chip chip--err">{{ g.gaps|length }}</span>
+  </div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr>
+      <th>Control</th><th>What was checked</th><th>System</th><th>Failing</th><th>What failed</th>
+    </tr></thead>
+    <tbody>
+      {% for x in g.gaps %}
+      <tr>
+        <td><a href="/controls?q={{ x.control_id }}" style="font-weight:600">{{ x.control_id }}</a></td>
+        <td><a href="/control-tests/{{ x.test_id }}">{{ x.check }}</a>
+          {% if x.expected %}<div class="dim" style="font-size:12px">expected: {{ x.expected }}</div>{% endif %}</td>
+        <td class="dim"><a href="/systems/{{ x.system_id }}">{{ x.system }}</a></td>
+        <td><span class="chip chip--err">{{ x.failing }}</span><span class="dim"> / {{ x.evaluated }}</span></td>
+        <td>
+          {% for e in x.examples %}<div class="dim" style="font-size:12px">{{ e }}</div>{% endfor %}
+          {% if x.failing > x.examples|length %}
+          <div class="dim" style="font-size:11px">+{{ x.failing - x.examples|length }} more</div>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{% if g.clean %}
+<section class="card">
+  <div class="card__header">
+    <div class="card__title">Controls currently satisfied</div>
+    <span class="chip chip--ok">{{ g.clean|length }}</span>
+  </div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>What was checked</th><th>System</th><th>Evaluated</th></tr></thead>
+    <tbody>
+      {% for x in g.clean %}
+      <tr>
+        <td><strong>{{ x.control_id }}</strong></td>
+        <td><a href="/control-tests/{{ x.test_id }}">{{ x.check }}</a></td>
+        <td class="dim">{{ x.system }}</td>
+        <td class="dim">{{ x.evaluated }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+{% endif %}
+
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}
