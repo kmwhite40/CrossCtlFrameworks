@@ -91,13 +91,18 @@
         </tr></thead>
         <tbody>
           {% for c in s.systems %}
-          {% set col = 'var(--ok-500)' if c.sprs_score >= 88 else ('var(--warn-500)' if c.sprs_score >= 0 else 'var(--err-500)') %}
+          {# `sprs_score` is None when nothing has been assessed, so the
+             comparison is guarded: an unassessed system has no score to colour,
+             and rendering one would put the scale's floor (-203) on screen as
+             though it had been measured. #}
+          {% set col = 'var(--text-secondary)' if not c.assessed else ('var(--ok-500)' if c.sprs_score >= 88 else ('var(--warn-500)' if c.sprs_score >= 0 else 'var(--err-500)')) %}
           <tr>
             <td><a href="/scoring?system_id={{ c.system_id }}" style="font-weight:600">{{ c.name }}</a>
               {% if not c.ssp_present %}<span class="chip chip--err" title="SSP prerequisite not met">SSP</span>{% endif %}</td>
             <td>{% if c.baseline %}<span class="chip chip--ghost">{{ c.baseline }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
             <td><span class="chip {{ 'chip--ok' if c.ato_status=='authorized' else 'chip--ghost' }}">{{ c.ato_status or 'none' }}</span></td>
-            <td><strong style="color:{{ col }}">{{ c.sprs_score }}</strong><span class="dim">/110</span></td>
+            <td>{% if c.assessed %}<strong style="color:{{ col }}">{{ c.sprs_score }}</strong><span class="dim">/110</span>
+              {% else %}<span class="dim" title="No controls assessed yet, so there is no score">not assessed</span>{% endif %}</td>
             <td>{{ c.controls_assessed }}/110</td>
             <td>{{ c.impl_met }}/{{ c.impl_total }}</td>
             <td>{{ c.open_poams }}</td>

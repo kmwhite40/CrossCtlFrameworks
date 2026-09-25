@@ -18,11 +18,16 @@ environment unless all of these hold:
 | `CCF_AUTH_SESSION_SECRET` | not `dev-insecure-change-me`. A strong random value, 32+ bytes. |
 | `CCF_API_CORS_ORIGINS` | explicit origins, never `*` |
 
-## 2. Configuration it does NOT refuse to start without — check these by hand
+## 2. Configuration it warns about but starts without
+
+These do not block startup — neither lets a request act as someone it is not,
+which is the bar for refusing — but both are logged at `warning` as
+`config.insecure_default` on every start. Read the first lines of the log
+after a deploy.
 
 | Variable | Why it matters |
 |---|---|
-| `CCF_AI_CREDENTIAL_MASTER_KEY` | Wraps every stored connector, AI provider and MFA secret. **Without it the cipher fails closed and no credential can be saved at all.** With the wrong one, existing credentials are unreadable. |
+| `CCF_AI_CREDENTIAL_MASTER_KEY` | Wraps every stored connector, AI provider and MFA secret. **Without it the cipher fails closed and no credential can be saved at all** — which presents as "the connector page will not accept my key". With the wrong one, existing credentials are unreadable. Back it up separately from the database. |
 | `CCF_AI_CREDENTIAL_KEY_PROVIDER` | Defaults to `local`, which keeps key material in the environment. Production should be `aws_kms` so the platform never holds it. |
 | `CCF_CSRF_TRUSTED_ORIGINS` | Only if a separately-hosted front end posts to this API. Leave empty otherwise. |
 

@@ -121,3 +121,66 @@ async def test_the_overview_blocks_use_the_live_subquery_unconditionally() -> No
             f"the {model} block still applies the live-system filter only when "
             "an organization is given"
         )
+
+
+# --- an unassessed system has no score ---------------------------------------
+
+
+async def _org_with_unassessed_system() -> tuple[int, int]:
+    tag = uuid.uuid4().hex[:8]
+    async with session_scope() as s:
+        org = Organization(name=f"Unassessed Org {tag}")
+        s.add(org)
+        await s.flush()
+        system = System(organization_id=org.id, name=f"Never Assessed {tag}")
+        s.add(system)
+        await s.flush()
+        return org.id, system.id
+
+
+@pytest.mark.asyncio
+async def test_a_system_with_nothing_assessed_carries_no_sprs_score() -> None:
+    """SPRS starts at the baseline and subtracts, so an unassessed system lands
+    at the floor -- -203 for 800-171, the worst value the scale produces.
+
+    It was rendering on the scorecard as though someone had measured it, while
+    the executive summary (correctly) excluded such a system from
+    `worst_system`. The two views sat on one page disagreeing: the scorecard
+    showed -203 as the worst number present while the headline named a
+    different system at -163.
+    """
+    org_id, system_id = await _org_with_unassessed_system()
+    async with session_scope() as s:
+        cards = await posture.systems_scorecard(s, today=date.today(), org_id=org_id)
+
+    card = next(c for c in cards if c["system_id"] == system_id)
+    assert card["controls_assessed"] == 0
+    assert card["assessed"] is False
+    assert card["sprs_score"] is None, "the scale's floor was rendered as a measurement"
+    assert card["sprs_percentage"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_unassessed_system_is_absent_from_the_headline_numbers() -> None:
+    """It must not set the average, nor be named the worst performer."""
+    org_id, system_id = await _org_with_unassessed_system()
+    async with session_scope() as s:
+        summary = await posture.org_summary(s, today=date.today(), org_id=org_id)
+
+    assert summary["systems_total"] == 1, "the system should still be counted as existing"
+    assert summary["systems_scored"] == 0
+    assert summary["avg_sprs_score"] is None
+    assert summary["worst_system"] is None
+    assert summary["min_sprs_score"] is None
+
+
+@pytest.mark.asyncio
+async def test_scored_and_the_assessed_flag_cannot_disagree() -> None:
+    """Both now read the same predicate, so a system cannot be scored in the
+    summary while rendering "not assessed" on the scorecard."""
+    org_id, _system_id = await _org_with_unassessed_system()
+    async with session_scope() as s:
+        cards = await posture.systems_scorecard(s, today=date.today(), org_id=org_id)
+        summary = await posture.org_summary(s, today=date.today(), org_id=org_id)
+
+    assert summary["systems_scored"] == len([c for c in cards if c["assessed"]])

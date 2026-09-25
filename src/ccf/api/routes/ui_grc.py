@@ -49,7 +49,13 @@ from urllib.parse import quote
 from ...ai.cipher import CredentialStorageError
 from ...connectors import credentials as connector_credentials
 from ...connectors import get_connector
-from ...connectors.credential_spec import SPECS, IncompleteCredential, missing_fields, spec_for
+from ...connectors.credential_spec import (
+    SPECS,
+    IncompleteCredential,
+    configurable_types,
+    missing_fields,
+    spec_for,
+)
 from ...posture.checks import checks_for
 from .ui import _principal_org, templates
 
@@ -339,8 +345,8 @@ async def regulatory_update(
 #: could not be created here at all. Deriving the list from ``SPECS`` means a
 #: type is offered exactly when a credential for it can be stored.
 def _configurable_types() -> tuple[tuple[str, str], ...]:
-    """``(connector_type, label)`` for everything with a credential spec."""
-    return tuple((key, spec.label) for key, spec in sorted(SPECS.items()))
+    """Delegates to ``connectors.credential_spec.configurable_types``."""
+    return configurable_types()
 
 
 # ── Connector registry ───────────────────────────────────────────────────────

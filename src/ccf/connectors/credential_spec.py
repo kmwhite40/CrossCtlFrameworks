@@ -224,6 +224,22 @@ class IncompleteCredential(ValueError):
     """
 
 
+def configurable_types() -> tuple[tuple[str, str], ...]:
+    """``(connector_type, label)`` for everything a credential can be stored for.
+
+    The one answer to "what may be created", shared by the settings page and
+    the JSON API. They previously offered ``grc.CONNECTOR_TYPES``, the demo
+    vocabulary paired with ``_MOCK_DISCOVERY``: seven of its ten entries have
+    no connector and no credential spec, so creating one produced a row that
+    could never capture anything.
+
+    Lives here rather than in a route because both routes need it and
+    ``ui_grc`` already imports from ``grc`` -- putting it in either made the
+    import circular.
+    """
+    return tuple((key, spec.label) for key, spec in sorted(SPECS.items()))
+
+
 def spec_for(connector_type: str) -> CredentialSpec | None:
     return SPECS.get(connector_type)
 
@@ -258,6 +274,7 @@ def missing_fields(connector_type: str, secret: dict) -> tuple[str, ...]:
 
 __all__ = [
     "SPECS",
+    "configurable_types",
     "CredentialField",
     "CredentialSpec",
     "IncompleteCredential",
