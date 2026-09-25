@@ -71,6 +71,7 @@ async def set_credential(
     name: str | None = None,
     environment: str | None = None,
     actor: str | None = None,
+    config: ConnectorConfig | None = None,
 ) -> ConnectorConfig:
     """Create/update the organization's stored credential for a connector.
 
@@ -91,14 +92,29 @@ async def set_credential(
         raise IncompleteCredential(
             f"{connector_type} credential is missing: {', '.join(outstanding)}"
         )
-    cfg = (
-        await session.execute(
-            select(ConnectorConfig).where(
-                ConnectorConfig.organization_id == org_id,
-                ConnectorConfig.connector_type == connector_type,
+    # `config` is the row the caller was actually editing. Without it this
+    # looked the row up by (organization, connector_type) and took the first
+    # match, so with two connectors of one type in an organization a credential
+    # entered on the second was silently written to the first: the row you
+    # filled in stayed "not configured" and the other one changed under you.
+    # Observed in a real deployment.
+    if config is not None:
+        if config.organization_id != org_id or config.connector_type != connector_type:
+            raise ValueError(
+                "the connector row does not belong to this organization/type"
             )
-        )
-    ).scalars().first()
+        cfg = config
+    else:
+        cfg = (
+            await session.execute(
+                select(ConnectorConfig)
+                .where(
+                    ConnectorConfig.organization_id == org_id,
+                    ConnectorConfig.connector_type == connector_type,
+                )
+                .order_by(ConnectorConfig.id)
+            )
+        ).scalars().first()
     if cfg is None:
         cfg = ConnectorConfig(
             organization_id=org_id,

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Connectors · Concord{% endblock %}
 {% block heading %}Cloud connectors{% endblock %}
-{% block subtitle %}<p class="page__subtitle">Register cloud/SaaS connectors for evidence collection. Sync runs a mock discovery until live credentials are wired.</p>{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Register cloud/SaaS connectors for evidence collection. Test checks the stored credential against the provider and records what it said.</p>{% endblock %}
 {% block content %}
 {% if no_org %}
 <section class="card">
@@ -38,7 +38,7 @@
         <td class="dim">{{ c.last_sync.strftime('%Y-%m-%d %H:%M') if c.last_sync else '—' }}</td>
         <td>{{ c.objects_discovered }}</td>
         <td>{{ c.evidence_produced }}</td>
-        <td><form method="post" action="/connectors/{{ c.id }}/sync"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="refresh-cw"></i> Sync</button></form></td>
+        <td><form method="post" action="/connectors/{{ c.id }}/sync"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="plug"></i> Test</button></form></td>
       </tr>{% endfor %}
     </tbody>
   </table></div>

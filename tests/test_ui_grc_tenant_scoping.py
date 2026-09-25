@@ -386,62 +386,79 @@ async def test_connectors_sync_is_scoped(orgs: list[int]) -> None:
     outsider = await _org(orgs, f"UIGRC Conn Outsider {tag}")
     cfg = await _connector(owner, f"Conn {tag}")
 
+    # The owner reaches the route; with no credential stored it reports that
+    # rather than writing anything. The subject here is who may act on the
+    # row, not what a successful verify does.
     async with session_scope() as s:
         await set_session_tenant(s, None)
         assert (await ui_grc.connectors_sync(cfg, _req(owner), s)).status_code == 303
     async with session_scope() as s:
         await set_session_tenant(s, None)
         row = await s.get(ConnectorConfig, cfg)
-        assert row is not None and row.status == "configured"
-        # Reset, so the outsider's attempt is measured from a known state.
-        row.status = "pending"
-        row.last_sync = None
-        row.objects_discovered = 0
+        assert row is not None and row.status == "pending"
+        assert row.objects_discovered == 0
 
+    # The outsider is now refused outright rather than silently doing nothing.
     async with session_scope() as s:
         await set_session_tenant(s, None)
-        assert (await ui_grc.connectors_sync(cfg, _req(outsider), s)).status_code == 303
+        with pytest.raises(HTTPException) as caught:
+            await ui_grc.connectors_sync(cfg, _req(outsider), s)
+        assert caught.value.status_code == 404
     async with session_scope() as s:
         await set_session_tenant(s, None)
         row = await s.get(ConnectorConfig, cfg)
         assert row is not None
-        assert row.status == "pending", "another tenant ran the capture mock on this connector"
+        assert row.status == "pending", "another tenant acted on this connector"
         assert row.last_sync is None
         assert row.objects_discovered == 0
 
+    # And an org-less principal is refused too. This used to sync, on the
+    # reading that `org is None` means unscoped and therefore permitted. A
+    # connector belongs to an organization and its credential is keyed by one,
+    # so "no organization" is not a licence to write capture state into a
+    # tenant -- it is the absence of the thing that decides which tenant.
     async with session_scope() as s:
         await set_session_tenant(s, None)
-        assert (await ui_grc.connectors_sync(cfg, _req(None), s)).status_code == 303
+        with pytest.raises(HTTPException) as caught:
+            await ui_grc.connectors_sync(cfg, _req(None), s)
+        assert caught.value.status_code == 400
     async with session_scope() as s:
         await set_session_tenant(s, None)
         row = await s.get(ConnectorConfig, cfg)
-        assert row is not None and row.status == "configured", "global principal must still sync"
+        assert row is not None and row.status == "pending"
 
 
 @pytest.mark.asyncio
 async def test_connectors_sync_is_disabled_outside_dev(
     orgs: list[int], production_env: None
 ) -> None:
-    """``0eadea4`` gated ``grc.sync_connector`` and missed this twin, so the
-    mock kept writing the capture columns in every environment.
+    """The dev gate is gone because the mock it guarded is gone.
 
-    ``tests/conftest.py`` sets ``CCF_ENV=test``, which ``is_dev_env`` counts as
-    a development environment -- so this needs ``production_env`` explicitly, or
-    it would pass with no gate present at all.
+    ``0eadea4`` gated ``grc.sync_connector`` because the mock wrote the four
+    columns ``connector_backing_state`` reads without contacting anything, and
+    this twin was missed. The route no longer mocks: it asks the provider and
+    records what it said, which is a legitimate operation in any environment.
+
+    What this now pins is that it writes no capture state in production --
+    the property the gate existed to protect, kept without the gate. Runs with
+    ``production_env`` because ``conftest`` sets ``CCF_ENV=test``, which
+    ``is_dev_env`` counts as development.
     """
     tag = _tag()
     owner = await _org(orgs, f"UIGRC Conn Prod {tag}")
     cfg = await _connector(owner, f"Conn Prod {tag}")
     async with session_scope() as s:
         await set_session_tenant(s, None)
-        with pytest.raises(HTTPException) as err:
-            await ui_grc.connectors_sync(cfg, _req(owner), s)
-        assert err.value.status_code == 503
-        assert "development-only mock" in str(err.value.detail)
+        # No credential stored, so it reports that -- and, crucially, reaches
+        # the route at all rather than being refused for being a mock.
+        assert (await ui_grc.connectors_sync(cfg, _req(owner), s)).status_code == 303
     async with session_scope() as s:
         await set_session_tenant(s, None)
         row = await s.get(ConnectorConfig, cfg)
         assert row is not None and row.status == "pending"
+        assert row.objects_discovered == 0
+        assert row.evidence_produced == 0
+        assert row.last_sync is None
 
 
 # --- Vendor questionnaires --------------------------------------------------
