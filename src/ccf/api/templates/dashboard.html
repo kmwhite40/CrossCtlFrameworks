@@ -75,13 +75,18 @@
       <div class="ovw-card__title">System authorization readiness</div>
       <div class="ovw-fw">
         {% for s in d.readiness[:4] %}
-          {% set p = [[s.sprs_percentage, 0]|max, 100]|min %}
+          {# `sprs_percentage` is None for a system nothing has been assessed
+             against: there is no percentage to gauge, and `max` on None raises.
+             Shown as 0 with the tile labelled, rather than inventing a figure. #}
+          {% set assessed = s.sprs_percentage is not none %}
+          {% set p = [[s.sprs_percentage, 0]|max, 100]|min if assessed else 0 %}
           <a class="ovw-fw__tile" href="/systems/{{ s.system_id }}">
             <div class="ovw-fw__top">
               {{ gauge(p, size=56, thickness=6, color='var(--accent)') }}
               <div class="ovw-fw__meta">
                 <div class="ovw-fw__name" title="{{ s.name }}">{{ s.name }}</div>
-                {{ badge(p) }}
+                {% if assessed %}{{ badge(p) }}
+                {% else %}<span class="chip" title="No controls assessed yet">not assessed</span>{% endif %}
               </div>
             </div>
             <div class="ovw-fw__num">{{ '{:,}'.format(s.impl_met) }}</div>
