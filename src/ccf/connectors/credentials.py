@@ -39,6 +39,11 @@ _SECRET_FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     # The service-account private key, not the JSON bundle: the bundle's
     # last-sorting field is `type`, which is not a secret at all.
     "gcp": ("private_key",),
+    # The API token, not the bundle: a Jira secret also carries base_url and
+    # email, and the bundle's last-sorting field is the account email address —
+    # not a secret, and showing its last four characters tells an operator
+    # nothing about which token is installed.
+    "jira": ("api_token",),
 }
 
 

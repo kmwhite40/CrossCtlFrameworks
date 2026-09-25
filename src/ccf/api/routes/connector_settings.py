@@ -24,6 +24,7 @@ from ...auth import Principal
 from ...connectors import connector_keys
 from ...connectors import credentials as connector_credentials
 from ...enforcement.registry import write_credential_keys
+from ...integrations import integration_credential_keys
 from ...models_grc import ConnectorConfig
 from ..auth_deps import require_role
 from ..deps import get_session
@@ -43,7 +44,7 @@ def _known_connectors() -> tuple[str, ...]:
     enforcement dead in any real deployment, and apply-time's revoke re-check
     with nothing to check against.
     """
-    return connector_keys() + write_credential_keys()
+    return connector_keys() + write_credential_keys() + integration_credential_keys()
 
 
 def _org_id(principal: Principal) -> int:

@@ -43,7 +43,7 @@
   <div class="table-wrap"><table class="data">
     <thead><tr>
       <th>Weakness</th><th>Remediation</th><th>Severity</th><th>Status</th><th>Source</th>
-      <th>Milestones</th><th>Due</th><th>POC</th>
+      <th>Milestones</th><th>Due</th><th>POC</th><th>Jira</th>
     </tr></thead>
     <tbody>
       {% for r in rows %}{% set p = r.obj %}<tr>
@@ -68,6 +68,21 @@
         </td>
         <td>{% if r.overdue %}<span class="chip chip--err">{{ p.due_on }}</span>{% else %}<span class="dim">{{ p.due_on or '—' }}</span>{% endif %}</td>
         <td class="dim" style="font-size:12px">{{ p.point_of_contact or '—' }}</td>
+        <td style="min-width:120px">
+          {% if r.jira %}
+            <a class="chip {% if r.jira.last_status == 'failed' %}chip--warn{% else %}chip--ok{% endif %}"
+               href="{{ r.jira.external_url }}" target="_blank" rel="noopener noreferrer"
+               {% if r.jira.last_status == 'failed' %}title="Last push failed: {{ r.jira.last_error }}"{% endif %}>
+              <i data-lucide="external-link"></i> {{ r.jira.external_id }}</a>
+          {% endif %}
+          {% if jira_ready %}
+            <button type="button" class="btn btn--ghost btn--sm"
+                    data-jira-push data-poam="{{ p.id }}" style="margin-top:4px">
+              {% if r.jira %}Update{% else %}Send to Jira{% endif %}</button>
+          {% elif not r.jira %}
+            <span class="dim" style="font-size:12px">—</span>
+          {% endif %}
+        </td>
       </tr>{% endfor %}
     </tbody>
   </table></div>
@@ -81,4 +96,46 @@
 </section>
 
 <script>if(window.lucide)lucide.createIcons();</script>
+
+{% if jira_ready %}
+<script>
+// Push is a POST to the same origin, so the session cookie and the CSRF
+// Origin check both apply unchanged. The row is updated from the response
+// rather than reloaded: a reload would lose the operator's filters.
+document.querySelectorAll('[data-jira-push]').forEach(function (button) {
+  button.addEventListener('click', async function () {
+    var cell = button.closest('td');
+    button.disabled = true;
+    var original = button.textContent;
+    button.textContent = 'Sending…';
+    try {
+      var response = await fetch('/api/poams/' + button.dataset.poam + '/push/jira', {
+        method: 'POST', headers: { 'Accept': 'application/json' },
+      });
+      var body = await response.json();
+      if (!response.ok) throw new Error(body.detail || ('HTTP ' + response.status));
+      var link = cell.querySelector('a') || document.createElement('a');
+      link.className = 'chip chip--ok';
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.href = body.url;
+      link.textContent = body.external_id;
+      if (!link.parentNode) cell.prepend(link);
+      button.textContent = 'Update';
+    } catch (error) {
+      // Jira's own complaint is the actionable part; keep it on screen.
+      var note = cell.querySelector('[data-jira-error]') || document.createElement('div');
+      note.className = 'dim';
+      note.setAttribute('data-jira-error', '');
+      note.style.cssText = 'font-size:11px;margin-top:4px;color:var(--err-700)';
+      note.textContent = error.message;
+      if (!note.parentNode) cell.appendChild(note);
+      button.textContent = original;
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
+</script>
+{% endif %}
 {% endblock %}
