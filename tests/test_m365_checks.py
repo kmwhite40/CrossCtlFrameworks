@@ -246,13 +246,23 @@ def test_malformed_timestamp_is_not_applicable_not_a_crash() -> None:
 # ── Registration ─────────────────────────────────────────────────────────────
 
 
-def test_all_three_checks_are_registered_under_msgraph() -> None:
-    keys = {c.key for c in checks_for("msgraph")}
-    assert keys == {
+def test_every_m365_check_is_registered_under_msgraph() -> None:
+    """Asserted against the module's own CHECKS rather than a copied list.
+
+    This named three keys literally, so adding a fourth failed here without
+    saying anything about the fourth -- the list was a second place to
+    remember, not a check on anything.
+    """
+    from ccf.posture.providers import m365
+
+    assert {c.key for c in checks_for("msgraph")} == {c.key for c in m365.CHECKS}
+    # And the original three are still among them, so a CHECKS tuple emptied
+    # by accident would not satisfy the equality above.
+    assert {
         "m365.identity.mfa_registered",
         "m365.policy.legacy_auth_blocked",
         "m365.identity.stale_accounts",
-    }
+    } <= {c.key for c in checks_for("msgraph")}
 
 
 def test_every_check_declares_controls_and_permissions() -> None:

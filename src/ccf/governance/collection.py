@@ -14,6 +14,8 @@ never attributed to an org that didn't produce it.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from typing import Any
 
 from sqlalchemy import select
@@ -23,6 +25,7 @@ from ..connectors import connector_keys, get_connector
 from ..connectors.credentials import orgs_with_bound_credentials, resolve_credential
 from ..logging import get_logger
 from ..models import CaptureSnapshot
+from ..models_grc import ConnectorConfig
 from . import bus
 
 log = get_logger(__name__)
@@ -50,6 +53,41 @@ async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
         except Exception as e:
             log.warning("collection.capture_failed", connector=conn.key, error=str(e)[:200])
             continue
+
+        # Record what this capture actually produced on the connector row.
+        #
+        # Only the development mock ever wrote these four columns, so removing
+        # its fabricated values left the genuine path unable to set them at
+        # all: a connector that really captured showed "0 objects discovered"
+        # forever. That matters beyond the tile --
+        # `governance.control_tests.connector_backing_state` requires
+        # `objects_discovered > 0` to return `current`, and `current` is what
+        # permits an SSP statement to claim evidence from automated capture. A
+        # number that lied was replaced with one that could never be true.
+        #
+        # Counted from `caps`, so it describes this capture and nothing else.
+        cfg = (
+            await session.execute(
+                select(ConnectorConfig).where(
+                    ConnectorConfig.organization_id == org_id,
+                    ConnectorConfig.connector_type == conn.key,
+                )
+            )
+        ).scalars().first()
+        if cfg is not None:
+            cfg.objects_discovered = len(caps)
+            cfg.evidence_produced = len(caps)
+            cfg.last_sync = datetime.now(UTC)
+            cfg.status = "configured"
+            cfg.error_message = None
+            # The controls this capture evidenced, from the parameters it
+            # actually returned -- not from what the connector *could* cover.
+            # The connector page says "sync populates these as captures map to
+            # controls", and nothing in the codebase wrote this column at all.
+            cfg.controls_impacted = sorted(
+                {cap.nist_id for cap in caps if getattr(cap, "nist_id", None)}
+            )
+
         for cap in caps:
             captured += 1
             snap = (
