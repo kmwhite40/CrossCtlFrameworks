@@ -20,7 +20,7 @@ from ..config import get_settings
 from ..logging import get_logger
 from ..models_ai_actions import AiProviderConfig
 from .cipher import build_cipher, mask
-from .providers import build_provider
+from .providers import SUPPORTED_PROVIDERS, build_provider
 from .providers.base import (
     AIProvider,
     EmbedRequest,
@@ -34,6 +34,16 @@ log = get_logger(__name__)
 
 class GatewayError(RuntimeError):
     """No usable provider/credential/model for the requested organization."""
+
+
+class UnknownProviderError(GatewayError):
+    """A provider name this build cannot construct.
+
+    Its own type, not a bare GatewayError: the settings routes turn a storage
+    failure into a 400 and this into a 422, because "the key vault is
+    unavailable" and "there is no such provider" need different answers from
+    whoever sees them.
+    """
 
 
 @dataclass(slots=True)
@@ -87,7 +97,18 @@ async def set_credential(
 
     The plaintext key is enveloped immediately and never stored or logged; only the
     last-4 identifier is retained for display.
+
+    Refuses a provider this build cannot construct. The settings form used to
+    pass ``provider`` straight through, so posting ``provider=gemini`` stored
+    an *enabled* credential with a masked key against a name every call site
+    then rejected with ``unknown AI provider``. Checked here rather than in the
+    route so the JSON API and the rotate path are covered by the same rule.
     """
+    if (provider or "").lower() not in SUPPORTED_PROVIDERS:
+        raise UnknownProviderError(
+            f"unknown AI provider {provider!r}; this build supports "
+            + ", ".join(SUPPORTED_PROVIDERS)
+        )
     now = datetime.now(UTC)
     cfg = (
         await session.execute(

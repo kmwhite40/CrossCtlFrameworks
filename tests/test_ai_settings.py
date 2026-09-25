@@ -400,3 +400,44 @@ async def test_an_unscoped_principal_still_cannot_write_a_credential() -> None:
 
     assert r.status_code == 400
     assert r.json()["detail"] == "organization context required"
+
+
+@pytest.mark.asyncio
+async def test_a_provider_this_build_cannot_construct_is_never_stored() -> None:
+    """It used to store an *enabled* credential with a masked key.
+
+    `provider` went from the form straight into storage, so posting
+    `provider=gemini` produced a row that looked configured on the settings
+    page and raised `unknown AI provider` at every call site. Checked in the
+    gateway rather than the route, so the JSON API and rotate are covered by
+    the same rule -- asserted here through the JSON API for that reason.
+    """
+    org_id, token = await _org_admin("AiSettings Unknown Provider Org")
+    async with _client() as c:
+        r = await c.post(
+            "/api/ai-settings/providers/gemini",
+            json={"api_key": "sk-not-real-abcd1234", "enabled": True},
+            headers=_auth(token),
+        )
+    # 422, not the 400 a storage failure gives: "no such provider" and "the
+    # key vault is unavailable" need different answers.
+    assert r.status_code == 422
+    assert "gemini" in r.json()["detail"]
+
+    async with _client() as c:
+        listed = await c.get("/api/ai-settings/providers", headers=_auth(token))
+    assert [p["provider"] for p in listed.json()] == []
+
+
+@pytest.mark.asyncio
+async def test_a_supported_provider_still_stores() -> None:
+    """The guard must not refuse everything -- without this, deleting the
+    provider list entirely would pass the test above."""
+    _org_id, token = await _org_admin("AiSettings Known Provider Org")
+    async with _client() as c:
+        r = await c.post(
+            "/api/ai-settings/providers/anthropic",
+            json={"api_key": "sk-ant-api03-real-looking-key", "enabled": True},
+            headers=_auth(token),
+        )
+    assert r.status_code in (200, 201), r.text
