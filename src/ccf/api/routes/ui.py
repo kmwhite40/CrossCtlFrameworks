@@ -231,6 +231,27 @@ async def home(request: Request, session: AsyncSession = Depends(get_session)) -
     )
 
 
+@router.get("/workspace", response_class=HTMLResponse)
+async def workspace(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """The customer journey as one ordered thing, with a state per step.
+
+    Concord had every part of this and no path through it: describe a system,
+    connect a provider, scan, read findings, generate an SSP -- five unrelated
+    pages, any order, nothing saying which step you were on. The tools existed;
+    the workflow did not.
+    """
+    from ...analytics.workspace import customer_workspace  # noqa: PLC0415
+
+    w = await customer_workspace(session, _principal_org(request))
+    return templates.TemplateResponse(
+        request,
+        "workspace.html",
+        {"active": "workspace", "w": w, "p": w.get("posture"), "asset_v": _asset_version()},
+    )
+
+
 @router.get("/operations", response_class=HTMLResponse)
 async def operations(
     request: Request, session: AsyncSession = Depends(get_session)
