@@ -206,6 +206,35 @@ async def landing(request: Request) -> HTMLResponse:
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """What this organization has to fix, first thing on sign-in.
+
+    Everything shown here was already recorded -- a scan writes a control test
+    per check, a result per test, and a finding per resource -- but the answer
+    was spread across `/control-tests`, `/posture`, `/governance` and `/poams`
+    with no page rolling it up. The most important view should not be
+    something you navigate to.
+
+    The operational overview this page used to show is still at
+    `/operations`; it answers a different question (how the programme is
+    running) from the one someone signing in asks first (what is broken).
+    """
+    from ...analytics.gaps import compliance_gaps  # noqa: PLC0415
+
+    return templates.TemplateResponse(
+        request,
+        "dashboard_gaps.html",
+        {
+            "active": "dashboard",
+            "g": await compliance_gaps(session, _principal_org(request)),
+            "asset_v": _asset_version(),
+        },
+    )
+
+
+@router.get("/operations", response_class=HTMLResponse)
+async def operations(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
     """Operational overview: compliance readiness, vulnerability response, ConMon ops."""
     from ...analytics.overview import dashboard_overview  # noqa: PLC0415
 
