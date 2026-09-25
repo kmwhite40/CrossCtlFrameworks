@@ -66,7 +66,7 @@ from ...models import (
     Worksheet,
     WorksheetRow,
 )
-from ...integrations.jira import PROVIDER as JIRA_PROVIDER
+from ...integrations.service import PROVIDERS as OUTBOUND_PROVIDERS
 from ...integrations.service import ENTITY_POAM, links_for_entities
 from ...models_assessment_engine import OBJECTIVE_VERDICTS
 from ...models_grc import ConnectorConfig, ExternalIssueLink
@@ -622,27 +622,30 @@ async def poams_page(
     # Where each shown POA&M has already been filed. Loaded in one query rather
     # than per row, and only for this org: a link is tenant data, and an
     # unscoped read here would put another customer's issue key on the page.
-    links: dict[int, ExternalIssueLink] = {}
+    links: dict[int, dict[str, ExternalIssueLink]] = {}
     if org is not None and rows:
         links = await links_for_entities(
-            session, org, ENTITY_POAM, [r["obj"].id for r in rows], JIRA_PROVIDER
+            session, org, ENTITY_POAM, [r["obj"].id for r in rows]
         )
     for row in rows:
-        row["jira"] = links.get(row["obj"].id)
+        row["links"] = links.get(row["obj"].id, {})
 
     # Whether the button should be offered at all. A push with nothing
     # configured is a 409 the operator can do nothing useful with from here.
-    jira_ready = False
+    ready_providers: list[str] = []
     if org is not None:
-        jira_ready = (
-            await session.execute(
-                select(ConnectorConfig.id).where(
-                    ConnectorConfig.organization_id == org,
-                    ConnectorConfig.connector_type == JIRA_PROVIDER,
-                    ConnectorConfig.encrypted_credential.is_not(None),
+        configured = set(
+            (
+                await session.execute(
+                    select(ConnectorConfig.connector_type).where(
+                        ConnectorConfig.organization_id == org,
+                        ConnectorConfig.connector_type.in_(OUTBOUND_PROVIDERS),
+                        ConnectorConfig.encrypted_credential.is_not(None),
+                    )
                 )
-            )
-        ).first() is not None
+            ).scalars().all()
+        )
+        ready_providers = [p for p in OUTBOUND_PROVIDERS if p in configured]
 
     return templates.TemplateResponse(
         request,
@@ -655,7 +658,8 @@ async def poams_page(
             "f_status": status or "",
             "f_severity": severity or "",
             "f_system": system_id,
-            "jira_ready": jira_ready,
+            "ready_providers": ready_providers,
+            "provider_labels": {"jira": "Jira", "emass": "eMASS"},
         },
     )
 

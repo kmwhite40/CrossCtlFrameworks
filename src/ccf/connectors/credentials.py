@@ -44,6 +44,9 @@ _SECRET_FIELD_CANDIDATES: dict[str, tuple[str, ...]] = {
     # not a secret, and showing its last four characters tells an operator
     # nothing about which token is installed.
     "jira": ("api_token",),
+    # The api-key, not the user-uid: the uid identifies a person, is not
+    # secret, and sorts first in the bundle.
+    "emass": ("api_key",),
 }
 
 

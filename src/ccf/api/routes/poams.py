@@ -632,13 +632,14 @@ async def update_milestone(
     return _ms_out(m)
 
 
-@router.post("/{pid}/push/jira")
-async def push_poam_to_jira(
+@router.post("/{pid}/push/{provider}")
+async def push_poam_to_tracker(
     pid: int,
+    provider: str,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
-    """File or update this POA&M's Jira issue. Nothing is ever read back.
+    """File or update this POA&M in an outbound system. Nothing is read back.
 
     Admin-only: an API token bearing full Jira authority is being spent, and
     the ticket is visible to everyone in that project -- a POA&M's text can
@@ -650,8 +651,12 @@ async def push_poam_to_jira(
     its reason is in the body, 504 means Jira could not be reached and the
     same request is worth retrying unchanged.
     """
+    if provider not in integrations_service.PROVIDERS:
+        raise HTTPException(404, f"unknown outbound provider {provider!r}")
     try:
-        result = await integrations_service.push_poam(session, principal.org_id, pid)
+        result = await integrations_service.push_poam(
+            session, principal.org_id, pid, provider=provider
+        )
     except IntegrationNotConfigured as exc:
         raise HTTPException(409, str(exc)) from exc
     except IntegrationRefused as exc:
@@ -660,7 +665,7 @@ async def push_poam_to_jira(
         raise HTTPException(504, str(exc)) from exc
     return {
         "poam_id": pid,
-        "provider": "jira",
+        "provider": provider,
         "external_id": result.external_id,
         "url": result.url,
         "created": result.created,

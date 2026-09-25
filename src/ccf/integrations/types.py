@@ -91,12 +91,27 @@ class PushResult:
 
 
 @runtime_checkable
-class IssueTracker(Protocol):
-    """A system Concord can file and update a ticket in. Never read back from."""
+class OutboundTarget(Protocol):
+    """A system Concord can file a record into. Never read back from.
+
+    Each target maps the POA&M itself, rather than being handed a shape
+    agreed in advance. A ticket tracker wants a title and a body; eMASS is a
+    POA&M system of record and wants severity, a point of contact, a control
+    acronym and a scheduled completion date as its own typed fields. Forcing
+    the second through the first loses exactly the fields that matter, so
+    ``content_for`` belongs to the provider and the service stays ignorant of
+    what either produces.
+    """
 
     provider: str
     credential_type: str
 
-    async def create(self, content: IssueContent) -> PushResult: ...
+    def content_for(self, poam: Any) -> Any: ...
 
-    async def update(self, external_id: str, content: IssueContent) -> PushResult: ...
+    async def create(self, content: Any) -> PushResult: ...
+
+    async def update(self, external_id: str, content: Any) -> PushResult: ...
+
+
+#: Retained name for the ticket-shaped subset of :class:`OutboundTarget`.
+IssueTracker = OutboundTarget
