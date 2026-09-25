@@ -171,3 +171,43 @@ async def test_only_the_latest_result_for_a_test_is_reported() -> None:
         g = await compliance_gaps(s, org_id)
     assert g["failing"] == 0, "an older failing result is still being reported"
     assert g["passing"] == 2
+
+
+@pytest.mark.asyncio
+async def test_the_executive_rollup_carries_continuous_monitoring() -> None:
+    """The one view aimed at people who decide about risk omitted it entirely.
+
+    Every other consumer of a scan saw its results -- the gap report, the work
+    queue, the alerts -- but `insights.executive` had no control-test block,
+    so a leader could read that page while six of ten continuously-monitored
+    controls were failing and see no sign of it.
+    """
+    from ccf.governance import insights
+
+    org_id, _ = await _seed()
+    async with session_scope() as s:
+        r = await insights.executive(s, org_id=org_id)
+
+    assert "control_tests" in r, "the executive rollup carries no conmon block"
+    ct = r["control_tests"]
+    assert ct["assessed"] == 2
+    assert ct["failing"] == 1
+    assert ct["passing"] == 1
+    assert ct["resources_failing"] == 6
+    # Named, not just counted: a number alone does not say what to look at.
+    assert ct["failing_controls"] == ["IA-2"]
+
+
+@pytest.mark.asyncio
+async def test_the_executive_conmon_block_is_scoped_to_one_organization() -> None:
+    """The owning org is asserted first, so a block that reported nothing at
+    all would fail here too."""
+    from ccf.governance import insights
+
+    mine, _ = await _seed()
+    await _seed()  # another tenant, also with one failing control
+    async with session_scope() as s:
+        r = await insights.executive(s, org_id=mine)
+
+    assert r["control_tests"]["assessed"] == 2, "another tenant's tests were counted"
+    assert r["control_tests"]["failing"] == 1

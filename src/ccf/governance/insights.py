@@ -15,6 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics import org_summary
+from ..analytics.gaps import compliance_gaps
 from ..capability.divergence import divergence_count
 from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
@@ -240,8 +241,30 @@ async def executive(session: AsyncSession, *, org_id: int | None = None) -> dict
         by_band[band(score)] += 1
 
     dq = await data_quality(session, org_id=org_id)
+
+    # Continuous monitoring, which this rollup did not carry at all.
+    #
+    # Every other consumer of a scan saw its results -- the gap report, the
+    # work queue, the alerts -- but the executive view did not, so a leader
+    # could read this page while six of ten continuously-monitored controls
+    # were failing and see no sign of it. The risk existed, the platform knew
+    # it, and the one view aimed at the people who decide about risk omitted
+    # it.
+    gaps = await compliance_gaps(session, org_id)
+
     return {
         "generated_at": today.isoformat(),
+        "control_tests": {
+            "assessed": gaps["assessed"],
+            "failing": gaps["failing"],
+            "passing": gaps["passing"],
+            "resources_failing": gaps["resources_failing"],
+            "resources_evaluated": gaps["resources_evaluated"],
+            "last_assessed": gaps["last_assessed"],
+            # The controls themselves, deduplicated and ordered, so the page
+            # can name what is failing rather than only counting it.
+            "failing_controls": sorted({g["control_id"] for g in gaps["gaps"]}),
+        },
         "avg_sprs_score": summary.get("avg_sprs_score"),
         "systems_total": summary.get("systems_total"),
         "systems_by_ato": summary.get("systems_by_ato"),
