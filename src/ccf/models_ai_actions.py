@@ -60,7 +60,14 @@ class AiActionRun(Base):
     entity_id: Mapped[str | None] = mapped_column(String(128))
     # draft|pending_review|approved|rejected|completed|blocked
     status: Mapped[str] = mapped_column(String(16), default="pending_review")
+    #: The provider that ACTUALLY produced the output, set from the generation
+    #: result rather than from settings. It used to be set before the call,
+    #: from ``settings.ai_provider``, while the generator ignored it and always
+    #: returned the stub -- so a run could name a vendor no model had answered.
     provider: Mapped[str] = mapped_column(String(24), default="stub")
+    #: The resolved model, when a real one answered. ``None`` for a stub run;
+    #: writing a model name there would repeat the defect above.
+    model: Mapped[str | None] = mapped_column(String(64))
     prompt_version: Mapped[str] = mapped_column(String(24), default="v1")
     input_hash: Mapped[str | None] = mapped_column(String(64))
     output_hash: Mapped[str | None] = mapped_column(String(64))

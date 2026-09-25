@@ -227,7 +227,10 @@ async def run_action(
     run = AiActionRun(
         organization_id=org_id, action_key=action_key, entity_type=entity_type,
         entity_id=str(entity_id), actor=actor,
-        provider=settings.ai_provider if settings.ai_enabled else "stub",
+        # Set AFTER generation, from what actually answered -- see below. The
+        # row needs a value before the flush that mints its id, and "stub" is
+        # the only one true of a run that has not generated anything yet.
+        provider="stub",
         status="pending_review" if _effective_requires_approval(action, settings) else "completed",
     )
     session.add(run)
@@ -248,7 +251,11 @@ async def run_action(
     if context is None:
         raise AiActionError(f"{entity_type} {entity_id} not found")
 
-    result = provider.generate(action, context, provider=run.provider)
+    result = await provider.generate(action, context, session=session, org_id=org_id)
+    # The provider and model that produced this output, not the ones configured.
+    # These used to be assumed before the call while the generator ignored them.
+    run.provider = result["provider"]
+    run.model = result["model"]
     citations = result["citations"]
     uncited = action.citation_required and not citations
 
