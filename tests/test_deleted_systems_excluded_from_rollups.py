@@ -184,3 +184,61 @@ async def test_scored_and_the_assessed_flag_cannot_disagree() -> None:
         summary = await posture.org_summary(s, today=date.today(), org_id=org_id)
 
     assert summary["systems_scored"] == len([c for c in cards if c["assessed"]])
+
+
+@pytest.mark.asyncio
+async def test_the_operations_page_renders_with_an_unassessed_system() -> None:
+    """Withholding the score broke a template that gauged the percentage.
+
+    `sprs_percentage` became None for a system nothing has been assessed
+    against, and `dashboard.html` fed it straight to `max` --
+    ``TypeError: '>' not supported between instances of 'int' and 'NoneType'``,
+    a 500 on the operations page.
+
+    It was missed because the consumer sweep grepped for ``sprs_score`` and
+    this template uses ``sprs_percentage``: one field was guarded and its twin
+    was not. And no existing test rendered the page with an unassessed system,
+    which is the only state that triggers it -- so the suite stayed green.
+    """
+    import os
+
+    from httpx import ASGITransport, AsyncClient
+
+    from ccf.api.main import create_app
+
+    org_id, _system_id = await _org_with_unassessed_system()
+
+    from ccf.auth import hash_password, new_api_token
+    from ccf.config import get_settings
+    from ccf.models import User
+
+    async with session_scope() as s:
+        user = User(
+            email=f"ops-{uuid.uuid4().hex[:6]}@ops.test",
+            organization_id=org_id,
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        s.add(user)
+        await s.flush()
+        token = user.api_token
+
+    os.environ["CCF_AUTH_ENABLED"] = "true"
+    os.environ["CCF_AUTH_SESSION_SECRET"] = "test-secret"
+    get_settings.cache_clear()
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=create_app()),
+            base_url="http://t",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as client:
+            r = await client.get("/operations")
+    finally:
+        os.environ.pop("CCF_AUTH_ENABLED", None)
+        os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
+        get_settings.cache_clear()
+
+    assert r.status_code == 200, "an unassessed system 500s the operations page"
+    assert "not assessed" in r.text
