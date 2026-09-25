@@ -43,6 +43,8 @@ capture in the other namespace would be stored and silently never rendered.
 
 from __future__ import annotations
 
+import inspect
+
 import asyncio
 from datetime import UTC, datetime
 from typing import Any, ClassVar
@@ -229,7 +231,24 @@ class MsGraphConnector(ConfigConnector):
             )
             resp.raise_for_status()
             payload = resp.json()
-            rows.extend(payload.get("value") or [])
+            # A response carrying no `value` and no content of its own is not a
+            # singleton resource -- it is an empty or malformed body, and
+            # turning it into a row would hand an evaluator a phantom resource.
+            # `@odata.*` annotations do not count as content.
+            substantive = {
+                k: v for k, v in payload.items() if not k.startswith("@odata.")
+            }
+            if "value" in payload or not substantive:
+                rows.extend(payload.get("value") or [])
+            else:
+                # A singleton resource -- `policies/authorizationPolicy` and
+                # `policies/authenticationMethodsPolicy` return the object
+                # itself with no `value` envelope. Without this they yielded no
+                # rows at all, and a check reading one would see an empty fleet
+                # and report "nothing to assess" rather than assessing the
+                # tenant. Keyed on the absence of `value`, not on truthiness,
+                # so a collection that is legitimately empty stays empty.
+                rows.append(payload)
             nxt = payload.get("@odata.nextLink")
             next_target = nxt if isinstance(nxt, str) else None
         if next_target:
@@ -406,9 +425,16 @@ class MsGraphConnector(ConfigConnector):
 
         evaluator = m365.EVALUATORS[rc.evaluator_key or rc.check.key]
         kwargs: dict[str, Any] = dict(rc.parameters or {})
-        if (rc.evaluator_key or rc.check.key) == m365.LEGACY_AUTH_BLOCKED.key:
+        # Driven by the evaluator's own signature rather than a branch per
+        # check key. The branch had to be extended for every new tenant-level
+        # evaluator, and forgetting it produced a TypeError at scan time that
+        # the per-check isolation reported as `manual_review_required` -- a
+        # wiring omission wearing the costume of a finding. Four checks landed
+        # that way on their first run.
+        accepted = inspect.signature(evaluator).parameters
+        if "tenant_id" in accepted and "tenant_id" not in kwargs:
             kwargs["tenant_id"] = tenant_id
-        elif (rc.evaluator_key or rc.check.key) == m365.STALE_ACCOUNTS.key:
+        if "now" in accepted and "now" not in kwargs:
             kwargs["now"] = now
         findings = evaluator(rows, **kwargs)
         return CheckOutcome.from_findings(rc.check, tuple(findings))

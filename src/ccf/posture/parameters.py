@@ -43,6 +43,13 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     m365.MFA_REGISTERED.key: (),
     m365.LEGACY_AUTH_BLOCKED.key: (),
     m365.STALE_ACCOUNTS.key: ("threshold_days",),
+    # Empty tuples: each takes no parameter yet. Present because a check absent
+    # from this mapping cannot be named by a pack at all, so omitting one
+    # silently removes it from Form A -- which is why the guard exists.
+    m365.PHISHING_RESISTANT_MFA.key: (),
+    m365.PHISHABLE_METHODS_DISABLED.key: (),
+    m365.GUEST_INVITES_RESTRICTED.key: (),
+    m365.DEFAULT_USER_PERMISSIONS_RESTRICTED.key: (),
     aws.ROOT_MFA_ENABLED.key: (),
     aws.PASSWORD_POLICY.key: (),
     aws.ACCESS_KEY_ROTATION.key: ("threshold_days",),

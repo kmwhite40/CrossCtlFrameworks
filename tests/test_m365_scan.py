@@ -40,7 +40,10 @@ async def test_scan_returns_one_outcome_per_check(monkeypatch: pytest.MonkeyPatc
 
     outcomes = await MsGraphConnector(credential=CRED).scan()
     keys = {o.check_key for o in outcomes}
-    assert keys == {MFA_REGISTERED.key, LEGACY_AUTH_BLOCKED.key, STALE_ACCOUNTS.key}
+    # Derived from CHECKS: naming the keys literally meant every new check
+    # failed here while saying nothing about the new check.
+    assert keys == {c.key for c in m365_provider.CHECKS}
+    assert {MFA_REGISTERED.key, LEGACY_AUTH_BLOCKED.key, STALE_ACCOUNTS.key} <= keys
     mfa = next(o for o in outcomes if o.check_key == MFA_REGISTERED.key)
     assert mfa.verdict == "pass"
     legacy = next(o for o in outcomes if o.check_key == LEGACY_AUTH_BLOCKED.key)
@@ -91,7 +94,8 @@ async def test_one_check_failing_does_not_lose_the_others(
     monkeypatch.setattr(MsGraphConnector, "_get_all", selective)
 
     outcomes = await MsGraphConnector(credential=CRED).scan()
-    assert len(outcomes) == 3
+    # One outcome per registered check, derived rather than counted.
+    assert len(outcomes) == len(m365_provider.CHECKS)
     mfa = next(o for o in outcomes if o.check_key == MFA_REGISTERED.key)
     assert mfa.verdict == "manual_review_required"
     legacy = next(o for o in outcomes if o.check_key == LEGACY_AUTH_BLOCKED.key)
@@ -124,7 +128,10 @@ async def test_evaluator_failure_does_not_discard_the_whole_scan(
     outcomes = await MsGraphConnector(credential=CRED).scan()
     assert outcomes, "an evaluator exception must not discard the whole scan"
     keys = {o.check_key for o in outcomes}
-    assert keys == {MFA_REGISTERED.key, LEGACY_AUTH_BLOCKED.key, STALE_ACCOUNTS.key}
+    # Derived from CHECKS: naming the keys literally meant every new check
+    # failed here while saying nothing about the new check.
+    assert keys == {c.key for c in m365_provider.CHECKS}
+    assert {MFA_REGISTERED.key, LEGACY_AUTH_BLOCKED.key, STALE_ACCOUNTS.key} <= keys
 
     mfa = next(o for o in outcomes if o.check_key == MFA_REGISTERED.key)
     assert mfa.verdict == "manual_review_required"

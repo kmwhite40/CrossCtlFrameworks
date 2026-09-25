@@ -63,7 +63,84 @@ STALE_ACCOUNTS = PostureCheck(
     required_permissions=("AuditLog.Read.All", "User.Read.All"),
 )
 
-CHECKS: tuple[PostureCheck, ...] = (MFA_REGISTERED, LEGACY_AUTH_BLOCKED, STALE_ACCOUNTS)
+
+#: Authentication methods that resist phishing: a hardware authenticator or a
+#: certificate. IA-2(11) asks for one to be available, not for every other
+#: method to be removed.
+PHISHING_RESISTANT_METHODS = frozenset({"Fido2", "X509Certificate"})
+
+#: Methods an attacker can intercept or socially engineer. SMS and voice are
+#: interceptable via SIM swap and call forwarding; email is only as strong as
+#: the mailbox, which is the thing being protected.
+PHISHABLE_METHODS = frozenset({"Sms", "Voice", "Email"})
+
+#: `allowInvitesFrom` values that let ordinary members invite external guests.
+#: "everyone" additionally lets *guests* invite further guests.
+UNRESTRICTED_INVITE_SETTINGS = frozenset({"everyone", "adminsGuestInvitersAndAllMembers"})
+
+#: Default-user permissions that grant ordinary accounts privileged capability.
+#: Wants to be an organization-defined parameter -- some tenants legitimately
+#: let users register applications -- but a constant with a recorded intent is
+#: honest where inventing configuration now is premature.
+PRIVILEGED_DEFAULT_PERMISSIONS = (
+    "allowedToCreateTenants",
+    "allowedToCreateApps",
+    "allowedToCreateSecurityGroups",
+)
+
+
+PHISHING_RESISTANT_MFA = PostureCheck(
+    key="m365.identity.phishing_resistant_mfa",
+    title="A phishing-resistant authentication method is enabled",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected="at least one of FIDO2 or certificate-based authentication is enabled",
+    control_ids=("IA-2(11)",),
+    required_permissions=("Policy.Read.All",),
+)
+
+PHISHABLE_METHODS_DISABLED = PostureCheck(
+    key="m365.identity.phishable_methods_disabled",
+    title="Interceptable authentication methods are disabled",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected="SMS, voice and email are not enabled as authentication methods",
+    control_ids=("IA-2(1)", "IA-2(2)"),
+    required_permissions=("Policy.Read.All",),
+)
+
+GUEST_INVITES_RESTRICTED = PostureCheck(
+    key="m365.policy.guest_invites_restricted",
+    title="Guest invitations are restricted to administrators",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected="inviting external guests is not open to all members",
+    control_ids=("AC-3", "AC-6"),
+    required_permissions=("Policy.Read.All",),
+)
+
+DEFAULT_USER_PERMISSIONS_RESTRICTED = PostureCheck(
+    key="m365.policy.default_user_permissions_restricted",
+    title="Default user permissions withhold privileged capability",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=(
+        "ordinary accounts cannot create tenants, register applications, or "
+        "create security groups"
+    ),
+    control_ids=("AC-6", "AC-6(1)"),
+    required_permissions=("Policy.Read.All",),
+)
+
+CHECKS: tuple[PostureCheck, ...] = (
+    MFA_REGISTERED,
+    LEGACY_AUTH_BLOCKED,
+    STALE_ACCOUNTS,
+    PHISHING_RESISTANT_MFA,
+    PHISHABLE_METHODS_DISABLED,
+    GUEST_INVITES_RESTRICTED,
+    DEFAULT_USER_PERMISSIONS_RESTRICTED,
+)
 
 #: Graph collection each check reads, relative to the Graph base URL.
 #:
@@ -86,6 +163,15 @@ ENDPOINTS: dict[str, str] = {
     STALE_ACCOUNTS.key: (
         "/v1.0/users?$select=id,userPrincipalName,accountEnabled,signInActivity&$top=500"
     ),
+    # Singleton resources: Graph returns the object itself with no `value`
+    # envelope, which `_get_all` surfaces as a single row. Two checks share
+    # each endpoint -- availability and absence are separate questions about
+    # the same policy, and reporting them as one finding would hide whichever
+    # half passed.
+    PHISHING_RESISTANT_MFA.key: "/v1.0/policies/authenticationMethodsPolicy",
+    PHISHABLE_METHODS_DISABLED.key: "/v1.0/policies/authenticationMethodsPolicy",
+    GUEST_INVITES_RESTRICTED.key: "/v1.0/policies/authorizationPolicy",
+    DEFAULT_USER_PERMISSIONS_RESTRICTED.key: "/v1.0/policies/authorizationPolicy",
 }
 
 
@@ -270,8 +356,167 @@ def evaluate_stale_accounts(
 
 #: Check key -> its evaluator. ``scan`` dispatches through this rather than a
 #: chain of conditionals, so adding a check is a registry entry.
+
+def _enabled_methods(rows: list[dict[str, Any]]) -> set[str]:
+    """Ids of authentication methods the tenant has enabled.
+
+    The policy is one object with an ``authenticationMethodConfigurations``
+    list, each entry carrying an ``id`` and a ``state`` of ``enabled`` or
+    ``disabled``. An entry Graph omits is not enabled -- absence and
+    ``disabled`` mean the same thing here.
+    """
+    policy = rows[0] if rows else {}
+    configs = policy.get("authenticationMethodConfigurations") or []
+    return {
+        str(m.get("id"))
+        for m in configs
+        if isinstance(m, dict) and m.get("state") == "enabled"
+    }
+
+
+def evaluate_phishing_resistant_mfa(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """IA-2(11): at least one phishing-resistant method is available."""
+    enabled = _enabled_methods(rows)
+    available = sorted(enabled & PHISHING_RESISTANT_METHODS)
+    if available:
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="pass",
+                observed=f"phishing-resistant method(s) enabled: {', '.join(available)}",
+                detail={"enabled": available},
+            )
+        ]
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict="fail",
+            observed=(
+                "no phishing-resistant method is enabled; expected one of "
+                f"{', '.join(sorted(PHISHING_RESISTANT_METHODS))}"
+            ),
+            detail={"enabled_methods": sorted(enabled)},
+        )
+    ]
+
+
+def evaluate_phishable_methods_disabled(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """IA-2(1)/(2): SMS, voice and email are not accepted as factors.
+
+    Separate from the check above because they are separate questions: a
+    tenant can offer FIDO2 *and* still accept SMS, and an attacker only has
+    to defeat the weakest method the tenant will accept.
+    """
+    enabled = _enabled_methods(rows)
+    offending = sorted(enabled & PHISHABLE_METHODS)
+    if not offending:
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="pass",
+                observed="no interceptable authentication method is enabled",
+                detail={"enabled_methods": sorted(enabled)},
+            )
+        ]
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict="fail",
+            observed=f"interceptable method(s) enabled: {', '.join(offending)}",
+            detail={"offending": offending},
+        )
+    ]
+
+
+def evaluate_guest_invites_restricted(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """AC-3/AC-6: inviting external guests is not open to every member."""
+    policy = rows[0] if rows else {}
+    setting = policy.get("allowInvitesFrom")
+    if setting is None:
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="not_applicable",
+                observed="the tenant reported no guest-invitation setting",
+                detail={},
+            )
+        ]
+    if str(setting) in UNRESTRICTED_INVITE_SETTINGS:
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="fail",
+                observed=f"guest invitations are open to {setting!r}",
+                detail={"allowInvitesFrom": setting},
+            )
+        ]
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict="pass",
+            observed=f"guest invitations restricted to {setting!r}",
+            detail={"allowInvitesFrom": setting},
+        )
+    ]
+
+
+def evaluate_default_user_permissions(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """AC-6: an ordinary account does not carry privileged capability."""
+    policy = rows[0] if rows else {}
+    permissions = policy.get("defaultUserRolePermissions")
+    if not isinstance(permissions, dict):
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="not_applicable",
+                observed="the tenant reported no default user-role permissions",
+                detail={},
+            )
+        ]
+    granted = [name for name in PRIVILEGED_DEFAULT_PERMISSIONS if permissions.get(name) is True]
+    if not granted:
+        return [
+            ResourceFinding(
+                resource_id=tenant_id,
+                resource_type="m365_tenant",
+                verdict="pass",
+                observed="default users hold none of the privileged capabilities checked",
+                detail={"checked": list(PRIVILEGED_DEFAULT_PERMISSIONS)},
+            )
+        ]
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict="fail",
+            observed=f"default users may: {', '.join(granted)}",
+            detail={"granted": granted},
+        )
+    ]
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     MFA_REGISTERED.key: evaluate_mfa_registered,
     LEGACY_AUTH_BLOCKED.key: evaluate_legacy_auth_blocked,
     STALE_ACCOUNTS.key: evaluate_stale_accounts,
+    PHISHING_RESISTANT_MFA.key: evaluate_phishing_resistant_mfa,
+    PHISHABLE_METHODS_DISABLED.key: evaluate_phishable_methods_disabled,
+    GUEST_INVITES_RESTRICTED.key: evaluate_guest_invites_restricted,
+    DEFAULT_USER_PERMISSIONS_RESTRICTED.key: evaluate_default_user_permissions,
 }
