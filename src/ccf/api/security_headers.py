@@ -14,7 +14,22 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 _HEADERS = {
     b"x-content-type-options": b"nosniff",
     b"x-frame-options": b"DENY",
-    b"referrer-policy": b"no-referrer",
+    # `same-origin`, NOT `no-referrer`.
+    #
+    # Both withhold the referrer from cross-origin requests, which is the whole
+    # privacy goal here. But per the Fetch standard's "append a request `Origin`
+    # header" step, a request whose method is neither GET nor HEAD has its
+    # serialized origin replaced with the literal `null` when the referrer
+    # policy is `no-referrer`. So `no-referrer` silently made every browser
+    # send `Origin: null` on every form submission in the application, and
+    # `CsrfOriginMiddleware` -- correctly -- treats a present-but-opaque origin
+    # as untrusted and refuses it.
+    #
+    # The result was that two security headers, each defensible alone, combined
+    # to reject every state-changing form in the product while every GET still
+    # worked. `same-origin` keeps the cross-origin referrer suppressed and
+    # leaves the Origin intact.
+    b"referrer-policy": b"same-origin",
     b"content-security-policy": (
         b"default-src 'self'; img-src 'self' data:; "
         # 'unsafe-eval' is required by the vendored Alpine.js build, which compiles
