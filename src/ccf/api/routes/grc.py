@@ -669,7 +669,15 @@ async def update_finding(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     f = await session.get(AuditFinding, find_id)
-    if f is None:
+    # Scoped explicitly as well as by RLS. Its two siblings in this file check
+    # the organization and this one did not, so a finding id from another
+    # tenant reached the update -- and an HTTP test cannot tell an app
+    # predicate from the database policy, which is how it survived.
+    if f is None or (
+        principal.org_id is not None
+        and f.organization_id is not None
+        and f.organization_id != principal.org_id
+    ):
         raise HTTPException(404, "finding not found")
     data = body.model_dump(exclude_none=True)
     if data.get("system_id") is not None and principal.org_id is not None:
@@ -990,18 +998,33 @@ async def run_control_test(
     if body.status not in ("pass", "fail", "warn"):
         raise HTTPException(422, "status must be pass|fail|warn")
     t = await session.get(ControlTest, test_id)
-    if t is None:
+    # Scoped explicitly as well as by RLS: its UI twin and `connectors_sync`
+    # both addressed another tenant's row by id for want of this, and a test
+    # issued over HTTP cannot tell an app predicate from the database policy.
+    if t is None or (principal.org_id is not None and t.organization_id != principal.org_id):
         raise HTTPException(404, "control test not found")
-    res = ControlTestResult(
-        control_test_id=test_id,
-        status=body.status,
-        detail=body.detail,
-        evidence_ref=body.evidence_ref,
-    )
-    session.add(res)
-    t.last_status = body.status
-    t.last_tested_at = _now()
-    await session.flush()
+    # Through `record_result`, which the module documents as deliberately the
+    # only writer of results. Writing a ControlTestResult here directly meant
+    # alerting, remediation-task creation and recovery behaved differently
+    # depending on which door the result came through -- and skipped the
+    # scan-owned check entirely.
+    if control_tests.scan_owned(t):
+        raise HTTPException(
+            409,
+            f"'{t.name}' is assessed by posture scan '{t.check_key}'. "
+            "Re-run the scan to change its result.",
+        )
+    try:
+        res = await control_tests.record_result(
+            session,
+            t,
+            status=body.status,
+            detail=body.detail,
+            evidence_ref=body.evidence_ref,
+            actor=principal.email,
+        )
+    except control_tests.ScanOwnedTestError as exc:
+        raise HTTPException(409, str(exc)) from exc
 
     if body.status in ("fail", "warn"):
         sev = "critical" if body.status == "fail" else "warning"

@@ -196,7 +196,12 @@ class MsGraphConnector(ConfigConnector):
         return resolved
 
     async def _get_all(
-        self, client: httpx.AsyncClient, url: str, headers: dict[str, Any]
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, Any],
+        *,
+        max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
         """Every page of a Graph collection, following ``@odata.nextLink``.
 
@@ -221,9 +226,16 @@ class MsGraphConnector(ConfigConnector):
         fleet that would roll up to a false ``pass``.
         """
         base = httpx.URL(self._graph_base)
+        # `max_pages` of 1 means "the first page answers the question".
+        # A check asking whether a *recent* audit record exists needs the
+        # newest row and nothing else, but following `@odata.nextLink` walked
+        # a tenant's entire sign-in log -- the largest collection in Graph --
+        # and earned a 429 on a `$top=1` query. Rate-limited into
+        # `manual_review_required`, which reads as a finding.
+        limit = self._MAX_PAGES if max_pages is None else max_pages
         rows: list[dict[str, Any]] = []
         next_target: str | None = url
-        for _ in range(self._MAX_PAGES):
+        for _ in range(limit):
             if not next_target:
                 return rows
             resp = await self._get_with_retry(
@@ -251,7 +263,10 @@ class MsGraphConnector(ConfigConnector):
                 rows.append(payload)
             nxt = payload.get("@odata.nextLink")
             next_target = nxt if isinstance(nxt, str) else None
-        if next_target:
+        if next_target and max_pages is None:
+            # Only a *fleet* read must refuse a partial answer. A deliberate
+            # single-page read has more pages by design, and raising there
+            # would fail the check it was meant to make cheap.
             raise GraphPaginationTruncatedError(
                 f"stopped after {self._MAX_PAGES} pages with more pages remaining "
                 "-- refusing to evaluate a partial fleet"
@@ -379,7 +394,14 @@ class MsGraphConnector(ConfigConnector):
                         # rule); it is passed through as-is and resolved
                         # safely inside _get_all rather than concatenated
                         # onto the host here -- see _safe_url.
-                        rows = await self._get_all(client, rc.endpoint, headers)
+                        rows = await self._get_all(
+                            client,
+                            rc.endpoint,
+                            headers,
+                            max_pages=m365.FIRST_PAGE_ONLY.get(
+                                rc.evaluator_key or rc.check.key
+                            ),
+                        )
                     except Exception as e:
                         outcomes.append(self._unrunnable(rc.check, e))
                         continue

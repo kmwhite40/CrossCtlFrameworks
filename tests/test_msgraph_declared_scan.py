@@ -64,7 +64,9 @@ async def _token_ok(self: Any, client: Any) -> str:
 async def test_a_declared_check_runs_and_reports_per_resource(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fake_get_all(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+    async def fake_get_all(
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         assert "userType" in url, "the declared check's own endpoint must be used"
         return [
             {"userPrincipalName": "member@x.gov", "userType": "Member"},
@@ -91,7 +93,9 @@ async def test_a_declared_check_that_is_forbidden_names_its_permission(
     """The 403-is-not-empty rule must hold for declared checks too, or a pack's
     check silently reports a clean fleet."""
 
-    async def forbidden(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+    async def forbidden(
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         request = httpx.Request("GET", url)
         raise httpx.HTTPStatusError(
             "Forbidden", request=request, response=httpx.Response(403, request=request)
@@ -111,7 +115,9 @@ async def test_a_parameterized_platform_check_uses_the_declared_threshold(
 ) -> None:
     idle_75 = (datetime.now(UTC) - timedelta(days=75)).isoformat().replace("+00:00", "Z")
 
-    async def fake_get_all(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+    async def fake_get_all(
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         return [
             {
                 "userPrincipalName": "idle@x.gov",
@@ -162,7 +168,9 @@ async def test_one_bad_declared_check_does_not_discard_the_others(
         ),
     )
 
-    async def fake_get_all(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+    async def fake_get_all(
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         return [{"userPrincipalName": "member@x.gov", "userType": "Member"}]
 
     monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)
@@ -181,7 +189,9 @@ async def test_no_checks_argument_still_runs_the_platform_registry(
 ) -> None:
     """Every existing caller of scan() behaves exactly as before."""
 
-    async def fake_get_all(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+    async def fake_get_all(
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         return []
 
     monkeypatch.setattr(MsGraphConnector, "_token", _token_ok)

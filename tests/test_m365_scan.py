@@ -26,7 +26,7 @@ async def test_unconfigured_scans_nothing() -> None:
 
 async def test_scan_returns_one_outcome_per_check(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_get_all(
-        self: Any, client: Any, url: str, headers: Any
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
     ) -> list[dict[str, Any]]:
         if "userRegistrationDetails" in url:
             return [
@@ -58,7 +58,7 @@ async def test_forbidden_is_manual_review_not_not_applicable(
     a broken check behind a benign-looking verdict."""
 
     async def forbidden(
-        self: Any, client: Any, url: str, headers: Any
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
     ) -> list[dict[str, Any]]:
         request = httpx.Request("GET", url)
         raise httpx.HTTPStatusError(
@@ -84,7 +84,7 @@ async def test_one_check_failing_does_not_lose_the_others(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def selective(
-        self: Any, client: Any, url: str, headers: Any
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
     ) -> list[dict[str, Any]]:
         if "userRegistrationDetails" in url:
             raise RuntimeError("graph exploded")
@@ -112,7 +112,7 @@ async def test_evaluator_failure_does_not_discard_the_whole_scan(
     posture, and it would silently drop the other two checks that did run."""
 
     async def fake_get_all(
-        self: Any, client: Any, url: str, headers: Any
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
     ) -> list[dict[str, Any]]:
         return []
 
@@ -167,7 +167,7 @@ async def test_stale_check_receives_a_clock(monkeypatch: pytest.MonkeyPatch) -> 
     """evaluate_stale_accounts needs `now`; scan must supply it."""
 
     async def one_old_user(
-        self: Any, client: Any, url: str, headers: Any
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
     ) -> list[dict[str, Any]]:
         if "users?" in url:
             return [
@@ -200,7 +200,9 @@ async def test_stale_accounts_requests_the_largest_supported_page_size(
     selected -- so a future edit that drops it must fail this test."""
     urls: list[str] = []
 
-    async def record_url(self: Any, client: Any, url: str, headers: Any) -> list[dict[str, Any]]:
+    async def record_url(
+        self: Any, client: Any, url: str, headers: Any, **kwargs: Any
+    ) -> list[dict[str, Any]]:
         urls.append(url)
         return []
 
