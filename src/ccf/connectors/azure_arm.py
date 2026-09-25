@@ -82,6 +82,7 @@ from typing import Any, ClassVar
 import httpx
 
 from ..config import get_settings
+from .clouds import microsoft_endpoints
 from ..logging import get_logger
 from .base import CapturedParameter, ConfigConnector
 
@@ -149,6 +150,26 @@ class AzureArmConnector(ConfigConnector):
 
     # ── credentials ──────────────────────────────────────────────────────────
 
+
+    @property
+    def _endpoints(self):
+        """This organization's own cloud, or the deployment's configured one.
+
+        See :mod:`ccf.connectors.clouds`: the sovereign cloud belongs to the
+        service principal, not to the instance, and defaults to US Government.
+        """
+        return microsoft_endpoints((self.credential or {}).get("cloud"))
+
+    @property
+    def _login_url(self) -> str:
+        endpoints = self._endpoints
+        return endpoints.login_url if endpoints else get_settings().arm_login_url
+
+    @property
+    def _arm_base(self) -> str:
+        endpoints = self._endpoints
+        return endpoints.arm_base_url if endpoints else get_settings().arm_base_url
+
     def is_configured(self) -> bool:
         """True only with this org's own full ARM service-principal bundle.
 
@@ -175,14 +196,14 @@ class AzureArmConnector(ConfigConnector):
         """
         s = get_settings()
         c = self.credential or {}
-        url = f"{s.arm_login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
+        url = f"{self._login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
         resp = await client.post(
             url,
             data={
                 "grant_type": "client_credentials",
                 "client_id": c.get("client_id"),
                 "client_secret": c.get("client_secret"),
-                "scope": f"{s.arm_base_url}/.default",
+                "scope": f"{self._arm_base}/.default",
             },
         )
         resp.raise_for_status()
@@ -225,7 +246,7 @@ class AzureArmConnector(ConfigConnector):
         "nothing to see", and raises :class:`ArmPaginationTruncatedError` rather
         than returning a partial resource set.
         """
-        base = httpx.URL(get_settings().arm_base_url)
+        base = httpx.URL(self._arm_base)
         rows: list[dict[str, Any]] = []
         next_target: str | None = path
         for _ in range(self._MAX_PAGES):
@@ -270,7 +291,7 @@ class AzureArmConnector(ConfigConnector):
                 "connected": bool(token),
                 "tenant": (self.credential or {}).get("tenant_id"),
                 "subscription": (self.credential or {}).get("subscription_id"),
-                "arm_endpoint": s.arm_base_url,
+                "arm_endpoint": self._arm_base,
             }
         except Exception as e:
             return {"connected": False, "reason": str(e)[:200]}

@@ -33,7 +33,12 @@
     <form method="post" action="/connectors/{{ c.id }}/credential">
       {% for field in spec.fields %}
       <label class="label" for="cred-{{ field.name }}" style="display:block;margin-bottom:4px">{{ field.label }}</label>
-      {% if field.multiline %}
+      {% if field.choices %}
+      <select class="select" id="cred-{{ field.name }}" name="{{ field.name }}"
+              style="width:100%;margin-bottom:4px">
+        {% for value, label in field.choices %}<option value="{{ value }}">{{ label }}</option>{% endfor %}
+      </select>
+      {% elif field.multiline %}
       <textarea class="input" id="cred-{{ field.name }}" name="{{ field.name }}" rows="5"
                 style="width:100%;margin-bottom:4px;font-family:var(--font-mono)"
                 autocomplete="off" spellcheck="false"></textarea>
