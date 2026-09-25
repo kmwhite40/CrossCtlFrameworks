@@ -4,6 +4,16 @@
 {% block subtitle %}<p class="page__subtitle">Manage AI provider credentials for this organization. Keys are envelope-encrypted at rest — only the last 4 characters are ever shown here.</p>{% endblock %}
 {% block content %}
 
+{% if no_org %}
+<section class="card">
+  <div class="card__body dim" style="text-align:center;padding:40px">
+    <p style="margin:0 0 8px"><strong>No organization in this session.</strong></p>
+    <p style="margin:0;max-width:60ch;display:inline-block">AI provider credentials are held per organization, so this page has
+    nothing to scope to. Sign in as a member of an organization to manage its keys.</p>
+  </div>
+</section>
+{% else %}
+
 {% if error %}
 <div class="chip {% if error.startswith('test:valid') %}chip--ok{% elif error.startswith('test:') %}chip--warn{% else %}chip--err{% endif %}" style="margin-bottom:16px">
   <i data-lucide="alert-triangle"></i> {{ error }}
@@ -57,4 +67,5 @@
 </section>
 
 <script>if(window.lucide)lucide.createIcons();</script>
+{% endif %}
 {% endblock %}

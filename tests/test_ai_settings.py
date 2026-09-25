@@ -9,6 +9,7 @@ never present in any response.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
 import pytest
 from alembic import command
@@ -53,6 +54,32 @@ def _auth_enabled() -> None:
     os.environ.pop("CCF_AUTH_ENABLED", None)
     os.environ.pop("CCF_AUTH_SESSION_SECRET", None)
     get_settings.cache_clear()
+
+
+
+@contextmanager
+def _auth_disabled():
+    """Run with auth off, restoring the env *before* any fixture tears down.
+
+    Not `monkeypatch.setenv`: `_master_key` requests `monkeypatch`, so it is
+    built before the autouse `_auth_enabled` fixture and therefore unwound
+    *after* it. `_auth_enabled` pops CCF_AUTH_ENABLED and clears the settings
+    cache, and then monkeypatch's teardown puts "true" back with nothing left to
+    clear it -- leaking auth-enabled into every module that runs afterwards.
+    That surfaced as five unrelated failures in test_approval_visibility, whose
+    unauthenticated calls started coming back as error bodies.
+    """
+    previous = os.environ.get("CCF_AUTH_ENABLED")
+    os.environ["CCF_AUTH_ENABLED"] = "false"
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("CCF_AUTH_ENABLED", None)
+        else:
+            os.environ["CCF_AUTH_ENABLED"] = previous
+        get_settings.cache_clear()
 
 
 def _client() -> AsyncClient:
@@ -324,3 +351,52 @@ async def test_ui_page_refuses_non_admin() -> None:
     async with _client() as c:
         page = await c.get("/admin/ai-settings", headers=_auth(viewer_token))
         assert page.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_the_page_explains_itself_when_the_principal_has_no_organization() -> None:
+    """An unscoped principal must be refused, but refused as a *page*.
+
+    ``org_id is None`` is the system principal -- what every caller becomes when
+    auth is disabled, which is the default in a dev deployment. ``_org_id``
+    raised ``HTTPException(400)``, so the admin page rendered in a browser as
+    the bare body ``{"detail":"organization context required"}``: indis-
+    tinguishable from the feature being broken, and offering no hint that the
+    session simply had no organization to scope to.
+
+    The refusal is unchanged -- still 400, still reads no configs. Only the
+    rendering differs. Asserts both halves, because a fix that quietly started
+    serving someone's credentials to an unscoped caller would be far worse than
+    the bug.
+    """
+    with _auth_disabled():
+        async with _client() as c:
+            r = await c.get("/admin/ai-settings")
+
+    assert r.status_code == 400, "the refusal itself must not have been relaxed"
+    body = r.text
+    assert "<html" in body.lower(), f"still not HTML: {body[:120]}"
+    assert '{"detail"' not in body
+    assert "No organization in this session" in body
+    # The credential form must not be offered to a caller we cannot scope.
+    assert 'action="/admin/ai-settings/providers"' not in body
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_principal_still_cannot_write_a_credential() -> None:
+    """The mutating routes keep the hard refusal; only the GET was re-rendered.
+
+    This is the mutation that matters: relaxing `_org_id` itself, rather than
+    the one page's presentation, would let an org-less caller store a key
+    against some arbitrary tenant. Pinned separately so the page change cannot
+    drift into the write path.
+    """
+    with _auth_disabled():
+        async with _client() as c:
+            r = await c.post(
+                "/admin/ai-settings/providers",
+                data={"provider": "anthropic", "api_key": _KEY_A},
+            )
+
+    assert r.status_code == 400
+    assert r.json()["detail"] == "organization context required"

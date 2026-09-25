@@ -156,12 +156,24 @@ async def ai_settings_page(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
-    org_id = _org_id(principal)
+    # A principal with no organization cannot be shown anyone's credentials, but
+    # `_org_id`'s HTTPException renders in a browser as a bare JSON body -- the
+    # page simply fails to exist, with nothing saying why. The refusal itself is
+    # unchanged (no configs read, still a 400, and every mutating route below
+    # still goes through `_org_id`); only its presentation does.
+    if principal.org_id is None:
+        return templates.TemplateResponse(
+            request, "ai_settings.html",
+            {"active": "ai_settings", "configs": [], "providers": _SUPPORTED_PROVIDERS,
+             "error": None, "no_org": True},
+            status_code=400,
+        )
+    org_id = principal.org_id
     configs = [gateway.masked_view(c) for c in await _list_configs(session, org_id)]
     return templates.TemplateResponse(
         request, "ai_settings.html",
         {"active": "ai_settings", "configs": configs, "providers": _SUPPORTED_PROVIDERS,
-         "error": request.query_params.get("error")},
+         "error": request.query_params.get("error"), "no_org": False},
     )
 
 

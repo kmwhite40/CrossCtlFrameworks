@@ -160,112 +160,121 @@ async def test_rejection_response_still_carries_security_headers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_rejection_names_the_offending_origin_in_the_log() -> None:
+async def test_a_rejection_names_the_offending_origin_in_the_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The 403 body is deliberately opaque, so the log has to carry the diagnosis.
 
     The response says only ``cross-origin request rejected`` and must keep
     saying only that: echoing the submitted Origin back into a response body
     reflects attacker-controlled input. That leaves the log as the sole place
     an operator can learn *why*, and it recorded nothing at all -- so a
-    deployment behind a proxy that rewrites ``Host``, or an app reached through
-    a forwarded port, presented as "every form on the site is broken" with no
-    thread to pull.
+    deployment behind a proxy that rewrites ``Host``, or a client sending
+    ``Origin: null`` from a sandboxed frame, presented as "every form on the
+    site is broken" with no thread to pull.
 
-    Asserts the served host, the offending origin and the configured trusted
-    list are all present, since the fix needs all three.
+    The module's logger is replaced rather than structlog being reconfigured:
+    ``configure_logging`` sets ``cache_logger_on_first_use``, so by the time the
+    full suite reaches this test the bound logger is already cached and a later
+    ``structlog.configure`` never reaches it. That made this test pass alone and
+    fail in the suite.
     """
-    import structlog
+    from ccf.api import csrf as csrf_module
 
-    from ccf.api.csrf import CsrfOriginMiddleware
+    recorded: list[tuple[str, dict]] = []
 
-    capture = structlog.testing.LogCapture()
-    structlog.configure(processors=[capture])
-    try:
+    class _Recorder:
+        def warning(self, event: str, **fields: object) -> None:
+            recorded.append((event, fields))
 
-        async def app(scope, receive, send):  # pragma: no cover - never reached
-            raise AssertionError("request should not have reached the app")
+    monkeypatch.setattr(csrf_module, "_log", _Recorder())
 
-        sent: list[dict] = []
+    async def app(scope, receive, send):  # pragma: no cover - never reached
+        raise AssertionError("request should not have reached the app")
 
-        async def send(message):
-            sent.append(message)
+    sent: list[dict] = []
 
-        async def receive():
-            return {"type": "http.request", "body": b""}
+    async def send(message):
+        sent.append(message)
 
-        middleware = CsrfOriginMiddleware(app, trusted_origins=("https://app.example.gov",))
-        await middleware(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/connectors",
-                "headers": [
-                    (b"host", b"localhost:8088"),
-                    (b"origin", b"https://forwarded-8088.example.dev"),
-                ],
-            },
-            receive,
-            send,
-        )
-    finally:
-        structlog.reset_defaults()
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    middleware = csrf_module.CsrfOriginMiddleware(
+        app, trusted_origins=("https://app.example.gov",)
+    )
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/connectors",
+            "headers": [
+                (b"host", b"localhost:8088"),
+                (b"origin", b"https://forwarded-8088.example.dev"),
+            ],
+        },
+        receive,
+        send,
+    )
 
     assert sent[0]["status"] == 403
     assert b"forwarded-8088" not in sent[1]["body"], "the body must not reflect the origin"
 
-    events = [e for e in capture.entries if e.get("event") == "csrf.origin_rejected"]
-    assert events, "a rejection was not logged"
-    event = events[0]
-    assert event["origin"] == "https://forwarded-8088.example.dev"
-    assert event["served_host"] == "localhost:8088"
-    assert event["trusted_origins"] == ["https://app.example.gov"]
-    assert event["path"] == "/connectors"
-    assert "CCF_CSRF_TRUSTED_ORIGINS" in event["hint"]
-    assert event["log_level"] == "warning"
+    assert recorded, "a rejection was not logged"
+    event, fields = recorded[0]
+    assert event == "csrf.origin_rejected"
+    assert fields["origin"] == "https://forwarded-8088.example.dev"
+    assert fields["served_host"] == "localhost:8088"
+    assert fields["trusted_origins"] == ["https://app.example.gov"]
+    assert fields["path"] == "/connectors"
+    assert "CCF_CSRF_TRUSTED_ORIGINS" in fields["hint"]
 
 
 @pytest.mark.asyncio
-async def test_an_allowed_request_logs_no_rejection() -> None:
+async def test_an_allowed_request_logs_no_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The warning must mark a real refusal, not fire on every POST.
 
     A log line that appears on allowed traffic is worse than none: it trains
     whoever reads it to ignore the one occurrence that matters. This is the
     mutation that a test asserting only "something was logged" would miss.
     """
-    import structlog
+    from ccf.api import csrf as csrf_module
 
-    from ccf.api.csrf import CsrfOriginMiddleware
+    recorded: list[str] = []
 
-    capture = structlog.testing.LogCapture()
-    structlog.configure(processors=[capture])
-    try:
-        reached = []
+    class _Recorder:
+        def warning(self, event: str, **fields: object) -> None:
+            recorded.append(event)
 
-        async def app(scope, receive, send):
-            reached.append(scope["path"])
+    monkeypatch.setattr(csrf_module, "_log", _Recorder())
 
-        async def send(message):  # pragma: no cover - nothing is sent by us
-            raise AssertionError("middleware should not have responded")
+    reached: list[str] = []
 
-        async def receive():
-            return {"type": "http.request", "body": b""}
+    async def app(scope, receive, send):
+        reached.append(scope["path"])
 
-        middleware = CsrfOriginMiddleware(app, trusted_origins=())
-        await middleware(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/connectors",
-                "headers": [
-                    (b"host", b"localhost:8088"),
-                    (b"origin", b"http://localhost:8088"),
-                ],
-            },
-            receive,
-            send,
-        )
-    finally:
-        structlog.reset_defaults()
+    async def send(message):  # pragma: no cover - nothing is sent by us
+        raise AssertionError("middleware should not have responded")
+
+    async def receive():
+        return {"type": "http.request", "body": b""}
+
+    middleware = csrf_module.CsrfOriginMiddleware(app, trusted_origins=())
+    await middleware(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/connectors",
+            "headers": [
+                (b"host", b"localhost:8088"),
+                (b"origin", b"http://localhost:8088"),
+            ],
+        },
+        receive,
+        send,
+    )
 
     assert reached == ["/connectors"]
-    assert not [e for e in capture.entries if e.get("event") == "csrf.origin_rejected"]
+    assert recorded == []
