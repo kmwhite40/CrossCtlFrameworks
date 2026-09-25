@@ -618,3 +618,123 @@ def test_the_categorical_chip_is_the_only_neutral_one_that_is_filled() -> None:
         assert contrast(tag.background, surface) > contrast(
             plain.background, surface
         ), f"{theme}: chip--brand no longer stands off the card more than .chip"
+
+
+def _rule_bodies(css: str, selector: str) -> list[str]:
+    """Every declaration body whose selector list contains ``selector`` exactly."""
+    out = []
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        names = [s.strip() for s in m.group(1).split(",")]
+        if any(n == selector or n.endswith(" " + selector) for n in names):
+            out.append(m.group(2))
+    return out
+
+
+def test_the_banner_hero_is_boxed_like_the_page_it_sits_above() -> None:
+    """The banner hero is a *sibling* of ``.page``, so it inherits none of its layout.
+
+    ``.page`` centres itself (``margin: 0 auto``) inside ``.main`` and spaces its
+    own children with ``.page > * + *``. The banner hero is emitted by
+    ``base.html`` as a preceding sibling, so neither applies to it: it has to
+    reproduce both by hand. It did not. It carried fixed side margins, which
+    left it short of centre by half the overflow once ``.main`` grew past
+    ``--maxw``, and a zero bottom margin, which sat its 1px border flush against
+    the first heading below it at every desktop width. The ``<= 720px`` override
+    happened to set all four margins, so the collision was desktop-only.
+
+    This asserts the two properties that make its box match ``.page``'s content
+    box, and that any narrower override which resets one of ``width`` /
+    ``max-width`` resets the other -- setting only ``max-width`` leaves the
+    desktop ``width`` in force and strands the difference on one side.
+    """
+    css = read_css()
+    bodies = _rule_bodies(css, ".page-hero--banner")
+    assert bodies, "no .page-hero--banner rule found"
+
+    base = bodies[0]
+    margin = re.search(r"(?<![\w-])margin\s*:\s*([^;]+);", base)
+    assert margin, "the banner hero declares no margin"
+    parts = margin.group(1).split()
+    assert len(parts) == 3, f"expected a 3-value margin, got {margin.group(1)!r}"
+    top, side, bottom = parts
+    assert side == "auto", (
+        f"the banner hero must centre itself like `.page` does; side margin is {side!r}"
+    )
+    assert bottom not in ("0", "0px"), (
+        "the banner hero needs its own bottom margin -- `.page > * + *` cannot "
+        "reach it, so a zero here puts its border against the next heading"
+    )
+
+    for body in bodies[1:]:
+        has_w = re.search(r"(?<![\w-])width\s*:", body)
+        has_mw = re.search(r"(?<![\w-])max-width\s*:", body)
+        assert bool(has_w) == bool(has_mw), (
+            "an override of the banner hero resets one of width/max-width but "
+            f"not the other, leaving the desktop sizing half in force: {body.strip()!r}"
+        )
+
+
+def test_no_large_display_number_can_collide_with_its_own_wrapped_line() -> None:
+    """``line-height: 1`` gives a line box exactly the em size, and glyphs exceed it.
+
+    Every KPI-style numeral in this UI renders values whose width is not known
+    at design time -- an SPRS score is ``-150.8 / 110``, a control count is
+    ``12,431``. ``.kpi__value`` pairs a clamp up to 40px with
+    ``overflow-wrap: anywhere`` precisely so long values wrap rather than
+    overflow, and then set ``line-height: 1``, so the moment one wrapped the
+    two lines overlapped. A display face's ascenders and descenders routinely
+    run 10-20% past the em box, so 1.0 is below the floor at which consecutive
+    lines clear each other at all.
+    """
+    css = read_css()
+    dashboard = (SRC / "templates" / "dashboard.html").read_text(encoding="utf-8")
+    failures = []
+    for source, name in ((css, "app.css"), (dashboard, "dashboard.html")):
+        for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", source):
+            body = m.group(2)
+            lh = re.search(r"(?<![\w-])line-height\s*:\s*([\d.]+)\s*[;}]", body)
+            size = re.search(
+                r"(?<![\w-])font-size\s*:\s*(?:clamp\([^)]*?,\s*)?[^;]*?(\d+)px", body
+            )
+            if not lh or not size:
+                continue
+            # The largest px figure in the declaration: a clamp's ceiling.
+            biggest = max(int(x) for x in re.findall(r"(\d+)px", size.group(0)))
+            if biggest >= 20 and float(lh.group(1)) < 1.1:
+                failures.append(
+                    f"{name}: {m.group(1).strip()} sets line-height "
+                    f"{lh.group(1)} on {biggest}px type"
+                )
+    assert not failures, (
+        "large display type needs a line-height of at least 1.1 or wrapped "
+        "lines overlap:\n  " + "\n  ".join(failures)
+    )
+
+
+def test_no_fr_track_can_be_forced_wider_than_its_container() -> None:
+    """A bare ``1fr`` track has an automatic minimum of ``min-content``.
+
+    That means one unbreakable cell -- a long identifier, a wide table, a
+    numeral that will not wrap -- pushes its track past its share and the whole
+    row past the container, which is how a grid ends up overlapping whatever
+    sits beside it. ``minmax(0, 1fr)`` is the form that actually honours the
+    container. Only the fixed-column utilities are covered;
+    ``repeat(auto-fill, minmax(260px, 1fr))`` states its own floor deliberately.
+    """
+    css = read_css()
+    failures = []
+    for m in re.finditer(r"([^{}]+)\{([^{}]*)\}", css):
+        body = m.group(2)
+        for decl in re.finditer(r"grid-template-columns\s*:\s*([^;}]+)", body):
+            value = decl.group(1)
+            if "auto-fill" in value or "auto-fit" in value:
+                continue
+            if re.search(r"(?<![\w(,])\s*\d*\.?\d*fr", value.replace("minmax(0,", "")):
+                stripped = re.sub(r"minmax\([^)]*\)", "", value)
+                if re.search(r"\d*\.?\d*fr", stripped):
+                    failures.append(f"{m.group(1).strip()} -> {value.strip()}")
+    assert not failures, (
+        "these grid tracks use a bare `fr`, whose min-content floor lets one "
+        "wide cell overflow the row; use `minmax(0, Nfr)`:\n  "
+        + "\n  ".join(failures)
+    )
