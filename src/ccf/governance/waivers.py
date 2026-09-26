@@ -136,6 +136,77 @@ def cover(
     )
 
 
+def waiver_matches(waiver: Waiver, test: ControlTest) -> bool:
+    """Whether this waiver is a candidate for this test.
+
+    The one definition of the match. :func:`waivers_for_test` and
+    :func:`waivers_for_tests` both resolve through it, so the per-test path a
+    scan takes and the batch path a report takes cannot drift apart -- a report
+    that matched slightly differently would tell an operator a finding was
+    accepted while the scan kept alerting on it.
+
+    A waiver matches either the test's ``check_key`` or its ``control_id``. The
+    ``check_key`` arm applies only when the test actually has one -- a manual
+    test's ``check_key`` is NULL, and matching NULL to NULL would treat every
+    control-targeting waiver as though it were a check waiver.
+
+    The tenant arm is deliberately redundant with the ``organization_id``
+    filter :func:`waivers_for_tests` puts in its query: a waiver carrying a
+    foreign or NULL ``organization_id`` on the right ``system_id`` is caught by
+    either one alone, so mutation testing reports each as survivable. Deleting
+    *both* fails
+    ``test_a_waiver_whose_organization_does_not_match_the_test_never_covers_it``
+    and ``test_another_organizations_waiver_does_not_apply``. Keep both: one
+    tenant's acceptance silencing another's finding is the failure this pair
+    exists to make impossible, and neither layer should be trusted alone.
+    """
+    if test.system_id is None:
+        return False
+    if waiver.organization_id != test.organization_id or waiver.system_id != test.system_id:
+        return False
+    if waiver.control_id is not None and waiver.control_id == test.control_id:
+        return True
+    return bool(test.check_key) and waiver.check_key == test.check_key
+
+
+async def waivers_for_tests(
+    session: AsyncSession, tests: Sequence[ControlTest]
+) -> dict[int, list[Waiver]]:
+    """Candidate waivers for many tests, by test id, in one query.
+
+    Returns **candidates**, not active ones, exactly as the single-test form
+    does: status and expiry belong to :func:`is_active`.
+
+    Every test with no candidates still gets an entry, so a caller reading
+    ``result[test.id]`` never has to decide what a missing key means.
+    """
+    scoped = [t for t in tests if t.system_id is not None]
+    out: dict[int, list[Waiver]] = {t.id: [] for t in tests}
+    if not scoped:
+        return out
+    # `IN (NULL)` matches nothing, so a NULL organization is asked for by
+    # name -- the single-test query renders `organization_id = NULL` as
+    # `IS NULL`, and losing that here would make the batch path resolve fewer
+    # waivers than the per-test path for an unscoped test.
+    orgs = {t.organization_id for t in scoped}
+    org_filter = or_(
+        *[
+            Waiver.organization_id.is_(None) if o is None else Waiver.organization_id == o
+            for o in orgs
+        ]
+    )
+    rows = (
+        await session.execute(
+            select(Waiver)
+            .where(org_filter, Waiver.system_id.in_({t.system_id for t in scoped}))
+            .order_by(Waiver.id)
+        )
+    ).scalars().all()
+    for test in scoped:
+        out[test.id] = [w for w in rows if waiver_matches(w, test)]
+    return out
+
+
 async def waivers_for_test(session: AsyncSession, test: ControlTest) -> list[Waiver]:
     """Candidate waivers for one control test, scoped to its tenant and system.
 
@@ -144,32 +215,11 @@ async def waivers_for_test(session: AsyncSession, test: ControlTest) -> list[Wai
     "in force". Filtering status here as well would create a second definition
     that could silently diverge from it.
 
-    A waiver matches either the test's ``check_key`` or its ``control_id``. The
-    ``check_key`` arm is included only when the test actually has one -- a
-    manual test's ``check_key`` is NULL, and matching NULL to NULL would pull in
-    every control-targeting waiver as though it were a check waiver.
-
     An org-wide test (``system_id`` is NULL) resolves nothing: there is no
     system to scope an acceptance to, and matching every system's waivers would
     let one system's acceptance silence another's finding.
     """
-    if test.system_id is None:
-        return []
-    targets = [Waiver.control_id == test.control_id]
-    if test.check_key:
-        targets.append(Waiver.check_key == test.check_key)
-    rows = (
-        await session.execute(
-            select(Waiver)
-            .where(
-                Waiver.organization_id == test.organization_id,
-                Waiver.system_id == test.system_id,
-                or_(*targets),
-            )
-            .order_by(Waiver.id)
-        )
-    ).scalars().all()
-    return list(rows)
+    return (await waivers_for_tests(session, [test]))[test.id]
 
 
 def can_approve(requested_by: str | None, approver: str | None, *, is_global: bool) -> bool:

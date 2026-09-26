@@ -23,6 +23,13 @@ splatted module-level tuple/list/set of literals to its members, and -- the
 part that keeps this test able to fail -- refuses any argument it *cannot*
 resolve rather than skipping it. A guard that silently ignores what it does
 not understand is indistinguishable from one that passes.
+
+It also follows an **imported** constant to the module that defines it. The
+alternative, when a UI route needed the same approver list as its JSON sibling,
+was to copy the tuple into the second file to keep this guard readable -- two
+copies of who may accept risk on behalf of an organization, which is the exact
+shape of defect this file exists to catch. Resolving the import is the honest
+option; a constant this resolver cannot follow is still an offense.
 """
 
 from __future__ import annotations
@@ -77,7 +84,53 @@ def _module_role_constants(tree: ast.Module) -> dict[str, list[str]]:
     return consts
 
 
-def _resolve_arg(arg: ast.expr, consts: dict[str, list[str]]) -> list[str] | None:
+def _imported_names(tree: ast.Module, path: Path) -> dict[str, Path]:
+    """``{imported name: the file that defines it}`` for this module's imports.
+
+    Both relative (``from .waivers import APPROVER_ROLES``) and absolute
+    (``from ccf.api.routes.waivers import ...``) forms, so a role constant
+    shared between two call sites can live in one place.
+    """
+    out: dict[str, Path] = {}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.ImportFrom):
+            continue
+        if stmt.level:
+            # level 1 is this module's own package; each further level goes up one.
+            base = path.parent
+            for _ in range(stmt.level - 1):
+                base = base.parent
+        else:
+            # Absolute: `ccf.api.routes.waivers` sits beside the `ccf` package.
+            base = _SRC.parent
+        target = base.joinpath(*(stmt.module or "").split(".")) if stmt.module else base
+        for alias in stmt.names:
+            # Either `<module>.py` holds the name, or the name is itself a
+            # submodule -- only the former can define a role tuple.
+            candidate = target.with_suffix(".py")
+            if candidate.is_file():
+                out[alias.asname or alias.name] = candidate
+    return out
+
+
+def _consts_for(path: Path, cache: dict[Path, dict[str, list[str]]]) -> dict[str, list[str]]:
+    """Module-level role constants in ``path``, parsed once."""
+    if path not in cache:
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except (OSError, SyntaxError):
+            cache[path] = {}
+        else:
+            cache[path] = _module_role_constants(tree)
+    return cache[path]
+
+
+def _resolve_arg(
+    arg: ast.expr,
+    consts: dict[str, list[str]],
+    imports: dict[str, Path] | None = None,
+    cache: dict[Path, dict[str, list[str]]] | None = None,
+) -> list[str] | None:
     """The role names one ``require_role`` argument contributes, or ``None``.
 
     ``None`` means "this test cannot tell what roles this names" -- which is
@@ -91,7 +144,12 @@ def _resolve_arg(arg: ast.expr, consts: dict[str, list[str]]) -> list[str] | Non
         if literal is not None:
             return literal
         if isinstance(inner, ast.Name):
-            return consts.get(inner.id)
+            local = consts.get(inner.id)
+            if local is not None:
+                return local
+            source = (imports or {}).get(inner.id)
+            if source is not None:
+                return _consts_for(source, cache if cache is not None else {}).get(inner.id)
         return None
     return None
 
@@ -99,16 +157,19 @@ def _resolve_arg(arg: ast.expr, consts: dict[str, list[str]]) -> list[str] | Non
 def _scan() -> tuple[dict[str, set[str]], dict[str, list[str]]]:
     """``({file: role names}, {file: unresolvable arg sources})``.
 
-    Resolves string literals *and* splatted module-level tuple/list/set
-    constants -- ``require_role(*ADOPTER_ROLES)`` counts exactly as much as
-    ``require_role("admin", "issm")``, which is how the ``packs.py`` pair of
-    dead names survived the literals-only version of this guard.
+    Resolves string literals, splatted module-level tuple/list/set constants,
+    and constants imported from another module -- ``require_role(*ADOPTER_ROLES)``
+    counts exactly as much as ``require_role("admin", "issm")``, which is how
+    the ``packs.py`` pair of dead names survived the literals-only version of
+    this guard.
     """
     found: dict[str, set[str]] = {}
     unresolved: dict[str, list[str]] = {}
+    cache: dict[Path, dict[str, list[str]]] = {}
     for path in sorted(_SRC.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         consts = _module_role_constants(tree)
+        imports = _imported_names(tree, path)
         where = str(path.relative_to(_SRC))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -118,7 +179,7 @@ def _scan() -> tuple[dict[str, set[str]], dict[str, list[str]]]:
             if name != "require_role":
                 continue
             for arg in node.args:
-                names = _resolve_arg(arg, consts)
+                names = _resolve_arg(arg, consts, imports, cache)
                 if names is None:
                     unresolved.setdefault(where, []).append(ast.unparse(arg))
                 else:
