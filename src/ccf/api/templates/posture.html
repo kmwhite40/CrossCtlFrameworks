@@ -7,9 +7,85 @@
 {% endblock %}
 {% block actions %}
   <a href="/scoring" class="btn btn--secondary"><i data-lucide="gauge"></i> Live scoring</a>
-  <a href="/api/posture/summary" class="btn btn--ghost"><i data-lucide="braces"></i> JSON</a>
+  <a href="/api/posture/framework" class="btn btn--ghost"><i data-lucide="braces"></i> JSON</a>
 {% endblock %}
 {% block content %}
+
+{# Step 3 of the customer flow: current posture in accordance with the framework.
+   This page carried only the SPRS scorecard, which answers a different question
+   -- a self-assessment score out of 110 -- so "where do we stand against the
+   framework we are held to" was answerable nowhere in the UI. Per system,
+   because the framework is a property of a system: one organization here has a
+   Moderate-baseline system and an 800-171 system side by side, measured in
+   different units over different denominators. #}
+{% if fw and (fw.systems or fw.systems_without_a_framework) %}
+<section class="card card--elevated" style="margin-bottom:20px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Posture against the applied framework</div>
+      <div class="card__subtitle">Each system measured in its own framework's units — never summed across them</div>
+    </div>
+  </div>
+  <div class="card__body stack" style="gap:18px">
+    {% for e in fw.systems %}
+    {% set unit = e.unit or 'control' %}
+    <div>
+      <div class="row between" style="align-items:flex-end;flex-wrap:wrap;gap:8px">
+        <div>
+          <a href="/scoring?system_id={{ e.system_id }}" style="font-weight:650">{{ e.system }}</a>
+          <div class="dim" style="font-size:12px">
+            {% if e.framework_label %}{{ e.framework_label }}
+              {%- if e.framework_source == 'profile.frameworks' %} · declared in the intake profile
+              {%- elif e.framework_source == 'system.baseline' %} · from its FIPS-199 categorization
+              {%- endif %}
+            {% else %}No framework declared{% endif %}</div>
+        </div>
+        {% if e.total %}
+        <span class="chip {% if e.failing %}chip--err{% elif e.assessed_pct %}chip--ok{% else %}chip--warn{% endif %}">
+          {{ e.assessed_pct }}% assessed of {{ e.total }} {{ unit }}s</span>
+        {% endif %}
+      </div>
+
+      {% if e.total %}
+      {# Four segments over the framework's own denominator. Widths are shares of
+         the total, so the bar is the coverage picture rather than a rating. #}
+      <div class="bar-row__track" style="margin-top:8px;height:12px;display:flex">
+        {% for width, colour, label in [
+             (100 * e.passing|length / e.total, 'var(--ok-500)', 'satisfied'),
+             (100 * e.failing|length / e.total, 'var(--err-500)', 'failing'),
+             (100 * e.documented|length / e.total, 'var(--warn-500)', 'documented only'),
+           ] %}
+          {% if width %}<span style="width:{{ width|round(2) }}%;background:{{ colour }}"
+             title="{{ label }}"></span>{% endif %}
+        {% endfor %}
+      </div>
+      <div class="row" style="gap:14px;flex-wrap:wrap;margin-top:8px;font-size:13px">
+        <span><strong style="color:var(--ok-500)">{{ e.passing|length }}</strong> <span class="dim">satisfied</span></span>
+        <span><strong style="color:var(--err-500)">{{ e.failing|length }}</strong> <span class="dim">failing</span></span>
+        <span><strong>{{ e.documented|length }}</strong> <span class="dim">documented only</span></span>
+        <span><strong>{{ e.unaddressed|length }}</strong> <span class="dim">not yet addressed</span></span>
+        {% if e.unreachable %}
+        <span class="dim" title="No 800-53 control in the shipped crosswalk maps to these, so no scan can close them">
+          {{ e.unreachable|length }} unreachable by scan</span>
+        {% endif %}
+      </div>
+      {% if e.failing %}
+      <div style="margin-top:8px">
+        {% for c in e.failing %}<a class="chip chip--err" style="margin:0 6px 6px 0" href="/dashboard">{{ c }}</a>{% endfor %}
+      </div>
+      {% endif %}
+      {% else %}
+      {# Zeros with no explanation read as "nothing wrong", which is the reading
+         this whole view exists to prevent. #}
+      <div class="note note--warn" style="margin-top:8px">
+        <div style="font-size:13px">{{ e.reason or 'Posture cannot be measured for this system.' }}</div>
+      </div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
 
 {% set sprs = s.avg_sprs_score %}
 {% set sprs_color = 'var(--ok-500)' if (sprs is not none and sprs >= 88) else ('var(--warn-500)' if (sprs is not none and sprs >= 0) else 'var(--err-500)') %}

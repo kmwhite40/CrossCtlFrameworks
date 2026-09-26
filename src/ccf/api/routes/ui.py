@@ -1727,13 +1727,19 @@ async def ssp_save_entry(
 async def posture_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    summary = await org_summary(
-        session, today=datetime.now(UTC).date(), org_id=_principal_org(request)
-    )
+    from ...analytics.framework_posture import org_framework_posture  # noqa: PLC0415
+
+    org = _principal_org(request)
+    summary = await org_summary(session, today=datetime.now(UTC).date(), org_id=org)
+    # Posture in the units of the framework each system is held to. The SPRS
+    # scorecard below answers a different question -- a self-assessment score
+    # out of 110 -- and having only that on this page left "where do we stand
+    # against the framework" answerable nowhere in the UI for a system without a
+    # FIPS-199 baseline.
     return templates.TemplateResponse(
         request,
         "posture.html",
-        {"active": "posture", "s": summary},
+        {"active": "posture", "s": summary, "fw": await org_framework_posture(session, org)},
     )
 
 
