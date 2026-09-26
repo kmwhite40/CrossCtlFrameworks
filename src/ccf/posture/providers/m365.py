@@ -1,8 +1,19 @@
 """Microsoft 365 / Entra posture checks.
 
-Three checks spanning three resource shapes -- a per-user fleet, a tenant-level
-singleton, and a per-user check with exclusions -- so the posture spine is
-exercised across all of them rather than three variations of one.
+Checks across three resource shapes -- a per-user fleet, a per-device fleet, and
+a tenant-level singleton -- so the posture spine is exercised on all of them
+rather than on variations of one. ``CHECKS`` is the list; this sentence
+deliberately does not restate its length, because the previous one said "three"
+for as long as it took to reach fourteen.
+
+Choosing the shape is the judgement that matters here. A per-resource verdict is
+right when every resource is genuinely in scope for the question -- every user
+should have an MFA method, every managed device should meet its assigned policy.
+It is wrong when a resource can legitimately be silent: an Intune compliance
+policy scoped to disk encryption configures no screen lock, and failing it for
+that would manufacture a finding against a correctly-narrow policy. Those
+questions are asked of the tenant, and the answer names the policy that
+satisfied it.
 
 Every evaluator here is pure: it takes the rows a Graph collection returned and
 returns findings. No network, no clock, no database -- ``now`` is passed in --
@@ -193,6 +204,68 @@ RISKY_USERS_RESOLVED = PostureCheck(
     required_permissions=("IdentityRiskyUser.Read.All",),
 )
 
+#: Intune compliance-policy property names that configure an inactivity lock.
+#: Every platform-specific policy type Graph returns spells it the same way, but
+#: a policy that governs something else (encryption only, OS version only) does
+#: not carry it -- which is why the question below is asked of the *tenant*
+#: rather than of each policy. Per-policy verdicts would fail a
+#: legitimately-narrow policy for not doing a job it was never given.
+_LOCK_TIMEOUT_KEY = "passwordMinutesOfInactivityBeforeLock"
+_LOCK_REQUIRED_KEY = "passwordRequired"
+
+#: Upper bound on an inactivity lock, in minutes. FedRAMP and CMMC both leave
+#: the period organization-defined; 15 minutes is the figure the DoD STIGs and
+#: the CIS Microsoft 365 benchmark use, and it is recorded here rather than
+#: invented per call site. Wants to be an ODP like STALE_ACCOUNT_DAYS.
+SESSION_LOCK_MAX_MINUTES = 15
+
+#: The one place this expectation is worded. A pack that parameterizes the
+#: period re-renders this template, so an SSP statement can never claim 15
+#: minutes while the check enforces 30 -- the same contract STALE_ACCOUNTS has.
+SESSION_LOCK_EXPECTED = (
+    "at least one device compliance policy requires a password and locks the screen "
+    "after no more than {max_minutes} minutes of inactivity"
+)
+
+SESSION_LOCK_ENFORCED = PostureCheck(
+    key="m365.device.session_lock_enforced",
+    title="A device compliance policy locks the screen after inactivity",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=SESSION_LOCK_EXPECTED.format(max_minutes=SESSION_LOCK_MAX_MINUTES),
+    control_ids=("AC-11", "AC-11(1)"),
+    required_permissions=("DeviceManagementConfiguration.Read.All",),
+)
+
+STORAGE_ENCRYPTION_REQUIRED = PostureCheck(
+    key="m365.device.storage_encryption_required",
+    title="A device compliance policy requires storage encryption",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected="at least one device compliance policy requires device storage to be encrypted",
+    # AC-19(5) is the mobile-device arm of the same requirement: it asks for
+    # full-device or container encryption on the devices this policy governs.
+    control_ids=("SC-28", "SC-28(1)", "AC-19(5)"),
+    required_permissions=("DeviceManagementConfiguration.Read.All",),
+)
+
+#: Conditional Access session controls that force reauthentication.
+_SIGNIN_FREQUENCY_KEY = "signInFrequency"
+
+SESSION_REAUTHENTICATION_REQUIRED = PostureCheck(
+    key="m365.policy.session_reauthentication_required",
+    title="Conditional Access forces periodic reauthentication",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=(
+        "an enabled Conditional Access policy sets a sign-in frequency, so a session "
+        "cannot continue indefinitely without reauthenticating"
+    ),
+    control_ids=("AC-12",),
+    required_permissions=("Policy.Read.All",),
+)
+
+
 CHECKS: tuple[PostureCheck, ...] = (
     MFA_REGISTERED,
     LEGACY_AUTH_BLOCKED,
@@ -205,6 +278,9 @@ CHECKS: tuple[PostureCheck, ...] = (
     DIRECTORY_AUDIT_CURRENT,
     DEVICE_COMPLIANCE,
     RISKY_USERS_RESOLVED,
+    SESSION_LOCK_ENFORCED,
+    STORAGE_ENCRYPTION_REQUIRED,
+    SESSION_REAUTHENTICATION_REQUIRED,
 )
 
 #: Graph collection each check reads, relative to the Graph base URL.
@@ -250,6 +326,15 @@ ENDPOINTS: dict[str, str] = {
         "/v1.0/identityProtection/riskyUsers"
         "?$select=id,userPrincipalName,riskLevel,riskState&$top=500"
     ),
+    # Compliance *policies*, not devices -- a different collection from
+    # DEVICE_COMPLIANCE's `managedDevices`, and a different question: whether
+    # the tenant requires these things at all, rather than whether a given
+    # device currently meets what it was assigned. No `$select`: the property
+    # set differs per platform-specific policy type, and selecting a field a
+    # type does not declare makes Graph reject the whole request.
+    SESSION_LOCK_ENFORCED.key: "/v1.0/deviceManagement/deviceCompliancePolicies",
+    STORAGE_ENCRYPTION_REQUIRED.key: "/v1.0/deviceManagement/deviceCompliancePolicies",
+    SESSION_REAUTHENTICATION_REQUIRED.key: "/v1.0/identity/conditionalAccess/policies",
 }
 
 
@@ -703,6 +788,203 @@ def evaluate_risky_users_resolved(rows: list[dict[str, Any]]) -> list[ResourceFi
     return findings
 
 
+def _tenant_finding(
+    tenant_id: str, *, passed: bool, observed: str, detail: dict[str, Any]
+) -> list[ResourceFinding]:
+    """One finding, the tenant as the resource.
+
+    Three tenant-level checks below share this shape. It was already written
+    inline twice in `evaluate_legacy_auth_blocked`; a fourth and fifth copy is
+    how the two halves come to word the same verdict differently.
+    """
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict="pass" if passed else "fail",
+            observed=observed,
+            detail=detail,
+        )
+    ]
+
+
+def _lock_minutes(policy: dict[str, Any]) -> int | None:
+    """The inactivity lock a compliance policy sets, in minutes.
+
+    ``None`` when the policy does not configure one at all, which is different
+    from configuring zero: Intune treats 0 as "not configured" on some platform
+    types, so both are reported as absent rather than as an immediate lock.
+    """
+    value = policy.get(_LOCK_TIMEOUT_KEY)
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return value
+
+
+def evaluate_session_lock_enforced(
+    rows: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    max_minutes: int = SESSION_LOCK_MAX_MINUTES,
+) -> list[ResourceFinding]:
+    """Does any compliance policy lock an idle screen soon enough?
+
+    Asked of the tenant, not of each policy. A compliance policy that governs
+    only disk encryption does not set a lock timeout, and failing it for that
+    would manufacture findings against correctly-scoped policies -- the
+    per-resource shape misattributing the question, which is the mistake
+    `DEVICE_UNEVALUATED_STATES` exists to avoid on the sibling check.
+
+    ``max_minutes`` defaults to the module constant, so every existing caller is
+    unaffected; a pack supplies its own through :mod:`ccf.posture.parameters`,
+    which re-renders ``SESSION_LOCK_EXPECTED`` to match.
+    """
+    qualifying = [
+        p
+        for p in rows
+        if p.get(_LOCK_REQUIRED_KEY) is True
+        and (minutes := _lock_minutes(p)) is not None
+        and minutes <= max_minutes
+    ]
+    if qualifying:
+        first = qualifying[0]
+        return _tenant_finding(
+            tenant_id,
+            passed=True,
+            observed=(
+                f"{first.get('displayName') or first.get('id')!r} requires a password and "
+                f"locks after {_lock_minutes(first)} minute(s)"
+            ),
+            detail={
+                "policy_id": first.get("id"),
+                "lock_minutes": _lock_minutes(first),
+                "qualifying_policies": len(qualifying),
+                "policies_examined": len(rows),
+            },
+        )
+    # Say which of the two ways it failed: no policy at all is a different
+    # remedy from policies that exist but lock too late.
+    configured = [(p, m) for p in rows if (m := _lock_minutes(p)) is not None]
+    if configured:
+        soonest = min(m for _p, m in configured)
+        observed = (
+            f"{len(configured)} policy/policies set a lock, the soonest at {soonest} minute(s), "
+            f"longer than the {max_minutes} expected"
+            if soonest > max_minutes
+            else f"{len(configured)} policy/policies set a lock but do not require a password"
+        )
+    else:
+        observed = (
+            f"none of {len(rows)} device compliance policy/policies configures an "
+            "inactivity lock"
+            if rows
+            else "no device compliance policy exists"
+        )
+    return _tenant_finding(
+        tenant_id,
+        passed=False,
+        observed=observed,
+        detail={
+            "policies_examined": len(rows),
+            "policies_with_a_lock": len(configured),
+            "expected_max_minutes": max_minutes,
+        },
+    )
+
+
+def evaluate_storage_encryption_required(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """Does any compliance policy require the device's storage to be encrypted?
+
+    Tenant-level for the same reason as the lock check: a policy about OS
+    versions does not speak to encryption, and reading its silence as a refusal
+    would be an invented finding.
+    """
+    requiring = [p for p in rows if p.get("storageRequireEncryption") is True]
+    if requiring:
+        first = requiring[0]
+        return _tenant_finding(
+            tenant_id,
+            passed=True,
+            observed=(
+                f"{first.get('displayName') or first.get('id')!r} requires storage encryption"
+            ),
+            detail={
+                "policy_id": first.get("id"),
+                "requiring_policies": len(requiring),
+                "policies_examined": len(rows),
+            },
+        )
+    return _tenant_finding(
+        tenant_id,
+        passed=False,
+        observed=(
+            f"none of {len(rows)} device compliance policy/policies requires storage encryption"
+            if rows
+            else "no device compliance policy exists"
+        ),
+        detail={"policies_examined": len(rows)},
+    )
+
+
+def _sets_signin_frequency(policy: dict[str, Any]) -> dict[str, Any] | None:
+    """The sign-in frequency an enabled CA policy sets, if it sets one.
+
+    ``state`` must be ``enabled``: a policy in report-only mode reauthenticates
+    nobody, and counting it would report a control as operating on the strength
+    of a policy deliberately not in force. The same rule the legacy-auth check
+    applies.
+    """
+    if policy.get("state") != "enabled":
+        return None
+    controls = policy.get("sessionControls")
+    if not isinstance(controls, dict):
+        return None
+    frequency = controls.get(_SIGNIN_FREQUENCY_KEY)
+    if not isinstance(frequency, dict) or frequency.get("isEnabled") is not True:
+        return None
+    return frequency
+
+
+def evaluate_session_reauthentication_required(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """Is there an enabled Conditional Access policy that bounds a session?"""
+    for policy in rows:
+        frequency = _sets_signin_frequency(policy)
+        if frequency is None:
+            continue
+        # Graph expresses this either as value+type (e.g. 4 hours) or as
+        # `frequencyInterval: everyTime`. Both bound the session; the observed
+        # string reports whichever the tenant chose rather than assuming one.
+        interval = frequency.get("frequencyInterval")
+        if interval == "everyTime":
+            described = "reauthentication on every use"
+        elif frequency.get("value") is not None:
+            described = f"{frequency.get('value')} {frequency.get('type') or 'unit(s)'}"
+        else:
+            described = "an enabled sign-in frequency with no stated period"
+        return _tenant_finding(
+            tenant_id,
+            passed=True,
+            observed=(
+                f"{policy.get('displayName') or policy.get('id')!r} requires {described}"
+            ),
+            detail={"policy_id": policy.get("id"), "sign_in_frequency": frequency},
+        )
+    return _tenant_finding(
+        tenant_id,
+        passed=False,
+        observed=(
+            f"none of {len(rows)} Conditional Access policy/policies sets a sign-in frequency"
+            if rows
+            else "no Conditional Access policy exists"
+        ),
+        detail={"policies_examined": len(rows)},
+    )
+
+
 #: Checks whose question is answered by the first page. Graph returns audit
 #: collections newest-first, so "is there a recent record" needs one row --
 #: and following the nextLink walked a tenant's whole sign-in log and earned
@@ -726,4 +1008,7 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     DIRECTORY_AUDIT_CURRENT.key: evaluate_directory_audit_current,
     DEVICE_COMPLIANCE.key: evaluate_device_compliance,
     RISKY_USERS_RESOLVED.key: evaluate_risky_users_resolved,
+    SESSION_LOCK_ENFORCED.key: evaluate_session_lock_enforced,
+    STORAGE_ENCRYPTION_REQUIRED.key: evaluate_storage_encryption_required,
+    SESSION_REAUTHENTICATION_REQUIRED.key: evaluate_session_reauthentication_required,
 }
