@@ -348,3 +348,47 @@ async def test_another_tenant_cannot_open_or_accept_this_test() -> None:
     assert page.status_code == 404
     assert post.status_code == 404
     assert await _waivers(int(mine["test_id"])) == []
+
+
+@pytest.mark.asyncio
+async def test_the_gap_dashboard_renders_an_accepted_row() -> None:
+    """The landing page's populated branch, which no test had reached.
+
+    Every existing `/dashboard` test runs without an organization, so
+    `compliance_gaps` returns the empty shape, `g.assessed` is 0, and the whole
+    table is skipped -- the counts and the per-row decision column were never
+    evaluated by anything.
+
+    The failure mode is quieter than a 500: Jinja resolves a missing dict key
+    to Undefined, which renders as an empty string and tests falsy. So the
+    assertions below pin the *rendered numbers*, not the surrounding labels --
+    a label is present whatever the data does, and asserting on one is how a
+    test ends up unable to fail.
+    """
+    sc = await _scene()
+    async with _client() as c:
+        before = await c.get("/dashboard", headers=_auth(str(sc["ao"])))
+        assert before.status_code == 200, before.text
+        # One failing control, none accepted: the open KPI must render "1".
+        assert '>1</div>' in before.text, "the open-gap count rendered empty"
+        assert "Resolve" in before.text, "an open gap offers no way in"
+
+        await c.post(
+            f"/control-tests/{sc['test_id']}/accept",
+            data={"rationale": "Accepted.", "expires_on": "2027-03-31"},
+            headers=_auth(str(sc["owner"])),
+            follow_redirects=False,
+        )
+        waiver = (await _waivers(int(sc["test_id"])))[0]
+        await c.post(
+            f"/control-tests/{sc['test_id']}/waivers/{waiver.id}/approve",
+            headers=_auth(str(sc["ao"])),
+            follow_redirects=False,
+        )
+        after = await c.get("/dashboard", headers=_auth(str(sc["ao"])))
+
+    assert after.status_code == 200, after.text
+    assert ">0</div>" in after.text, "the open count did not fall to zero"
+    assert "1 accepted" in after.text, "the accepted count rendered empty"
+    assert "until 2027-03-31" in after.text, "the acceptance's expiry is not shown"
+    assert "Resolve" not in after.text, "a decided row still offers the open-work action"
