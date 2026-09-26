@@ -27,6 +27,24 @@
     <div class="dim" style="font-size:13px;margin-top:12px">By responsibility:
       {% for k, v in result.by_responsibility.items() %}<span class="chip chip--ghost">{{ k }}: {{ v }}</span> {% endfor %}
     </div>
+    {# The derivation is the whole point of this page, so this is where the
+       score's provenance is least excusable to omit: it was computed from the
+       answers just submitted and a vendor placemat, and it is not an
+       assessment of anything. #}
+    {% if result.sprs_derived_credit %}
+    <div class="note note--warn" style="margin-top:14px">
+      <div style="font-weight:650;margin-bottom:2px">This score is a projection, not an assessment</div>
+      <div style="font-size:13px">
+        {{ result.sprs_derived_credit }} of 110 points are credited from your answers and the
+        platform's shared-responsibility guidance across {{ result.sprs_derived_controls }} practices.
+        {% if result.ssp_present_source == 'derived' %}
+        That includes the SSP prerequisite (CA.L2-3.12.4), which no SSP on record supports yet.
+        {% endif %}
+        Assess the practices in <a href="/scoring?system_id={{ system_id }}">SPRS scoring</a> to replace
+        derived states with your own, and connect a platform so Concord can test them.
+      </div>
+    </div>
+    {% endif %}
     <div class="row" style="gap:8px;margin-top:14px">
       {% if ssp_project_id %}<a class="btn btn--primary" href="/ssp/{{ ssp_project_id }}"><i data-lucide="file-text"></i> Open generated SSP</a>{% endif %}
       <a class="btn btn--secondary" href="/scoring"><i data-lucide="gauge"></i> SPRS scoring</a>

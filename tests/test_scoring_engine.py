@@ -9,6 +9,8 @@ from docx import Document
 from ccf.scoring.engine import (
     MAX_SPRS_SCORE,
     SPRS_FLOOR,
+    SSP_CONTROL_ID,
+    credit_for,
     deduction_for,
     score_system,
 )
@@ -91,3 +93,112 @@ def test_generate_ssp_docx_roundtrips() -> None:
     cell_text = "\n".join(c.text for t in doc.tables for row in t.rows for c in row.cells)
     assert "AC.L2-3.1.1" in cell_text
     assert "users are identified" in cell_text
+
+
+# ---------------------------------------------------------------------------
+# Provenance: which of a score's points nobody assessed
+# ---------------------------------------------------------------------------
+
+
+def test_credit_for_is_what_a_state_keeps_relative_to_not_assessed() -> None:
+    # The honest measure of a state's worth: what an unassessed practice
+    # would have cost, minus what this one costs.
+    assert credit_for("5", "implemented") == 5
+    assert credit_for("3", "inherited") == 3
+    assert credit_for("1", "not_applicable") == 1
+    # Partial credit exists only on the three 3/5 requirements, so a partial
+    # on any other row keeps nothing at all.
+    assert credit_for("3/5", "partial") == 2
+    assert credit_for("5", "partial") == 0
+    assert credit_for("3", "not_implemented") == 0
+    assert credit_for("Special", "implemented") == 0
+
+
+def test_derived_states_are_reported_without_changing_the_score() -> None:
+    """SPRS is self-attested, so the math must not move; the reader must know.
+
+    A derivation credits practices from an intake answer and a vendor placemat.
+    Those points count -- and a view that cannot tell them from assessed ones
+    shows a questionnaire's output as an assessment.
+    """
+    seed = load_seed()
+    states = {r["control_id"]: "implemented" for r in seed}
+    derived_ids = {r["control_id"] for r in seed[:5]}
+    sources = {cid: "derived" for cid in derived_ids}
+
+    assessed_only = score_system(seed, states)
+    mixed = score_system(seed, states, sources=sources)
+
+    assert mixed.score == assessed_only.score == MAX_SPRS_SCORE
+    assert mixed.derived_controls == 5
+    assert mixed.assessed_controls == 105
+    assert assessed_only.derived_controls == 0
+    assert assessed_only.assessed_controls == 110
+    # The credited points are exactly those five rows' point values.
+    expected = sum(
+        credit_for(r["point_value"], "implemented")
+        for r in seed
+        if r["control_id"] in derived_ids
+    )
+    assert mixed.derived_credit == expected
+    assert assessed_only.derived_credit == 0
+
+
+def test_an_unrecognised_or_absent_source_counts_as_assessed() -> None:
+    """Never overstate the derived share -- that would be its own false claim."""
+    seed = load_seed()[:3]
+    states = {r["control_id"]: "implemented" for r in seed}
+    for value in ("", "platform", "DERIVED", "unknown"):
+        s = score_system(seed, states, sources={r["control_id"]: value for r in seed})
+        assert s.derived_controls == 0, value
+        assert s.derived_credit == 0, value
+        assert s.assessed_controls == 3, value
+
+
+def test_a_control_nobody_recorded_is_neither_assessed_nor_derived() -> None:
+    """With no state there is no decision to attribute to anyone."""
+    seed = load_seed()[:4]
+    s = score_system(seed, {}, sources={r["control_id"]: "derived" for r in seed})
+    assert s.derived_controls == 0
+    assert s.assessed_controls == 0
+    assert s.state_counts["not_assessed"] == 4
+
+
+def test_a_derived_ssp_prerequisite_is_not_reported_as_satisfied_outright() -> None:
+    """CA.L2-3.12.4 is the one prerequisite an assessment cannot proceed without.
+
+    The m365 placemat marks it "Shared Coverage", which the derivation turns
+    into ``partial`` -- and ``ssp_present`` reads ``partial`` as present. So
+    answering "Microsoft 365 GCC High" on the intake form asserted that an SSP
+    exists. The assertion still stands (it is the customer's claim to make),
+    but the source is now on the record beside it.
+    """
+    seed = load_seed()
+    states = {SSP_CONTROL_ID: "partial"}
+
+    derived = score_system(seed, states, sources={SSP_CONTROL_ID: "derived"})
+    assert derived.ssp_present is True
+    assert derived.ssp_present_source == "derived"
+
+    assessed = score_system(seed, states)
+    assert assessed.ssp_present is True
+    assert assessed.ssp_present_source == "assessed"
+
+    # An absent SSP is not a claim anyone relies on, so it carries no source --
+    # "no SSP" must not render as "an SSP asserted by a placemat".
+    missing = score_system(seed, {}, sources={SSP_CONTROL_ID: "derived"})
+    assert missing.ssp_present is False
+    assert missing.ssp_present_source is None
+
+
+def test_the_summary_dict_carries_provenance_to_its_consumers() -> None:
+    """`as_dict` is what the API, the analytics and the templates actually read."""
+    seed = load_seed()
+    d = score_system(
+        seed,
+        {r["control_id"]: "inherited" for r in seed},
+        sources={seed[0]["control_id"]: "derived"},
+    ).as_dict()
+    for key in ("derived_credit", "derived_controls", "assessed_controls", "ssp_present_source"):
+        assert key in d, key
+    assert d["derived_controls"] == 1

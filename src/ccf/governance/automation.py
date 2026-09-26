@@ -33,7 +33,8 @@ from ..models import (
     Vendor,
 )
 from ..models_grc import ControlTest
-from ..scoring.engine import deduction_for, score_system
+from ..scoring.engine import DERIVED, deduction_for, score_system
+from ..scoring.service import record_derived_state
 from ..ssp import constants as ssp_constants
 from ..ssp import statements as stmt
 from ..ssp.platforms import (
@@ -246,6 +247,7 @@ async def derive_system(
 
     derivation: dict[str, Any] = {}
     score_states: dict[str, str] = {}
+    score_sources: dict[str, str] = {}
     score_rows: list[dict[str, Any]] = []
     by_resp: dict[str, int] = {}
     by_state: dict[str, int] = {}
@@ -259,41 +261,52 @@ async def derive_system(
         else:
             state, resp, source = _platform_state(profile.cloud_platform, sc)
 
+        # Upsert the CMMC scoring state so SPRS reflects the derivation. Every
+        # row written here is labelled `derived`: nobody has assessed the
+        # practice, and the score must be able to say so.
+        st = existing_status.get(sc.id)
+        if st is None:
+            st = ScoringStatus(system_id=system_id, scoring_control_id=sc.id)
+            session.add(st)
+            record_derived_state(st, state, derived_from=source)
+        elif st.state == "not_assessed":  # don't clobber a human assessment
+            record_derived_state(st, state, derived_from=source)
+
+        # What is now stored -- which is a human's state where one already
+        # stood, and this derivation's everywhere else. Everything downstream
+        # reads this rather than the rule's output: reporting the rule's state
+        # meant the SPRS score returned here could disagree with the score
+        # `system_score_summary` computes from the same rows, and a gap POA&M
+        # could be seeded for a practice its owner had marked implemented.
+        effective_state, effective_source = st.state, st.source
+
         derivation[sc.control_id] = {
-            "state": state,
+            "state": effective_state,
+            "derived_state": state,
             "responsibility": resp,
             "source": source,
+            "assessed": effective_source != DERIVED,
             "domain": sc.domain,
             "point_value": sc.point_value,
         }
-        score_states[sc.control_id] = state
+        score_states[sc.control_id] = effective_state
+        score_sources[sc.control_id] = effective_source
         score_rows.append(
             {"control_id": sc.control_id, "domain": sc.domain, "point_value": sc.point_value}
         )
         by_resp[resp] = by_resp.get(resp, 0) + 1
-        by_state[state] = by_state.get(state, 0) + 1
+        by_state[effective_state] = by_state.get(effective_state, 0) + 1
         # "unknown" (no per-control/per-domain coverage data) is a gap too — it
         # still needs a POA&M/triage entry, just like customer/shared, rather
         # than being silently treated as covered.
-        if state in ("not_implemented", "planned") and resp in ("customer", "shared", "unknown"):
+        if effective_state in ("not_implemented", "planned") and resp in (
+            "customer",
+            "shared",
+            "unknown",
+        ):
             gaps.append(sc)
 
-        # Upsert the CMMC scoring state so SPRS reflects the derivation.
-        st = existing_status.get(sc.id)
-        if st is None:
-            session.add(
-                ScoringStatus(
-                    system_id=system_id,
-                    scoring_control_id=sc.id,
-                    state=state,
-                    notes=f"derived: {source}",
-                )
-            )
-        elif st.state == "not_assessed":  # don't clobber a human assessment
-            st.state = state
-            st.notes = f"derived: {source}"
-
-    summary = score_system(score_rows, score_states)
+    summary = score_system(score_rows, score_states, sources=score_sources)
 
     # Persist the snapshot on the profile.
     profile.derivation = derivation
@@ -311,7 +324,14 @@ async def derive_system(
         "by_state": by_state,
         "sprs_score": summary.score,
         "sprs_percentage": summary.percentage,
+        # What the score rests on. A derivation credits practices from the
+        # intake answers and a vendor placemat, so a caller that shows only
+        # `sprs_score` shows a projection as though it were an assessment.
+        "sprs_derived_credit": summary.derived_credit,
+        "sprs_assessed_controls": summary.assessed_controls,
+        "sprs_derived_controls": summary.derived_controls,
         "ssp_present": summary.ssp_present,
+        "ssp_present_source": summary.ssp_present_source,
         "gaps": len(gaps),
         "poams_created": poams_created,
         "vendors_inherited": len(set(vendor_map.values())),

@@ -31,6 +31,8 @@ from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
 from ...identity import mfa_service
+from ...integrations.service import ENTITY_POAM, links_for_entities
+from ...integrations.service import PROVIDERS as OUTBOUND_PROVIDERS
 from ...models import (
     POAM,
     Assessment,
@@ -67,12 +69,11 @@ from ...models import (
     Worksheet,
     WorksheetRow,
 )
-from ...integrations.service import PROVIDERS as OUTBOUND_PROVIDERS
-from ...integrations.service import ENTITY_POAM, links_for_entities
 from ...models_assessment_engine import OBJECTIVE_VERDICTS
 from ...models_grc import ConnectorConfig, ExternalIssueLink
 from ...onboarding import onboarding_state
 from ...scoring.engine import STATES
+from ...scoring.service import record_assessed_state
 from ...ssp import constants as ssp_constants
 from ...ssp.odp import render as render_template
 from ...ssp.odp_defs import odp_definitions_for_project
@@ -1355,7 +1356,7 @@ async def scoring_set_state(
             if status is None:
                 status = ScoringStatus(system_id=system_id, scoring_control_id=ctrl.id)
                 session.add(status)
-            status.state = state
+            record_assessed_state(status, state)
             await session.commit()
     summary = await compute_summary(session, system_id)
     return templates.TemplateResponse(
