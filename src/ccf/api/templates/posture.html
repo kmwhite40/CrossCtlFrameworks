@@ -98,12 +98,23 @@
           {% set col = 'var(--text-secondary)' if not c.assessed else ('var(--ok-500)' if c.sprs_score >= 88 else ('var(--warn-500)' if c.sprs_score >= 0 else 'var(--err-500)')) %}
           <tr>
             <td><a href="/scoring?system_id={{ c.system_id }}" style="font-weight:600">{{ c.name }}</a>
-              {% if not c.ssp_present %}<span class="chip chip--err" title="SSP prerequisite not met">SSP</span>{% endif %}</td>
+              {% if not c.ssp_present %}<span class="chip chip--err" title="SSP prerequisite not met">SSP</span>
+              {% elif c.ssp_present_source == 'derived' %}<span class="chip chip--warn"
+                title="The SSP prerequisite (CA.L2-3.12.4) is asserted by the platform profile, not by an SSP on record">SSP claimed</span>{% endif %}</td>
             <td>{% if c.baseline %}<span class="chip chip--ghost">{{ c.baseline }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
             <td><span class="chip {{ 'chip--ok' if c.ato_status=='authorized' else 'chip--ghost' }}">{{ c.ato_status or 'none' }}</span></td>
             <td>{% if c.assessed %}<strong style="color:{{ col }}">{{ c.sprs_score }}</strong><span class="dim">/110</span>
+              {# A score built only from the intake derivation is a projection.
+                 It earns SPRS credit identically to an assessed one, so the
+                 column has to say which this is. #}
+              {% if c.derived_credit %}<br><span class="chip chip--warn" style="margin-top:4px"
+                title="{{ c.derived_credit }} points are credited from the system profile and the platform's shared-responsibility guidance, not from an assessment"
+                >{{ 'projected' if not c.controls_reviewed else '+' ~ c.derived_credit ~ ' derived' }}</span>{% endif %}
               {% else %}<span class="dim" title="No controls assessed yet, so there is no score">not assessed</span>{% endif %}</td>
-            <td>{{ c.controls_assessed }}/110</td>
+            <td>{{ c.controls_reviewed }}/110
+              {% if c.controls_assessed > c.controls_reviewed %}<span class="dim" style="font-size:12px"
+                title="{{ c.controls_assessed - c.controls_reviewed }} further practices carry a state derived from the profile, which nobody has assessed"
+                >(+{{ c.controls_assessed - c.controls_reviewed }} derived)</span>{% endif %}</td>
             <td>{{ c.impl_met }}/{{ c.impl_total }}</td>
             <td>{{ c.open_poams }}</td>
             <td>{% if c.overdue_poams %}<span class="chip chip--err">{{ c.overdue_poams }}</span>{% else %}0{% endif %}</td>

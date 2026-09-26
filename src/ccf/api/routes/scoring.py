@@ -20,7 +20,7 @@ from ...governance import reactions
 from ...models import ScoringControl, ScoringStatus, System
 from ...scoring.engine import STATES
 from ...scoring.seed import seed_scoring_controls
-from ...scoring.service import system_score_summary
+from ...scoring.service import record_assessed_state, system_score_summary
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -174,11 +174,9 @@ async def set_control_state(
     if status is None:
         status = ScoringStatus(system_id=system_id, scoring_control_id=ctrl.id)
         session.add(status)
-    status.state = body.state
-    if body.notes is not None:
-        status.notes = body.notes
-    if body.evidence_ref is not None:
-        status.evidence_ref = body.evidence_ref
+    record_assessed_state(
+        status, body.state, notes=body.notes, evidence_ref=body.evidence_ref
+    )
     await session.flush()
     # Reaction: satisfying a practice auto-closes its gap POA&M + records an event.
     reaction = await reactions.on_scoring_status_changed(

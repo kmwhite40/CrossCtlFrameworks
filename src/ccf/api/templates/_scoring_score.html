@@ -32,6 +32,38 @@
       <div class="chip chip--err" style="margin-top:12px">
         <i data-lucide="alert-triangle"></i> SSP prerequisite (CA.L2-3.12.4) not met — assessment cannot be scored
       </div>
+    {% elif summary.ssp_present_source == 'derived' %}
+      {# The SSP is the one prerequisite a DoD assessment cannot proceed
+         without. Deriving it from a platform placemat means the profile
+         asserted it; say so rather than showing a satisfied prerequisite. #}
+      <div class="chip chip--warn" style="margin-top:12px">
+        <i data-lucide="alert-triangle"></i> SSP prerequisite (CA.L2-3.12.4) asserted by the platform profile — no SSP on record
+      </div>
+    {% endif %}
+
+    {% if summary.derived_controls %}
+      {# What the number rests on. SPRS is self-attested, so counting a claimed
+         state is correct -- but a state this platform derived from the intake
+         answers and a vendor placemat is not a claim anyone made, and it earns
+         credit identically. Nobody should read this score without knowing how
+         much of it came from the questionnaire. #}
+      <div class="note note--warn" style="margin-top:12px">
+        <div style="font-weight:650;margin-bottom:2px">
+          {% if not summary.assessed_controls %}
+            Projected from the system profile — not assessed
+          {% else %}
+            {{ summary.derived_credit }} of {{ summary.max_score }} points credited without assessment
+          {% endif %}
+        </div>
+        <div style="font-size:13px">
+          {{ summary.derived_controls }} practice{{ '' if summary.derived_controls == 1 else 's' }}
+          carr{{ 'ies' if summary.derived_controls == 1 else 'y' }} a state derived from the intake
+          answers and the platform's shared-responsibility guidance; {{ summary.assessed_controls }}
+          {{ 'has' if summary.assessed_controls == 1 else 'have' }} been assessed.
+          Derived states keep {{ summary.derived_credit }} point{{ '' if summary.derived_credit == 1 else 's' }}
+          that an unassessed practice would have cost. Set a practice's state to record an assessment.
+        </div>
+      </div>
     {% endif %}
 
     <hr style="border:none;border-top:1px solid var(--ink-200);margin:16px 0">

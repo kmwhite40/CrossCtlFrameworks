@@ -496,6 +496,24 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .chip--ghost { background: transparent; border-color: var(--border-strong); color: var(--text-muted); font-weight: 500; }
 
 /* ════════════════════════════════════════════════════════════
+   NOTES
+   A block-level qualifier on a number or a claim — longer than a chip can
+   carry, and attached to the thing it qualifies rather than floating as a
+   page-level banner. Full border and a soft tint, never a side stripe.
+   ════════════════════════════════════════════════════════════ */
+.note {
+  padding: var(--space-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); background: var(--bg-inset);
+  color: var(--text); font-size: 14px; line-height: 1.45;
+}
+/* The ink tokens are the contrast-checked pairs for their own soft fills
+   (see the token block); body copy in a note must use them rather than
+   --text-secondary, which is measured against the card, not the tint. */
+.note--warn { background: var(--warning-soft); border-color: var(--warning); color: var(--warning-ink); }
+.note--err  { background: var(--danger-soft);  border-color: var(--danger);  color: var(--danger-ink); }
+.note--info { background: var(--info-soft);    border-color: var(--info);    color: var(--info-ink); }
+
+/* ════════════════════════════════════════════════════════════
    CHARTS
    These style the macros in `_charts.html`. They lived in dashboard.html's
    own <style> block, which worked only because the dashboard was the single

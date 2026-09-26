@@ -117,6 +117,11 @@ async def systems_scorecard(
         controls_assessed = sprs["total_controls"] - sprs["state_counts"].get(
             "not_assessed", 0
         )
+        # Of those, how many somebody actually assessed. The intake derivation
+        # writes a state for all 110 practices from the profile answers, so
+        # `controls_assessed` reaches 110 for a system nobody has looked at and
+        # the scorecard read "110 assessed" on a questionnaire alone.
+        controls_reviewed = sprs["assessed_controls"]
         # A system nobody has assessed has no score, and must not render one.
         #
         # SPRS starts at the baseline and subtracts for unmet controls, so an
@@ -142,7 +147,10 @@ async def systems_scorecard(
                 "sprs_score": sprs["score"] if assessed else None,
                 "sprs_percentage": sprs["percentage"] if assessed else None,
                 "ssp_present": sprs["ssp_present"],
+                "ssp_present_source": sprs["ssp_present_source"],
                 "controls_assessed": controls_assessed,
+                "controls_reviewed": controls_reviewed,
+                "derived_credit": sprs["derived_credit"],
                 "impl_total": coverage["total"],
                 "impl_met": coverage["met"],
                 "open_poams": open_poams,

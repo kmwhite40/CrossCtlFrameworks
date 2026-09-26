@@ -1115,6 +1115,22 @@ class ScoringStatus(Base):
     state: Mapped[str] = mapped_column(String(32), default="not_assessed")
     notes: Mapped[str | None] = mapped_column(Text)
     evidence_ref: Mapped[str | None] = mapped_column(String(1024))
+    #: Who decided this state. ``"derived"`` means the profile derivation
+    #: computed it from the intake answers and a vendor placemat -- nobody has
+    #: assessed the practice. ``"assessed"`` means a person or a piece of
+    #: evidence set it. SPRS credits ``inherited``/``implemented`` identically
+    #: either way, so without this column a score projected from a
+    #: questionnaire is indistinguishable from an assessed one; see
+    #: ``ccf.scoring.engine.score_system``, which reports the derived share.
+    source: Mapped[str] = mapped_column(
+        String(16), default="assessed", server_default="assessed", index=True
+    )
+    #: The derivation rule that produced a ``derived`` state --
+    #: ``platform:m365_gcc_high``, ``vendor:Acme``, ``profile:not_applicable``.
+    #: Null for an assessed state. Structural, unlike the ``notes`` prose that
+    #: used to carry it: nothing cleared that prose when a person overrode the
+    #: state, so the platform was credited for human claims (migration 0089).
+    derived_from: Mapped[str | None] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

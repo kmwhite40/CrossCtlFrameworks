@@ -35,16 +35,14 @@ from .models import (
     FrameworkMapping,
     IngestionRun,
     Organization,
-    ScoringControl,
-    ScoringStatus,
     SSPControlEntry,
     SSPProject,
     User,
     Worksheet,
 )
 from .prep import jobs as prep_jobs
-from .scoring.engine import score_system
 from .scoring.seed import seed_scoring_controls
+from .scoring.service import system_score_summary
 from .ssp.generator import generate_ssp_docx
 from .ssp.seed import entry_to_dict
 from .ssp.templates_seed import seed_statement_templates
@@ -822,27 +820,27 @@ def score(system_id: int = typer.Argument(..., help="System id to score")) -> No
     """Print the live SPRS score for a system."""
 
     async def _run() -> None:
+        # Through the shared service, not a local query: it is the one place
+        # that reads a state's provenance alongside it, so the CLI cannot end
+        # up reporting a derived score as an assessed one.
         async with session_scope() as session:
-            controls = [
-                {"control_id": c.control_id, "domain": c.domain, "point_value": c.point_value}
-                for c in (await session.execute(select(ScoringControl))).scalars()
-            ]
-            states = {
-                cid: st
-                for cid, st in (
-                    await session.execute(
-                        select(ScoringControl.control_id, ScoringStatus.state)
-                        .join(ScoringStatus, ScoringStatus.scoring_control_id == ScoringControl.id)
-                        .where(ScoringStatus.system_id == system_id)
-                    )
-                ).all()
-            }
-        summary = score_system(controls, states)
+            summary = await system_score_summary(session, system_id)
         console.print(
-            f"[bold]SPRS score: {summary.score}/110[/bold] "
-            f"({summary.percentage}%) - minus {summary.deductions_total} pts, "
-            f"SSP present: {summary.ssp_present}"
+            f"[bold]SPRS score: {summary['score']}/110[/bold] "
+            f"({summary['percentage']}%) - minus {summary['deductions_total']} pts, "
+            f"SSP present: {summary['ssp_present']}"
+            + (
+                " (asserted by the system profile)"
+                if summary["ssp_present_source"] == "derived"
+                else ""
+            )
         )
+        if summary["derived_controls"]:
+            console.print(
+                f"[yellow]{summary['derived_credit']} of 110 points credited without "
+                f"assessment[/yellow] - {summary['derived_controls']} practice(s) carry a state "
+                f"derived from the system profile; {summary['assessed_controls']} assessed."
+            )
 
     asyncio.run(_run())
 
