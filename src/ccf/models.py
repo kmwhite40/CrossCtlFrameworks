@@ -946,6 +946,14 @@ class POAM(Base):
     source: Mapped[str | None] = mapped_column(String(32))  # assessment|scan|conmon|self_identified
     point_of_contact: Mapped[str | None] = mapped_column(String(255))
     remediation_plan: Mapped[str | None] = mapped_column(Text)
+    #: Who wrote ``remediation_plan``: ``generated`` by a failed automated
+    #: control test, ``ai`` by an approved AI mutation, ``analyst`` by a person.
+    #: Only ``generated`` may be refreshed by a later scan -- see migration
+    #: 0090. Defaults to ``analyst``, the direction that never destroys work:
+    #: an unlabelled plan is treated as somebody's own words.
+    remediation_plan_source: Mapped[str] = mapped_column(
+        String(16), default="analyst", server_default="analyst"
+    )
     resources_required: Mapped[str | None] = mapped_column(Text)
     cost_estimate: Mapped[str | None] = mapped_column(String(64))
     scheduled_completion: Mapped[date | None] = mapped_column(Date)

@@ -192,7 +192,11 @@ async def test_recovery_survives_an_intervening_not_applicable() -> None:
                 select(POAM).where(POAM.system_id == sys_id, POAM.source_ref == source_ref)
             )
         ).scalar_one()
-        assert poam.remediation_plan is None
+        # No recovery note. Asserted on the note rather than on the field being
+        # empty: a failing control test now seeds the plan with remediation
+        # guidance, so `is None` stopped expressing "no recovery fired" and
+        # started expressing "nothing wrote a plan at all".
+        assert "now passes" not in (poam.remediation_plan or "")
 
     async with session_scope() as s:
         await control_tests.record_result(
@@ -383,7 +387,7 @@ async def test_only_the_matching_test_is_resolved() -> None:
             )
         ).scalar_one()
         assert "now passes" in (poam_a.remediation_plan or "")
-        assert poam_b.remediation_plan is None
+        assert "now passes" not in (poam_b.remediation_plan or "")
 
 
 async def test_recovery_failure_is_isolated_and_logged(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -538,7 +542,7 @@ async def test_closed_poam_is_left_alone_on_recovery() -> None:
             )
         ).scalar_one()
         assert poam.status == "closed"
-        assert poam.remediation_plan is None
+        assert "now passes" not in (poam.remediation_plan or "")
         notes = (
             await s.execute(
                 select(Notification).where(Notification.dedupe_key == f"poam-recovery:{poam.id}")
@@ -585,3 +589,71 @@ async def test_a_task_a_human_has_taken_up_is_not_resolved() -> None:
         assert task.status == "in_progress", (
             "a task somebody had taken up must not be auto-resolved out from under them"
         )
+
+
+async def test_recovery_annotates_only_its_own_poam_on_a_shared_system() -> None:
+    """Two failing control tests on ONE system; one recovers.
+
+    `test_only_the_matching_test_is_resolved` above uses two organizations *and*
+    two systems, so the recovery query's `system_id` filter alone catches it and
+    the `source_ref` filter could be deleted with every test still green --
+    mutation testing said so. The case that needs `source_ref` is two POA&Ms on
+    the same system: without it the lookup matches both, `scalar_one_or_none`
+    raises MultipleResultsFound, and the `except Exception` around recovery
+    swallows it -- so the recovery silently does nothing and the POA&M its own
+    test just cleared keeps reading as open work with no note.
+    """
+    async with session_scope() as s:
+        org_id, sys_id = await _make_org_system(s, "Recovery Shared System Org")
+        first = await _make_test(s, org_id, sys_id, "AC-SHARED-1")
+        second = await _make_test(s, org_id, sys_id, "AC-SHARED-2")
+        first_id, second_id = first.id, second.id
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, first_id), status="fail", detail="one failing"
+        )
+        await control_tests.record_result(
+            s, await _reload_test(s, second_id), status="fail", detail="two failing"
+        )
+
+    async with session_scope() as s:
+        await control_tests.record_result(
+            s, await _reload_test(s, first_id), status="pass", detail="one fixed"
+        )
+
+    async with session_scope() as s:
+        poam_first = (
+            await s.execute(
+                select(POAM).where(
+                    POAM.system_id == sys_id,
+                    POAM.source_ref == f"control_test:{first_id}",
+                )
+            )
+        ).scalar_one()
+        poam_second = (
+            await s.execute(
+                select(POAM).where(
+                    POAM.system_id == sys_id,
+                    POAM.source_ref == f"control_test:{second_id}",
+                )
+            )
+        ).scalar_one()
+
+    assert "now passes" in (poam_first.remediation_plan or ""), (
+        "the recovering test's own POA&M was not annotated"
+    )
+    assert "now passes" not in (poam_second.remediation_plan or ""), (
+        "a still-failing control test's POA&M was annotated as recovered"
+    )
+    task_second = (
+        await _task_by_dedupe(f"ctltest-fix:{second_id}")
+    )
+    assert task_second.status == "open", "the still-failing test's task was resolved"
+
+
+async def _task_by_dedupe(dedupe: str) -> Task:
+    async with session_scope() as s:
+        return (
+            await s.execute(select(Task).where(Task.dedupe_key == dedupe))
+        ).scalar_one()

@@ -158,6 +158,49 @@ def scan_owned(test: ControlTest) -> bool:
     return bool(test.check_key)
 
 
+#: Marks a remediation plan this module wrote. Structural, not a prose prefix:
+#: see ``POAM.remediation_plan_source`` and migration 0090.
+GENERATED_PLAN = "generated"
+
+
+def remediation_guidance(test: ControlTest, detail: str) -> str:
+    """Default POA&M guidance for an automated control-test failure.
+
+    The platform should give an operator a first useful action even before a
+    human analyst edits the POA&M. Kept deterministic and source-light: provider
+    checks already carry the expected state and the failed-resource counts.
+
+    Deliberately says nothing an analyst has to unpick. Every line is either the
+    check's own recorded expectation, the observation this run made, or the
+    standing question the control raises -- never a claim about what the tenant
+    has done.
+    """
+    expected = test.expected or "the expected control state"
+    provider = test.connector_type or "the applicable provider"
+    lines = [
+        f"Remediation objective: bring {test.control_id} into alignment so {expected}.",
+        f"Observed condition: {detail}",
+        (
+            f"Recommended actions: review the failing resources from the latest {provider} "
+            "scan, correct the provider configuration or resource assignment, and re-run "
+            "the automated control check."
+        ),
+        (
+            "Validation evidence: attach the passing scan result, affected resource "
+            "identifiers, and any provider policy/configuration export used to prove the "
+            "corrected state."
+        ),
+        (
+            "SSP impact: update the implementation statement and evidence references for "
+            "this control if the remediation changes responsibility, implementation "
+            "status, or inherited/provider-managed coverage."
+        ),
+    ]
+    if test.check_key:
+        lines.insert(1, f"Automated check: {test.check_key}.")
+    return "\n".join(lines)
+
+
 def connector_backing_state(
     conn: ConnectorConfig | None, today: date, stale_after_days: int
 ) -> str:
@@ -479,6 +522,7 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
     weakness = (
         f"Automated control test '{test.name}' ({test.control_id}) failed: {detail}"
     )
+    guidance = remediation_guidance(test, detail)
     existing = (
         await session.execute(
             select(POAM).where(
@@ -491,6 +535,21 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
     ).scalar_one_or_none()
     if existing is not None:
         existing.weakness = weakness
+        # Refresh only a plan this module wrote. The observed condition and the
+        # failing-resource counts move between scans, so a generated plan has to
+        # follow them -- but an analyst's plan, or an approved AI draft carrying
+        # its own provenance badge, is not ours to rewrite. Deciding this by
+        # whether the stored text still began "Remediation objective:" looked
+        # like a marker and behaved as a trap: the most natural edit there is --
+        # appending a milestone, correcting the action -- keeps that first line,
+        # and the next scan silently destroyed it.
+        if existing.remediation_plan_source == GENERATED_PLAN:
+            existing.remediation_plan = guidance
+        elif not existing.remediation_plan:
+            # Nothing to protect: an empty plan is filled and labelled ours, so
+            # the next scan may keep it current.
+            existing.remediation_plan = guidance
+            existing.remediation_plan_source = GENERATED_PLAN
         return False
 
     control_id = (
@@ -506,6 +565,8 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
         severity="high",
         status="open",
         source="control_test",
+        remediation_plan=guidance,
+        remediation_plan_source=GENERATED_PLAN,
         identified_on=today,
         due_on=due,
         original_due_on=due,

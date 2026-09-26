@@ -65,6 +65,25 @@ def _patch(monkeypatch: pytest.MonkeyPatch, outcomes: list[CheckOutcome]) -> Non
     monkeypatch.setattr(scan_mod, "_connector_for_org", _fake_connector)
 
 
+def _patch_resolved(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    checks: tuple[PostureCheck, ...],
+    outcomes: list[CheckOutcome],
+) -> None:
+    async def _fake_connector(*a: object, **k: object) -> _FakeConnector:
+        return _FakeConnector(outcomes)
+
+    async def _fake_resolve(*a: object, **k: object) -> tuple[object, ...]:
+        return tuple(
+            SimpleNamespace(check=c, endpoint=f"/{c.key}", source="platform")
+            for c in checks
+        )
+
+    monkeypatch.setattr(scan_mod, "resolve_checks", _fake_resolve)
+    monkeypatch.setattr(scan_mod, "_connector_for_org", _fake_connector)
+
+
 async def _system(session) -> System:
     org = Organization(name=f"ScanOrg-{next(_SEQ)}")
     session.add(org)
@@ -95,6 +114,7 @@ async def test_scan_creates_a_generated_test_and_a_result(
         assert t.source == "generated"
         assert t.check_key == "demo.bucket.public"
         assert t.control_id == "AC-3"
+        assert t.expected == "public access blocked"
 
         r = (
             await session.execute(
@@ -105,6 +125,61 @@ async def test_scan_creates_a_generated_test_and_a_result(
         assert r.evaluated == 3
         assert r.failing == 1
         assert r.expected == "public access blocked"
+
+
+async def test_scan_reports_expected_and_skipped_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = PostureCheck(
+        key="demo.bucket.encrypted",
+        title="Buckets are encrypted",
+        provider="demo_provider",
+        resource_type="bucket",
+        expected="server-side encryption enabled",
+        control_ids=("SC-28",),
+        required_permissions=("storage:ReadEncryption",),
+    )
+    _patch_resolved(
+        monkeypatch,
+        checks=(CHECK, other),
+        outcomes=[_outcome("pass")],
+    )
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+
+        assert out["checks_expected"] == 2
+        assert out["checks_run"] == 1
+        assert out["skipped_checks"] == [
+            {
+                "check_key": "demo.bucket.encrypted",
+                "title": "Buckets are encrypted",
+                "control_ids": ["SC-28"],
+                "resource_type": "bucket",
+                "source": "platform",
+                "required_permissions": ["storage:ReadEncryption"],
+                "reason": "connector returned no outcome for this check",
+            }
+        ]
+
+
+async def test_failed_scan_poam_gets_remediation_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch(monkeypatch, [_outcome("fail")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        poam = (
+            await session.execute(select(POAM).where(POAM.system_id == sys_.id))
+        ).scalars().one()
+
+        assert poam.remediation_plan is not None
+        assert "Remediation objective" in poam.remediation_plan
+        assert "public access blocked" in poam.remediation_plan
+        assert "SSP impact" in poam.remediation_plan
 
 
 async def test_all_not_applicable_detail_does_not_read_as_a_clean_fleet(
@@ -538,3 +613,138 @@ async def test_the_scan_response_names_the_controls_and_where_to_read_them(
         )
     assert out["results"][0]["control_ids"] == ["AC-3"]
     assert out["framework_posture_url"] == f"/api/systems/{sys_.id}/framework-posture"
+
+
+async def test_the_scan_report_adds_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`checks_expected == checks_run + len(skipped_checks)`, always.
+
+    This is the arithmetic that makes the report trustworthy. Without it the
+    three numbers are three separate claims, and a check that silently fell out
+    of the loop would leave them disagreeing with nobody noticing -- which is the
+    whole reason the scan reports them instead of just `checks_run`.
+    """
+    ran = PostureCheck(
+        key="demo.bucket.public",
+        title="Buckets block public access",
+        provider="demo_provider",
+        resource_type="bucket",
+        expected="public access blocked",
+        control_ids=("AC-3",),
+    )
+    silent = PostureCheck(
+        key="demo.bucket.encrypted",
+        title="Buckets are encrypted",
+        provider="demo_provider",
+        resource_type="bucket",
+        expected="server-side encryption enabled",
+        control_ids=("SC-28",),
+    )
+    _patch_resolved(monkeypatch, checks=(ran, silent), outcomes=[_outcome("pass")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+    assert out["checks_expected"] == out["checks_run"] + len(out["skipped_checks"])
+
+
+async def test_an_inactive_test_is_named_in_the_report_and_still_adds_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A human deactivated the test, so the check ran and recorded nothing.
+
+    That is a third reason a check produced no result, and it has to appear
+    beside the other two -- an operator looking at "1 of 2 checks run" needs the
+    sentence, not the subtraction.
+    """
+    _patch(monkeypatch, [_outcome("fail")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        await scan_for_system(session, system_id=sys_.id, connector_key="demo_provider")
+        test = (
+            await session.execute(
+                select(ControlTest).where(ControlTest.system_id == sys_.id)
+            )
+        ).scalars().one()
+        test.active = False
+        await session.flush()
+
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+
+    assert out["checks_run"] == 0
+    reasons = [s["reason"] for s in out["skipped_checks"]]
+    assert reasons == ["generated control test is inactive"]
+    assert out["checks_expected"] == out["checks_run"] + len(out["skipped_checks"])
+
+
+async def test_an_outcome_for_an_unknown_check_is_reported_separately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connector returned something this build has no definition for.
+
+    It must be visible -- a log line is not a report -- but it must not land in
+    `skipped_checks`, which holds *expected* checks that did not run. Mixing it
+    in would break the sum above while looking like extra diligence.
+    """
+    stranger = PostureCheck(
+        key="demo.unknown.thing",
+        title="Something this build does not define",
+        provider="demo_provider",
+        resource_type="bucket",
+        expected="?",
+        control_ids=("XX-1",),
+    )
+    findings = (ResourceFinding("res-0", "bucket", "fail", "observed"),)
+    _patch_resolved(
+        monkeypatch,
+        checks=(CHECK,),
+        outcomes=[_outcome("pass"), CheckOutcome.from_findings(stranger, findings)],
+    )
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+
+    assert [u["check_key"] for u in out["unexpected_outcomes"]] == ["demo.unknown.thing"]
+    assert out["unexpected_outcomes"][0]["reason"]
+    assert all(s["check_key"] != "demo.unknown.thing" for s in out["skipped_checks"])
+    assert out["checks_expected"] == out["checks_run"] + len(out["skipped_checks"])
+
+
+async def test_an_unconfigured_connector_answers_the_same_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every key a caller reads is present whether or not a credential exists.
+
+    A response that grows and shrinks its own keys forces the consumer to guess
+    which branch it is on.
+    """
+    async def _no_connector(*a: object, **k: object) -> None:
+        return None
+
+    async def _fake_resolve(*a: object, **k: object) -> tuple[object, ...]:
+        return (SimpleNamespace(check=CHECK, endpoint="/demo", source="platform"),)
+
+    monkeypatch.setattr(scan_mod, "resolve_checks", _fake_resolve)
+    monkeypatch.setattr(scan_mod, "_connector_for_org", _no_connector)
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+    for key in (
+        "checks_expected",
+        "checks_run",
+        "results",
+        "skipped_checks",
+        "unexpected_outcomes",
+        "reason",
+    ):
+        assert key in out, key
+    assert out["checks_expected"] == out["checks_run"] + len(out["skipped_checks"])
+    assert out["skipped_checks"][0]["reason"] == (
+        "connector not configured for this organization"
+    )
