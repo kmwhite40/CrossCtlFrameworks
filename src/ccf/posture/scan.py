@@ -246,6 +246,12 @@ async def scan_for_system(
                 "verdict": outcome.verdict,
                 "evaluated": outcome.evaluated,
                 "failing": outcome.failing,
+                # The controls this check bears on, so the response says what
+                # was assessed rather than only which of Concord's internal
+                # check keys ran. Without them an API consumer had to know that
+                # `m365.identity.mfa_registered` means IA-2 before the result
+                # meant anything at all.
+                "control_ids": list(check.control_ids),
             }
         )
         failing_total += outcome.failing
@@ -289,6 +295,11 @@ async def scan_for_system(
         "connector": connector_key,
         "checks_run": len(recorded),
         "results": recorded,
+        # Where to read this scan in the terms of the framework the system is
+        # held to. A caller that only wants "did it work" can ignore it; a
+        # caller that wants "where do we stand" no longer has to reconstruct
+        # the framework, its denominator and the crosswalk for itself.
+        "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
     }
 
 

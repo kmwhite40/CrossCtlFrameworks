@@ -48,6 +48,10 @@ STATES = (
 
 # States that count as satisfied (zero deduction).
 _MET = {"implemented", "inherited", "not_applicable"}
+#: The same set under a public name, for readers outside this module. One
+#: definition: a second list of "states that mean in place" is how two reports
+#: of the same system come to disagree.
+MET_STATES = frozenset(_MET)
 # States that count as a full miss.
 _MISS = {"not_assessed", "not_implemented", "planned"}
 

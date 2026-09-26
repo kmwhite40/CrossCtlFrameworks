@@ -23,6 +23,10 @@ from ...analytics import (
     poam_aging,
     systems_scorecard,
 )
+from ...analytics.framework_posture import (
+    org_framework_posture,
+    system_framework_posture,
+)
 from ...auth import Principal
 from ...models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
 from ...posture.drift import latest_drift, resource_timeline
@@ -58,6 +62,30 @@ async def systems(
 ) -> list[dict[str, Any]]:
     """Per-system scorecard."""
     return await systems_scorecard(session, today=_today(), org_id=principal.org_id)
+
+
+@router.get("/framework")
+async def framework(
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """This organization's scan results, expressed in each system's own framework.
+
+    The answer a consumer needs after scanning an organization, which nothing
+    served before: ``POST /api/systems/{id}/scan`` returns check keys and
+    verdicts, and turning those into "where do we stand against the framework
+    we are held to" meant knowing Concord's internal check vocabulary, the
+    800-53 ids behind it, and which framework each system had been categorized
+    under. `framework_posture` computed exactly this and was wired only to an
+    HTML page.
+
+    Per system, because the framework is a property of a system, not of an
+    organization -- one tenant here has a Moderate-baseline system and an
+    800-171 system side by side. ``by_framework`` sums within a framework and
+    never across: a requirement count added to a control count is a number that
+    means nothing while looking authoritative.
+    """
+    return await org_framework_posture(session, principal.org_id)
 
 
 @router.get("/poam-aging")
@@ -155,6 +183,23 @@ async def scan_system(
         raise HTTPException(status_code=404, detail=str(e)) from e
     await session.commit()
     return out
+
+
+@scan_router.get("/systems/{system_id}/framework-posture")
+async def system_framework(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """One system's scan results in its own framework's units.
+
+    Sits beside ``POST /api/systems/{system_id}/scan`` on purpose: scan, then
+    read the same system's posture in the terms the framework uses.
+    """
+    await require_system_in_scope(session, system_id, principal)
+    return await system_framework_posture(
+        session, org_id=principal.org_id, system_id=system_id
+    )
 
 
 @scan_router.get("/control-tests/{test_id}/results/{result_id}/resources")

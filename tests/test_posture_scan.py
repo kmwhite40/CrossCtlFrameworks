@@ -518,3 +518,23 @@ async def test_effective_verdict_ignores_a_manually_run_test() -> None:
         assert out["source"] is None
         assert out["verdict"] is None
         assert out["reason"] == "no fresh deterministic result"
+
+
+async def test_the_scan_response_names_the_controls_and_where_to_read_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A consumer had to decode the response through Concord's own check keys.
+
+    `demo.bucket.public` -- or `m365.identity.mfa_registered` in production --
+    means nothing to a caller that does not already know which control it
+    evidences, so the result carries the control ids and points at the endpoint
+    that expresses them in the framework the system is held to.
+    """
+    _patch(monkeypatch, [_outcome("pass", "fail")])
+    async with session_scope() as session:
+        sys_ = await _system(session)
+        out = await scan_for_system(
+            session, system_id=sys_.id, connector_key="demo_provider"
+        )
+    assert out["results"][0]["control_ids"] == ["AC-3"]
+    assert out["framework_posture_url"] == f"/api/systems/{sys_.id}/framework-posture"
