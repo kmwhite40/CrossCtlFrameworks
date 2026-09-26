@@ -640,3 +640,160 @@ async def test_every_entry_in_the_org_answer_names_its_system() -> None:
             assert entry["reason"], f"system {entry['system_id']} reported zeros in silence"
 
 
+
+
+# ---------------------------------------------------------------------------
+# On the pages a customer actually opens
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_measures_a_system_that_has_no_fips199_baseline() -> None:
+    """Step 3 of the flow, for the shape the live tenant actually has.
+
+    The workspace picked its focus system by "has a baseline", so a system held
+    to 800-171 through its intake profile was skipped -- and if it was the only
+    system, the posture step read "No baseline declared, so coverage cannot be
+    measured", which names a remedy the customer may not need.
+    """
+    sc = await _scene(baseline=None, frameworks=["NIST_800_171"], label="FW Work")
+    await _seed_crosswalk([("IA-02", "3.5.1 Identify system users")])
+    await _record(int(sc["system_id"]), int(sc["org_id"]), "IA-2", "fail")
+
+    async with _client() as c:
+        r = await c.get(
+            "/workspace", headers={"Authorization": f"Bearer {sc['token']}"}
+        )
+    assert r.status_code == 200, r.text
+    assert "NIST SP 800-171" in r.text
+    assert "No baseline declared" not in r.text, "the old, wrong remedy is still offered"
+    # The denominator is the framework's, and the unit is a requirement.
+    assert "110 requirements" in r.text or "of 110 requirement" in r.text
+    assert "3.5.1" in r.text, "the failing requirement is not named"
+    # The ceiling is stated beside the number, not left to be inferred.
+    assert "no scan can reach" in r.text
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_says_why_when_no_framework_is_declared() -> None:
+    """An absent card reads as 'nothing to report'.
+
+    Both places have to say it: the card, and the posture step's own detail
+    line. Asserting only the card left the step free to keep offering "set a
+    baseline" -- a remedy that is wrong for a system whose framework is 800-171.
+    """
+    sc = await _scene(baseline=None, frameworks=["CIS"], label="FW WorkNone")
+    async with _client() as c:
+        r = await c.get(
+            "/workspace", headers={"Authorization": f"Bearer {sc['token']}"}
+        )
+    assert r.status_code == 200, r.text
+    assert "Posture cannot be measured yet" in r.text
+    assert "no framework is declared" in r.text
+    assert "No baseline declared" not in r.text, "the step still names the wrong remedy"
+    assert "Declare a framework" in r.text, "the step's action still sends them to a baseline"
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_focuses_the_system_whose_framework_it_can_measure() -> None:
+    """Two systems, neither with a baseline, only one measurable.
+
+    The old rule picked "the first with a baseline, else the first at all", so
+    with no baselines anywhere it landed on whichever system happened to be
+    created first -- and if that one declared no framework, the workspace
+    reported that it could measure nothing while a measurable system sat beside
+    it. A single-system test cannot catch this: the fallback lands on the right
+    system by accident.
+    """
+    tag = uuid.uuid4().hex[:6]
+    async with session_scope() as s:
+        await seed_scoring_controls(s)
+        org = Organization(name=f"FW Focus {tag}")
+        s.add(org)
+        await s.flush()
+        user = User(
+            email=f"f-{tag}@fw.test",
+            organization_id=org.id,
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        s.add(user)
+        # Created first, so `systems[0]` under the old rule. No framework.
+        bare = System(organization_id=org.id, name=f"Bare {tag}", baseline=None)
+        s.add(bare)
+        await s.flush()
+        cui = System(organization_id=org.id, name=f"CUI {tag}", baseline=None)
+        s.add(cui)
+        await s.flush()
+        s.add(
+            SystemProfile(
+                system_id=cui.id,
+                answers={},
+                environment_type="cloud",
+                cloud_platform="m365_gcc_high",
+                frameworks=["NIST_800_171"],
+            )
+        )
+        await s.flush()
+        token, cui_name, bare_name = user.api_token, cui.name, bare.name
+
+    async with _client() as c:
+        r = await c.get("/workspace", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    assert "Posture against NIST SP 800-171" in r.text, (
+        f"the workspace focused a system it cannot measure; expected {cui_name}"
+    )
+    assert "Posture cannot be measured yet" not in r.text
+    # The other system is still named rather than hidden, with its own status.
+    assert bare_name in r.text
+    assert "no framework declared" in r.text
+
+
+@pytest.mark.asyncio
+async def test_the_posture_page_reports_each_system_in_its_own_units() -> None:
+    """One organization, two frameworks, two denominators, never summed."""
+    tag = uuid.uuid4().hex[:6]
+    async with session_scope() as s:
+        await seed_scoring_controls(s)
+        org = Organization(name=f"FW Page {tag}")
+        s.add(org)
+        await s.flush()
+        user = User(
+            email=f"p-{tag}@fw.test",
+            organization_id=org.id,
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        s.add(user)
+        cui = System(organization_id=org.id, name=f"CUI {tag}", baseline=None)
+        bare = System(organization_id=org.id, name=f"Bare {tag}", baseline=None)
+        s.add_all([cui, bare])
+        await s.flush()
+        s.add(
+            SystemProfile(
+                system_id=cui.id,
+                answers={},
+                environment_type="cloud",
+                cloud_platform="m365_gcc_high",
+                frameworks=["NIST_800_171"],
+            )
+        )
+        await s.flush()
+        token, cui_name, bare_name = user.api_token, cui.name, bare.name
+
+    async with _client() as c:
+        r = await c.get("/posture", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    assert "Posture against the applied framework" in r.text
+    assert cui_name in r.text
+    assert "110 requirements" in r.text, "the 800-171 denominator is not rendered"
+    # The system with no framework is shown with its reason, not omitted.
+    assert bare_name in r.text
+    assert "no framework is declared" in r.text
+    # Percentages are per framework; there is no portfolio-wide coverage number
+    # mixing requirements with controls.
+    assert "assessed of 110 requirements" in r.text

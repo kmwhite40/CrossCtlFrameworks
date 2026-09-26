@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import POAM, SSPProject, System, Task
 from ..models_grc import ConnectorConfig, ControlTest
-from .framework_posture import framework_posture
+from .framework_posture import resolve_applied_framework, system_framework_posture
 from .gaps import compliance_gaps
 
 
@@ -55,11 +55,21 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
         )
     ).scalars().all()
 
-    # The system this workspace is about: the first with a baseline declared,
-    # else the first at all. A workspace that silently picked a different
-    # system each time the data changed would be worse than one that says it
-    # is unset.
-    system = next((s for s in systems if s.baseline), systems[0] if systems else None)
+    # The system this workspace is about: the first whose framework Concord can
+    # actually measure, else the first at all. A workspace that silently picked
+    # a different system each time the data changed would be worse than one
+    # that says it is unset.
+    #
+    # "Has a baseline" used to be the test, which skipped a system held to
+    # 800-171 through its intake profile -- the shape the tenant this was found
+    # on actually has. `resolve_applied_framework` answers the real question.
+    applied_by_system = {
+        s.id: await resolve_applied_framework(session, s) for s in systems
+    }
+    system = next(
+        (s for s in systems if applied_by_system[s.id] is not None),
+        systems[0] if systems else None,
+    )
 
     steps: list[dict[str, Any]] = []
 
@@ -127,27 +137,33 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
             f"{assessed} control test(s) recorded from live configuration.",
             "See results", "/control-tests"))
 
-    # 4 -- posture, measured against the baseline
+    # 4 -- posture, measured against the framework the system is held to
     posture = (
-        await framework_posture(session, org_id=org_id, system_id=system.id)
+        await system_framework_posture(session, org_id=org_id, system_id=system.id)
         if system is not None
         else None
     )
     if posture and posture["total"]:
         covered = len(posture["passing"]) + len(posture["failing"])
+        unit = posture["unit"] or "control"
         steps.append(_step(
             "posture", "Current posture", "done" if covered else "todo",
             (
                 f"{len(posture['passing'])} satisfied, {len(posture['failing'])} failing, "
                 f"{len(posture['unaddressed'])} not yet addressed of {posture['total']} "
-                f"controls in the {posture['baseline']} baseline."
+                f"{unit}s in {posture['framework_label']}."
             ),
             "Open posture", "/posture"))
     else:
+        # Say what is missing. "No baseline declared" was wrong for a system
+        # that declares 800-171 and has no FIPS-199 categorization -- it named
+        # the wrong remedy, and sent the customer to set a baseline they may not
+        # need.
         steps.append(_step(
             "posture", "Current posture", "blocked",
-            "No baseline declared, so coverage cannot be measured.",
-            "Set a baseline", f"/systems/{system.id}" if system else "/intake"))
+            (posture or {}).get("reason")
+            or "No framework declared, so coverage cannot be measured.",
+            "Declare a framework", f"/systems/{system.id}" if system else "/intake"))
 
     # 5 -- remediate
     open_tasks = (
@@ -201,6 +217,17 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
         "system": system,
         "posture": posture,
         "next": nxt,
+        # Named, so a page showing one system's posture does not read as the
+        # organization's. Two systems here sit on different frameworks.
+        "other_systems": [
+            {
+                "system_id": s.id,
+                "name": s.name,
+                "framework": applied_by_system[s.id].label if applied_by_system[s.id] else None,
+            }
+            for s in systems
+            if system is None or s.id != system.id
+        ],
         "open_poams": (
             await session.execute(
                 select(func.count(POAM.id)).join(System, System.id == POAM.system_id).where(

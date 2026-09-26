@@ -2,7 +2,8 @@
 {% block title %}Compliance workspace · Concord{% endblock %}
 {% block heading %}Compliance workspace{% endblock %}
 {% block subtitle %}<p class="page__subtitle">
-  {% if w.system %}{{ w.system.name }}{% if p and p.baseline %} · FedRAMP {{ p.baseline.title() }} baseline{% endif %}
+  {% if w.system %}{{ w.system.name }}{% if p and p.framework_label %} · {{ p.framework_label }}{% endif %}
+    {% if w.other_systems %}<span class="dim"> · one of {{ w.other_systems|length + 1 }} systems</span>{% endif %}
   {% else %}Describe a system to begin.{% endif %}
 </p>{% endblock %}
 {% block content %}
@@ -15,9 +16,17 @@
 {% else %}
 
 {% if p and p.total %}
+{% set unit = p.unit or 'control' %}
 <section class="card card--elevated" style="margin-bottom:20px">
   <div class="card__header">
-    <div class="card__title">Posture against the {{ p.baseline }} baseline</div>
+    <div>
+      <div class="card__title">Posture against {{ p.framework_label }}</div>
+      <div class="card__subtitle">
+        {{ p.total }} {{ unit }}s
+        {%- if p.framework_source == 'profile.frameworks' %} · framework declared in the intake profile
+        {%- elif p.framework_source == 'system.baseline' %} · from this system's FIPS-199 categorization
+        {%- endif %}</div>
+    </div>
     <span class="chip {% if p.failing %}chip--err{% elif p.assessed_pct %}chip--ok{% else %}chip--warn{% endif %}">
       {{ p.assessed_pct }}% assessed</span>
   </div>
@@ -34,12 +43,67 @@
         <div class="dim" style="font-size:12px">claimed, not machine-tested</div></div>
       <div><div class="kpi__label">Not yet addressed</div>
         <div class="kpi__value">{{ p.unaddressed|length }}</div>
-        <div class="dim" style="font-size:12px">of {{ p.total }} in the baseline</div></div>
+        <div class="dim" style="font-size:12px">of {{ p.total }} {{ unit }}s</div></div>
     </div>
     <p class="dim" style="margin:14px 0 0;max-width:80ch;font-size:13px">
-      The denominator is the baseline, not the checks Concord happens to run. Coverage of
-      {{ p.total }} controls is what an assessor measures; anything else flatters the number.
+      The denominator is the framework, not the checks Concord happens to run. Coverage of
+      {{ p.total }} {{ unit }}s is what an assessor measures; anything else flatters the number.
     </p>
+    {% if p.unreachable %}
+    {# The ceiling, said next to the number rather than left for someone to
+       infer from a stubbornly high "not yet addressed" count. #}
+    <div class="note note--info" style="margin-top:14px">
+      <div style="font-weight:650;margin-bottom:2px">{{ p.unreachable|length }} {{ unit }}s no scan can reach</div>
+      <div style="font-size:13px">
+        No 800-53 control in the shipped crosswalk maps to them, so connecting more providers
+        will not close them. They need documented implementations and evidence you supply.
+      </div>
+    </div>
+    {% endif %}
+    {% if p.unmappable_controls %}
+    <div class="note note--warn" style="margin-top:12px">
+      <div style="font-weight:650;margin-bottom:2px">{{ p.unmappable_controls|length }} tested control(s) could not be placed</div>
+      <div style="font-size:13px">
+        Concord tested <span class="mono">{{ p.unmappable_controls|join(', ') }}</span> but the
+        crosswalk maps {{ 'it' if p.unmappable_controls|length == 1 else 'them' }} to no
+        requirement, so {{ 'it is' if p.unmappable_controls|length == 1 else 'they are' }} not
+        counted above. The result stands on the control test itself.
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% elif p and p.reason %}
+{# Never an absent card. A system whose framework Concord cannot measure used to
+   render nothing here, which reads as "nothing to report". #}
+<section class="card" style="margin-bottom:20px">
+  <div class="card__header"><div class="card__title">Posture cannot be measured yet</div></div>
+  <div class="card__body">
+    <div class="note note--warn">
+      <div style="font-weight:650;margin-bottom:2px">{{ w.system.name if w.system else 'This organization' }}</div>
+      <div style="font-size:13px">{{ p.reason }}</div>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+{% if w.other_systems %}
+<section class="card" style="margin-bottom:20px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Other systems in this organization</div>
+      <div class="card__subtitle">Each is measured against its own framework</div>
+    </div>
+    <span class="chip chip--ghost">{{ w.other_systems|length }}</span>
+  </div>
+  <div class="card__body">
+    {% for s in w.other_systems %}
+    <div class="row between" style="padding:8px 0;border-bottom:{{ '1px solid var(--border)' if not loop.last else 'none' }}">
+      <div><a href="/scoring?system_id={{ s.system_id }}" style="font-weight:600">{{ s.name }}</a>
+        <div class="dim" style="font-size:12px">{{ s.framework or 'no framework declared' }}</div></div>
+      <a class="btn btn--ghost btn--sm" href="/posture">Posture</a>
+    </div>
+    {% endfor %}
   </div>
 </section>
 {% endif %}
@@ -75,7 +139,7 @@
 {% if p and p.failing %}
 <section class="card">
   <div class="card__header">
-    <div class="card__title">Controls to correct</div>
+    <div class="card__title">{{ (p.unit or 'control')|capitalize }}s to correct</div>
     <span class="chip chip--err">{{ p.failing|length }}</span>
   </div>
   <div class="card__body">
