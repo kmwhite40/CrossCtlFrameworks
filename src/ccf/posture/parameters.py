@@ -54,6 +54,12 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     m365.DIRECTORY_AUDIT_CURRENT.key: (),
     m365.DEVICE_COMPLIANCE.key: (),
     m365.RISKY_USERS_RESOLVED.key: (),
+    # The inactivity period is organization-defined in both FedRAMP and CMMC, so
+    # this one takes a parameter rather than shipping 15 minutes as though the
+    # figure were settled.
+    m365.SESSION_LOCK_ENFORCED.key: ("max_minutes",),
+    m365.STORAGE_ENCRYPTION_REQUIRED.key: (),
+    m365.SESSION_REAUTHENTICATION_REQUIRED.key: (),
     aws.ROOT_MFA_ENABLED.key: (),
     aws.PASSWORD_POLICY.key: (),
     aws.ACCESS_KEY_ROTATION.key: ("threshold_days",),
@@ -64,12 +70,16 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
 #: Sourced from the provider module so the wording lives in exactly one place.
 EXPECTED_TEMPLATES: dict[str, str] = {
     m365.STALE_ACCOUNTS.key: m365.STALE_ACCOUNTS_EXPECTED,
+    m365.SESSION_LOCK_ENFORCED.key: m365.SESSION_LOCK_EXPECTED,
     aws.ACCESS_KEY_ROTATION.key: aws.ACCESS_KEY_ROTATION_EXPECTED,
 }
 
 #: Parameter name -> validator. Every parameter needs one: an unvalidated
 #: parameter is a ``TypeError`` waiting for a scan.
-_VALIDATORS: dict[str, str] = {"threshold_days": "positive_int"}
+_VALIDATORS: dict[str, str] = {
+    "threshold_days": "positive_int",
+    "max_minutes": "positive_int",
+}
 
 
 def _positive_int_error(name: str, value: Any) -> str | None:
