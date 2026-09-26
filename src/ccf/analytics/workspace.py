@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import POAM, SSPProject, System, Task
 from ..models_grc import ConnectorConfig, ControlTest
 from .framework_posture import framework_posture
+from .gaps import compliance_gaps
 
 
 def _step(key: str, title: str, state: str, detail: str, action: str, href: str) -> dict[str, Any]:
@@ -156,17 +157,32 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
             )
         )
     ).scalar_one()
-    failing = len(posture["failing"]) if posture else 0
-    if failing or open_tasks:
+    # A formally accepted finding is not outstanding work, so the step that
+    # asks "is there anything left to do" must not count it. It is still
+    # failing -- the posture step above is right to include it -- so both
+    # numbers are reported, rather than one quietly replacing the other.
+    gaps = await compliance_gaps(session, org_id)
+    accepted = gaps["accepted"]
+    outstanding = gaps["open"]
+    if outstanding or open_tasks:
         steps.append(_step(
-            "remediate", "Remediate", "todo",
-            f"{failing} control(s) failing, {open_tasks} open remediation task(s).",
-            "Work the queue", "/dashboard"))
+            "remediate", "Correct and remediate", "todo",
+            (
+                f"{outstanding} of {gaps['failing']} failing control(s) unaccepted, "
+                f"{open_tasks} open remediation task(s)"
+                + (f", {accepted} risk-accepted." if accepted else ".")
+            ),
+            "Work the gaps", "/dashboard"))
+    elif accepted:
+        steps.append(_step(
+            "remediate", "Correct and remediate", "done",
+            f"Nothing outstanding — {accepted} finding(s) failing with the risk accepted.",
+            "Review acceptances", "/dashboard"))
     else:
         steps.append(_step(
-            "remediate", "Remediate", "done" if assessed else "blocked",
+            "remediate", "Correct and remediate", "done" if assessed else "blocked",
             "Nothing failing." if assessed else "Nothing assessed yet.",
-            "Work the queue", "/dashboard"))
+            "Work the gaps", "/dashboard"))
 
     # 6 -- document
     ssp = (

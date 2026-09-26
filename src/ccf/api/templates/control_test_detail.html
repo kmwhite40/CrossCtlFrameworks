@@ -12,6 +12,125 @@
   <div class="kpi"><div class="kpi__label">Runs recorded</div><div class="kpi__value">{{ results|length }}</div></div>
 </div>
 
+{% if error %}
+<div class="note note--err" style="margin-bottom:16px">{{ error }}</div>
+{% endif %}
+
+{# Step 4 of the customer flow: correct and remediate. A failing control landed
+   here from the gap report and there was nothing to do -- no way to accept the
+   risk, no record of one already accepted. Acceptance never touches the
+   finding: the status below stays `fail`, the observations stay, and the
+   posture measurement still counts the control as not operating. What it stops
+   is the consequence -- the repeated task, the alert, the POA&M churn. #}
+{% if test.last_status == 'fail' or waivers %}
+<section class="card card--elevated" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Resolution</div>
+      <div class="card__subtitle">Fix it and re-run the check, or accept the risk on the record</div>
+    </div>
+    {% if coverage.suppress %}
+      <span class="chip chip--warn">risk accepted</span>
+    {% elif waivers %}
+      <span class="chip chip--ghost">{{ waivers|length }} acceptance(s) on file</span>
+    {% endif %}
+  </div>
+  <div class="card__body stack" style="gap:14px">
+
+    {% if coverage.suppress %}
+      <div class="note note--warn">
+        <div style="font-weight:650;margin-bottom:2px">Accepted — and still failing</div>
+        <div style="font-size:13px">
+          Every failing resource is covered by an approved acceptance, so Concord stops
+          raising it. The control is <strong>not</strong> recorded as satisfied: the result
+          below reads <span class="mono">fail</span>, the evidence stands, and posture
+          against the baseline still counts it as not operating. An assessor sees the
+          finding and the decision, which is the point.
+        </div>
+      </div>
+    {% elif coverage.waived and coverage.uncovered %}
+      <div class="note note--warn">
+        <div style="font-weight:650;margin-bottom:2px">Partly accepted, so nothing is suppressed</div>
+        <div style="font-size:13px">
+          {{ coverage.waived }} resource(s) accepted, {{ coverage.uncovered|length }} not:
+          <span class="mono">{{ coverage.uncovered[:6]|join(', ') }}{% if coverage.uncovered|length > 6 %} …{% endif %}</span>.
+          A partially accepted check is still an unaccepted finding.
+        </div>
+      </div>
+    {% endif %}
+
+    {% if waivers %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr>
+        <th>Scope</th><th>Status</th><th>Expires</th><th>Requested by</th><th>Why</th><th></th>
+      </tr></thead>
+      <tbody>
+        {% for w in waivers %}
+        <tr>
+          <td class="mono" style="font-size:12px">{{ w.resource_id or 'whole check' }}</td>
+          <td>
+            {% if is_active_waiver(w) %}<span class="chip chip--warn">in force</span>
+            {% elif w.status == 'approved' %}<span class="chip chip--ghost" title="Approved, but its expiry has passed">expired</span>
+            {% elif w.status == 'revoked' %}<span class="chip chip--ghost">revoked</span>
+            {% else %}<span class="chip chip--ghost" title="Requested only — it suppresses nothing">requested</span>{% endif %}
+          </td>
+          <td class="dim">{{ w.expires_on.strftime('%Y-%m-%d') if w.expires_on else 'no expiry' }}</td>
+          <td class="dim" style="font-size:12px">{{ w.requested_by or '—' }}
+            {% if w.approved_by %}<div class="dim" style="font-size:11px">approved by {{ w.approved_by }}</div>{% endif %}</td>
+          <td style="font-size:13px">{{ w.rationale }}</td>
+          <td>
+            {% if w.status == 'requested' and may_approve %}
+              {% if can_approve(w.requested_by, viewer_email, is_global=viewer_is_global) %}
+              <form method="post" action="/control-tests/{{ test.id }}/waivers/{{ w.id }}/approve">
+                <button class="btn btn--primary btn--sm" type="submit">Approve</button>
+              </form>
+              {% else %}
+              {# Separation of duties: the requester may not grant their own.
+                 Stated rather than hidden, so nobody waits for a button that
+                 will never appear for them. #}
+              <span class="dim" style="font-size:12px">needs another admin</span>
+              {% endif %}
+            {% elif w.status == 'approved' and may_approve %}
+              <form method="post" action="/control-tests/{{ test.id }}/waivers/{{ w.id }}/revoke">
+                <button class="btn btn--ghost btn--sm" type="submit">Revoke</button>
+              </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+    {% endif %}
+
+    <details {% if not waivers %}open{% endif %}>
+      <summary style="font-weight:600">Request a risk acceptance</summary>
+      <form method="post" action="/control-tests/{{ test.id }}/accept" class="stack" style="gap:10px;margin-top:12px;max-width:70ch">
+        <div class="field-group">
+          <label class="label" for="rationale">Why is this acceptable?</label>
+          <textarea id="rationale" name="rationale" rows="3" required
+            placeholder="Compensating control, business justification, or the risk decision this is filed under."></textarea>
+          <div class="dim" style="font-size:12px">Required. An acceptance with no stated reason is not reviewable.</div>
+        </div>
+        <div class="row" style="gap:12px;flex-wrap:wrap">
+          <div class="field-group">
+            <label class="label" for="expires_on">Expires</label>
+            <input id="expires_on" name="expires_on" type="date">
+            <div class="dim" style="font-size:12px">Leave empty for no expiry — permitted, and reported as a governance smell.</div>
+          </div>
+          <div class="field-group">
+            <label class="label" for="resource_id">One resource only (optional)</label>
+            <input id="resource_id" name="resource_id" type="text" placeholder="resource id">
+            <div class="dim" style="font-size:12px">Empty accepts the whole check.</div>
+          </div>
+        </div>
+        <div><button class="btn btn--secondary" type="submit"><i data-lucide="file-check"></i> Request acceptance</button>
+          <span class="dim" style="font-size:12px;margin-left:8px">Arrives <strong>requested</strong> and suppresses nothing until an admin grants it.</span></div>
+      </form>
+    </details>
+  </div>
+</section>
+{% endif %}
+
 {% if test.description or test.connector_type or test.assertion %}
 <section class="card" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">Definition</div></div>

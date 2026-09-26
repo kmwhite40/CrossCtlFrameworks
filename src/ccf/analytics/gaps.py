@@ -11,18 +11,29 @@ and `/poams`, and no page rolled it up.
 Scoped to one organization throughout, and to **live** systems: a deleted
 system's failures are not a customer's outstanding work, and analytics that
 forgot that once put a deleted system's score in the executive headline.
+
+A formally accepted finding is reported **separately, never as passing**. This
+page answers "what is outstanding", and an acceptance is a decision about the
+consequence, not about the evidence: the status stays ``fail``, the observation
+stays, and `framework_posture` still counts the control as not operating --
+which is correct there, because it measures whether a control works, not
+whether somebody signed for it. What the report could not do before was tell
+an operator which of its rows had already been decided, so an accepted risk sat
+in the queue looking exactly like untouched work.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..governance.waivers import cover, is_active, waivers_for_tests
 from ..models import System, Task
-from ..models_grc import ControlTest, ControlTestResult, ControlTestResourceResult
+from ..models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
+from ..posture.types import ResourceFinding
 
 #: How many failing resources to name per control. The full set is on the
 #: control-test page; a rollup that printed 74 user principal names would bury
@@ -34,16 +45,24 @@ EXAMPLES_PER_GAP = 4
 _WORST_FIRST = (ControlTestResult.failing.desc(), ControlTest.control_id.asc())
 
 
-async def compliance_gaps(session: AsyncSession, org_id: int | None) -> dict[str, Any]:
+async def compliance_gaps(
+    session: AsyncSession, org_id: int | None, *, today: date | None = None
+) -> dict[str, Any]:
     """Every assessed control for this organization, failures first.
 
     ``org_id`` of ``None`` returns the empty shape rather than every tenant's
     gaps: this drives a customer-facing page, and "no organization" is not a
     licence to show all of them.
+
+    ``today`` decides which acceptances are in force and defaults to the local
+    date. Pass it to test expiry; the pure coverage layer never reads a clock.
     """
+    today = today or date.today()
     empty: dict[str, Any] = {
         "assessed": 0,
         "failing": 0,
+        "open": 0,
+        "accepted": 0,
         "passing": 0,
         "resources_evaluated": 0,
         "resources_failing": 0,
@@ -87,26 +106,49 @@ async def compliance_gaps(session: AsyncSession, org_id: int | None) -> dict[str
 
     result_ids = [res.id for _t, res, _s in rows if res.status == "fail"]
     examples: dict[int, list[str]] = {}
+    # Per-resource findings for the failing results, which is what `cover`
+    # decides acceptance from. Every failing resource is loaded, not only the
+    # `EXAMPLES_PER_GAP` shown: acceptance requires that *all* of them be
+    # covered, so truncating here would report a partly accepted finding as
+    # fully accepted -- the one mistake this must not make.
+    findings: dict[int, list[ResourceFinding]] = {}
     if result_ids:
-        for result_id, observed in (
+        for result_id, resource_id, resource_type, verdict, observed in (
             await session.execute(
                 select(
                     ControlTestResourceResult.result_id,
+                    ControlTestResourceResult.resource_id,
+                    ControlTestResourceResult.resource_type,
+                    ControlTestResourceResult.verdict,
                     ControlTestResourceResult.observed,
                 )
-                .where(
-                    ControlTestResourceResult.result_id.in_(result_ids),
-                    ControlTestResourceResult.verdict == "fail",
-                )
+                .where(ControlTestResourceResult.result_id.in_(result_ids))
                 .order_by(ControlTestResourceResult.id)
             )
         ).all():
-            bucket = examples.setdefault(result_id, [])
-            if len(bucket) < EXAMPLES_PER_GAP:
-                bucket.append(str(observed))
+            findings.setdefault(result_id, []).append(
+                ResourceFinding(
+                    resource_id=resource_id,
+                    resource_type=resource_type,
+                    verdict=verdict,
+                    observed=str(observed or ""),
+                )
+            )
+            if verdict == "fail":
+                bucket = examples.setdefault(result_id, [])
+                if len(bucket) < EXAMPLES_PER_GAP:
+                    bucket.append(str(observed))
+
+    # Acceptances evaluated against today, not the counters the last scan
+    # stored: a waiver approved after that run would otherwise leave the row
+    # reading as untouched work until somebody happened to re-scan.
+    candidates = await waivers_for_tests(
+        session, [t for t, res, _s in rows if res.status == "fail"]
+    )
 
     gaps: list[dict[str, Any]] = []
     clean: list[dict[str, Any]] = []
+    accepted_count = 0
     evaluated = failing_resources = 0
     last_assessed: datetime | None = None
     systems: set[int] = set()
@@ -131,7 +173,37 @@ async def compliance_gaps(session: AsyncSession, org_id: int | None) -> dict[str
             "test_id": test.id,
             "examples": examples.get(result.id, []),
         }
-        (gaps if result.status == "fail" else clean).append(entry)
+        if result.status == "fail":
+            waivers = candidates.get(test.id, [])
+            coverage = cover(findings.get(result.id, ()), waivers, today=today)
+            active = [w for w in waivers if is_active(w, today=today)]
+            # `suppress` is the same flag the scan uses to decide whether to
+            # alert, so "accepted" here means exactly what it means there.
+            entry["accepted"] = coverage.suppress
+            entry["waived_resources"] = coverage.waived
+            entry["uncovered_resources"] = len(coverage.uncovered)
+            entry["requested_waivers"] = sum(1 for w in waivers if w.status == "requested")
+            # The soonest expiry among the acceptances in force: the date this
+            # row comes back. `None` when an acceptance is indefinite, which the
+            # view has to render differently -- an acceptance that never lapses
+            # is permitted and is worth seeing.
+            expiries = [w.expires_on for w in active]
+            entry["accepted_until"] = (
+                min((e for e in expiries if e is not None), default=None) if active else None
+            )
+            entry["accepted_indefinitely"] = coverage.suppress and any(
+                w.expires_on is None for w in active
+            )
+            if coverage.suppress:
+                accepted_count += 1
+            gaps.append(entry)
+        else:
+            clean.append(entry)
+
+    # Outstanding work first. `_WORST_FIRST` already ordered by how much is
+    # broken; this is a stable partition on top of it, so an accepted row keeps
+    # its place relative to other accepted rows.
+    gaps.sort(key=lambda g: g["accepted"])
 
     open_tasks = (
         await session.execute(
@@ -143,7 +215,11 @@ async def compliance_gaps(session: AsyncSession, org_id: int | None) -> dict[str
 
     return {
         "assessed": len(rows),
+        # `failing` is unchanged: every control whose latest run failed. The
+        # split is additive so no existing reader silently changes meaning.
         "failing": len(gaps),
+        "open": len(gaps) - accepted_count,
+        "accepted": accepted_count,
         "passing": len(clean),
         "resources_evaluated": evaluated,
         "resources_failing": failing_resources,

@@ -22,6 +22,7 @@ from ...auth import Principal
 from ...config import get_settings, is_dev_env
 from ...evidence import service as evidence_service
 from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
+from ...governance import waivers as waiver_service
 from ...ingest import parse_scan, reconcile_findings
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
 from ...models_evidence import EvidenceObject
@@ -31,6 +32,7 @@ from ...models_grc import (
     AuditRequest,
     ConnectorConfig,
     ControlTest,
+    ControlTestResourceResult,
     ControlTestResult,
     RegulatoryUpdate,
     TrustAccessRequest,
@@ -58,6 +60,14 @@ from ...connectors.credential_spec import (
     spec_for,
 )
 from ...posture.checks import checks_for
+from ...posture.types import ResourceFinding
+from .waivers import (
+    APPROVER_ROLES,
+    WaiverIn,
+    approve_waiver,
+    create_waiver,
+    revoke_waiver,
+)
 from .ui import _principal_org, templates
 
 
@@ -652,10 +662,161 @@ async def control_test_detail(
             .limit(100)
         )
     ).scalars().all()
+    # The resolution path. Landing here from the gap report used to be a dead
+    # end: the page showed what failed and offered nothing to do about it, so
+    # step 4 of the customer flow -- correct and remediate -- had no surface at
+    # all and the only recorded acceptances were ones made over the JSON API.
+    today = date.today()
+    waivers = await waiver_service.waivers_for_test(session, test)
+    latest = results[0] if results else None
+    findings = (
+        (
+            await session.execute(
+                select(ControlTestResourceResult).where(
+                    ControlTestResourceResult.result_id == latest.id
+                )
+            )
+        ).scalars().all()
+        if latest is not None
+        else []
+    )
+    coverage = waiver_service.cover(
+        [
+            ResourceFinding(
+                resource_id=f.resource_id,
+                resource_type=f.resource_type,
+                verdict=f.verdict,
+                observed=str(f.observed or ""),
+            )
+            for f in findings
+        ],
+        waivers,
+        today=today,
+    )
+    principal = getattr(request.state, "principal", None)
     return templates.TemplateResponse(
         request,
         "control_test_detail.html",
-        {"active": "controltests", "test": test, "results": results},
+        {
+            "active": "controltests",
+            "test": test,
+            "results": results,
+            "waivers": waivers,
+            "coverage": coverage,
+            "today": today,
+            "is_active_waiver": lambda w: waiver_service.is_active(w, today=today),
+            # Whether *this* viewer may grant an acceptance. Approval is
+            # admin-only and the requester may never approve their own, so the
+            # button is shown only when both hold -- offering it and then
+            # refusing would teach people the page lies.
+            "may_approve": (
+                getattr(principal, "role", None) in APPROVER_ROLES
+                or getattr(principal, "is_global", False)
+            ),
+            "viewer_email": getattr(principal, "email", None),
+            "viewer_is_global": bool(getattr(principal, "is_global", False)),
+            "can_approve": waiver_service.can_approve,
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+@router.post("/control-tests/{test_id}/accept")
+async def control_test_request_acceptance(  # noqa: PLR0917 -- FastAPI binds these by keyword
+    test_id: int,
+    request: Request,
+    rationale: str = Form(""),
+    expires_on: str = Form(""),
+    resource_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Request that this finding's consequence be accepted.
+
+    Delegates to the JSON handler rather than building a ``Waiver`` here: that
+    is where the rationale requirement, the one-target rule, the control-id
+    canonicalization and the audit event live, and a second copy of those would
+    be a second set of rules to keep in step. The tenant check below is
+    therefore belt-and-braces -- ``create_waiver`` refuses a system the caller
+    does not own -- but it is what makes *this* route answer 404 for a test it
+    should not have shown in the first place, rather than leaning on the
+    handler two frames down.
+    """
+    org = _principal_org(request)
+    test = await session.get(ControlTest, test_id)
+    if test is None or (org is not None and test.organization_id != org):
+        raise HTTPException(404, "control test not found")
+    if test.system_id is None:
+        return _acceptance_error(
+            test_id,
+            "This test is not scoped to a system, so there is nothing to accept it against.",
+        )
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        raise HTTPException(403, "not authenticated")
+    parsed_expiry: date | None = None
+    if expires_on.strip():
+        try:
+            parsed_expiry = date.fromisoformat(expires_on.strip())
+        except ValueError:
+            return _acceptance_error(test_id, "Expiry must be a date, as YYYY-MM-DD.")
+    body = WaiverIn(
+        system_id=test.system_id,
+        rationale=rationale,
+        # A check-generated test is accepted by its check key; a hand-authored
+        # one has none, so it is accepted by the control it evidences. Exactly
+        # one, which is what `ck_waiver_one_target` requires.
+        check_key=test.check_key or None,
+        control_id=None if test.check_key else test.control_id,
+        resource_id=resource_id.strip() or None,
+        expires_on=parsed_expiry,
+    )
+    try:
+        await create_waiver(body, session, principal)
+    except HTTPException as exc:
+        return _acceptance_error(test_id, str(exc.detail))
+    return RedirectResponse(f"/control-tests/{test_id}", status_code=303)
+
+
+@router.post("/control-tests/{test_id}/waivers/{waiver_id}/approve")
+async def control_test_approve_acceptance(
+    test_id: int,
+    waiver_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*APPROVER_ROLES)),
+) -> RedirectResponse:
+    """Grant an acceptance. From here it suppresses the consequence."""
+    try:
+        await approve_waiver(waiver_id, session, principal)
+    except HTTPException as exc:
+        return _acceptance_error(test_id, str(exc.detail))
+    return RedirectResponse(f"/control-tests/{test_id}", status_code=303)
+
+
+@router.post("/control-tests/{test_id}/waivers/{waiver_id}/revoke")
+async def control_test_revoke_acceptance(
+    test_id: int,
+    waiver_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*APPROVER_ROLES)),
+) -> RedirectResponse:
+    """Withdraw an acceptance. The consequence resumes on the next result."""
+    try:
+        await revoke_waiver(waiver_id, session, principal)
+    except HTTPException as exc:
+        return _acceptance_error(test_id, str(exc.detail))
+    return RedirectResponse(f"/control-tests/{test_id}", status_code=303)
+
+
+def _acceptance_error(test_id: int, message: str) -> RedirectResponse:
+    """Back to the test, saying what went wrong.
+
+    Never a bare 4xx: a form post that fails silently is the shape of defect
+    that had CSRF refusals landing on a blank page all day.
+    """
+    return RedirectResponse(
+        f"/control-tests/{test_id}?error={quote(message)}", status_code=303
     )
 
 

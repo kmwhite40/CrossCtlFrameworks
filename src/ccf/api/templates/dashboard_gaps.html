@@ -26,9 +26,14 @@
 {% else %}
 
 <div class="cols-4" style="margin-bottom:20px">
-  <div class="kpi card"><div class="kpi__label">Controls failing</div>
-    <div class="kpi__value" style="color:{{ 'var(--err-500)' if g.failing else 'var(--ok-500)' }}">{{ g.failing }}</div>
-    <div class="dim" style="font-size:12px">of {{ g.assessed }} assessed</div></div>
+  {# The headline counts outstanding work. A formally accepted finding is still
+     failing -- the status, the observation and the posture measurement all say
+     so -- but it is not work anybody is waiting on, and it sat in this number
+     indistinguishable from untouched failures. #}
+  <div class="kpi card"><div class="kpi__label">Controls failing, open</div>
+    <div class="kpi__value" style="color:{{ 'var(--err-500)' if g.open else 'var(--ok-500)' }}">{{ g.open }}</div>
+    <div class="dim" style="font-size:12px">of {{ g.assessed }} assessed{% if g.accepted %} ·
+      {{ g.accepted }} accepted{% endif %}</div></div>
   <div class="kpi card"><div class="kpi__label">Resources failing</div>
     <div class="kpi__value">{{ g.resources_failing }}</div>
     <div class="dim" style="font-size:12px">of {{ g.resources_evaluated }} evaluated</div></div>
@@ -44,11 +49,13 @@
 <section class="card card--elevated" style="margin-bottom:20px">
   <div class="card__header">
     <div class="card__title">Gaps to remediate</div>
-    <span class="chip chip--err">{{ g.gaps|length }}</span>
+    <span class="chip chip--err">{{ g.open }} open</span>
+    {% if g.accepted %}<span class="chip chip--warn">{{ g.accepted }} accepted</span>{% endif %}
   </div>
   <div class="table-wrap"><table class="data">
     <thead><tr>
-      <th>Control</th><th>What was checked</th><th>System</th><th>Failing</th><th>What failed</th>
+      <th>Control</th><th>What was checked</th><th>System</th><th>Failing</th>
+      <th>Decision</th><th>What failed</th>
     </tr></thead>
     <tbody>
       {% for x in g.gaps %}
@@ -58,6 +65,22 @@
           {% if x.expected %}<div class="dim" style="font-size:12px">expected: {{ x.expected }}</div>{% endif %}</td>
         <td class="dim"><a href="/systems/{{ x.system_id }}">{{ x.system }}</a></td>
         <td><span class="chip chip--err">{{ x.failing }}</span><span class="dim"> / {{ x.evaluated }}</span></td>
+        <td>
+          {% if x.accepted %}
+            <span class="chip chip--warn" title="The finding stands; its consequence is accepted">accepted</span>
+            <div class="dim" style="font-size:12px">
+              {% if x.accepted_indefinitely %}no expiry
+              {% elif x.accepted_until %}until {{ x.accepted_until.strftime('%Y-%m-%d') }}
+              {% endif %}</div>
+          {% elif x.requested_waivers %}
+            <span class="chip chip--ghost" title="Requested, not approved — it suppresses nothing yet">{{ x.requested_waivers }} requested</span>
+          {% else %}
+            <a class="btn btn--ghost btn--sm" href="/control-tests/{{ x.test_id }}">Resolve</a>
+          {% endif %}
+          {% if x.uncovered_resources and x.waived_resources %}
+            <div class="dim" style="font-size:11px">{{ x.uncovered_resources }} resource(s) not covered</div>
+          {% endif %}
+        </td>
         <td>
           {% for e in x.examples %}<div class="dim" style="font-size:12px">{{ e }}</div>{% endfor %}
           {% if x.failing > x.examples|length %}
