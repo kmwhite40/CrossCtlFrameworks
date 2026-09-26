@@ -346,3 +346,21 @@ async def test_record_derived_state_and_record_assessed_state_are_inverses() -> 
         record_assessed_state(row, "partial")
         assert (row.state, row.source, row.derived_from) == ("partial", ASSESSED, None)
         assert row.notes is None
+
+
+@pytest.mark.asyncio
+async def test_the_posture_page_renders_a_derived_systems_row() -> None:
+    """The scorecard template gained three new fields; a missing one raises.
+
+    `{% if c.controls_assessed > c.controls_reviewed %}` compares against an
+    Undefined if the analytics layer stops supplying the key, which is a 500 on
+    a page the executive view links to -- and no API test exercises the HTML.
+    """
+    org_id, system_id, token = await _org_admin_system("Prov Posture")
+    await _derive(org_id, system_id)
+
+    async with _client() as c:
+        r = await c.get("/posture", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    assert "derived" in r.text, "the row does not say the score is derived"
+    assert "SSP claimed" in r.text, "the placemat's SSP assertion renders as satisfied"
