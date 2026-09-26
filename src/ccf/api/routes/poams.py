@@ -506,6 +506,11 @@ async def update_poam(
         )
     for k, v in data.items():
         setattr(obj, k, v)
+    if "remediation_plan" in data:
+        # A person wrote this, so a later scan must leave it alone. Set from the
+        # write rather than offered as a field on POAMUpdate: provenance is a
+        # fact about who made the call, never something the body gets to claim.
+        obj.remediation_plan_source = "analyst"
     if (
         "status" in data
         and data["status"] not in POAM_CLOSED_STATUSES

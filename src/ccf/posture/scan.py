@@ -84,6 +84,7 @@ async def _upsert_generated_test(
     check_source: str,
     control_id: str,
     title: str,
+    expected: str,
     capability_id: int | None,
     connector_key: str,
 ) -> ControlTest:
@@ -127,6 +128,7 @@ async def _upsert_generated_test(
             check_source=check_source,
             capability_id=capability_id,
             description=description,
+            expected=expected,
             connector_type=connector_key,
         )
         session.add(test)
@@ -137,6 +139,7 @@ async def _upsert_generated_test(
     test.check_source = check_source
     test.capability_id = capability_id
     test.description = description
+    test.expected = expected
     test.connector_type = connector_key
     return test
 
@@ -153,6 +156,23 @@ async def scan_for_system(
     if system is None:
         raise ValueError(f"unknown system: {system_id}")
 
+    # Resolved once: the platform's checks plus anything this tenant's packs
+    # declared. The same sequence drives execution and attribution, so a
+    # declared check cannot be scanned and then discarded below as unknown.
+    resolved = await resolve_checks(
+        session, provider=connector_key, org_id=system.organization_id
+    )
+    expected_checks = [
+        {
+            "check_key": r.check.key,
+            "title": r.check.title,
+            "control_ids": list(r.check.control_ids),
+            "resource_type": r.check.resource_type,
+            "source": r.source,
+            "required_permissions": list(r.check.required_permissions),
+        }
+        for r in resolved
+    ]
     conn = await _connector_for_org(
         session, organization_id=system.organization_id, connector_key=connector_key
     )
@@ -160,21 +180,29 @@ async def scan_for_system(
         return {
             "system_id": system_id,
             "connector": connector_key,
+            "checks_expected": len(expected_checks),
             "checks_run": 0,
             "results": [],
+            "skipped_checks": [
+                {**check, "reason": "connector not configured for this organization"}
+                for check in expected_checks
+            ],
+            "unexpected_outcomes": [],
             "reason": "connector not configured for this organization",
         }
 
-    # Resolved once: the platform's checks plus anything this tenant's packs
-    # declared. The same sequence drives execution and attribution, so a
-    # declared check cannot be scanned and then discarded below as unknown.
-    resolved = await resolve_checks(
-        session, provider=connector_key, org_id=system.organization_id
-    )
     by_key: dict[str, ResolvedCheck] = {r.check.key: r for r in resolved}
     outcomes: list[CheckOutcome] = await conn.scan(checks=resolved)
+    returned_keys = {o.check_key for o in outcomes}
 
     recorded: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    # Outcomes for checks this build has no definition for. Kept out of
+    # `skipped_checks` on purpose: those are the *expected* checks that did not
+    # run, and the invariant `checks_expected == checks_run + len(skipped_checks)`
+    # is what makes the report addable. An unknown outcome was never expected, so
+    # it is reported on its own rather than breaking that sum.
+    unexpected: list[dict[str, Any]] = []
     failing_total = 0
     for outcome in outcomes:
         rc = by_key.get(outcome.check_key)
@@ -186,6 +214,13 @@ async def scan_for_system(
                 "posture.unknown_check",
                 check_key=outcome.check_key,
                 provider=connector_key,
+            )
+            unexpected.append(
+                {
+                    "check_key": outcome.check_key,
+                    "verdict": outcome.verdict,
+                    "reason": "no definition for this check in this build",
+                }
             )
             continue
         check = rc.check
@@ -204,6 +239,7 @@ async def scan_for_system(
             check_source=rc.source,
             control_id=check.control_ids[0],
             title=check.title,
+            expected=check.expected,
             capability_id=capability_id,
             connector_key=connector_key,
         )
@@ -218,6 +254,17 @@ async def scan_for_system(
                 "posture.skipped_inactive_test",
                 check_key=outcome.check_key,
                 control_test_id=test.id,
+            )
+            skipped.append(
+                {
+                    "check_key": outcome.check_key,
+                    "title": check.title,
+                    "control_ids": list(check.control_ids),
+                    "resource_type": check.resource_type,
+                    "source": rc.source,
+                    "required_permissions": list(check.required_permissions),
+                    "reason": "generated control test is inactive",
+                }
             )
             continue
         # `considered` (not `evaluated`) so an unlicensed tenant -- where
@@ -252,6 +299,7 @@ async def scan_for_system(
                 # `m365.identity.mfa_registered` means IA-2 before the result
                 # meant anything at all.
                 "control_ids": list(check.control_ids),
+                "required_permissions": list(check.required_permissions),
             }
         )
         failing_total += outcome.failing
@@ -277,6 +325,20 @@ async def scan_for_system(
 
             observe("drift_transitions", _count_transition)
 
+    for rc in resolved:
+        if rc.check.key not in returned_keys:
+            skipped.append(
+                {
+                    "check_key": rc.check.key,
+                    "title": rc.check.title,
+                    "control_ids": list(rc.check.control_ids),
+                    "resource_type": rc.check.resource_type,
+                    "source": rc.source,
+                    "required_permissions": list(rc.check.required_permissions),
+                    "reason": "connector returned no outcome for this check",
+                }
+            )
+
     from ..api.metrics import POSTURE_FAILING_RESOURCES  # noqa: PLC0415
 
     # Labelled by connector as well as system: `scan_for_system` runs once per
@@ -293,8 +355,11 @@ async def scan_for_system(
     return {
         "system_id": system_id,
         "connector": connector_key,
+        "checks_expected": len(expected_checks),
         "checks_run": len(recorded),
         "results": recorded,
+        "skipped_checks": skipped,
+        "unexpected_outcomes": unexpected,
         # Where to read this scan in the terms of the framework the system is
         # held to. A caller that only wants "did it work" can ignore it; a
         # caller that wants "where do we stand" no longer has to reconstruct

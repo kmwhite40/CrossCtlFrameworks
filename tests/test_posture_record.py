@@ -159,7 +159,9 @@ async def test_not_applicable_is_not_treated_as_a_recovery() -> None:
                 select(POAM).where(POAM.system_id == t.system_id, POAM.source_ref == source_ref)
             )
         ).scalar_one()
-        assert poam.remediation_plan is None, "not_applicable must not annotate the POA&M"
+        assert "now passes" not in (poam.remediation_plan or ""), (
+            "not_applicable must not annotate the POA&M with a recovery note"
+        )
 
 
 async def test_long_resource_ids_are_truncated_not_rejected() -> None:

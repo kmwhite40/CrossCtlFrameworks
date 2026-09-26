@@ -316,6 +316,10 @@ async def _apply_mutation(
             # fails to appear for content-only providers.
             applied_text = payload.get("remediation_plan") or output.content
             poam.remediation_plan = applied_text
+            # Labelled `ai`, so a later posture scan will not overwrite an
+            # approved draft -- and so the row itself records that this text was
+            # machine-drafted, beside the provenance badge that renders it.
+            poam.remediation_plan_source = "ai"
             return {"mutation_type": "set_poam_remediation", "target_type": "poam",
                     "target_id": run.entity_id, "applied_text": applied_text}
     elif action.allowed_mutation == "create_task":

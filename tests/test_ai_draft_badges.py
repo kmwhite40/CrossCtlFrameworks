@@ -260,3 +260,47 @@ async def test_poam_hand_edited_after_ai_draft_loses_badge() -> None:
     row = next(row for row in rows if "Edited weakness" in row)
     assert BADGE not in row
     assert "Human follow-up" in row
+
+
+@pytest.mark.asyncio
+async def test_an_approved_ai_remediation_is_labelled_so_a_scan_cannot_retract_it() -> None:
+    """The badge is not the only thing that has to know this text is AI-drafted.
+
+    ``POAM.remediation_plan`` is also written by a failed automated control test,
+    and that path refreshes its own guidance on every re-scan
+    (``control_tests._upsert_poam``). It decides what is its own from
+    ``remediation_plan_source``, so the AI mutation has to set it -- otherwise a
+    scan of the same failing check silently replaces text a reviewer approved,
+    and the badge keeps advertising an AI draft that is no longer there.
+
+    Lives beside the badge tests rather than with the scan's own provenance
+    tests because this is the module whose harness can drive a real run through
+    to approval; asserting it by setting the column by hand proved nothing --
+    mutation testing showed that test passing with the label removed.
+    """
+    _org_id, sys_id = await _org_and_system("BadgePoamProvenanceOrg")
+    async with session_scope() as s:
+        poam = POAM(
+            system_id=sys_id, title="AI remediation provenance", severity="high", status="open"
+        )
+        s.add(poam)
+        await s.flush()
+        poam_id = poam.id
+
+    async with _client() as c:
+        run = (
+            await c.post(
+                "/api/ai-actions/draft_poam_remediation/run",
+                json={"entity_type": "poam", "entity_id": str(poam_id)},
+            )
+        ).json()
+        approved = await c.post(f"/api/ai-actions/runs/{run['id']}/approve")
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["mutation_applied"] is True
+
+    async with session_scope() as s:
+        after = await s.get(POAM, poam_id)
+    assert after.remediation_plan, "the approved draft was not applied"
+    assert after.remediation_plan_source == "ai", (
+        "an approved AI draft is unlabelled, so the next posture scan overwrites it"
+    )
