@@ -150,6 +150,7 @@ async def scan_for_system(
     system_id: int,
     connector_key: str,
     actor: str = "scan",
+    check_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     """Scan one system with one connector and record every outcome."""
     system = await session.get(System, system_id)
@@ -162,6 +163,9 @@ async def scan_for_system(
     resolved = await resolve_checks(
         session, provider=connector_key, org_id=system.organization_id
     )
+    if check_keys is not None:
+        allowed = set(check_keys)
+        resolved = tuple(r for r in resolved if r.check.key in allowed)
     expected_checks = [
         {
             "check_key": r.check.key,
@@ -365,6 +369,61 @@ async def scan_for_system(
         # caller that wants "where do we stand" no longer has to reconstruct
         # the framework, its denominator and the crosswalk for itself.
         "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
+    }
+
+
+async def record_manual_review_check(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    connector_key: str,
+    check: dict[str, Any],
+    reason: str,
+    actor: str = "scan",
+) -> dict[str, Any]:
+    """Persist a manual-review-required result for an applicable unscanned check."""
+    system = await session.get(System, system_id)
+    if system is None:
+        raise ValueError(f"unknown system: {system_id}")
+    control_ids = [str(c) for c in check.get("control_ids") or [] if c]
+    if not control_ids:
+        raise ValueError("manual-review check requires at least one control id")
+    check_key = str(check["check_key"])
+    test = await _upsert_generated_test(
+        session,
+        organization_id=system.organization_id,
+        system_id=system_id,
+        check_key=check_key,
+        check_source=str(check.get("source") or "platform"),
+        control_id=control_ids[0],
+        title=str(check.get("title") or check_key),
+        expected=str(check.get("expected") or "manual evidence is required"),
+        capability_id=None,
+        connector_key=connector_key,
+    )
+    if not test.active:
+        return {
+            "check_key": check_key,
+            "verdict": "not_tested",
+            "control_ids": control_ids,
+            "reason": "generated control test is inactive",
+        }
+    await record_result(
+        session,
+        test,
+        status="manual_review_required",
+        detail=reason,
+        actor=actor,
+        evaluated=0,
+        failing=0,
+        expected=test.expected,
+        resources=(),
+    )
+    return {
+        "check_key": check_key,
+        "verdict": "manual_review_required",
+        "control_ids": control_ids,
+        "reason": reason,
     }
 
 

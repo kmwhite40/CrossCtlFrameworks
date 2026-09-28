@@ -31,6 +31,7 @@ from ..models_grc import (
     ControlTestResult,
 )
 from ..posture.checks import ResourceFinding
+from ..posture.remediation import playbook_for
 from . import bus
 from .waivers import cover, waivers_for_test
 
@@ -177,27 +178,41 @@ def remediation_guidance(test: ControlTest, detail: str) -> str:
     """
     expected = test.expected or "the expected control state"
     provider = test.connector_type or "the applicable provider"
+    playbook = playbook_for(test.check_key)
     lines = [
         f"Remediation objective: bring {test.control_id} into alignment so {expected}.",
         f"Observed condition: {detail}",
-        (
-            f"Recommended actions: review the failing resources from the latest {provider} "
-            "scan, correct the provider configuration or resource assignment, and re-run "
-            "the automated control check."
-        ),
-        (
-            "Validation evidence: attach the passing scan result, affected resource "
-            "identifiers, and any provider policy/configuration export used to prove the "
-            "corrected state."
-        ),
-        (
-            "SSP impact: update the implementation statement and evidence references for "
-            "this control if the remediation changes responsibility, implementation "
-            "status, or inherited/provider-managed coverage."
-        ),
     ]
     if test.check_key:
         lines.insert(1, f"Automated check: {test.check_key}.")
+    if playbook is None:
+        lines.extend(
+            [
+                (
+                    f"Recommended actions: review the failing resources from the latest "
+                    f"{provider} scan, correct the provider configuration or resource "
+                    "assignment, and re-run the automated control check."
+                ),
+                (
+                    "Validation evidence: attach the passing scan result, affected resource "
+                    "identifiers, and any provider policy/configuration export used to prove "
+                    "the corrected state."
+                ),
+            ]
+        )
+    else:
+        lines.append("Recommended actions:")
+        lines.extend(f"- {action}" for action in playbook.actions)
+        if playbook.milestones:
+            lines.append("Suggested milestones:")
+            lines.extend(f"- {milestone}" for milestone in playbook.milestones)
+        lines.append("Validation evidence:")
+        lines.extend(f"- {evidence}" for evidence in playbook.evidence)
+    lines.append(
+        "SSP impact: update the implementation statement and evidence references for "
+        "this control if the remediation changes responsibility, implementation "
+        "status, or inherited/provider-managed coverage."
+    )
     return "\n".join(lines)
 
 
@@ -516,8 +531,16 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
     org-wide test (not scoped to one system) has nothing to attach a POA&M to,
     so it keeps the existing Task/Notification alert only.
     """
+    poam, created = await ensure_poam_for_control_test(session, test, detail)
+    return bool(poam is not None and created)
+
+
+async def ensure_poam_for_control_test(
+    session: AsyncSession, test: ControlTest, detail: str
+) -> tuple[POAM | None, bool]:
+    """Create or refresh the open POA&M for one actionable control test."""
     if test.system_id is None:
-        return False
+        return None, False
     source_ref = f"control_test:{test.id}"
     weakness = (
         f"Automated control test '{test.name}' ({test.control_id}) failed: {detail}"
@@ -550,7 +573,7 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
             # the next scan may keep it current.
             existing.remediation_plan = guidance
             existing.remediation_plan_source = GENERATED_PLAN
-        return False
+        return existing, False
 
     control_id = (
         await session.execute(select(Control.id).where(Control.identifier == test.control_id))
@@ -578,7 +601,7 @@ async def _upsert_poam(session: AsyncSession, test: ControlTest, detail: str) ->
         )
     )
     session.add(poam)
-    return True
+    return poam, True
 
 
 async def _resolve_on_recovery(

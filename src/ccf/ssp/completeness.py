@@ -189,10 +189,62 @@ def _boundary_gaps_and_pct(boundary: dict[str, Any]) -> tuple[list[str], float]:
     return gaps, passed / checks
 
 
+#: POA&M severities that must not be open when an SSP is declared ready. A high
+#: or critical weakness the organization has not closed is the thing an
+#: authorizing official most needs to have seen before signing, so a package
+#: that reports itself ready while one stands would be actively misleading.
+BLOCKING_POAM_SEVERITIES = ("critical", "high")
+
+
+def _readiness_blockers(machine_evidence: dict[str, Any]) -> list[str]:
+    """Hard gates on declaring the SSP ready, from what the platform observed.
+
+    Separate from the score on purpose. The score is a completeness ratio and
+    every dimension in it is a fraction; these are not fractions, they are
+    conditions. Folding an open critical POA&M into a percentage would let it be
+    averaged away by a well-filled document, which is exactly backwards -- the
+    more complete the package, the more the unclosed finding matters.
+
+    ``machine_evidence`` is the same optional shape ``boundary`` and the ODP
+    dimension use: absent means the dimension is entirely inert, so every caller
+    written before this existed is byte-identical.
+
+    Also gates on missing provider shared-responsibility template coverage once
+    the DB query supplies it. That is a hard condition: if Concord cannot say
+    whether the provider, customer, or both own a control, the SSP must not be
+    declared ready as though origination were settled.
+    """
+    blockers: list[str] = []
+    unassessed = int(machine_evidence.get("controls_not_machine_verified") or 0)
+    if unassessed:
+        blockers.append(
+            f"{unassessed} control(s) could not be assessed automatically "
+            "(manual_review_required) and rest on manual evidence"
+        )
+    findings = int(machine_evidence.get("controls_with_open_findings") or 0)
+    if findings:
+        blockers.append(
+            f"{findings} control(s) have an open finding from automated testing"
+        )
+    by_severity = machine_evidence.get("open_poams_by_severity") or {}
+    for severity in BLOCKING_POAM_SEVERITIES:
+        count = int(by_severity.get(severity) or 0)
+        if count:
+            blockers.append(f"{count} open {severity}-severity POA&M(s)")
+    missing_templates = machine_evidence.get("missing_responsibility_templates") or []
+    if missing_templates:
+        blockers.append(
+            f"{len(missing_templates)} control(s) lack provider shared-responsibility "
+            "template coverage"
+        )
+    return blockers
+
+
 def assess(
     project_metadata: dict[str, Any],
     entries: list[dict[str, Any]],
     boundary: dict[str, Any] | None = None,
+    machine_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a completeness report: score, per-area gaps, and control detail.
 
@@ -271,10 +323,21 @@ def assess(
         ]
 
     score = round(100 * (0.8 * control_pct + 0.2 * section_pct), 1)
+    # Hard gates, kept out of the score -- see `_readiness_blockers`. When no
+    # machine evidence is supplied the list is empty and `ready` is decided
+    # exactly as it was before this dimension existed.
+    # `None` means the machine dimension could not be evaluated at all -- a
+    # project with no linked system has nothing scanned and no POA&Ms to reach.
+    # An empty blocker list would then read as "conditions cleared", which is the
+    # same misreading `framework_posture`'s bare zeros produced: the absence of a
+    # measurement is not a clean result, and the report has to say which it is.
+    measured = machine_evidence is not None
+    blockers = _readiness_blockers(machine_evidence or {}) if measured else []
     # "Ready" means genuinely done: every control complete (the 80/20 blend must
     # not let a high score mask empty controls), all required front matter present,
-    # and at least one control in the SSP.
-    ready = bool(total) and complete == total and not missing_sections
+    # at least one control in the SSP, and nothing the platform observed standing
+    # in the way.
+    ready = bool(total) and complete == total and not missing_sections and not blockers
     return {
         "score": score,
         "ready": ready,
@@ -283,4 +346,13 @@ def assess(
         "missing_sections": missing_sections,
         "control_gaps": control_gaps[:200],
         "odp_summary": {"total": total_odps, "unset": unset_odps},
+        "readiness_blockers": blockers,
+        # False when nothing could be observed, so an empty `readiness_blockers`
+        # is never mistaken for a cleared gate.
+        "readiness_measured": measured,
+        # Named so a reader is not left to assume every condition the programme
+        # intends is enforced here. A silent omission reads as a cleared gate.
+        "not_yet_gated": (
+            [] if measured else ["automated findings and POA&Ms (no system linked to this project)"]
+        ),
     }

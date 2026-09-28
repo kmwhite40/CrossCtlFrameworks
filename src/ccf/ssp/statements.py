@@ -72,6 +72,64 @@ def _verification_clause(verified: list[dict[str, str]] | None) -> str:
     )
 
 
+def _gap_clause(
+    failing: list[dict[str, str]] | None,
+    unassessed: list[dict[str, str]] | None,
+) -> tuple[str, bool]:
+    """What automated testing found wrong, and what it could not judge.
+
+    The counterpart to :func:`_verification_clause`, and the half that was
+    missing. An SSP that cited only its passing tests read as though the
+    platform had found nothing else: a control whose scan failed this morning
+    produced a statement describing an implementation, with the failure visible
+    nowhere in the document an assessor reads.
+
+    Two different facts, kept apart because they call for different things:
+
+    * A **failing** test is a finding. The control is not operating as the
+      statement describes, and the statement has to say so rather than let the
+      description stand unqualified. Where a POA&M tracks it, that is cited --
+      the plan's own requirement, and what lets an assessor follow the thread.
+    * A **manual_review_required** verdict is not a finding. Concord could not
+      assess the control -- a missing permission, an endpoint that answered
+      nothing -- so the honest statement is that the implementation rests on
+      manual evidence. Reporting it as a failure would invent one; omitting it
+      would let an unverified control read exactly like a verified one.
+
+    Returns ``(clause, blocks_acceptance)``. The flag is separate because a
+    control carrying either fact must be reviewed by a person before the
+    statement is accepted, whatever its responsibility says -- including a
+    control derived as ``inherited`` or ``not_applicable``, where a failing test
+    is a contradiction worth someone's attention rather than a detail.
+    """
+    parts: list[str] = []
+    for f in failing or []:
+        if not (f.get("check") and f.get("observed_on")):
+            continue
+        poam = f.get("poam_id")
+        tracked = f", tracked by POA&M #{poam}" if poam else ", with no POA&M on file"
+        parts.append(f"{f['check']} failed on {f['observed_on']}{tracked}")
+    clause = ""
+    if parts:
+        clause += (
+            " Open finding — automated testing against the live environment found "
+            + "; ".join(parts)
+            + ". Until closed, this control is not fully operating as described above."
+        )
+    unresolved = [
+        u["check"]
+        for u in (unassessed or [])
+        if u.get("check")
+    ]
+    if unresolved:
+        clause += (
+            " Not machine-verified — Concord could not assess "
+            + "; ".join(unresolved)
+            + " automatically, so this control's implementation rests on manual evidence."
+        )
+    return clause, bool(parts or unresolved)
+
+
 def is_draft_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
     """True if any part narrative still carries the machine-drafted marker.
 
@@ -302,6 +360,8 @@ def compose(
     odp_values: dict[str, str] | None = None,
     captured: list[dict[str, str]] | None = None,
     verified: list[dict[str, str]] | None = None,
+    failing: list[dict[str, str]] | None = None,
+    unassessed: list[dict[str, str]] | None = None,
     style: str = "standard",
     include_captured: bool = True,
     mark_draft: bool = True,
@@ -317,6 +377,11 @@ def compose(
     Options: ``style`` (concise | standard | detailed), ``include_captured``
     (fold live connector captures into the parameters clause), and ``mark_draft``
     (prefix customer/shared statements with the [DRAFT] indicator for review).
+
+    ``failing`` and ``unassessed`` are the machine findings this control carries
+    (see :func:`_gap_clause`): a failing check is cited as an open finding with
+    its POA&M, an unassessable one as a statement that the control rests on
+    manual evidence. Either forces ``needs_review``.
 
     ``responsible_role`` should be the project's real named role (system_owner
     / ISSO) when known; it falls back to a flagged generic domain label
@@ -343,6 +408,11 @@ def compose(
     # parameter detail, but "we tested this and it passed" is the strongest
     # thing the platform can say about a control and never noise.
     verification = _verification_clause(verified if include_captured else [])
+    # Never gated on `include_captured`. That option decides whether *captured
+    # configuration* is folded in -- a presentation choice about parameter
+    # detail. A finding is not presentation, and a document that could be asked
+    # to hide its own open findings would be the wrong document.
+    gaps, gap_blocks_acceptance = _gap_clause(failing, unassessed)
     role = _resolved_role(control_id, responsible_role)
     freq = _resolved_frequency(frequency)
     policy = _policy_clause(policy_ref)
@@ -353,8 +423,13 @@ def compose(
         tail = params
         if include_role_freq:
             tail += _role_clause(role) + _frequency_clause(freq)
-        tail += verification + evidence + policy
+        tail += verification + gaps + evidence + policy
         text = text + tail
+        # A control with an open finding or an unassessable check is reviewed by
+        # a person before its statement is accepted, whatever the derivation
+        # concluded -- `or`, never an assignment, so a branch that already
+        # demanded review keeps demanding it.
+        needs_review = needs_review or gap_blocks_acceptance
         if needs_review and mark_draft:
             text = DRAFT_PREFIX + text
         return text, needs_review

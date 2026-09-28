@@ -966,6 +966,13 @@ async def system_detail(
             )
         ).scalar_one(),
     }
+    from .posture import get_live_audit_workflow  # noqa: PLC0415
+
+    live_audit_workflow = await get_live_audit_workflow(
+        system_id,
+        session=session,
+        principal=principal,
+    )
     return templates.TemplateResponse(
         request,
         "system_detail.html",
@@ -979,8 +986,33 @@ async def system_detail(
             "onboarding_steps": onboarding_steps,
             "onboarding_chips": ONBOARDING_CHIPS,
             "onboarding_state_labels": ONBOARDING_STATE_LABELS,
+            "live_audit_workflow": live_audit_workflow,
         },
     )
+
+
+@router.post("/systems/{system_id}/live-audit/verify")
+async def system_live_audit_verify(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> RedirectResponse:
+    from .posture import check_system_provider_readiness  # noqa: PLC0415
+
+    await check_system_provider_readiness(system_id, session=session, principal=principal)
+    return RedirectResponse(f"/systems/{system_id}", status_code=303)
+
+
+@router.post("/systems/{system_id}/live-audit/scan")
+async def system_live_audit_scan(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> RedirectResponse:
+    from .posture import scan_system_all_connectors  # noqa: PLC0415
+
+    await scan_system_all_connectors(system_id, session=session, principal=principal)
+    return RedirectResponse(f"/systems/{system_id}", status_code=303)
 
 
 @router.get("/risks", response_class=HTMLResponse)

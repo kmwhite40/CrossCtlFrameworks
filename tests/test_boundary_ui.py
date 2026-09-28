@@ -145,3 +145,6 @@ async def test_system_detail_page_embeds_boundary_summary() -> None:
         assert r.status_code == 200
         assert f"/systems/{sys_id}/boundary" in r.text
         assert "0 component(s)" in r.text
+        assert "Live audit workflow" in r.text
+        assert f"/systems/{sys_id}/live-audit/verify" in r.text
+        assert f"/systems/{sys_id}/live-audit/scan" in r.text

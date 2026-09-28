@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth import Principal
 from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
+from ...connectors.readiness import provider_readiness
 from ...governance import automation
 from ...models import (
     SSPControlEntry,
@@ -46,6 +47,7 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import entry_to_dict, seed_80053_project, seed_project_entries
 from ...ssp.statements import STYLES
+from ...ssp.sync import project_scan_sync
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -368,6 +370,17 @@ async def completeness(
     return await project_completeness(session, proj)
 
 
+@router.get("/projects/{project_id}/scan-sync")
+async def scan_sync(
+    project_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Scan evidence, manual-review gaps and POA&M impacts for SSP controls."""
+    proj = await _require_project(session, project_id, principal)
+    return await project_scan_sync(session, proj)
+
+
 class MetadataIn(BaseModel):
     metadata_json: dict[str, Any]
     autofill: bool = True
@@ -520,11 +533,13 @@ async def verify_connector(
     global/env fallback — so this only succeeds for an org that has bound its
     own credential via ``/api/connector-settings/credentials/{connector_type}``.
     """
-    credential = await resolve_credential(session, principal.org_id, key)
-    conn = get_connector(key, credential=credential)
-    if conn is None:
+    result = await provider_readiness(
+        session, organization_id=principal.org_id, connector_key=key, persist=True
+    )
+    if result["status"] == "unknown_connector":
         raise HTTPException(404, "unknown connector")
-    return {"connector": conn.key, "configured": conn.is_configured(), **(await conn.verify())}
+    await session.commit()
+    return result
 
 
 @router.post("/projects/{project_id}/autofill")

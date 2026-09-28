@@ -17,6 +17,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
@@ -24,6 +25,7 @@ from ccf.config import get_settings
 from ccf.connectors.msgraph import MsGraphConnector
 from ccf.db import session_scope
 from ccf.models import Organization, SSPControlEntry, SSPProject, User
+from ccf.models_grc import ConnectorConfig
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -340,7 +342,35 @@ async def test_verify_and_autofill_see_configured_after_binding() -> None:
         assert v1.status_code == 200
         assert v1.json()["configured"] is True
         assert v1.json()["connected"] is True
+        assert v1.json()["ready"] is True
+        assert v1.json()["status"] == "ready"
         assert v1.json()["tenant"] == "tenant-1"
+        assert v1.json()["provider"]["tenant"] == "tenant-1"
+
+        listed = await c.get("/api/connector-settings/credentials", headers=_auth(token))
+        row = next(r for r in listed.json() if r["connector_type"] == "msgraph")
+        assert row["readiness_status"] == "ready"
+        assert row["readiness_detail"]["provider"]["tenant"] == "tenant-1"
+        mfa_check = next(
+            c
+            for c in row["readiness_detail"]["checks"]
+            if c["check_key"] == "m365.identity.mfa_registered"
+        )
+        assert mfa_check["responsibility"]["version"]
+        assert mfa_check["scan_applicability"] in {"scan", "manual_scope_review"}
+
+        async with session_scope() as s:
+            cfg = (
+                await s.execute(
+                    select(ConnectorConfig).where(
+                        ConnectorConfig.organization_id == org_id,
+                        ConnectorConfig.connector_type == "msgraph",
+                    )
+                )
+            ).scalar_one()
+            assert cfg.readiness_status == "ready"
+            assert cfg.readiness_checked_at is not None
+            assert cfg.readiness_detail["ready"] is True
 
         # And autofill actually applies the captured ODP value.
         a1 = await c.post(

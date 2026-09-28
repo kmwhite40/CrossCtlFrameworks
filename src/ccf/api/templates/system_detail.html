@@ -65,6 +65,79 @@
   </table></div>
 </section>
 
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Live audit workflow</div>
+      <div class="card__subtitle">Next: {{ live_audit_workflow.next_action | replace('_', ' ') | title }}</div>
+    </div>
+    <div class="row" style="gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <form method="post" action="/systems/{{ sys.id }}/live-audit/verify">
+        <button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="plug-zap"></i> Verify</button>
+      </form>
+      <form method="post" action="/systems/{{ sys.id }}/live-audit/scan">
+        <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="radar"></i> Run audit</button>
+      </form>
+    </div>
+  </div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Step</th><th>Status</th><th>Signal</th><th></th></tr></thead>
+    <tbody>
+      {% set workflow_labels = {
+        'verify_connectors': 'Verify connectors',
+        'run_live_audit': 'Run live audit',
+        'review_controls': 'Review controls',
+        'create_poams': 'Create POA&Ms',
+        'update_ssp': 'Update SSP'
+      } %}
+      {% for step in live_audit_workflow.steps %}
+        {% set chip = 'chip--ok' if step.status == 'complete' else ('chip--warn' if step.status == 'needs_attention' else 'chip--ghost') %}
+        <tr>
+          <td>{{ workflow_labels.get(step.key, step.key | replace('_', ' ') | title) }}</td>
+          <td><span class="chip {{ chip }}">{{ step.status | replace('_', ' ') }}</span></td>
+          <td class="dim">
+            {% if step.key == 'verify_connectors' %}
+              {{ live_audit_workflow.audit_plan.summary.providers_ready }} of {{ live_audit_workflow.audit_plan.summary.providers }} provider(s) ready
+            {% elif step.key == 'run_live_audit' %}
+              {{ live_audit_workflow.control_evaluations.total }} control evaluation(s)
+            {% elif step.key == 'review_controls' %}
+              {{ live_audit_workflow.control_evaluations.failed }} failed · {{ live_audit_workflow.control_evaluations.manual_review_required }} manual
+            {% elif step.key == 'create_poams' %}
+              {{ live_audit_workflow.control_evaluations.failed_without_poam }} finding(s) without POA&M
+            {% elif step.key == 'update_ssp' and live_audit_workflow.ssp %}
+              {{ live_audit_workflow.ssp.score }}% ready · {{ live_audit_workflow.ssp.readiness_blockers | length }} blocker(s)
+            {% elif step.key == 'update_ssp' %}
+              No SSP linked
+            {% endif %}
+          </td>
+          <td>
+            {% if step.key == 'create_poams' %}
+              <a class="btn btn--ghost btn--sm" href="{{ live_audit_workflow.control_evaluations.url }}"><i data-lucide="arrow-right"></i> Open</a>
+            {% elif step.key == 'run_live_audit' %}
+              <form method="post" action="/systems/{{ sys.id }}/live-audit/scan">
+                <button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="play"></i></button>
+              </form>
+            {% elif step.key == 'verify_connectors' %}
+              <form method="post" action="/systems/{{ sys.id }}/live-audit/verify">
+                <button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="plug-zap"></i></button>
+              </form>
+            {% else %}
+              <a class="btn btn--ghost btn--sm" href="{{ step.url }}"><i data-lucide="arrow-right"></i> Open</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  {% if live_audit_workflow.audit_plan.providers_unavailable %}
+    <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+      {% for p in live_audit_workflow.audit_plan.providers_unavailable %}
+        <span class="chip chip--warn">{{ p.connector }}: {{ p.reason or p.status }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+
 <section class="grid-cards" style="margin-bottom:16px">
   {% set total = impl_counts.values() | sum %}
   {% for label, key, cls in [

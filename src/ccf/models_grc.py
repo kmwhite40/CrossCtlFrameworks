@@ -219,6 +219,13 @@ class ConnectorConfig(Base):
     evidence_produced: Mapped[int] = mapped_column(Integer, default=0)
     controls_impacted: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     config: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    #: Latest provider-readiness verdict for live posture scans. This is
+    #: deliberately separate from ``status``/``last_sync``: sync says capture
+    #: ran, readiness says a scan can authenticate into the expected provider
+    #: environment now.
+    readiness_status: Mapped[str | None] = mapped_column(String(32))
+    readiness_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    readiness_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     # Envelope-encrypted credential bundle (JSON secret payload) for the live
     # config-capture connectors (ccf.connectors.*) — never plaintext. Reuses the
     # Slice-3a cipher (ccf.ai.cipher); see ccf.connectors.credentials. One row
@@ -421,9 +428,9 @@ __all__ = [
     "AuditFinding",
     "AuditRequest",
     "ConnectorConfig",
-    "ExternalIssueLink",
     "ControlTest",
     "ControlTestResult",
+    "ExternalIssueLink",
     "RegulatoryUpdate",
     "TrustAccessRequest",
     "TrustProfile",

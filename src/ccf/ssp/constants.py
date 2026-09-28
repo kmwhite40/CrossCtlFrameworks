@@ -6,6 +6,8 @@ terminology adapted for CMMC, but the content is CMMC/800-171.
 
 from __future__ import annotations
 
+from . import responsibility as responsibility_templates
+
 # Prefix marking machine-drafted narrative content that a human must review.
 DRAFT_PREFIX = "[DRAFT] "
 
@@ -116,34 +118,12 @@ COVERAGE_TO_ORIGINATION: dict[str, list[str]] = {
 # for that platform — origination must not be guessed; see
 # ``needs_manual_responsibility_assignment``.
 PLATFORM_DOMAIN_RESPONSIBILITY: dict[str, dict[str, str]] = {
-    "azure": {
-        "PE": "inherited",
-        "MA": "shared",
-        "SC": "shared",
-        "AU": "shared",
-        "CM": "shared",
-        "SI": "shared",
-    },
-    "aws_govcloud": {
-        "PE": "inherited",
-        "MA": "shared",
-        "SC": "shared",
-        "AU": "shared",
-        "CM": "shared",
-        "SI": "shared",
-    },
-    # Same shape as the other hyperscalers: physical is the provider's, and the
-    # rest of these families are genuinely split. Assured Workloads changes
-    # which personnel and regions may touch the data; it does not move the
-    # responsibility line.
-    "gcp": {
-        "PE": "inherited",
-        "MA": "shared",
-        "SC": "shared",
-        "AU": "shared",
-        "CM": "shared",
-        "SI": "shared",
-    },
+    platform: {
+        entry.domain or "": entry.responsibility
+        for entry in responsibility_templates.template_entries(platform)
+        if entry.domain
+    }
+    for platform in ("azure", "aws_govcloud", "gcp")
 }
 
 # Responsibility bucket -> control origination, reusing CONTROL_ORIGINATION_OPTIONS.
@@ -151,9 +131,8 @@ PLATFORM_DOMAIN_RESPONSIBILITY: dict[str, dict[str, str]] = {
 # "inherited"/"shared" — a provider-performed or provider-shared control must
 # never render as purely organization/system-specific.
 RESPONSIBILITY_TO_ORIGINATION: dict[str, list[str]] = {
-    "inherited": ["Inherited"],
-    "shared": ["Shared"],
-    "customer": ["Configured by Customer / Business Owner"],
+    k: responsibility_templates.origination_for(k)
+    for k in ("provider", "inherited", "shared", "customer")
 }
 
 # Clear flag used (in ``responsible_role``, not ``control_origination`` — origination
@@ -186,7 +165,8 @@ def platform_responsibility(platform: str, domain: str | None) -> str | None:
     """
     if platform == NO_PLATFORM:
         return "customer"
-    return PLATFORM_DOMAIN_RESPONSIBILITY.get(platform, {}).get((domain or "").upper())
+    resp = responsibility_templates.responsibility_for(platform, domain)
+    return None if resp == "unknown" else resp
 
 
 def needs_manual_responsibility_assignment(platform: str, domain: str | None) -> bool:
@@ -211,7 +191,7 @@ def platform_origination(
     if platform == "m365":
         return default_origination(coverage_status)
     resp = platform_responsibility(platform, domain)
-    return list(RESPONSIBILITY_TO_ORIGINATION.get(resp or "", []))
+    return responsibility_templates.origination_for(resp or "")
 
 
 def section_number(domain: str) -> str:

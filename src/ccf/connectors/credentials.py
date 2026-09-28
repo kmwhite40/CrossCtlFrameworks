@@ -24,9 +24,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai.cipher import build_cipher, mask
-from .credential_spec import IncompleteCredential, missing_fields
 from ..config import get_settings
 from ..models_grc import ConnectorConfig
+from .credential_spec import IncompleteCredential, missing_fields
 
 # The field within each connector's secret bundle that actually identifies the
 # credential, in priority order — used to derive a meaningful ``key_last4``
@@ -193,4 +193,7 @@ def masked_view(cfg: ConnectorConfig) -> dict[str, Any]:
         "status": cfg.status,
         "has_credential": bool(cfg.encrypted_credential),
         "key_last4": cfg.key_last4,
+        "readiness_status": cfg.readiness_status,
+        "readiness_checked_at": cfg.readiness_checked_at,
+        "readiness_detail": cfg.readiness_detail,
     }

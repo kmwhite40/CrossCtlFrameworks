@@ -6,13 +6,18 @@ import itertools
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from typer.testing import CliRunner
 
+import ccf.posture.scan as scan_module
 from ccf.api.main import create_app
+from ccf.api.routes import posture as posture_routes
 from ccf.cli import app as cli_app
 from ccf.db import session_scope
-from ccf.models import Organization, System
+from ccf.governance.control_tests import GENERATED_PLAN
+from ccf.models import POAM, Organization, System
 from ccf.models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
+from ccf.posture import audit_plan as audit_plan_module
 
 _SEQ = itertools.count()
 
@@ -27,6 +32,11 @@ async def test_openapi_lists_posture_routes() -> None:
         paths = (await client.get("/openapi.json")).json()["paths"]
         assert "/api/systems/{system_id}/scan" in paths
         assert "/api/systems/{system_id}/scan-all" in paths
+        assert "/api/systems/{system_id}/provider-readiness" in paths
+        assert "/api/systems/{system_id}/audit-plan" in paths
+        assert "/api/systems/{system_id}/control-evaluations" in paths
+        assert "/api/systems/{system_id}/live-audit-workflow" in paths
+        assert "/api/control-tests/{test_id}/poam" in paths
         assert "/api/posture/failing-resources" in paths
         assert "/api/controls/{control_id}/effective-verdict" in paths
         assert "/api/control-tests/{test_id}/results/{result_id}/resources" in paths
@@ -218,7 +228,8 @@ async def test_scan_on_an_unconfigured_connector_reports_the_reason() -> None:
         r = await client.post(f"/api/systems/{sid}/scan?connector=aws_govcloud")
         assert r.status_code == 200
         assert r.json()["checks_run"] == 0
-        assert "not configured" in r.json()["reason"]
+        assert r.json()["readiness"]["status"] == "not_configured"
+        assert r.json()["reason"]
 
 
 @pytest.mark.asyncio
@@ -226,6 +237,57 @@ async def test_scan_on_an_unknown_system_is_404() -> None:
     async with _client() as client:
         r = await client.post("/api/systems/999999/scan?connector=aws_govcloud")
         assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_live_audit_workflow_starts_with_connector_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with session_scope() as session:
+        org = Organization(name=f"WorkflowOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"WorkflowSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        system_id = sys_.id
+
+    async def _ready(session, *, organization_id: int | None, connector_key: str, persist: bool):
+        return {
+            "connector": connector_key,
+            "status": "not_configured",
+            "ready": False,
+            "configured": False,
+            "connected": False,
+            "checks_expected": 1,
+            "checks": [
+                {
+                    "check_key": f"{connector_key}.api",
+                    "title": "API check",
+                    "control_ids": ["AC-2"],
+                    "resource_type": "tenant",
+                    "source": "platform",
+                    "required_permissions": [],
+                    "responsibility": {"responsibility": "customer"},
+                    "scan_applicability": "scan",
+                }
+            ],
+            "required_permissions": [],
+            "reason": "not configured",
+        }
+
+    monkeypatch.setattr(audit_plan_module, "provider_readiness", _ready)
+    monkeypatch.setattr(audit_plan_module, "known_providers", lambda: frozenset({"msgraph"}))
+
+    async with _client() as client:
+        r = await client.get(f"/api/systems/{system_id}/live-audit-workflow")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["next_action"] == "verify_connectors"
+    assert body["steps"][0]["key"] == "verify_connectors"
+    assert body["steps"][0]["status"] == "needs_attention"
+    assert body["control_evaluations"]["total"] == 0
+    assert body["ssp"] is None
 
 
 @pytest.mark.asyncio
@@ -269,8 +331,6 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
     ran, and a tenant with a healthy Microsoft 365 connector and a broken AWS one
     recorded nothing at all -- while the error named only the broken half.
     """
-    from ccf.api.routes import posture as posture_routes
-
     async with session_scope() as s:
         org = Organization(name=f"ScanAllOrg-{next(_SEQ)}")
         s.add(org)
@@ -282,7 +342,14 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
 
     calls: list[str] = []
 
-    async def _fake_scan(session, *, system_id: int, connector_key: str, actor: str):
+    async def _fake_scan(
+        session,
+        *,
+        system_id: int,
+        connector_key: str,
+        actor: str,
+        check_keys: set[str] | None = None,
+    ):
         calls.append(connector_key)
         if connector_key == "aws_govcloud":
             raise RuntimeError("credential rejected")
@@ -296,17 +363,30 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
             "unexpected_outcomes": [],
         }
 
-    import ccf.posture.scan as scan_module
+    async def _ready(session, *, organization_id: int | None, connector_key: str, persist: bool):
+        return {
+            "connector": connector_key,
+            "status": "ready",
+            "ready": True,
+            "configured": True,
+            "connected": True,
+            "checks_expected": 2,
+            "checks": [],
+            "required_permissions": [],
+        }
 
     monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
-    monkeypatch.setattr(posture_routes, "connector_keys", lambda: ("msgraph", "aws_govcloud"))
+    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
+    monkeypatch.setattr(
+        posture_routes, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
+    )
 
     async with _client() as client:
         r = await client.post(f"/api/systems/{system_id}/scan-all")
     assert r.status_code == 200, r.text
     body = r.json()
 
-    assert calls == ["msgraph", "aws_govcloud"], "a failure stopped the remaining providers"
+    assert calls == ["aws_govcloud", "msgraph"], "a failure stopped the remaining providers"
     # The healthy provider's work survived.
     assert body["checks_run"] == 1
     assert body["providers_scanned"] == 1
@@ -326,8 +406,6 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
     One key holding an int at the top level and a list one level down forces a
     consumer to branch on where it happens to be looking.
     """
-    from ccf.api.routes import posture as posture_routes
-
     async with session_scope() as s:
         org = Organization(name=f"ScanAllShape-{next(_SEQ)}")
         s.add(org)
@@ -337,7 +415,14 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
         await s.flush()
         system_id = sys_.id
 
-    async def _fake_scan(session, *, system_id: int, connector_key: str, actor: str):
+    async def _fake_scan(
+        session,
+        *,
+        system_id: int,
+        connector_key: str,
+        actor: str,
+        check_keys: set[str] | None = None,
+    ):
         return {
             "system_id": system_id,
             "connector": connector_key,
@@ -348,10 +433,21 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
             "unexpected_outcomes": [],
         }
 
-    import ccf.posture.scan as scan_module
+    async def _ready(session, *, organization_id: int | None, connector_key: str, persist: bool):
+        return {
+            "connector": connector_key,
+            "status": "ready",
+            "ready": True,
+            "configured": True,
+            "connected": True,
+            "checks_expected": 3,
+            "checks": [],
+            "required_permissions": [],
+        }
 
     monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
-    monkeypatch.setattr(posture_routes, "connector_keys", lambda: ("msgraph",))
+    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
+    monkeypatch.setattr(posture_routes, "known_providers", lambda: frozenset({"msgraph"}))
 
     async with _client() as client:
         body = (await client.post(f"/api/systems/{system_id}/scan-all")).json()
@@ -360,3 +456,438 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
     assert "skipped_checks" not in body, "the aggregate shadows the per-provider list"
     assert isinstance(body["connectors"][0]["skipped_checks"], list)
     assert body["checks_expected"] == 3
+
+
+@pytest.mark.asyncio
+async def test_audit_plan_separates_api_checks_from_manual_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with session_scope() as s:
+        org = Organization(name=f"AuditPlanOrg-{next(_SEQ)}")
+        s.add(org)
+        await s.flush()
+        sys_ = System(organization_id=org.id, name=f"AuditPlanSys-{next(_SEQ)}")
+        s.add(sys_)
+        await s.flush()
+        system_id = sys_.id
+
+    async def _ready(session, *, organization_id: int | None, connector_key: str, persist: bool):
+        return {
+            "connector": connector_key,
+            "status": "ready" if connector_key == "msgraph" else "not_configured",
+            "ready": connector_key == "msgraph",
+            "configured": connector_key == "msgraph",
+            "connected": connector_key == "msgraph",
+            "checks_expected": 2,
+            "checks": [
+                {
+                    "check_key": f"{connector_key}.scan",
+                    "title": "scan check",
+                    "control_ids": ["AC-2"],
+                    "resource_type": "tenant",
+                    "source": "platform",
+                    "required_permissions": [],
+                    "responsibility": {"responsibility": "shared"},
+                    "scan_applicability": "scan",
+                },
+                {
+                    "check_key": f"{connector_key}.inherited",
+                    "title": "inherited check",
+                    "control_ids": ["PE-2"],
+                    "resource_type": "tenant",
+                    "source": "platform",
+                    "required_permissions": [],
+                    "responsibility": {"responsibility": "inherited"},
+                    "scan_applicability": "inherited_evidence",
+                },
+            ],
+            "required_permissions": [],
+            "reason": None if connector_key == "msgraph" else "not configured",
+        }
+
+    monkeypatch.setattr(
+        posture_routes, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
+    )
+    monkeypatch.setattr(
+        audit_plan_module,
+        "known_providers",
+        lambda: frozenset({"msgraph", "aws_govcloud"}),
+    )
+    monkeypatch.setattr(audit_plan_module, "provider_readiness", _ready)
+
+    async with _client() as client:
+        r = await client.get(f"/api/systems/{system_id}/audit-plan")
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["summary"]["api_checks"] == 1
+    assert body["api_checks"][0]["check_key"] == "msgraph.scan"
+    manual = {c["check_key"]: c["reason"] for c in body["manual_review_required"]}
+    assert manual["msgraph.inherited"] == "inherited_evidence"
+    assert manual["aws_govcloud.scan"] == "not configured"
+
+
+@pytest.mark.asyncio
+async def test_scan_all_scans_only_api_applicable_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with session_scope() as s:
+        org = Organization(name=f"ScanAllApplicableOrg-{next(_SEQ)}")
+        s.add(org)
+        await s.flush()
+        sys_ = System(organization_id=org.id, name=f"ScanAllApplicableSys-{next(_SEQ)}")
+        s.add(sys_)
+        await s.flush()
+        system_id = sys_.id
+
+    scanned_keys: set[str] | None = None
+
+    async def _fake_scan(
+        session,
+        *,
+        system_id: int,
+        connector_key: str,
+        actor: str,
+        check_keys: set[str] | None = None,
+    ):
+        nonlocal scanned_keys
+        scanned_keys = check_keys
+        return {
+            "system_id": system_id,
+            "connector": connector_key,
+            "checks_expected": len(check_keys or set()),
+            "checks_run": len(check_keys or set()),
+            "results": [{"check_key": key, "verdict": "pass"} for key in sorted(check_keys or [])],
+            "skipped_checks": [],
+            "unexpected_outcomes": [],
+        }
+
+    async def _ready(session, *, organization_id: int | None, connector_key: str, persist: bool):
+        return {
+            "connector": connector_key,
+            "status": "ready",
+            "ready": True,
+            "configured": True,
+            "connected": True,
+            "checks_expected": 2,
+            "checks": [
+                {
+                    "check_key": "msgraph.api",
+                    "title": "API check",
+                    "expected": "API verifies this control",
+                    "control_ids": ["AC-2"],
+                    "resource_type": "tenant",
+                    "source": "platform",
+                    "required_permissions": [],
+                    "responsibility": {"responsibility": "customer"},
+                    "scan_applicability": "scan",
+                },
+                {
+                    "check_key": "msgraph.inherited",
+                    "title": "Inherited check",
+                    "expected": "provider CRM evidences this control",
+                    "control_ids": ["PE-2"],
+                    "resource_type": "tenant",
+                    "source": "platform",
+                    "required_permissions": [],
+                    "responsibility": {"responsibility": "inherited"},
+                    "scan_applicability": "inherited_evidence",
+                },
+            ],
+            "required_permissions": [],
+        }
+
+    monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
+    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
+    monkeypatch.setattr(posture_routes, "known_providers", lambda: frozenset({"msgraph"}))
+
+    async with _client() as client:
+        r = await client.post(f"/api/systems/{system_id}/scan-all")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert scanned_keys == {"msgraph.api"}
+    assert body["checks_run"] == 1
+    assert body["connectors"][0]["manual_review_results"][0]["check_key"] == (
+        "msgraph.inherited"
+    )
+
+
+@pytest.mark.asyncio
+async def test_scan_all_records_manual_review_required_for_unavailable_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with session_scope() as s:
+        org = Organization(name=f"ManualReviewOrg-{next(_SEQ)}")
+        s.add(org)
+        await s.flush()
+        sys_ = System(organization_id=org.id, name=f"ManualReviewSys-{next(_SEQ)}")
+        s.add(sys_)
+        await s.flush()
+        system_id = sys_.id
+
+    async def _ready(session, *, organization_id: int | None, connector_key: str, persist: bool):
+        return {
+            "connector": connector_key,
+            "status": "not_configured",
+            "ready": False,
+            "configured": False,
+            "connected": False,
+            "checks_expected": 1,
+            "checks": [
+                {
+                    "check_key": f"{connector_key}.blocked",
+                    "title": "Blocked provider check",
+                    "expected": "provider API can evaluate the control",
+                    "control_ids": ["AC-2"],
+                    "resource_type": "tenant",
+                    "source": "platform",
+                    "required_permissions": [],
+                    "responsibility": {"responsibility": "shared"},
+                    "scan_applicability": "scan",
+                }
+            ],
+            "required_permissions": [],
+            "reason": "not configured",
+        }
+
+    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
+    monkeypatch.setattr(posture_routes, "known_providers", lambda: frozenset({"msgraph"}))
+
+    async with _client() as client:
+        r = await client.post(f"/api/systems/{system_id}/scan-all")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["connectors"][0]["manual_review_results"][0]["verdict"] == (
+        "manual_review_required"
+    )
+
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(ControlTestResult, ControlTest)
+                .join(ControlTest, ControlTest.id == ControlTestResult.control_test_id)
+                .where(ControlTest.system_id == system_id)
+            )
+        ).one()
+        result, test = row
+        assert test.check_key == "msgraph.blocked"
+        assert result.status == "manual_review_required"
+        assert result.detail == "not configured"
+
+
+@pytest.mark.asyncio
+async def test_control_evaluations_include_resources_and_poam_link() -> None:
+    async with session_scope() as session:
+        org = Organization(name=f"EvalOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"EvalSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        test = ControlTest(
+            organization_id=org.id,
+            system_id=sys_.id,
+            control_id="AC-2",
+            name="MFA check",
+            source="generated",
+            check_key="m365.identity.mfa_registered",
+            connector_type="msgraph",
+            expected="every user has MFA",
+        )
+        session.add(test)
+        await session.flush()
+        result = ControlTestResult(
+            control_test_id=test.id,
+            status="fail",
+            detail="1 of 2 users failing",
+            evaluated=2,
+            failing=1,
+            expected="every user has MFA",
+            evidence_ref="graph://result/1",
+        )
+        session.add(result)
+        await session.flush()
+        session.add(
+            ControlTestResourceResult(
+                result_id=result.id,
+                resource_id="user-1",
+                resource_type="entra_user",
+                verdict="fail",
+                observed="no registered method",
+            )
+        )
+        session.add(
+            POAM(
+                system_id=sys_.id,
+                title="Control test failed: MFA check (AC-2)",
+                weakness="MFA missing",
+                severity="high",
+                status="open",
+                source="control_test",
+                source_ref=f"control_test:{test.id}",
+            )
+        )
+        await session.flush()
+        system_id = sys_.id
+
+    async with _client() as client:
+        r = await client.get(f"/api/systems/{system_id}/control-evaluations")
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    row = next(e for e in rows if e["check_key"] == "m365.identity.mfa_registered")
+    assert row["expected"] == "every user has MFA"
+    assert row["status"] == "fail"
+    assert row["evidence_ref"] == "graph://result/1"
+    assert row["resources"][0]["resource_id"] == "user-1"
+    assert row["resources"][0]["waiver_id"] is None
+    assert row["poam"]["severity"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_control_evaluation_can_open_a_poam_with_guidance() -> None:
+    async with session_scope() as session:
+        org = Organization(name=f"EvalPoamOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"EvalPoamSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        test = ControlTest(
+            organization_id=org.id,
+            system_id=sys_.id,
+            control_id="AC-2",
+            name="MFA check",
+            source="generated",
+            check_key="m365.identity.mfa_registered",
+            connector_type="msgraph",
+            expected="every user has MFA registered",
+        )
+        session.add(test)
+        await session.flush()
+        session.add(
+            ControlTestResult(
+                control_test_id=test.id,
+                status="manual_review_required",
+                detail="provider not configured; API evidence unavailable",
+                evaluated=0,
+                failing=0,
+                expected="every user has MFA registered",
+            )
+        )
+        await session.flush()
+        test_id = test.id
+
+    async with _client() as client:
+        r = await client.post(f"/api/control-tests/{test_id}/poam")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["created"] is True
+    assert body["poam"]["source_ref"] == f"control_test:{test_id}"
+    assert body["poam"]["remediation_plan_source"] == GENERATED_PLAN
+    assert "provider not configured" in body["poam"]["weakness"]
+    assert "SSP impact" in body["poam"]["remediation_plan"]
+
+
+@pytest.mark.asyncio
+async def test_control_evaluation_poam_action_is_idempotent_and_preserves_analyst_plan() -> None:
+    async with session_scope() as session:
+        org = Organization(name=f"EvalPoamIdemOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"EvalPoamIdemSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        test = ControlTest(
+            organization_id=org.id,
+            system_id=sys_.id,
+            control_id="AC-3",
+            name="Public access check",
+            source="generated",
+            check_key="aws.s3.public_access_block",
+            connector_type="aws_govcloud",
+            expected="public access is blocked",
+        )
+        session.add(test)
+        await session.flush()
+        session.add(
+            ControlTestResult(
+                control_test_id=test.id,
+                status="fail",
+                detail="1 of 3 buckets failing",
+                evaluated=3,
+                failing=1,
+                expected="public access is blocked",
+            )
+        )
+        await session.flush()
+        test_id = test.id
+
+    async with _client() as client:
+        first = await client.post(f"/api/control-tests/{test_id}/poam")
+    assert first.status_code == 200, first.text
+    poam_id = first.json()["poam"]["id"]
+
+    async with session_scope() as session:
+        poam = (await session.execute(select(POAM).where(POAM.id == poam_id))).scalars().one()
+        poam.remediation_plan = "Analyst-approved plan"
+        poam.remediation_plan_source = "analyst"
+        test = (
+            await session.execute(select(ControlTest).where(ControlTest.id == test_id))
+        ).scalars().one()
+        session.add(
+            ControlTestResult(
+                control_test_id=test.id,
+                status="fail",
+                detail="2 of 3 buckets failing",
+                evaluated=3,
+                failing=2,
+                expected="public access is blocked",
+            )
+        )
+
+    async with _client() as client:
+        second = await client.post(f"/api/control-tests/{test_id}/poam")
+    assert second.status_code == 200, second.text
+    body = second.json()
+    assert body["created"] is False
+    assert body["poam"]["id"] == poam_id
+    assert "2 of 3 buckets failing" in body["poam"]["weakness"]
+    assert body["poam"]["remediation_plan"] == "Analyst-approved plan"
+    assert body["poam"]["remediation_plan_source"] == "analyst"
+
+
+@pytest.mark.asyncio
+async def test_control_evaluation_poam_action_rejects_passing_latest_result() -> None:
+    async with session_scope() as session:
+        org = Organization(name=f"EvalPoamPassOrg-{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        sys_ = System(organization_id=org.id, name=f"EvalPoamPassSys-{next(_SEQ)}")
+        session.add(sys_)
+        await session.flush()
+        test = ControlTest(
+            organization_id=org.id,
+            system_id=sys_.id,
+            control_id="AC-2",
+            name="MFA check",
+            source="generated",
+            check_key="m365.identity.mfa_registered",
+        )
+        session.add(test)
+        await session.flush()
+        session.add(
+            ControlTestResult(
+                control_test_id=test.id,
+                status="pass",
+                detail="all users passing",
+                evaluated=2,
+                failing=0,
+            )
+        )
+        await session.flush()
+        test_id = test.id
+
+    async with _client() as client:
+        r = await client.post(f"/api/control-tests/{test_id}/poam")
+    assert r.status_code == 409
+    assert "no POA&M is needed" in r.json()["detail"]

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..capability.service import capability_statements_by_control
 from ..catalog.canonical import canonicalize
+from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
     POAM,
     CaptureSnapshot,
@@ -216,6 +217,15 @@ def _platform_state(platform: str | None, sc: ScoringControl) -> tuple[str, str,
 
 
 _SEV_FOR_PV = {"5": "high", "3": "moderate", "1": "low", "3/5": "high", "Special": "moderate"}
+
+#: Control-test verdicts an SSP has to disclose, as distinct from the `pass`
+#: verdicts it cites as evidence. `warn` is included with `fail`: a warning is
+#: still the platform saying the control is not operating as expected, and an
+#: SSP that disclosed only hard failures would let a warned control read clean.
+#: `not_applicable` and `not_tested` are deliberately absent -- neither is a
+#: finding nor an unassessable control, and surfacing them would put noise in an
+#: authorization document.
+_SSP_GAP_STATUSES = ("fail", "warn", "manual_review_required")
 
 
 async def derive_system(
@@ -702,6 +712,65 @@ async def generate_statements(
             }
         )
 
+    # The other half. Citing only the passing tests made the document read as
+    # though the platform had found nothing else: a control whose scan failed
+    # this morning produced a statement describing an implementation, with the
+    # failure nowhere in the SSP. `fail` becomes an open finding carrying its
+    # POA&M; `manual_review_required` becomes a statement that the control rests
+    # on manual evidence, which is neither a pass nor a finding.
+    poam_by_test = {
+        int(str(ref).split(":", 1)[1]): pid
+        for pid, ref in (
+            await session.execute(
+                select(POAM.id, POAM.source_ref)
+                .join(System, System.id == POAM.system_id)
+                .where(
+                    System.organization_id == project.organization_id,
+                    POAM.source == "control_test",
+                    POAM.source_ref.like("control_test:%"),
+                    POAM.status.in_(POAM_ACTIVE_STATUSES),
+                )
+            )
+        ).all()
+        if str(ref).split(":", 1)[1].isdigit()
+    }
+    failing_by_control: dict[str, list[dict[str, str]]] = {}
+    unassessed_by_control: dict[str, list[dict[str, str]]] = {}
+    for test_id, control_id, name, run_at, status in (
+        await session.execute(
+            select(
+                ControlTest.id,
+                ControlTest.control_id,
+                ControlTest.name,
+                ControlTest.last_tested_at,
+                ControlTest.last_status,
+            )
+            .join(System, System.id == ControlTest.system_id)
+            .where(
+                System.organization_id == project.organization_id,
+                System.deleted_at.is_(None),
+                ControlTest.last_status.in_(_SSP_GAP_STATUSES),
+                ControlTest.control_id.is_not(None),
+            )
+        )
+    ).all():
+        row: dict[str, str] = {
+            "check": str(name),
+            "observed_on": run_at.date().isoformat() if run_at else "",
+        }
+        if status == "manual_review_required":
+            # The only verdict that means "Concord could not judge this".
+            unassessed_by_control.setdefault(str(control_id), []).append(row)
+        else:
+            # `fail` and `warn`. Both are the platform saying the control is not
+            # operating as expected, so both are findings -- routing `warn` to
+            # the unassessed bucket would have the SSP claim Concord could not
+            # assess a control it assessed and did not like.
+            poam_id = poam_by_test.get(int(test_id))
+            if poam_id is not None:
+                row["poam_id"] = str(poam_id)
+            failing_by_control.setdefault(str(control_id), []).append(row)
+
     # Real vendors, by name, for the ``crm_ref``/``frequency`` of a
     # vendor-inherited control (source ``vendor:<name>`` — see
     # ``_vendor_inheritance``) — ``authorization`` (e.g. "FedRAMP High
@@ -765,7 +834,7 @@ async def generate_statements(
         .all()
     )
     ai_ready = use_ai and ai.is_configured()
-    drafts = ai_used = manual_evidence_required = 0
+    drafts = ai_used = manual_evidence_required = status_downgraded = 0
     preserved_authored: list[str] = []
     replaced_authored: list[str] = []
     for e in entries:
@@ -782,6 +851,8 @@ async def generate_statements(
         services = services_for(ssp_plat, e.domain)
         captured = caps_by_nist.get(e.nist_id or "", [])
         verified = verified_by_control.get(e.control_id or "", [])
+        failing = failing_by_control.get(e.control_id or "", [])
+        unassessed = unassessed_by_control.get(e.control_id or "", [])
         cap_key = _cap_key(e)
         cap_rows = caps_by_control.get(cap_key, []) if cap_key else []
         # Split by status here, not in the resolution layer: capability/service.py
@@ -812,6 +883,8 @@ async def generate_statements(
             odp_values=dict(e.odp_values or {}),
             captured=captured,
             verified=verified,
+            failing=failing,
+            unassessed=unassessed,
             style=style,
             include_captured=include_captured,
             mark_draft=mark_draft,
@@ -879,6 +952,20 @@ async def generate_statements(
             is_platform_sourced = str(source or "").startswith("platform:")
             if is_platform_sourced and "Implemented" in (e.implementation_status or []):
                 e.implementation_status = ["Partially Implemented"]
+        # A control the platform's own testing found failing cannot carry
+        # "Implemented" in the status column while the narrative beside it
+        # describes an open finding. The docx and the OSCAL export both read
+        # this field, so leaving it would put the contradiction into the
+        # deliverable rather than only into a paragraph -- and "Implemented" is
+        # the word an assessor samples on.
+        #
+        # Downgraded to "Partially Implemented" rather than blanked: the
+        # implementation described above is real work, and the finding says it is
+        # not fully operating, which is what "Partially Implemented" means. Same
+        # move the manual-evidence branch below makes, for the same reason.
+        if failing and "Implemented" in (e.implementation_status or []):
+            e.implementation_status = ["Partially Implemented"]
+            status_downgraded += 1
         if needs_review:
             drafts += 1
         e.part_narratives = [{"label": "Implementation", "text": text}]
@@ -888,6 +975,16 @@ async def generate_statements(
         "drafts": drafts,
         "ai_used": ai_used,
         "manual_evidence_required": manual_evidence_required,
+        # Reported, not silent: a caller that generated statements should be
+        # told the platform contradicted a claimed implementation, rather than
+        # discovering it by diffing the status column.
+        "status_downgraded_by_findings": status_downgraded,
+        "controls_with_open_findings": sum(
+            1 for e in entries if failing_by_control.get(e.control_id or "")
+        ),
+        "controls_not_machine_verified": sum(
+            1 for e in entries if unassessed_by_control.get(e.control_id or "")
+        ),
         "preserved_authored": preserved_authored,
         "replaced_authored": replaced_authored,
     }

@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import select
 
 from ccf.db import session_scope
-from ccf.governance.control_tests import record_result
+from ccf.governance.control_tests import record_result, remediation_guidance
 from ccf.models import POAM, Organization, System, Task
 from ccf.models_grc import ControlTest, ControlTestResult
 from ccf.posture import scan as scan_mod
@@ -92,6 +92,37 @@ async def _system(session) -> System:
     session.add(sys_)
     await session.flush()
     return sys_
+
+
+def test_remediation_guidance_uses_known_playbook() -> None:
+    test = ControlTest(
+        organization_id=1,
+        system_id=1,
+        control_id="IA-2",
+        name="MFA registered",
+        check_key="m365.identity.mfa_registered",
+        connector_type="msgraph",
+        expected="every user has MFA",
+    )
+    text = remediation_guidance(test, "1 of 2 entra_user(s) failing")
+    assert "authentication-methods registration campaign" in text
+    assert "Suggested milestones:" in text
+    assert "Graph authentication method registration report" in text
+
+
+def test_remediation_guidance_falls_back_for_unknown_check() -> None:
+    test = ControlTest(
+        organization_id=1,
+        system_id=1,
+        control_id="AC-3",
+        name="Custom check",
+        check_key="custom.check",
+        connector_type="custom",
+        expected="expected state",
+    )
+    text = remediation_guidance(test, "observed")
+    assert "review the failing resources from the latest custom scan" in text
+    assert "Suggested milestones:" not in text
 
 
 async def test_scan_creates_a_generated_test_and_a_result(
