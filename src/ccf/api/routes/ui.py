@@ -70,7 +70,7 @@ from ...models import (
     WorksheetRow,
 )
 from ...models_assessment_engine import OBJECTIVE_VERDICTS
-from ...models_grc import ConnectorConfig, ExternalIssueLink
+from ...models_grc import ConnectorConfig, ControlTest, ControlTestResult, ExternalIssueLink
 from ...onboarding import onboarding_state
 from ...scoring.engine import STATES
 from ...scoring.service import record_assessed_state
@@ -1013,6 +1013,94 @@ async def system_live_audit_scan(
 
     await scan_system_all_connectors(system_id, session=session, principal=principal)
     return RedirectResponse(f"/systems/{system_id}", status_code=303)
+
+
+@router.get("/systems/{system_id}/live-audit", response_class=HTMLResponse)
+async def system_live_audit_page(
+    system_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> HTMLResponse:
+    from ...posture.evaluations import control_evaluations_for_system  # noqa: PLC0415
+    from ...ssp.sync import project_scan_sync  # noqa: PLC0415
+    from .posture import get_live_audit_workflow  # noqa: PLC0415
+
+    sys = await require_system_in_scope(session, system_id, principal)
+    workflow = await get_live_audit_workflow(
+        system_id,
+        session=session,
+        principal=principal,
+    )
+    evaluations = await control_evaluations_for_system(
+        session,
+        system_id=system_id,
+        org_id=principal.org_id,
+    )
+    project = (
+        await session.execute(
+            select(SSPProject)
+            .where(SSPProject.system_id == system_id)
+            .order_by(SSPProject.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if (
+        project is not None
+        and principal.org_id is not None
+        and project.organization_id != principal.org_id
+    ):
+        project = None
+    ssp_sync = await project_scan_sync(session, project) if project is not None else None
+    return templates.TemplateResponse(
+        request,
+        "live_audit.html",
+        {
+            "active": "systems",
+            "sys": sys,
+            "workflow": workflow,
+            "evaluations": evaluations,
+            "ssp_project": project,
+            "ssp_sync": ssp_sync,
+        },
+    )
+
+
+@router.post("/systems/{system_id}/live-audit/control-tests/{test_id}/poam")
+async def system_live_audit_open_poam(
+    system_id: int,
+    test_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> RedirectResponse:
+    from ...governance.control_tests import ensure_poam_for_control_test  # noqa: PLC0415
+
+    await require_system_in_scope(session, system_id, principal)
+    test = (
+        await session.execute(
+            select(ControlTest).where(
+                ControlTest.id == test_id,
+                ControlTest.system_id == system_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if test is None or (
+        principal.org_id is not None and test.organization_id != principal.org_id
+    ):
+        raise HTTPException(404, "control test not found")
+    latest = (
+        await session.execute(
+            select(ControlTestResult)
+            .where(ControlTestResult.control_test_id == test.id)
+            .order_by(ControlTestResult.run_at.desc(), ControlTestResult.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if latest is None or latest.status not in {"fail", "warn", "manual_review_required"}:
+        raise HTTPException(409, "latest evaluation does not need a POA&M")
+    await ensure_poam_for_control_test(session, test, latest.detail or latest.status)
+    await session.commit()
+    return RedirectResponse(f"/systems/{system_id}/live-audit", status_code=303)
 
 
 @router.get("/risks", response_class=HTMLResponse)

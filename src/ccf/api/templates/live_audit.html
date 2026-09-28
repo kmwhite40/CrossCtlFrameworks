@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Live audit · {{ sys.name }}{% endblock %}
+{% block breadcrumbs %}
+<nav class="breadcrumbs" aria-label="Breadcrumb" style="max-width:1280px;margin:0 auto;padding:16px 28px 0">
+  <a href="/dashboard">Home</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/systems">Systems</a>
+  <i data-lucide="chevron-right"></i>
+  <a href="/systems/{{ sys.id }}">{{ sys.name }}</a>
+  <i data-lucide="chevron-right"></i>
+  <span>Live audit</span>
+</nav>
+{% endblock %}
+{% block heading %}Live audit{% endblock %}
+{% block subtitle %}<p class="page__subtitle">{{ sys.name }} · next: {{ workflow.next_action | replace('_', ' ') | title }}</p>{% endblock %}
+{% block actions %}
+  <a class="btn btn--ghost btn--sm" href="/systems/{{ sys.id }}"><i data-lucide="arrow-left"></i> System</a>
+  <form method="post" action="/systems/{{ sys.id }}/live-audit/verify">
+    <button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="plug-zap"></i> Verify</button>
+  </form>
+  <form method="post" action="/systems/{{ sys.id }}/live-audit/scan">
+    <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="radar"></i> Run audit</button>
+  </form>
+{% endblock %}
+{% block content %}
+
+<section class="grid-cards" style="margin-bottom:16px">
+  <div class="kpi"><span class="kpi__label">Providers ready</span><span class="kpi__value">{{ workflow.audit_plan.summary.providers_ready }}/{{ workflow.audit_plan.summary.providers }}</span></div>
+  <div class="kpi"><span class="kpi__label">API checks</span><span class="kpi__value">{{ workflow.audit_plan.summary.api_checks }}</span></div>
+  <div class="kpi"><span class="kpi__label">Evaluations</span><span class="kpi__value">{{ workflow.control_evaluations.total }}</span></div>
+  <div class="kpi"><span class="kpi__label">Needs POA&amp;M</span><span class="kpi__value">{{ workflow.control_evaluations.failed_without_poam }}</span></div>
+</section>
+
+{% if workflow.audit_plan.providers_unavailable %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div class="card__title">Provider readiness gaps</div>
+  </div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Provider</th><th>Status</th><th>Reason</th></tr></thead>
+    <tbody>
+      {% for p in workflow.audit_plan.providers_unavailable %}
+      <tr><td>{{ p.connector }}</td><td><span class="chip chip--warn">{{ p.status }}</span></td><td class="dim">{{ p.reason or 'not ready' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Control evaluations</div>
+      <div class="card__subtitle">Latest live-audit result, remediation advice and POA&amp;M action</div>
+    </div>
+  </div>
+  {% if evaluations %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>Status</th><th>Observed</th><th>Advice</th><th>POA&amp;M</th></tr></thead>
+    <tbody>
+      {% for e in evaluations %}
+      {% set bad = e.status in ['fail', 'warn', 'manual_review_required'] %}
+      <tr>
+        <td>
+          <a href="/control-tests/{{ e.control_test_id }}">{{ e.control_id or e.check_key }}</a>
+          <div class="dim" style="font-size:12px">{{ e.name }} · {{ e.connector or 'manual' }}</div>
+        </td>
+        <td><span class="chip {% if e.status == 'pass' %}chip--ok{% elif bad %}chip--err{% else %}chip--warn{% endif %}">{{ e.status | replace('_', ' ') }}</span></td>
+        <td class="dim" style="font-size:13px">
+          {{ e.detail or e.expected or 'No detail recorded' }}
+          {% if e.resources %}
+            <div>{{ e.failing }} failing of {{ e.evaluated }} evaluated</div>
+          {% endif %}
+        </td>
+        <td style="min-width:240px">
+          {% if e.remediation %}
+            <ul style="margin:0;padding-left:18px">
+              {% for action in e.remediation.actions[:2] %}<li>{{ action }}</li>{% endfor %}
+            </ul>
+          {% elif e.status == 'manual_review_required' %}
+            <span class="dim">Collect manual evidence or restore provider access, then re-run the audit.</span>
+          {% else %}
+            <span class="dim">No generated playbook for this check.</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if e.poam %}
+            <a class="btn btn--ghost btn--sm" href="/poams?system_id={{ sys.id }}"><i data-lucide="clipboard-list"></i> POA&amp;M {{ e.poam.id }}</a>
+          {% elif bad %}
+            <form method="post" action="/systems/{{ sys.id }}/live-audit/control-tests/{{ e.control_test_id }}/poam">
+              <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="plus"></i> Open</button>
+            </form>
+          {% else %}
+            <span class="dim">None needed</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+    <div class="card__body dim" style="text-align:center;padding:32px">No control evaluations yet. Run the audit to populate this workspace.</div>
+  {% endif %}
+</section>
+
+<section class="card">
+  <div class="card__header">
+    <div>
+      <div class="card__title">SSP scan impact</div>
+      <div class="card__subtitle">Passing evidence, open findings and manual review items that affect the linked SSP</div>
+    </div>
+    {% if ssp_project %}<a class="btn btn--ghost btn--sm" href="/ssp/{{ ssp_project.id }}"><i data-lucide="file-text"></i> SSP</a>{% endif %}
+  </div>
+  {% if ssp_sync %}
+  <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+    <span class="chip chip--ok">{{ ssp_sync.summary.with_passing_evidence }} with passing evidence</span>
+    <span class="chip chip--err">{{ ssp_sync.summary.with_open_findings }} with findings</span>
+    <span class="chip chip--warn">{{ ssp_sync.summary.manual_review_required }} manual review</span>
+    <span class="chip chip--brand">{{ ssp_sync.summary.ssp_blockers }} blocker(s)</span>
+  </div>
+  {% else %}
+  <div class="card__body dim">No SSP project is linked to this system yet.</div>
+  {% endif %}
+</section>
+
+{% endblock %}

@@ -8,6 +8,7 @@ it is independent of pre-existing data in the shared test DB.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -17,10 +18,11 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from ccf.api.main import create_app
+from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.governance import control_tests, digest, exporter, insights
-from ccf.models import POAM, Notification, Organization, Risk, System, Task
+from ccf.models import POAM, Notification, Organization, Risk, System, Task, User
 from ccf.models_grc import (
     AuditEngagement,
     AuditRequest,
@@ -281,20 +283,24 @@ async def test_connector_and_control_test_detail_pages_render() -> None:
             control_id="AC.L2-3.1.7",
             name="Detail render test",
             method="manual",
+            check_key="m365.identity.mfa_registered",
+            connector_type="m365",
         )
         s.add(test)
         await s.flush()
         conn_id, test_id = conn.id, test.id
-        await control_tests.record_result(s, test, status="fail", detail="drift detected")
+        await control_tests.record_result(
+            s,
+            test,
+            status="fail",
+            detail="drift detected",
+            evaluated=1,
+            failing=1,
+        )
 
     # The connector pages are organization-scoped: a credential is bound to an
     # org, so an org-less caller now gets a 400 and an explanation rather than
     # every tenant's connectors. This test therefore has to be somebody.
-    import os
-
-    from ccf.auth import hash_password, new_api_token
-    from ccf.models import User
-
     async with session_scope() as s:
         admin = User(
             email="detail-pages@detail-pages-org.test",
@@ -325,6 +331,12 @@ async def test_connector_and_control_test_detail_pages_render() -> None:
             r_test = await client.get(f"/control-tests/{test_id}")
             assert r_test.status_code == 200
             assert "Detail render test" in r_test.text and "drift detected" in r_test.text
+
+            r_live = await client.get(f"/systems/{sys_id}/live-audit")
+            assert r_live.status_code == 200
+            assert "Control evaluations" in r_live.text
+            assert "Detail render test" in r_live.text
+            assert "POA&amp;M" in r_live.text
 
             assert (await client.get("/connectors/999999")).status_code == 404
             assert (await client.get("/control-tests/999999")).status_code == 404

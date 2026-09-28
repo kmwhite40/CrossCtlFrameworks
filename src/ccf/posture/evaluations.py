@@ -11,6 +11,7 @@ from ..constants import POAM_ACTIVE_STATUSES
 from ..models import POAM
 from ..models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
 from .latest import latest_result_ids
+from .remediation import playbook_for
 
 
 async def control_evaluations_for_system(
@@ -61,6 +62,7 @@ async def control_evaluations_for_system(
                 )
             )
         ).scalar_one_or_none()
+        playbook = playbook_for(test.check_key)
         out.append(
             {
                 "control_test_id": test.id,
@@ -87,6 +89,15 @@ async def control_evaluations_for_system(
                     }
                     for r in resources
                 ],
+                "remediation": (
+                    {
+                        "actions": list(playbook.actions),
+                        "evidence": list(playbook.evidence),
+                        "milestones": list(playbook.milestones),
+                    }
+                    if playbook is not None
+                    else None
+                ),
                 "poam": (
                     {
                         "id": poam.id,
