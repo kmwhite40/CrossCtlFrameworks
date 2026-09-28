@@ -10,7 +10,10 @@
   <div class="card" style="flex:1;min-width:150px;padding:16px">
     <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Control health</div>
     <div style="font-size:2rem;font-weight:700">{{ health.health_pct if health.health_pct is not none else '—' }}%</div>
-    <div class="dim" style="font-size:12px">{{ health.total }} implementations</div>
+    <div class="dim" style="font-size:12px">
+      {{ health.total }} {{ 'live checks' if health.source == 'live_scan' else 'implementations' }}
+      {% if health.source == 'live_scan' and health.findings %} · {{ health.findings }} need review{% endif %}
+    </div>
   </div>
   <div class="card" style="flex:1;min-width:150px;padding:16px">
     <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Open tasks</div>
@@ -31,7 +34,7 @@
 
 <div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-start">
   <section class="card" id="tasks" style="flex:1;min-width:320px">
-    <div class="card__header"><div class="card__title">Work queue</div><span class="chip chip--brand">{{ tasks|length }}</span></div>
+    <div class="card__header"><div class="card__title">Work queue</div><span class="chip chip--brand">{{ counts.open_tasks }}</span></div>
     <div class="card__body stack" style="gap:8px">
       {% for t in tasks %}
       <div class="row between" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px">
@@ -41,7 +44,18 @@
           <div class="dim" style="font-size:12px">{{ t.kind }} · {{ t.status }}{% if t.due_on %} · due {{ t.due_on }}{% endif %}{% if t.source=='auto' %} · auto{% endif %}</div>
         </div>
       </div>
-      {% else %}<div class="dim">No open tasks. Run a ConMon scan to generate work.</div>{% endfor %}
+      {% endfor %}
+      {% for t in scan_work_items %}
+      <a class="row between" href="{{ t.url }}" style="border-bottom:1px solid var(--ink-100);padding-bottom:6px;text-decoration:none;color:inherit">
+        <div>
+          <span class="chip {% if t.priority=='critical' %}chip--err{% elif t.priority=='high' %}chip--warn{% else %}chip--ghost{% endif %}">{{ t.priority }}</span>
+          <span style="font-weight:600">{{ t.title }}</span>
+          <div class="dim" style="font-size:12px">{{ t.kind }} · {{ t.status | replace('_', ' ') }} · scan{% if t.detail %} · {{ t.detail }}{% endif %}</div>
+        </div>
+        <i data-lucide="arrow-right"></i>
+      </a>
+      {% endfor %}
+      {% if not tasks and not scan_work_items %}<div class="dim">No open tasks or failed live checks. Run a ConMon scan or live audit to generate work.</div>{% endif %}
     </div>
   </section>
 

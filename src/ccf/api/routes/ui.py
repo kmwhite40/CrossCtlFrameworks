@@ -72,6 +72,7 @@ from ...models import (
 from ...models_assessment_engine import OBJECTIVE_VERDICTS
 from ...models_grc import ConnectorConfig, ControlTest, ControlTestResult, ExternalIssueLink
 from ...onboarding import onboarding_state
+from ...posture.latest import latest_result_ids
 from ...scoring.engine import STATES
 from ...scoring.service import record_assessed_state
 from ...ssp import constants as ssp_constants
@@ -1889,6 +1890,53 @@ async def governance_page(
         .scalars()
         .all()
     )
+    latest = latest_result_ids()
+    scan_rows = (
+        await session.execute(
+            select(ControlTest, ControlTestResult)
+            .join(latest, latest.c.control_test_id == ControlTest.id)
+            .join(ControlTestResult, ControlTestResult.id == latest.c.result_id)
+            .where(ControlTest.check_key.is_not(None))
+            .order_by(ControlTestResult.run_at.desc(), ControlTest.id.desc())
+        )
+    ).all()
+    if org is not None:
+        scan_rows = [(t, r) for t, r in scan_rows if t.organization_id == org]
+    scan_total = len(scan_rows)
+    scan_pass = sum(1 for _, r in scan_rows if r.status == "pass")
+    scan_attention = [
+        (t, r)
+        for t, r in scan_rows
+        if r.status in {"fail", "warn", "manual_review_required"}
+    ]
+    represented_task_keys = {
+        t.dedupe_key
+        for t in tasks
+        if t.dedupe_key
+    } | {
+        f"ctltest-fix:{t.entity_id}"
+        for t in tasks
+        if t.entity_type == "control_test" and t.entity_id
+    }
+    scan_work_items = [
+        {
+            "id": f"scan-{test.id}",
+            "priority": "critical" if result.status == "fail" else "high",
+            "title": f"Review failed live check: {test.name}",
+            "kind": "live_audit",
+            "status": result.status,
+            "source": "scan",
+            "due_on": None,
+            "url": (
+                f"/systems/{test.system_id}/live-audit"
+                if test.system_id is not None
+                else f"/control-tests/{test.id}"
+            ),
+            "detail": result.detail,
+        }
+        for test, result in scan_attention
+        if f"ctltest-fix:{test.id}" not in represented_task_keys
+    ][:25]
     notifs = (
         (
             await session.execute(
@@ -1925,16 +1973,30 @@ async def governance_page(
         "vendors": (
             await session.execute(_scoped(select(func.count(Vendor.id)), Vendor.organization_id))
         ).scalar_one(),
-        "open_tasks": len(tasks),
+        "open_tasks": len(tasks) + len(scan_work_items),
         "unread_alerts": sum(1 for n in notifs if n.read_at is None),
     }
+    scan_health_pct = round((scan_pass / scan_total) * 100) if scan_total else None
+    display_health = dict(health)
+    if scan_total:
+        display_health.update(
+            {
+                "health_pct": scan_health_pct,
+                "total": scan_total,
+                "source": "live_scan",
+                "findings": len(scan_attention),
+            }
+        )
+    else:
+        display_health["source"] = "implementation"
     return templates.TemplateResponse(
         request,
         "governance.html",
         {
             "active": "governance",
-            "health": health,
+            "health": display_health,
             "tasks": tasks,
+            "scan_work_items": scan_work_items,
             "notifs": notifs,
             "events": events,
             "systems": systems,

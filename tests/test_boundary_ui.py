@@ -21,6 +21,7 @@ from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Organization, System, User
+from ccf.models_grc import ControlTest, ControlTestResult
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -148,3 +149,45 @@ async def test_system_detail_page_embeds_boundary_summary() -> None:
         assert "Live audit workflow" in r.text
         assert f"/systems/{sys_id}/live-audit/verify" in r.text
         assert f"/systems/{sys_id}/live-audit/scan" in r.text
+
+
+@pytest.mark.asyncio
+async def test_governance_command_center_reports_live_scan_failures_without_impls() -> None:
+    token, sys_id = await _mk_user_and_system(
+        "live-scan-governance@boundary-ui.test",
+        "Boundary UI Live Scan Governance Org",
+        "admin",
+        "Live Scan Governance Sys",
+    )
+    async with session_scope() as s:
+        sysrow = (await s.get(System, sys_id))
+        test = ControlTest(
+            organization_id=sysrow.organization_id,
+            system_id=sys_id,
+            control_id="AC-3",
+            name="Guest invitations are restricted to administrators",
+            method="automated",
+            connector_type="m365",
+            source="generated",
+            check_key="m365.tenant.guest_invites_admins",
+            last_status="fail",
+        )
+        s.add(test)
+        await s.flush()
+        s.add(
+            ControlTestResult(
+                control_test_id=test.id,
+                status="fail",
+                detail="1 of 1 m365_tenant(s) failing",
+                evaluated=1,
+                failing=1,
+            )
+        )
+
+    async with _client() as c:
+        r = await c.get("/governance", headers=_auth(token))
+        assert r.status_code == 200
+        assert "0 implementations" not in r.text
+        assert "1 live checks" in r.text
+        assert "Review failed live check" in r.text
+        assert "Guest invitations are restricted to administrators" in r.text
