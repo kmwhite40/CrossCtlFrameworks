@@ -121,18 +121,57 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 28 checks touching 34 of the 288 controls in a
-  FedRAMP Moderate baseline** — roughly 12%. Every registered connector now
+- **Posture check coverage is 32 checks touching 37 of the 288 controls in a
+  FedRAMP Moderate baseline** — roughly 13%. Every registered connector now
   ships checks, so binding a credential to any of them produces verdicts rather
   than an empty scan. By provider:
 
   | Provider | Checks | Controls evidenced |
   |---|---|---|
-  | `msgraph` (Entra / Intune) | 14 | AC-2, AC-2(3), AC-3, AC-6, AC-6(1), AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), SC-28, SC-28(1), SI-2, SI-4 |
-  | `aws_govcloud` | 4 | AU-2, AU-12, IA-2, IA-2(1), IA-5, IA-5(1) |
+  | `msgraph` (Entra / Intune) | 14 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), SC-28, SC-28(1), SI-2, SI-4 |
+  | `aws_govcloud` | 8 | AC-3, AC-4, AU-2, AU-9, AU-9(3), AU-12, IA-2, IA-2(1), IA-5, IA-5(1), SC-7, SC-28, SC-28(1) |
   | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `gcp` | 3 | AU-4, AU-11, CM-2, CM-6, SC-12, SC-28, SC-28(1) |
   | `puppetdb` | 2 | CM-2, CM-6, CM-8 |
+
+  Three of the 40 distinct controls these checks evidence — `AC-2(12)`,
+  `AU-9(3)` and `IA-2(11)` — are **not** in the Moderate baseline, which is why
+  the "37 of 288" figure is lower than the control count. They are not wasted:
+  a High-baseline system is held to them, and `GET
+  /api/systems/{id}/framework-posture` reports against whichever baseline the
+  system actually carries. But nobody should read 40 as Moderate coverage.
+
+  A check declaring several controls is evidence about **all** of them when it
+  does not pass, and about its first one when it does
+  (`ccf.posture.evidence`). The counts above are the full declared sets, which
+  is what the running product now credits; before that asymmetry was
+  implemented the product credited only the first control of each check, and
+  this table overstated what a scan actually reported.
+
+  The check total and every control id in the table are asserted against the
+  registry by `tests/test_runbook_states_real_coverage.py`, in both directions —
+  the table may neither name a control no check evidences nor omit one that a
+  check does. **The "37 of 288" intersection is not asserted**: baseline
+  membership lives in `controls.fisma_mod`, which a catalog ingest loads and the
+  test database therefore does not have, so a guard over it would skip forever.
+  Re-measure it after adding or removing a check:
+
+  ```
+  CCF_DATABASE_URL="postgresql+asyncpg://ccf:ccf@localhost:5433/ccf" \
+  python -c "
+  import asyncio
+  from ccf.analytics.framework_posture import baseline_controls, fold_to_control
+  from ccf.connectors import connector_keys
+  from ccf.posture.checks import checks_for
+  from ccf.db import session_scope
+  ev = {f for k in connector_keys() for c in checks_for(k) for i in c.control_ids
+        if (f := fold_to_control(i))}
+  async def main():
+      async with session_scope() as s:
+          mod = await baseline_controls(s, 'moderate')
+      print(f'{len(ev & mod)} of {len(mod)}  ({len(ev)} distinct controls evidenced)')
+  asyncio.run(main())"
+  ```
 
   Concord reports what it assessed and names what it did not: a scan response
   carries `checks_expected`, `checks_run` and a reason for every skipped check,
@@ -148,7 +187,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   python -c "from ccf.posture.checks import checks_for; from ccf.connectors import connector_keys; print({k: len(checks_for(k)) for k in connector_keys()})"
   ```
 
-- **800-171 coverage is 18 of the 110 requirements.** The 800-53 → 800-171
+- **800-171 coverage is 20 of the 110 requirements.** The 800-53 → 800-171
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
