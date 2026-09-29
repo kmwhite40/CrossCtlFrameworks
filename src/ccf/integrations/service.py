@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +47,7 @@ PROVIDERS: tuple[str, ...] = (PROVIDER, EMASS_PROVIDER)
 
 async def _config_and_secret(
     session: AsyncSession, org_id: int, credential_type: str, label: str
-) -> tuple[dict, dict]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     secret = await resolve_credential(session, org_id, credential_type)
     if not secret:
         raise IntegrationNotConfigured(

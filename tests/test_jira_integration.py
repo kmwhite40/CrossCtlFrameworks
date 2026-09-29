@@ -25,7 +25,10 @@ from tests.fake_jira import FakeJira
 _CONTENT = IssueContent(
     key="poam:1",
     title="Session tokens carry no audience claim",
-    body="Weakness\nAnything signed with the session secret verifies.\n\nRemediation plan\nDerive a key per purpose.",
+    body=(
+        "Weakness\nAnything signed with the session secret verifies.\n\n"
+        "Remediation plan\nDerive a key per purpose."
+    ),
     labels=("concord", "poam-1", "severity-high"),
 )
 
@@ -86,7 +89,7 @@ async def test_an_update_omits_the_fields_jira_refuses_after_creation() -> None:
     assert result.external_id == "SEC-1"
     assert fake.issues["SEC-1"]["summary"] == "Now with a fix"
     put = [r for r in fake.requests if r.method == "PUT"][-1]
-    import json as _json
+    import json as _json  # noqa: PLC0415
 
     sent = _json.loads(put.content)["fields"]
     assert "project" not in sent and "issuetype" not in sent
@@ -111,7 +114,7 @@ async def test_the_due_date_is_withheld_unless_the_operator_opts_in() -> None:
     enabled -- a "safe default" that silently ignored the setting would pass a
     test that only checked the default.
     """
-    from datetime import date
+    from datetime import date  # noqa: PLC0415
 
     content = IssueContent(key="poam:3", title="t", body="b", due_on=date(2026, 3, 1))
 
@@ -156,7 +159,7 @@ async def test_an_unreachable_site_is_not_reported_as_a_rejected_ticket() -> Non
     Recording the first as the second is how an outage becomes a POA&M that
     looks permanently unfileable.
     """
-    import httpx
+    import httpx  # noqa: PLC0415
 
     def _boom(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("name resolution failed")
@@ -180,7 +183,7 @@ async def test_a_2xx_without_an_issue_key_is_refused_not_stored() -> None:
     claims to be filed in Jira and links nowhere -- the claim-versus-rendering
     shape, in its outbound form.
     """
-    import httpx
+    import httpx  # noqa: PLC0415
 
     tracker = JiraTracker(
         base_url="https://acme.atlassian.net",

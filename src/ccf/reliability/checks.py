@@ -952,8 +952,8 @@ async def _check_ssp_platform_agreement(session: AsyncSession) -> Check:
         params[k], params[f"{k}_v"] = cloud, PLATFORM_TO_SSP[cloud]
     # ``values`` is built from this module's own PLATFORM_TO_SSP keys, never
     # from user input, and every value in it is a bound parameter.
-    sql = (  # nosec B608
-        "SELECT "
+    sql = (
+        "SELECT "  # nosec B608 -- bandit reports the concatenation, not the `sql =` line
         "  count(*) FILTER (WHERE m.ssp IS NOT NULL AND p.platform <> m.ssp) AS disagrees,"
         "  count(*) FILTER (WHERE m.ssp IS NULL AND p.platform <> :no_platform) AS unmapped "
         "FROM ccf.ssp_projects p "

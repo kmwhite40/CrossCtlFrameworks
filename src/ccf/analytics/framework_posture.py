@@ -96,7 +96,10 @@ async def framework_posture(
     system = await session.get(System, system_id)
     if system is None or (org_id is not None and system.organization_id != org_id):
         return _empty(None)
-    baseline = (system.baseline.value if hasattr(system.baseline, "value") else system.baseline) or ""
+    # `baseline` is an enum member at runtime and `str | None` to the checker;
+    # getattr covers both without asserting either.
+    raw: object = system.baseline
+    baseline = str(getattr(raw, "value", raw) or "")
     controls = await baseline_controls(session, baseline)
     if not controls:
         return _empty(baseline or None)
@@ -222,9 +225,10 @@ async def resolve_applied_framework(
     exactly that. It is the case that produced the original defect: an
     unmeasurable system rendering as a clean one.
     """
-    baseline = (
-        system.baseline.value if hasattr(system.baseline, "value") else system.baseline
-    ) or ""
+    # `baseline` is an enum member at runtime and `str | None` to the checker;
+    # getattr covers both without asserting either.
+    raw: object = system.baseline
+    baseline = str(getattr(raw, "value", raw) or "")
     if baseline.lower() in BASELINE_COLUMNS:
         return AppliedFramework(
             key=f"fedramp_{baseline.lower()}",

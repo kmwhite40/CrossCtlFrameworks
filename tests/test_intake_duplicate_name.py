@@ -83,10 +83,14 @@ async def test_a_duplicate_system_name_is_a_form_error_not_a_500() -> None:
     name = f"Federal {uuid.uuid4().hex[:6]}"
 
     async with _client() as c:
-        first = await c.post("/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"})
+        first = await c.post(
+            "/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"}
+        )
         assert first.status_code == 200, "the first submission must succeed"
 
-        second = await c.post("/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"})
+        second = await c.post(
+            "/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"}
+        )
 
     assert second.status_code == 409
     assert "already has a system named" in second.text
@@ -103,7 +107,9 @@ async def test_a_deleted_systems_name_can_be_used_again() -> None:
     name = f"Nexus {uuid.uuid4().hex[:6]}"
 
     async with _client() as c:
-        created = await c.post("/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"})
+        created = await c.post(
+            "/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"}
+        )
     assert created.status_code == 200
 
     async with session_scope() as s:
@@ -115,7 +121,9 @@ async def test_a_deleted_systems_name_can_be_used_again() -> None:
         system.deleted_at = datetime.now(UTC)
 
     async with _client() as c:
-        again = await c.post("/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"})
+        again = await c.post(
+            "/intake", data=_form(name), headers={"Authorization": f"Bearer {token}"}
+        )
     assert again.status_code == 200, "a deleted system is still holding its name"
 
     async with session_scope() as s:
@@ -144,7 +152,7 @@ async def test_intake_without_an_organization_does_not_guess_one() -> None:
     """It used to fall back to the most recently created organization, or make
     a "Default Organization" -- writing a system, its derived baseline and a
     generated SSP into whichever tenant happened to sort last."""
-    before = await _org_admin(f"Intake NoOrg {uuid.uuid4().hex[:6]}")
+    await _org_admin(f"Intake NoOrg {uuid.uuid4().hex[:6]}")
     name = f"Orphan {uuid.uuid4().hex[:6]}"
 
     os.environ["CCF_AUTH_ENABLED"] = "false"

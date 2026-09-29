@@ -179,7 +179,7 @@ async def test_a_rejection_names_the_offending_origin_in_the_log(
     ``structlog.configure`` never reaches it. That made this test pass alone and
     fail in the suite.
     """
-    from ccf.api import csrf as csrf_module
+    from ccf.api import csrf as csrf_module  # noqa: PLC0415
 
     recorded: list[tuple[str, dict]] = []
 
@@ -240,7 +240,7 @@ async def test_an_allowed_request_logs_no_rejection(
     whoever reads it to ignore the one occurrence that matters. This is the
     mutation that a test asserting only "something was logged" would miss.
     """
-    from ccf.api import csrf as csrf_module
+    from ccf.api import csrf as csrf_module  # noqa: PLC0415
 
     recorded: list[str] = []
 

@@ -39,7 +39,7 @@ async def _remove_connectors_afterwards():
     different module with nothing pointing back here. This module's whole
     subject is writing to those rows, so it has to clear them up.
     """
-    from sqlalchemy import delete
+    from sqlalchemy import delete  # noqa: PLC0415
 
     yield
     async with session_scope() as s:
@@ -76,7 +76,7 @@ async def _org_with_connector() -> tuple[int, int]:
 @pytest.fixture
 def _capturing_connector(monkeypatch: pytest.MonkeyPatch):
     """A msgraph connector that is configured and returns two parameters."""
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     async def _capture(self):
         return [
@@ -93,7 +93,7 @@ def _capturing_connector(monkeypatch: pytest.MonkeyPatch):
     async def _resolve(session, org_id, connector_type):
         return {"tenant_id": "t", "client_id": "c", "client_secret": "s"}
 
-    import ccf.governance.collection as collection
+    from ccf.governance import collection  # noqa: PLC0415
 
     monkeypatch.setattr(collection, "resolve_credential", _resolve)
     monkeypatch.setattr(MsGraphConnector, "is_configured", lambda self: True)

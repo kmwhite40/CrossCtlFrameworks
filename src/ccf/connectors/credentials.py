@@ -24,9 +24,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai.cipher import build_cipher, mask
-from .credential_spec import IncompleteCredential, missing_fields
 from ..config import get_settings
 from ..models_grc import ConnectorConfig
+from .credential_spec import IncompleteCredential, missing_fields
 
 # The field within each connector's secret bundle that actually identifies the
 # credential, in priority order — used to derive a meaningful ``key_last4``
@@ -103,7 +103,7 @@ async def set_credential(
             raise ValueError(
                 "the connector row does not belong to this organization/type"
             )
-        cfg = config
+        cfg: ConnectorConfig | None = config
     else:
         cfg = (
             await session.execute(

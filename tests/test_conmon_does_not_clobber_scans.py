@@ -36,7 +36,7 @@ async def _remove_connectors_afterwards():
     collection path in `test_connectors.py` then tries to capture from it and
     fails in another module with nothing pointing back here.
     """
-    from sqlalchemy import delete, select
+    from sqlalchemy import delete, select  # noqa: PLC0415
 
     yield
     async with session_scope() as s:

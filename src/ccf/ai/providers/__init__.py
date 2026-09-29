@@ -16,6 +16,7 @@ from .base import (
 )
 
 __all__ = [
+    "SUPPORTED_PROVIDERS",
     "AIProvider",
     "CredentialValidationResult",
     "EmbedRequest",
@@ -26,7 +27,6 @@ __all__ = [
     "ProviderError",
     "StructuredGenerationRequest",
     "StructuredGenerationResponse",
-    "SUPPORTED_PROVIDERS",
     "build_provider",
 ]
 

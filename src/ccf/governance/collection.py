@@ -15,7 +15,6 @@ never attributed to an org that didn't produce it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-
 from typing import Any
 
 from sqlalchemy import select

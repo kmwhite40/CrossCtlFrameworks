@@ -412,7 +412,7 @@ async def test_a_provider_this_build_cannot_construct_is_never_stored() -> None:
     gateway rather than the route, so the JSON API and rotate are covered by
     the same rule -- asserted here through the JSON API for that reason.
     """
-    org_id, token = await _org_admin("AiSettings Unknown Provider Org")
+    _org_id, token = await _org_admin("AiSettings Unknown Provider Org")
     async with _client() as c:
         r = await c.post(
             "/api/ai-settings/providers/gemini",
