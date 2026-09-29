@@ -22,6 +22,7 @@ A capture made under the host's identity does not evidence a tenant.
 from __future__ import annotations
 
 import base64
+import inspect
 import json
 import time
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -29,6 +30,9 @@ from typing import TYPE_CHECKING, Any, ClassVar
 import httpx
 
 from ..logging import get_logger
+from ..posture.providers import gcp as gcp_checks
+from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
+from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -165,6 +169,129 @@ class GcpConnector(ConfigConnector):
             source=source,
             confidence=confidence,
             detail={**(detail or {}), "nist_80053_id": self._NIST_80053[odp_key]},
+        )
+
+    # ── posture scanning ─────────────────────────────────────────────────────
+
+    async def scan(
+        self, checks: tuple[ResolvedCheck, ...] | None = None
+    ) -> list[CheckOutcome]:
+        """Assess this project against its resolved posture checks.
+
+        ``capture`` reads these same three collections to fill ODP blanks; this
+        turns them into verdicts. Before it existed, a system whose only
+        connector was Google Cloud resolved zero checks and reported
+        ``checks_expected: 0`` -- which reads as clean rather than unassessed.
+
+        Never raises, per ``ConfigConnector.scan``.
+        """
+        if not self.is_configured():
+            return []
+        resolved = (
+            resolve_checks_from_registry(self.key) if checks is None else tuple(checks)
+        )
+        if not resolved:
+            return []
+        project = str((self.credential or {}).get("project_id") or "unknown")
+        outcomes: list[CheckOutcome] = []
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            token = await self._token(client)
+            if not token:
+                # One unrunnable finding per check, never an empty list: the
+                # rollup maps zero findings to `not_applicable`, which would
+                # hide a key that will not sign behind a benign verdict.
+                return [
+                    self._unrunnable(
+                        rc.check,
+                        RuntimeError("the service-account key did not sign"),
+                        project=project,
+                    )
+                    for rc in resolved
+                ]
+            headers = {"Authorization": f"Bearer {token}"}
+            for rc in resolved:
+                try:
+                    rows = await self._rows_for(client, headers, rc.endpoint, project)
+                except Exception as e:
+                    outcomes.append(self._unrunnable(rc.check, e, project=project))
+                    continue
+                try:
+                    outcomes.append(self._evaluate(rc, rows, project=project))
+                except Exception as e:
+                    # A check that silently stops producing results is
+                    # indistinguishable from one that passes.
+                    outcomes.append(self._unrunnable(rc.check, e, project=project))
+        return outcomes
+
+    async def _rows_for(
+        self,
+        client: httpx.AsyncClient,
+        headers: dict[str, str],
+        endpoint: str,
+        project: str,
+    ) -> list[dict[str, Any]]:
+        """Fetch the collection an endpoint token names.
+
+        The token is ``<url template>#<envelope key>``: Google's three APIs
+        return three differently-named arrays, so the envelope travels with the
+        URL rather than living in a second table here that could drift from the
+        registry. ``{project}`` comes from this connector's own credential and
+        never from a caller.
+        """
+        url_template, _, envelope = endpoint.partition("#")
+        if not url_template or not envelope:
+            raise ValueError(
+                f"malformed GCP endpoint {endpoint!r}; expected 'url#envelope_key'"
+            )
+        resp = await client.get(url_template.format(project=project), headers=headers)
+        resp.raise_for_status()
+        rows = resp.json().get(envelope) or []
+        # A scalar or object where an array was expected is a shape change, not
+        # an empty result: returning [] would report it as a clean fleet.
+        if not isinstance(rows, list):
+            raise ValueError(f"expected a list under {envelope!r}, got {type(rows).__name__}")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _evaluate(
+        self, rc: ResolvedCheck, rows: list[dict[str, Any]], *, project: str
+    ) -> CheckOutcome:
+        """Run the evaluator this check dispatches to, signature-driven."""
+        evaluator = gcp_checks.EVALUATORS[rc.evaluator_key or rc.check.key]
+        kwargs: dict[str, Any] = dict(rc.parameters or {})
+        accepted = inspect.signature(evaluator).parameters
+        if "project_id" in accepted and "project_id" not in kwargs:
+            kwargs["project_id"] = project
+        return CheckOutcome.from_findings(rc.check, tuple(evaluator(rows, **kwargs)))
+
+    def _unrunnable(
+        self, check: PostureCheck, error: Exception, *, project: str
+    ) -> CheckOutcome:
+        """A check that could not run -- never a clean project."""
+        if isinstance(error, httpx.HTTPStatusError):
+            code = error.response.status_code
+            if code in (401, 403):
+                needed = ", ".join(check.required_permissions) or "unknown permissions"
+                observed = f"{code} from Google Cloud; requires {needed}"
+            else:
+                observed = f"Google Cloud returned {code}; could not evaluate this check"
+        elif isinstance(error, httpx.TimeoutException):
+            observed = "Google Cloud request timed out; could not evaluate this check"
+        else:
+            observed = f"could not evaluate this check ({type(error).__name__})"
+        log.warning(
+            "connector.gcp.check_unrunnable", check=check.key, error=str(error)[:200]
+        )
+        return CheckOutcome.from_findings(
+            check,
+            (
+                ResourceFinding(
+                    resource_id=project,
+                    resource_type=check.resource_type,
+                    verdict="manual_review_required",
+                    observed=observed,
+                    detail={"error": str(error)[:300]},
+                ),
+            ),
         )
 
     async def capture(self) -> list[CapturedParameter]:

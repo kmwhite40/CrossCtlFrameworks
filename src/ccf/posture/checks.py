@@ -10,7 +10,7 @@ so P2b's move into ``packs/`` relocates content rather than redesigning it.
 
 from __future__ import annotations
 
-from .providers import aws, azure, m365, puppetdb
+from .providers import aws, azure, gcp, m365, puppetdb
 from .types import CheckOutcome, PostureCheck, ResourceFinding
 
 __all__ = [
@@ -33,6 +33,7 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
     "puppetdb": puppetdb.CHECKS,
     "aws_govcloud": aws.CHECKS,
     "azure_arm": azure.CHECKS,
+    "gcp": gcp.CHECKS,
 }
 
 
@@ -53,6 +54,9 @@ ENDPOINT_REGISTRY: dict[str, dict[str, str]] = {
     # ARM registers `Provider/type@api-version`: ARM has no request path a pack
     # could name, and the api-version must be pinned or the call is a 400.
     "azure_arm": azure.ENDPOINTS,
+    # GCP registers `<url template>#<envelope key>`: Google's REST APIs are full
+    # URLs with three different response envelopes, so the token carries both.
+    "gcp": gcp.ENDPOINTS,
 }
 
 
