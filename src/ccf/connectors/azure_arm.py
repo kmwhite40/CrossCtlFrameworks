@@ -77,12 +77,16 @@ returns ``[]`` rather than raising on any failure.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, ClassVar
 
 import httpx
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture.providers import azure as azure_checks
+from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
+from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
 from .clouds import MicrosoftEndpoints, microsoft_endpoints
 
@@ -295,6 +299,134 @@ class AzureArmConnector(ConfigConnector):
             return {"connected": False, "reason": str(e)[:200]}
 
     # ── capture ──────────────────────────────────────────────────────────────
+
+    # ── posture scanning ─────────────────────────────────────────────────────
+
+    async def scan(
+        self, checks: tuple[ResolvedCheck, ...] | None = None
+    ) -> list[CheckOutcome]:
+        """Assess this subscription against its resolved posture checks.
+
+        ``capture`` reads these same ARM collections to fill ODP blanks; this
+        turns them into verdicts. The connector registered no checks and had no
+        ``scan`` before, so a system whose only connector was Azure resolved
+        zero checks and reported ``checks_expected: 0`` — which reads as clean
+        far more readily than "nothing was assessed".
+
+        Never raises, per ``ConfigConnector.scan``: an unconfigured org, a
+        missing credential or an ARM error all produce results, or none, rather
+        than an exception ``scan_for_system`` is not expecting.
+        """
+        if not self.is_configured():
+            return []
+        resolved = (
+            resolve_checks_from_registry(self.key) if checks is None else tuple(checks)
+        )
+        if not resolved:
+            return []
+        subscription = str((self.credential or {}).get("subscription_id") or "unknown")
+        outcomes: list[CheckOutcome] = []
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            token = await self._token(client)
+            if not token:
+                # One unrunnable finding per check, never an empty list: the
+                # rollup maps zero findings to `not_applicable`, which would
+                # hide a bad credential behind a benign verdict.
+                return [
+                    self._unrunnable(
+                        rc.check,
+                        RuntimeError("could not obtain an ARM token"),
+                        subscription=subscription,
+                    )
+                    for rc in resolved
+                ]
+            headers = {"Authorization": f"Bearer {token}"}
+            for rc in resolved:
+                try:
+                    rows = await self._rows_for(client, headers, rc.endpoint)
+                except Exception as e:
+                    outcomes.append(
+                        self._unrunnable(rc.check, e, subscription=subscription)
+                    )
+                    continue
+                try:
+                    outcomes.append(
+                        self._evaluate(rc, rows, subscription=subscription)
+                    )
+                except Exception as e:
+                    # A check that silently stops producing results is
+                    # indistinguishable from one that passes.
+                    outcomes.append(
+                        self._unrunnable(rc.check, e, subscription=subscription)
+                    )
+        return outcomes
+
+    async def _rows_for(
+        self, client: httpx.AsyncClient, headers: dict[str, Any], endpoint: str
+    ) -> list[dict[str, Any]]:
+        """Fetch the ARM collection an endpoint token names.
+
+        The token is ``Provider/type@api-version`` — ARM has no request path a
+        pack could name, and the api-version must be pinned or the call is a
+        400. Split rather than parsed loosely: an endpoint without a version is
+        refused here instead of producing that 400 at the provider.
+        """
+        provider_path, _, api_version = endpoint.partition("@")
+        if not provider_path or not api_version:
+            raise ValueError(f"malformed ARM endpoint {endpoint!r}; expected 'path@api-version'")
+        return await self._get_all(
+            client, self._sub_path(provider_path, api_version), headers
+        )
+
+    def _evaluate(
+        self, rc: ResolvedCheck, rows: list[dict[str, Any]], *, subscription: str
+    ) -> CheckOutcome:
+        """Run the evaluator this check dispatches to.
+
+        Signature-driven, as ``msgraph`` does: the subscription-level
+        evaluators need the subscription id and the fleet ones do not, so each
+        is called with what it declares rather than forcing one shape that most
+        would ignore.
+        """
+        evaluator = azure_checks.EVALUATORS[rc.evaluator_key or rc.check.key]
+        kwargs: dict[str, Any] = dict(rc.parameters or {})
+        accepted = inspect.signature(evaluator).parameters
+        if "subscription_id" in accepted and "subscription_id" not in kwargs:
+            kwargs["subscription_id"] = subscription
+        return CheckOutcome.from_findings(rc.check, tuple(evaluator(rows, **kwargs)))
+
+    def _unrunnable(
+        self, check: PostureCheck, error: Exception, *, subscription: str
+    ) -> CheckOutcome:
+        """A check that could not run — never a clean subscription."""
+        if isinstance(error, httpx.HTTPStatusError):
+            code = error.response.status_code
+            if code in (401, 403):
+                needed = ", ".join(check.required_permissions) or "unknown permissions"
+                observed = f"{code} from ARM; requires {needed}"
+            else:
+                observed = f"ARM returned {code}; could not evaluate this check"
+        elif isinstance(error, ArmPaginationTruncatedError):
+            observed = f"could not evaluate this check: {error}"
+        elif isinstance(error, httpx.TimeoutException):
+            observed = "ARM request timed out; could not evaluate this check"
+        else:
+            observed = f"could not evaluate this check ({type(error).__name__})"
+        log.warning(
+            "connector.azure.check_unrunnable", check=check.key, error=str(error)[:200]
+        )
+        return CheckOutcome.from_findings(
+            check,
+            (
+                ResourceFinding(
+                    resource_id=subscription,
+                    resource_type=check.resource_type,
+                    verdict="manual_review_required",
+                    observed=observed,
+                    detail={"error": str(error)[:300]},
+                ),
+            ),
+        )
 
     async def capture(self) -> list[CapturedParameter]:
         """Read ARM and return captured parameters. Never raises (base contract).

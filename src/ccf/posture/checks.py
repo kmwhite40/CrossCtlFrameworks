@@ -10,7 +10,7 @@ so P2b's move into ``packs/`` relocates content rather than redesigning it.
 
 from __future__ import annotations
 
-from .providers import aws, m365, puppetdb
+from .providers import aws, azure, m365, puppetdb
 from .types import CheckOutcome, PostureCheck, ResourceFinding
 
 __all__ = [
@@ -32,6 +32,7 @@ CHECK_REGISTRY: dict[str, tuple[PostureCheck, ...]] = {
     "msgraph": m365.CHECKS,
     "puppetdb": puppetdb.CHECKS,
     "aws_govcloud": aws.CHECKS,
+    "azure_arm": azure.CHECKS,
 }
 
 
@@ -49,6 +50,9 @@ ENDPOINT_REGISTRY: dict[str, dict[str, str]] = {
     "msgraph": m365.ENDPOINTS,
     "puppetdb": puppetdb.ENDPOINTS,
     "aws_govcloud": aws.ENDPOINTS,
+    # ARM registers `Provider/type@api-version`: ARM has no request path a pack
+    # could name, and the api-version must be pinned or the call is a 400.
+    "azure_arm": azure.ENDPOINTS,
 }
 
 

@@ -121,15 +121,16 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 20 checks touching 26 of the 288 controls in a
-  FedRAMP Moderate baseline** — roughly 9%. By provider:
+- **Posture check coverage is 25 checks touching 33 of the 288 controls in a
+  FedRAMP Moderate baseline** — roughly 11%. By provider:
 
   | Provider | Checks | Controls evidenced |
   |---|---|---|
   | `msgraph` (Entra / Intune) | 14 | AC-2, AC-2(3), AC-3, AC-6, AC-6(1), AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), SC-28, SC-28(1), SI-2, SI-4 |
   | `aws_govcloud` | 4 | AU-2, AU-12, IA-2, IA-2(1), IA-5, IA-5(1) |
+  | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `puppetdb` | 2 | CM-2, CM-6, CM-8 |
-  | `azure_arm`, `gcp` | 0 | none — these connectors capture configuration but register no posture checks, so scanning a system with only one of them runs nothing |
+  | `gcp` | 0 | none — the connector captures configuration but registers no posture checks, so scanning a system whose only connector is GCP runs nothing at all |
 
   Concord reports what it assessed and names what it did not: a scan response
   carries `checks_expected`, `checks_run` and a reason for every skipped check,
@@ -145,7 +146,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   python -c "from ccf.posture.checks import checks_for; from ccf.connectors import connector_keys; print({k: len(checks_for(k)) for k in connector_keys()})"
   ```
 
-- **800-171 coverage is 14 of the 110 requirements.** The 800-53 → 800-171
+- **800-171 coverage is 17 of the 110 requirements.** The 800-53 → 800-171
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
