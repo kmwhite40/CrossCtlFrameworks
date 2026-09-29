@@ -533,6 +533,10 @@ async def get_live_audit_workflow(
         "audit_plan": {
             "framework": audit_plan["framework"],
             "summary": audit_plan["summary"],
+            "framework_controls": audit_plan.get("framework_controls", []),
+            "framework_manual_review_required": audit_plan.get(
+                "framework_manual_review_required", []
+            ),
             "providers_unavailable": [
                 {
                     "connector": p["connector"],

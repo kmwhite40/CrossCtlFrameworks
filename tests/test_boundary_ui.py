@@ -20,7 +20,7 @@ from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, System, User
+from ccf.models import Organization, SSPProject, System, User
 from ccf.models_grc import ControlTest, ControlTestResult
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -191,3 +191,62 @@ async def test_governance_command_center_reports_live_scan_failures_without_impl
         assert "1 live checks" in r.text
         assert "Review failed live check" in r.text
         assert "Guest invitations are restricted to administrators" in r.text
+
+
+@pytest.mark.asyncio
+async def test_systems_and_ssp_pages_report_live_scan_state_without_impls() -> None:
+    token, sys_id = await _mk_user_and_system(
+        "live-scan-pages@boundary-ui.test",
+        "Boundary UI Live Scan Pages Org",
+        "admin",
+        "Live Scan Pages Sys",
+    )
+    async with session_scope() as s:
+        sysrow = await s.get(System, sys_id)
+        project = SSPProject(
+            organization_id=sysrow.organization_id,
+            system_id=sys_id,
+            customer_name="Live Scan Pages Org",
+            system_name=sysrow.name,
+            framework="nist-800-53r5",
+        )
+        s.add(project)
+        test = ControlTest(
+            organization_id=sysrow.organization_id,
+            system_id=sys_id,
+            control_id="AC-6",
+            name="Default user permissions withhold privileged capability",
+            method="automated",
+            connector_type="m365",
+            source="generated",
+            check_key="m365.tenant.default_user_permissions_limited",
+            last_status="fail",
+        )
+        s.add(test)
+        await s.flush()
+        s.add(
+            ControlTestResult(
+                control_test_id=test.id,
+                status="fail",
+                detail="1 of 1 m365_tenant(s) failing",
+                evaluated=1,
+                failing=1,
+            )
+        )
+        project_id = project.id
+
+    async with _client() as c:
+        systems = await c.get("/systems", headers=_auth(token))
+        assert systems.status_code == 200
+        assert "Live audit" in systems.text
+        assert "1 attention" in systems.text
+
+        ssp = await c.get("/ssp", headers=_auth(token))
+        assert ssp.status_code == 200
+        assert "Live scan" in ssp.text
+        assert "1 blocker(s)" in ssp.text
+
+        detail = await c.get(f"/ssp/{project_id}", headers=_auth(token))
+        assert detail.status_code == 200
+        assert "Live scan impact" in detail.text
+        assert "Needs attention" in detail.text

@@ -100,9 +100,9 @@
             {% if step.key == 'verify_connectors' %}
               {{ live_audit_workflow.audit_plan.summary.providers_ready }} of {{ live_audit_workflow.audit_plan.summary.providers }} provider(s) ready
             {% elif step.key == 'run_live_audit' %}
-              {{ live_audit_workflow.control_evaluations.total }} control evaluation(s)
+              {{ live_audit_workflow.audit_plan.summary.api_checks }} automated · {{ live_audit_workflow.audit_plan.summary.framework_total }} framework item(s)
             {% elif step.key == 'review_controls' %}
-              {{ live_audit_workflow.control_evaluations.failed }} failed · {{ live_audit_workflow.control_evaluations.manual_review_required }} manual
+              {{ live_audit_workflow.control_evaluations.failed }} failed · {{ live_audit_workflow.audit_plan.summary.framework_manual_review_required }} framework manual
             {% elif step.key == 'create_poams' %}
               {{ live_audit_workflow.control_evaluations.failed_without_poam }} finding(s) without POA&M
             {% elif step.key == 'update_ssp' and live_audit_workflow.ssp %}

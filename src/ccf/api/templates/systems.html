@@ -81,7 +81,7 @@
             <div class="table-wrap" style="margin-top:10px">
               <table class="data">
                 <thead><tr>
-                  <th>System</th><th>Baseline</th><th>ATO status</th><th>Expires</th><th>Description</th><th></th>
+                  <th>System</th><th>Baseline</th><th>ATO status</th><th>Live audit</th><th>Expires</th><th>Description</th><th></th>
                 </tr></thead>
                 <tbody>
                   {% for s in sys_list %}
@@ -89,6 +89,20 @@
                       <td><a href="/systems/{{ s.id }}">{{ s.name }}</a></td>
                       <td>{% if s.baseline %}<span class="chip chip--brand">{{ s.baseline | upper }}</span>{% else %}—{% endif %}</td>
                       <td>{% if s.ato_status %}<span class="chip {% if s.ato_status=='authorized' %}chip--ok{% elif s.ato_status=='expired' %}chip--err{% endif %}">{{ s.ato_status }}</span>{% else %}—{% endif %}</td>
+                      {% set scan = live_scan.get(s.id) %}
+                      <td>
+                        {% if scan %}
+                          {# Green requires a measurement. `scan.total` alone would paint a system whose
+             every check found nothing in scope as healthy, which is the reading
+             `health_pct` was just changed to stop producing. #}
+          <a href="/systems/{{ s.id }}/live-audit" class="chip {% if scan.attention %}chip--err{% elif scan.health_pct is not none %}chip--ok{% else %}chip--ghost{% endif %}">
+                            {% if scan.health_pct is not none %}{{ scan.health_pct }}%{% else %}not measured{% endif %}
+                          </a>
+                          <div class="dim" style="font-size:12px">{{ scan.attention }} attention · {{ scan.total }} check(s)</div>
+                        {% else %}
+                          <a href="/systems/{{ s.id }}/live-audit" class="chip chip--ghost">not scanned</a>
+                        {% endif %}
+                      </td>
                       <td class="dim">{{ s.ato_expires_on or '—' }}</td>
                       <td class="dim">{{ s.description or '' }}</td>
                       <td style="text-align:right">

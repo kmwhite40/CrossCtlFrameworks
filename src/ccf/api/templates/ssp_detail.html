@@ -53,6 +53,48 @@
   </div>
 </form>
 
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Live scan impact</div>
+      <div class="card__subtitle">How current automated evidence affects this SSP</div>
+    </div>
+    {% if project.system_id %}
+      <a class="btn btn--ghost btn--sm" href="/systems/{{ project.system_id }}/live-audit"><i data-lucide="list-checks"></i> Live audit</a>
+    {% endif %}
+  </div>
+  <div class="card__body">
+    {% if live_scan %}
+      <div class="cols-4" style="margin-bottom:12px">
+        <div><div class="kpi__label">Health</div>
+          {# Never "—%": a dangling unit reads as a number that failed to render
+             rather than as a measurement that could not be taken. And the
+             subline names the denominator, because health is a share of the
+             checks that actually judged the control — a check that found nothing
+             in scope is not a failure to count against the system. #}
+          <div class="kpi__value">{% if live_scan.health_pct is not none %}{{ live_scan.health_pct }}%{% else %}<span class="dim">not measured</span>{% endif %}</div>
+          <div class="dim" style="font-size:12px">
+            {% if live_scan.assessed %}of {{ live_scan.assessed }} assessed check(s)
+            {%- if live_scan.total > live_scan.assessed %} · {{ live_scan.total - live_scan.assessed }} not in scope{% endif %}
+            {% else %}no check judged this system{% endif %}</div></div>
+        <div><div class="kpi__label">Passing</div><div class="kpi__value" style="color:var(--ok-500)">{{ live_scan.pass }}</div></div>
+        <div><div class="kpi__label">Needs attention</div><div class="kpi__value" style="color:{{ 'var(--err-500)' if live_scan.attention else 'var(--ok-500)' }}">{{ live_scan.attention }}</div></div>
+        <div><div class="kpi__label">SSP blockers</div><div class="kpi__value">{{ scan_sync.summary.ssp_blockers }}</div></div>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <span class="chip chip--ok">{{ scan_sync.summary.with_passing_evidence }} control(s) with passing evidence</span>
+        <span class="chip {% if scan_sync.summary.with_open_findings %}chip--err{% else %}chip--ghost{% endif %}">{{ scan_sync.summary.with_open_findings }} with findings</span>
+        <span class="chip {% if scan_sync.summary.manual_review_required %}chip--warn{% else %}chip--ghost{% endif %}">{{ scan_sync.summary.manual_review_required }} manual review</span>
+        <span class="chip {% if completeness.ready %}chip--ok{% else %}chip--warn{% endif %}">{{ completeness.score }}% SSP ready</span>
+      </div>
+    {% elif project.system_id %}
+      <div class="dim">No live scan has reported on this linked system yet.</div>
+    {% else %}
+      <div class="dim">This SSP is not linked to a system, so scan evidence cannot be synchronized.</div>
+    {% endif %}
+  </div>
+</section>
+
 {% for d in ordered_domains %}
 <details class="card" style="margin-bottom:12px" {% if loop.first %}open{% endif %}>
   <summary class="card__header" style="cursor:pointer;list-style:none">

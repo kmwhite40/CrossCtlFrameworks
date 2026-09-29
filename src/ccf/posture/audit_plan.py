@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..analytics.framework_posture import resolve_applied_framework
+from ..analytics.framework_posture import resolve_applied_framework, system_framework_posture
 from ..connectors.readiness import provider_readiness
 from ..models import System
 from .checks import known_providers
@@ -52,8 +52,14 @@ async def live_audit_plan(
 
     api_checks: list[dict[str, Any]] = []
     manual_review: list[dict[str, Any]] = []
+    automated_control_ids: set[str] = set()
     for provider in providers:
         for check in provider["checks"]:
+            if check["scan_applicability"] == "scan":
+                if check.get("control_id"):
+                    automated_control_ids.add(str(check["control_id"]))
+                for control_id in check.get("control_ids") or []:
+                    automated_control_ids.add(str(control_id))
             if not provider["ready"]:
                 manual_review.append(
                     {
@@ -75,16 +81,68 @@ async def live_audit_plan(
                     }
                 )
 
+    framework_posture = await system_framework_posture(
+        session,
+        org_id=org_id,
+        system_id=system.id,
+    )
+    framework_items: list[dict[str, Any]] = []
+    framework_manual_review: list[dict[str, Any]] = []
+    if framework_posture.get("total"):
+        unit = framework_posture.get("unit") or "control"
+        practice_ids = framework_posture.get("practice_ids") or {}
+        all_items = (
+            set(framework_posture.get("passing") or [])
+            | set(framework_posture.get("failing") or [])
+            | set(framework_posture.get("documented") or [])
+            | set(framework_posture.get("unaddressed") or [])
+        )
+        for item_id in sorted(all_items):
+            mapped_control = practice_ids.get(item_id, item_id)
+            automated = mapped_control in automated_control_ids or item_id in automated_control_ids
+            if item_id in set(framework_posture.get("passing") or []):
+                status = "automated_pass"
+            elif item_id in set(framework_posture.get("failing") or []):
+                status = "automated_fail"
+            elif item_id in set(framework_posture.get("documented") or []):
+                status = "documented"
+            else:
+                status = "manual_review_required"
+            row = {
+                "id": item_id,
+                "unit": unit,
+                "mapped_control_id": mapped_control,
+                "automated": automated,
+                "status": status,
+                "reason": (
+                    "covered_by_automated_check"
+                    if automated
+                    else "no_automated_provider_check_for_framework_item"
+                ),
+            }
+            framework_items.append(row)
+            if status == "manual_review_required":
+                framework_manual_review.append(row)
+
     return {
         "system_id": system.id,
         "framework": framework,
+        "framework_posture": framework_posture,
+        "framework_controls": framework_items,
         "providers": providers,
         "api_checks": api_checks,
         "manual_review_required": manual_review,
+        "framework_manual_review_required": framework_manual_review,
         "summary": {
             "providers": len(providers),
             "providers_ready": sum(1 for p in providers if p["ready"]),
             "api_checks": len(api_checks),
             "manual_review_required": len(manual_review),
+            "framework_total": framework_posture.get("total") or 0,
+            "framework_automated": sum(1 for row in framework_items if row["automated"]),
+            "framework_manual_review_required": len(framework_manual_review),
+            "framework_failing": len(framework_posture.get("failing") or []),
+            "framework_passing": len(framework_posture.get("passing") or []),
+            "framework_documented": len(framework_posture.get("documented") or []),
         },
     }

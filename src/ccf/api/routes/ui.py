@@ -528,6 +528,8 @@ async def systems_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from ...analytics.live_scan import live_scan_by_system  # noqa: PLC0415
+
     org = _principal_org(request)
     orgs_stmt = select(Organization).where(Organization.deleted_at.is_(None)).order_by(
         Organization.name
@@ -549,6 +551,7 @@ async def systems_page(
             "organizations": orgs,
             "systems": systems,
             "by_org": by_org,
+            "live_scan": await live_scan_by_system(session, org_id=org),
         },
     )
 
@@ -1537,6 +1540,8 @@ async def scoring_create_system(
 
 @router.get("/ssp", response_class=HTMLResponse)
 async def ssp_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    from ...analytics.live_scan import live_scan_by_system  # noqa: PLC0415
+
     org = _principal_org(request)
     proj_stmt = select(SSPProject).order_by(SSPProject.created_at.desc())
     sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
@@ -1560,6 +1565,7 @@ async def ssp_page(request: Request, session: AsyncSession = Depends(get_session
             "have_controls": have_controls,
             "platforms": PLATFORMS,
             "frameworks": FRAMEWORKS,
+            "live_scan": await live_scan_by_system(session, org_id=org),
         },
     )
 
@@ -1644,6 +1650,10 @@ async def ssp_detail(
     session: AsyncSession = Depends(get_session),
     domain: str | None = Query(None),
 ) -> HTMLResponse:
+    from ...analytics.live_scan import live_scan_for_system  # noqa: PLC0415
+    from ...ssp.completeness_query import project_completeness  # noqa: PLC0415
+    from ...ssp.sync import project_scan_sync  # noqa: PLC0415
+
     proj = await _scoped_project(session, project_id, _principal_org(request))
     if proj is None:
         raise HTTPException(404, "SSP project not found")
@@ -1703,6 +1713,17 @@ async def ssp_detail(
             "odp_defs_for": odp_defs_for,
             "templates_for": templates_for,
             "is_draft_entry": lambda e: is_draft_narrative(e.part_narratives),
+            "scan_sync": await project_scan_sync(session, proj),
+            "completeness": await project_completeness(session, proj),
+            "live_scan": (
+                await live_scan_for_system(
+                    session,
+                    system_id=proj.system_id,
+                    org_id=_principal_org(request),
+                )
+                if proj.system_id is not None
+                else None
+            ),
         },
     )
 

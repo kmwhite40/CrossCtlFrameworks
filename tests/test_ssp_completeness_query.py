@@ -443,6 +443,15 @@ _EXPECTED_LINKED: dict[str, Any] = {
         },
     ],
     "odp_summary": {"total": 3, "unset": 1},
+    # A linked system with nothing scanned and no open POA&M: the dimension WAS
+    # measurable and found nothing outstanding, which is a different statement
+    # from the unlinked project's "could not be measured" above. `not_yet_gated`
+    # is empty because every condition the programme names is now enforced --
+    # provider shared-responsibility coverage included, once `responsibility.py`
+    # landed.
+    "readiness_blockers": [],
+    "readiness_measured": True,
+    "not_yet_gated": [],
 }
 
 # 2 controls, 1 complete -> control_pct = 0.5. boundary is None, so section_pct
@@ -456,6 +465,13 @@ _EXPECTED_UNLINKED: dict[str, Any] = {
     "missing_sections": ["ISSO", "Authorizing Official"],
     "control_gaps": [{"control_id": _C3, "gaps": ["implemented without evidence"]}],
     "odp_summary": {"total": 1, "unset": 0},
+    # No linked system, so there is nothing to scan and no POA&M to reach: the
+    # readiness dimension is *unmeasured*, not cleared. `readiness_measured`
+    # carries that difference so an empty blocker list is never read as "checked
+    # and fine" -- the same misreading bare zeros produce elsewhere.
+    "readiness_blockers": [],
+    "readiness_measured": False,
+    "not_yet_gated": ["automated findings and POA&Ms (no system linked to this project)"],
 }
 
 # Same two entries, but system_id points at a row that no longer exists: the
@@ -477,6 +493,12 @@ _EXPECTED_DANGLING: dict[str, Any] = {
     ],
     "control_gaps": [{"control_id": _C3, "gaps": ["implemented without evidence"]}],
     "odp_summary": {"total": 1, "unset": 0},
+    # `system_id` is set, so the dimension is measured even though the System row
+    # is gone: the queries simply find nothing against that id. Consistent with
+    # how the boundary dimension already treats this project shape.
+    "readiness_blockers": [],
+    "readiness_measured": True,
+    "not_yet_gated": [],
 }
 
 

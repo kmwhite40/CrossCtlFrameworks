@@ -505,6 +505,29 @@ async def test_audit_plan_separates_api_checks_from_manual_review(
             "reason": None if connector_key == "msgraph" else "not configured",
         }
 
+    async def _framework_posture(session, *, org_id: int | None, system_id: int):
+        return {
+            "framework": "fedramp_moderate",
+            "framework_label": "NIST SP 800-53 Moderate",
+            "framework_source": "system.baseline",
+            "denominator": "fips199_baseline",
+            "unit": "control",
+            "baseline": "moderate",
+            "total": 4,
+            "passing": ["AC-2"],
+            "failing": [],
+            "documented": ["PE-2"],
+            "unaddressed": ["AU-2", "CM-2"],
+            "addressed_pct": 50.0,
+            "assessed_pct": 25.0,
+            "unmappable_controls": [],
+            "unreachable": [],
+            "practice_ids": {},
+            "reason": None,
+            "system_id": system_id,
+            "system": "AuditPlanSys",
+        }
+
     monkeypatch.setattr(
         posture_routes, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
     )
@@ -514,6 +537,7 @@ async def test_audit_plan_separates_api_checks_from_manual_review(
         lambda: frozenset({"msgraph", "aws_govcloud"}),
     )
     monkeypatch.setattr(audit_plan_module, "provider_readiness", _ready)
+    monkeypatch.setattr(audit_plan_module, "system_framework_posture", _framework_posture)
 
     async with _client() as client:
         r = await client.get(f"/api/systems/{system_id}/audit-plan")
@@ -521,7 +545,11 @@ async def test_audit_plan_separates_api_checks_from_manual_review(
     body = r.json()
 
     assert body["summary"]["api_checks"] == 1
+    assert body["summary"]["framework_total"] == 4
+    assert body["summary"]["framework_automated"] == 1
+    assert body["summary"]["framework_manual_review_required"] == 2
     assert body["api_checks"][0]["check_key"] == "msgraph.scan"
+    assert {c["id"] for c in body["framework_manual_review_required"]} == {"AU-2", "CM-2"}
     manual = {c["check_key"]: c["reason"] for c in body["manual_review_required"]}
     assert manual["msgraph.inherited"] == "inherited_evidence"
     assert manual["aws_govcloud.scan"] == "not configured"

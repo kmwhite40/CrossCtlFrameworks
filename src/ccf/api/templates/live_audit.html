@@ -26,10 +26,34 @@
 
 <section class="grid-cards" style="margin-bottom:16px">
   <div class="kpi"><span class="kpi__label">Providers ready</span><span class="kpi__value">{{ workflow.audit_plan.summary.providers_ready }}/{{ workflow.audit_plan.summary.providers }}</span></div>
-  <div class="kpi"><span class="kpi__label">API checks</span><span class="kpi__value">{{ workflow.audit_plan.summary.api_checks }}</span></div>
+  <div class="kpi"><span class="kpi__label">Automated checks</span><span class="kpi__value">{{ workflow.audit_plan.summary.api_checks }}</span><span class="kpi__meta">provider API checks</span></div>
+  <div class="kpi"><span class="kpi__label">Framework scope</span><span class="kpi__value">{{ workflow.audit_plan.summary.framework_total }}</span><span class="kpi__meta">{{ workflow.audit_plan.summary.framework_manual_review_required }} need manual review</span></div>
   <div class="kpi"><span class="kpi__label">Evaluations</span><span class="kpi__value">{{ workflow.control_evaluations.total }}</span></div>
   <div class="kpi"><span class="kpi__label">Needs POA&amp;M</span><span class="kpi__value">{{ workflow.control_evaluations.failed_without_poam }}</span></div>
 </section>
+
+{% if workflow.audit_plan.summary.framework_total %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Framework-wide audit scope</div>
+      <div class="card__subtitle">
+        {{ workflow.audit_plan.summary.framework_automated }} automated item(s) out of
+        {{ workflow.audit_plan.summary.framework_total }} framework item(s)
+      </div>
+    </div>
+    <span class="chip {% if workflow.audit_plan.summary.framework_manual_review_required %}chip--warn{% else %}chip--ok{% endif %}">
+      {{ workflow.audit_plan.summary.framework_manual_review_required }} manual
+    </span>
+  </div>
+  <div class="card__body row" style="gap:8px;flex-wrap:wrap">
+    <span class="chip chip--ok">{{ workflow.audit_plan.summary.framework_passing }} passing</span>
+    <span class="chip {% if workflow.audit_plan.summary.framework_failing %}chip--err{% else %}chip--ghost{% endif %}">{{ workflow.audit_plan.summary.framework_failing }} failing</span>
+    <span class="chip chip--brand">{{ workflow.audit_plan.summary.framework_documented }} documented</span>
+    <span class="chip chip--warn">{{ workflow.audit_plan.summary.framework_manual_review_required }} not covered by API evidence</span>
+  </div>
+</section>
+{% endif %}
 
 {% if workflow.audit_plan.providers_unavailable %}
 <section class="card" style="margin-bottom:16px">

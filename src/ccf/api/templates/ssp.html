@@ -24,12 +24,25 @@
     <div class="card__header"><div class="card__title">SSP projects</div></div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Customer</th><th>System</th><th>Version</th><th>Status</th><th>Created</th><th></th></tr></thead>
+        <thead><tr><th>Customer</th><th>System</th><th>Live scan</th><th>Version</th><th>Status</th><th>Created</th><th></th></tr></thead>
         <tbody>
           {% for p in projects %}
           <tr>
             <td><a href="/ssp/{{ p.id }}" style="font-weight:600">{{ p.customer_name }}</a></td>
             <td>{{ p.system_name or '—' }}</td>
+            {% set scan = live_scan.get(p.system_id) if p.system_id else none %}
+            <td>
+              {% if scan %}
+                <span class="chip {% if scan.attention %}chip--err{% else %}chip--ok{% endif %}">
+                  {{ scan.attention }} blocker(s)
+                </span>
+                <div class="dim" style="font-size:12px">{{ scan.pass }} pass · {{ scan.total }} check(s)</div>
+              {% elif p.system_id %}
+                <span class="chip chip--ghost">not scanned</span>
+              {% else %}
+                <span class="dim">—</span>
+              {% endif %}
+            </td>
             <td><span class="chip chip--ghost">v{{ p.version }}</span></td>
             <td><span class="chip {{ 'chip--ok' if p.status=='final' else ('chip--info' if p.status=='in_review' else 'chip--warn') }}">{{ p.status }}</span></td>
             <td class="dim">{{ p.created_at.strftime('%Y-%m-%d') }}</td>
@@ -39,7 +52,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="6" class="dim">No SSP projects yet — create one for a customer →</td></tr>
+          <tr><td colspan="7" class="dim">No SSP projects yet — create one for a customer →</td></tr>
           {% endfor %}
         </tbody>
       </table>
