@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from ...auth import Principal
 from ...config import get_settings, is_dev_env
+from ...connectors.credential_spec import configurable_types
 from ...governance import bus, control_tests, trust_corroboration
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, System, Task
@@ -31,7 +32,6 @@ from ...models_grc import (
     TrustAccessRequest,
     TrustProfile,
 )
-from ...connectors.credential_spec import configurable_types
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
@@ -1015,7 +1015,7 @@ async def run_control_test(
             "Re-run the scan to change its result.",
         )
     try:
-        res = await control_tests.record_result(
+        await control_tests.record_result(
             session,
             t,
             status=body.status,

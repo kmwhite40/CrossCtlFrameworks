@@ -159,7 +159,7 @@ async def test_an_unauthenticated_caller_cannot_push() -> None:
 
 
 async def _link(org_id: int, poam_id: int, key: str) -> None:
-    from ccf.models_grc import ExternalIssueLink
+    from ccf.models_grc import ExternalIssueLink  # noqa: PLC0415
 
     async with session_scope() as s:
         s.add(
@@ -175,7 +175,7 @@ async def _link(org_id: int, poam_id: int, key: str) -> None:
 
 
 async def _org_id_of(poam_id: int) -> int:
-    from sqlalchemy import select as _select
+    from sqlalchemy import select as _select  # noqa: PLC0415
 
     async with session_scope() as s:
         return (
@@ -223,8 +223,8 @@ async def test_the_button_is_withheld_until_jira_is_configured() -> None:
     exists -- a page that never rendered the button would pass the first half
     alone.
     """
-    from ccf.connectors.credentials import set_credential
-    from ccf.models_grc import ConnectorConfig
+    from ccf.connectors.credentials import set_credential  # noqa: PLC0415
+    from ccf.models_grc import ConnectorConfig  # noqa: PLC0415
 
     poam_id, token = await _org_poam_and_user(f"Jira Button {uuid.uuid4().hex[:6]}")
     org_id = await _org_id_of(poam_id)

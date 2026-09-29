@@ -103,7 +103,7 @@ async def set_credential(
             raise ValueError(
                 "the connector row does not belong to this organization/type"
             )
-        cfg = config
+        cfg: ConnectorConfig | None = config
     else:
         cfg = (
             await session.execute(

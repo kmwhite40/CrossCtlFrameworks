@@ -176,10 +176,10 @@ async def test_every_evaluator_receives_the_arguments_it_declares() -> None:
     cannot be half-wired: the dispatcher reads the signature, so there is no
     branch left to forget.
     """
-    from datetime import UTC, datetime
+    from datetime import UTC, datetime  # noqa: PLC0415
 
-    from ccf.connectors.msgraph import MsGraphConnector
-    from ccf.posture.resolve import ResolvedCheck
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
+    from ccf.posture.resolve import ResolvedCheck  # noqa: PLC0415
 
     connector = MsGraphConnector(
         credential={"tenant_id": TENANT, "client_id": "c", "client_secret": "s"}
@@ -228,9 +228,9 @@ async def test_a_singleton_policy_endpoint_yields_one_row() -> None:
     in directly, so they pass whether or not the fetch produces any -- the
     mutation that removed this branch left all of them green.
     """
-    import httpx
+    import httpx  # noqa: PLC0415
 
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     body = {"allowInvitesFrom": "everyone", "defaultUserRolePermissions": {}}
 
@@ -258,9 +258,9 @@ async def test_a_collection_that_is_genuinely_empty_stays_empty() -> None:
     A collection endpoint returning `{"value": []}` means "no resources",
     which must not become one row containing the envelope.
     """
-    import httpx
+    import httpx  # noqa: PLC0415
 
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     async def _serve(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"value": []})

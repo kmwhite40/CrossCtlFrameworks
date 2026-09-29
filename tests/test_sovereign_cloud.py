@@ -149,7 +149,7 @@ async def test_the_pagination_guard_follows_the_organizations_own_cloud() -> Non
 
 
 def test_the_aws_region_travels_with_the_credential_and_defaults_to_govcloud() -> None:
-    from ccf.connectors.aws import AwsGovCloudConnector
+    from ccf.connectors.aws import AwsGovCloudConnector  # noqa: PLC0415
 
     default = AwsGovCloudConnector(credential={"access_key_id": "A", "secret_access_key": "B"})
     assert default._region() == get_settings().aws_region == "us-gov-west-1"

@@ -27,9 +27,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...ai import gateway
+from ...ai.cipher import CredentialStorageError
 from ...ai.gateway import UnknownProviderError
 from ...ai.providers import SUPPORTED_PROVIDERS
-from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
 from ...models_ai_actions import AiProviderConfig
 from ..auth_deps import require_role

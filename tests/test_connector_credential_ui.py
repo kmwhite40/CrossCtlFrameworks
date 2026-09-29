@@ -214,7 +214,7 @@ async def test_a_blank_secret_field_keeps_the_stored_value() -> None:
         )
     assert "saved=1" in second.headers["location"], second.headers["location"]
 
-    from ccf.connectors.credentials import resolve_credential
+    from ccf.connectors.credentials import resolve_credential  # noqa: PLC0415
 
     async with session_scope() as s:
         cfg = await s.get(ConnectorConfig, cfg_id)
@@ -288,7 +288,7 @@ async def test_a_failed_test_records_the_providers_own_reason(
     async with _client() as c:
         await c.post(f"/connectors/{cfg_id}/credential", data=_MSGRAPH, headers=_auth(token))
 
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     async def _refuse(self):
         return {"connected": False, "reason": "AADSTS7000215: Invalid client secret provided."}
@@ -314,7 +314,7 @@ async def test_a_successful_test_clears_the_previous_error(
     async with _client() as c:
         await c.post(f"/connectors/{cfg_id}/credential", data=_MSGRAPH, headers=_auth(token))
 
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     async def _ok(self):
         return {"connected": True, "tenant": "contoso.onmicrosoft.com"}
@@ -338,9 +338,9 @@ def test_a_failed_token_request_reports_entras_own_code() -> None:
     about HTTP status codes. The code is in the response body, which was
     discarded.
     """
-    import httpx
+    import httpx  # noqa: PLC0415
 
-    from ccf.connectors.msgraph import _aad_reason
+    from ccf.connectors.msgraph import _aad_reason  # noqa: PLC0415
 
     request = httpx.Request("POST", "https://login.microsoftonline.us/t/oauth2/v2.0/token")
     response = httpx.Response(
@@ -364,7 +364,7 @@ def test_a_failed_token_request_reports_entras_own_code() -> None:
 def test_a_transport_failure_without_a_response_still_reports_something() -> None:
     """No response body to read: the exception text is all there is, and
     returning an empty reason would render as 'the provider did not say why'."""
-    from ccf.connectors.msgraph import _aad_reason
+    from ccf.connectors.msgraph import _aad_reason  # noqa: PLC0415
 
     assert _aad_reason(OSError("name resolution failed")) == "name resolution failed"
 
@@ -377,9 +377,9 @@ async def test_verify_routes_a_token_failure_through_the_aad_reader() -> None:
     ``str(e)``: both mutations had to fail, and only one did. This drives
     ``verify()`` itself and asserts the AADSTS code survives the trip.
     """
-    import httpx
+    import httpx  # noqa: PLC0415
 
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     request = httpx.Request("POST", "https://login.microsoftonline.us/t/oauth2/v2.0/token")
     response = httpx.Response(
@@ -491,7 +491,7 @@ async def test_sync_reports_no_credential_and_writes_nothing() -> None:
     async with _client() as c:
         r = await c.post(f"/connectors/{cfg_id}/sync", headers=_auth(token))
     assert r.status_code == 303
-    from urllib.parse import unquote
+    from urllib.parse import unquote  # noqa: PLC0415
 
     assert "no stored credential" in unquote(r.headers["location"])
 
@@ -515,7 +515,7 @@ async def test_sync_asks_the_provider_and_never_invents_capture_counts(
     read as a working integration and hid the real error. So it asks the
     provider, and capture counts are left to real capture.
     """
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     org_id, token = await _org_admin(f"Conn Sync Verify {uuid.uuid4().hex[:6]}")
     cfg_id = await _connector(org_id)
@@ -529,7 +529,7 @@ async def test_sync_asks_the_provider_and_never_invents_capture_counts(
     async with _client() as c:
         r = await c.post(f"/connectors/{cfg_id}/sync", headers=_auth(token))
 
-    from urllib.parse import unquote
+    from urllib.parse import unquote  # noqa: PLC0415
 
     assert "AADSTS700016" in unquote(r.headers["location"])
     async with session_scope() as s:
@@ -562,7 +562,7 @@ async def test_sync_asks_the_provider_and_never_invents_capture_counts(
 
 
 async def _system(org_id: int, name: str = "Federal") -> int:
-    from ccf.models import System
+    from ccf.models import System  # noqa: PLC0415
 
     async with session_scope() as s:
         system = System(organization_id=org_id, name=name)
@@ -591,7 +591,7 @@ async def test_a_scan_runs_the_connectors_checks_and_records_results(
         seen.update(system_id=system_id, connector_key=connector_key, actor=actor)
         return {"checks_run": 3, "failing_total": 1, "results": []}
 
-    import ccf.posture.scan as scan_module
+    import ccf.posture.scan as scan_module  # noqa: PLC0415
 
     monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
     async with _client() as c:
@@ -628,7 +628,7 @@ async def test_a_scan_that_ran_no_checks_does_not_look_clean(
     async def _no_checks(session, *, system_id, connector_key, actor="scan"):
         return {"checks_run": 0, "results": [], "reason": "no checks registered"}
 
-    import ccf.posture.scan as scan_module
+    import ccf.posture.scan as scan_module  # noqa: PLC0415
 
     monkeypatch.setattr(scan_module, "scan_for_system", _no_checks)
     try:
@@ -639,7 +639,7 @@ async def test_a_scan_that_ran_no_checks_does_not_look_clean(
                 headers=_auth(token),
             )
 
-        from urllib.parse import unquote
+        from urllib.parse import unquote  # noqa: PLC0415
 
         location = unquote(r.headers["location"])
         assert "scanned=" not in location
@@ -662,7 +662,7 @@ async def test_a_scan_needs_a_credential_and_an_owned_system() -> None:
     cfg_id = await _connector(org_id)
     system_id = await _system(org_id)
 
-    from urllib.parse import unquote
+    from urllib.parse import unquote  # noqa: PLC0415
 
     # No credential yet.
     async with _client() as c:

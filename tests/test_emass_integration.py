@@ -10,7 +10,7 @@ specification matches the service.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
@@ -69,7 +69,7 @@ async def test_a_date_is_sent_as_unix_seconds_not_milliseconds() -> None:
     stored = next(iter(fake.poams.values()))
     assert stored["scheduledCompletionDate"] == _epoch(date(2026, 3, 1))
     assert (
-        datetime.fromtimestamp(stored["scheduledCompletionDate"], timezone.utc).date()
+        datetime.fromtimestamp(stored["scheduledCompletionDate"], UTC).date()
         == date(2026, 3, 1)
     )
 
@@ -85,7 +85,7 @@ def test_the_date_is_the_same_wherever_the_container_runs() -> None:
 
 @pytest.mark.asyncio
 async def test_the_body_is_an_array_even_for_one_poam() -> None:
-    import json
+    import json  # noqa: PLC0415
 
     fake = FakeEmass()
     target = _target(fake)
@@ -166,7 +166,7 @@ async def test_an_update_carries_the_poam_id_in_the_item() -> None:
     assert result.created is False
     assert result.external_id == created.external_id
 
-    import json
+    import json  # noqa: PLC0415
 
     sent = json.loads(fake.requests[-1].content)[0]
     assert sent["poamId"] == int(created.external_id)

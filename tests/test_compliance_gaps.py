@@ -184,7 +184,7 @@ async def test_the_executive_rollup_carries_continuous_monitoring() -> None:
     so a leader could read that page while six of ten continuously-monitored
     controls were failing and see no sign of it.
     """
-    from ccf.governance import insights
+    from ccf.governance import insights  # noqa: PLC0415
 
     org_id, _ = await _seed()
     async with session_scope() as s:
@@ -204,7 +204,7 @@ async def test_the_executive_rollup_carries_continuous_monitoring() -> None:
 async def test_the_executive_conmon_block_is_scoped_to_one_organization() -> None:
     """The owning org is asserted first, so a block that reported nothing at
     all would fail here too."""
-    from ccf.governance import insights
+    from ccf.governance import insights  # noqa: PLC0415
 
     mine, _ = await _seed()
     await _seed()  # another tenant, also with one failing control

@@ -38,13 +38,13 @@ def integration_credential_keys() -> tuple[str, ...]:
 
 
 __all__ = [
+    "EmassTarget",
     "IntegrationError",
     "IntegrationNotConfigured",
     "IntegrationRefused",
     "IntegrationUnavailable",
     "IssueContent",
     "IssueTracker",
-    "EmassTarget",
     "JiraTracker",
     "PushResult",
     "integration_credential_keys",

@@ -31,7 +31,9 @@ from .framework_posture import resolve_applied_framework, system_framework_postu
 from .gaps import compliance_gaps
 
 
-def _step(key: str, title: str, state: str, detail: str, action: str, href: str) -> dict[str, Any]:
+def _step(  # noqa: PLR0917 -- one positional per column of a step row
+    key: str, title: str, state: str, detail: str, action: str, href: str
+) -> dict[str, Any]:
     return {
         "key": key,
         "title": title,
@@ -223,7 +225,7 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
             {
                 "system_id": s.id,
                 "name": s.name,
-                "framework": applied_by_system[s.id].label if applied_by_system[s.id] else None,
+                "framework": (af.label if (af := applied_by_system[s.id]) else None),
             }
             for s in systems
             if system is None or s.id != system.id

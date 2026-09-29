@@ -64,7 +64,7 @@ async def test_the_system_subquery_returns_only_live_systems() -> None:
 @pytest.mark.asyncio
 async def test_the_scorecard_does_not_score_a_deleted_system() -> None:
     """`systems_total` and `worst_system` are both derived from this list."""
-    org_id, live_id, gone_id = await _org_with_live_and_deleted()
+    org_id, live_id, _gone_id = await _org_with_live_and_deleted()
     async with session_scope() as s:
         cards = await posture.systems_scorecard(s, today=date.today(), org_id=org_id)
     ids = {c["system_id"] for c in cards}
@@ -112,7 +112,7 @@ async def test_the_overview_blocks_use_the_live_subquery_unconditionally() -> No
     `if org_id is not None` gate, under which an unscoped call filtered
     nothing -- the helper would be correct and the dashboard still wrong.
     """
-    import inspect
+    import inspect  # noqa: PLC0415
 
     source = inspect.getsource(overview)
     for model in ("Risk", "POAM", "KSIState"):
@@ -163,7 +163,7 @@ async def test_a_system_with_nothing_assessed_carries_no_sprs_score() -> None:
 @pytest.mark.asyncio
 async def test_an_unassessed_system_is_absent_from_the_headline_numbers() -> None:
     """It must not set the average, nor be named the worst performer."""
-    org_id, system_id = await _org_with_unassessed_system()
+    org_id, _system_id = await _org_with_unassessed_system()
     async with session_scope() as s:
         summary = await posture.org_summary(s, today=date.today(), org_id=org_id)
 
@@ -200,17 +200,17 @@ async def test_the_operations_page_renders_with_an_unassessed_system() -> None:
     was not. And no existing test rendered the page with an unassessed system,
     which is the only state that triggers it -- so the suite stayed green.
     """
-    import os
+    import os  # noqa: PLC0415
 
-    from httpx import ASGITransport, AsyncClient
+    from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
 
-    from ccf.api.main import create_app
+    from ccf.api.main import create_app  # noqa: PLC0415
 
     org_id, _system_id = await _org_with_unassessed_system()
 
-    from ccf.auth import hash_password, new_api_token
-    from ccf.config import get_settings
-    from ccf.models import User
+    from ccf.auth import hash_password, new_api_token  # noqa: PLC0415
+    from ccf.config import get_settings  # noqa: PLC0415
+    from ccf.models import User  # noqa: PLC0415
 
     async with session_scope() as s:
         user = User(

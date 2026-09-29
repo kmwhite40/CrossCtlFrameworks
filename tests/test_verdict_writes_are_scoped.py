@@ -18,8 +18,7 @@ import uuid
 import pytest
 
 from ccf.db import session_scope
-from ccf.governance import control_tests
-from ccf.governance.control_tests import ScanOwnedTestError, record_result
+from ccf.governance.control_tests import record_result
 from ccf.models import Organization, System
 from ccf.models_grc import ControlTest
 
@@ -52,7 +51,7 @@ async def _test_row(*, check_key: str | None) -> tuple[int, int]:
 def test_a_scan_owned_test_is_identified_by_its_check_key() -> None:
     """A scan-owned test's result is evidence; a typed value replacing it is
     indistinguishable afterwards."""
-    from ccf.governance.control_tests import scan_owned
+    from ccf.governance.control_tests import scan_owned  # noqa: PLC0415
 
     assert scan_owned(ControlTest(check_key="m365.identity.mfa_registered")) is True
     assert scan_owned(ControlTest(check_key=None)) is False
@@ -68,9 +67,9 @@ def test_both_write_routes_refuse_a_verdict_on_a_scan_owned_test() -> None:
     a resourceless tenant-level failure: a scan being told its own result was
     hand-typed.
     """
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.api.routes import grc, ui_grc
+    from ccf.api.routes import grc, ui_grc  # noqa: PLC0415
 
     for fn in (grc.run_control_test, ui_grc.control_tests_run):
         assert "scan_owned" in inspect.getsource(fn), (
@@ -81,7 +80,7 @@ def test_both_write_routes_refuse_a_verdict_on_a_scan_owned_test() -> None:
 def test_the_writer_itself_stays_open_to_internal_callers() -> None:
     """`record_result` must not refuse: the scan, the scheduler and the
     recovery path all go through it, and a guard there breaks them."""
-    import inspect
+    import inspect  # noqa: PLC0415
 
     assert "ScanOwnedTestError" not in inspect.getsource(record_result)
 
@@ -93,9 +92,9 @@ def test_both_write_routes_go_through_the_single_writer() -> None:
     remediation-task creation, recovery and the scan-owned check all behaved
     differently depending on which door the result came through.
     """
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.api.routes import grc, ui_grc
+    from ccf.api.routes import grc, ui_grc  # noqa: PLC0415
 
     for fn in (grc.run_control_test, ui_grc.control_tests_run):
         source = inspect.getsource(fn)
@@ -107,9 +106,9 @@ def test_both_write_routes_go_through_the_single_writer() -> None:
 
 def test_both_write_routes_check_the_organization() -> None:
     """Their read siblings always did; the write paths did not."""
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.api.routes import grc, ui_grc
+    from ccf.api.routes import grc, ui_grc  # noqa: PLC0415
 
     assert "t.organization_id != principal.org_id" in inspect.getsource(grc.run_control_test)
     assert "test.organization_id != org" in inspect.getsource(ui_grc.control_tests_run)
@@ -118,9 +117,9 @@ def test_both_write_routes_check_the_organization() -> None:
 def test_the_other_tenant_writes_check_the_organization() -> None:
     """Offboarding a person and tripping an AI kill switch are consequential
     enough that neither should rest on RLS alone."""
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.api.routes import grc, ui_grc
+    from ccf.api.routes import grc, ui_grc  # noqa: PLC0415
 
     assert "p.organization_id != org" in inspect.getsource(ui_grc.personnel_offboard)
     assert "agent.organization_id != org" in inspect.getsource(ui_grc.ai_agents_kill_ui)

@@ -23,6 +23,7 @@ configured, and could never authenticate.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from .clouds import AWS_REGION_CHOICES, CLOUD_CHOICES
 
@@ -215,7 +216,7 @@ SPECS: dict[str, CredentialSpec] = {
 }
 
 
-class IncompleteCredential(ValueError):
+class IncompleteCredential(ValueError):  # noqa: N818 -- names a state, not an error kind
     """A stored bundle that could never authenticate.
 
     Raised rather than recorded: a credential accepted and marked configured is
@@ -244,7 +245,7 @@ def spec_for(connector_type: str) -> CredentialSpec | None:
     return SPECS.get(connector_type)
 
 
-def missing_fields(connector_type: str, secret: dict) -> tuple[str, ...]:
+def missing_fields(connector_type: str, secret: dict[str, Any]) -> tuple[str, ...]:
     """Field names still needed, or ``()`` when the bundle is usable.
 
     Where a connector accepts alternatives, the group closest to satisfied is
@@ -274,10 +275,10 @@ def missing_fields(connector_type: str, secret: dict) -> tuple[str, ...]:
 
 __all__ = [
     "SPECS",
-    "configurable_types",
     "CredentialField",
     "CredentialSpec",
     "IncompleteCredential",
+    "configurable_types",
     "missing_fields",
     "spec_for",
 ]

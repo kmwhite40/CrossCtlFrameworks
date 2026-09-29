@@ -90,7 +90,9 @@ class FakeEmass:
             self.poams[poam_id].update(item)
         return {"systemId": self.system_id, "poamId": poam_id, "success": True}
 
-    def _validate(self, item: dict[str, Any], *, creating: bool) -> str | None:
+    def _validate(  # noqa: PLR0911 -- one return per rejection reason
+        self, item: dict[str, Any], *, creating: bool
+    ) -> str | None:
         if not creating and "poamId" not in item:
             return "poamId is required to update a POA&M."
         if item.get("severity") not in SEVERITIES:

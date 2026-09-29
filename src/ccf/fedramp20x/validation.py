@@ -37,7 +37,7 @@ from ..models import (
     KSIValidationResult,
     System,
 )
-from ..models_grc import ControlTest, ControlTestResult
+from ..models_grc import ControlTest
 
 # Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
 # Public because ccf.posture.rollup shares it -- but note the two uses select

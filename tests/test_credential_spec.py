@@ -40,7 +40,7 @@ def _aws_capture_available(monkeypatch: pytest.MonkeyPatch):
     False for reasons that have nothing to do with the credential -- a test
     that cannot fail, which is the exact trap this module exists to avoid.
     """
-    from ccf.config import get_settings
+    from ccf.config import get_settings  # noqa: PLC0415
 
     connector = get_connector("aws_govcloud")
     monkeypatch.setattr(type(connector), "_boto3_available", lambda self: True)
@@ -69,7 +69,7 @@ def test_every_storable_connector_type_declares_its_fields() -> None:
     # PROVIDER_REGISTRY empty, because `registry` is what imports the providers
     # package that populates it. Run on its own, this guard then checked five
     # read connectors and no write credential at all.
-    from ccf.enforcement.registry import PROVIDER_REGISTRY
+    from ccf.enforcement.registry import PROVIDER_REGISTRY  # noqa: PLC0415
 
     shipped_write = {
         provider.write_credential_type
@@ -157,7 +157,7 @@ def test_the_connectors_page_only_offers_types_that_can_be_configured() -> None:
     Both directions are asserted, since a page offering nothing would satisfy
     the first on its own.
     """
-    from ccf.api.routes.ui_grc import _configurable_types
+    from ccf.api.routes.ui_grc import _configurable_types  # noqa: PLC0415
 
     offered = dict(_configurable_types())
     assert offered, "the connectors page offers no types at all"
@@ -175,8 +175,8 @@ def test_the_connectors_page_only_offers_types_that_can_be_configured() -> None:
 
 def test_the_demo_connector_vocabulary_is_no_longer_what_the_page_offers() -> None:
     """Pins the separation, so a future edit cannot quietly reunite them."""
-    from ccf.api.routes.grc import CONNECTOR_TYPES
-    from ccf.api.routes.ui_grc import _configurable_types
+    from ccf.api.routes.grc import CONNECTOR_TYPES  # noqa: PLC0415
+    from ccf.api.routes.ui_grc import _configurable_types  # noqa: PLC0415
 
     offered = {key for key, _label in _configurable_types()}
     demo_only = {"azure", "azure_gov", "m365", "m365_gcc_high", "github", "servicenow"}
@@ -196,8 +196,8 @@ async def test_the_json_api_offers_the_same_types_as_the_page() -> None:
     type with no implementation -- and those rows reach production, which the
     page's fix did not cover.
     """
-    from ccf.api.routes.ui_grc import _configurable_types
-    from ccf.connectors.credential_spec import configurable_types
+    from ccf.api.routes.ui_grc import _configurable_types  # noqa: PLC0415
+    from ccf.connectors.credential_spec import configurable_types  # noqa: PLC0415
 
     assert tuple(_configurable_types()) == tuple(configurable_types())
     offered = {key for key, _label in configurable_types()}
@@ -206,9 +206,9 @@ async def test_the_json_api_offers_the_same_types_as_the_page() -> None:
 
 def test_the_json_api_no_longer_validates_against_the_demo_vocabulary() -> None:
     """Pins the wiring, not the helper: the route could still hold its own list."""
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.api.routes import grc
+    from ccf.api.routes import grc  # noqa: PLC0415
 
     source = inspect.getsource(grc.create_connector)
     assert "CONNECTOR_TYPES" not in source, (

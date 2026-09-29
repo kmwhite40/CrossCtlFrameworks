@@ -48,7 +48,8 @@ def test_the_directory_audit_check_reads_its_own_timestamp_field() -> None:
     `createdDateTime` -- reading the wrong field would make every tenant look
     like it had no audit trail."""
     rows = [{"activityDateTime": _stamp(1)}]
-    assert m365.evaluate_directory_audit_current(rows, tenant_id=TENANT, now=NOW)[0].verdict == "pass"
+    result = m365.evaluate_directory_audit_current(rows, tenant_id=TENANT, now=NOW)
+    assert result[0].verdict == "pass"
     # The sign-in evaluator must not accept that field, or the two would be
     # interchangeable and the distinction above meaningless.
     assert m365.evaluate_signin_audit_current(rows, tenant_id=TENANT, now=NOW)[0].verdict == "fail"
@@ -131,9 +132,9 @@ def test_the_audit_checks_are_the_only_single_page_reads() -> None:
 async def test_a_single_page_read_does_not_follow_the_next_link() -> None:
     """Driven through `_get_all`, because the bound is in the fetch and a test
     of the mapping alone would pass with the wiring absent."""
-    import httpx
+    import httpx  # noqa: PLC0415
 
-    from ccf.connectors.msgraph import MsGraphConnector
+    from ccf.connectors.msgraph import MsGraphConnector  # noqa: PLC0415
 
     calls: list[str] = []
 
