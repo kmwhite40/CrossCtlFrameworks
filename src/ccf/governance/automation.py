@@ -34,6 +34,7 @@ from ..models import (
     Vendor,
 )
 from ..models_grc import ControlTest
+from ..posture.evidence import non_passing_attribution
 from ..scoring.engine import DERIVED, deduction_for, score_system
 from ..scoring.service import record_derived_state
 from ..ssp import constants as ssp_constants
@@ -736,11 +737,12 @@ async def generate_statements(
     }
     failing_by_control: dict[str, list[dict[str, str]]] = {}
     unassessed_by_control: dict[str, list[dict[str, str]]] = {}
-    for test_id, control_id, name, run_at, status in (
+    for test_id, control_id, control_ids, name, run_at, status in (
         await session.execute(
             select(
                 ControlTest.id,
                 ControlTest.control_id,
+                ControlTest.control_ids,
                 ControlTest.name,
                 ControlTest.last_tested_at,
                 ControlTest.last_status,
@@ -758,9 +760,17 @@ async def generate_statements(
             "check": str(name),
             "observed_on": run_at.date().isoformat() if run_at else "",
         }
+        # A finding is a finding against every control the check declares, not
+        # only the first one recorded. The guest-invitation check declares AC-3
+        # and AC-6; an SSP that discloses it under AC-3 and lets AC-6 stand as
+        # "Implemented" is the failure this whole section exists to prevent.
+        # `verified_by_control` above is deliberately NOT widened -- see
+        # `ccf.posture.evidence` for why a pass credits the primary only.
+        attributed = non_passing_attribution(control_id, control_ids)
         if status == "manual_review_required":
             # The only verdict that means "Concord could not judge this".
-            unassessed_by_control.setdefault(str(control_id), []).append(row)
+            for attributed_id in attributed:
+                unassessed_by_control.setdefault(attributed_id, []).append(dict(row))
         else:
             # `fail` and `warn`. Both are the platform saying the control is not
             # operating as expected, so both are findings -- routing `warn` to
@@ -769,7 +779,8 @@ async def generate_statements(
             poam_id = poam_by_test.get(int(test_id))
             if poam_id is not None:
                 row["poam_id"] = str(poam_id)
-            failing_by_control.setdefault(str(control_id), []).append(row)
+            for attributed_id in attributed:
+                failing_by_control.setdefault(attributed_id, []).append(dict(row))
 
     # Real vendors, by name, for the ``crm_ref``/``frequency`` of a
     # vendor-inherited control (source ``vendor:<name>`` — see

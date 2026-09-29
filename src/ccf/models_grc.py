@@ -297,6 +297,12 @@ class ControlTest(Base):
     )
     system_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.systems.id", ondelete="CASCADE"))
     control_id: Mapped[str] = mapped_column(String(64), index=True)  # CMMC practice or catalog id
+    #: Every control the check behind this test declares it evidences, primary
+    #: first (migration 0092). Null for authored tests and for rows written
+    #: before the column existed; both mean "the primary control alone". Read
+    #: it through ``ccf.posture.evidence`` rather than directly -- the pass and
+    #: fail attributions differ, deliberately.
+    control_ids: Mapped[list[str] | None] = mapped_column(JSONB)
     name: Mapped[str] = mapped_column(String(512))
     description: Mapped[str | None] = mapped_column(Text)
     method: Mapped[str] = mapped_column(String(16), default="manual")  # manual|automated|connector

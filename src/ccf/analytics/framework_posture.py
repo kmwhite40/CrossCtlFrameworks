@@ -41,6 +41,7 @@ from ..models import (
     SystemProfile,
 )
 from ..models_grc import ControlTest
+from ..posture.evidence import non_passing_attribution, pass_attribution
 from ..scoring.engine import MET_STATES
 
 #: Baseline name -> the catalog column that records membership.
@@ -105,18 +106,29 @@ async def framework_posture(
         return _empty(baseline or None)
 
     tested: dict[str, set[str]] = {}
-    for control_id, status in (
+    for control_id, control_ids, status in (
         await session.execute(
-            select(ControlTest.control_id, ControlTest.last_status).where(
+            select(
+                ControlTest.control_id, ControlTest.control_ids, ControlTest.last_status
+            ).where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id.is_not(None),
                 ControlTest.last_status.is_not(None),
             )
         )
     ).all():
-        folded = fold_to_control(control_id)
-        if folded:
-            tested.setdefault(folded, set()).add(status)
+        # A failing check is a finding against every control it declares; a
+        # passing one credits only its primary control. `ccf.posture.evidence`
+        # owns that asymmetry and explains it.
+        attributed = (
+            pass_attribution(control_id)
+            if status == "pass"
+            else non_passing_attribution(control_id, control_ids)
+        )
+        for attributed_id in attributed:
+            folded = fold_to_control(attributed_id)
+            if folded:
+                tested.setdefault(folded, set()).add(status)
 
     implemented = {
         folded
@@ -281,16 +293,24 @@ async def _nist_171_posture(
         return _empty_framework(applied, reason="the 800-171 requirement matrix is not loaded")
 
     tested: dict[str, set[str]] = {}
-    for control_id, status in (
+    for control_id, control_ids, status in (
         await session.execute(
-            select(ControlTest.control_id, ControlTest.last_status).where(
+            select(
+                ControlTest.control_id, ControlTest.control_ids, ControlTest.last_status
+            ).where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id.is_not(None),
                 ControlTest.last_status.is_not(None),
             )
         )
     ).all():
-        tested.setdefault(control_id, set()).add(status)
+        attributed = (
+            pass_attribution(control_id)
+            if status == "pass"
+            else non_passing_attribution(control_id, control_ids)
+        )
+        for attributed_id in attributed:
+            tested.setdefault(attributed_id, set()).add(status)
 
     mapped, unmappable = await practices_for_controls(session, set(tested))
     by_requirement: dict[str, set[str]] = {}

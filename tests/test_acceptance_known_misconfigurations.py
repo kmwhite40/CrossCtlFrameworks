@@ -29,6 +29,13 @@ into the right compliance conclusion; it does not prove Graph returns that
 response for a tenant in that state. Closing that half needs a tenant to break,
 and it is the remaining work behind this criterion.
 
+An earlier version of this file recorded, as asserted behaviour, that a scan
+credited only ``control_ids[0]`` -- so the MFA check, which declares ``IA-2``
+and ``IA-2(1)``, was evidence about ``IA-2`` alone. Writing the understatement
+down is what made it worth fixing; it now attributes a non-passing verdict to
+every control its check declares (``ccf.posture.evidence``), and this file
+asserts the wider, correct set.
+
 Every expectation below is derived from the fixture by hand and written as a
 literal -- including the crosswalk rows, which are copied from the loaded
 catalog. Computing an expectation from the code under test is how an end-to-end
@@ -273,12 +280,11 @@ EXPECTED_VERDICTS = {
 }
 FAILING_CHECKS = {k for k, v in EXPECTED_VERDICTS.items() if v == "fail"}
 
-#: A scan records ONE ``ControlTest`` per check, on ``control_ids[0]``
-#: (``posture/scan.py``). The other controls a check declares travel in the
-#: result payload but never reach the rollup, so the MFA check -- which
-#: declares ``IA-2`` and ``IA-2(1)`` -- is only ever evidence about ``IA-2``.
-#: Asserted rather than worked around: it is the platform's behaviour, and it
-#: understates coverage.
+#: A scan records ONE ``ControlTest`` per check, whose ``control_id`` is
+#: ``control_ids[0]``. These are the primary controls -- the row identity, what
+#: the POA&M and waiver paths key on. The controls a check *additionally*
+#: declares are recorded in ``ControlTest.control_ids`` and reach the rollups
+#: through ``ccf.posture.evidence``; they are asserted separately, below.
 EXPECTED_FAILING_CONTROLS = {
     "IA-2",  # mfa_registered, legacy_auth_blocked
     "AC-2",  # stale_accounts
@@ -355,6 +361,7 @@ CROSSWALK_ROWS = [
         "3.1.1 Limit system access to authorized users, processes acting on behalf of"
         " authorized users, and devices (including other systems).",
     ),
+    ("AC-02(03)", "03-01-01:"),
     (
         "AC-03",
         "3.1.1 Limit system access to authorized users, processes acting on behalf of"
@@ -362,6 +369,11 @@ CROSSWALK_ROWS = [
     ),
     (
         "AC-06#row337",
+        "3.1.5 Employ the principle of least privilege, including for specific security"
+        " functions and privileged accounts.",
+    ),
+    (
+        "AC-06(01)",
         "3.1.5 Employ the principle of least privilege, including for specific security"
         " functions and privileged accounts.",
     ),
@@ -375,8 +387,25 @@ CROSSWALK_ROWS = [
         "3.1.10 Use session lock with pattern-hiding displays to prevent access and"
         " viewing of data after a period of inactivity",
     ),
+    (
+        "AC-11(01)",
+        "3.1.10 Use session lock with pattern-hiding displays to prevent access and"
+        " viewing of data after a period of inactivity",
+    ),
     ("AC-12", "3.1.11 Terminate (automatically) a user session after a defined condition."),
+    (
+        "AC-17",
+        "3.1.1 Limit system access to authorized users, processes acting on behalf of"
+        " authorized users, and devices (including other systems).",
+    ),
+    ("AC-19(05)", "3.1.19 Encrypt CUI on mobile devices and mobile computing platforms."),
     ("AU-02", "3.3.1 Create and retain system audit logs and records to the extent needed."),
+    ("AU-06", "3.3.1 Create and retain system audit logs and records to the extent needed."),
+    (
+        "CM-02",
+        "3.4.1 Establish and maintain baseline configurations and inventories of"
+        " organizational systems.",
+    ),
     (
         "CM-06",
         "3.4.1 Establish and maintain baseline configurations and inventories of"
@@ -388,24 +417,50 @@ CROSSWALK_ROWS = [
         "3.5.3 Use multifactor authentication for local and network access to"
         " privileged accounts.",
     ),
+    (
+        "IA-02(02)",
+        "3.5.3 Use multifactor authentication for local and network access to"
+        " privileged accounts.",
+    ),
     ("SC-28", "3.13.16 Protect the confidentiality of CUI at rest."),
+    ("SI-02", "3.14.1 Identify, report, and correct system flaws in a timely manner."),
+    (
+        "SI-04",
+        "3.14.6 Monitor organizational systems, including inbound and outbound"
+        " communications traffic.",
+    ),
 ]
 
-#: Every requirement the failing controls reach, traced through the rows above:
-#: AC-2 + AC-2(12) + AC-3 -> 3.1.1; AC-6 -> 3.1.5 and 3.1.6; AC-11 -> 3.1.10;
-#: CM-6 -> 3.4.1; IA-2 + IA-2(11) -> 3.5.1; IA-2(1) -> 3.5.3; SC-28 -> 3.13.16.
+#: Every requirement the failing controls reach, traced through the rows above.
+#: AC-2 + AC-2(3) + AC-2(12) + AC-3 + AC-17 -> 3.1.1; AC-6 + AC-6(1) -> 3.1.5,
+#: and AC-6 also -> 3.1.6; AC-11 + AC-11(1) -> 3.1.10; AC-19(5) -> 3.1.19;
+#: AU-6 -> 3.3.1; CM-2 + CM-6 -> 3.4.1; IA-2 + IA-2(11) -> 3.5.1; IA-2(1) +
+#: IA-2(2) -> 3.5.3; SC-28 (and SC-28(1) by fallback) -> 3.13.16; SI-2 ->
+#: 3.14.1; SI-4 -> 3.14.6.
 EXPECTED_FAILING_REQUIREMENTS = {
     "3.1.1",
     "3.1.5",
     "3.1.6",
     "3.1.10",
+    "3.1.19",
+    "3.3.1",
     "3.4.1",
     "3.5.1",
     "3.5.3",
     "3.13.16",
+    "3.14.1",
+    "3.14.6",
 }
-#: AU-2 -> 3.3.1, AC-12 -> 3.1.11.
-EXPECTED_PASSING_REQUIREMENTS = {"3.3.1", "3.1.11"}
+#: AC-12 -> 3.1.11, and nothing else survives clean.
+#:
+#: 3.3.1 is the one to read twice. Both audit checks pass, and AU-2 maps there
+#: -- but the risky-user check FAILS and declares AU-6, which maps there too.
+#: A requirement any failing test bears on is failing, so 3.3.1 is reported as
+#: failing rather than passing. That is the whole point of attributing a
+#: non-passing verdict to every control its check declares: before this, AU-6
+#: was invisible and the audit requirement read clean while unresolved risky
+#: users sat in the tenant.
+EXPECTED_PASSING_REQUIREMENTS = {"3.1.11"}
 
 
 @dataclass
@@ -512,7 +567,10 @@ async def _environment() -> tuple[int, int, int, _SeededCatalog]:
         )
         s.add(project)
         await s.flush()
-        for control_id in ("IA-2", "AC-2", "AU-2"):
+        # AC-17 is declared ONLY as the second control of the legacy-auth check.
+        # Before `ccf.posture.evidence` it could not appear in this document at
+        # all, so it is seeded claiming Implemented like the rest.
+        for control_id in ("IA-2", "AC-2", "AU-2", "AC-17"):
             s.add(
                 SSPControlEntry(
                     project_id=project.id,
@@ -732,10 +790,10 @@ async def test_framework_posture_names_the_failing_requirements(broken_tenant) -
         assert set(posture["passing"]) == EXPECTED_PASSING_REQUIREMENTS
         assert posture["unmappable_controls"] == []
 
-        # 10 of 110 assessed. The number is small because the crosswalk and the
+        # 13 of 110 assessed. The number is small because the crosswalk and the
         # check catalog are both partial, and it is reported rather than a
         # percentage of what was checked.
-        assert posture["assessed_pct"] == 9.1
+        assert posture["assessed_pct"] == 11.8
 
         # The gap report, on the same scan, still answers its own question.
         assert gaps["failing"] == len(FAILING_CHECKS)
@@ -761,8 +819,14 @@ async def test_the_ssp_discloses_the_findings_and_stops_claiming_implemented(
 ) -> None:
     """The plan's fourth acceptance criterion, on the same fixture.
 
-    Each entry was seeded claiming "Implemented". Two of the three controls are
-    failing, and the document must say so rather than let the claim stand.
+    Each entry was seeded claiming "Implemented". Three of the four controls
+    are failing, and the document must say so rather than let the claim stand.
+
+    ``AC-17`` is the one that matters most here. No check names it as a primary
+    control -- it is reachable only as the second control the legacy-auth check
+    declares. An SSP that disclosed the report-only Conditional Access policy
+    under ``IA-2`` while ``AC-17`` (remote access) kept reading "Implemented"
+    is precisely the document that gets an assessor to the wrong conclusion.
     """
     org_id, system_id, project_id, seeded = await _environment()
     try:
@@ -795,7 +859,7 @@ async def test_the_ssp_discloses_the_findings_and_stops_claiming_implemented(
                 )
             }
 
-        for control_id in ("IA-2", "AC-2"):
+        for control_id in ("IA-2", "AC-2", "AC-17"):
             text = entries[control_id].part_narratives[0]["text"]
             assert "Open finding" in text, control_id
             assert "POA&M #" in text, f"{control_id} cites no POA&M"
@@ -808,7 +872,7 @@ async def test_the_ssp_discloses_the_findings_and_stops_claiming_implemented(
         assert "Open finding" not in au2
         assert entries["AU-2"].implementation_status == ["Implemented"]
 
-        assert result["controls_with_open_findings"] == 2
-        assert result["status_downgraded_by_findings"] == 2
+        assert result["controls_with_open_findings"] == 3
+        assert result["status_downgraded_by_findings"] == 3
     finally:
         await _cleanup(org_id, seeded)

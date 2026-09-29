@@ -83,6 +83,7 @@ async def _upsert_generated_test(
     check_key: str,
     check_source: str,
     control_id: str,
+    control_ids: list[str],
     title: str,
     expected: str,
     capability_id: int | None,
@@ -100,6 +101,11 @@ async def _upsert_generated_test(
     from a tenant's self-attested pack verdict (CRITICAL 3), and it is what
     ``effective_verdict`` uses to keep a pack from outranking the platform
     for the same control (CRITICAL 2).
+
+    ``control_ids`` is the check's whole declared tuple and is refreshed on
+    every scan for the same reason ``control_id`` is: it is what the check
+    declares today, not what it declared when the row was created. A check that
+    drops a control stops being evidence about it from the next scan onward.
 
     ``connector_type`` IS machine-owned (it names which connector this check
     runs against, not something a human chooses) and is written on both
@@ -121,6 +127,7 @@ async def _upsert_generated_test(
             organization_id=organization_id,
             system_id=system_id,
             control_id=control_id,
+            control_ids=control_ids,
             name=title,
             method="connector",
             source="generated",
@@ -136,6 +143,7 @@ async def _upsert_generated_test(
         return test
 
     test.control_id = control_id
+    test.control_ids = control_ids
     test.check_source = check_source
     test.capability_id = capability_id
     test.description = description
@@ -242,6 +250,7 @@ async def scan_for_system(
             check_key=outcome.check_key,
             check_source=rc.source,
             control_id=check.control_ids[0],
+            control_ids=list(check.control_ids),
             title=check.title,
             expected=check.expected,
             capability_id=capability_id,
@@ -396,6 +405,7 @@ async def record_manual_review_check(
         check_key=check_key,
         check_source=str(check.get("source") or "platform"),
         control_id=control_ids[0],
+        control_ids=control_ids,
         title=str(check.get("title") or check_key),
         expected=str(check.get("expected") or "manual evidence is required"),
         capability_id=None,
