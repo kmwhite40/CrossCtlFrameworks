@@ -104,8 +104,16 @@ def test_normalize_finding_none_maps_to_not_assessed() -> None:
 
 
 def test_normalize_finding_unknown_value_maps_to_unknown_not_crash() -> None:
+    """An unrecognised spelling degrades to `unknown` rather than crashing.
+
+    The second example used to be ``"pass"``, chosen when the machine
+    vocabulary (``ccf.fedramp20x.VALIDATION_STATUSES``) had no aliases. It does
+    now — a rollup that exists to reconcile finding vocabularies could not read
+    the one the platform writes on every scan — so the example is a value no
+    source produces. The property under test is unchanged.
+    """
     assert normalize_finding("bogus") == UNKNOWN
-    assert normalize_finding("pass") == UNKNOWN
+    assert normalize_finding("cromulent") == UNKNOWN
 
 
 def test_normalize_finding_case_and_whitespace_insensitive() -> None:

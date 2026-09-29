@@ -188,7 +188,11 @@ async def test_governance_command_center_reports_live_scan_failures_without_impl
         r = await c.get("/governance", headers=_auth(token))
         assert r.status_code == 200
         assert "0 implementations" not in r.text
-        assert "1 live checks" in r.text
+        # The page names its denominator now: health is a share of the checks
+        # that actually judged a control, not of every recorded result. Same
+        # intent as the original assertion -- live-scan state reaches a tenant
+        # with no implementation rows -- against the wording that carries it.
+        assert "1 of 1 live check(s) judged" in r.text
         assert "Review failed live check" in r.text
         assert "Guest invitations are restricted to administrators" in r.text
 
