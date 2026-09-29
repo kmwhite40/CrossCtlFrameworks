@@ -1,11 +1,18 @@
 """Cross-source finding-status rollup (ISSM-13 / DATA-05).
 
-A control's finding/status lives in three places with three different
+A control's finding/status lives in **four** places with four different
 vocabularies — see ``ccf.constants`` for the full explanation:
 
 - ``AssessmentResult.finding`` (DB enum)
 - ``AssessmentControlResult.finding`` (free string)
 - ``ScoringStatus.state`` (free string, SPRS implementation state)
+- ``ControlTest.last_status`` (the machine vocabulary,
+  ``ccf.fedramp20x.VALIDATION_STATUSES``)
+
+The fourth was missing, and it is now the source that produces most of the
+findings: a scan writes a ``ControlTest`` per check on every run. A rollup whose
+job is to reconcile finding vocabularies, while omitting the one the platform
+generates automatically, answers a narrower question than its name promises.
 
 This module is the "rollup" that combines finding counts *across* those
 sources for a system: every raw value is passed through
@@ -30,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import ALL_CANONICAL_FINDINGS, normalize_finding
 from ..models import Assessment, AssessmentControlResult, AssessmentResult, ScoringStatus
+from ..models_grc import ControlTest
 
 
 def canonical_finding_counts(raw_values: Iterable[str | None]) -> dict[str, int]:
@@ -49,14 +57,17 @@ def canonical_finding_counts(raw_values: Iterable[str | None]) -> dict[str, int]
 
 
 async def system_finding_rollup(session: AsyncSession, system_id: int) -> dict[str, Any]:
-    """Combined canonical finding counts for one system, across all three sources.
+    """Combined canonical finding counts for one system, across all four sources.
 
-    Pulls the raw values straight from each source's own column (no
-    per-source transformation), then feeds the combined list through
-    ``canonical_finding_counts``. Also reports the pre-normalization
-    per-source counts alongside, purely for visibility/debugging — the
-    per-source *behavior* elsewhere in the app is unaffected by this
-    function existing.
+    Pulls the raw values straight from each source's own column (no per-source
+    transformation), then feeds the combined list through
+    ``canonical_finding_counts``. Also reports the per-source counts alongside,
+    so a reader can see which source contributed what — the per-source
+    *behavior* elsewhere in the app is unaffected by this function existing.
+
+    A source contributing nothing still appears in ``by_source`` with a
+    zero-filled bucket set, so "this system has no assessment results" and
+    "this source was not consulted" cannot read alike.
     """
     assessment_result_findings = (
         await session.execute(
@@ -80,10 +91,20 @@ async def system_finding_rollup(session: AsyncSession, system_id: int) -> dict[s
         )
     ).scalars().all()
 
+    control_test_statuses = (
+        await session.execute(
+            select(ControlTest.last_status).where(
+                ControlTest.system_id == system_id,
+                ControlTest.last_status.is_not(None),
+            )
+        )
+    ).scalars().all()
+
     combined = (
         list(assessment_result_findings)
         + list(assessment_control_findings)
         + list(scoring_states)
+        + list(control_test_statuses)
     )
 
     return {
@@ -93,6 +114,7 @@ async def system_finding_rollup(session: AsyncSession, system_id: int) -> dict[s
             "assessment_results": canonical_finding_counts(assessment_result_findings),
             "assessment_control_results": canonical_finding_counts(assessment_control_findings),
             "scoring_statuses": canonical_finding_counts(scoring_states),
+            "control_tests": canonical_finding_counts(control_test_statuses),
         },
         "total": len(combined),
     }

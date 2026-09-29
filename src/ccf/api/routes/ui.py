@@ -907,6 +907,8 @@ async def system_detail(
     # one home, and ``ccf.api.routes.ui_boundary`` already takes the system for
     # its own per-system page this way. No new role gate -- a viewer could open
     # this page before and still can.
+    from ...analytics.findings import system_finding_rollup  # noqa: PLC0415
+
     sys = await require_system_in_scope(session, system_id, principal)
     # The guided onboarding path (docs/superpowers/specs/
     # 2026-09-21-guided-onboarding-design.md). Rendered above the counts below
@@ -991,6 +993,13 @@ async def system_detail(
             "onboarding_chips": ONBOARDING_CHIPS,
             "onboarding_state_labels": ONBOARDING_STATE_LABELS,
             "live_audit_workflow": live_audit_workflow,
+            # One reconciled answer to "what is this system's finding status",
+            # across all four places a determination is recorded. The module
+            # computing it existed and nothing called it, so the page showed
+            # implementation counts from one source and said nothing about the
+            # other three -- including the machine scans, which now produce most
+            # of the determinations.
+            "finding_rollup": await system_finding_rollup(session, system_id),
         },
     )
 
@@ -1911,6 +1920,8 @@ async def governance_page(
         .scalars()
         .all()
     )
+    from ...analytics.live_scan import live_scan_for_org  # noqa: PLC0415
+
     latest = latest_result_ids()
     # Scoped in SQL, not after the fact. Fetching every tenant's latest scan
     # result and then dropping the ones that do not belong is a row count that
@@ -1927,8 +1938,6 @@ async def governance_page(
     if org is not None:
         scan_stmt = scan_stmt.where(ControlTest.organization_id == org)
     scan_rows = (await session.execute(scan_stmt)).all()
-    scan_total = len(scan_rows)
-    scan_pass = sum(1 for _, r in scan_rows if r.status == "pass")
     scan_attention = [
         (t, r)
         for t, r in scan_rows
@@ -2001,19 +2010,32 @@ async def governance_page(
         "open_tasks": len(tasks) + len(scan_work_items),
         "unread_alerts": sum(1 for n in notifs if n.read_at is None),
     }
-    scan_health_pct = round((scan_pass / scan_total) * 100) if scan_total else None
+    # The shared rollup, not a second one computed here. This page divided
+    # passing checks by *every* result, while `live_scan_for_org` divides by the
+    # ones that actually judged a control -- so a tenant with any
+    # `not_applicable` result (an unlicensed M365 fleet produces them by the
+    # hundred) saw one health number on /governance and a different one on
+    # /systems and /ssp, with neither page saying which it was showing.
+    live = await live_scan_for_org(session, org_id=org)
     display_health = dict(health)
-    if scan_total:
+    if live["total"]:
         display_health.update(
             {
-                "health_pct": scan_health_pct,
-                "total": scan_total,
+                "health_pct": live["health_pct"],
+                "total": live["total"],
+                "assessed": live["assessed"],
                 "source": "live_scan",
-                "findings": len(scan_attention),
+                "findings": live["attention"],
+                # Implementation health does not vanish because scans exist.
+                # A tenant running both has two populations, and replacing one
+                # with the other silently drops whichever the page did not pick.
+                "implementations_total": health["total"],
+                "implementations_health_pct": health["health_pct"],
             }
         )
     else:
         display_health["source"] = "implementation"
+        display_health["assessed"] = health["total"]
     return templates.TemplateResponse(
         request,
         "governance.html",

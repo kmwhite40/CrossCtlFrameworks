@@ -9,11 +9,30 @@
 <div class="row" style="gap:12px;flex-wrap:wrap;margin-bottom:16px">
   <div class="card" style="flex:1;min-width:150px;padding:16px">
     <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Control health</div>
-    <div style="font-size:2rem;font-weight:700">{{ health.health_pct if health.health_pct is not none else '—' }}%</div>
-    <div class="dim" style="font-size:12px">
-      {{ health.total }} {{ 'live checks' if health.source == 'live_scan' else 'implementations' }}
-      {% if health.source == 'live_scan' and health.findings %} · {{ health.findings }} need review{% endif %}
+    {# Never "—%": a dangling unit reads as a number that failed to render
+       rather than as a measurement that could not be taken. #}
+    <div style="font-size:2rem;font-weight:700">
+      {% if health.health_pct is not none %}{{ health.health_pct }}%{% else %}<span class="dim" style="font-size:1rem">not measured</span>{% endif %}
     </div>
+    <div class="dim" style="font-size:12px">
+      {% if health.source == 'live_scan' %}
+        {# The denominator is named. A percentage whose base is invisible invites
+           the reader to divide by the wrong number: checks that found nothing in
+           scope are not failures to count against the tenant. #}
+        {{ health.assessed }} of {{ health.total }} live check(s) judged
+        {%- if health.findings %} · {{ health.findings }} need review{% endif %}
+      {% else %}
+        {{ health.total }} implementation(s)
+      {% endif %}
+    </div>
+    {% if health.source == 'live_scan' and health.implementations_total %}
+      {# Both populations, because a tenant running both has two. Replacing one
+         with the other silently drops whichever this page did not pick. #}
+      <div class="dim" style="font-size:12px;margin-top:4px">
+        plus {{ health.implementations_total }} documented implementation(s)
+        {%- if health.implementations_health_pct is not none %}, {{ health.implementations_health_pct }}% healthy{% endif %}
+      </div>
+    {% endif %}
   </div>
   <div class="card" style="flex:1;min-width:150px;padding:16px">
     <div class="dim" style="font-size:12px;text-transform:uppercase;letter-spacing:.05em">Open tasks</div>

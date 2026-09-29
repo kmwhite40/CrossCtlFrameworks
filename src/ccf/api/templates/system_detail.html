@@ -139,6 +139,61 @@
   {% endif %}
 </section>
 
+{# One reconciled answer to "where does this system stand", across every place a
+   determination is recorded. The counts below it are one source (documented
+   implementations); this card is all four, normalised onto one vocabulary, so a
+   reader is not left to add up four pages with four different words for the
+   same finding. #}
+{% if finding_rollup and finding_rollup.total %}
+{% set c = finding_rollup.canonical %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Finding status, all sources</div>
+      <div class="card__subtitle">{{ finding_rollup.total }} determination(s) reconciled onto one vocabulary</div>
+    </div>
+    <span class="chip {% if c.other_than_satisfied %}chip--err{% elif c.satisfied %}chip--ok{% else %}chip--ghost{% endif %}">
+      {{ c.satisfied }} satisfied · {{ c.other_than_satisfied }} not
+    </span>
+  </div>
+  <div class="card__body">
+    <div class="row" style="gap:14px;flex-wrap:wrap;font-size:13px;margin-bottom:12px">
+      <span><strong style="color:var(--ok-500)">{{ c.satisfied }}</strong> <span class="dim">satisfied</span></span>
+      <span><strong style="color:var(--err-500)">{{ c.other_than_satisfied }}</strong> <span class="dim">other than satisfied</span></span>
+      <span><strong>{{ c.not_applicable }}</strong> <span class="dim">not applicable</span></span>
+      <span><strong>{{ c.not_assessed }}</strong> <span class="dim">not assessed</span></span>
+      {% if c.unknown %}
+        {# Visible on purpose: a spelling no source maps is a data-quality
+           signal, and folding it into "not assessed" would hide it. #}
+        <span><strong class="chip chip--warn">{{ c.unknown }}</strong> <span class="dim">unrecognised value</span></span>
+      {% endif %}
+    </div>
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Source</th><th>Satisfied</th><th>Other than satisfied</th><th>N/A</th><th>Not assessed</th></tr></thead>
+      <tbody>
+        {% for key, label in [
+          ('control_tests','Automated control tests'),
+          ('scoring_statuses','SPRS implementation states'),
+          ('assessment_results','Assessment results'),
+          ('assessment_control_results','Assessment control results'),
+        ] %}
+        {% set row = finding_rollup.by_source.get(key) %}
+        {% if row %}
+        <tr{% if not (row.satisfied or row.other_than_satisfied or row.not_applicable or row.not_assessed) %} class="dim"{% endif %}>
+          <td>{{ label }}</td>
+          <td>{{ row.satisfied }}</td>
+          <td>{{ row.other_than_satisfied }}</td>
+          <td>{{ row.not_applicable }}</td>
+          <td>{{ row.not_assessed }}</td>
+        </tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </div>
+</section>
+{% endif %}
+
 <section class="grid-cards" style="margin-bottom:16px">
   {% set total = impl_counts.values() | sum %}
   {% for label, key, cls in [

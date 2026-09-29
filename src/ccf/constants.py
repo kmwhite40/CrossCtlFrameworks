@@ -101,6 +101,28 @@ _FINDING_ALIASES: dict[str, str] = {
     # which ccf.api.routes.oscal carries into the SAR as its own prop rather
     # than losing it here.
     "insufficient_evidence": NOT_ASSESSED,
+    # ControlTest.last_status / ControlTestResult.status -- the machine
+    # vocabulary (``ccf.fedramp20x.VALIDATION_STATUSES``). It was absent, so
+    # every automated verdict normalized to UNKNOWN: a cross-source rollup that
+    # exists to reconcile finding vocabularies could not read the source that
+    # now produces most of the findings.
+    #
+    # ``not_applicable`` is already canonical above and needs no entry.
+    "pass": SATISFIED,
+    "fail": OTHER_THAN_SATISFIED,
+    # A warning is the platform saying the control is not operating as expected.
+    # It is a softer observation than a failure, not a different determination,
+    # and letting it fall to UNKNOWN would drop a real finding out of the rollup
+    # exactly as "not_satisfied" once did.
+    "warn": OTHER_THAN_SATISFIED,
+    # Neither of these is a determination about the control. "not_tested" is
+    # nobody having looked; "manual_review_required" is Concord having looked
+    # and been unable to judge -- a missing permission, an endpoint that
+    # answered nothing. Reporting either as OTHER_THAN_SATISFIED would
+    # manufacture a finding out of an absence, the same mistake
+    # "insufficient_evidence" above exists to avoid.
+    "not_tested": NOT_ASSESSED,
+    "manual_review_required": NOT_ASSESSED,
 }
 
 
