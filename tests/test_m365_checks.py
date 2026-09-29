@@ -253,7 +253,7 @@ def test_every_m365_check_is_registered_under_msgraph() -> None:
     saying anything about the fourth -- the list was a second place to
     remember, not a check on anything.
     """
-    from ccf.posture.providers import m365
+    from ccf.posture.providers import m365  # noqa: PLC0415
 
     assert {c.key for c in checks_for("msgraph")} == {c.key for c in m365.CHECKS}
     # And the original three are still among them, so a CHECKS tuple emptied

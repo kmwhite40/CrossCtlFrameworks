@@ -11,6 +11,7 @@ import contextlib
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -18,12 +19,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
-from ...config import get_settings, is_dev_env
+from ...connectors import credentials as connector_credentials
+from ...connectors import get_connector
+from ...connectors.credential_spec import (
+    SPECS,
+    IncompleteCredential,
+    configurable_types,
+    missing_fields,
+    spec_for,
+)
 from ...evidence import service as evidence_service
 from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
 from ...governance import waivers as waiver_service
 from ...ingest import parse_scan, reconcile_findings
+from ...logging import get_logger
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
 from ...models_evidence import EvidenceObject
 from ...models_grc import (
@@ -40,27 +51,15 @@ from ...models_grc import (
 )
 from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
+from ...posture.checks import checks_for
+from ...posture.types import ResourceFinding
 from ..auth_deps import require_role, resolve_caller_org
 from ..deps import get_session
 from .grc import (
     _emit_access_decision,
     _load_access_request,
 )
-from urllib.parse import quote
-
-from ...ai.cipher import CredentialStorageError
-from ...connectors import credentials as connector_credentials
-from ...connectors import get_connector
-from ...logging import get_logger
-from ...connectors.credential_spec import (
-    SPECS,
-    IncompleteCredential,
-    configurable_types,
-    missing_fields,
-    spec_for,
-)
-from ...posture.checks import checks_for
-from ...posture.types import ResourceFinding
+from .ui import _principal_org, templates
 from .waivers import (
     APPROVER_ROLES,
     WaiverIn,
@@ -68,7 +67,6 @@ from .waivers import (
     create_waiver,
     revoke_waiver,
 )
-from .ui import _principal_org, templates
 
 
 def _principal_email(request: Request) -> str:
@@ -1744,7 +1742,7 @@ async def _scan_every_system(session: AsyncSession, org: int, connector_type: st
                 connector_key=connector_type,
                 actor="connector-test",
             )
-        except Exception as exc:  # noqa: BLE001 - logged, never fatal to the others
+        except Exception as exc:
             log.warning(
                 "connector.autoscan_failed",
                 system_id=system_id,
@@ -1914,7 +1912,7 @@ async def connectors_scan(
             connector_key=cfg.connector_type,
             actor=_principal_email(request),
         )
-    except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+    except Exception as exc:
         await session.rollback()
         return RedirectResponse(
             f"/connectors/{cfg_id}?error={quote(str(exc)[:300])}", status_code=303

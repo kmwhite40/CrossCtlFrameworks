@@ -656,7 +656,7 @@ def test_the_banner_hero_is_boxed_like_the_page_it_sits_above() -> None:
     assert margin, "the banner hero declares no margin"
     parts = margin.group(1).split()
     assert len(parts) == 3, f"expected a 3-value margin, got {margin.group(1)!r}"
-    top, side, bottom = parts
+    _top, side, bottom = parts
     assert side == "auto", (
         f"the banner hero must centre itself like `.page` does; side margin is {side!r}"
     )

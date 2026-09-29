@@ -82,9 +82,9 @@ from typing import Any, ClassVar
 import httpx
 
 from ..config import get_settings
-from .clouds import microsoft_endpoints
 from ..logging import get_logger
 from .base import CapturedParameter, ConfigConnector
+from .clouds import MicrosoftEndpoints, microsoft_endpoints
 
 log = get_logger(__name__)
 
@@ -152,7 +152,7 @@ class AzureArmConnector(ConfigConnector):
 
 
     @property
-    def _endpoints(self):
+    def _endpoints(self) -> MicrosoftEndpoints | None:
         """This organization's own cloud, or the deployment's configured one.
 
         See :mod:`ccf.connectors.clouds`: the sovereign cloud belongs to the
@@ -194,7 +194,6 @@ class AzureArmConnector(ConfigConnector):
         requested for ``{arm_base_url}/.default``, so a Graph token cannot be
         reused here and an ARM token cannot be replayed against Graph.
         """
-        s = get_settings()
         c = self.credential or {}
         url = f"{self._login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
         resp = await client.post(
@@ -278,7 +277,6 @@ class AzureArmConnector(ConfigConnector):
 
     async def verify(self) -> dict[str, Any]:
         """Confirm an ARM token can be obtained for this org's subscription."""
-        s = get_settings()
         if not self.is_configured():
             return {
                 "connected": False,

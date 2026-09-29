@@ -23,6 +23,8 @@ from ccf.integrations.types import (
     IssueContent,
     PushResult,
 )
+from ccf.models import POAM, Organization, System
+from ccf.models_grc import ExternalIssueLink
 
 
 def poam_content(poam):
@@ -33,8 +35,6 @@ def poam_content(poam):
         api_token="t",
         project_key="SEC",
     ).content_for(poam)
-from ccf.models import POAM, Organization, System
-from ccf.models_grc import ExternalIssueLink
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -234,7 +234,7 @@ async def test_a_failed_later_push_keeps_the_link_and_records_why() -> None:
 async def test_an_unset_field_is_omitted_rather_than_rendered_as_none() -> None:
     """"Remediation plan: None" reads as a recorded decision. Omission does not."""
     tag = _tag()
-    org_id, poam_id = await _org_with_poam(
+    _org_id, poam_id = await _org_with_poam(
         f"Jira Map {tag}", title="No plan yet", weakness="Tokens are unbounded"
     )
     async with session_scope() as s:
@@ -253,7 +253,7 @@ async def test_the_ticket_says_concord_still_owns_the_compliance_status() -> Non
     Someone will close the Jira issue and believe the POA&M closed with it.
     """
     tag = _tag()
-    org_id, poam_id = await _org_with_poam(f"Jira Truth {tag}")
+    _org_id, poam_id = await _org_with_poam(f"Jira Truth {tag}")
     async with session_scope() as s:
         poam = (await s.execute(select(POAM).where(POAM.id == poam_id))).scalars().one()
         body = poam_content(poam).body
@@ -272,7 +272,7 @@ async def test_the_link_lookup_refuses_another_tenants_row_on_its_own() -> None:
     The owning org is asserted first, so a lookup that returned nothing at all
     would fail here too.
     """
-    from ccf.integrations.service import links_for_entities
+    from ccf.integrations.service import links_for_entities  # noqa: PLC0415
 
     tag = _tag()
     mine_id, mine_poam = await _org_with_poam(f"Jira Lookup Mine {tag}")
@@ -305,7 +305,7 @@ async def test_the_link_lookup_refuses_another_tenants_row_on_its_own() -> None:
 @pytest.mark.asyncio
 async def test_the_link_lookup_issues_no_query_for_an_empty_page() -> None:
     """`IN ()` is not valid SQL everywhere and is never worth emitting."""
-    from ccf.integrations.service import links_for_entities
+    from ccf.integrations.service import links_for_entities  # noqa: PLC0415
 
     async with session_scope() as s:
         assert await links_for_entities(s, 1, ENTITY_POAM, [], ("jira",)) == {}
@@ -317,7 +317,7 @@ async def test_a_bare_provider_string_is_refused_rather_than_iterated() -> None:
     characters -- `provider IN ('j','i','r','a')` matches nothing, and the page
     would quietly show no links at all. A silent empty result is the worst
     possible failure here, so it raises."""
-    from ccf.integrations.service import links_for_entities
+    from ccf.integrations.service import links_for_entities  # noqa: PLC0415
 
     async with session_scope() as s:
         with pytest.raises(TypeError):

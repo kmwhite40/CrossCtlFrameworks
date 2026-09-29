@@ -34,7 +34,7 @@ def test_a_provider_outside_the_list_is_refused_by_the_builder() -> None:
 
 def test_the_settings_page_offers_exactly_what_the_build_supports() -> None:
     """Derived rather than restated, so the two cannot drift again."""
-    from ccf.api.routes.ai_settings import _SUPPORTED_PROVIDERS
+    from ccf.api.routes.ai_settings import _SUPPORTED_PROVIDERS  # noqa: PLC0415
 
     assert tuple(_SUPPORTED_PROVIDERS) == tuple(SUPPORTED_PROVIDERS)
 

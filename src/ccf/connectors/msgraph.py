@@ -43,22 +43,21 @@ capture in the other namespace would be stored and silently never rendered.
 
 from __future__ import annotations
 
-import inspect
-
 import asyncio
+import inspect
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 import httpx
 
 from ..config import get_settings
-from .clouds import microsoft_endpoints
 from ..logging import get_logger
 from ..posture.declared import evaluate_declared
 from ..posture.providers import m365
 from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
 from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
 from .base import CapturedParameter, ConfigConnector
+from .clouds import MicrosoftEndpoints, microsoft_endpoints
 
 log = get_logger(__name__)
 
@@ -88,7 +87,7 @@ def _aad_reason(error: Exception) -> str:
     if response is not None:
         try:
             body = response.json()
-        except Exception:  # noqa: BLE001 - a non-JSON body is not exceptional here
+        except Exception:
             body = None
         if isinstance(body, dict):
             description = body.get("error_description") or body.get("error")
@@ -117,7 +116,7 @@ class MsGraphConnector(ConfigConnector):
 
 
     @property
-    def _endpoints(self):
+    def _endpoints(self) -> MicrosoftEndpoints | None:
         """This organization's own cloud, or the deployment's configured one.
 
         The sovereign cloud travels with the credential because it is a
@@ -143,7 +142,6 @@ class MsGraphConnector(ConfigConnector):
         return bool(c and c.get("tenant_id") and c.get("client_id") and c.get("client_secret"))
 
     async def _token(self, client: httpx.AsyncClient) -> str | None:
-        s = get_settings()
         c = self.credential or {}
         url = f"{self._login_url}/{c.get('tenant_id')}/oauth2/v2.0/token"
         resp = await client.post(
@@ -308,7 +306,6 @@ class MsGraphConnector(ConfigConnector):
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can obtain a Graph token for this org's Gov tenant."""
-        s = get_settings()
         if not self.is_configured():
             return {
                 "connected": False,
@@ -328,7 +325,6 @@ class MsGraphConnector(ConfigConnector):
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():
             return []
-        s = get_settings()
         out: list[CapturedParameter] = []
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:

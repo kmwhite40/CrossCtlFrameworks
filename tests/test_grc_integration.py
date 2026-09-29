@@ -290,10 +290,10 @@ async def test_connector_and_control_test_detail_pages_render() -> None:
     # The connector pages are organization-scoped: a credential is bound to an
     # org, so an org-less caller now gets a 400 and an explanation rather than
     # every tenant's connectors. This test therefore has to be somebody.
-    import os
+    import os  # noqa: PLC0415
 
-    from ccf.auth import hash_password, new_api_token
-    from ccf.models import User
+    from ccf.auth import hash_password, new_api_token  # noqa: PLC0415
+    from ccf.models import User  # noqa: PLC0415
 
     async with session_scope() as s:
         admin = User(

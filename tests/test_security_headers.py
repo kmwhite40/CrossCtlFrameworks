@@ -105,7 +105,7 @@ async def test_an_opaque_origin_is_still_refused_by_the_csrf_check() -> None:
     CSRF -- would have made the symptom disappear while admitting exactly the
     sandboxed-frame and redirected-form cases the check exists to stop.
     """
-    from ccf.api.csrf import is_allowed_origin
+    from ccf.api.csrf import is_allowed_origin  # noqa: PLC0415
 
     assert not is_allowed_origin(
         method="POST",

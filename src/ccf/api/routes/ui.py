@@ -640,7 +640,7 @@ async def poams_page(
     poams = (await session.execute(stmt)).scalars().all()
     ai_remediation_ids = await ai_written_poam_ids(session, list(poams))
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     metrics = {"total": 0, "open": 0, "overdue": 0, "high": 0}
     for p in poams:
         ms = list(p.milestones or [])
@@ -1273,7 +1273,7 @@ async def _scoring_rows(
             )
         ).all()
     }
-    rows = []
+    rows: list[dict[str, Any]] = []
     for c in controls:
         st, notes = states.get(c.control_id, ("not_assessed", None))
         rows.append({"c": c, "state": st, "notes": notes})

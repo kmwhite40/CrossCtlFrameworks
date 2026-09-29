@@ -87,9 +87,9 @@ async def test_a_failing_test_is_never_cited_as_evidence() -> None:
     because the clause has no way to know a result failed -- the filter is the
     guard, and it is the one that could be widened by accident.
     """
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.governance import automation
+    from ccf.governance import automation  # noqa: PLC0415
 
     source = inspect.getsource(automation.generate_statements)
     assert 'ControlTest.last_status == "pass"' in source, (
@@ -101,9 +101,9 @@ async def test_a_failing_test_is_never_cited_as_evidence() -> None:
 async def test_only_this_organizations_live_systems_are_cited() -> None:
     """A citation drawn from another tenant, or from a deleted system, would
     put someone else's evidence into this customer's authorization package."""
-    import inspect
+    import inspect  # noqa: PLC0415
 
-    from ccf.governance import automation
+    from ccf.governance import automation  # noqa: PLC0415
 
     source = inspect.getsource(automation.generate_statements)
     assert "System.organization_id == project.organization_id" in source

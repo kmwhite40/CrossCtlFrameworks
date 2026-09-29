@@ -269,7 +269,7 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
     ran, and a tenant with a healthy Microsoft 365 connector and a broken AWS one
     recorded nothing at all -- while the error named only the broken half.
     """
-    from ccf.api.routes import posture as posture_routes
+    from ccf.api.routes import posture as posture_routes  # noqa: PLC0415
 
     async with session_scope() as s:
         org = Organization(name=f"ScanAllOrg-{next(_SEQ)}")
@@ -296,7 +296,7 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
             "unexpected_outcomes": [],
         }
 
-    import ccf.posture.scan as scan_module
+    import ccf.posture.scan as scan_module  # noqa: PLC0415
 
     monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
     monkeypatch.setattr(posture_routes, "connector_keys", lambda: ("msgraph", "aws_govcloud"))
@@ -326,7 +326,7 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
     One key holding an int at the top level and a list one level down forces a
     consumer to branch on where it happens to be looking.
     """
-    from ccf.api.routes import posture as posture_routes
+    from ccf.api.routes import posture as posture_routes  # noqa: PLC0415
 
     async with session_scope() as s:
         org = Organization(name=f"ScanAllShape-{next(_SEQ)}")
@@ -348,7 +348,7 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
             "unexpected_outcomes": [],
         }
 
-    import ccf.posture.scan as scan_module
+    import ccf.posture.scan as scan_module  # noqa: PLC0415
 
     monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
     monkeypatch.setattr(posture_routes, "connector_keys", lambda: ("msgraph",))

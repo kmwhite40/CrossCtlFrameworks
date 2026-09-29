@@ -24,7 +24,7 @@ class IntegrationError(RuntimeError):
     """Base for every refusal these integrations raise."""
 
 
-class IntegrationNotConfigured(IntegrationError):
+class IntegrationNotConfigured(IntegrationError):  # noqa: N818 -- names a state
     """No credential, or no project, bound for this organization.
 
     Distinct from a failed call: nothing was attempted and nothing is wrong
@@ -33,7 +33,7 @@ class IntegrationNotConfigured(IntegrationError):
     """
 
 
-class IntegrationRefused(IntegrationError):
+class IntegrationRefused(IntegrationError):  # noqa: N818 -- sibling, same reasoning
     """The remote system rejected the request and said why.
 
     ``detail`` carries the remote's own message. Jira's 400s are specific and
@@ -47,7 +47,7 @@ class IntegrationRefused(IntegrationError):
         self.status = status
 
 
-class IntegrationUnavailable(IntegrationError):
+class IntegrationUnavailable(IntegrationError):  # noqa: N818 -- sibling, same reasoning
     """The remote system could not be reached at all.
 
     Separate from :class:`IntegrationRefused` so a transient outage is never

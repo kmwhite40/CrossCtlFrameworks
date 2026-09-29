@@ -30,20 +30,18 @@ async def _seed_catalog() -> None:
     and an ODP placeholder, because folding those away is the thing being
     tested.
     """
-    import uuid
 
-    from sqlalchemy import select
+    from sqlalchemy import select  # noqa: PLC0415
 
-    from ccf.models import Control
+    from ccf.models import Control  # noqa: PLC0415
 
-    tag = uuid.uuid4().hex[:6].upper()
     rows = [
         # (identifier, low, mod, high)
-        (f"ZA-01a.[01]", True, True, True),
-        (f"ZA-01_ODP_01", True, True, True),
-        (f"ZA-02", False, True, True),
-        (f"ZA-02(03)(c)", False, True, True),
-        (f"ZA-03", False, False, True),
+        ("ZA-01a.[01]", True, True, True),
+        ("ZA-01_ODP_01", True, True, True),
+        ("ZA-02", False, True, True),
+        ("ZA-02(03)(c)", False, True, True),
+        ("ZA-03", False, False, True),
     ]
     async with session_scope() as s:
         existing = set(
@@ -121,9 +119,9 @@ async def test_an_unknown_baseline_returns_nothing_rather_than_guessing() -> Non
 async def test_a_system_with_no_baseline_reports_no_coverage() -> None:
     """Coverage of an undeclared baseline is not zero -- it is unanswerable,
     and reporting 0% would read as a finding about the system."""
-    import uuid
+    import uuid  # noqa: PLC0415
 
-    from ccf.models import Organization, System
+    from ccf.models import Organization, System  # noqa: PLC0415
 
     async with session_scope() as s:
         org = Organization(name=f"NoBaseline {uuid.uuid4().hex[:6]}")
@@ -142,9 +140,9 @@ async def test_a_system_with_no_baseline_reports_no_coverage() -> None:
 
 @pytest.mark.asyncio
 async def test_another_organizations_system_is_not_reported() -> None:
-    import uuid
+    import uuid  # noqa: PLC0415
 
-    from ccf.models import Organization, System
+    from ccf.models import Organization, System  # noqa: PLC0415
 
     await _seed_catalog()
     async with session_scope() as s:
