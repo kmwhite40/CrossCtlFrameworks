@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import text
@@ -516,7 +516,15 @@ async def _check_ai_agent_governance(session: AsyncSession) -> Check:
 
 
 async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
-    """Assurance-graph tables present; warn when the graph has never been built."""
+    """The assurance graph exists **and is current**.
+
+    This check selected ``finished_at`` and then ignored it, returning PASS for
+    any graph that had ever been built successfully. A graph built once and
+    never again reported healthy indefinitely, under the name
+    ``assurance_graph_freshness`` — a check asserting a property it did not
+    verify, on the page an operator consults to decide whether to trust the
+    platform's own view of itself.
+    """
     if not await _regclass(session, "ccf.assurance_build_runs"):
         return Check(
             "assurance_graph_freshness", FAIL, "assurance_build_runs table missing.",
@@ -535,10 +543,47 @@ async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
             "assurance_graph_freshness", WARN, "Assurance graph has not been built yet.",
             "Run `ccf assurance graph-rebuild` or POST /api/assurance/graph/rebuild.",
         )
+    nodes, edges, finished_at = row[0], row[1], row[2]
+    if finished_at is None:
+        # `status = 'ok'` with no finish time is a row that cannot be aged.
+        # Reported rather than treated as current: an unmeasurable age is not a
+        # fresh one.
+        return Check(
+            "assurance_graph_freshness", WARN,
+            f"Assurance graph build recorded no finish time ({nodes} nodes, {edges} edges).",
+            "Rebuild the graph so its age can be established.",
+        )
+    age = datetime.now(UTC) - _as_utc(finished_at)
+    limit = _assurance_staleness_limit()
+    if age > limit:
+        return Check(
+            "assurance_graph_freshness", WARN,
+            f"Assurance graph is {age.days}d old ({nodes} nodes, {edges} edges); "
+            f"expected a rebuild within {limit.days}d.",
+            "Enable CCF_SCHEDULER_ENABLED, or run `ccf assurance graph-rebuild`.",
+        )
     return Check(
         "assurance_graph_freshness", PASS,
-        f"Assurance graph built ({row[0]} nodes, {row[1]} edges).",
+        f"Assurance graph built {age.days}d ago ({nodes} nodes, {edges} edges).",
     )
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Postgres may hand back a naive timestamp; compare like with like."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def _assurance_staleness_limit() -> timedelta:
+    """How old the graph may get before it is worth reporting.
+
+    Derived from the scheduler's own cadence rather than invented: the graph is
+    rebuilt once per cycle, so two missed cycles is the first point at which
+    something is actually wrong. A fixed constant here would go stale the moment
+    an operator changed the interval — which is the failure this whole check was
+    an instance of.
+    """
+    hours = max(1.0, get_settings().scheduler_interval_hours)
+    return timedelta(hours=hours * 2)
 
 
 async def _check_evidence_repository(session: AsyncSession) -> Check:

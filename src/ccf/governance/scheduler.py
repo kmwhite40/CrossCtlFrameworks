@@ -12,8 +12,9 @@ Two kinds of job live in one cycle, and they are scoped differently (IA-06):
   platform-wide records (``CatalogSource``, ATO/POA&M/policy/vendor rollups)
   that are not owned by any one organization. These run once per cycle with
   the session's RLS tenant unscoped (bypass), same as CLI/ETL.
-* PER-TENANT — connector collection, the ConMon scan, and connector-backed
-  control-test auto-runs all read/write an organization's own rows
+* PER-TENANT — connector collection, the ConMon scan, connector-backed
+  control-test auto-runs, and the assurance-graph rebuild all read/write an
+  organization's own rows
   (``CaptureSnapshot``, ``MonitoringRun``, ``ControlTestResult``, tasks,
   notifications, POA&Ms). These run once per organization inside
   :func:`_run_per_tenant_cycle`, each iteration clamped to that org via
@@ -32,6 +33,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..assurance import builder as assurance_builder
 from ..capability import derive as capability_derive
 from ..config import get_settings
 from ..db import get_engine, session_scope, set_session_tenant
@@ -81,6 +83,7 @@ async def _run_per_tenant_cycle(
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
+    assurance_results: list[dict[str, Any]] = []
     derive_enabled = get_settings().capability_derive_enabled
     for org_id in org_ids:
         await set_session_tenant(session, org_id)
@@ -144,6 +147,36 @@ async def _run_per_tenant_cycle(
                     step="capability_derive",
                     error=str(e)[:200],
                 )
+        try:
+            # The assurance graph is derived from this organization's own
+            # records, so it goes stale the moment any of the steps above
+            # writes one. Nothing rebuilt it: it was built only when somebody
+            # ran the CLI or posted the endpoint, and the reliability check
+            # meant to notice reported PASS regardless of age. Rebuilding it
+            # here is what makes "authorization digital twin" true of the
+            # thing on the page rather than of the thing the builder can
+            # produce on request.
+            #
+            # Last of the per-tenant steps on purpose: it summarises what the
+            # earlier ones just wrote, so running it first would snapshot the
+            # previous cycle.
+            async with session.begin_nested():
+                run = await assurance_builder.rebuild_org(session, org_id)
+                assurance_results.append(
+                    {
+                        "organization_id": org_id,
+                        "nodes": run.node_count,
+                        "edges": run.edge_count,
+                        "status": run.status,
+                    }
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="assurance_graph",
+                error=str(e)[:200],
+            )
     # Back to bypass before any global step (or the advisory unlock) runs.
     # Suppressed: a prior step's failure must not prevent the tenant clamp
     # from being reset — mirrors the advisory-unlock suppress in run_cycle.
@@ -159,6 +192,11 @@ async def _run_per_tenant_cycle(
             ],
             "captured": sum(r["captured"] for r in collection_results),
             "drift": sum(r["drift"] for r in collection_results),
+        },
+        "assurance_graph": {
+            "organizations_processed": [r["organization_id"] for r in assurance_results],
+            "nodes": sum(r["nodes"] for r in assurance_results),
+            "edges": sum(r["edges"] for r in assurance_results),
         },
         "pack_sync": {
             "organizations_processed": [r["organization_id"] for r in pack_sync_results],
