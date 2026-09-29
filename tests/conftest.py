@@ -9,6 +9,7 @@ from pathlib import Path
 
 import openpyxl
 import pytest
+import structlog
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, delete, select, text
@@ -103,6 +104,40 @@ def _delete_keyed_cr26_documents_before_wipe(cfg: Config) -> None:
             )
     finally:
         engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def _structlog_configuration_is_restored() -> Iterator[None]:
+    """Undo any structlog reconfiguration a test performs.
+
+    ``structlog.testing.capture_logs`` mutates the configured processors list
+    **in place**, deliberately, so that bound loggers already cached under
+    ``cache_logger_on_first_use=True`` still route through it. That contract
+    breaks the moment anything calls ``structlog.configure()`` again: configure
+    installs a *new* list, the cached loggers keep a reference to the old one,
+    and from then on every ``capture_logs`` block in the session sees nothing.
+
+    One test does exactly that -- ``test_configure_logging_tolerates_bad_level``
+    calls ``ccf.logging.configure_logging()`` with a deliberately invalid level,
+    which is the behaviour it is there to check. Alphabetically it runs before
+    the scheduler tests, so those asserted on captured warnings and received
+    ``[]``, while their behavioural assertions in the same test passed. The
+    suite failed differently on different runs depending on which loggers had
+    been cached first: identical code produced eight failures on one run and
+    three on the next.
+
+    ``tests/test_csrf_origin.py`` already documents this failure mode and works
+    around it locally by replacing one module's logger. This restores the
+    configuration instead, which fixes the class rather than an instance.
+
+    Restoring the *same list object* is what matters, not merely equal
+    contents: the cached loggers hold that identity.
+    """
+    saved = dict(structlog.get_config())
+    try:
+        yield
+    finally:
+        structlog.configure(**saved)
 
 
 @pytest.fixture(scope="session", autouse=True)
