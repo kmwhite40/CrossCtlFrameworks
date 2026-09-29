@@ -10,19 +10,27 @@ repos:
         args: ["--maxkb=2048"]
       - id: check-merge-conflict
       - id: detect-private-key
+  # These revs must track the pinned versions in pyproject's [dev] extra. A hook
+  # older than the pin does not know the newer rules, so every `# noqa` naming one
+  # reads as unused -- and `--fix` then strips it, corrupting the comment it was
+  # attached to. At v0.5.7 that was 448 directives in this tree, in one run.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.5.7
+    rev: v0.16.2
     hooks:
       - id: ruff
         args: ["--fix"]
       - id: ruff-format
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.1
+    rev: v1.20.2
     hooks:
       - id: mypy
+        # Mirror pyproject's own constraints, not a looser restatement of them:
+        # this hook resolves in its own isolated environment, so an unbounded
+        # `sqlalchemy>=2.0` here reinstates exactly the 2.1 typing divergence the
+        # cap in pyproject exists to prevent.
         additional_dependencies:
-          - "pydantic>=2.7"
-          - "sqlalchemy>=2.0"
+          - "pydantic[email]>=2.7,<3"
+          - "sqlalchemy[asyncio]>=2.0.30,<2.1"
           - "types-python-slugify"
         args: ["--ignore-missing-imports", "src"]
         pass_filenames: false
