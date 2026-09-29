@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models_grc import ConnectorConfig
-from ..posture.resolve import resolve_checks
+from ..posture.resolve import ResolvedCheck, resolve_checks
 from ..ssp.responsibility import (
     control_domain,
     responsibility_entry_for,
@@ -73,7 +73,7 @@ async def provider_readiness(
     resolved = await resolve_checks(session, provider=connector_key, org_id=organization_id)
     platform = _CONNECTOR_PLATFORM.get(connector_key, connector_key)
 
-    def _check_descriptor(rc) -> dict[str, Any]:
+    def _check_descriptor(rc: ResolvedCheck) -> dict[str, Any]:
         domain = control_domain(rc.check.control_ids[0] if rc.check.control_ids else None)
         responsibility = responsibility_entry_for(platform, domain)
         return {

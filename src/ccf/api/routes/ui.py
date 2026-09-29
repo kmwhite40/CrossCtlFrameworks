@@ -1912,17 +1912,21 @@ async def governance_page(
         .all()
     )
     latest = latest_result_ids()
-    scan_rows = (
-        await session.execute(
-            select(ControlTest, ControlTestResult)
-            .join(latest, latest.c.control_test_id == ControlTest.id)
-            .join(ControlTestResult, ControlTestResult.id == latest.c.result_id)
-            .where(ControlTest.check_key.is_not(None))
-            .order_by(ControlTestResult.run_at.desc(), ControlTest.id.desc())
-        )
-    ).all()
+    # Scoped in SQL, not after the fact. Fetching every tenant's latest scan
+    # result and then dropping the ones that do not belong is a row count that
+    # grows with the whole platform for a page that shows one organization, and
+    # it puts the tenant boundary in a list comprehension a later edit can walk
+    # past -- the predicate belongs where the database can also enforce it.
+    scan_stmt = (
+        select(ControlTest, ControlTestResult)
+        .join(latest, latest.c.control_test_id == ControlTest.id)
+        .join(ControlTestResult, ControlTestResult.id == latest.c.result_id)
+        .where(ControlTest.check_key.is_not(None))
+        .order_by(ControlTestResult.run_at.desc(), ControlTest.id.desc())
+    )
     if org is not None:
-        scan_rows = [(t, r) for t, r in scan_rows if t.organization_id == org]
+        scan_stmt = scan_stmt.where(ControlTest.organization_id == org)
+    scan_rows = (await session.execute(scan_stmt)).all()
     scan_total = len(scan_rows)
     scan_pass = sum(1 for _, r in scan_rows if r.status == "pass")
     scan_attention = [

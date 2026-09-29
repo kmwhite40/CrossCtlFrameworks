@@ -27,7 +27,7 @@ def _dateish(value: object) -> str | None:
     if value is None:
         return None
     if hasattr(value, "date"):
-        return value.date().isoformat()  # type: ignore[no-any-return, union-attr]
+        return value.date().isoformat()  # type: ignore[no-any-return]
     return str(value)
 
 
@@ -133,14 +133,19 @@ async def project_scan_sync(
         if result.status == "pass":
             passing_by_control.setdefault(control_id, []).append(row)
         elif result.status in _FINDING_STATUSES:
-            poam = poam_by_test.get(test.id)
-            if poam is not None:
+            # Distinct name: `poam` is still bound by the loop that filled
+            # `poam_by_test` above, so reusing it here means a miss on `.get`
+            # leaves the *previous* POA&M in scope -- one finding wearing
+            # another's plan number, which is exactly the kind of citation an
+            # assessor follows.
+            linked_poam = poam_by_test.get(test.id)
+            if linked_poam is not None:
                 row["poam"] = {
-                    "id": poam.id,
-                    "status": poam.status,
-                    "severity": poam.severity,
-                    "title": poam.title,
-                    "due_on": poam.due_on,
+                    "id": linked_poam.id,
+                    "status": linked_poam.status,
+                    "severity": linked_poam.severity,
+                    "title": linked_poam.title,
+                    "due_on": linked_poam.due_on,
                 }
             findings_by_control.setdefault(control_id, []).append(row)
         elif result.status == _MANUAL_REVIEW_STATUS:
