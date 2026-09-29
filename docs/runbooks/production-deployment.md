@@ -31,6 +31,40 @@ after a deploy.
 | `CCF_AI_CREDENTIAL_KEY_PROVIDER` | Defaults to `local`, which keeps key material in the environment. Production should be `aws_kms` so the platform never holds it. |
 | `CCF_CSRF_TRUSTED_ORIGINS` | Only if a separately-hosted front end posts to this API. Leave empty otherwise. |
 
+## 2a. Configuration that decides whether the platform does anything on its own
+
+Nothing below blocks startup, nothing warns, and every one defaults to **off**.
+A deployment that follows every other section of this runbook and skips this one
+comes up healthy, serves every page, and then sits still: no connector
+collection, no ConMon scan, no control-test auto-runs, no assurance-graph
+rebuild. Continuous monitoring that only runs when somebody clicks is not
+continuous, and the platform will not tell you — an operator's first sign is a
+posture page that never changes.
+
+| Variable | Default | What stays switched off without it |
+|---|---|---|
+| `CCF_SCHEDULER_ENABLED` | `false` | **Every recurring job.** The in-app scheduler runs connector collection, pack sync, the ConMon scan, connector-backed control-test auto-runs, capability derivation and the assurance-graph rebuild — per organization, once per cycle. Set `true`, or drive `ccf scheduler --once` from an external cron. |
+| `CCF_SCHEDULER_INTERVAL_HOURS` | `24.0` | The cycle cadence. It also sets the staleness threshold the `assurance_graph_freshness` reliability check warns past, so shortening the interval tightens that check automatically. |
+| `CCF_AWS_CAPTURE_ENABLED` | `false` | AWS configuration capture. Leave off unless an AWS connector is bound. |
+| `CCF_PREP_ENABLED` | `false` | The evidence-prep pipeline and its worker. |
+| `CCF_AI_ENABLED` | `false` | AI drafting. Off is a defensible production posture; on requires a configured provider and leaves AI-drafted content visibly badged. |
+
+Verify it took, rather than assuming — see section 6.
+
+### Defaults that weaken an assurance claim rather than a feature
+
+These are off by default too, and each one changes what the platform can honestly
+say about its own output. They are listed apart from the table above because
+switching them on is a compliance decision, not an operational one.
+
+| Variable | Default | What the default costs you |
+|---|---|---|
+| `CCF_EVIDENCE_OBJECT_LOCK_ENABLED` | `false` | Evidence is written without WORM/object-lock. Only storage-enforceable on `evidence_backend='s3'` (Object Lock, COMPLIANCE mode); on `local` the platform logs `evidence.worm_not_storage_enforced` rather than making a false immutability claim — which is the right behaviour, and also means local evidence is mutable. An assessor asking "can this evidence have been altered after collection" gets "yes" while this is off. Pair with `CCF_EVIDENCE_OBJECT_LOCK_RETENTION_DAYS` (default 365) when no per-organization retention policy applies. |
+| `CCF_AI_ALLOW_UNCITED_DRAFTS` | `false` | Leave it off. On, AI may produce draft content with no citation behind it, in a document an authorizing official reads. The default is the safe one; it is named here so nobody turns it on without meaning to. |
+| `CCF_FEDRAMP20X_OSCAL_VALIDATE` | `false` | FedRAMP 20x OSCAL output is not schema-validated on export. A package that fails validation at the reviewer's end is discovered by the reviewer. |
+| `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` | `false` | Validation falls back to a bundled schema rather than requiring the official one. |
+| `CCF_READONLY` | `false` | Not a gap — a mode. Set it for a demonstration or a frozen archive instance so nothing can be written through the UI or API.
+
 ## 3. TLS and the reverse proxy
 
 - Session cookies and PIV/CAC both assume TLS termination in front of the app.
@@ -82,6 +116,8 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 | `select count(*) from ccf.users` | only accounts you provisioned |
 | A connector's **Test** button | the provider's own error, or connected |
 | `/api/posture/summary` `systems_total` | equals live systems in that org |
+| `GET /api/reliability` → `assurance_graph_freshness` | `pass`, within a day or two of deploy. A persistent `warn` that the graph is *N*d old means no scheduler is running — see section 2a. |
+| The API log on start | `scheduler.started` with the interval, if `CCF_SCHEDULER_ENABLED=true`. Its absence is the only signal that nothing recurring will happen. |
 
 ## 7. Known limits to state before anyone relies on this
 
