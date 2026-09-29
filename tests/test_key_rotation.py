@@ -292,9 +292,16 @@ async def test_a_row_whose_key_is_unknown_is_reported_and_left_alone(keys) -> No
     keys(KEY_A, previous=[KEY_C])
     async with session_scope() as s:
         rescued = await rewrap_all(s)
-    assert not any(row_id == cred_id for _t, row_id, _k in rescued.unreadable), (
-        f"row {cred_id} still unreadable after its key was restored: {rescued.unreadable}"
-    )
+    # Table-qualified, for the reason spelled out above: ids restart per table,
+    # so comparing the id alone fails whenever another swept table holds an
+    # unreadable row with the same integer. Two tests in this file carried the
+    # unqualified form; a mid-session schema wipe in an unrelated module had
+    # been clearing those rows by accident, so the defect stayed hidden until
+    # that wipe was removed.
+    assert not any(
+        table == "user_mfa_credentials" and row_id == cred_id
+        for table, row_id, _k in rescued.unreadable
+    ), f"row {cred_id} still unreadable after its key was restored: {rescued.unreadable}"
 
     async with session_scope() as s:
         cred = await s.get(UserMfaCredential, cred_id)
@@ -609,7 +616,10 @@ async def test_the_sweep_moves_a_version_one_mfa_secret_to_the_current_key(keys)
     keys(KEY_B, previous=[KEY_A])
     async with session_scope() as s:
         report = await rewrap_all(s)
-    assert not any(row_id == cred_id for _t, row_id, _k in report.unreadable), report.unreadable
+    assert not any(
+        table == "user_mfa_credentials" and row_id == cred_id
+        for table, row_id, _k in report.unreadable
+    ), report.unreadable
 
     async with session_scope() as s:
         cred = await s.get(UserMfaCredential, cred_id)
