@@ -9,9 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ccf.config import get_settings
@@ -19,16 +17,36 @@ from ccf.etl import ingest_workbook
 from ccf.models import Control, Framework, FrameworkMapping, Worksheet
 
 
-@pytest.fixture(scope="session", autouse=True)
-def apply_migrations() -> None:
-    # Reset to a clean schema before ingesting so control/mapping counts are
-    # deterministic regardless of what earlier modules seeded. (conftest's
-    # ``clean_migrated_db`` already cleaned the session start; this gives the
-    # modules that run after this one a clean slate too.)
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
-    command.downgrade(cfg, "base")
-    command.upgrade(cfg, "head")
+@pytest.fixture(scope="module", autouse=True)
+def clean_catalog_tables() -> None:
+    """Empty the catalog this module counts, without resetting the database.
+
+    These tests assert exact totals (``ctl_count == 3``), so they need the
+    catalog empty. They used to get that by downgrading the whole schema to
+    ``base`` and re-upgrading, from a **session-scoped** fixture — mid-session,
+    which is precisely what ``conftest.clean_migrated_db`` warns against in its
+    own docstring: it wipes data every module that already ran depends on, and
+    two modules doing it raced into a ``pg_type`` collision recreating
+    ``ccf.ingestion_runs``.
+
+    Deleting the four tables this module actually counts gives the same
+    determinism with a blast radius of four tables instead of the database.
+    ``Framework`` is deliberately left alone: ``fw_count >= 20`` asserts on the
+    catalog the migrations seed, which a truncate would destroy and nothing
+    would put back.
+    """
+    engine = create_engine(str(get_settings().database_url_sync))
+    with engine.begin() as conn:
+        # Order matters only in so far as the FKs allow; CASCADE covers the
+        # dependents (implementations, mappings) without naming each one here
+        # and going stale when a new dependent is added.
+        conn.execute(
+            text(
+                "TRUNCATE ccf.controls, ccf.framework_mappings, ccf.worksheets, "
+                "ccf.ingestion_runs RESTART IDENTITY CASCADE"
+            )
+        )
+    engine.dispose()
 
 
 @pytest.mark.asyncio

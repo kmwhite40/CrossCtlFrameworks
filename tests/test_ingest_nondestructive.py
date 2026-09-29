@@ -23,9 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from ccf.config import get_settings
@@ -43,11 +41,24 @@ from ccf.models import (
 
 
 @pytest.fixture(scope="module", autouse=True)
-def apply_migrations() -> None:
-    cfg = Config("alembic.ini")
-    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
-    command.downgrade(cfg, "base")
-    command.upgrade(cfg, "head")
+def clean_catalog_tables() -> None:
+    """Empty the catalog this module re-ingests into, without resetting the DB.
+
+    This module asserts *relative* behaviour — a control survives a re-ingest, a
+    POA&M keeps its control — so it needs a predictable catalog, not a fresh
+    database. Downgrading to ``base`` mid-session wiped every earlier module's
+    data and raced the other ingest module into a ``pg_type`` collision
+    recreating ``ccf.ingestion_runs``.
+    """
+    engine = create_engine(str(get_settings().database_url_sync))
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "TRUNCATE ccf.controls, ccf.framework_mappings, ccf.worksheets, "
+                "ccf.ingestion_runs RESTART IDENTITY CASCADE"
+            )
+        )
+    engine.dispose()
 
 
 @pytest.fixture
