@@ -154,9 +154,62 @@ Verified by mutation: 13 deletions, 13 named failures.
 
 ## Acceptance Criteria
 
-- A test environment with known misconfigurations produces matching failed
-  resource rows and control failures.
-- A scan response names every applicable check that did not run and why.
-- Every failed scan-owned control can produce a POA&M with actionable guidance.
-- SSP output distinguishes passing automated evidence, documented-only controls,
-  failed controls with POA&Ms, inherited controls, and manual review gaps.
+Every criterion below is **executed** by a named test, not asserted by this
+document. Each was checked by mutation: the guard was broken deliberately and
+the named test had to fail. A criterion recorded as met with no test that can
+fail is the same claim-versus-rendering defect this plan exists to remove.
+
+- **Executed** — A test environment with known misconfigurations produces
+  matching failed resource rows and control failures.
+  `tests/test_acceptance_known_misconfigurations.py`. One deliberately broken
+  M365 tenant driven through the real pipeline (payload → scan → resource rows →
+  control verdict → POA&M → framework posture → SSP statement). The fixture
+  answers all fourteen m365 platform checks, so a new check with no known-bad
+  payload fails the suite rather than scanning nothing.
+  *Limitation, stated rather than implied:* the environment is recorded
+  payloads. It proves Concord turns a given Graph response into the right
+  conclusion, not that Graph returns that response for a tenant in that state.
+  Closing that half needs a tenant somebody deliberately misconfigures, and it
+  is the one piece of this plan that hardware cannot substitute for.
+
+- **Executed** — A scan response names every applicable check that did not run
+  and why. `tests/test_acceptance_unrun_checks_are_named.py`. Asserts the
+  property rather than the paths: the arithmetic
+  (`checks_expected == checks_run + len(skipped_checks)`) closes, every skipped
+  entry names its check, and every reason is a sentence rather than a status
+  word. A structural guard covers the branch nobody has written yet — a new
+  `skipped_checks` entry with no `reason` fails the build.
+  Found and fixed while executing this: the success return omitted `reason`
+  while the unconfigured-connector return carried it, so `out["reason"]` worked
+  on the unhappy path and raised on the happy one.
+
+- **Executed** — Every failed scan-owned control can produce a POA&M with
+  actionable guidance. `tests/test_acceptance_known_misconfigurations.py::
+  test_every_failing_check_opens_a_poam_with_guidance`. One POA&M per failing
+  check, each `open`, each carrying generated guidance with a remediation
+  objective, the observed condition and the SSP impact, and the observed
+  condition carries the real resource count rather than a placeholder.
+
+- **Executed** — SSP output distinguishes passing automated evidence,
+  documented-only controls, failed controls with POA&Ms, inherited controls, and
+  manual review gaps. `tests/test_acceptance_ssp_distinguishes_control_kinds.py`.
+  One SSP project holding one control of each kind, asserted as a matrix: every
+  entry carries its own marker and none of the other four. Absence is asserted
+  as hard as presence, because a composer that appended every clause to every
+  control would satisfy the criterion on a read and be worthless — and because
+  "Verified by automated testing" on a control nothing tested is a false
+  statement in an authorization package that validates.
+
+### Not covered by these criteria
+
+Worth naming so nobody reads the four above as a completion certificate:
+
+- **eMASS** has never been exercised against a live instance. The client is
+  written and unit-tested; nothing has confirmed the real API accepts it.
+- **Workers and the scheduler** ship disabled. `ccf-prep-worker` and
+  `ccf-assessment-worker` are built but not running, and
+  `CCF_SCHEDULER_ENABLED` is unset on the dev container, so nothing recurs on
+  its own. See the runbook's automation-gate section.
+- **Check coverage** is partial by construction, and the runbook's coverage
+  table is the number to read — not these criteria, which say the plumbing is
+  right, not that it reaches every control.
