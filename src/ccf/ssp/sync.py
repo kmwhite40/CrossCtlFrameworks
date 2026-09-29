@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..constants import POAM_ACTIVE_STATUSES
 from ..models import POAM, SSPControlEntry, SSPProject
 from ..models_grc import ControlTest, ControlTestResult
+from ..posture.evidence import non_passing_attribution, pass_attribution
 from .seed import entry_to_dict
 
 _FINDING_STATUSES = {"fail", "warn"}
@@ -114,7 +115,16 @@ async def project_scan_sync(
     findings_by_control: dict[str, list[dict[str, Any]]] = {}
     manual_by_control: dict[str, list[dict[str, Any]]] = {}
     for test, result in result_rows:
-        control_id = str(test.control_id)
+        # A finding is a finding against every control the check declares; a
+        # pass credits the primary control only. `ccf.posture.evidence` owns
+        # that asymmetry. Keeping this view on `control_id` alone while
+        # `governance.automation` widened its own would have the same scan
+        # answer two ways in two places an assessor reads.
+        attributed = (
+            pass_attribution(test.control_id)
+            if result.status == "pass"
+            else non_passing_attribution(test.control_id, test.control_ids)
+        )
         row = {
             "test_id": test.id,
             "result_id": result.id,
@@ -131,7 +141,8 @@ async def project_scan_sync(
             "observed_on": _dateish(result.run_at or test.last_tested_at),
         }
         if result.status == "pass":
-            passing_by_control.setdefault(control_id, []).append(row)
+            for control_id in attributed:
+                passing_by_control.setdefault(control_id, []).append(dict(row))
         elif result.status in _FINDING_STATUSES:
             # Distinct name: `poam` is still bound by the loop that filled
             # `poam_by_test` above, so reusing it here means a miss on `.get`
@@ -147,9 +158,11 @@ async def project_scan_sync(
                     "title": linked_poam.title,
                     "due_on": linked_poam.due_on,
                 }
-            findings_by_control.setdefault(control_id, []).append(row)
+            for control_id in attributed:
+                findings_by_control.setdefault(control_id, []).append(dict(row))
         elif result.status == _MANUAL_REVIEW_STATUS:
-            manual_by_control.setdefault(control_id, []).append(row)
+            for control_id in attributed:
+                manual_by_control.setdefault(control_id, []).append(dict(row))
 
     controls: list[dict[str, Any]] = []
     with_passing = with_findings = with_manual = blockers = 0

@@ -38,6 +38,7 @@ from ..models import (
     System,
 )
 from ..models_grc import ControlTest
+from ..posture.evidence import non_passing_attribution, pass_attribution
 
 # Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
 # Public because ccf.posture.rollup shares it -- but note the two uses select
@@ -318,10 +319,19 @@ async def build_context(session: AsyncSession, system_id: int) -> SystemContext:
     # All-pass rather than last-write-wins: taking the newest result per key
     # makes the answer depend on the order the checks happened to run, so the
     # same evidence could credit the control or not from one scan to the next.
+    # A non-passing verdict reaches every control its check declares, so a
+    # supporting control cannot be credited here while a failing check has
+    # something to say about it; a pass still credits the primary control only
+    # (``ccf.posture.evidence``). This can only ever withhold credit, never
+    # add it -- the readiness number moves down when the evidence says so and
+    # never up. Without it, `analytics.framework_posture` could report AC-6 as
+    # not cleanly passing while this readiness view credited it, from one scan.
     by_control: dict[str, set[str]] = {}
-    for control_id, status in (
+    for control_id, control_ids, status in (
         await session.execute(
-            select(ControlTest.control_id, ControlTest.last_status)
+            select(
+                ControlTest.control_id, ControlTest.control_ids, ControlTest.last_status
+            )
             .where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id.is_not(None),
@@ -329,7 +339,13 @@ async def build_context(session: AsyncSession, system_id: int) -> SystemContext:
             )
         )
     ).all():
-        by_control.setdefault(normalize_control(control_id), set()).add(status)
+        attributed = (
+            pass_attribution(control_id)
+            if status == "pass"
+            else non_passing_attribution(control_id, control_ids)
+        )
+        for attributed_id in attributed:
+            by_control.setdefault(normalize_control(attributed_id), set()).add(status)
     for key, statuses in by_control.items():
         if statuses == {"pass"}:
             ctx.control_tests[key] = "pass"
