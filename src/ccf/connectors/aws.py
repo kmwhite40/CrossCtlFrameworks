@@ -443,6 +443,17 @@ class AwsGovCloudConnector(ConfigConnector):
 
         "Not configured" and "I could not look" are different facts and the
         second must never render as the first.
+
+        **Cost, stated rather than discovered in production.** This is one AWS
+        call per bucket, and the two S3 checks each run it, so a scan of an
+        account with *n* buckets makes roughly ``2n + 2`` S3 calls. That is
+        fine for the tens-of-buckets accounts this is written for and is not
+        fine for thousands: expect throttling, and the per-bucket failures that
+        causes arrive as ``manual_review_required`` rather than as false passes,
+        which is the right direction but is still a scan nobody can read. The
+        fix when it is needed is S3 Storage Lens or a Config aggregator, both of
+        which are a different data source and a different permission grant --
+        not a tweak to this loop.
         """
         client = self._session().client("s3", region_name=self._region())
         rows: list[dict[str, Any]] = []
