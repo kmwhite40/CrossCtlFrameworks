@@ -714,6 +714,23 @@ async def generate_statements(
     manual_evidence_note = manual_evidence_note_for(ssp_plat)
     derivation = profile.derivation or {}
 
+    # An SSP describes **one system**, so its evidence is that system's.
+    #
+    # These queries were scoped to the whole organization, which on a tenant
+    # with two systems sharing one Microsoft 365 tenant made each finding
+    # appear twice in one control's narrative, citing a POA&M raised against
+    # the other system. An assessor reading system A's SSP was being shown
+    # system B's weakness and B's remediation id as if they were A's.
+    #
+    # Seven of the twenty-one projects in the live database carry no system, so
+    # the organization remains the fallback rather than the rule: a project
+    # that names no system can only be described by its tenant's evidence.
+    system_scope = (
+        System.id == project.system_id
+        if project.system_id is not None
+        else System.organization_id == project.organization_id
+    )
+
     # Live captured config indexed by NIST id (from the connector collection loop).
     caps_by_nist: dict[str, list[dict[str, str]]] = {}
     for snap in (
@@ -752,7 +769,7 @@ async def generate_statements(
             )
             .join(System, System.id == ControlTest.system_id)
             .where(
-                System.organization_id == project.organization_id,
+                system_scope,
                 System.deleted_at.is_(None),
                 ControlTest.last_status == "pass",
                 ControlTest.control_id.is_not(None),
@@ -784,7 +801,7 @@ async def generate_statements(
                 select(POAM.id, POAM.source_ref)
                 .join(System, System.id == POAM.system_id)
                 .where(
-                    System.organization_id == project.organization_id,
+                    system_scope,
                     POAM.source == "control_test",
                     POAM.source_ref.like("control_test:%"),
                     POAM.status.in_(POAM_ACTIVE_STATUSES),
@@ -808,7 +825,7 @@ async def generate_statements(
             )
             .join(System, System.id == ControlTest.system_id)
             .where(
-                System.organization_id == project.organization_id,
+                system_scope,
                 System.deleted_at.is_(None),
                 ControlTest.last_status.in_(_SSP_GAP_STATUSES),
                 ControlTest.control_id.is_not(None),
