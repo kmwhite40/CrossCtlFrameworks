@@ -234,28 +234,30 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   msgraph connector with fourteen working checks scanned none of them. M365 now
   falls back to a domain-level answer derived from the scoring placemat.
 
-- **6 of the 32 registered checks cannot be scanned by any tenant today**, for
-  that same reason — the platform's responsibility template does not answer the
-  control's domain. They are enumerated with reasons in
-  `tests/test_every_check_can_be_scanned.py::UNSCANNABLE`, which fails if a new
-  check joins them silently or a listed one starts working:
+  All 32 registered checks are scannable today, and
+  `tests/test_every_check_can_be_scanned.py` fails if that stops being true —
+  its allowlist of unscannable checks is empty on purpose.
 
-  | Provider | Checks blocked | Missing template answer |
-  |---|---|---|
-  | `aws_govcloud` | `s3.public_access_blocked`, `iam.access_key_rotation`, `iam.password_policy`, `iam.root_mfa_enabled` | domains `AC` and `IA` |
-  | `puppetdb` | `node.last_run_succeeded`, `node.reporting` | no template for platform `puppetdb` |
+- **Scan scope is asked separately from who owns a control**, and the
+  distinction matters if you are changing either. `responsibility_for` answers
+  ownership and feeds two regulator-facing consumers: SSP control origination
+  (`ssp.seed`) and SPRS scoring state
+  (`governance.automation._platform_state`). Both deliberately refuse to guess,
+  so an unanswered domain is flagged for a human rather than defaulted.
 
-  So **half the AWS suite and all of PuppetDB produce no evidence**, including
-  root MFA and password policy — among the first things an assessor asks for.
-  This is not fixed here because it is not only a scan-scope question:
-  `responsibility_for` also feeds SSP control origination through
-  `ssp.constants.platform_responsibility`, and the hyperscaler template leaves a
-  domain unanswered *deliberately*, so an SSP flags the control for a human
-  rather than asserting an origination nobody chose
-  (`needs_manual_responsibility_assignment`). Adding `AC` and `IA` to that table
-  would unblock the four AWS checks and, in the same edit, change what every AWS
-  system's SSP claims about who originates its access-control requirements.
-  Decide that deliberately.
+  That refusal used to decide scan coverage too, which left **half the AWS suite
+  and all of PuppetDB producing no evidence** — root MFA, password policy,
+  access key rotation and S3 public-access blocks among them, because the
+  hyperscaler template declines to state an SSP origination for the whole `AC`
+  and `IA` domains. Those settings are changed by nobody but the customer, so
+  the ownership question was never the one the scan path needed answered.
+
+  `ssp.responsibility.SCAN_SCOPE_OVERRIDES` now answers scan scope on its own,
+  and an entry can only ever upgrade an *unanswered* domain to `scan` — a domain
+  the template positively calls provider-owned or not-applicable cannot be
+  opened from there. **Do not fix a scan-coverage gap by editing the
+  responsibility table**: that moves SSP origination and a score reported to the
+  DoD. `tests/test_scan_scope_is_not_responsibility.py` pins both halves.
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their

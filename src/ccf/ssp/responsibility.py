@@ -259,6 +259,86 @@ def origination_for(responsibility: str) -> list[str]:
     return list(RESPONSIBILITY_TO_ORIGINATION.get(responsibility, []))
 
 
+#: Platform/domain pairs a provider API may evaluate even though the
+#: responsibility template declines to say who *owns* the control.
+#:
+#: This answers a different question from :func:`responsibility_for`, and the
+#: distinction is the whole point of the table existing. Responsibility says who
+#: owns a control, and it feeds two regulator-facing consumers: SSP control
+#: origination (``ssp.seed``) and SPRS scoring state
+#: (``governance.automation._platform_state``). Both deliberately refuse to
+#: guess -- an unanswered domain is flagged for a human rather than defaulted,
+#: because a guessed origination is an assertion in an authorization package and
+#: a guessed SPRS responsibility changes a score reported to the DoD.
+#:
+#: Scan scope asks only whether a check may read the customer's own
+#: configuration through the provider's API, using the customer's own
+#: credential. That is a capability question. Answering it does not assert
+#: ownership, does not reach an SSP, and does not move a score -- a scan
+#: produces evidence, and the evidence is attributed to the controls the check
+#: declares regardless of who is deemed responsible.
+#:
+#: Conflating the two is what left half the AWS suite inert: the four checks
+#: below read IAM and S3 settings that no one but the customer can change, and
+#: they were filtered out because the template would not commit to an SSP
+#: origination for the whole AC and IA domains. Those are different questions
+#: and they now have different answers.
+#:
+#: Entries may only ever *upgrade* ``manual_scope_review`` to ``scan`` -- see
+#: :func:`scan_scope_for`. A domain the template positively calls provider-owned
+#: or not-applicable cannot be opened up from here, so this table is not a
+#: backdoor around the safeguard it sits beside.
+SCAN_SCOPE_OVERRIDES: dict[tuple[str, str], str] = {
+    (
+        "aws_govcloud",
+        "AC",
+    ): "S3 public access blocks are account-level settings only the customer can set",
+    (
+        "aws_govcloud",
+        "IA",
+    ): "IAM users, password policy and access keys are created and rotated by the customer",
+    (
+        "puppetdb",
+        "CM",
+    ): "PuppetDB is infrastructure the customer runs; there is no provider to inherit from",
+}
+
+
+def scan_scope_for(
+    platform: str,
+    domain: str | None,
+    *,
+    framework: str = FRAMEWORK_CMMC,
+    coverage_status: str | None = None,
+) -> str:
+    """Whether a provider API check may evaluate this control.
+
+    Prefer this over calling :func:`scan_applicability` on a responsibility
+    directly: it is the question the live-audit path actually has, and it keeps
+    scan coverage from being decided by a table whose real job is SSP
+    origination and SPRS scoring.
+
+    Only ``manual_scope_review`` -- the template having no answer -- can be
+    upgraded. ``inherited_evidence`` and ``not_applicable`` are positive
+    statements that the provider owns the control or that it does not apply, and
+    an override must not be able to talk over them.
+    """
+    responsibility = responsibility_for(
+        platform, domain, framework=framework, coverage_status=coverage_status
+    )
+    applicability = scan_applicability(responsibility)
+    if applicability != "manual_scope_review":
+        return applicability
+    if (platform, (domain or "").upper()) in SCAN_SCOPE_OVERRIDES:
+        return "scan"
+    return applicability
+
+
+def scan_scope_reason(platform: str, domain: str | None) -> str | None:
+    """Why this platform/domain is scannable despite an unanswered template."""
+    return SCAN_SCOPE_OVERRIDES.get((platform, (domain or "").upper()))
+
+
 def scan_applicability(responsibility: str) -> str:
     """How a live audit should treat controls with this responsibility.
 
