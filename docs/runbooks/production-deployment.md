@@ -51,6 +51,28 @@ posture page that never changes.
 
 Verify it took, rather than assuming — see section 6.
 
+**The bundled `docker-compose.yml` turns the scheduler on.** `config.py` still
+defaults `scheduler_enabled` to `false` — that is the library default and every
+sentence above is about it — but the compose stack sets
+`CCF_SCHEDULER_ENABLED: "true"` on the `api` service, so a `docker compose up`
+does run recurring jobs. It is set on `api` alone and deliberately not on the
+`x-ccf-env` anchor: the anchor also feeds `etl`, `cli` and `poller`, and
+`scheduler.start()` is idempotent per process rather than across them, so
+putting it in the anchor would run one scheduler per container and fire every
+tenant's cycle several times over. Any other deployment method — a Helm chart,
+a systemd unit, a hand-rolled container — inherits the `false` default and must
+set this itself.
+
+The two workers are behind compose **profiles** rather than an environment
+variable, so they do not start with a plain `up`:
+
+```
+docker compose --profile prep --profile assessment up -d prep-worker assessment-worker
+```
+
+Both poll in a loop and log `{"claimed": 0, ...}` against an empty queue, which
+is what healthy-and-idle looks like. Neither is needed for the scheduler.
+
 ### Defaults that weaken an assurance claim rather than a feature
 
 These are off by default too, and each one changes what the platform can honestly

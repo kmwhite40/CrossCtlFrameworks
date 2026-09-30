@@ -113,3 +113,68 @@ def test_the_runbook_says_how_to_tell_the_scheduler_is_actually_running() -> Non
     assert "scheduler.started" in RUNBOOK.read_text(encoding="utf-8"), (
         "the runbook gives no way to confirm the scheduler is running"
     )
+
+
+def test_the_runbook_and_the_compose_file_agree_about_the_scheduler() -> None:
+    """Section 2a's claim about the bundled stack must match the bundled stack.
+
+    The section's whole argument is that these gates default to off and a
+    deployment that skips it "comes up healthy and then sits still". That is
+    true of `config.py` and became false of `docker-compose.yml` the moment the
+    scheduler was switched on there. A runbook that tells an operator the stack
+    does nothing on its own, while the stack in the same repository runs a cycle
+    fifteen seconds after boot, is worse than one that says nothing: it is read,
+    and it is wrong.
+
+    Both directions are checked, so this fails whichever side moves.
+    """
+    import re  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text(
+        encoding="utf-8"
+    )
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+
+    enabled_in_compose = bool(
+        re.search(r'^\s*CCF_SCHEDULER_ENABLED:\s*"true"', compose, flags=re.M)
+    )
+    claimed_in_runbook = "bundled `docker-compose.yml` turns the scheduler on" in runbook
+
+    assert enabled_in_compose == claimed_in_runbook, (
+        "docker-compose.yml "
+        f"{'enables' if enabled_in_compose else 'does not enable'} the scheduler "
+        f"and the runbook {'says it does' if claimed_in_runbook else 'does not say so'}. "
+        "Update whichever one is wrong."
+    )
+
+
+def test_the_scheduler_is_enabled_on_exactly_one_service() -> None:
+    """Two schedulers means every tenant's cycle runs twice.
+
+    `scheduler.start()` is idempotent within a process and has no cross-process
+    lock, so the only thing keeping one cycle per interval is that exactly one
+    container sets the flag. Putting it on the shared `x-ccf-env` anchor -- the
+    obvious-looking place -- would silently multiply it by the number of
+    services that use the anchor.
+    """
+    import re  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    compose_path = Path(__file__).resolve().parents[1] / "docker-compose.yml"
+    compose = compose_path.read_text(encoding="utf-8")
+
+    occurrences = re.findall(r'^\s*CCF_SCHEDULER_ENABLED:\s*"(\w+)"', compose, flags=re.M)
+    enabled = [o for o in occurrences if o == "true"]
+    assert len(enabled) <= 1, (
+        f"CCF_SCHEDULER_ENABLED is set true {len(enabled)} times in "
+        "docker-compose.yml; each container that sets it runs its own scheduler"
+    )
+
+    if enabled:
+        # And it must not be in the shared anchor, which several services inherit.
+        anchor = compose.split("services:", 1)[0]
+        assert "CCF_SCHEDULER_ENABLED" not in anchor, (
+            "CCF_SCHEDULER_ENABLED is in the x-ccf-env anchor; every service "
+            "using the anchor would start a scheduler"
+        )

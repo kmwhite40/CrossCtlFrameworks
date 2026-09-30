@@ -73,7 +73,19 @@ DEFAULT_SOURCES: list[dict[str, Any]] = [
         "kind": "oscal_catalog",
         "url": f"{_NIST_RAW}/SP800-53/rev5/json/NIST_SP-800-53A_rev5_catalog.json",
         "framework_code": "NIST_800_53A_R5",
-        "enabled": True,
+        # Disabled, and the URL kept rather than deleted so nobody re-derives
+        # it and re-adds this. NIST does not publish 800-53A Rev. 5 as OSCAL:
+        # the whole `usnistgov/oscal-content` tree contains no path matching
+        # `53A` at all, so this is not a URL that moved -- the content was never
+        # there. Enabled, it returned 404 on every poll, which is the same
+        # "permanently failing source trains people to ignore the digest"
+        # problem the DISA CCI entry below is disabled for.
+        #
+        # Concord is not missing the objectives: `ccf.controls` already holds
+        # assessment objectives and ODP rows, sourced from the curated
+        # cross-mapping workbook. Re-enable this only if NIST starts publishing
+        # it, and set the real URL when they do rather than guessing one.
+        "enabled": False,
     },
     {
         "key": "nist_800_53_r5_high_baseline",
