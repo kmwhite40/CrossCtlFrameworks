@@ -226,133 +226,21 @@ async def scan_system_all_connectors(
     response states which providers ran, which were unavailable, and where to
     read the framework posture. Provider-specific scan remains available for
     troubleshooting and targeted re-runs.
+
+    The orchestration lives in ``posture.scan_all`` rather than here, because the
+    scheduler needs it too -- while it lived in this handler the only way to run
+    a full posture scan was for a person to ask, so verdicts never refreshed on
+    their own.
     """
-    from ...posture.scan import record_manual_review_check, scan_for_system  # noqa: PLC0415
+    from ...posture.scan_all import scan_all_providers  # noqa: PLC0415
 
     await require_system_in_scope(session, system_id, principal)
-    results: list[dict[str, Any]] = []
-    for key in sorted(known_providers()):
-        readiness = await provider_readiness(
-            session,
-            organization_id=principal.org_id,
-            connector_key=key,
-            persist=True,
-        )
-        if not readiness["ready"]:
-            manual_results = [
-                await record_manual_review_check(
-                    session,
-                    system_id=system_id,
-                    connector_key=key,
-                    check=check,
-                    reason=readiness.get("reason") or readiness["status"],
-                    actor=principal.email,
-                )
-                for check in readiness["checks"]
-            ]
-            results.append(
-                {
-                    "system_id": system_id,
-                    "connector": key,
-                    "readiness": readiness,
-                    "checks_expected": readiness["checks_expected"],
-                    "checks_run": 0,
-                    "results": [],
-                    "skipped_checks": [
-                        {**check, "reason": readiness.get("reason") or readiness["status"]}
-                        for check in readiness["checks"]
-                    ],
-                    "manual_review_results": manual_results,
-                    "reason": readiness.get("reason") or readiness["status"],
-                }
-            )
-            continue
-        try:
-            manual_results = [
-                await record_manual_review_check(
-                    session,
-                    system_id=system_id,
-                    connector_key=key,
-                    check=check,
-                    reason=check["scan_applicability"],
-                    actor=principal.email,
-                )
-                for check in readiness["checks"]
-                if check["scan_applicability"] != "scan"
-            ]
-            api_check_keys = {
-                str(check["check_key"])
-                for check in readiness["checks"]
-                if check["scan_applicability"] == "scan"
-            }
-            out = await scan_for_system(
-                session,
-                system_id=system_id,
-                connector_key=key,
-                actor=principal.email,
-                check_keys=api_check_keys,
-            )
-            out["readiness"] = readiness
-            out["manual_review_results"] = manual_results
-            results.append(out)
-        except Exception as exc:  # reported per provider, never swallowed
-            # One provider's failure must not discard the providers that
-            # worked. Without this the whole request raised, the commit below
-            # never ran, and a tenant with a healthy Microsoft 365 connector
-            # and a broken AWS one recorded nothing at all -- while the error
-            # named only the broken half.
-            #
-            # The rollback is required, not tidiness: a failed scan can leave
-            # the session in a state where every later provider's flush fails
-            # too, which would turn one provider's fault into all of them.
-            await session.rollback()
-            log.warning(
-                "posture.scan_all_provider_failed",
-                system_id=system_id,
-                connector=key,
-                error=type(exc).__name__,
-            )
-            results.append(
-                {
-                    "system_id": system_id,
-                    "connector": key,
-                    "readiness": readiness,
-                    "checks_expected": 0,
-                    "checks_run": 0,
-                    "results": [],
-                    "skipped_checks": [],
-                    "reason": (
-                        f"provider scan failed ({type(exc).__name__}); "
-                        "nothing was recorded for this provider"
-                    ),
-                }
-            )
-    await session.commit()
-    # `skipped_checks` is a list on every per-provider entry, so the aggregate
-    # gets its own name rather than the same key holding an int at one level and
-    # a list at the next -- a consumer walking `response["skipped_checks"]`
-    # would otherwise get a different type depending on where it looked.
-    return {
-        "system_id": system_id,
-        "connectors": results,
-        "checks_expected": sum(int(r.get("checks_expected") or 0) for r in results),
-        "checks_run": sum(int(r.get("checks_run") or 0) for r in results),
-        "skipped_checks_total": sum(len(r.get("skipped_checks") or []) for r in results),
-        # Which providers actually contributed, so "0 checks run" is readable.
-        # A provider registering no posture checks at all (azure_arm, gcp) is a
-        # different fact from one holding no credential, and both are different
-        # from one that broke.
-        "providers_scanned": sum(1 for r in results if r.get("checks_run")),
-        "providers_without_checks": sum(
-            1 for r in results if not r.get("checks_expected") and not r.get("reason")
-        ),
-        "providers_unavailable": [
-            {"connector": r["connector"], "reason": r["reason"]}
-            for r in results
-            if r.get("reason")
-        ],
-        "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
-    }
+    return await scan_all_providers(
+        session,
+        system_id=system_id,
+        organization_id=principal.org_id,
+        actor=principal.email,
+    )
 
 
 @scan_router.post("/systems/{system_id}/provider-readiness")
