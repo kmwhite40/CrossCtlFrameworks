@@ -226,23 +226,23 @@
 
   <header class="masthead">
     <div class="eyebrow">
-      <span>Concord Platform</span><span>Build Level Report</span><span>17 September 2026</span>
+      <span>Concord Platform</span><span>Build Level Report</span><span>30 September 2026</span>
     </div>
     <h1>Everything a customer can do today, and what the build will not yet claim.</h1>
     <p class="standfirst">Five product areas, forty surfaces, one honest boundary line.</p>
   </header>
 
   <dl class="ledger">
-    <div class="cell"><dt>Migration head</dt><dd>0084</dd></div>
-    <div class="cell"><dt>Tests passing</dt><dd>3,826</dd></div>
-    <div class="cell"><dt>API endpoints</dt><dd>494</dd></div>
-    <div class="cell"><dt>Tenant tables</dt><dd>141</dd></div>
+    <div class="cell"><dt>Migration head</dt><dd>0092</dd></div>
+    <div class="cell"><dt>Tests passing</dt><dd>4,428</dd></div>
+    <div class="cell"><dt>API endpoints</dt><dd>537</dd></div>
+    <div class="cell"><dt>Tenant tables</dt><dd>142</dd></div>
   </dl>
 
   <section>
     <div class="sec-head">
       <h2>Where the build stands</h2>
-      <span class="sec-note">as of head 4eb72ba</span>
+      <span class="sec-note">as of head 3fc8c97</span>
     </div>
     <p class="lede">
       Concord is feature-complete across the authorization lifecycle: a customer can define
@@ -266,12 +266,13 @@
     </p>
 
     <div class="evidence">
-      <div><span>Static analysis</span><span><b>Clean.</b> ruff across <span class="mono">src</span> and <span class="mono">tests</span>; mypy strict across 306 source files, no issues.</span></div>
-      <div><span>Schema</span><span><b>One head</b> — <span class="mono">0084_mfa_totp</span>. 84 Alembic migrations, no divergence.</span></div>
-      <div><span>Test suite</span><span><b>3,826 passing, 2 skipped</b> in 6m23s, run against a real PostgreSQL instance rather than a mock. The single skip needs a browser driver that is not installed locally.</span></div>
-      <div><span>Tenant isolation</span><span><b>141 tables</b> under database-enforced row-level security, with a positive-control test that fails the build when a new table escapes it.</span></div>
-      <div><span>Code base</span><span>74,795 lines of application code against 93,392 lines of tests — more test than product.</span></div>
-      <div><span>Interface</span><span><b>Monochrome chrome.</b> Colour is reserved for status, so a reader never has to learn which colours mean something. 54 server-rendered pages, one shell, no build step and no JavaScript bundle. Contrast is asserted in both themes rather than eyeballed, and a page cannot reference a style that does not exist.</span></div>
+      <div><span>Static analysis</span><span><b>Clean.</b> ruff, mypy strict and bandit across 333 source files — checked in a virtualenv built the way CI builds one, not only against a developer machine, because the two had silently diverged.</span></div>
+      <div><span>Continuous integration</span><span><b>Green.</b> It had failed eight runs in a row through 25 September, at <span class="mono">mypy src</span> — which precedes <span class="mono">pytest</span>, so the suite was not running in CI at all. An unpinned SQLAlchemy let a fresh resolve install 2.1, whose result typing yields 47 errors on a tree that is clean under 2.0.x; the identical commit passed locally and failed in CI. Dependencies and the three tool versions are now pinned, and the pre-commit hooks track those pins rather than resolving their own.</span></div>
+      <div><span>Schema</span><span><b>One head</b> — <span class="mono">0092_control_test_evidenced_controls</span>. 92 Alembic migrations, no divergence.</span></div>
+      <div><span>Test suite</span><span><b>4,428 passing, 2 skipped</b> in 13m37s, run against a real PostgreSQL instance rather than a mock. The skips need a browser driver that is not installed locally.</span></div>
+      <div><span>Tenant isolation</span><span><b>142 tables</b> under database-enforced row-level security, with a positive-control test that fails the build when a new table escapes it.</span></div>
+      <div><span>Code base</span><span>87,003 lines of application code against 112,887 lines of tests — more test than product.</span></div>
+      <div><span>Interface</span><span><b>Monochrome chrome.</b> Colour is reserved for status, so a reader never has to learn which colours mean something. 63 server-rendered pages, one shell, no build step and no JavaScript bundle. Contrast is asserted in both themes rather than eyeballed, and a page cannot reference a style that does not exist.</span></div>
     </div>
   </section>
 
@@ -446,15 +447,64 @@
   <section>
     <div class="sec-head">
       <h2>What landed this cycle</h2>
-      <span class="sec-note">seventeen pull requests, all merged</span>
+      <span class="sec-note">newest first</span>
     </div>
     <p class="lede">
-      The cycle's theme was foundations: the ontology that removes per-framework narrative
-      duplication, and the posture spine that gives machine evidence somewhere to land.
-      Both were sequenced deliberately ahead of the features that need them.
+      The cycle began with foundations — the ontology that removes per-framework narrative
+      duplication, and the posture spine that gives machine evidence somewhere to land —
+      and has now spent that groundwork: every connector Concord registers evaluates what it
+      collects, rather than merely collecting it.
     </p>
 
     <div class="items">
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>Azure and Google Cloud produce verdicts</h3>
+          <p>Both had been capture-only: configuration arrived and nothing judged it. Azure now
+          carries five checks and Google Cloud three, and AWS GovCloud grew from four to eight with
+          audit-log integrity and storage encryption. Thirty-two checks across five connectors, none
+          of them sitting at zero.</p>
+          <p>This closes the limitation every previous edition of this report led with.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>The automation is switched on</h3>
+          <p>The scheduler now reports what a cycle actually did, and posture verdicts recur rather
+          than being computed once and left to age. Turning it on is what surfaced the rest.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-built">Shipped</span>
+        <div>
+          <h3>One definition, one rule</h3>
+          <p>A check now evidences every control it declares rather than only the first, and the SSP
+          evidence sync and FedRAMP 20x readiness compute from the same rule instead of two that
+          could disagree. Acceptance tests pin both, including that a scan names every applicable
+          check that did <em>not</em> run &mdash; silence is not a pass.</p>
+        </div>
+      </div>
+
+      <div class="item">
+        <span class="tag t-hardened">Hardened</span>
+        <div>
+          <h3>The build gates, and the hooks behind them</h3>
+          <p>CI had failed eight runs in a row, at the type check, before <span class="mono">pytest</span>
+          ever ran. An unpinned SQLAlchemy let a fresh install resolve 2.1, whose result typing breaks a
+          tree that is clean under 2.0.x &mdash; so the same commit passed on a developer machine and
+          failed in CI.</p>
+          <p>The tools and the typed dependencies are now pinned, and the pre-commit hooks track those
+          pins. They had not: the ruff hook was eleven minor versions behind and ran with
+          <span class="mono">--fix</span>, which read 448 <span class="mono">noqa</span> directives as
+          unused and would have stripped them &mdash; deleting the code and leaving the reason behind as
+          an orphaned comment.</p>
+        </div>
+      </div>
+
       <div class="item">
         <span class="tag t-built">Shipped</span>
         <div>
@@ -874,14 +924,16 @@
       <div class="item">
         <span class="tag t-limit">Limit</span>
         <div>
-          <h3>Live machine evidence is three providers deep</h3>
-          <p>Nine automated posture checks: five across Microsoft 365 / Graph and PuppetDB, and
-          four over AWS GovCloud, which previously captured configuration that nothing
-          evaluated. Azure Government now has a capture connector; Google Cloud does not, and a
-          GCP customer&rsquo;s plan says so rather than borrowing another provider&rsquo;s catalogue.</p>
-          <p>A claim of automated evidence now requires that this organization&rsquo;s own connector
-          completed a recent, non-empty capture &mdash; not merely that a connector exists for the
-          platform. Everything else is human-attested or ingested evidence, and says so.</p>
+          <h3>Every connector is evaluated, and a claim still needs this tenant&rsquo;s own capture</h3>
+          <p>This was the standing limitation of every prior edition of this report, and it is
+          closed. <strong>Thirty-two automated posture checks across all five registered
+          connectors</strong> &mdash; fourteen on Microsoft 365 / Graph, eight on AWS GovCloud,
+          five on Azure, three on Google Cloud, two on PuppetDB. None sits at zero, so no customer
+          sees configuration collected that nothing evaluates.</p>
+          <p>What has not changed is the evidential bar. A claim of automated evidence requires
+          that this organization&rsquo;s own connector completed a recent, non-empty capture &mdash;
+          not merely that a connector exists for the platform. Everything else is human-attested
+          or ingested evidence, and says so.</p>
 </div>
       </div>
 
@@ -983,7 +1035,6 @@
     </p>
     <ul class="plain">
       <li><strong>Marketplace status reporting</strong> &mdash; blocked on a source, not on engineering. FedRAMP publishes no status vocabulary this platform can read, and the five-per-regime lists exist only in an unadopted draft RFC. What each system carries instead is Concord&rsquo;s own pipeline stage, barred by test from any filed deliverable.</li>
-      <li><strong>eMASS and Jira</strong> &mdash; the two outbound integrations customers ask for. The typed AI action path now runs on the organization&rsquo;s own gateway and records which provider and model produced each output, so what remains in this line is the two ticketing and package systems, not the AI wiring.</li>
       <li><strong>FedRAMP-assigned parameter values</strong> &mdash; the Rev 5 baseline overlay. Every organization-defined parameter now carries its label, guidance and choices from the catalog, and an assessor can see which are unset. What does not exist anywhere in the data is FedRAMP&rsquo;s own assigned values: the workbook&rsquo;s FedRAMP columns are membership markers, and one cell says plainly that a provider &ldquo;may use FedRAMP value&rdquo; without carrying one. It needs FedRAMP&rsquo;s published OSCAL baselines ingested as a new source.</li>
     </ul>
 
@@ -996,10 +1047,15 @@
   </section>
 
   <footer>
-    <p>Build level at <span class="mono">main</span> head
-    <span class="mono">4eb72ba</span>. Migration head <span class="mono">0084</span>,
-    single Alembic head. ruff, mypy strict and bandit clean across 306 source files.
-    3,826 tests passing, 2 skipped, against a real PostgreSQL instance.</p>
+    <p>Build level at <span class="mono">origin/main</span> head
+    <span class="mono">3fc8c97</span>. Migration head <span class="mono">0092</span>,
+    single Alembic head. ruff, mypy strict and bandit clean across 333 source files.
+    4,428 tests passing, 2 skipped, against a real PostgreSQL instance.</p>
+    <p>Editions of this report dated between 25 and 29 September called the gates
+    &ldquo;clean&rdquo; while CI had been failing for eight consecutive runs. That was wrong, and
+    it is recorded here rather than quietly corrected: the checks now run in a CI-shaped
+    environment precisely because a developer machine and a fresh install had stopped
+    agreeing.</p>
     <p>Counts in this report are measured from the repository at that commit, not quoted
     from prior documents. Where a figure in the README disagrees, the README is the stale
     one.</p>
