@@ -43,8 +43,9 @@ import itertools
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
+from ccf.api.routes.oscal import build_ssp_doc
 from ccf.db import session_scope
 from ccf.governance.automation import generate_statements
 from ccf.models import (
@@ -358,3 +359,117 @@ async def test_the_unmatched_list_names_controls_rather_than_counting_them() -> 
             assert all(isinstance(v, str) and v for v in value)
     finally:
         await _cleanup(int(made["project_id"]), int(made["org_id"]))  # type: ignore[call-overload]
+
+
+@pytest.mark.asyncio
+async def test_an_ssp_never_exports_implemented_for_a_control_observed_failing() -> None:
+    """The most consequential consequence of the mapping, pinned end to end.
+
+    `generate_statements` downgrades an entry from "Implemented" to "Partially
+    Implemented" when a check bearing on it is failing -- the implementation
+    described is real work, and the finding says it is not fully operating.
+
+    That downgrade reads `failing_by_control[entry.control_id]`, which for a
+    CMMC project was **always empty**: checks declare 800-53 ids and entries are
+    practice ids. So the downgrade could not fire on the framework every project
+    in the live database uses. An assessor could mark a practice Implemented,
+    the platform could observe it failing an hour later, and the delivered
+    OSCAL would still carry `implementation-status: Implemented`.
+
+    That is the worst shape this product can produce: not a missing statement
+    but a false one, machine-readable, in the artifact a regulator ingests.
+    """
+    tag = f"{next(_SEQ)}"
+    async with session_scope() as session:
+        await seed_scoring_controls(session)
+
+    async with session_scope() as session:
+        org = Organization(name=f"NoFalseImplemented-{tag}")
+        session.add(org)
+        await session.flush()
+        system = System(organization_id=org.id, name=f"NFI-{tag}")
+        session.add(system)
+        await session.flush()
+        profile = SystemProfile(
+            system_id=system.id,
+            answers={},
+            environment_type="cloud",
+            cloud_platform="m365_gcc_high",
+            frameworks=["NIST_800_171"],
+            derivation={},
+        )
+        session.add(profile)
+        project = SSPProject(
+            organization_id=org.id,
+            system_id=system.id,
+            customer_name=f"NFI {tag}",
+            platform="m365",
+            framework="cmmc-800-171",
+        )
+        session.add(project)
+        await session.flush()
+        await seed_project_entries(session, project)
+
+        # A human has asserted this practice is implemented.
+        await session.execute(
+            update(SSPControlEntry)
+            .where(
+                SSPControlEntry.project_id == project.id,
+                SSPControlEntry.control_id == "IA.L2-3.5.3",
+            )
+            .values(implementation_status=["Implemented"])
+        )
+        # And the platform has just observed it failing.
+        session.add(
+            ControlTest(
+                organization_id=org.id,
+                system_id=system.id,
+                name="Every user has an MFA method registered",
+                check_key="m365.identity.mfa_registered",
+                source="generated",
+                control_id="IA-2",
+                control_ids=["IA-2", "IA-2(1)"],
+                last_status="fail",
+                last_tested_at=datetime.now(UTC),
+                method="api",
+            )
+        )
+        await session.flush()
+
+        result = await generate_statements(
+            session, project=project, profile=profile, include_captured=True
+        )
+        entry = (
+            await session.execute(
+                select(SSPControlEntry).where(
+                    SSPControlEntry.project_id == project.id,
+                    SSPControlEntry.control_id == "IA.L2-3.5.3",
+                )
+            )
+        ).scalars().one()
+        doc = await build_ssp_doc(session, project)
+        project_id, org_id = project.id, org.id
+        await session.commit()
+
+    try:
+        assert result["status_downgraded_by_findings"] == 1, (
+            "a failing check on an Implemented control must downgrade it"
+        )
+        assert entry.implementation_status == ["Partially Implemented"]
+
+        statuses: list[str] = []
+        for ir in doc["system-security-plan"]["control-implementation"][
+            "implemented-requirements"
+        ]:
+            if ir.get("control-id") == "_3.5.3":
+                statuses = [
+                    p["value"] for p in ir.get("props", []) if p["name"] == "implementation-status"
+                ]
+        assert statuses == ["Partially Implemented"], (
+            f"delivered OSCAL says {statuses} for a control observed failing"
+        )
+        assert "Implemented" not in statuses, (
+            "the exported document claims a failing control is implemented"
+        )
+    finally:
+        await _cleanup(int(project_id), int(org_id))
