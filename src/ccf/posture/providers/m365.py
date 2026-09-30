@@ -808,7 +808,7 @@ def _tenant_finding(
     ]
 
 
-def _lock_minutes(policy: dict[str, Any]) -> int | None:
+def lock_minutes(policy: dict[str, Any]) -> int | None:
     """The inactivity lock a compliance policy sets, in minutes.
 
     ``None`` when the policy does not configure one at all, which is different
@@ -843,7 +843,7 @@ def evaluate_session_lock_enforced(
         p
         for p in rows
         if p.get(_LOCK_REQUIRED_KEY) is True
-        and (minutes := _lock_minutes(p)) is not None
+        and (minutes := lock_minutes(p)) is not None
         and minutes <= max_minutes
     ]
     if qualifying:
@@ -853,18 +853,18 @@ def evaluate_session_lock_enforced(
             passed=True,
             observed=(
                 f"{first.get('displayName') or first.get('id')!r} requires a password and "
-                f"locks after {_lock_minutes(first)} minute(s)"
+                f"locks after {lock_minutes(first)} minute(s)"
             ),
             detail={
                 "policy_id": first.get("id"),
-                "lock_minutes": _lock_minutes(first),
+                "lock_minutes": lock_minutes(first),
                 "qualifying_policies": len(qualifying),
                 "policies_examined": len(rows),
             },
         )
     # Say which of the two ways it failed: no policy at all is a different
     # remedy from policies that exist but lock too late.
-    configured = [(p, m) for p in rows if (m := _lock_minutes(p)) is not None]
+    configured = [(p, m) for p in rows if (m := lock_minutes(p)) is not None]
     if configured:
         soonest = min(m for _p, m in configured)
         observed = (

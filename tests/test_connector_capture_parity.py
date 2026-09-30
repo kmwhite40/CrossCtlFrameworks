@@ -144,6 +144,41 @@ def _graph_handler(request: httpx.Request) -> httpx.Response:
                 ]
             },
         )
+    if "/deviceManagement/deviceCompliancePolicies" in url:
+        # `inactivity_period` comes from here, not from the Conditional Access
+        # sign-in frequency above. The two are deliberately different numbers in
+        # this fixture: if the mapper ever goes back to reading sign-in
+        # frequency it will emit "15 minutes" and the assertion below, which
+        # expects the policy's 10, will say so.
+        return httpx.Response(
+            200,
+            json={
+                "value": [
+                    # Sets no lock at all -- skipped rather than read as zero.
+                    {"id": "dcp-encrypt", "displayName": "Encryption only"},
+                    # Intune reports 0 for "not configured" on some platforms.
+                    {
+                        "id": "dcp-zero",
+                        "displayName": "Unconfigured lock",
+                        "passwordRequired": True,
+                        "passwordMinutesOfInactivityBeforeLock": 0,
+                    },
+                    {
+                        "id": "dcp-lax",
+                        "displayName": "Lax lock",
+                        "passwordRequired": True,
+                        "passwordMinutesOfInactivityBeforeLock": 30,
+                    },
+                    # The soonest real lock, which is the one to report.
+                    {
+                        "id": "dcp-strict",
+                        "displayName": "Corp devices",
+                        "passwordRequired": True,
+                        "passwordMinutesOfInactivityBeforeLock": 10,
+                    },
+                ]
+            },
+        )
     return httpx.Response(404, json={"error": {"code": "unknownPath", "message": url}})
 
 
