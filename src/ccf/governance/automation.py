@@ -36,7 +36,12 @@ from ..models import (
     Vendor,
 )
 from ..models_grc import ControlTest
-from ..posture.evidence import non_passing_attribution
+from ..posture.evidence import (
+    non_passing_attribution,
+    non_passing_practice_attribution,
+    pass_attribution,
+    pass_practice_attribution,
+)
 from ..scoring.engine import DERIVED, deduction_for, score_system
 from ..scoring.service import record_derived_state
 from ..ssp import constants as ssp_constants
@@ -737,9 +742,14 @@ async def generate_statements(
     # A failing test is a finding and belongs in a POA&M; an SSP citing its own
     # failures as evidence of implementation would be worse than silence.
     verified_by_control: dict[str, list[dict[str, str]]] = {}
-    for control_id, name, run_at in (
+    for control_id, check_key, name, run_at in (
         await session.execute(
-            select(ControlTest.control_id, ControlTest.name, ControlTest.last_tested_at)
+            select(
+                ControlTest.control_id,
+                ControlTest.check_key,
+                ControlTest.name,
+                ControlTest.last_tested_at,
+            )
             .join(System, System.id == ControlTest.system_id)
             .where(
                 System.organization_id == project.organization_id,
@@ -749,14 +759,17 @@ async def generate_statements(
             )
         )
     ).all():
-        verified_by_control.setdefault(str(control_id), []).append(
-            {
-                "check": str(name),
-                # Dated: machine evidence with no date is a claim about an
-                # unknown moment, and an assessor has to know which.
-                "observed_on": run_at.date().isoformat() if run_at else "",
-            }
-        )
+        verified_row = {
+            "check": str(name),
+            # Dated: machine evidence with no date is a claim about an
+            # unknown moment, and an assessor has to know which.
+            "observed_on": run_at.date().isoformat() if run_at else "",
+        }
+        # Both vocabularies, primary only in each. A posture check declares
+        # 800-53 ids; a CMMC project's entries are practice ids, and without
+        # the second call this evidence reaches nothing in such a document.
+        for credited in pass_attribution(control_id) + pass_practice_attribution(check_key):
+            verified_by_control.setdefault(credited, []).append(dict(verified_row))
 
     # The other half. Citing only the passing tests made the document read as
     # though the platform had found nothing else: a control whose scan failed
@@ -782,12 +795,13 @@ async def generate_statements(
     }
     failing_by_control: dict[str, list[dict[str, str]]] = {}
     unassessed_by_control: dict[str, list[dict[str, str]]] = {}
-    for test_id, control_id, control_ids, name, run_at, status in (
+    for test_id, control_id, control_ids, check_key, name, run_at, status in (
         await session.execute(
             select(
                 ControlTest.id,
                 ControlTest.control_id,
                 ControlTest.control_ids,
+                ControlTest.check_key,
                 ControlTest.name,
                 ControlTest.last_tested_at,
                 ControlTest.last_status,
@@ -811,7 +825,9 @@ async def generate_statements(
         # "Implemented" is the failure this whole section exists to prevent.
         # `verified_by_control` above is deliberately NOT widened -- see
         # `ccf.posture.evidence` for why a pass credits the primary only.
-        attributed = non_passing_attribution(control_id, control_ids)
+        attributed = non_passing_attribution(
+            control_id, control_ids
+        ) + non_passing_practice_attribution(check_key)
         if status == "manual_review_required":
             # The only verdict that means "Concord could not judge this".
             for attributed_id in attributed:

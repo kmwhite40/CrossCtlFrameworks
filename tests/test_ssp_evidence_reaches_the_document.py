@@ -61,7 +61,9 @@ _SEQ = itertools.count()
 
 
 async def _cmmc_project_with_a_failing_check(
-    *, extra_entry_control_id: str | None = None
+    *,
+    extra_entry_control_id: str | None = None,
+    check_key: str = "m365.identity.mfa_registered",
 ) -> dict[str, object]:
     """One CMMC project seeded the real way, plus one failing posture verdict.
 
@@ -104,8 +106,8 @@ async def _cmmc_project_with_a_failing_check(
             ControlTest(
                 organization_id=org.id,
                 system_id=system.id,
-                name="m365.identity.mfa_registered",
-                check_key="m365.identity.mfa_registered",
+                name=check_key,
+                check_key=check_key,
                 source="generated",
                 control_id="IA-2",
                 control_ids=["IA-2", "IA-2(1)"],
@@ -156,8 +158,14 @@ async def _cleanup(project_id: int, org_id: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failing_check_that_reaches_no_entry_is_reported_not_swallowed() -> None:
-    """The defect, through the real CMMC seeding path."""
+async def test_a_mapped_check_reaches_the_cmmc_entry_it_evidences() -> None:
+    """The fix, through the real CMMC seeding path.
+
+    `m365.identity.mfa_registered` maps to IA.L2-3.5.3 ("Use multifactor
+    authentication..."), so its failure now lands on an entry that exists in a
+    CMMC document. Before the mapping this count was 0 with four live failures
+    on the tenant.
+    """
     made = await _cmmc_project_with_a_failing_check()
     try:
         result = made["result"]
@@ -177,16 +185,39 @@ async def test_a_failing_check_that_reaches_no_entry_is_reported_not_swallowed()
             "seed_project_entries no longer produces CMMC practice ids; this "
             "test's premise is gone"
         )
-        assert "IA-2" not in ids
+        assert "IA-2" not in ids, "the 800-53 id is still not an entry in this document"
+        assert "IA.L2-3.5.3" in ids
 
-        # The finding exists and lands on no entry, so the per-entry count is
-        # zero -- and the new field is what makes that zero readable.
+        assert result["controls_with_open_findings"] == 1, (
+            "the finding must reach the practice the check evidences"
+        )
+        # The 800-53 ids the check also declares still name no entry here, and
+        # are still reported rather than dropped: the document uses one
+        # vocabulary and the verdict carries two.
+        assert set(result["findings_unmatched_controls"]) == {"IA-2", "IA-2(1)"}
+    finally:
+        await _cleanup(int(made["project_id"]), int(made["org_id"]))  # type: ignore[call-overload]
+
+
+@pytest.mark.asyncio
+async def test_an_unmapped_check_is_still_reported_rather_than_swallowed() -> None:
+    """The half that is reporting, not mapping.
+
+    Four checks are deliberately unmapped (`posture.practices.UNMAPPED`)
+    because no 800-171 practice matches without an argument. Their findings
+    must stay visible as unattributable instead of vanishing into a zero --
+    which is exactly what the whole document did before either change.
+    """
+    made = await _cmmc_project_with_a_failing_check(
+        check_key="aws.iam.access_key_rotation"
+    )
+    try:
+        result = made["result"]
+        assert isinstance(result, dict)
         assert result["controls_with_open_findings"] == 0
         assert set(result["findings_unmatched_controls"]) == {"IA-2", "IA-2(1)"}, (
-            "a failing check naming controls this SSP does not use must be "
-            "reported; otherwise the document reads clean"
+            "an unmapped check's finding must be reported as unattributable"
         )
-        assert "IA-2" in result["evidence_unmatched_controls"]
     finally:
         await _cleanup(int(made["project_id"]), int(made["org_id"]))  # type: ignore[call-overload]
 
@@ -195,17 +226,13 @@ async def test_a_failing_check_that_reaches_no_entry_is_reported_not_swallowed()
 async def test_evidence_that_does_reach_an_entry_is_not_reported_as_unmatched() -> None:
     """The other direction, so the field cannot be a constant.
 
-    Add one entry keyed the way the evidence is keyed. The finding then attaches
-    to it, `controls_with_open_findings` rises, and only the control ids that
-    still match nothing remain unmatched.
+    Add one entry keyed the way the 800-53 evidence is keyed. That id then
+    attaches and stops being reported, while its sibling still matches nothing.
     """
     made = await _cmmc_project_with_a_failing_check(extra_entry_control_id="IA-2")
     try:
         result = made["result"]
         assert isinstance(result, dict)
-        assert result["controls_with_open_findings"] == 1, (
-            "the finding should have attached to the entry sharing its id"
-        )
         assert "IA-2" not in result["findings_unmatched_controls"]
         # IA-2(1) is still declared by the check and still has no entry, so it
         # stays reported -- the field tracks control ids, not whole checks.
