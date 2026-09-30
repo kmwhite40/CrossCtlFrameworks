@@ -33,6 +33,9 @@ from __future__ import annotations
 
 import pytest
 
+from ccf.connectors.readiness import provider_readiness
+from ccf.db import session_scope
+from ccf.models import Organization
 from ccf.ssp import constants
 from ccf.ssp.responsibility import (
     SCAN_SCOPE_OVERRIDES,
@@ -153,6 +156,89 @@ def test_every_override_reason_is_specific() -> None:
         assert reason[0].isupper() or reason.startswith(("IAM", "S3", "PuppetDB")), (
             f"{platform}/{domain}: {reason!r}"
         )
+
+
+@pytest.mark.asyncio
+async def test_readiness_itself_reports_the_new_scope_not_the_old_one() -> None:
+    """Drive the real `provider_readiness`, because every other test stubs it.
+
+    This is the assertion the first pass was missing. Nine tests pinned
+    `scan_scope_for` directly and none of them noticed when `readiness.py` was
+    reverted to `scan_applicability(responsibility.responsibility)` -- the whole
+    fix backed out, all six checks dark again, suite green. Found by mutation,
+    which is the only thing that finds it.
+
+    `provider_readiness` builds its check descriptors before it looks at
+    credentials, so an organization with no AWS connector still exercises the
+    line under test; the status is `not_configured` and the descriptors are
+    real.
+    """
+    async with session_scope() as session:
+        org = Organization(name="ScanScopeWiring")
+        session.add(org)
+        await session.flush()
+        readiness = await provider_readiness(
+            session,
+            organization_id=org.id,
+            connector_key="aws_govcloud",
+            persist=False,
+        )
+        await session.rollback()
+
+    checks = readiness["checks"]
+    assert len(checks) == 8, "the AWS suite must be present for this to mean anything"
+
+    not_scanning = [
+        (c["check_key"], c["scan_applicability"])
+        for c in checks
+        if c["scan_applicability"] != "scan"
+    ]
+    assert not_scanning == [], (
+        "provider_readiness is not using scan_scope_for -- these AWS checks are "
+        f"still out of scope: {not_scanning}"
+    )
+
+    # Exactly the four that were blocked carry the override's reason -- both
+    # directions, so neither a missing reason nor a reason spreading to checks
+    # the template answers on its own can pass. `aws.s3.default_encryption` is
+    # the useful negative: it is an S3 check, but its control is SC-28, which
+    # the hyperscaler template answers as "shared" without any override.
+    with_reason = {c["check_key"] for c in checks if c["scan_scope_reason"]}
+    assert with_reason == {
+        "aws.s3.public_access_blocked",
+        "aws.iam.access_key_rotation",
+        "aws.iam.password_policy",
+        "aws.iam.root_mfa_enabled",
+    }, f"unexpected set of override-scanned checks: {sorted(with_reason)}"
+
+
+@pytest.mark.asyncio
+async def test_readiness_still_withholds_a_provider_owned_domain() -> None:
+    """The other direction, through the same real call path.
+
+    M365's PE domain is Microsoft's. If a future override or a loosened default
+    let it through, this is where it shows up -- at the descriptor an operator
+    and the scan orchestrator both read, not at the helper.
+    """
+    async with session_scope() as session:
+        org = Organization(name="ScanScopeWiringPE")
+        session.add(org)
+        await session.flush()
+        readiness = await provider_readiness(
+            session,
+            organization_id=org.id,
+            connector_key="msgraph",
+            persist=False,
+        )
+        await session.rollback()
+
+    # No msgraph check touches PE today, so assert the rule at the source the
+    # descriptor is built from rather than inventing a check that does not exist.
+    assert scan_scope_for("m365", "PE") == "inherited_evidence"
+    assert all(c["scan_applicability"] == "scan" for c in readiness["checks"])
+    assert all(c["scan_scope_reason"] is None for c in readiness["checks"]), (
+        "M365 scans because its placemat answers the domain, not via an override"
+    )
 
 
 def test_scan_scope_agrees_with_scan_applicability_where_the_template_answers() -> None:
