@@ -52,7 +52,21 @@ def test_connectors_report_not_configured_by_default() -> None:
         assert asyncio.run(c.capture()) == []
 
 
-def test_graph_maps_signin_frequency_to_session_lock_odp() -> None:
+def test_graph_does_not_map_signin_frequency_to_the_session_lock_odp() -> None:
+    """The inverse of the test that used to be here, which asserted the defect.
+
+    `test_graph_maps_signin_frequency_to_session_lock_odp` specified that a
+    Conditional Access sign-in frequency -- how often a user re-authenticates --
+    should fill the 800-171 3.1.10 session-lock ODP. On a live tenant that put
+    "inactivity period = 8 hours" under "Use session lock ... after a period of
+    inactivity" in an SSP whose own session-lock check was passing at fifteen
+    minutes. The test passed throughout, because it asserted the substitution
+    rather than the requirement.
+
+    See `test_inactivity_period_is_the_lock_not_the_signin.py` for the positive
+    half. This one stays because a deleted test leaves no trace of why, and the
+    mapping is an easy one to reintroduce as an approximation.
+    """
     payload = {
         "value": [
             {
@@ -64,16 +78,43 @@ def test_graph_maps_signin_frequency_to_session_lock_odp() -> None:
             }
         ]
     }
-    caps = MsGraphConnector()._map_conditional_access(payload)
-    assert len(caps) == 1
-    assert caps[0].odp_key == "inactivity_period"
-    assert caps[0].value == "15 minutes"
-    assert caps[0].nist_id == "3.1.10"
+    conn = MsGraphConnector()
+    assert not hasattr(conn, "_map_conditional_access"), (
+        "the sign-in-frequency mapper is back; it must not fill the session-lock ODP"
+    )
+    # Nothing in the Conditional Access payload may produce the session-lock ODP.
+    assert all(c.odp_key != "inactivity_period" for c in conn._map_mfa(payload))
 
 
 def test_graph_ignores_disabled_policies() -> None:
-    payload = {"value": [{"state": "disabled", "sessionControls": {}}]}
-    assert MsGraphConnector()._map_conditional_access(payload) == []
+    """Retargeted at `_map_mfa`, which carries the same state filter.
+
+    It previously exercised `_map_conditional_access`. That function is gone,
+    but the rule it demonstrated -- a policy that is not enabled is not
+    evidence -- still has a live caller.
+    """
+    enabled = {
+        "value": [
+            {
+                "id": "on",
+                "state": "enabled",
+                "grantControls": {"builtInControls": ["mfa"]},
+            }
+        ]
+    }
+    disabled = {
+        "value": [
+            {
+                "id": "off",
+                "state": "disabled",
+                "grantControls": {"builtInControls": ["mfa"]},
+            }
+        ]
+    }
+    # Asserted in both directions: the same policy, enabled, must be captured,
+    # or "ignores disabled" would also pass on a mapper that ignores everything.
+    assert MsGraphConnector()._map_mfa(enabled)
+    assert MsGraphConnector()._map_mfa(disabled) == []
 
 
 # ── Per-org credential resolution (IA-05) ────────────────────────────────────

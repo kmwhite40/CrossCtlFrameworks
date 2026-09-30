@@ -19,7 +19,8 @@ from ..posture.resolve import ResolvedCheck, resolve_checks
 from ..ssp.responsibility import (
     control_domain,
     responsibility_entry_for,
-    scan_applicability,
+    scan_scope_for,
+    scan_scope_reason,
 )
 from . import get_connector
 from .credentials import resolve_credential
@@ -85,7 +86,17 @@ async def provider_readiness(
             "source": rc.source,
             "required_permissions": list(rc.check.required_permissions),
             "responsibility": responsibility.to_dict(),
-            "scan_applicability": scan_applicability(responsibility.responsibility),
+            # Scan scope is asked as its own question rather than derived from
+            # the responsibility bucket. The responsibility table's job is SSP
+            # origination and SPRS scoring, and letting it also decide scan
+            # coverage meant a domain it declined to attribute silently stopped
+            # four AWS checks -- IAM and S3 settings only the customer can
+            # change -- from ever running. See `ssp.responsibility.scan_scope_for`.
+            "scan_applicability": scan_scope_for(platform, domain),
+            # Non-None only when an override opened this up, so a reader can
+            # tell "the template said customer/shared" from "the template had
+            # no answer and this pair is on the scan-scope list, because <why>".
+            "scan_scope_reason": scan_scope_reason(platform, domain),
         }
 
     required_permissions = sorted(

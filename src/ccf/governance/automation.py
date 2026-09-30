@@ -10,6 +10,7 @@ and the snapshot on the profile is the single source of truth SSP/coverage read.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..capability.service import capability_statements_by_control
 from ..catalog.canonical import canonicalize
 from ..constants import POAM_ACTIVE_STATUSES
+from ..logging import get_logger
 from ..models import (
     POAM,
     CaptureSnapshot,
@@ -34,7 +36,12 @@ from ..models import (
     Vendor,
 )
 from ..models_grc import ControlTest
-from ..posture.evidence import non_passing_attribution
+from ..posture.evidence import (
+    non_passing_attribution,
+    non_passing_practice_attribution,
+    pass_attribution,
+    pass_practice_attribution,
+)
 from ..scoring.engine import DERIVED, deduction_for, score_system
 from ..scoring.service import record_derived_state
 from ..ssp import constants as ssp_constants
@@ -49,6 +56,8 @@ from ..ssp.platforms import (
 from ..ssp.seed import seed_project_entries
 from . import ai, bus
 from .control_tests import organization_capture_is_live
+
+log = get_logger(__name__)
 
 # --- The questionnaire that makes intake simplistic --------------------------
 QUESTIONNAIRE: list[dict[str, Any]] = [
@@ -585,6 +594,47 @@ def _has_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
     return any(((part or {}).get("text") or "").strip() for part in part_narratives or [])
 
 
+def _unmatched_evidence(
+    *,
+    entries: Sequence[SSPControlEntry],
+    verified_by_control: dict[str, list[dict[str, str]]],
+    failing_by_control: dict[str, list[dict[str, str]]],
+    unassessed_by_control: dict[str, list[dict[str, str]]],
+    project: SSPProject,
+) -> dict[str, Any]:
+    """Control ids carrying evidence that no entry in this SSP is keyed by.
+
+    An SSP reports what it assessed. The counts beside this one are computed by
+    looking *up* evidence per entry, which cannot distinguish "no finding" from
+    "the finding is filed under a control id this document does not use" -- and
+    the second is the one that produces a clean-looking authorization package
+    over a failing system.
+
+    So this looks the other way: every control id evidence is keyed by, minus
+    every control id the entries use. A non-empty result means verdicts exist
+    that this document structurally cannot show, and the caller is told rather
+    than left to infer it from a zero.
+    """
+    entry_ids = {e.control_id for e in entries if e.control_id}
+    evidenced = set(verified_by_control) | set(failing_by_control) | set(unassessed_by_control)
+    unmatched = sorted(evidenced - entry_ids)
+    unmatched_findings = sorted(set(failing_by_control) - entry_ids)
+    if unmatched:
+        log.warning(
+            "ssp.evidence_names_no_control_in_this_ssp",
+            project_id=project.id,
+            framework=project.framework,
+            unmatched_controls=len(unmatched),
+            unmatched_findings=len(unmatched_findings),
+            # The first few, so the log line is diagnosable without a query.
+            sample=unmatched[:5],
+        )
+    return {
+        "evidence_unmatched_controls": unmatched,
+        "findings_unmatched_controls": unmatched_findings,
+    }
+
+
 async def generate_statements(
     session: AsyncSession,
     *,
@@ -664,6 +714,23 @@ async def generate_statements(
     manual_evidence_note = manual_evidence_note_for(ssp_plat)
     derivation = profile.derivation or {}
 
+    # An SSP describes **one system**, so its evidence is that system's.
+    #
+    # These queries were scoped to the whole organization, which on a tenant
+    # with two systems sharing one Microsoft 365 tenant made each finding
+    # appear twice in one control's narrative, citing a POA&M raised against
+    # the other system. An assessor reading system A's SSP was being shown
+    # system B's weakness and B's remediation id as if they were A's.
+    #
+    # Seven of the twenty-one projects in the live database carry no system, so
+    # the organization remains the fallback rather than the rule: a project
+    # that names no system can only be described by its tenant's evidence.
+    system_scope = (
+        System.id == project.system_id
+        if project.system_id is not None
+        else System.organization_id == project.organization_id
+    )
+
     # Live captured config indexed by NIST id (from the connector collection loop).
     caps_by_nist: dict[str, list[dict[str, str]]] = {}
     for snap in (
@@ -692,26 +759,34 @@ async def generate_statements(
     # A failing test is a finding and belongs in a POA&M; an SSP citing its own
     # failures as evidence of implementation would be worse than silence.
     verified_by_control: dict[str, list[dict[str, str]]] = {}
-    for control_id, name, run_at in (
+    for control_id, check_key, name, run_at in (
         await session.execute(
-            select(ControlTest.control_id, ControlTest.name, ControlTest.last_tested_at)
+            select(
+                ControlTest.control_id,
+                ControlTest.check_key,
+                ControlTest.name,
+                ControlTest.last_tested_at,
+            )
             .join(System, System.id == ControlTest.system_id)
             .where(
-                System.organization_id == project.organization_id,
+                system_scope,
                 System.deleted_at.is_(None),
                 ControlTest.last_status == "pass",
                 ControlTest.control_id.is_not(None),
             )
         )
     ).all():
-        verified_by_control.setdefault(str(control_id), []).append(
-            {
-                "check": str(name),
-                # Dated: machine evidence with no date is a claim about an
-                # unknown moment, and an assessor has to know which.
-                "observed_on": run_at.date().isoformat() if run_at else "",
-            }
-        )
+        verified_row = {
+            "check": str(name),
+            # Dated: machine evidence with no date is a claim about an
+            # unknown moment, and an assessor has to know which.
+            "observed_on": run_at.date().isoformat() if run_at else "",
+        }
+        # Both vocabularies, primary only in each. A posture check declares
+        # 800-53 ids; a CMMC project's entries are practice ids, and without
+        # the second call this evidence reaches nothing in such a document.
+        for credited in pass_attribution(control_id) + pass_practice_attribution(check_key):
+            verified_by_control.setdefault(credited, []).append(dict(verified_row))
 
     # The other half. Citing only the passing tests made the document read as
     # though the platform had found nothing else: a control whose scan failed
@@ -726,7 +801,7 @@ async def generate_statements(
                 select(POAM.id, POAM.source_ref)
                 .join(System, System.id == POAM.system_id)
                 .where(
-                    System.organization_id == project.organization_id,
+                    system_scope,
                     POAM.source == "control_test",
                     POAM.source_ref.like("control_test:%"),
                     POAM.status.in_(POAM_ACTIVE_STATUSES),
@@ -737,19 +812,20 @@ async def generate_statements(
     }
     failing_by_control: dict[str, list[dict[str, str]]] = {}
     unassessed_by_control: dict[str, list[dict[str, str]]] = {}
-    for test_id, control_id, control_ids, name, run_at, status in (
+    for test_id, control_id, control_ids, check_key, name, run_at, status in (
         await session.execute(
             select(
                 ControlTest.id,
                 ControlTest.control_id,
                 ControlTest.control_ids,
+                ControlTest.check_key,
                 ControlTest.name,
                 ControlTest.last_tested_at,
                 ControlTest.last_status,
             )
             .join(System, System.id == ControlTest.system_id)
             .where(
-                System.organization_id == project.organization_id,
+                system_scope,
                 System.deleted_at.is_(None),
                 ControlTest.last_status.in_(_SSP_GAP_STATUSES),
                 ControlTest.control_id.is_not(None),
@@ -766,7 +842,9 @@ async def generate_statements(
         # "Implemented" is the failure this whole section exists to prevent.
         # `verified_by_control` above is deliberately NOT widened -- see
         # `ccf.posture.evidence` for why a pass credits the primary only.
-        attributed = non_passing_attribution(control_id, control_ids)
+        attributed = non_passing_attribution(
+            control_id, control_ids
+        ) + non_passing_practice_attribution(check_key)
         if status == "manual_review_required":
             # The only verdict that means "Concord could not judge this".
             for attributed_id in attributed:
@@ -995,6 +1073,26 @@ async def generate_statements(
         ),
         "controls_not_machine_verified": sum(
             1 for e in entries if unassessed_by_control.get(e.control_id or "")
+        ),
+        # Evidence this organization holds that names no control in this SSP.
+        #
+        # Without this, "controls_with_open_findings: 0" is unreadable: it means
+        # "nothing is failing" and "fourteen verdicts exist and not one of them
+        # names a control in this document" identically, and the second renders
+        # as a clean authorization package.
+        #
+        # That is not hypothetical. Posture checks declare NIST 800-53 control
+        # ids ("AC-2", "IA-2"); a CMMC project's entries are practice ids
+        # ("AC.L2-3.1.1"), seeded from `ccf.scoring_controls`. The two
+        # vocabularies do not intersect, so on a real CMMC SSP every posture
+        # verdict -- passes cited as evidence and failures owed a POA&M alike --
+        # lands on no entry at all.
+        **_unmatched_evidence(
+            entries=entries,
+            verified_by_control=verified_by_control,
+            failing_by_control=failing_by_control,
+            unassessed_by_control=unassessed_by_control,
+            project=project,
         ),
         "preserved_authored": preserved_authored,
         "replaced_authored": replaced_authored,

@@ -332,15 +332,29 @@ class MsGraphConnector(ConfigConnector):
                 if not token:
                     return []
                 headers = {"Authorization": f"Bearer {token}"}
-                # Conditional Access sign-in frequency → session/device lock period.
                 r = await client.get(
                     f"{self._graph_base}/v1.0/identity/conditionalAccess/policies",
                     headers=headers,
                 )
                 r.raise_for_status()
-                payload = r.json()
-                out.extend(self._map_conditional_access(payload))
-                out.extend(self._map_mfa(payload))
+                out.extend(self._map_mfa(r.json()))
+                # Guarded on its own so a tenant that has not granted
+                # DeviceManagementConfiguration.Read.All still keeps the
+                # Conditional Access captures above. The outer handler returns
+                # `[]`, so folding this into it would let one missing Intune
+                # permission discard every parameter this connector captures.
+                try:
+                    rd = await client.get(
+                        f"{self._graph_base}/v1.0/deviceManagement/deviceCompliancePolicies",
+                        headers=headers,
+                    )
+                    rd.raise_for_status()
+                    out.extend(self._map_device_lock(rd.json()))
+                except Exception as e:
+                    log.warning(
+                        "connector.msgraph.device_lock_capture_failed",
+                        error=str(e)[:200],
+                    )
         except Exception as e:  # best-effort — never break the caller
             log.warning("connector.msgraph.capture_failed", error=str(e)[:200])
             return []
@@ -530,22 +544,53 @@ class MsGraphConnector(ConfigConnector):
                 ]
         return []
 
-    def _map_conditional_access(self, payload: dict[str, Any]) -> list[CapturedParameter]:
-        """Extract a sign-in frequency, mapped to the session-lock ODP."""
+    def _map_device_lock(self, payload: dict[str, Any]) -> list[CapturedParameter]:
+        """The inactivity lock an Intune device compliance policy actually sets.
+
+        This ODP -- 800-171 3.1.10, "period of inactivity before session/device
+        lock" -- used to be filled from the Conditional Access **sign-in
+        frequency**, which measures how often a user must re-authenticate, not
+        how long an idle screen stays unlocked. They are different settings on
+        different controls, and the substitution put a number in an
+        authorization package that the organization had never set for this
+        requirement.
+
+        It was not a harmless approximation. On a live tenant it rendered
+        "inactivity period = 8 hours (captured from msgraph)" under the session
+        lock requirement, in the same SSP as a **passing**
+        ``m365.device.session_lock_enforced`` -- a check that passes only when a
+        policy locks within fifteen minutes. One document, two contradictory
+        statements about the same setting, and the wrong one was the one an
+        assessor reads as the organization's own claim.
+
+        The lock timeout is read here from the same field, by the same
+        function, that the check evaluates, so the narrative and the verdict
+        cannot disagree again. Policies that set no lock are skipped rather
+        than reported as zero -- see :func:`_lock_minutes`.
+        """
+        best: tuple[int, dict[str, Any]] | None = None
         for pol in payload.get("value", []) or []:
-            if (pol.get("state") or "") != "enabled":
+            minutes = m365.lock_minutes(pol)
+            if minutes is None:
                 continue
-            sf = ((pol.get("sessionControls") or {}).get("signInFrequency")) or {}
-            if sf.get("isEnabled") and sf.get("value") and sf.get("type"):
-                value = f"{sf['value']} {sf['type']}"  # e.g. "15 minutes" / "1 hours"
-                return [
-                    CapturedParameter(
-                        odp_key="inactivity_period",
-                        value=value,
-                        nist_id="3.1.10",
-                        source=f"Graph: Conditional Access '{pol.get('displayName', '')}'",
-                        confidence="medium",
-                        detail={"policy_id": pol.get("id")},
-                    )
-                ]
-        return []
+            if best is None or minutes < best[0]:
+                best = (minutes, pol)
+        if best is None:
+            # No policy configures one. Nothing is the honest answer: the ODP
+            # then stays unfilled and the SSP shows it as organization-defined
+            # and outstanding, which is true.
+            return []
+        minutes, pol = best
+        return [
+            CapturedParameter(
+                odp_key="inactivity_period",
+                value=f"{minutes} minutes",
+                nist_id="3.1.10",
+                source=(
+                    "Graph: Intune device compliance policy "
+                    f"{pol.get('displayName') or pol.get('id')!r}"
+                ),
+                confidence="high",
+                detail={"policy_id": pol.get("id"), "lock_minutes": minutes},
+            )
+        ]

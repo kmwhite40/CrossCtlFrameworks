@@ -79,3 +79,29 @@ def pass_attribution(control_id: str | None) -> list[str]:
     """
     primary = (control_id or "").strip()
     return [primary] if primary else []
+
+
+def non_passing_practice_attribution(check_key: str | None) -> list[str]:
+    """CMMC practices a non-``pass`` verdict reaches: every one the check maps.
+
+    The 800-53 ids above and these practices are two vocabularies for the same
+    verdict, not two verdicts, so the asymmetry has to hold identically in both.
+    A finding narrowed to one practice while its siblings read clean is the
+    same understatement whichever id space the document happens to use.
+    """
+    from .practices import practices_for_check  # noqa: PLC0415 -- avoids a cycle
+
+    return list(practices_for_check(check_key))
+
+
+def pass_practice_attribution(check_key: str | None) -> list[str]:
+    """Practices a ``pass`` verdict credits: the primary one only.
+
+    Same reasoning as :func:`pass_attribution`, and the same shape of guard:
+    the primary practice is the first the mapping lists, and there is no
+    parameter through which a caller could widen it.
+    """
+    from .practices import practices_for_check  # noqa: PLC0415 -- avoids a cycle
+
+    practices = practices_for_check(check_key)
+    return [practices[0]] if practices else []

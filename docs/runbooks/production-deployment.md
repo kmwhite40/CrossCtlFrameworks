@@ -219,6 +219,45 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   (AC-11 session lock, SC-28 storage encryption) report
   `manual_review_required` naming that permission — never a false pass or fail,
   but no evidence either.
+- **A ready connector does not mean every one of its checks runs.** Before a
+  check is scanned, the shared-responsibility template is asked who owns the
+  control; only `customer` and `shared` are scanned, and a domain the template
+  cannot answer is recorded as `manual_scope_review` — evidence a human must
+  supply, not a verdict. So `checks_run` can be far below `checks_expected` with
+  nothing failing. The scheduler's cycle line carries `posture_manual_review`
+  for exactly this reason; read it before concluding a scan is broken.
+
+  This gap hid a real defect for as long as it existed. The M365 branch of
+  `responsibility_for` read only a control's CMMC coverage status, and the scan
+  path — which holds NIST 800-53 ids, not CMMC practices — had none to pass, so
+  *every* M365 check resolved to `manual_scope_review` on every tenant. A ready
+  msgraph connector with fourteen working checks scanned none of them. M365 now
+  falls back to a domain-level answer derived from the scoring placemat.
+
+  All 32 registered checks are scannable today, and
+  `tests/test_every_check_can_be_scanned.py` fails if that stops being true —
+  its allowlist of unscannable checks is empty on purpose.
+
+- **Scan scope is asked separately from who owns a control**, and the
+  distinction matters if you are changing either. `responsibility_for` answers
+  ownership and feeds two regulator-facing consumers: SSP control origination
+  (`ssp.seed`) and SPRS scoring state
+  (`governance.automation._platform_state`). Both deliberately refuse to guess,
+  so an unanswered domain is flagged for a human rather than defaulted.
+
+  That refusal used to decide scan coverage too, which left **half the AWS suite
+  and all of PuppetDB producing no evidence** — root MFA, password policy,
+  access key rotation and S3 public-access blocks among them, because the
+  hyperscaler template declines to state an SSP origination for the whole `AC`
+  and `IA` domains. Those settings are changed by nobody but the customer, so
+  the ownership question was never the one the scan path needed answered.
+
+  `ssp.responsibility.SCAN_SCOPE_OVERRIDES` now answers scan scope on its own,
+  and an entry can only ever upgrade an *unanswered* domain to `scan` — a domain
+  the template positively calls provider-owned or not-applicable cannot be
+  opened from there. **Do not fix a scan-coverage gap by editing the
+  responsibility table**: that moves SSP origination and a score reported to the
+  DoD. `tests/test_scan_scope_is_not_responsibility.py` pins both halves.
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their
