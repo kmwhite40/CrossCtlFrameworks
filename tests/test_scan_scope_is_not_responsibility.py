@@ -97,6 +97,31 @@ def test_a_not_applicable_control_stays_not_applicable() -> None:
         )
 
 
+def test_an_unanswered_domain_not_on_the_list_still_needs_review() -> None:
+    """The override table is a list, not a default.
+
+    Found by mutation: replacing the membership test with a bare
+    `return "scan"` -- opening *every* domain the template declines -- passed
+    the entire file. That is the blanket-yes this design exists to avoid, and
+    nothing was pinning against it.
+
+    AT, CA, IR, MP, PS and RA are unanswered for the hyperscalers and are not
+    overridden, because no check evidences them through a provider API. If one
+    is ever written, it must arrive through a deliberate entry rather than
+    inherit a default.
+    """
+    for domain in ("AT", "CA", "IR", "MP", "PS", "RA"):
+        assert ("aws_govcloud", domain) not in SCAN_SCOPE_OVERRIDES
+        assert responsibility_for("aws_govcloud", domain) == "unknown"
+        assert scan_scope_for("aws_govcloud", domain) == "manual_scope_review", (
+            f"aws_govcloud/{domain} is neither answered by the template nor "
+            "overridden, so it must not be scannable"
+        )
+    # And a platform with no template at all is only open where listed.
+    assert scan_scope_for("puppetdb", "CM") == "scan"
+    assert scan_scope_for("puppetdb", "AC") == "manual_scope_review"
+
+
 def test_the_aws_checks_that_were_blocked_now_scan() -> None:
     """The regression, named by the domains the four checks live in."""
     assert scan_scope_for("aws_govcloud", "AC") == "scan"
