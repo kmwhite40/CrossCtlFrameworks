@@ -675,15 +675,27 @@ single authorization-package ZIP — with every OSCAL export **machine-proven va
 against the official NIST v1.1.2 schema**. Platform self-hardening is complete: the
 app is **fail-closed by default**, with account lockout, a password policy, login
 rate limiting, security-response-header middleware, and `bandit` SAST in CI.
-Alembic-managed schema (54 migrations), Docker/Compose, CI (lint · mypy · pytest ·
+Live posture is read and **evaluated** across every registered connector — 32
+automated checks (Microsoft 365 / Graph 14, AWS GovCloud 8, Azure 5, Google Cloud 3,
+PuppetDB 2) — so no platform captures configuration that nothing judges.
+Alembic-managed schema (92 migrations), Docker/Compose, CI (lint · mypy · pytest ·
 bandit · SBOM · pip-audit · Trivy · Docker build), and a reliability self-check
-subsystem. The suite runs **720+ tests** against a real Postgres.
+subsystem. The suite runs **4,400+ tests** against a real Postgres.
 
-Next (deliberately-scoped depth): a FedRAMP Rev 5 baseline overlay (FedRAMP-added
-controls + assigned ODP values), objective-level (800-53A) SAR findings, a generated
-OSCAL assessment plan (SAP), MFA / PIV-CAC + SSO hardening, KMS-backed key rotation +
-FIPS-validated crypto, Azure Gov / GCP config connectors, and wiring the typed
-`ai_actions` path to the org AI gateway.
+Next (deliberately-scoped depth): **FedRAMP's own assigned parameter values** — the
+Rev 5 baseline overlay — which needs FedRAMP's published OSCAL baselines ingested as a
+source, because the workbook's FedRAMP columns are membership markers and carry no
+values; **validating the posture checks against live provider tenants** rather than
+recorded response shapes; **gap-assessment and Trust Center depth** on the capability
+ontology; and an **MCP surface**, which does not exist yet. Marketplace status
+reporting is blocked upstream, not here: FedRAMP publishes no status vocabulary this
+platform can read.
+
+Shipped since this section last named them: objective-level (800-53A) SAR findings, a
+generated OSCAL assessment plan (`/api/oscal/sap/{id}`), MFA / PIV-CAC + SSO
+hardening, KMS-backed key rotation, Azure Gov / GCP connectors — now with checks, not
+just capture — and the typed `ai_actions` path running on the organization's own AI
+gateway.
 
 ---
 
