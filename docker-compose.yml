@@ -83,6 +83,24 @@ services:
       <<: *ccf_env
       CCF_PREP_ENABLED: "true"
       CCF_ASSESSMENT_ENGINE_ENABLED: "true"
+      # The in-app automation scheduler. Off by default in `config.py` and
+      # deliberately turned on here: without it nothing recurs, and every
+      # freshness check, ConMon scan and due control test only ever runs
+      # because a human clicked something. `scheduler.started` in the API log
+      # on boot is the only signal it is on — see runbook section 2a.
+      #
+      # Set on `api` ALONE, never on x-ccf-env. The anchor also feeds `etl`,
+      # `cli` and `poller`, and `scheduler.start()` is idempotent per process,
+      # not across them — putting it in the anchor would run one scheduler per
+      # container, so every tenant's cycle would fire several times over.
+      #
+      # What a cycle does, per organization: collection (fetches from each
+      # configured connector under that tenant's stored credential), pack sync
+      # (read-only; installing is never automatic), ConMon, due control tests,
+      # capability derivation, then the assurance-graph rebuild. So enabling
+      # this makes live provider API calls on a timer. The first cycle runs 15s
+      # after boot and then every `CCF_SCHEDULER_INTERVAL_HOURS` (default 24).
+      CCF_SCHEDULER_ENABLED: "true"
     ports: ["8088:8000"]
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]

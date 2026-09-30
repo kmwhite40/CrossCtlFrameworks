@@ -171,11 +171,73 @@ CLOUDTRAIL_MULTI_REGION = PostureCheck(
     required_permissions=("cloudtrail:DescribeTrails", "cloudtrail:GetTrailStatus"),
 )
 
+CLOUDTRAIL_LOG_FILE_VALIDATION = PostureCheck(
+    key="aws.cloudtrail.log_file_validation",
+    title="Every CloudTrail trail validates its log files",
+    provider="aws_govcloud",
+    resource_type="cloudtrail_trail",
+    expected="each CloudTrail trail has log file validation enabled",
+    # AU-9 is protection of audit information; AU-9(3) is the cryptographic
+    # protection of it, which is precisely what log file validation is -- a
+    # digest chain that makes a deleted or edited log file detectable.
+    control_ids=("AU-9", "AU-9(3)"),
+    # No new AWS surface: this reads the trails `describe_trails` already
+    # returned for CLOUDTRAIL_MULTI_REGION, so it adds a control family
+    # without adding a permission an operator has to grant.
+    required_permissions=("cloudtrail:DescribeTrails",),
+)
+
+S3_PUBLIC_ACCESS_BLOCKED = PostureCheck(
+    key="aws.s3.public_access_blocked",
+    title="Every bucket blocks public access at the bucket level",
+    provider="aws_govcloud",
+    resource_type="s3_bucket",
+    expected="each S3 bucket has all four public-access-block settings enabled",
+    control_ids=("AC-3", "AC-4", "SC-7"),
+    required_permissions=("s3:ListAllMyBuckets", "s3:GetBucketPublicAccessBlock"),
+)
+
+S3_DEFAULT_ENCRYPTION = PostureCheck(
+    key="aws.s3.default_encryption",
+    title="Every bucket encrypts objects at rest by default",
+    provider="aws_govcloud",
+    resource_type="s3_bucket",
+    expected="each S3 bucket has a default server-side encryption rule",
+    control_ids=("SC-28", "SC-28(1)"),
+    required_permissions=("s3:ListAllMyBuckets", "s3:GetEncryptionConfiguration"),
+)
+
+EBS_ENCRYPTION_BY_DEFAULT = PostureCheck(
+    key="aws.ec2.ebs_encryption_by_default",
+    title="New EBS volumes are encrypted by default",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="EBS encryption by default is enabled in this account and region",
+    control_ids=("SC-28", "SC-28(1)"),
+    required_permissions=("ec2:GetEbsEncryptionByDefault",),
+)
+
 CHECKS: tuple[PostureCheck, ...] = (
     ROOT_MFA_ENABLED,
     PASSWORD_POLICY,
     ACCESS_KEY_ROTATION,
     CLOUDTRAIL_MULTI_REGION,
+    CLOUDTRAIL_LOG_FILE_VALIDATION,
+    S3_PUBLIC_ACCESS_BLOCKED,
+    S3_DEFAULT_ENCRYPTION,
+    EBS_ENCRYPTION_BY_DEFAULT,
+)
+
+#: The four settings that together make a bucket non-public. All four are
+#: required: ``BlockPublicAcls`` stops new public ACLs while ``IgnorePublicAcls``
+#: neutralizes ones already set, and the same split applies to policies. A
+#: bucket with two of the four enabled is still reachable by one of the two
+#: routes, so this is an all-of and not a majority.
+_PUBLIC_ACCESS_BLOCK_SETTINGS = (
+    "BlockPublicAcls",
+    "IgnorePublicAcls",
+    "BlockPublicPolicy",
+    "RestrictPublicBuckets",
 )
 
 #: Check key -> the boto3 ``<service>.<operation>`` its rows come from.
@@ -196,12 +258,25 @@ ENDPOINTS: dict[str, str] = {
     PASSWORD_POLICY.key: "iam.get_account_password_policy",
     ACCESS_KEY_ROTATION.key: "iam.list_access_keys",
     CLOUDTRAIL_MULTI_REGION.key: "cloudtrail.describe_trails",
+    # Deliberately the same token as CLOUDTRAIL_MULTI_REGION: both judge the
+    # trails that one call returns, and giving this check a token of its own
+    # would make the connector fetch the same fleet twice. Two m365 checks
+    # share `/deviceManagement/deviceCompliancePolicies` for the same reason.
+    CLOUDTRAIL_LOG_FILE_VALIDATION.key: "cloudtrail.describe_trails",
+    S3_PUBLIC_ACCESS_BLOCKED.key: "s3.get_public_access_block",
+    S3_DEFAULT_ENCRYPTION.key: "s3.get_bucket_encryption",
+    EBS_ENCRYPTION_BY_DEFAULT.key: "ec2.get_ebs_encryption_by_default",
 }
 
 #: Evaluators that need to be told which account they are judging, because
 #: their resource is the account itself rather than a row AWS returned.
 ACCOUNT_SCOPED: frozenset[str] = frozenset(
-    {ROOT_MFA_ENABLED.key, PASSWORD_POLICY.key, CLOUDTRAIL_MULTI_REGION.key}
+    {
+        ROOT_MFA_ENABLED.key,
+        PASSWORD_POLICY.key,
+        CLOUDTRAIL_MULTI_REGION.key,
+        EBS_ENCRYPTION_BY_DEFAULT.key,
+    }
 )
 
 
@@ -528,6 +603,201 @@ def evaluate_cloudtrail_multi_region(
     ]
 
 
+def evaluate_cloudtrail_log_file_validation(
+    rows: list[dict[str, Any]],
+) -> list[ResourceFinding]:
+    """One finding per trail. The trail is the resource here, not the account.
+
+    Deliberately not an any-of, unlike :func:`evaluate_cloudtrail_multi_region`.
+    That check asks whether *the account* records its activity, which one
+    healthy trail answers. AU-9 asks whether the audit record is protected from
+    modification, and an unvalidated trail is unprotected however many validated
+    trails sit beside it -- its log files can be altered and nothing will show
+    it. So each trail is judged on its own.
+
+    A trail that omits ``LogFileValidationEnabled`` entirely is a ``fail``, not
+    ``manual_review_required``: ``describe_trails`` returns the field for every
+    trail, and AWS's default for it is ``false``. An absent field here means the
+    feature was never turned on, which is the finding -- unlike ``IsLogging``,
+    which comes from a second call that can genuinely fail.
+    """
+    findings: list[ResourceFinding] = []
+    for trail in rows:
+        ref = str(trail.get("Name") or trail.get("TrailARN") or "unknown trail")
+        enabled = trail.get("LogFileValidationEnabled") is True
+        findings.append(
+            ResourceFinding(
+                resource_id=str(trail.get("TrailARN") or ref),
+                resource_type="cloudtrail_trail",
+                verdict="pass" if enabled else "fail",
+                observed=(
+                    f"{ref}: log file validation enabled"
+                    if enabled
+                    else f"{ref}: log file validation is not enabled"
+                ),
+                detail={
+                    "LogFileValidationEnabled": trail.get("LogFileValidationEnabled"),
+                    "IsMultiRegionTrail": trail.get("IsMultiRegionTrail"),
+                },
+            )
+        )
+    return findings
+
+
+def evaluate_s3_public_access_blocked(
+    rows: list[dict[str, Any]],
+) -> list[ResourceFinding]:
+    """One finding per bucket, naming which of the four settings is missing.
+
+    "Bucket is public" is not actionable; "``IgnorePublicAcls`` is off" is. The
+    missing settings go in ``observed`` rather than only in ``detail``, because
+    the observed string is what reaches a POA&M's weakness line.
+
+    A bucket whose ``PublicAccessBlockConfiguration`` could not be read is
+    ``manual_review_required``. The connector distinguishes "no block
+    configuration exists" (which AWS reports as an error, and which means the
+    permissive default applies -- a ``fail``) from "the call did not answer",
+    and only the second arrives here without a configuration.
+    """
+    findings: list[ResourceFinding] = []
+    for row in rows:
+        name = str(row.get("Name") or "unknown bucket")
+        if row.get("Unreadable"):
+            findings.append(
+                ResourceFinding(
+                    resource_id=name,
+                    resource_type="s3_bucket",
+                    verdict="manual_review_required",
+                    observed=(
+                        f"{name}: public-access-block configuration could not be read"
+                        f" ({row.get('Unreadable')})"
+                    ),
+                    detail={"error": row.get("Unreadable")},
+                )
+            )
+            continue
+        config = row.get("PublicAccessBlockConfiguration") or {}
+        missing = [s for s in _PUBLIC_ACCESS_BLOCK_SETTINGS if config.get(s) is not True]
+        findings.append(
+            ResourceFinding(
+                resource_id=name,
+                resource_type="s3_bucket",
+                verdict="fail" if missing else "pass",
+                observed=(
+                    f"{name}: public access blocked on all four settings"
+                    if not missing
+                    else f"{name}: not enabled — {', '.join(missing)}"
+                ),
+                detail={s: config.get(s) for s in _PUBLIC_ACCESS_BLOCK_SETTINGS},
+            )
+        )
+    return findings
+
+
+def evaluate_s3_default_encryption(
+    rows: list[dict[str, Any]],
+) -> list[ResourceFinding]:
+    """One finding per bucket: is there a default encryption rule at all?
+
+    The algorithm is reported but not judged. ``AES256`` (SSE-S3) and ``aws:kms``
+    both satisfy SC-28; SC-28(1) is where a package may require a
+    customer-managed key, and which key is acceptable is an
+    organization-defined decision this check has no basis to make. Failing a
+    bucket for using SSE-S3 would be this module inventing a requirement, so it
+    records the algorithm for an assessor and fails only on absence.
+    """
+    findings: list[ResourceFinding] = []
+    for row in rows:
+        name = str(row.get("Name") or "unknown bucket")
+        if row.get("Unreadable"):
+            findings.append(
+                ResourceFinding(
+                    resource_id=name,
+                    resource_type="s3_bucket",
+                    verdict="manual_review_required",
+                    observed=(
+                        f"{name}: encryption configuration could not be read"
+                        f" ({row.get('Unreadable')})"
+                    ),
+                    detail={"error": row.get("Unreadable")},
+                )
+            )
+            continue
+        rules = (row.get("ServerSideEncryptionConfiguration") or {}).get("Rules") or []
+        algorithms = [
+            str(
+                (r.get("ApplyServerSideEncryptionByDefault") or {}).get("SSEAlgorithm")
+                or ""
+            )
+            for r in rules
+            if isinstance(r, dict)
+        ]
+        applied = [a for a in algorithms if a]
+        findings.append(
+            ResourceFinding(
+                resource_id=name,
+                resource_type="s3_bucket",
+                verdict="pass" if applied else "fail",
+                observed=(
+                    f"{name}: default encryption with {', '.join(applied)}"
+                    if applied
+                    else f"{name}: no default server-side encryption rule"
+                ),
+                detail={"algorithms": applied, "rules_examined": len(rules)},
+            )
+        )
+    return findings
+
+
+def evaluate_ebs_encryption_by_default(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding: the account-and-region setting is the resource.
+
+    ``EbsEncryptionByDefault`` is per region, and the connector reads it for the
+    region it is configured against. That is stated in ``detail`` so a reader
+    does not take a single ``pass`` as a statement about every region the
+    account uses -- it is not one, and a check that quietly implied otherwise
+    would be the kind of overclaim that only shows up in an assessment.
+
+    An empty response is ``manual_review_required`` rather than a ``fail``:
+    ``get_ebs_encryption_by_default`` returning nothing means the call did not
+    answer, and AWS's default being "off" is not a licence to report an
+    unverified account as non-compliant when the honest answer is "unknown".
+    """
+    summary = rows[0] if rows else None
+    if not summary or "EbsEncryptionByDefault" not in summary:
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="manual_review_required",
+                observed="the account did not report an EBS default-encryption setting",
+                detail={"rows_examined": len(rows)},
+            )
+        ]
+    enabled = summary.get("EbsEncryptionByDefault") is True
+    region = summary.get("Region")
+    scope = f" in {region}" if region else ""
+    return [
+        ResourceFinding(
+            resource_id=account_id,
+            resource_type="aws_account",
+            verdict="pass" if enabled else "fail",
+            observed=(
+                f"EBS encryption by default is enabled{scope}"
+                if enabled
+                else f"EBS encryption by default is disabled{scope}"
+            ),
+            detail={
+                "EbsEncryptionByDefault": summary.get("EbsEncryptionByDefault"),
+                # Named so a pass is not read as an account-wide claim.
+                "region_assessed": region,
+            },
+        )
+    ]
+
+
 #: Check key -> its evaluator. ``scan`` dispatches through this rather than a
 #: chain of conditionals, so adding a check is a registry entry.
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
@@ -535,4 +805,8 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     PASSWORD_POLICY.key: evaluate_password_policy,
     ACCESS_KEY_ROTATION.key: evaluate_access_key_rotation,
     CLOUDTRAIL_MULTI_REGION.key: evaluate_cloudtrail_multi_region,
+    CLOUDTRAIL_LOG_FILE_VALIDATION.key: evaluate_cloudtrail_log_file_validation,
+    S3_PUBLIC_ACCESS_BLOCKED.key: evaluate_s3_public_access_blocked,
+    S3_DEFAULT_ENCRYPTION.key: evaluate_s3_default_encryption,
+    EBS_ENCRYPTION_BY_DEFAULT.key: evaluate_ebs_encryption_by_default,
 }

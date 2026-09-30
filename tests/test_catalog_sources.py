@@ -82,3 +82,82 @@ async def test_seed_sources_sets_the_oscal_ssp_schema_drift_baseline() -> None:
             )
         ).scalar_one()
         assert row.last_sha256 == expected
+
+
+# ---------------------------------------------------------------------------
+# A disabled source has to say why it is disabled
+# ---------------------------------------------------------------------------
+#
+# Found by turning the scheduler on. `nist_800_53a_r5_assessment` shipped
+# enabled against a URL NIST does not publish -- the whole
+# `usnistgov/oscal-content` tree contains no path matching `53A` -- so every
+# poll recorded a 404 and every cycle logged `catalog.check_failed`. Nothing was
+# broken by it, which is the problem: a source that can only ever fail trains
+# whoever reads the alert digest to skim past it, and the next failure that
+# matters is in the same list.
+#
+# Two rules, because each catches a different way this recurs.
+
+
+def test_every_disabled_default_source_records_why() -> None:
+    """`enabled: False` with no comment is indistinguishable from an accident.
+
+    The next person to read the list cannot tell a deliberate "the upstream
+    refuses non-browser fetches" from somebody's half-finished edit, and the
+    safe-looking move is to flip it back on. The reason has to be next to the
+    flag.
+    """
+    import inspect  # noqa: PLC0415
+    import re  # noqa: PLC0415
+
+    from ccf.etl import sources as sources_module  # noqa: PLC0415
+
+    text = inspect.getsource(sources_module)
+    # Each entry is a dict literal; find the block each disabled flag sits in by
+    # walking back to the opening brace of its entry.
+    disabled_keys = [s["key"] for s in sources_module.DEFAULT_SOURCES if not s.get("enabled", True)]
+    assert disabled_keys, "no source is disabled; this guard has nothing to check"
+
+    undocumented: list[str] = []
+    for key in disabled_keys:
+        start = text.index(f'"key": "{key}"')
+        end = text.index('"enabled": False', start)
+        block = text[start:end]
+        # A comment somewhere in the entry, above the flag.
+        if not re.search(r"^\s*#", block, flags=re.M):
+            undocumented.append(key)
+    assert not undocumented, (
+        f"these sources are disabled with no comment saying why: {undocumented}. "
+        "An undocumented flag reads as an accident and gets flipped back."
+    )
+
+
+def test_no_default_source_is_enabled_against_a_known_dead_upstream() -> None:
+    """An allowlist of upstreams that do not exist, so nobody re-adds them.
+
+    Deliberately not a network call: a test that fetches every source URL would
+    fail on an egress-restricted build machine and pass for the wrong reason on
+    a machine with a caching proxy, and it would turn NIST's uptime into this
+    suite's uptime. The knowledge is recorded instead, next to the reason.
+    """
+    from ccf.etl import sources as sources_module  # noqa: PLC0415
+
+    #: URL fragment -> why nothing will ever fetch it.
+    dead = {
+        "NIST_SP-800-53A_rev5_catalog.json": (
+            "NIST does not publish 800-53A Rev. 5 as OSCAL; the oscal-content "
+            "tree has no 53A path at all. Concord's assessment objectives come "
+            "from the curated cross-mapping workbook instead."
+        ),
+    }
+    offenders: list[str] = []
+    for spec in sources_module.DEFAULT_SOURCES:
+        if not spec.get("enabled", True):
+            continue
+        for fragment, why in dead.items():
+            if fragment in str(spec.get("url", "")):
+                offenders.append(f"{spec['key']} -> {fragment}: {why}")
+    assert not offenders, (
+        "these sources are enabled against an upstream that does not exist, so "
+        f"every poll will record an error forever: {offenders}"
+    )

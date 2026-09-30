@@ -39,7 +39,7 @@ from ..config import get_settings
 from ..db import get_engine, session_scope, set_session_tenant
 from ..etl.sources import poll as poll_sources
 from ..logging import get_logger
-from ..models import Organization
+from ..models import Organization, System
 from ..packs import sync as pack_sync
 from . import collection, conmon, control_tests, digest
 
@@ -60,6 +60,67 @@ async def _active_org_ids(session: AsyncSession) -> list[int]:
     """
     stmt = select(Organization.id).where(Organization.deleted_at.is_(None))
     return sorted((await session.execute(stmt)).scalars().all())
+
+
+async def _scan_org_systems(session: AsyncSession, *, org_id: int) -> dict[str, Any]:
+    """Run every posture provider against every live system in one organization.
+
+    Systems are enumerated here rather than passed in because the caller is
+    already clamped to this tenant and RLS backstops the filter -- and because
+    "which systems does this organization have" is the question the scheduler is
+    answering, not one it should be told the answer to.
+
+    Soft-deleted systems are skipped. Scanning one would make live provider API
+    calls on behalf of a boundary somebody has retired, and record evidence
+    against it.
+
+    Each system's scan is independent: a provider failure inside
+    ``scan_all_providers`` is already contained per provider, and this loop adds
+    nothing on top, so one system's total failure propagates to the caller's
+    savepoint. That is deliberate -- the per-system savepoint is the caller's,
+    and duplicating containment here would hide which system broke.
+    """
+    from ..posture.scan_all import scan_all_providers  # noqa: PLC0415 - avoids an import cycle
+
+    system_ids = (
+        (
+            await session.execute(
+                select(System.id).where(
+                    System.organization_id == org_id,
+                    System.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    scanned = 0
+    checks_run = 0
+    checks_expected = 0
+    manual_review = 0
+    for system_id in system_ids:
+        out = await scan_all_providers(
+            session,
+            system_id=int(system_id),
+            organization_id=org_id,
+            # Recorded on every result, so a scheduled scan is distinguishable
+            # in the evidence record from one a person asked for. Matches what
+            # `control_tests.run_due` already writes.
+            actor="scheduler",
+            # The cycle owns the transaction; see the call site.
+            commit=False,
+        )
+        scanned += 1
+        checks_run += int(out.get("checks_run") or 0)
+        checks_expected += int(out.get("checks_expected") or 0)
+        manual_review += int(out.get("manual_review_total") or 0)
+    return {
+        "organization_id": org_id,
+        "systems_scanned": scanned,
+        "checks_run": checks_run,
+        "checks_expected": checks_expected,
+        "manual_review": manual_review,
+    }
 
 
 async def _run_per_tenant_cycle(
@@ -84,7 +145,12 @@ async def _run_per_tenant_cycle(
     control_test_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
+    posture_results: list[dict[str, Any]] = []
     derive_enabled = get_settings().capability_derive_enabled
+    #: (organization id, step) for every savepointed step that raised. Counted
+    #: rather than only logged, so the cycle summary can distinguish "did
+    #: nothing" from "tried and failed".
+    step_failures: list[dict[str, str]] = []
     for org_id in org_ids:
         await set_session_tenant(session, org_id)
         try:
@@ -97,6 +163,7 @@ async def _run_per_tenant_cycle(
                 step="collection",
                 error=str(e)[:200],
             )
+            step_failures.append({"organization_id": str(org_id), "step": "collection"})
         try:
             # Read-only: fetch, hash, validate and record. Installing is never
             # automatic unless a source opts in (auto_install), because a pack
@@ -110,6 +177,7 @@ async def _run_per_tenant_cycle(
                 step="pack_sync",
                 error=str(e)[:200],
             )
+            step_failures.append({"organization_id": str(org_id), "step": "pack_sync"})
         try:
             async with session.begin_nested():
                 result = await conmon.scan(session, today=today, org_id=org_id)
@@ -121,6 +189,7 @@ async def _run_per_tenant_cycle(
                 step="conmon",
                 error=str(e)[:200],
             )
+            step_failures.append({"organization_id": str(org_id), "step": "conmon"})
         try:
             async with session.begin_nested():
                 result = await control_tests.run_due(session, today=today, org_id=org_id)
@@ -132,6 +201,40 @@ async def _run_per_tenant_cycle(
                 step="control_tests",
                 error=str(e)[:200],
             )
+            step_failures.append({"organization_id": str(org_id), "step": "control_tests"})
+        try:
+            # The posture scan. `run_due` above deliberately excludes
+            # scan-generated tests (`source != "generated"`), because its
+            # connector-freshness evaluator has nothing useful to say about a
+            # posture check and would bury the real verdict under a spurious
+            # warn. Correct -- and it left nothing at all re-running posture
+            # checks, so a tenant scanned once in September still showed
+            # September's verdicts in November while the SSP cited them as
+            # automated evidence with their original observed-on dates.
+            #
+            # Before this step existed the only way to refresh a verdict was for
+            # a person to click Scan. Nothing reported the gap: the cycle's
+            # `tests_evaluated` counts `run_due`'s work, which rightly excludes
+            # these, so zero was an honest answer to a question nobody asked.
+            #
+            # Per system, and each system in its own savepoint: one system's
+            # provider failure must not cost the others their scan. (Per
+            # *provider* containment already lives inside
+            # `scan_all_providers`.) `commit=False` because this runs inside the
+            # cycle's shared transaction -- committing here would end it under
+            # the steps that follow.
+            async with session.begin_nested():
+                posture_results.append(
+                    await _scan_org_systems(session, org_id=org_id)
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="posture_scan",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "posture_scan"})
         if derive_enabled:
             try:
                 async with session.begin_nested():
@@ -147,6 +250,7 @@ async def _run_per_tenant_cycle(
                     step="capability_derive",
                     error=str(e)[:200],
                 )
+                step_failures.append({"organization_id": str(org_id), "step": "capability_derive"})
         try:
             # The assurance graph is derived from this organization's own
             # records, so it goes stale the moment any of the steps above
@@ -177,12 +281,20 @@ async def _run_per_tenant_cycle(
                 step="assurance_graph",
                 error=str(e)[:200],
             )
+            step_failures.append({"organization_id": str(org_id), "step": "assurance_graph"})
     # Back to bypass before any global step (or the advisory unlock) runs.
     # Suppressed: a prior step's failure must not prevent the tenant clamp
     # from being reset — mirrors the advisory-unlock suppress in run_cycle.
     with contextlib.suppress(Exception):
         await set_session_tenant(session, None)
     return {
+        # Every per-tenant step above is savepointed, so a failure is contained
+        # and logged as its own warning -- and then contributes nothing to the
+        # lists below. That made a cycle whose collection failed for all seven
+        # organizations indistinguishable, in the cycle summary, from one where
+        # collection had nothing to do. The count travels with the results so
+        # the summary can say so.
+        "step_failures": step_failures,
         "collection": {
             "organizations_processed": [r["organization_id"] for r in collection_results],
             "connectors_run": [
@@ -205,6 +317,7 @@ async def _run_per_tenant_cycle(
             "installed": sum(r["installed"] for r in pack_sync_results),
         },
         "conmon": conmon_results,
+        "posture_scan": posture_results,
         "control_tests": control_test_results,
         "capability_derive": {
             "organizations_processed": [r["organization_id"] for r in derive_results],
@@ -214,10 +327,134 @@ async def _run_per_tenant_cycle(
     }
 
 
+def _total(rows: list[dict[str, Any]], field: str) -> int:
+    """Sum one integer field across per-organization result rows.
+
+    A value that will not convert counts as zero **and logs a warning naming the
+    field**. Both halves matter. The summary is the last thing ``run_cycle``
+    does, so an exception raised here escapes into ``_loop``'s handler and the
+    whole cycle -- all of it already committed -- reports as failed; a summary
+    that can destroy the report it is summarizing is not worth the strictness.
+    But swallowing it silently would leave a step under-reporting forever with
+    nothing to notice, which is the other half of the same mistake.
+    """
+    total = 0
+    for row in rows:
+        raw = row.get(field)
+        if raw is None or raw == "":
+            continue
+        try:
+            total += int(raw)
+        except (TypeError, ValueError):
+            log.warning(
+                "scheduler.summary_field_unusable",
+                field=field,
+                value=str(raw)[:80],
+                organization_id=str(row.get("organization_id")),
+            )
+    return total
+
+
+def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
+    """The one line an operator reads, with numbers in it.
+
+    This used to be ``{k: v if isinstance(v, int) else "ok"}``, which flattened
+    every result in the cycle to the literal string ``ok`` -- and every result
+    except ``catalog_checks`` is a dict or a list, so the summary read
+    ``collection=ok conmon=ok control_tests=ok ...`` whatever happened. Three
+    things it could not distinguish, all of which an operator needs to:
+
+    * a cycle that evaluated 400 control tests from one that evaluated none,
+      because no connector is bound and nothing is due;
+    * a cycle that opened twelve POA&Ms from one that opened none;
+    * a cycle where a step **failed for every organization** from a clean one.
+      Each per-tenant step is savepointed, so a failure logs its own warning and
+      then contributes nothing to the results -- leaving the summary to say
+      ``ok`` about work that did not happen. The warnings are above it in the
+      log, which helps only somebody who already suspects something.
+
+    ``failures`` first, and always present rather than omitted when zero: a
+    field that appears only on the bad path is one a reader has no habit of
+    looking for, and ``failures=0`` is the sentence that makes ``failures=7``
+    legible when it comes.
+
+    Counts, not verdicts. This deliberately does not decide whether a cycle was
+    "healthy" -- zero control tests is correct for a tenant with no connector
+    bound and alarming for one with six, and nothing here knows which. It
+    reports what happened and leaves the judgment to the reliability checks,
+    which have the context to make it.
+    """
+    conmon = out.get("conmon") or []
+    posture = out.get("posture_scan") or []
+    tests = out.get("control_tests") or []
+    collection = out.get("collection") or {}
+    assurance = out.get("assurance_graph") or {}
+    packs = out.get("pack_sync") or {}
+    derive = out.get("capability_derive") or {}
+    fedramp = out.get("fedramp20x") or {}
+    step_failures = out.get("step_failures") or []
+    global_failures = out.get("global_failures") or []
+
+    if out.get("skipped"):
+        return {"skipped": out["skipped"]}
+
+    summary: dict[str, Any] = {
+        "failures": len(step_failures) + len(global_failures),
+        "orgs": len(collection.get("organizations_processed") or []),
+        "catalog_checks": int(out.get("catalog_checks") or 0),
+        "connectors_run": len(collection.get("connectors_run") or []),
+        "captured": int(collection.get("captured") or 0),
+        "drift": int(collection.get("drift") or 0),
+        "pack_sources": int(packs.get("sources") or 0),
+        "packs_pending": int(packs.get("pending") or 0),
+        # The posture scan's own numbers. Kept separate from `tests_evaluated`,
+        # which counts `run_due` and correctly excludes scan-generated tests --
+        # conflating them would make the zero that exposed this gap unreadable
+        # again in the other direction.
+        "posture_systems": _total(posture, "systems_scanned"),
+        "posture_checks_run": _total(posture, "checks_run"),
+        "posture_checks_expected": _total(posture, "checks_expected"),
+        # Why expected and run can differ without anything failing: the
+        # responsibility template ruled these out of API scope.
+        "posture_manual_review": _total(posture, "manual_review"),
+        "conmon_controls": _total(conmon, "controls_checked"),
+        "conmon_findings": _total(conmon, "findings"),
+        "poams_created": _total(conmon, "poams_created"),
+        "poams_recovered": _total(conmon, "poams_recovered"),
+        "tasks_created": _total(conmon, "tasks_created"),
+        "tests_evaluated": _total(tests, "evaluated"),
+        "tests_failed": _total(tests, "fail"),
+        "tests_warned": _total(tests, "warn"),
+        "derive_systems": int(derive.get("systems") or 0),
+        "assurance_nodes": int(assurance.get("nodes") or 0),
+        "assurance_edges": int(assurance.get("edges") or 0),
+        "fedramp_scanned": int(fedramp.get("systems_scanned") or 0),
+        # An int, not a list. `len()` here passed every hand-written test and
+        # crashed the first real cycle that had drift, because `0 or []` is
+        # falsy and a zero-drift cycle took the list branch harmlessly.
+        "fedramp_drift": int(fedramp.get("drift_events") or 0),
+    }
+    # Named only when non-empty: which step broke is the first question after
+    # seeing a non-zero count, and repeating "none" on every clean cycle would
+    # bury the counts that are always worth reading.
+    if step_failures:
+        summary["failed_steps"] = sorted(
+            {f"{f['step']}@{f['organization_id']}" for f in step_failures}
+        )
+    if global_failures:
+        summary["failed_global_steps"] = sorted(set(global_failures))
+    return summary
+
+
 async def run_cycle() -> dict[str, Any]:
     """Run one full automation cycle. Returns per-job results."""
     today = datetime.now(UTC).date()
     out: dict[str, Any] = {}
+    #: Global (non-per-tenant) steps that raised. Same reason as
+    #: ``step_failures``: each is savepointed and logged, and then leaves no
+    #: trace in ``out``, so the summary could not tell a skipped step from a
+    #: successful one.
+    global_failures: list[str] = []
     is_pg = get_engine().dialect.name == "postgresql"
     async with session_scope() as session:
         # Multi-replica safety: only the instance that wins the advisory lock runs
@@ -248,6 +485,7 @@ async def run_cycle() -> dict[str, Any]:
                     out["catalog_checks"] = len(checks)
             except Exception as e:
                 log.warning("scheduler.global_step_failed", step="poll_sources", error=str(e)[:200])
+                global_failures.append("poll_sources")
 
             # PER-TENANT: collection, ConMon, and control-test auto-run — one
             # pass per organization, each clamped to its own RLS tenant.
@@ -263,6 +501,7 @@ async def run_cycle() -> dict[str, Any]:
                     out["digest"] = await digest.run(session, today=today)
             except Exception as e:
                 log.warning("scheduler.global_step_failed", step="digest", error=str(e)[:200])
+                global_failures.append("digest")
             try:
                 async with session.begin_nested():
                     from ..fedramp20x import monitoring  # noqa: PLC0415 — lazy, keeps startup light
@@ -272,6 +511,7 @@ async def run_cycle() -> dict[str, Any]:
                 log.warning(
                     "scheduler.global_step_failed", step="fedramp20x_monitoring", error=str(e)[:200]
                 )
+                global_failures.append("fedramp20x_monitoring")
         finally:
             # Release the advisory lock, and do not let anything above it stop
             # that from happening.
@@ -308,7 +548,8 @@ async def run_cycle() -> dict[str, Any]:
             # Never leave the session's next use pinned to a stale org.
             with contextlib.suppress(Exception):
                 await set_session_tenant(session, None)
-    log.info("scheduler.cycle", **{k: (v if isinstance(v, int) else "ok") for k, v in out.items()})
+    out["global_failures"] = global_failures
+    log.info("scheduler.cycle", **cycle_summary(out))
     return out
 
 

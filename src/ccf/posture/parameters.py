@@ -64,6 +64,17 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     aws.PASSWORD_POLICY.key: (),
     aws.ACCESS_KEY_ROTATION.key: ("threshold_days",),
     aws.CLOUDTRAIL_MULTI_REGION.key: (),
+    aws.CLOUDTRAIL_LOG_FILE_VALIDATION.key: (),
+    aws.S3_PUBLIC_ACCESS_BLOCKED.key: (),
+    # No parameter, and the reason is worth recording rather than leaving as an
+    # empty tuple somebody later reads as an oversight: the tunable thing here
+    # would be *which* SSE algorithms are acceptable, and this check
+    # deliberately does not judge the algorithm. SC-28(1) is where a package may
+    # require a customer-managed key, and that is an organization's decision --
+    # so the check fails only on the absence of any default rule and records the
+    # algorithm for an assessor. Adding a parameter would mean adding a judgment.
+    aws.S3_DEFAULT_ENCRYPTION.key: (),
+    aws.EBS_ENCRYPTION_BY_DEFAULT.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.

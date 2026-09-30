@@ -305,6 +305,17 @@ class AwsGovCloudConnector(ConfigConnector):
             aws_checks.ENDPOINTS[
                 aws_checks.CLOUDTRAIL_MULTI_REGION.key
             ]: self._read_cloudtrail_trails,
+            # CLOUDTRAIL_LOG_FILE_VALIDATION shares that token deliberately, so
+            # it needs no entry of its own -- both checks judge the same fleet.
+            aws_checks.ENDPOINTS[
+                aws_checks.S3_PUBLIC_ACCESS_BLOCKED.key
+            ]: self._read_bucket_public_access,
+            aws_checks.ENDPOINTS[
+                aws_checks.S3_DEFAULT_ENCRYPTION.key
+            ]: self._read_bucket_encryption,
+            aws_checks.ENDPOINTS[
+                aws_checks.EBS_ENCRYPTION_BY_DEFAULT.key
+            ]: self._read_ebs_encryption_default,
         }
 
     def _iam(self) -> Any:
@@ -400,6 +411,111 @@ class AwsGovCloudConnector(ConfigConnector):
                 )
             rows.append(row)
         return rows
+
+    def _bucket_names(self, client: Any) -> list[str]:
+        """Every bucket in the account, by name.
+
+        ``list_buckets`` is not paginated by boto3 (the API returns the whole
+        set), so there is no paginator to miss here -- unlike ``list_users``
+        above, where there is.
+        """
+        return [
+            str(b["Name"])
+            for b in (client.list_buckets().get("Buckets", []) or [])
+            if b.get("Name")
+        ]
+
+    def _per_bucket(
+        self, operation: str, envelope: str, absent_codes: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        """One row per bucket: ``{"Name": ..., <envelope>: ...}``.
+
+        Three outcomes are kept apart, because collapsing any two of them is how
+        a bucket ends up reported as safe:
+
+        * the call answered -- the envelope is on the row;
+        * AWS said the configuration does not exist (one of ``absent_codes``) --
+          the row carries an empty envelope, which the evaluator reads as the
+          permissive default being in force, a ``fail``;
+        * the call failed for any other reason -- the row carries
+          ``Unreadable``, which the evaluator reports as
+          ``manual_review_required``.
+
+        "Not configured" and "I could not look" are different facts and the
+        second must never render as the first.
+
+        **Cost, stated rather than discovered in production.** This is one AWS
+        call per bucket, and the two S3 checks each run it, so a scan of an
+        account with *n* buckets makes roughly ``2n + 2`` S3 calls. That is
+        fine for the tens-of-buckets accounts this is written for and is not
+        fine for thousands: expect throttling, and the per-bucket failures that
+        causes arrive as ``manual_review_required`` rather than as false passes,
+        which is the right direction but is still a scan nobody can read. The
+        fix when it is needed is S3 Storage Lens or a Config aggregator, both of
+        which are a different data source and a different permission grant --
+        not a tweak to this loop.
+        """
+        client = self._session().client("s3", region_name=self._region())
+        rows: list[dict[str, Any]] = []
+        for name in self._bucket_names(client):
+            try:
+                answer = getattr(client, operation)(Bucket=name)
+                rows.append({"Name": name, envelope: answer.get(envelope)})
+            except Exception as e:
+                code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code")
+                if code in absent_codes:
+                    rows.append({"Name": name, envelope: {}})
+                    continue
+                log.warning(
+                    "connector.aws.bucket_setting_unreadable",
+                    bucket=name[:200],
+                    operation=operation,
+                    error=str(e)[:200],
+                )
+                rows.append({"Name": name, "Unreadable": str(e)[:200]})
+        return rows
+
+    def _read_bucket_public_access(self) -> list[dict[str, Any]]:
+        """``s3.get_public_access_block`` for every bucket.
+
+        AWS raises ``NoSuchPublicAccessBlockConfiguration`` for a bucket that
+        has never had one set. That is not an error to report -- it means no
+        block is in force, which is exactly the finding.
+        """
+        return self._per_bucket(
+            "get_public_access_block",
+            "PublicAccessBlockConfiguration",
+            ("NoSuchPublicAccessBlockConfiguration",),
+        )
+
+    def _read_bucket_encryption(self) -> list[dict[str, Any]]:
+        """``s3.get_bucket_encryption`` for every bucket.
+
+        ``ServerSideEncryptionConfigurationNotFoundError`` is AWS's way of
+        saying "no default encryption rule", which is the finding rather than a
+        failure to read.
+        """
+        return self._per_bucket(
+            "get_bucket_encryption",
+            "ServerSideEncryptionConfiguration",
+            ("ServerSideEncryptionConfigurationNotFoundError",),
+        )
+
+    def _read_ebs_encryption_default(self) -> list[dict[str, Any]]:
+        """``ec2.get_ebs_encryption_by_default``, tagged with the region read.
+
+        The setting is per region. The region is put on the row so the evaluator
+        can say which one it assessed: a bare ``pass`` would otherwise read as a
+        statement about every region the account uses, which it is not.
+        """
+        region = self._region()
+        answer = self._session().client("ec2", region_name=region).get_ebs_encryption_by_default()
+        return [
+            {
+                "EbsEncryptionByDefault": bool(answer.get("EbsEncryptionByDefault")),
+                "Region": region,
+            }
+        ]
 
     async def _fetch(self, endpoint: str) -> list[dict[str, Any]]:
         """The rows for one source token, read off the event loop."""

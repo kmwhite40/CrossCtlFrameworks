@@ -9,9 +9,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from typer.testing import CliRunner
 
-import ccf.posture.scan as scan_module
+import ccf.posture.scan_all as scan_all_module
 from ccf.api.main import create_app
-from ccf.api.routes import posture as posture_routes
 from ccf.cli import app as cli_app
 from ccf.db import session_scope
 from ccf.governance.control_tests import GENERATED_PLAN
@@ -375,10 +374,10 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
             "required_permissions": [],
         }
 
-    monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
-    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
+    monkeypatch.setattr(scan_all_module, "scan_for_system", _fake_scan)
+    monkeypatch.setattr(scan_all_module, "provider_readiness", _ready)
     monkeypatch.setattr(
-        posture_routes, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
+        scan_all_module, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
     )
 
     async with _client() as client:
@@ -445,9 +444,9 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
             "required_permissions": [],
         }
 
-    monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
-    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
-    monkeypatch.setattr(posture_routes, "known_providers", lambda: frozenset({"msgraph"}))
+    monkeypatch.setattr(scan_all_module, "scan_for_system", _fake_scan)
+    monkeypatch.setattr(scan_all_module, "provider_readiness", _ready)
+    monkeypatch.setattr(scan_all_module, "known_providers", lambda: frozenset({"msgraph"}))
 
     async with _client() as client:
         body = (await client.post(f"/api/systems/{system_id}/scan-all")).json()
@@ -529,7 +528,7 @@ async def test_audit_plan_separates_api_checks_from_manual_review(
         }
 
     monkeypatch.setattr(
-        posture_routes, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
+        scan_all_module, "known_providers", lambda: frozenset({"msgraph", "aws_govcloud"})
     )
     monkeypatch.setattr(
         audit_plan_module,
@@ -625,9 +624,9 @@ async def test_scan_all_scans_only_api_applicable_checks(
             "required_permissions": [],
         }
 
-    monkeypatch.setattr(scan_module, "scan_for_system", _fake_scan)
-    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
-    monkeypatch.setattr(posture_routes, "known_providers", lambda: frozenset({"msgraph"}))
+    monkeypatch.setattr(scan_all_module, "scan_for_system", _fake_scan)
+    monkeypatch.setattr(scan_all_module, "provider_readiness", _ready)
+    monkeypatch.setattr(scan_all_module, "known_providers", lambda: frozenset({"msgraph"}))
 
     async with _client() as client:
         r = await client.post(f"/api/systems/{system_id}/scan-all")
@@ -678,8 +677,8 @@ async def test_scan_all_records_manual_review_required_for_unavailable_provider(
             "reason": "not configured",
         }
 
-    monkeypatch.setattr(posture_routes, "provider_readiness", _ready)
-    monkeypatch.setattr(posture_routes, "known_providers", lambda: frozenset({"msgraph"}))
+    monkeypatch.setattr(scan_all_module, "provider_readiness", _ready)
+    monkeypatch.setattr(scan_all_module, "known_providers", lambda: frozenset({"msgraph"}))
 
     async with _client() as client:
         r = await client.post(f"/api/systems/{system_id}/scan-all")
