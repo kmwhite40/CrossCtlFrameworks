@@ -213,12 +213,63 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
+- **A CMMC SSP shows evidence for 18 of the 110 practices**, from the 28 of 32
+  checks that declare one. This is a *different* number from the two above and
+  from the per-provider table: those count controls a check evidences, while
+  this counts practices a **CMMC document can actually display**.
+
+  The distinction exists because it was the defect. A posture check declares
+  NIST 800-53 ids; a CMMC project's SSP entries are practice ids seeded from
+  `ccf.scoring_controls`, and the two vocabularies do not intersect. So every
+  verdict — passes cited as evidence and failures owed a POA&M alike — landed on
+  no entry in the document an assessor reads. On the live tenant that was four
+  failing checks and `controls_with_open_findings: 0`.
+
+  `ccf.posture.practices.CHECK_PRACTICES` states the mapping, quoting each
+  practice's requirement text beside it, because the entry is a compliance
+  assertion that reaches an authorization package. The catalog crosswalk cannot
+  supply it: `framework_mappings` stores the 800-171 side as prose and reaches
+  14 of the 32 checks, none of them the four that were failing.
+
+  Four checks are deliberately unmapped, in `practices.UNMAPPED` with the
+  argument recorded — 800-171 has no authenticator-lifetime requirement for key
+  rotation; "a Defender plan is on the Standard tier" does not say which
+  protection runs; Identity Protection risk detections are not a named practice;
+  and Conditional Access sign-in frequency is not session termination. Their
+  findings keep appearing in `generate_statements`' `findings_unmatched_controls`
+  rather than disappearing into a zero. The practice ids and the mapped/unmapped
+  split are asserted by `tests/test_check_practice_mapping_is_sound.py`.
+
+  Practices covered, by domain: **AC** 3.1.1, 3.1.5, 3.1.10, 3.1.19, 3.1.22 ·
+  **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2 · **IA** 3.5.3, 3.5.4, 3.5.6,
+  3.5.7, 3.5.8 · **SC** 3.13.8, 3.13.10, 3.13.16.
+- **An SSP reports its own system's evidence, not its organization's.** Two
+  systems sharing one Microsoft 365 tenant each carry their own control tests
+  and their own POA&M for a tenant-level finding, which is correct — each system
+  tracks its own remediation. What was not correct was one document reporting
+  both: before this was scoped, the SSP for one system stated each finding twice
+  and cited the sibling system's POA&M id. A project that names no system
+  (7 of 21 in the live database) still falls back to organization scope, because
+  nothing else can describe it.
 - **The Microsoft Graph app registration needs
   `DeviceManagementConfiguration.Read.All`** on top of the permissions the
   earlier checks required. Without it the two device-compliance-policy checks
   (AC-11 session lock, SC-28 storage encryption) report
   `manual_review_required` naming that permission — never a false pass or fail,
   but no evidence either.
+
+  The same permission now also backs the **`inactivity_period` ODP capture**
+  (800-171 3.1.10), which reads the lock timeout from the device compliance
+  policy. Without the grant that parameter is simply not captured, and the SSP
+  renders it as organization-defined and outstanding. That is deliberate: the
+  value used to be taken from the Conditional Access *sign-in frequency* — a
+  different setting on a different control — which on the live tenant put
+  "inactivity period = 8 hours" under the session-lock requirement while the
+  session-lock check was passing at fifteen minutes. The real value is 15
+  minutes. An unfilled parameter is recoverable; a wrong one in an authorization
+  package is not. The device-policy read is guarded separately from the
+  Conditional Access read, so a missing Intune grant cannot discard the MFA
+  capture alongside it.
 - **A ready connector does not mean every one of its checks runs.** Before a
   check is scanned, the shared-responsibility template is asked who owns the
   control; only `customer` and `shared` are scanned, and a domain the template

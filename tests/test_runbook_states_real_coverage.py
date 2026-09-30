@@ -162,3 +162,70 @@ def test_the_runbook_says_how_the_baseline_figure_was_measured() -> None:
         "section 7 states a baseline intersection without naming how to "
         "re-measure it; see the note in this test for why it cannot be asserted"
     )
+
+
+def test_the_stated_practice_coverage_is_the_real_one() -> None:
+    """"18 of the 110 practices" and "28 of 32 checks" must stay true.
+
+    Same discipline as the check total above, for the number that says what a
+    **CMMC document can display**. It is the one an authorizing official reads
+    when asking what the SSP will actually show, and it moves every time a check
+    is mapped or added.
+    """
+    from ccf.posture.practices import CHECK_PRACTICES, UNMAPPED  # noqa: PLC0415
+    from ccf.scoring.parser import load_seed  # noqa: PLC0415
+
+    text = _runbook()
+    practices = {p for ps in CHECK_PRACTICES.values() for p in ps}
+    total_practices = {r["control_id"] for r in load_seed() if r.get("control_id")}
+
+    match = re.search(r"evidence for (\d+) of the (\d+) practices", text)
+    assert match, "the runbook must state practice coverage as 'N of the M practices'"
+    assert (int(match.group(1)), int(match.group(2))) == (
+        len(practices),
+        len(total_practices),
+    ), (
+        f"runbook says {match.group(1)} of {match.group(2)}; the mapping covers "
+        f"{len(practices)} of {len(total_practices)}"
+    )
+
+    split = re.search(r"from the (\d+) of (\d+)\s*\n?\s*checks that declare one", text)
+    assert split, "the runbook must state how many checks declare a practice"
+    registered = sum(len(checks_for(k)) for k in connector_keys())
+    assert (int(split.group(1)), int(split.group(2))) == (
+        len(CHECK_PRACTICES),
+        registered,
+    )
+    # And that the unmapped four are still four, stated as such.
+    assert "Four checks are deliberately unmapped" in text
+    assert len(UNMAPPED) == 4, (
+        f"{len(UNMAPPED)} checks are unmapped; the runbook still says four"
+    )
+
+
+def test_every_practice_the_runbook_lists_is_actually_mapped() -> None:
+    """The per-domain list must not name a practice the mapping does not cover.
+
+    Both directions, because a list that is merely *a subset* of the truth is
+    the failure mode the check-total guard was written for: it stays plausible
+    while drifting.
+    """
+    from ccf.posture.practices import CHECK_PRACTICES  # noqa: PLC0415
+
+    text = _runbook()
+    section = text.split("Practices covered, by domain:")[1].split("\n- ")[0]
+    listed: set[str] = set()
+    for domain_part in re.finditer(r"\*\*([A-Z]{2})\*\*\s*([0-9.,\s]+)", section):
+        domain = domain_part.group(1)
+        for raw in domain_part.group(2).split(","):
+            # The last item in each domain run carries the sentence's full stop.
+            # No requirement number ends in a dot, so stripping it is safe.
+            number = raw.strip().rstrip("·").strip().rstrip(".")
+            if number:
+                listed.add(f"{domain}.L2-{number}")
+    mapped = {p for ps in CHECK_PRACTICES.values() for p in ps}
+    assert listed, "the runbook's per-domain practice list did not parse"
+    assert listed == mapped, (
+        f"runbook lists but mapping does not cover: {sorted(listed - mapped)}; "
+        f"mapping covers but runbook omits: {sorted(mapped - listed)}"
+    )
