@@ -219,6 +219,43 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   (AC-11 session lock, SC-28 storage encryption) report
   `manual_review_required` naming that permission — never a false pass or fail,
   but no evidence either.
+- **A ready connector does not mean every one of its checks runs.** Before a
+  check is scanned, the shared-responsibility template is asked who owns the
+  control; only `customer` and `shared` are scanned, and a domain the template
+  cannot answer is recorded as `manual_scope_review` — evidence a human must
+  supply, not a verdict. So `checks_run` can be far below `checks_expected` with
+  nothing failing. The scheduler's cycle line carries `posture_manual_review`
+  for exactly this reason; read it before concluding a scan is broken.
+
+  This gap hid a real defect for as long as it existed. The M365 branch of
+  `responsibility_for` read only a control's CMMC coverage status, and the scan
+  path — which holds NIST 800-53 ids, not CMMC practices — had none to pass, so
+  *every* M365 check resolved to `manual_scope_review` on every tenant. A ready
+  msgraph connector with fourteen working checks scanned none of them. M365 now
+  falls back to a domain-level answer derived from the scoring placemat.
+
+- **6 of the 32 registered checks cannot be scanned by any tenant today**, for
+  that same reason — the platform's responsibility template does not answer the
+  control's domain. They are enumerated with reasons in
+  `tests/test_every_check_can_be_scanned.py::UNSCANNABLE`, which fails if a new
+  check joins them silently or a listed one starts working:
+
+  | Provider | Checks blocked | Missing template answer |
+  |---|---|---|
+  | `aws_govcloud` | `s3.public_access_blocked`, `iam.access_key_rotation`, `iam.password_policy`, `iam.root_mfa_enabled` | domains `AC` and `IA` |
+  | `puppetdb` | `node.last_run_succeeded`, `node.reporting` | no template for platform `puppetdb` |
+
+  So **half the AWS suite and all of PuppetDB produce no evidence**, including
+  root MFA and password policy — among the first things an assessor asks for.
+  This is not fixed here because it is not only a scan-scope question:
+  `responsibility_for` also feeds SSP control origination through
+  `ssp.constants.platform_responsibility`, and the hyperscaler template leaves a
+  domain unanswered *deliberately*, so an SSP flags the control for a human
+  rather than asserting an origination nobody chose
+  (`needs_manual_responsibility_assignment`). Adding `AC` and `IA` to that table
+  would unblock the four AWS checks and, in the same edit, change what every AWS
+  system's SSP claims about who originates its access-control requirements.
+  Decide that deliberately.
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their
