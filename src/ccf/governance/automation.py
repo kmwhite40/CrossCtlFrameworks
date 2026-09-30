@@ -10,6 +10,7 @@ and the snapshot on the profile is the single source of truth SSP/coverage read.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..capability.service import capability_statements_by_control
 from ..catalog.canonical import canonicalize
 from ..constants import POAM_ACTIVE_STATUSES
+from ..logging import get_logger
 from ..models import (
     POAM,
     CaptureSnapshot,
@@ -49,6 +51,8 @@ from ..ssp.platforms import (
 from ..ssp.seed import seed_project_entries
 from . import ai, bus
 from .control_tests import organization_capture_is_live
+
+log = get_logger(__name__)
 
 # --- The questionnaire that makes intake simplistic --------------------------
 QUESTIONNAIRE: list[dict[str, Any]] = [
@@ -585,6 +589,47 @@ def _has_narrative(part_narratives: list[dict[str, str]] | None) -> bool:
     return any(((part or {}).get("text") or "").strip() for part in part_narratives or [])
 
 
+def _unmatched_evidence(
+    *,
+    entries: Sequence[SSPControlEntry],
+    verified_by_control: dict[str, list[dict[str, str]]],
+    failing_by_control: dict[str, list[dict[str, str]]],
+    unassessed_by_control: dict[str, list[dict[str, str]]],
+    project: SSPProject,
+) -> dict[str, Any]:
+    """Control ids carrying evidence that no entry in this SSP is keyed by.
+
+    An SSP reports what it assessed. The counts beside this one are computed by
+    looking *up* evidence per entry, which cannot distinguish "no finding" from
+    "the finding is filed under a control id this document does not use" -- and
+    the second is the one that produces a clean-looking authorization package
+    over a failing system.
+
+    So this looks the other way: every control id evidence is keyed by, minus
+    every control id the entries use. A non-empty result means verdicts exist
+    that this document structurally cannot show, and the caller is told rather
+    than left to infer it from a zero.
+    """
+    entry_ids = {e.control_id for e in entries if e.control_id}
+    evidenced = set(verified_by_control) | set(failing_by_control) | set(unassessed_by_control)
+    unmatched = sorted(evidenced - entry_ids)
+    unmatched_findings = sorted(set(failing_by_control) - entry_ids)
+    if unmatched:
+        log.warning(
+            "ssp.evidence_names_no_control_in_this_ssp",
+            project_id=project.id,
+            framework=project.framework,
+            unmatched_controls=len(unmatched),
+            unmatched_findings=len(unmatched_findings),
+            # The first few, so the log line is diagnosable without a query.
+            sample=unmatched[:5],
+        )
+    return {
+        "evidence_unmatched_controls": unmatched,
+        "findings_unmatched_controls": unmatched_findings,
+    }
+
+
 async def generate_statements(
     session: AsyncSession,
     *,
@@ -995,6 +1040,26 @@ async def generate_statements(
         ),
         "controls_not_machine_verified": sum(
             1 for e in entries if unassessed_by_control.get(e.control_id or "")
+        ),
+        # Evidence this organization holds that names no control in this SSP.
+        #
+        # Without this, "controls_with_open_findings: 0" is unreadable: it means
+        # "nothing is failing" and "fourteen verdicts exist and not one of them
+        # names a control in this document" identically, and the second renders
+        # as a clean authorization package.
+        #
+        # That is not hypothetical. Posture checks declare NIST 800-53 control
+        # ids ("AC-2", "IA-2"); a CMMC project's entries are practice ids
+        # ("AC.L2-3.1.1"), seeded from `ccf.scoring_controls`. The two
+        # vocabularies do not intersect, so on a real CMMC SSP every posture
+        # verdict -- passes cited as evidence and failures owed a POA&M alike --
+        # lands on no entry at all.
+        **_unmatched_evidence(
+            entries=entries,
+            verified_by_control=verified_by_control,
+            failing_by_control=failing_by_control,
+            unassessed_by_control=unassessed_by_control,
+            project=project,
         ),
         "preserved_authored": preserved_authored,
         "replaced_authored": replaced_authored,
