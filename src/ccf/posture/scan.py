@@ -373,6 +373,13 @@ async def scan_for_system(
         "results": recorded,
         "skipped_checks": skipped,
         "unexpected_outcomes": unexpected,
+        # Null, not absent. The early return above carries `reason` and this
+        # one did not, so a caller reading `out["reason"]` worked on the
+        # unhappy path and raised on the happy one -- the key most likely to
+        # be missing was the one that explains what went wrong. A response
+        # whose shape depends on which branch produced it makes every consumer
+        # guess; `None` is "nothing to explain" and says so in the same slot.
+        "reason": None,
         # Where to read this scan in the terms of the framework the system is
         # held to. A caller that only wants "did it work" can ignore it; a
         # caller that wants "where do we stand" no longer has to reconstruct
