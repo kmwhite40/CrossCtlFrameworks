@@ -40,6 +40,7 @@ now makes them different numbers.
 from __future__ import annotations
 
 import itertools
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import delete, select
@@ -112,6 +113,7 @@ async def _cmmc_project_with_a_failing_check(
                 control_id="IA-2",
                 control_ids=["IA-2", "IA-2(1)"],
                 last_status="fail",
+                last_tested_at=datetime.now(UTC),
                 method="api",
             )
         )
@@ -239,6 +241,102 @@ async def test_evidence_that_does_reach_an_entry_is_not_reported_as_unmatched() 
         assert "IA-2(1)" in result["findings_unmatched_controls"]
     finally:
         await _cleanup(int(made["project_id"]), int(made["org_id"]))  # type: ignore[call-overload]
+
+
+@pytest.mark.asyncio
+async def test_an_ssp_cites_its_own_system_not_every_system_in_the_tenant() -> None:
+    """An SSP describes one system, so its evidence is that system's.
+
+    Found by reading the live document. Organization 2 runs two systems against
+    one Microsoft 365 tenant, so every tenant-level finding existed as a control
+    test on both. The composer scoped its evidence queries to the organization,
+    and the SSP for one system rendered each finding **twice** in a single
+    control's narrative, the second citing a POA&M raised against the other
+    system -- another system's weakness and another system's remediation id,
+    presented as this system's.
+    """
+    tag = f"{next(_SEQ)}"
+    async with session_scope() as session:
+        await seed_scoring_controls(session)
+
+    async with session_scope() as session:
+        org = Organization(name=f"TwoSystems-{tag}")
+        session.add(org)
+        await session.flush()
+        mine = System(organization_id=org.id, name=f"Mine-{tag}")
+        sibling = System(organization_id=org.id, name=f"Sibling-{tag}")
+        session.add_all([mine, sibling])
+        await session.flush()
+        profile = SystemProfile(
+            system_id=mine.id,
+            answers={},
+            environment_type="cloud",
+            cloud_platform="m365_gcc_high",
+            frameworks=["NIST_800_171"],
+            derivation={},
+        )
+        session.add(profile)
+        project = SSPProject(
+            organization_id=org.id,
+            system_id=mine.id,
+            customer_name=f"TwoSystems {tag}",
+            platform="m365",
+            framework="cmmc-800-171",
+        )
+        session.add(project)
+        await session.flush()
+        await seed_project_entries(session, project)
+
+        # The same tenant-level check, failing on both systems -- which is what
+        # two systems sharing one Microsoft 365 tenant really produces.
+        for system in (mine, sibling):
+            session.add(
+                ControlTest(
+                    organization_id=org.id,
+                    system_id=system.id,
+                    name="Every user has an MFA method registered",
+                    check_key="m365.identity.mfa_registered",
+                    source="generated",
+                    control_id="IA-2",
+                    control_ids=["IA-2"],
+                    last_status="fail",
+                    last_tested_at=datetime.now(UTC),
+                    method="api",
+                )
+            )
+        await session.flush()
+        result = await generate_statements(
+            session, project=project, profile=profile, include_captured=True
+        )
+        project_id, org_id = project.id, org.id
+        await session.commit()
+
+    try:
+        entry_text = ""
+        async with session_scope() as session:
+            entries = (
+                await session.execute(
+                    select(SSPControlEntry).where(
+                        SSPControlEntry.project_id == project_id,
+                        SSPControlEntry.control_id == "IA.L2-3.5.3",
+                    )
+                )
+            ).scalars().all()
+            for e in entries:
+                parts = e.part_narratives or []
+                if isinstance(parts, list):
+                    entry_text = " ".join(p.get("text", "") for p in parts)
+
+        assert result["controls_with_open_findings"] == 1
+        assert "Open finding" in entry_text
+        # The finding is stated once. Two systems failing the same tenant check
+        # is two systems' business; this document is one system's.
+        assert entry_text.count("Every user has an MFA method registered") == 1, (
+            "the sibling system's copy of the finding is in this system's SSP:\n"
+            f"{entry_text}"
+        )
+    finally:
+        await _cleanup(int(project_id), int(org_id))
 
 
 @pytest.mark.asyncio
