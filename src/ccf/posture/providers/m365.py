@@ -349,6 +349,34 @@ SYSTEM_USE_NOTIFICATION = PostureCheck(
     required_permissions=("Agreement.Read.All",),
 )
 
+#: Entra's grant controls that condition access on the device's identity. Both
+#: are device identification enforced at access time: `compliantDevice` means the
+#: device is enrolled and meets the tenant's compliance policy, and
+#: `domainJoinedDevice` is Entra's name for hybrid-joined, where the directory
+#: join itself is the identification. Accepting only the first would fail a
+#: tenant doing the right thing by the other route.
+_DEVICE_GRANT_CONTROLS: frozenset[str] = frozenset(
+    {"compliantDevice", "domainJoinedDevice"}
+)
+
+DEVICE_COMPLIANCE_REQUIRED = PostureCheck(
+    key="m365.policy.device_compliance_required",
+    title="Access requires a device the tenant has identified",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=(
+        "an enabled Conditional Access policy granting only on compliantDevice "
+        "or domainJoinedDevice"
+    ),
+    # IA-3 alone. AC-19 (Access Control for Mobile Devices) is equally uncovered
+    # and tempting, but this policy applies to every device rather than
+    # specifically to mobile ones -- and a non-passing verdict reaches every
+    # declared control, so listing AC-19 would file a finding against a
+    # requirement this check never observed.
+    control_ids=("IA-3",),
+    required_permissions=("Policy.Read.All",),
+)
+
 CHECKS: tuple[PostureCheck, ...] = (
     MFA_REGISTERED,
     LEGACY_AUTH_BLOCKED,
@@ -366,6 +394,7 @@ CHECKS: tuple[PostureCheck, ...] = (
     SESSION_REAUTHENTICATION_REQUIRED,    LOCKOUT_THRESHOLD,
     SECURITY_ALERTS_TRIAGED,
     SYSTEM_USE_NOTIFICATION,
+    DEVICE_COMPLIANCE_REQUIRED,
     REMOVABLE_STORAGE_BLOCKED,
 )
 
@@ -444,6 +473,10 @@ ENDPOINTS: dict[str, str] = {
     # answer 403. The check would have reported manual_review_required forever on
     # every GCC High tenant and read as a tenant problem.
     SYSTEM_USE_NOTIFICATION.key: "/v1.0/identityGovernance/termsOfUse/agreements",
+    # A third check on this collection. Legacy-auth, session reauthentication
+    # and device identification are separate questions about the same policies,
+    # and reporting them as one verdict would hide whichever half passed.
+    DEVICE_COMPLIANCE_REQUIRED.key: "/v1.0/identity/conditionalAccess/policies",
 }
 
 
@@ -1382,6 +1415,86 @@ def evaluate_system_use_notification(
     )
 
 
+def evaluate_device_compliance_required(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """IA-3: does an *enforced* policy condition access on the device's identity?
+
+    ``state`` must be exactly ``enabled``. ``disabled`` enforces nothing and
+    ``enabledForReportingButNotEnforced`` logs what it would have blocked and
+    blocks nobody, so neither may satisfy this -- the same rule
+    ``_blocks_legacy_auth`` and ``_sets_signin_frequency`` apply, and for the same
+    reason: a policy deliberately not in force must not put "devices are
+    identified before access" into an authorization package.
+
+    The live tenant this was written against is exactly why: it has four policies
+    naming a device grant control, one ``disabled``, one report-only and two
+    enabled. A check that counted policies rather than enforced ones would pass a
+    tenant whose only device policy is in report-only mode.
+
+    An empty or device-free policy list is a *failure*, not an unreadable state:
+    Graph listed the tenant's policies and none grants on device identity. The
+    detail carries how many were considered so a reader can tell that from
+    Concord having seen no policies at all.
+    """
+    # Counted over the whole list before any decision, because the early return
+    # below would otherwise leave this at "how many were examined before a match"
+    # -- which is not what the name says. Measured on the live tenant it read
+    # `policies: 13` for a tenant with 23 Conditional Access policies, because the
+    # matching one happened to sit at index 13. A number whose meaning depends on
+    # where the loop stopped is the same defect as a bucket that does not
+    # partition, in miniature.
+    policies = [p for p in rows if isinstance(p, dict)]
+    considered = len(policies)
+    unenforced: list[str] = []
+    for policy in policies:
+        grant = policy.get("grantControls")
+        controls = set((grant or {}).get("builtInControls") or [])
+        if not controls & _DEVICE_GRANT_CONTROLS:
+            continue
+        name = str(policy.get("displayName") or policy.get("id") or "unnamed")
+        state = str(policy.get("state") or "")
+        if state != "enabled":
+            unenforced.append(f"{name} ({state or 'no state'})")
+            continue
+        return _tenant_finding(
+            tenant_id,
+            passed=True,
+            observed=(
+                f"{name!r} is enabled and grants only on "
+                f"{', '.join(sorted(controls & _DEVICE_GRANT_CONTROLS))}"
+            ),
+            detail={"policies": considered, "policy": name},
+        )
+
+    if unenforced:
+        return _tenant_finding(
+            tenant_id,
+            passed=False,
+            observed=(
+                f"{len(unenforced)} policy(ies) require a known device but none is "
+                f"enforced: {', '.join(unenforced[:4])}"
+            ),
+            detail={"policies": considered, "not_enforced": unenforced[:20]},
+        )
+    if considered:
+        return _tenant_finding(
+            tenant_id,
+            passed=False,
+            observed=(
+                f"no enabled Conditional Access policy grants on device identity "
+                f"across {considered} policy(ies)"
+            ),
+            detail={"policies": considered},
+        )
+    return _tenant_finding(
+        tenant_id,
+        passed=False,
+        observed="no Conditional Access policy exists for this tenant",
+        detail={"policies": 0},
+    )
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     MFA_REGISTERED.key: evaluate_mfa_registered,
     LEGACY_AUTH_BLOCKED.key: evaluate_legacy_auth_blocked,
@@ -1401,4 +1514,5 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     SECURITY_ALERTS_TRIAGED.key: evaluate_security_alerts_triaged,
     REMOVABLE_STORAGE_BLOCKED.key: evaluate_removable_storage_blocked,
     SYSTEM_USE_NOTIFICATION.key: evaluate_system_use_notification,
+    DEVICE_COMPLIANCE_REQUIRED.key: evaluate_device_compliance_required,
 }

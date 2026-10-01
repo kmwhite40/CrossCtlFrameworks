@@ -193,6 +193,21 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # high-severity ones are not sitting unactioned. An alert left `new` for
     # months is the absence of the response the requirement asks for.
     "m365.security.alerts_triaged": ("SI.L2-3.14.3",),
+    # IA.L2-3.5.1  "Identify system users, processes acting on behalf of users,
+    #               and devices."
+    #
+    # The **devices** clause, observed directly: a Conditional Access policy that
+    # grants only on a compliant or hybrid-joined device identifies the device
+    # before granting access.
+    #
+    # 3.5.1 is deliberately *refused* elsewhere in this table, and the distinction
+    # is the point. `tests/test_one_check_to_requirement_mapping.py` records that
+    # the catalog crosswalk relates IA-2 to 3.5.1, so a failing MFA-registration
+    # check once marked 3.5.1 failing -- a requirement it never observed, because
+    # registering a second factor says nothing about whether users are
+    # *identified*. This check is the opposite case: device identification is
+    # exactly what it reads, and 3.5.1 is the only requirement that asks for it.
+    "m365.policy.device_compliance_required": ("IA.L2-3.5.1",),
 }
 
 #: Checks deliberately left unmapped, and the argument that would be needed.

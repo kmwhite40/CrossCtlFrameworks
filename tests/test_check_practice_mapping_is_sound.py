@@ -172,9 +172,9 @@ def test_the_mapped_share_is_stated_not_implied() -> None:
     covers. Update it deliberately, along with the runbook.
     """
     registered = _registered_check_keys()
-    # 41/36/5. The AT-2 check that briefly took this to 42/37 was removed: its
-    # endpoint (/v1.0/security/attackSimulation) is not served on
-    # graph.microsoft.us at all, so it could never be assessed in a GCC High
-    # tenant. AC-8 remains and is deliberately unmapped -- 800-171 carries no
-    # system use notification requirement.
-    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (41, 36, 5)
+    # 42/37/5. AC-8 is deliberately unmapped (800-171 carries no system use
+    # notification requirement); the IA-3 device-identification check maps to
+    # IA.L2-3.5.1, whose "and devices" clause it observes directly. An AT-2 check
+    # briefly took this to 42/37 by a different route and was removed -- its
+    # endpoint is not served on graph.microsoft.us at all.
+    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (42, 37, 5)

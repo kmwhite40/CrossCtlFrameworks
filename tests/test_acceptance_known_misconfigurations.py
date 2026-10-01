@@ -158,6 +158,18 @@ CONDITIONAL_ACCESS = [
         "conditions": {"clientAppTypes": ["exchangeActiveSync", "other"]},
         "grantControls": {"builtInControls": ["block"]},
     },
+    # IA-3 -- a device requirement that exists and enforces nothing. The
+    # instructive misconfiguration rather than an absent policy: an operator who
+    # created this believes devices are being identified, and a check that counted
+    # policies instead of *enforced* policies would agree with them. Report-only
+    # logs what it would have blocked and blocks nobody.
+    {
+        "id": "ca-3",
+        "displayName": "Require compliant device (piloting)",
+        "state": "enabledForReportingButNotEnforced",
+        "conditions": {"clientAppTypes": ["all"]},
+        "grantControls": {"operator": "OR", "builtInControls": ["compliantDevice"]},
+    },
 ]
 
 #: IA-2(11) / IA-2(1) -- SMS is enabled (interceptable) and no
@@ -337,6 +349,7 @@ FIXTURE: dict[str, tuple[list[dict[str, Any]], dict[str, Any]]] = {
     m365.SECURITY_ALERTS_TRIAGED.key: (SECURITY_ALERTS, {"tenant_id": TENANT}),
     m365.REMOVABLE_STORAGE_BLOCKED.key: (DEVICE_CONFIGURATIONS, {"tenant_id": TENANT}),
     m365.SYSTEM_USE_NOTIFICATION.key: (TERMS_OF_USE, {"tenant_id": TENANT}),
+    m365.DEVICE_COMPLIANCE_REQUIRED.key: (CONDITIONAL_ACCESS, {"tenant_id": TENANT}),
 }
 
 #: What a person reading the fixture says each check must conclude.
@@ -359,6 +372,7 @@ EXPECTED_VERDICTS = {
     m365.SECURITY_ALERTS_TRIAGED.key: "fail",
     m365.REMOVABLE_STORAGE_BLOCKED.key: "fail",
     m365.SYSTEM_USE_NOTIFICATION.key: "fail",
+    m365.DEVICE_COMPLIANCE_REQUIRED.key: "fail",
 }
 FAILING_CHECKS = {k for k, v in EXPECTED_VERDICTS.items() if v == "fail"}
 
@@ -381,6 +395,7 @@ EXPECTED_FAILING_CONTROLS = {
     "SI-4",  # alerts_triaged -- a stale high-severity alert nobody actioned
     "MP-7",  # removable_storage_blocked
     "AC-8",  # system_use_notification -- agreements exist, none must be read
+    "IA-3",  # device_compliance_required -- the device policy is report-only
 }
 #: AC-7 joins these: lockout is one of the things this tenant has configured
 #: correctly, and a fixture where every check fails would prove far less.
@@ -545,6 +560,11 @@ EXPECTED_FAILING_REQUIREMENTS = {
     "3.8.7",
     "3.13.16",
     "3.14.3",
+    # The IA-3 check maps to 3.5.1's "and devices" clause. 3.5.1 is deliberately
+    # *not* reached by the MFA checks -- see
+    # tests/test_one_check_to_requirement_mapping.py -- so this is the first
+    # verdict that legitimately lands on it.
+    "3.5.1",
 }
 #: Both audit checks pass and declare 3.3.1 and 3.3.2; a pass credits the
 #: **primary** practice only, so 3.3.1 is reported and 3.3.2 is not. That
@@ -904,13 +924,14 @@ async def test_framework_posture_names_the_failing_requirements(broken_tenant) -
             "m365.identity.system_use_notification",
         }
 
-        # 13 of 110 assessed -- 11 failing plus 3.1.8 and 3.3.1. It was briefly 14
-        # while an AT-2 check contributed 3.2.1; that check was removed because its
-        # Graph segment is not served in GCC High at all. It was also 13 before a
-        # relatedness crosswalk was replaced by authored mappings -- the smaller
-        # numbers are the ones the evidence supports, and this is still a
-        # percentage of the framework rather than of what was checked.
-        assert posture["assessed_pct"] == 11.8
+        # 14 of 110 assessed -- 12 failing plus 3.1.8 and 3.3.1. The twelfth is
+        # 3.5.1, from the IA-3 device-identification check: this tenant's device
+        # policy exists and is report-only, which is a failure rather than an
+        # absence. It was briefly 14 for a different reason -- an AT-2 check
+        # contributing 3.2.1 -- and that check was removed because its Graph
+        # segment is not served in GCC High at all. Still a percentage of the
+        # framework rather than of what was checked.
+        assert posture["assessed_pct"] == 12.7
 
         # The gap report, on the same scan, still answers its own question.
         assert gaps["failing"] == len(FAILING_CHECKS)
@@ -918,12 +939,12 @@ async def test_framework_posture_names_the_failing_requirements(broken_tenant) -
         assert gaps["open"] == len(FAILING_CHECKS), "nothing accepted, so all are open"
         assert gaps["accepted"] == 0
         # 2 MFA users + 1 stale user + 1 device + 1 risky user + 1 stale security
-        # alert, plus the nine tenant-wide failures: those share one resource id
-        # but are nine separate rows, one per check, so the tenant is not counted
-        # once. One more than before the AC-8 check, which is tenant-level. The
-        # alert is its own resource because the check judges alerts individually --
-        # a failure names the one to go and work.
-        assert gaps["resources_failing"] == 15
+        # alert, plus the ten tenant-wide failures: those share one resource id
+        # but are ten separate rows, one per check, so the tenant is not counted
+        # once. Two more than before the AC-8 and IA-3 checks, both tenant-level.
+        # The alert is its own resource because the check judges alerts
+        # individually -- a failure names the one to go and work.
+        assert gaps["resources_failing"] == 16
     finally:
         await _cleanup(org_id, seeded)
 

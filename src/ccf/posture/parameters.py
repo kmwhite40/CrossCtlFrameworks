@@ -91,6 +91,7 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # Blocked or not; nothing to tune.
     m365.REMOVABLE_STORAGE_BLOCKED.key: (),
     m365.SYSTEM_USE_NOTIFICATION.key: (),
+    m365.DEVICE_COMPLIANCE_REQUIRED.key: (),
     aws.SECURITY_GROUP_ADMIN_INGRESS.key: (),
     # Nor here: a flow log is either delivering or it is not. "How much logging
     # is enough" is a retention question, which `azure.monitor.log_retention`
