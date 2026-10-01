@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..governance.risk import band
@@ -232,6 +232,25 @@ async def _control_tests(session: AsyncSession, org_id: int | None = None) -> di
     row lands in exactly one bucket, so the buckets always sum to ``total``.
     """
     stmt = select(ControlTest.last_status, func.count()).group_by(ControlTest.last_status)
+    # Scoped to **live** systems, the way `_ksi_states`, `_risk_by_band` and
+    # `_mttr_trend` below already are. Filtering on `organization_id` alone counted
+    # soft-deleted systems: measured on one real organization, /dashboard reported
+    # 80 control tests assessed while this reported 112, the difference being a
+    # deleted system holding 32 of them. A customer who deleted that system was
+    # told it was gone and still saw its verdicts shaping the pass / fail /
+    # manual-review proportions here.
+    #
+    # Applied unconditionally for the reason `org_system_subq` documents: an
+    # unscoped (`org_id is None`) dashboard counted them too.
+    #
+    # A control test with no system -- an org-wide authored test -- is kept, which
+    # a bare `IN (live systems)` would drop.
+    stmt = stmt.where(
+        or_(
+            ControlTest.system_id.is_(None),
+            ControlTest.system_id.in_(posture.org_system_subq(org_id)),
+        )
+    )
     if org_id is not None:
         stmt = stmt.where(ControlTest.organization_id == org_id)
     rows = (await session.execute(stmt)).all()
@@ -273,6 +292,19 @@ async def _tasks_by_priority(session: AsyncSession, org_id: int | None = None) -
         select(Task.priority, func.count())
         .where(Task.status.in_(("open", "in_progress")))
         .group_by(Task.priority)
+    )
+    # Same scoping as the control tests above, and for a sharper reason: a
+    # remediation task against a deleted system was opened by that system's
+    # failing control test, which is no longer counted either -- so leaving the
+    # task here reports work nobody can do.
+    #
+    # `Task.system_id` is nullable and an org-wide task is real work, so the null
+    # is kept explicitly rather than dropped by the subquery.
+    stmt = stmt.where(
+        or_(
+            Task.system_id.is_(None),
+            Task.system_id.in_(posture.org_system_subq(org_id)),
+        )
     )
     if org_id is not None:
         stmt = stmt.where(Task.organization_id == org_id)
