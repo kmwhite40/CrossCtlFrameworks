@@ -143,14 +143,14 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 34 checks touching 37 of the 288 controls in a
-  FedRAMP Moderate baseline** — roughly 13%. Every registered connector now
+- **Posture check coverage is 37 checks touching 43 of the 288 controls in a
+  FedRAMP Moderate baseline** — roughly 15%. Every registered connector now
   ships checks, so binding a credential to any of them produces verdicts rather
   than an empty scan. By provider:
 
   | Provider | Checks | Controls evidenced |
   |---|---|---|
-  | `msgraph` (Entra / Intune) | 14 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), SC-28, SC-28(1), SI-2, SI-4 |
+  | `msgraph` (Entra / Intune) | 17 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-7, AC-7(1), AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AC-20(2), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), IR-4, MP-7, SC-28, SC-28(1), SI-2, SI-4, SI-5 |
   | `aws_govcloud` | 10 | AC-3, AC-4, AU-2, AU-9, AU-9(3), AU-12, CM-7, IA-2, IA-2(1), IA-5, IA-5(1), SC-7, SC-28, SC-28(1), SI-4 |
   | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `gcp` | 3 | AU-4, AU-11, CM-2, CM-6, SC-12, SC-28, SC-28(1) |
@@ -213,7 +213,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
-- **A CMMC SSP shows evidence for 22 of the 110 practices**, from the 30 of 34
+- **A CMMC SSP shows evidence for 25 of the 110 practices**, from the 33 of 37
   checks that declare one. This is a *different* number from the two above and
   from the per-provider table: those count controls a check evidences, while
   this counts practices a **CMMC document can actually display**.
@@ -240,10 +240,10 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   rather than disappearing into a zero. The practice ids and the mapped/unmapped
   split are asserted by `tests/test_check_practice_mapping_is_sound.py`.
 
-  Practices covered, by domain: **AC** 3.1.1, 3.1.5, 3.1.10, 3.1.19, 3.1.22 ·
-  **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2, 3.4.7 · **IA** 3.5.3, 3.5.4,
-  3.5.6, 3.5.7, 3.5.8 · **SC** 3.13.1, 3.13.6, 3.13.8, 3.13.10, 3.13.16 ·
-  **SI** 3.14.6.
+  Practices covered, by domain: **AC** 3.1.1, 3.1.5, 3.1.8, 3.1.10, 3.1.19,
+  3.1.22 · **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2, 3.4.7 · **IA** 3.5.3,
+  3.5.4, 3.5.6, 3.5.7, 3.5.8 · **MP** 3.8.7 · **SC** 3.13.1, 3.13.6, 3.13.8,
+  3.13.10, 3.13.16 · **SI** 3.14.3, 3.14.6.
 
   The two network-boundary checks added four practices (3.4.7, 3.13.1, 3.13.6,
   3.14.6) and **no** new Moderate-baseline controls: the 800-53 ids they declare

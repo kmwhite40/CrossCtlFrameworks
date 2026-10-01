@@ -77,6 +77,10 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # AC.L2-3.1.5   "Employ the principle of least privilege, including for
     #                specific security functions and privileged accounts."
     "m365.policy.default_user_permissions_restricted": ("AC.L2-3.1.5",),
+    # AC.L2-3.1.8   "Limit unsuccessful logon attempts."
+    # A lockout threshold is the limit, stated as a number. Nothing else in the
+    # tenant expresses this requirement.
+    "m365.identity.lockout_threshold_enforced": ("AC.L2-3.1.8",),
     # AC.L2-3.1.10  "Use session lock with pattern-hiding displays to prevent
     #                access and viewing of data after a period of inactivity."
     "m365.device.session_lock_enforced": ("AC.L2-3.1.10",),
@@ -157,6 +161,19 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     #                disclosure of CUI during transmission unless otherwise
     #                protected by alternative physical safeguards."
     "azure.storage.https_only": ("SC.L2-3.13.8",),
+    # ── Media protection ─────────────────────────────────────────────────────
+    # MP.L2-3.8.7   "Control the use of removable media on system components."
+    # A device restriction blocking removable storage is that control, expressed
+    # on the component. Distinct from 3.8.6, which is about *encrypting* CUI on
+    # media -- the device-encryption check carries that one.
+    "m365.device.removable_storage_blocked": ("MP.L2-3.8.7",),
+    # ── Flaw and threat response ─────────────────────────────────────────────
+    # SI.L2-3.14.3  "Monitor system security alerts and advisories and take
+    #                action in response."
+    # The check observes both halves: alerts are being surfaced, and the
+    # high-severity ones are not sitting unactioned. An alert left `new` for
+    # months is the absence of the response the requirement asks for.
+    "m365.security.alerts_triaged": ("SI.L2-3.14.3",),
 }
 
 #: Checks deliberately left unmapped, and the argument that would be needed.

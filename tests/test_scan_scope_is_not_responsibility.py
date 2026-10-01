@@ -36,6 +36,7 @@ import pytest
 from ccf.connectors.readiness import provider_readiness
 from ccf.db import session_scope
 from ccf.models import Organization
+from ccf.posture.checks import checks_for
 from ccf.ssp import constants
 from ccf.ssp.responsibility import (
     SCAN_SCOPE_OVERRIDES,
@@ -211,7 +212,15 @@ async def test_readiness_itself_reports_the_new_scope_not_the_old_one() -> None:
         await session.rollback()
 
     checks = readiness["checks"]
-    assert len(checks) == 8, "the AWS suite must be present for this to mean anything"
+    # Derived from the registry, not hardcoded. This said `== 8` and broke the
+    # moment two AWS checks were added -- a literal beside the thing it counts
+    # measures when the suite last changed, not whether the suite is present.
+    expected = len(checks_for("aws_govcloud"))
+    assert expected, "the AWS provider must register checks"
+    assert len(checks) == expected, (
+        "readiness did not describe every registered AWS check, so the "
+        "assertions below would be covering a subset"
+    )
 
     not_scanning = [
         (c["check_key"], c["scan_applicability"])

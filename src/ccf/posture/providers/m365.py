@@ -24,7 +24,7 @@ no live tenant is reachable from the build environment.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..types import PostureCheck, ResourceFinding
@@ -237,6 +237,72 @@ SESSION_LOCK_ENFORCED = PostureCheck(
     required_permissions=("DeviceManagementConfiguration.Read.All",),
 )
 
+#: Default bound for 3.1.8. Organization-defined, so it is a parameter rather
+#: than a constant -- DoD guidance commonly says three, FedRAMP Moderate says
+#: not more than three in a fifteen-minute window, and a tenant may justify
+#: another number. The check judges against whatever it is told.
+LOCKOUT_MAX_ATTEMPTS = 10
+LOCKOUT_EXPECTED = (
+    "the tenant's sign-in lockout threshold is enabled and no greater than "
+    "{max_attempts} failed attempts"
+)
+
+#: How long a high-severity alert may sit unactioned before it is a finding.
+#: 3.14.3 asks for a response, and responding takes time; failing an alert
+#: raised this morning would make every tenant fail permanently, which is
+#: indistinguishable from having no check.
+ALERT_TRIAGE_DAYS = 30
+ALERT_TRIAGE_EXPECTED = (
+    "no high or critical security alert has been left unresolved for more than "
+    "{threshold_days} days"
+)
+
+#: Alert states that mean nobody has finished with it yet.
+_ALERT_OPEN_STATES = frozenset({"new", "inprogress"})
+#: Severities worth failing a control over. Informational and low alerts left
+#: open are noise, not a control failure.
+_ALERT_ACTIONABLE_SEVERITIES = frozenset({"high", "critical"})
+
+#: The Graph directory-setting that carries the lockout threshold, and the key
+#: inside it. Confirmed against a live tenant: `/beta/settings` returns a
+#: "Password Rule Settings" object whose values include `LockoutThreshold`.
+_PASSWORD_SETTINGS_NAME = "Password Rule Settings"
+_LOCKOUT_THRESHOLD_KEY = "LockoutThreshold"
+_LOCKOUT_DURATION_KEY = "LockoutDurationInSeconds"
+
+#: The Intune general-configuration field that blocks removable storage.
+_REMOVABLE_STORAGE_KEY = "storageBlockRemovableStorage"
+
+LOCKOUT_THRESHOLD = PostureCheck(
+    key="m365.identity.lockout_threshold_enforced",
+    title="Sign-in lockout is enabled with a bounded threshold",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected=LOCKOUT_EXPECTED.format(max_attempts=LOCKOUT_MAX_ATTEMPTS),
+    control_ids=("AC-7", "AC-7(1)"),
+    required_permissions=("Directory.Read.All",),
+)
+
+SECURITY_ALERTS_TRIAGED = PostureCheck(
+    key="m365.security.alerts_triaged",
+    title="No high-severity security alert is left unactioned",
+    provider="msgraph",
+    resource_type="m365_security_alert",
+    expected=ALERT_TRIAGE_EXPECTED.format(threshold_days=ALERT_TRIAGE_DAYS),
+    control_ids=("SI-4", "SI-5", "IR-4"),
+    required_permissions=("SecurityAlert.Read.All",),
+)
+
+REMOVABLE_STORAGE_BLOCKED = PostureCheck(
+    key="m365.device.removable_storage_blocked",
+    title="A device configuration blocks removable storage",
+    provider="msgraph",
+    resource_type="m365_tenant",
+    expected="at least one device configuration profile blocks removable storage",
+    control_ids=("MP-7", "AC-20(2)"),
+    required_permissions=("DeviceManagementConfiguration.Read.All",),
+)
+
 STORAGE_ENCRYPTION_REQUIRED = PostureCheck(
     key="m365.device.storage_encryption_required",
     title="A device compliance policy requires storage encryption",
@@ -280,7 +346,9 @@ CHECKS: tuple[PostureCheck, ...] = (
     RISKY_USERS_RESOLVED,
     SESSION_LOCK_ENFORCED,
     STORAGE_ENCRYPTION_REQUIRED,
-    SESSION_REAUTHENTICATION_REQUIRED,
+    SESSION_REAUTHENTICATION_REQUIRED,    LOCKOUT_THRESHOLD,
+    SECURITY_ALERTS_TRIAGED,
+    REMOVABLE_STORAGE_BLOCKED,
 )
 
 #: Graph collection each check reads, relative to the Graph base URL.
@@ -335,6 +403,15 @@ ENDPOINTS: dict[str, str] = {
     SESSION_LOCK_ENFORCED.key: "/v1.0/deviceManagement/deviceCompliancePolicies",
     STORAGE_ENCRYPTION_REQUIRED.key: "/v1.0/deviceManagement/deviceCompliancePolicies",
     SESSION_REAUTHENTICATION_REQUIRED.key: "/v1.0/identity/conditionalAccess/policies",
+    # `/beta` deliberately: the lockout threshold lives in a directory-settings
+    # object that v1.0 does not expose. Confirmed readable on a live tenant --
+    # "Password Rule Settings" with LockoutThreshold and LockoutDurationInSeconds.
+    LOCKOUT_THRESHOLD.key: "/beta/settings",
+    SECURITY_ALERTS_TRIAGED.key: "/v1.0/security/alerts_v2",
+    # Configuration profiles, not compliance policies: removable storage is a
+    # device *restriction*, so it is set on windows10GeneralConfiguration rather
+    # than on the compliance policies the lock and encryption checks read.
+    REMOVABLE_STORAGE_BLOCKED.key: "/v1.0/deviceManagement/deviceConfigurations",
 }
 
 
@@ -789,19 +866,32 @@ def evaluate_risky_users_resolved(rows: list[dict[str, Any]]) -> list[ResourceFi
 
 
 def _tenant_finding(
-    tenant_id: str, *, passed: bool, observed: str, detail: dict[str, Any]
+    tenant_id: str,
+    *,
+    passed: bool,
+    observed: str,
+    detail: dict[str, Any],
+    unassessable: bool = False,
 ) -> list[ResourceFinding]:
     """One finding, the tenant as the resource.
 
-    Three tenant-level checks below share this shape. It was already written
-    inline twice in `evaluate_legacy_auth_blocked`; a fourth and fifth copy is
-    how the two halves come to word the same verdict differently.
+    Several tenant-level checks share this shape. It was already written inline
+    twice in `evaluate_legacy_auth_blocked`; a fourth and fifth copy is how the
+    two halves come to word the same verdict differently.
+
+    ``unassessable`` emits ``manual_review_required`` instead of ``fail``, for the
+    case where the tenant did not report the setting at all. The two are
+    genuinely different claims -- "this is configured wrongly" versus "this build
+    could not read it" -- and `manual_review_required` ranks between `fail` and
+    `warn`, so a check reporting it still fails the rollup rather than passing
+    quietly. Saying `fail` for an unreadable setting is the overclaim; saying
+    `pass` is the worse one.
     """
     return [
         ResourceFinding(
             resource_id=tenant_id,
             resource_type="m365_tenant",
-            verdict="pass" if passed else "fail",
+            verdict="manual_review_required" if unassessable else ("pass" if passed else "fail"),
             observed=observed,
             detail=detail,
         )
@@ -996,6 +1086,204 @@ FIRST_PAGE_ONLY: dict[str, int] = {
 }
 
 
+def _password_setting(rows: list[dict[str, Any]], key: str) -> str | None:
+    """One value out of Graph's "Password Rule Settings" directory setting."""
+    for setting in rows:
+        if (setting.get("displayName") or "") != _PASSWORD_SETTINGS_NAME:
+            continue
+        for value in setting.get("values") or []:
+            if value.get("name") == key:
+                raw = value.get("value")
+                return None if raw is None else str(raw)
+    return None
+
+
+def evaluate_lockout_threshold(
+    rows: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    max_attempts: int = LOCKOUT_MAX_ATTEMPTS,
+) -> list[ResourceFinding]:
+    """Is sign-in lockout on, and bounded?
+
+    Zero is the trap. Entra reads ``LockoutThreshold = 0`` as "never lock out",
+    so the arithmetic that matters is not ``threshold <= max_attempts`` -- which
+    zero satisfies -- but whether a threshold is in force at all. A check that
+    passed a tenant with lockout disabled would be reporting the strongest
+    possible failure of 3.1.8 as compliance.
+
+    A tenant with no password-rule settings is ``manual_review_required`` rather
+    than a fail: Entra applies its own default, and the honest answer is that this
+    build could not read the tenant's own value, not that the default is
+    acceptable.
+    """
+    raw = _password_setting(rows, _LOCKOUT_THRESHOLD_KEY)
+    if raw is None or not raw.strip():
+        return _tenant_finding(
+            tenant_id,
+            passed=False,
+            observed=(
+                "the tenant did not report a password-rule lockout threshold, so "
+                "its value could not be read"
+            ),
+            detail={"settings_examined": len(rows)},
+            unassessable=True,
+        )
+    try:
+        threshold = int(raw)
+    except ValueError:
+        return _tenant_finding(
+            tenant_id,
+            passed=False,
+            observed=f"the reported lockout threshold {raw!r} is not a number",
+            detail={"raw": raw},
+            unassessable=True,
+        )
+    duration = _password_setting(rows, _LOCKOUT_DURATION_KEY)
+    if threshold <= 0:
+        return _tenant_finding(
+            tenant_id,
+            passed=False,
+            observed="sign-in lockout is disabled (threshold 0)",
+            detail={"threshold": threshold, "max_attempts": max_attempts},
+        )
+    within = threshold <= max_attempts
+    return _tenant_finding(
+        tenant_id,
+        passed=within,
+        observed=(
+            f"lockout after {threshold} failed attempt(s)"
+            + (f", for {duration}s" if duration else "")
+            + ("" if within else f", longer than the {max_attempts} expected")
+        ),
+        detail={
+            "threshold": threshold,
+            "lockout_duration_seconds": duration,
+            "max_attempts": max_attempts,
+        },
+    )
+
+
+def evaluate_security_alerts_triaged(
+    rows: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    threshold_days: int = ALERT_TRIAGE_DAYS,
+) -> list[ResourceFinding]:
+    """One finding per stale alert, so a failure names what to go and work.
+
+    An empty list **passes**, unlike the configuration checks in this module. The
+    difference is deliberate: an empty configuration response means the call did
+    not answer, while no alerts is a real and clean state. Reporting a quiet
+    tenant as unassessable would manufacture a finding out of nothing having
+    happened.
+
+    Only high and critical alerts count, and only once older than
+    ``threshold_days``. 3.14.3 asks for a response, and responding takes time --
+    failing an alert raised this morning would make every tenant fail forever.
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=threshold_days)
+    stale: list[ResourceFinding] = []
+    for alert in rows:
+        status = str(alert.get("status") or "").strip().lower()
+        severity = str(alert.get("severity") or "").strip().lower()
+        if status not in _ALERT_OPEN_STATES or severity not in _ALERT_ACTIONABLE_SEVERITIES:
+            continue
+        created = _parse_graph_datetime(alert.get("createdDateTime"))
+        if created is None or created > cutoff:
+            continue
+        age = (datetime.now(UTC) - created).days
+        stale.append(
+            ResourceFinding(
+                resource_id=str(alert.get("id") or "unknown"),
+                resource_type="m365_security_alert",
+                verdict="fail",
+                observed=(
+                    f"{severity} alert {alert.get('title') or alert.get('id')!r} has been "
+                    f"{status} for {age} days"
+                ),
+                detail={
+                    "severity": severity,
+                    "status": status,
+                    "age_days": age,
+                    "threshold_days": threshold_days,
+                },
+            )
+        )
+    if stale:
+        return stale
+    return [
+        ResourceFinding(
+            resource_id=tenant_id,
+            resource_type="m365_tenant",
+            verdict="pass",
+            observed=(
+                f"no high or critical alert has been open longer than {threshold_days} days"
+                if rows
+                else "the tenant reported no security alerts"
+            ),
+            detail={"alerts_examined": len(rows), "threshold_days": threshold_days},
+        )
+    ]
+
+
+def evaluate_removable_storage_blocked(
+    rows: list[dict[str, Any]], *, tenant_id: str
+) -> list[ResourceFinding]:
+    """Does any configuration profile block removable storage?
+
+    Asked of the tenant rather than of each profile, for the reason
+    `evaluate_session_lock_enforced` gives: a profile scoped to kiosks does not
+    express an opinion about removable storage, and failing it for that would
+    manufacture findings against correctly-scoped policies.
+
+    Profiles that all leave the field unset are ``manual_review_required``, not a
+    fail -- none of them said anything, so the tenant's posture is unknown rather
+    than known-bad. The live tenant this was written against sets it to ``False``
+    on one profile, which is a genuine fail.
+    """
+    opinions = [row for row in rows if _REMOVABLE_STORAGE_KEY in row]
+    blocking = [row for row in opinions if row.get(_REMOVABLE_STORAGE_KEY) is True]
+    if blocking:
+        first = blocking[0]
+        return _tenant_finding(
+            tenant_id,
+            passed=True,
+            observed=(
+                f"{first.get('displayName') or first.get('id')!r} blocks removable storage"
+            ),
+            detail={
+                "blocking_profiles": len(blocking),
+                "profiles_with_a_setting": len(opinions),
+                "profiles_examined": len(rows),
+            },
+        )
+    if opinions:
+        return _tenant_finding(
+            tenant_id,
+            passed=False,
+            observed=(
+                f"{len(opinions)} configuration profile(s) set removable storage and none "
+                "blocks it"
+            ),
+            detail={
+                "profiles_with_a_setting": len(opinions),
+                "profiles_examined": len(rows),
+            },
+        )
+    return _tenant_finding(
+        tenant_id,
+        passed=False,
+        observed=(
+            f"none of {len(rows)} configuration profile(s) configures removable storage"
+            if rows
+            else "no device configuration profile exists"
+        ),
+        detail={"profiles_examined": len(rows)},
+        unassessable=True,
+    )
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     MFA_REGISTERED.key: evaluate_mfa_registered,
     LEGACY_AUTH_BLOCKED.key: evaluate_legacy_auth_blocked,
@@ -1011,4 +1299,7 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     SESSION_LOCK_ENFORCED.key: evaluate_session_lock_enforced,
     STORAGE_ENCRYPTION_REQUIRED.key: evaluate_storage_encryption_required,
     SESSION_REAUTHENTICATION_REQUIRED.key: evaluate_session_reauthentication_required,
+    LOCKOUT_THRESHOLD.key: evaluate_lockout_threshold,
+    SECURITY_ALERTS_TRIAGED.key: evaluate_security_alerts_triaged,
+    REMOVABLE_STORAGE_BLOCKED.key: evaluate_removable_storage_blocked,
 }
