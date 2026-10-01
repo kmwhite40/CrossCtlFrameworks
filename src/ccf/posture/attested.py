@@ -380,3 +380,126 @@ def redact_finding(finding: Mapping[str, Any]) -> dict[str, Any]:
                 clean["StatusReasons"] = codes
     out["Compliance"] = clean
     return out
+
+
+# ── Microsoft Secure Score: measuring whether a mapping exists at all ───────
+#
+# The AWS half of this module reads a provider-published 800-53 mapping. The
+# Microsoft equivalent is `secureScoreControlProfile.complianceInformation`, which
+# Graph's v1.0 model declares as
+# `Collection(complianceInformation)` = [{certificationName, certificationControls:
+# [{name, url}]}] -- verified against Microsoft's published $metadata, not prose.
+#
+# Measured on a live GCC High tenant, that field was **empty on all 200
+# profiles**, while `controlScores` carried 224 discrete control states. So
+# Microsoft has a place to publish the mapping and does not populate it there.
+#
+# This function is therefore a *measurement*, not an ingest. Writing an ingest for
+# a field that may never populate would be code that produces nothing and has to
+# be maintained anyway; writing the measurement answers the question that decides
+# whether an ingest is worth having, and answers it from the tenant in front of
+# the operator rather than from the one tenant this project happened to see.
+#
+# It also replaces the obvious alternative, which is to hand-author a crosswalk
+# from Microsoft's 224 product-taxonomy control names to 800-53. That is ~60
+# compliance assertions Concord would be making and would have to defend to an
+# assessor, at `platform` trust rather than provider-attested. Worth doing only if
+# this measurement shows the provider will never supply it.
+
+#: Certification names that denote 800-53. Matched case-insensitively against the
+#: name with spaces, dots and hyphens removed, so "NIST SP 800-53 Rev. 5",
+#: "NIST 800-53" and "nist80053r5" all match. Microsoft's exact spelling here is
+#: unknown -- the field was empty everywhere it has been observed -- which is why
+#: :func:`securescore_mapping` reports *every* certification name it saw,
+#: including the ones it rejected. A matcher that cannot be verified against data
+#: must not also hide what it declined.
+_NIST_80053_CERTIFICATION_TOKENS: tuple[str, ...] = ("nist80053", "sp80053", "80053")
+
+
+def _normalize_certification(name: str) -> str:
+    return "".join(ch for ch in name.lower() if ch.isalnum())
+
+
+def is_nist_80053_certification(name: str | None) -> bool:
+    """Does this ``certificationName`` denote NIST 800-53?"""
+    if not isinstance(name, str) or not name.strip():
+        return False
+    flat = _normalize_certification(name)
+    return any(token in flat for token in _NIST_80053_CERTIFICATION_TOKENS)
+
+
+def securescore_mapping(profiles: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    """Whether Microsoft publishes an 800-53 mapping on these Secure Score profiles.
+
+    Reports, over the profiles given:
+
+    ``profiles``
+        how many were examined -- the denominator for everything else.
+    ``with_any_certification``
+        how many carry a non-empty ``complianceInformation`` at all. Separating
+        this from the next field distinguishes "Microsoft publishes nothing here"
+        from "Microsoft publishes other frameworks but not 800-53", which are
+        different facts with different consequences.
+    ``with_nist_80053``
+        how many carry a certification this function recognises as 800-53.
+    ``controls``
+        the canonical 800-53 ids found, through the same
+        :func:`~ccf.catalog.canonical.canonicalize` every other path uses.
+    ``unreadable``
+        control names under an 800-53 certification that would not canonicalize.
+        Named rather than dropped, exactly as the AWS side names what it cannot
+        place.
+    ``certifications``
+        every distinct ``certificationName`` seen, matched or not. This is the
+        field that makes the measurement self-correcting: the 800-53 matcher was
+        written without data to check it against, so if it is wrong the rejected
+        name is sitting right here to be read.
+    """
+    total = 0
+    with_any = 0
+    with_nist = 0
+    controls: list[str] = []
+    unreadable: list[str] = []
+    certifications: list[str] = []
+
+    for profile in profiles:
+        if not isinstance(profile, Mapping):
+            continue
+        total += 1
+        info = profile.get("complianceInformation")
+        if not isinstance(info, (list, tuple)) or not info:
+            continue
+        with_any += 1
+        matched_here = False
+        for entry in info:
+            if not isinstance(entry, Mapping):
+                continue
+            name = entry.get("certificationName")
+            if isinstance(name, str) and name.strip() and name.strip() not in certifications:
+                certifications.append(name.strip())
+            if not is_nist_80053_certification(name):
+                continue
+            matched_here = True
+            for control in entry.get("certificationControls") or ():
+                if not isinstance(control, Mapping):
+                    continue
+                raw = control.get("name")
+                if not isinstance(raw, str) or not raw.strip():
+                    continue
+                canonical = canonicalize(raw)
+                if canonical is None:
+                    if raw.strip() not in unreadable:
+                        unreadable.append(raw.strip())
+                elif canonical.value not in controls:
+                    controls.append(canonical.value)
+        if matched_here:
+            with_nist += 1
+
+    return {
+        "profiles": total,
+        "with_any_certification": with_any,
+        "with_nist_80053": with_nist,
+        "controls": sorted(controls),
+        "unreadable": sorted(unreadable),
+        "certifications": sorted(certifications),
+    }

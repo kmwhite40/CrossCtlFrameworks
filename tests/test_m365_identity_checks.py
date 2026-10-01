@@ -215,10 +215,24 @@ async def test_every_evaluator_receives_the_arguments_it_declares() -> None:
             now=datetime.now(UTC),
         )
         assert outcome.check_key == check.key
-        # `manual_review_required` is what a raised evaluator produces; no
-        # check here should be reporting it from a fixture it can read.
-        assert outcome.verdict != "manual_review_required", (
-            f"{check.key} did not receive the arguments its evaluator declares"
+        # The signal is `_unrunnable`'s own marker, not the verdict.
+        #
+        # This used to assert `verdict != "manual_review_required"`, using the
+        # verdict as a proxy for "the evaluator did not raise". The proxy broke as
+        # soon as a check legitimately returned that verdict from a row it *could*
+        # read: `m365.identity.system_use_notification` reports
+        # manual_review_required when an agreement omits
+        # isViewingBeforeAcceptanceRequired, which these generic fixture rows do,
+        # and that is the honest answer rather than a wiring failure.
+        #
+        # `_unrunnable` is the only path that attaches `detail["error"]`, so that
+        # is what distinguishes "the evaluator was called wrongly" from "the
+        # evaluator ran and could not judge" -- which is the distinction this test
+        # is actually about.
+        errors = [f.detail.get("error") for f in outcome.findings if f.detail.get("error")]
+        assert errors == [], (
+            f"{check.key} did not receive the arguments its evaluator declares: "
+            f"{errors[0]}"
         )
 
 
