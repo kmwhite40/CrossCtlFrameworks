@@ -36,6 +36,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..analytics.framework_posture import baseline_controls, fold_to_control
 from ..governance.control_tests import record_result
 from ..logging import get_logger
 from ..models import System
@@ -58,12 +59,27 @@ async def ingest_attestations(
     system_id: int,
     actor: str = "attested-scan",
     max_pages: int | None = None,
+    write: bool = True,
+    sample: bool = False,
 ) -> dict[str, Any]:
     """Record AWS's own 800-53 control results for one system.
 
     Returns a report that always says whether the read was usable and, when it
     was not, why -- the same contract the connector keeps, for the same reason:
     "nothing was written" and "everything passed" must never look alike.
+
+    ``write=False`` is a dry run: everything is read, parsed and measured, and no
+    row is created or touched. It is a parameter here rather than a separate
+    probe function on purpose. A separate probe is free to drift from the ingest
+    it exists to verify, and a probe that measures something the real path does
+    not do is worse than no probe -- so the two share this code and
+    ``tests/test_attestation_probe.py`` pins that every count agrees between
+    them, with the rows as the only difference.
+
+    The dry run is how somebody with an AWS credential answers the two questions
+    this deployment cannot: how much of a baseline AWS's own mapping actually
+    reaches, and what share of ``RelatedRequirements`` Concord cannot place.
+    Neither is estimated anywhere; both are measured here.
 
     Does not commit. The caller owns the transaction, as every other writer in
     this package does.
@@ -72,20 +88,85 @@ async def ingest_attestations(
     if system is None:
         raise ValueError(f"unknown system: {system_id}")
 
-    def _report(
+    async def _coverage(requirements: set[str], *, available: bool) -> dict[str, Any]:
+        """How much of this system's baseline the attested requirements reach.
+
+        ``written`` says how many rows the ingest would create; it does not say
+        how much of the *framework* that is, which is the question an operator is
+        actually asking. Measured against the system's own declared baseline, so
+        the figure is comparable with the runbook's "n of 288".
+
+        A system with no declared baseline gets ``None`` for the denominator and
+        the percentage, never ``0``: a baseline nobody declared is unanswerable,
+        and 0% would read as a finding about the AWS account.
+
+        A requirement outside the baseline is named rather than discarded. A High
+        system is held to it, so it is not waste -- but it is not coverage of a
+        Moderate baseline either.
+
+        When the read itself was not usable -- no credential bound, the standard
+        off, a truncated page walk -- the percentage is ``None`` for the same
+        reason. The arithmetic would say ``0.0``, which is true and is the single
+        most misleading number this function could return: an operator reads it
+        as a finding about the AWS account when the fact is that Concord never
+        looked. Every organization in this deployment is currently in exactly
+        that state, so this is the common case rather than an edge one.
+        """
+        reached = sorted(requirements)
+        if not available:
+            raw_unavailable: object = system.baseline
+            return {
+                "baseline": str(getattr(raw_unavailable, "value", raw_unavailable) or "")
+                or None,
+                "baseline_total": None,
+                "requirements_reached": reached,
+                "in_baseline": [],
+                "outside_baseline": reached,
+                "in_baseline_pct": None,
+            }
+        raw: object = system.baseline
+        baseline = str(getattr(raw, "value", raw) or "")
+        if not baseline:
+            return {
+                "baseline": None,
+                "baseline_total": None,
+                "requirements_reached": reached,
+                "in_baseline": [],
+                "outside_baseline": reached,
+                "in_baseline_pct": None,
+            }
+        controls = await baseline_controls(session, baseline)
+        folded = {r: fold_to_control(r) for r in reached}
+        in_baseline = sorted(r for r, f in folded.items() if f and f in controls)
+        outside = sorted(r for r in reached if r not in set(in_baseline))
+        return {
+            "baseline": baseline,
+            "baseline_total": len(controls) or None,
+            "requirements_reached": reached,
+            "in_baseline": in_baseline,
+            "outside_baseline": outside,
+            "in_baseline_pct": (
+                round(100 * len(in_baseline) / len(controls), 1) if controls else None
+            ),
+        }
+
+    async def _report(
         *,
         available: bool,
         reason: str | None,
         written: int = 0,
         read: dict[str, Any] | None = None,
         controls_without_a_requirement: list[str] | None = None,
+        requirements: set[str] | None = None,
     ) -> dict[str, Any]:
         return {
             "system_id": system_id,
             "connector": CONNECTOR_KEY,
             "available": available,
             "reason": reason,
+            "dry_run": not write,
             "written": written,
+            "coverage": await _coverage(requirements or set(), available=available),
             "controls_read": len(read["controls"]) if read else 0,
             "controls_without_a_requirement": controls_without_a_requirement or [],
             "unreadable_requirements": list(read["unreadable_requirements"])
@@ -95,13 +176,21 @@ async def ingest_attestations(
             "account_id": read.get("account_id") if read else None,
             "pages_read": read.get("pages_read", 0) if read else 0,
             "truncated": bool(read.get("truncated")) if read else False,
+            # Only when asked for. Carried, never logged: it is non-sensitive by
+            # construction (see attested.redact_finding) but it is bulky, and a
+            # report that always hauled it would put it in every API response.
+            **(
+                {"redacted_findings": list(read.get("redacted_findings") or [])}
+                if sample and read
+                else {}
+            ),
         }
 
     conn = await _connector_for_org(
         session, organization_id=system.organization_id, connector_key=CONNECTOR_KEY
     )
     if conn is None:
-        return _report(
+        return await _report(
             available=False,
             reason=(
                 f"the {CONNECTOR_KEY} connector is not configured for this "
@@ -109,7 +198,7 @@ async def ingest_attestations(
             ),
         )
 
-    read = await conn.securityhub_attestations(max_pages=max_pages)
+    read = await conn.securityhub_attestations(max_pages=max_pages, sample=sample)
     if not read.get("available"):
         log.info(
             "posture.attested.unavailable",
@@ -117,7 +206,7 @@ async def ingest_attestations(
             reason=str(read.get("reason"))[:200],
             truncated=bool(read.get("truncated")),
         )
-        return _report(available=False, reason=read.get("reason"), read=read)
+        return await _report(available=False, reason=read.get("reason"), read=read)
 
     controls = read["controls"]
     rows = attested.attested_rows(controls)
@@ -128,6 +217,25 @@ async def ingest_attestations(
     ]
 
     written = 0
+    if not write:
+        # Measured, not written. Counted from the rows the shared expansion
+        # produced, so the number is the one the writing path would act on --
+        # not a second count derived some other way.
+        log.info(
+            "posture.attested.dry_run",
+            system_id=system_id,
+            controls_read=len(controls),
+            would_write=len(rows),
+        )
+        return await _report(
+            available=True,
+            reason=None,
+            written=len(rows),
+            read=read,
+            controls_without_a_requirement=without_requirement,
+            requirements={row.control_id for row in rows},
+        )
+
     for row in rows:
         test = await _upsert_generated_test(
             session,
@@ -177,10 +285,11 @@ async def ingest_attestations(
         written=written,
         region=read.get("region"),
     )
-    return _report(
+    return await _report(
         available=True,
         reason=None,
         written=written,
         read=read,
         controls_without_a_requirement=without_requirement,
+        requirements={row.control_id for row in rows},
     )

@@ -32,6 +32,7 @@ them in the pure layer, which costs a page budget that should have gone to
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -454,3 +455,78 @@ async def test_unreadable_requirements_are_surfaced_on_the_result(
     shub = _StubSecurityHub(pages=[[odd, _finding("S3.8", "PASSED")]])
     out = await _connector(shub, monkeypatch).securityhub_attestations()
     assert out["unreadable_requirements"] == [f"{REQUIREMENT_PREFIX} AC-2(j)"]
+
+
+# --------------------------------------------------------------------------
+# The optional redacted sample, for capturing a fixture from a real account
+# --------------------------------------------------------------------------
+
+
+async def test_no_sample_is_returned_unless_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Absent by default, so an ordinary scan never carries payload bodies
+    through the API response or the scheduler's logs."""
+    shub = _StubSecurityHub(pages=[[_finding("S3.8", "PASSED")]])
+    out = await _connector(shub, monkeypatch).securityhub_attestations()
+    assert "redacted_findings" not in out
+
+
+async def test_the_sample_is_redacted_at_the_connector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Redaction happens here, not in the CLI that writes the file.
+
+    If it happened at the write site, every other consumer of this result -- an
+    API response, a log line, a future caller -- would be handed the unredacted
+    bodies and would have to remember to redact them itself.
+    """
+    dirty = {
+        "Id": "arn:aws-us-gov:securityhub:us-gov-west-1:123456789012:finding/x",
+        "AwsAccountId": "123456789012",
+        "Title": "S3 buckets should block public access",
+        "Resources": [{"Id": "arn:aws-us-gov:s3:::acme-secret-bucket", "Type": "AwsS3Bucket"}],
+        "Note": {"Text": "accepted by jane.doe"},
+        "Compliance": {
+            "Status": "FAILED",
+            "SecurityControlId": "S3.8",
+            "RelatedRequirements": [f"{REQUIREMENT_PREFIX} AC-3"],
+            "AssociatedStandards": [{"StandardsId": NIST_80053_R5_STANDARD_ID}],
+        },
+    }
+    shub = _StubSecurityHub(pages=[[dirty]])
+    out = await _connector(shub, monkeypatch).securityhub_attestations(sample=True)
+
+    blob = json.dumps(out["redacted_findings"])
+    for token in ("123456789012", "acme-secret-bucket", "jane.doe", "arn:aws-us-gov"):
+        assert token not in blob, f"{token!r} survived into the sample: {blob}"
+    # And the parser's inputs are still there, or the fixture is useless.
+    assert out["redacted_findings"][0]["Compliance"]["SecurityControlId"] == "S3.8"
+    assert out["redacted_findings"][0]["Compliance"]["RelatedRequirements"] == [
+        f"{REQUIREMENT_PREFIX} AC-3"
+    ]
+
+
+async def test_a_sample_is_present_but_empty_when_the_read_was_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Asked for and unavailable is an empty list, not a missing key: a caller
+    that asked for a sample should not have to handle both shapes."""
+    shub = _StubSecurityHub(standards_error=_client_error("AccessDeniedException"))
+    out = await _connector(shub, monkeypatch).securityhub_attestations(sample=True)
+    assert out["redacted_findings"] == []
+
+
+async def test_the_sample_covers_every_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fixture captured from page one only would pin the parser against a
+    prefix of the shapes a real account emits."""
+    shub = _StubSecurityHub(
+        pages=[
+            [_finding("S3.8", "PASSED")],
+            [_finding("IAM.4", "FAILED")],
+            [_finding("CloudTrail.1", "NOT_AVAILABLE")],
+        ]
+    )
+    out = await _connector(shub, monkeypatch).securityhub_attestations(sample=True)
+    ids = [f["Compliance"]["SecurityControlId"] for f in out["redacted_findings"]]
+    assert ids == ["S3.8", "IAM.4", "CloudTrail.1"]

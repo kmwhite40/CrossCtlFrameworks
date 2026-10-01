@@ -292,6 +292,124 @@ def conmon_scan() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="attestations-probe")
+def attestations_probe(
+    system_id: int = typer.Argument(..., help="System to probe (its org's credential is used)"),
+    write: bool = typer.Option(
+        False,
+        "--write/--dry-run",
+        help="Write ControlTest rows. Default is a dry run that records nothing.",
+    ),
+    max_pages: int = typer.Option(
+        0, help="Cap the Security Hub page walk (0 = the connector's own cap)."
+    ),
+    save_fixture: str = typer.Option(
+        "",
+        help=(
+            "Write a redacted copy of the provider's control states to this path, "
+            "for use as a test fixture. Resource ids and account numbers are "
+            "removed; only the shapes the parser depends on are kept."
+        ),
+    ),
+) -> None:
+    """Measure what a provider attestation would contribute, writing nothing.
+
+    This exists because the attestation ingest has never run against a live AWS
+    account -- no organization in this deployment has a credential bound -- so two
+    numbers cannot be stated and are deliberately not estimated anywhere: how
+    much of a baseline AWS's own 800-53 mapping actually reaches, and what share
+    of its RelatedRequirements Concord cannot place. Both are measured here.
+
+    The dry run is the same code path as the real ingest (``write=False`` on
+    ``ingest_attestations``), not a separate implementation, so the numbers it
+    prints are the numbers the ingest would act on.
+    """
+
+    async def _run() -> None:
+        from .posture.attested_scan import ingest_attestations  # noqa: PLC0415
+
+        async with session_scope() as session:
+            out = await ingest_attestations(
+                session,
+                system_id=system_id,
+                actor="cli-probe",
+                max_pages=max_pages or None,
+                write=write,
+                sample=bool(save_fixture),
+            )
+            if write:
+                await session.commit()
+            else:
+                # Explicit, not incidental: a dry run must leave nothing behind
+                # even if some read path flushed on the way through.
+                await session.rollback()
+
+        if not out["available"]:
+            console.print(f"[yellow]no usable attestation[/yellow] — {out['reason']}")
+        cov = out["coverage"]
+        console.print(
+            f"[green]{'wrote' if write else 'would write'}[/green] {out['written']} "
+            f"row(s) from {out['controls_read']} provider control(s) "
+            f"in {out['region'] or '?'} / account {out['account_id'] or '?'}"
+        )
+        pct = cov["in_baseline_pct"]
+        console.print(
+            f"  baseline {cov['baseline'] or '(none declared)'}: "
+            + (
+                f"{len(cov['in_baseline'])} of {cov['baseline_total']} controls "
+                f"reached ({pct}%)"
+                if pct is not None
+                else "not measurable (see the reason above)"
+            )
+        )
+        if cov["outside_baseline"]:
+            console.print(
+                f"  reached but outside this baseline: "
+                f"{', '.join(cov['outside_baseline'])}"
+            )
+        if out["unreadable_requirements"]:
+            console.print(
+                f"  [yellow]could not place[/yellow] "
+                f"{len(out['unreadable_requirements'])} requirement(s): "
+                f"{', '.join(out['unreadable_requirements'][:10])}"
+            )
+        if out["controls_without_a_requirement"]:
+            console.print(
+                f"  provider controls with no readable requirement: "
+                f"{', '.join(out['controls_without_a_requirement'][:10])}"
+            )
+        if save_fixture:
+            path = Path(save_fixture)
+            findings = out.get("redacted_findings") or []
+            path.write_text(
+                json.dumps(
+                    {
+                        "captured_from": {
+                            "standard": "NIST SP 800-53 Rev 5 (AWS Security Hub)",
+                            "region": out["region"],
+                            "pages_read": out["pages_read"],
+                            "truncated": out["truncated"],
+                        },
+                        "note": (
+                            "Redacted by ccf.posture.attested.redact_finding: an "
+                            "allowlist of the fields the parser reads. No resource "
+                            "ids, account numbers or operator notes are present."
+                        ),
+                        "findings": findings,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            console.print(
+                f"  fixture written to [cyan]{path}[/cyan] "
+                f"({len(findings)} redacted finding(s))"
+            )
+
+    asyncio.run(_run())
+
+
 @app.command(name="keys-status")
 def keys_status() -> None:
     """Show the current key id and how many stored values still need rewrapping."""

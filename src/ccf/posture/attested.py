@@ -301,3 +301,82 @@ def attested_rows(controls: Sequence[AttestedControl]) -> tuple[AttestedRow, ...
                 )
             )
     return tuple(rows)
+
+
+#: The only fields a captured fixture keeps from a provider finding, and the only
+#: ones :func:`redact_finding` copies. An **allowlist**, deliberately: a denylist
+#: ("drop Resources, drop Note") ships whatever field the provider adds next, and
+#: the first one carrying a resource name would leak into a git repository
+#: silently. A field absent from this tuple is absent from the fixture, and its
+#: absence is visible there.
+_FIXTURE_TOP_LEVEL: tuple[str, ...] = ("Title", "RecordState")
+
+#: The same rule inside ``Compliance``, which is the block the parser reads.
+_FIXTURE_COMPLIANCE: tuple[str, ...] = (
+    "Status",
+    "SecurityControlId",
+    "RelatedRequirements",
+    "AssociatedStandards",
+)
+
+
+def redact_finding(finding: Mapping[str, Any]) -> dict[str, Any]:
+    """One provider finding reduced to the shapes the parser depends on.
+
+    Capturing real findings is how the biggest residual risk in this ingest gets
+    closed -- that its payload handling was written from a service model rather
+    than from what a real account emits. But a finding carries resource ARNs,
+    bucket and instance names, the account number, owner email addresses in
+    ``Tags``, and whatever the account's own tooling wrote into ``ProductFields``,
+    ``Note`` and ``UserDefinedFields``. None of that may reach a repository, so
+    redaction happens here, inside the module the connector calls, rather than in
+    the CLI that writes the file.
+
+    ``StatusReasons`` keeps ``ReasonCode`` -- a closed vocabulary, and useful for
+    pinning the parser -- and drops ``Description``, which interpolates the
+    resource name. ``ResourceCount`` replaces ``Resources`` because how many
+    resources a control evaluated is part of the shape; which ones they were is
+    not.
+
+    Never mutates its argument: it runs on live data inside the connector, and a
+    mutation here would change what the parser above it then reads.
+    """
+    if not isinstance(finding, Mapping):
+        return {}
+    out: dict[str, Any] = {}
+    for key in _FIXTURE_TOP_LEVEL:
+        value = finding.get(key)
+        if isinstance(value, str) and value:
+            out[key] = value
+    resources = finding.get("Resources")
+    out["ResourceCount"] = len(resources) if isinstance(resources, (list, tuple)) else 0
+
+    compliance = finding.get("Compliance")
+    clean: dict[str, Any] = {}
+    if isinstance(compliance, Mapping):
+        for key in _FIXTURE_COMPLIANCE:
+            if key not in compliance:
+                continue
+            value = compliance[key]
+            if key == "RelatedRequirements" and isinstance(value, (list, tuple)):
+                clean[key] = [str(v) for v in value if isinstance(v, str)]
+            elif key == "AssociatedStandards" and isinstance(value, (list, tuple)):
+                # Only the standards id; the rest of the structure is not read.
+                clean[key] = [
+                    {"StandardsId": str(entry.get("StandardsId"))}
+                    for entry in value
+                    if isinstance(entry, Mapping) and entry.get("StandardsId")
+                ]
+            elif isinstance(value, str):
+                clean[key] = value
+        reasons = compliance.get("StatusReasons")
+        if isinstance(reasons, (list, tuple)):
+            codes = [
+                {"ReasonCode": str(r["ReasonCode"])}
+                for r in reasons
+                if isinstance(r, Mapping) and r.get("ReasonCode")
+            ]
+            if codes:
+                clean["StatusReasons"] = codes
+    out["Compliance"] = clean
+    return out

@@ -826,7 +826,7 @@ class AwsGovCloudConnector(ConfigConnector):
     SECURITYHUB_PAGE_SIZE: ClassVar[int] = 100
 
     async def securityhub_attestations(
-        self, *, max_pages: int | None = None
+        self, *, max_pages: int | None = None, sample: bool = False
     ) -> dict[str, Any]:
         """AWS's own NIST 800-53 Rev 5 control results for this account/region.
 
@@ -842,6 +842,12 @@ class AwsGovCloudConnector(ConfigConnector):
             only when ``available`` is true and nothing was truncated. Without
             this, "no attestations" is indistinguishable from "every control
             passed", which is the shape that makes a posture report unusable.
+        ``redacted_findings``
+            Present only when ``sample=True``: each finding reduced by
+            :func:`ccf.posture.attested.redact_finding` to the fields the parser
+            reads, with every resource id, account number and operator note
+            removed. Redacted here, inside the connector, so identifying values
+            never leave it -- the probe's ``--save-fixture`` writes these to disk.
         ``truncated``
             Whether paging stopped early -- at the cap, or at an error partway
             through. A truncated read is never ``available``: publishing page one
@@ -869,6 +875,7 @@ class AwsGovCloudConnector(ConfigConnector):
                 "region": region,
                 "account_id": account_id,
                 "standard_id": attested.NIST_80053_R5_STANDARD_ID,
+                **({"redacted_findings": []} if sample else {}),
             }
 
         if not self.is_configured():
@@ -943,6 +950,15 @@ class AwsGovCloudConnector(ConfigConnector):
             "region": region,
             "account_id": account_id,
             "standard_id": attested.NIST_80053_R5_STANDARD_ID,
+            **(
+                {
+                    "redacted_findings": [
+                        attested.redact_finding(f) for f in findings
+                    ]
+                }
+                if sample
+                else {}
+            ),
         }
 
     @staticmethod
