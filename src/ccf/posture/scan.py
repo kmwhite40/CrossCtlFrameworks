@@ -28,6 +28,7 @@ from ..logging import get_logger
 from ..models import System
 from ..models_capability import Capability
 from ..models_grc import ControlTest, ControlTestResult
+from .attested import CHECK_SOURCE as ATTESTED_CHECK_SOURCE
 from .checks import CheckOutcome, platform_check_keys
 from .drift import latest_drift
 from .resolve import ResolvedCheck, resolve_checks
@@ -444,19 +445,68 @@ async def record_manual_review_check(
     }
 
 
-def _is_platform_sourced(test: ControlTest) -> bool:
-    """Is this test's check the platform's own, rather than a tenant's pack?
+#: Trust tiers for a generated test's ``check_source``, lowest number most
+#: trusted. See :func:`trust_tier` for why the ordering is this one.
+_TIER_PLATFORM = 0
+_TIER_ATTESTED = 1
+_TIER_PACK = 2
 
-    Prefers the stored ``check_source`` (set on every scan -- see
-    ``_upsert_generated_test``). Falls back, only for a 'generated' row
-    written before that column existed (migration 0070 adds it with no
-    backfill), to checking whether its ``check_key`` is still a registered
-    platform check: a live-data inference, not a migration-time guess, and
-    the row self-heals to a real ``check_source`` on its next scan.
+#: How each tier is described to a reader when its verdict is the one believed.
+#: The wording matters: before the attested tier existed, an AWS-supplied
+#: verdict was reported as "most recent pack-sourced result used", telling an
+#: assessor the evidence came from the tenant.
+_TIER_REASONS: dict[int, str] = {
+    _TIER_ATTESTED: (
+        "no fresh platform-sourced result; provider-attested result used "
+        "(the provider evaluated its own account)"
+    ),
+    _TIER_PACK: "no fresh platform- or provider-attested result; "
+    "most recent pack-sourced result used",
+}
+
+
+def trust_tier(test: ControlTest) -> int:
+    """How much a generated test's verdict is worth relative to the others.
+
+    Three tiers, lowest number winning:
+
+    ``0`` **platform** -- one of Concord's own registered checks. Concord
+    authored the evaluator *and* the control attribution and is accountable for
+    both, so nothing outranks it.
+
+    ``1`` **provider-attested** -- :data:`ccf.posture.attested.CHECK_SOURCE`.
+    The provider evaluated its own account and published its own control
+    mapping. Weaker than Concord's own check, because Concord did not choose
+    either the evaluator or the attribution; stronger than a tenant's pack rule,
+    because AWS assessing an account is not the account's owner self-attesting.
+
+    ``2`` **pack, and anything unrecognised** -- a tenant-installed rule. The
+    default lands here deliberately: a ``check_source`` nobody taught this
+    function about must not reach a higher tier by accident, and the worst case
+    at the bottom is that it is believed only when nothing fresher exists.
+
+    The tier is read from the stored ``check_source``, never inferred from the
+    ``check_key``'s spelling. Attested keys are not in the platform registry, so
+    a key-shape rule would let a pack claim provider trust by naming its rule
+    ``aws.securityhub.…``; ``packs.catalog`` only refuses collisions with
+    *registered* keys and would not catch it.
+
+    One exception, inherited from the function this replaced: a ``'generated'``
+    row written before migration 0070 added ``check_source`` (no backfill) is
+    platform-tier when its ``check_key`` is still a registered platform check.
+    That is a live-data inference rather than a migration-time guess, and the
+    row self-heals to a real ``check_source`` on its next scan.
     """
-    if test.check_source is not None:
-        return test.check_source == "platform"
-    return test.source == "generated" and test.check_key in platform_check_keys()
+    source = test.check_source
+    if source is None:
+        if test.source == "generated" and test.check_key in platform_check_keys():
+            return _TIER_PLATFORM
+        return _TIER_PACK
+    if source == "platform":
+        return _TIER_PLATFORM
+    if source == ATTESTED_CHECK_SOURCE:
+        return _TIER_ATTESTED
+    return _TIER_PACK
 
 
 async def effective_verdict(
@@ -516,11 +566,14 @@ async def effective_verdict(
             "verdict": None,
             "reason": "no fresh deterministic result",
         }
-    platform_rows = [r for r in rows if _is_platform_sourced(r[1])]
-    result, test = (platform_rows or rows)[0]
+    # `rows` is already newest-first, and `min` keeps the first of equal keys,
+    # so this is "best tier, then most recent within it" in one pass.
+    best_tier = min(trust_tier(test) for _, test in rows)
+    result, test = next((r, t) for r, t in rows if trust_tier(t) == best_tier)
     reason = "a deterministic check outranks a model verdict"
-    if not platform_rows:
-        reason += " (no fresh platform-sourced result; most recent pack-sourced result used)"
+    tier_reason = _TIER_REASONS.get(best_tier)
+    if tier_reason:
+        reason += f" ({tier_reason})"
     return {
         "system_id": system_id,
         "control_id": control_id,
