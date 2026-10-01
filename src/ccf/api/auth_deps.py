@@ -231,6 +231,35 @@ def require_role(*roles: str) -> Callable[..., Awaitable[Principal]]:
     return _dep
 
 
+def require_platform_admin() -> Callable[..., Awaitable[Principal]]:
+    """Dependency for operations on **Concord's own** boundary, not a tenant's.
+
+    ``require_role("admin")`` is the wrong gate for these: it admits any
+    customer's administrator, because being an admin *of a tenant* says nothing
+    about authority over the platform.
+
+    It also fails in a way that reads as a bug rather than a refusal. A
+    tenant-scoped session has its RLS tenant bound to that customer, so a lookup
+    of a platform-owned row returns nothing; code that then tries to create the
+    row is refused by the same policy, and the caller gets a 500. That is what
+    ``GET /api/admin/self-assurance/package`` did.
+
+    So the precondition is explicit: an unscoped (global) principal, which is
+    also the only session that can read and write platform-owned rows at all.
+    """
+
+    async def _dep(principal: Principal = Depends(get_principal)) -> Principal:
+        if not principal.is_global:
+            raise HTTPException(
+                403,
+                "this operates on Concord's own assurance boundary and requires a "
+                "platform-wide (unscoped) administrator, not a tenant administrator",
+            )
+        return principal
+
+    return _dep
+
+
 #: Reachable while a required authenticator is still outstanding. Everything
 #: here is either how you enrol or how you leave -- an allowlist that missed
 #: the enrolment page would lock an organization out of itself the moment an

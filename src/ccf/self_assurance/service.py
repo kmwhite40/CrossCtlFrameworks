@@ -55,6 +55,48 @@ async def _audit(
     await record_event(session, organization_id=organization_id, **kw)
 
 
+class SelfAssuranceNotInitialisedError(RuntimeError):
+    """The platform boundary has not been seeded yet.
+
+    Raised instead of creating it, so a read stays a read. ``POST /init`` is the
+    one place allowed to bring the boundary into existence.
+    """
+
+
+async def _self_ids_readonly(session: AsyncSession) -> tuple[int, int]:
+    """Look the platform boundary up. Never create it.
+
+    ``_self_ids`` below is a get-or-create, which is right for ``init`` and wrong
+    for everything else: ``export_package`` is served from a GET, and it was
+    creating an organization and a system as a side effect of being read.
+
+    The lookup is also why that mattered more than a REST quibble. On a
+    tenant-scoped session the RLS policy hides a platform-owned row, so the
+    get-or-create concluded the boundary was missing and tried to make a second
+    one -- refused by the same policy, surfacing as a 500. The route now requires
+    a platform administrator, whose session is unscoped; this function keeps the
+    read honest if that gate is ever loosened.
+    """
+    org = (
+        await session.execute(select(Organization).where(Organization.name == SELF_ORG))
+    ).scalar_one_or_none()
+    if org is None:
+        raise SelfAssuranceNotInitialisedError(
+            "self-assurance has not been initialised; POST /api/admin/self-assurance/init"
+        )
+    sysm = (
+        await session.execute(
+            select(System).where(System.organization_id == org.id, System.name == SELF_SYSTEM)
+        )
+    ).scalar_one_or_none()
+    if sysm is None:
+        raise SelfAssuranceNotInitialisedError(
+            f"the {SELF_ORG!r} organization exists but its system does not; "
+            "POST /api/admin/self-assurance/init"
+        )
+    return org.id, sysm.id
+
+
 async def _self_ids(session: AsyncSession) -> tuple[int, int]:
     org = (
         await session.execute(select(Organization).where(Organization.name == SELF_ORG))
@@ -268,7 +310,7 @@ async def export_package(session: AsyncSession, *, actor: str | None = None) -> 
     """Export Concord's own authorization package (captures self-assurance facts)."""
     from ..packages import service as pkg_service  # noqa: PLC0415
 
-    org_id, system_id = await _self_ids(session)
+    org_id, system_id = await _self_ids_readonly(session)
     pkg = await pkg_service.create_package(
         session, org_id=org_id, system_id=system_id, kind="json",
         label="Concord self-assurance package", created_by=actor,
