@@ -71,6 +71,19 @@
       </div>
     </div>
     {% endif %}
+    {% if p.unmapped_checks %}
+    <div class="note note--warn" style="margin-top:12px">
+      <div style="font-weight:650;margin-bottom:2px">{{ p.unmapped_checks|length }} check(s) place no requirement</div>
+      <div style="font-size:13px">
+        Concord ran <span class="mono">{{ p.unmapped_checks|join(', ') }}</span>, but
+        {{ 'it declares' if p.unmapped_checks|length == 1 else 'they declare' }} no
+        800-171 requirement, so
+        {{ 'its result is' if p.unmapped_checks|length == 1 else 'their results are' }}
+        not counted above. The verdict stands on the control test itself.
+        <a href="https://github.com/kmwhite40/CrossCtlFrameworks/blob/main/src/ccf/posture/practices.py">Why a check may be left unmapped</a>.
+      </div>
+    </div>
+    {% endif %}
   </div>
 </section>
 {% elif p and p.reason %}
