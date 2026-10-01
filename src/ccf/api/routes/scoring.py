@@ -23,6 +23,7 @@ from ...scoring.seed import seed_scoring_controls
 from ...scoring.service import record_assessed_state, system_score_summary
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/scoring", tags=["scoring"])
 
@@ -51,10 +52,8 @@ class StateUpdate(BaseModel):
 
 
 async def _require_system(session: AsyncSession, system_id: int, principal: Principal) -> System:
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
-    return sys
+    """Delegates to the one definition; see ``auth_deps.require_system_in_scope``."""
+    return await require_system_in_scope(session, system_id, principal)
 
 
 async def compute_summary(session: AsyncSession, system_id: int) -> dict[str, Any]:

@@ -17,6 +17,7 @@ from ...models_packages import PACKAGE_KINDS, AuthorizationPackage
 from ...packages import service
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/authorization-packages", tags=["authorization-packages"])
 
@@ -170,9 +171,9 @@ async def authorization_delta(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """An assessor-facing delta memo between the two latest packages for a system."""
-    sysm = await session.get(System, system_id)
-    if sysm is None or (principal.org_id is not None and sysm.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
+    # `session.get` was a seventh spelling of the same precondition, and like the
+    # other six it omitted the soft-delete filter.
+    await require_system_in_scope(session, system_id, principal)
     memo = await service.delta_memo(
         session, org_id=principal.org_id, system_id=system_id, since=since
     )
