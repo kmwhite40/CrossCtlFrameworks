@@ -88,6 +88,27 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # AC.L2-3.1.22  "Control CUI posted or processed on publicly accessible
     #                systems."
     "aws.s3.public_access_blocked": ("AC.L2-3.1.22",),
+    # ── Boundary protection ──────────────────────────────────────────────────
+    # CM.L2-3.4.7   "Restrict, disable, or prevent the use of nonessential
+    #                programs, functions, ports, protocols, and services."
+    # SC.L2-3.13.6  "Deny network communications traffic by default and allow
+    #                network communications traffic by exception."
+    # SSH and RDP reachable from the whole internet is the canonical failure of
+    # both: a nonessential port left open, and traffic permitted by default. The
+    # check is narrow on purpose (only 22 and 3389, only 0.0.0.0/0 and ::/0), so
+    # a load balancer on 443 is not a finding.
+    "aws.ec2.security_groups_no_public_admin_ingress": (
+        "CM.L2-3.4.7",
+        "SC.L2-3.13.6",
+    ),
+    # SC.L2-3.13.1  "Monitor, control, and protect communications ... at the
+    #                external boundaries and key internal boundaries."
+    # SI.L2-3.14.6  "Monitor organizational systems, including inbound and
+    #                outbound communications traffic, to detect attacks."
+    # Flow logs are the record of traffic crossing the VPC boundary. Without one
+    # there is nothing to monitor, which is what both requirements ask for; 3.13.1
+    # leads because the boundary is what a VPC is.
+    "aws.vpc.flow_logs_enabled": ("SC.L2-3.13.1", "SI.L2-3.14.6"),
     # ── Audit and accountability ─────────────────────────────────────────────
     # AU.L2-3.3.1  "Create and retain system audit logs and records to the
     #               extent needed to enable the monitoring, analysis,

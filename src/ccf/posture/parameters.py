@@ -75,6 +75,17 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # algorithm for an assessor. Adding a parameter would mean adding a judgment.
     aws.S3_DEFAULT_ENCRYPTION.key: (),
     aws.EBS_ENCRYPTION_BY_DEFAULT.key: (),
+    # No parameter, deliberately. The tunable thing would be *which* ports count
+    # as administrative, and widening that list is how this check turns into "no
+    # unrestricted ingress at all" -- which fails every public load balancer on
+    # 443 and is the shape an operator learns to ignore. A package that needs a
+    # different boundary rule wants its own check, not a looser version of this
+    # one.
+    aws.SECURITY_GROUP_ADMIN_INGRESS.key: (),
+    # Nor here: a flow log is either delivering or it is not. "How much logging
+    # is enough" is a retention question, which `azure.monitor.log_retention`
+    # and `gcp.logging.retention` already parameterize on their own terms.
+    aws.VPC_FLOW_LOGS.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.

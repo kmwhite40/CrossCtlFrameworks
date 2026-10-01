@@ -207,6 +207,40 @@ S3_DEFAULT_ENCRYPTION = PostureCheck(
     required_permissions=("s3:ListAllMyBuckets", "s3:GetEncryptionConfiguration"),
 )
 
+#: Administrative ports an unrestricted rule must never expose. Deliberately a
+#: short list rather than "any port": 443 open to the world is ordinary
+#: architecture for a load balancer, and a check that failed it would be the
+#: check an operator learns to ignore. The requirement is permit-by-exception,
+#: and a corporate CIDR reaching SSH *is* the exception.
+_ADMIN_PORTS: tuple[int, ...] = (22, 3389)
+
+#: The two ways a rule says "from anywhere". `::/0` is the same exposure as
+#: `0.0.0.0/0` and the one more often left behind.
+_ANY_IPV4 = "0.0.0.0/0"
+_ANY_IPV6 = "::/0"
+
+SECURITY_GROUP_ADMIN_INGRESS = PostureCheck(
+    key="aws.ec2.security_groups_no_public_admin_ingress",
+    title="No security group exposes SSH or RDP to the internet",
+    provider="aws_govcloud",
+    resource_type="aws_security_group",
+    expected=(
+        "no security group permits ingress from 0.0.0.0/0 or ::/0 to port 22 or 3389"
+    ),
+    control_ids=("SC-7", "AC-4", "CM-7"),
+    required_permissions=("ec2:DescribeSecurityGroups",),
+)
+
+VPC_FLOW_LOGS = PostureCheck(
+    key="aws.vpc.flow_logs_enabled",
+    title="Every VPC records network flow logs",
+    provider="aws_govcloud",
+    resource_type="aws_vpc",
+    expected="each VPC has at least one flow log in the ACTIVE state",
+    control_ids=("AU-2", "AU-12", "SI-4"),
+    required_permissions=("ec2:DescribeVpcs", "ec2:DescribeFlowLogs"),
+)
+
 EBS_ENCRYPTION_BY_DEFAULT = PostureCheck(
     key="aws.ec2.ebs_encryption_by_default",
     title="New EBS volumes are encrypted by default",
@@ -226,6 +260,8 @@ CHECKS: tuple[PostureCheck, ...] = (
     S3_PUBLIC_ACCESS_BLOCKED,
     S3_DEFAULT_ENCRYPTION,
     EBS_ENCRYPTION_BY_DEFAULT,
+    SECURITY_GROUP_ADMIN_INGRESS,
+    VPC_FLOW_LOGS,
 )
 
 #: The four settings that together make a bucket non-public. All four are
@@ -266,6 +302,14 @@ ENDPOINTS: dict[str, str] = {
     S3_PUBLIC_ACCESS_BLOCKED.key: "s3.get_public_access_block",
     S3_DEFAULT_ENCRYPTION.key: "s3.get_bucket_encryption",
     EBS_ENCRYPTION_BY_DEFAULT.key: "ec2.get_ebs_encryption_by_default",
+    SECURITY_GROUP_ADMIN_INGRESS.key: "ec2.describe_security_groups",
+    # One token for two calls. `describe_flow_logs` answers which VPCs are
+    # covered, but the denominator is every VPC, so the reader joins
+    # `describe_vpcs` to it and hands the evaluator whole VPCs. A VPC with no
+    # flow log has no row in the flow-log response at all -- keying the check on
+    # that response alone would make an unmonitored VPC invisible rather than
+    # failing.
+    VPC_FLOW_LOGS.key: "ec2.describe_flow_logs",
 }
 
 #: Evaluators that need to be told which account they are judging, because
@@ -276,6 +320,8 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
         PASSWORD_POLICY.key,
         CLOUDTRAIL_MULTI_REGION.key,
         EBS_ENCRYPTION_BY_DEFAULT.key,
+        SECURITY_GROUP_ADMIN_INGRESS.key,
+        VPC_FLOW_LOGS.key,
     }
 )
 
@@ -800,6 +846,133 @@ def evaluate_ebs_encryption_by_default(
 
 #: Check key -> its evaluator. ``scan`` dispatches through this rather than a
 #: chain of conditionals, so adding a check is a registry entry.
+
+
+def _unrestricted_admin_exposure(permission: dict[str, Any]) -> list[str]:
+    """Which admin ports this one ingress rule exposes to the whole internet.
+
+    ``IpProtocol: "-1"`` means every protocol and carries no ``FromPort`` at all,
+    so a port-equality test misses it entirely -- as does a rule written as
+    ``1-65535``, which is the likelier real-world shape. Both are handled by
+    treating the rule as a range and asking whether an admin port falls inside
+    it.
+    """
+    open_to_world = [
+        cidr
+        for cidr in (
+            *(r.get("CidrIp") for r in permission.get("IpRanges") or []),
+            *(r.get("CidrIpv6") for r in permission.get("Ipv6Ranges") or []),
+        )
+        if cidr in (_ANY_IPV4, _ANY_IPV6)
+    ]
+    if not open_to_world:
+        return []
+    protocol = str(permission.get("IpProtocol", ""))
+    if protocol == "-1":
+        return [f"all protocols from {cidr}" for cidr in open_to_world]
+    from_port = permission.get("FromPort")
+    if from_port is None:
+        return []
+    to_port = permission.get("ToPort")
+    low, high = int(from_port), int(to_port if to_port is not None else from_port)
+    exposed = [p for p in _ADMIN_PORTS if low <= p <= high]
+    return [f"port {p} from {cidr}" for p in exposed for cidr in open_to_world]
+
+
+def evaluate_security_group_admin_ingress(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per security group, so a failure names what to go and fix.
+
+    An empty answer is ``manual_review_required`` rather than ``pass``: every AWS
+    account has at least a default security group, so "no groups" means the call
+    did not answer, and an unverified account is not a compliant one.
+    """
+    if not rows:
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="manual_review_required",
+                observed="the account reported no security groups, so none were assessed",
+                detail={"rows_examined": 0},
+            )
+        ]
+    findings: list[ResourceFinding] = []
+    for group in rows:
+        group_id = str(group.get("GroupId") or group.get("GroupName") or "unknown")
+        exposures = [
+            exposure
+            for permission in group.get("IpPermissions") or []
+            for exposure in _unrestricted_admin_exposure(permission)
+        ]
+        findings.append(
+            ResourceFinding(
+                resource_id=group_id,
+                resource_type="aws_security_group",
+                verdict="fail" if exposures else "pass",
+                observed=(
+                    f"{group.get('GroupName') or group_id} permits " + "; ".join(exposures)
+                    if exposures
+                    else "no unrestricted ingress to an administrative port"
+                ),
+                detail={
+                    "group_name": group.get("GroupName"),
+                    "exposures": exposures,
+                    "admin_ports": list(_ADMIN_PORTS),
+                },
+            )
+        )
+    return findings
+
+
+def evaluate_vpc_flow_logs(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per VPC. A flow log only counts while it is ``ACTIVE``.
+
+    Reading the row's presence rather than its status is the easy mistake and the
+    expensive one: a log stuck in ``FAILED`` delivers nothing, so the boundary is
+    unmonitored while the check reports it covered.
+    """
+    if not rows:
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="manual_review_required",
+                observed="the account reported no VPCs, so none were assessed",
+                detail={"rows_examined": 0},
+            )
+        ]
+    findings: list[ResourceFinding] = []
+    for vpc in rows:
+        vpc_id = str(vpc.get("VpcId") or "unknown")
+        logs = vpc.get("FlowLogs") or []
+        active = [log for log in logs if str(log.get("FlowLogStatus", "")).upper() == "ACTIVE"]
+        inactive = [
+            f"{log.get('FlowLogId')} is {log.get('FlowLogStatus')}"
+            for log in logs
+            if log not in active
+        ]
+        if active:
+            observed = f"{len(active)} active flow log(s)"
+        elif inactive:
+            observed = "no active flow log; " + "; ".join(inactive)
+        else:
+            observed = "no flow log is configured for this VPC"
+        findings.append(
+            ResourceFinding(
+                resource_id=vpc_id,
+                resource_type="aws_vpc",
+                verdict="pass" if active else "fail",
+                observed=observed,
+                detail={"active": len(active), "configured": len(logs)},
+            )
+        )
+    return findings
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     ROOT_MFA_ENABLED.key: evaluate_root_mfa,
     PASSWORD_POLICY.key: evaluate_password_policy,
@@ -809,4 +982,6 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     S3_PUBLIC_ACCESS_BLOCKED.key: evaluate_s3_public_access_blocked,
     S3_DEFAULT_ENCRYPTION.key: evaluate_s3_default_encryption,
     EBS_ENCRYPTION_BY_DEFAULT.key: evaluate_ebs_encryption_by_default,
+    SECURITY_GROUP_ADMIN_INGRESS.key: evaluate_security_group_admin_ingress,
+    VPC_FLOW_LOGS.key: evaluate_vpc_flow_logs,
 }

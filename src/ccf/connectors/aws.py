@@ -316,6 +316,10 @@ class AwsGovCloudConnector(ConfigConnector):
             aws_checks.ENDPOINTS[
                 aws_checks.EBS_ENCRYPTION_BY_DEFAULT.key
             ]: self._read_ebs_encryption_default,
+            aws_checks.ENDPOINTS[
+                aws_checks.SECURITY_GROUP_ADMIN_INGRESS.key
+            ]: self._read_security_groups,
+            aws_checks.ENDPOINTS[aws_checks.VPC_FLOW_LOGS.key]: self._read_vpcs_with_flow_logs,
         }
 
     def _iam(self) -> Any:
@@ -500,6 +504,52 @@ class AwsGovCloudConnector(ConfigConnector):
             "ServerSideEncryptionConfiguration",
             ("ServerSideEncryptionConfigurationNotFoundError",),
         )
+
+    def _ec2(self) -> Any:
+        return self._session().client("ec2", region_name=self._region())
+
+    def _read_security_groups(self) -> list[dict[str, Any]]:
+        """``ec2.describe_security_groups`` -- every group, paginated.
+
+        Paginated rather than a single call: an account past the first page would
+        otherwise have its later groups silently unassessed, and the check would
+        report a clean pass over a partial fleet. That is the failure mode a
+        truncation this quiet produces, so the pages are followed.
+        """
+        ec2 = self._ec2()
+        out: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"MaxResults": 1000}
+            if token:
+                kwargs["NextToken"] = token
+            answer = ec2.describe_security_groups(**kwargs)
+            out.extend(answer.get("SecurityGroups") or [])
+            token = answer.get("NextToken")
+            if not token:
+                return out
+
+    def _read_vpcs_with_flow_logs(self) -> list[dict[str, Any]]:
+        """Every VPC, each carrying the flow logs that cover it.
+
+        Two calls joined here rather than in the evaluator. The denominator is
+        every VPC, and a VPC with no flow log has no row in
+        ``describe_flow_logs`` at all -- so a check reading only that response
+        would make an unmonitored VPC invisible instead of failing it, which is
+        the whole thing this check exists to catch.
+        """
+        ec2 = self._ec2()
+        vpcs = (ec2.describe_vpcs().get("Vpcs") or [])
+        logs = (ec2.describe_flow_logs().get("FlowLogs") or [])
+        by_vpc: dict[str, list[dict[str, Any]]] = {}
+        for log in logs:
+            resource = log.get("ResourceId")
+            if resource:
+                by_vpc.setdefault(str(resource), []).append(log)
+        return [
+            {**vpc, "FlowLogs": by_vpc.get(str(vpc.get("VpcId")), [])}
+            for vpc in vpcs
+        ]
 
     def _read_ebs_encryption_default(self) -> list[dict[str, Any]]:
         """``ec2.get_ebs_encryption_by_default``, tagged with the region read.
