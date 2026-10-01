@@ -196,8 +196,31 @@ async def framework_posture(
     # actionable bucket -- these are the controls needing human evidence -- and
     # because sweeping it into `unaddressed` said nobody had looked when Concord
     # had looked and said so.
+    # `warn` belongs here, with `manual_review_required`, and the two are grouped
+    # rather than split because what is actionable about them is identical: a
+    # human has to look.
+    #
+    # `warn` was named in none of these sets until the Security Hub ingest mapped
+    # AWS's WARNING onto it, and `unaddressed` below is a remainder rather than a
+    # decision -- so a control Concord had assessed and had something to say
+    # about would have been reported as one nobody had looked at. That is the same
+    # defect `manual_review` was carved out of `unaddressed` to fix, and it was
+    # about to recur with a different status.
+    #
+    # It is not `failing`: AWS's WARNING means "some information is missing or
+    # this check is not supported for your configuration", and reporting that as
+    # a failed control overstates a finding in a document a regulator acts on.
+    # It is not `passing` either, because nothing was satisfied.
+    #
+    # `tests/test_every_verdict_lands_in_a_bucket.py` now asserts a bucket for
+    # every member of VALIDATION_STATUSES, so the next status added to the
+    # vocabulary fails there rather than joining the remainder silently.
     manual_review = (
-        {c for c, statuses in tested.items() if "manual_review_required" in statuses}
+        {
+            c
+            for c, statuses in tested.items()
+            if statuses & {"manual_review_required", "warn"}
+        }
         & controls
     ) - failing - passing
     documented = (implemented & controls) - failing - passing - manual_review
@@ -501,11 +524,13 @@ async def _nist_171_posture(
     passing = (
         {r for r, statuses in by_requirement.items() if "pass" in statuses} & total
     ) - failing
+    # `warn` grouped with `manual_review_required`, for the reasoning the baseline
+    # path above states in full.
     manual_review = (
         {
             r
             for r, statuses in by_requirement.items()
-            if "manual_review_required" in statuses
+            if statuses & {"manual_review_required", "warn"}
         }
         & total
     ) - failing - passing

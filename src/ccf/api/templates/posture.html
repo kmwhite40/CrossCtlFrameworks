@@ -68,7 +68,7 @@
         <span><strong style="color:var(--err-500)">{{ e.failing|length }}</strong> <span class="dim">failing</span></span>
         <span><strong>{{ e.documented|length }}</strong> <span class="dim">documented only</span></span>
         {% if e.manual_review %}
-        <span title="Concord assessed these and could not judge them — most often a connector it has no credential for. They need human evidence, which is work to schedule.">
+        <span title="Concord assessed these and could not judge them, or judged them inconclusive — most often a connector it has no credential for, or a provider check reporting that information was missing. They need human evidence, which is work to schedule.">
           <strong>{{ e.manual_review|length }}</strong> <span class="dim">need manual review</span></span>
         {% endif %}
         <span title="Nothing has looked at these yet"><strong>{{ e.unaddressed|length }}</strong> <span class="dim">not yet addressed</span></span>
