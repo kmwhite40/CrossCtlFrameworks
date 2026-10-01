@@ -37,10 +37,17 @@
         {% for f in d.frameworks %}
           <a class="ovw-fw__tile" href="/frameworks/{{ f.code }}">
             <div class="ovw-fw__top">
+              {# None when no control catalog has been ingested: there is no
+                 denominator, so there is no coverage ratio. It used to be 0.0,
+                 which gauged every framework at zero and read as a finding about
+                 the frameworks rather than about the missing catalog. #}
+              {% if f.coverage_pct is not none %}
               {{ gauge(f.coverage_pct, size=56, thickness=6, color='var(--accent)') }}
+              {% endif %}
               <div class="ovw-fw__meta">
                 <div class="ovw-fw__name" title="{{ f.name }}">{{ f.code }}</div>
-                {{ badge(f.coverage_pct) }}
+                {% if f.coverage_pct is not none %}{{ badge(f.coverage_pct) }}
+                {% else %}<span class="dim" style="font-size:12px">no catalog ingested</span>{% endif %}
               </div>
             </div>
             <div class="ovw-fw__num">{{ '{:,}'.format(f.mapped_controls) }}</div>
@@ -140,9 +147,20 @@
       <div class="ovw-card">
         <div class="ovw-card__title">SLA status</div>
         <div class="ovw-donutrow ovw-donutrow--center">
+          {# `on_track_pct` is None when nothing is open. It used to be 100.0,
+             which drew a complete green dial labelled "100%" for a tenant that
+             had scanned nothing -- read as "on top of its weaknesses" rather than
+             "there is nothing here yet". A percentage of an empty set is not a
+             measurement, so the dial is not drawn at all. #}
+          {% if d.sla.on_track_pct is none %}
+          <div class="ovw-empty" style="padding:18px 6px;text-align:center">
+            <div class="dim" style="font-size:13px">No open POA&amp;M to track</div>
+          </div>
+          {% else %}
           {{ gauge(d.sla.on_track_pct, size=100, thickness=10,
                    color=('var(--sev-low)' if d.sla.overdue == 0 else 'var(--sev-high)'),
                    label='{}%'.format(d.sla.on_track_pct | round | int)) }}
+          {% endif %}
           <div class="ovw-mini">
             <div><strong>{{ d.sla.on_track }}</strong> on track</div>
             <div class="ovw-mini__bad"><strong>{{ d.sla.overdue }}</strong> overdue</div>

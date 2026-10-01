@@ -91,6 +91,26 @@ async def _catalog(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+def coverage_ratio(mapped_controls: int | None, total_controls: int) -> float | None:
+    """Share of the catalog a framework maps, or ``None`` when there is no catalog.
+
+    Pure, and separated from the query for one reason: the ``total_controls == 0``
+    branch is the whole point and it cannot be reached through
+    :func:`_framework_tiles` in a test database that other tests seed controls
+    into. A mutation reverting the ``None`` to ``0.0`` survived the suite because
+    of exactly that. The decision is testable here; the query is not the part
+    worth guarding.
+
+    ``None`` rather than ``0.0``: 0% reads as a finding about the framework --
+    "this framework covers none of the controls" -- when the fact is that there
+    are no controls to cover. The same sentence ``framework_posture`` states for
+    an undeclared baseline.
+    """
+    if not total_controls:
+        return None
+    return round(100 * (mapped_controls or 0) / total_controls, 1)
+
+
 async def _framework_tiles(session: AsyncSession, limit: int = 6) -> list[dict[str, Any]]:
     """Top frameworks by mapping volume, with a coverage ratio for a gauge.
 
@@ -114,7 +134,7 @@ async def _framework_tiles(session: AsyncSession, limit: int = 6) -> list[dict[s
     ).all()
     tiles: list[dict[str, Any]] = []
     for code, name, mapped_controls, mappings in rows:
-        pct = round(100 * (mapped_controls or 0) / total_controls, 1) if total_controls else 0.0
+        pct = coverage_ratio(mapped_controls, total_controls)
         tiles.append(
             {
                 "code": code,
@@ -299,7 +319,17 @@ async def dashboard_overview(
             "overdue": overdue,
             "no_due_date": no_due_date,
             "on_track": on_track,
-            "on_track_pct": round(100 * on_track / open_total, 1) if open_total else 100.0,
+            # `None`, never `100.0`, when nothing is open. The page renders this
+            # as a full gauge labelled with the number, so 100% over an empty
+            # queue draws a complete green dial for a tenant that has scanned
+            # nothing -- read as "this programme is on top of its weaknesses".
+            #
+            # It is the mirror of the rule `framework_posture` already applies in
+            # the other direction: coverage of an undeclared baseline is None
+            # because "reporting 0% would read as a finding about the system".
+            # 100% over nothing reads as an achievement just as wrongly, and is
+            # the more dangerous of the two because it reassures.
+            "on_track_pct": round(100 * on_track / open_total, 1) if open_total else None,
         },
         "poam_buckets": poam.get("buckets", {}),
         # Residual risk (risk_accepted) and the "completed but no closed_on"
