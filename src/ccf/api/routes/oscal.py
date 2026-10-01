@@ -50,6 +50,7 @@ from ...oscal import validate_document
 from ...ssp.platforms import platform_label
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/oscal", tags=["oscal"])
 
@@ -443,10 +444,7 @@ async def component_definition(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    # Scope to the caller's org (global/auth-off principals are unscoped).
-    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
+    sys = await require_system_in_scope(session, system_id, principal)
 
     return await build_component_definition_doc(session, sys)
 
@@ -722,11 +720,7 @@ async def poam_export(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Emit an OSCAL 1.1 Plan of Action and Milestones for a system's POA&Ms."""
-    sys = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
+    sys = await require_system_in_scope(session, system_id, principal)
 
     return await build_poam_doc(session, sys, open_only=not include_closed)
 
@@ -834,9 +828,7 @@ async def sar_export_latest(
     """Emit the OSCAL Assessment-Results (SAR) for a system's most recent
     assessment (by ``finished_on``, falling back to the newest id when several
     are still open)."""
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
+    await require_system_in_scope(session, system_id, principal)
 
     assessment = (
         await session.execute(
@@ -1420,10 +1412,7 @@ async def package_export(
 ) -> StreamingResponse:
     """Emit a downloadable authorization-package ZIP (SSP + SAR + POA&M +
     component-definition + README manifest) for a system."""
-    sys = (await session.execute(select(System).where(System.id == system_id))).scalar_one_or_none()
-    # Scope to the caller's org (global/auth-off principals are unscoped).
-    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
+    sys = await require_system_in_scope(session, system_id, principal)
 
     now_iso = datetime.now(UTC).isoformat()
     data = await build_package_zip(session, sys, now_iso=now_iso)

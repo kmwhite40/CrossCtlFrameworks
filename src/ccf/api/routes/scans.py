@@ -19,6 +19,7 @@ from ...ingest import parse_scan, reconcile_findings
 from ...models import ScanIngestion, System
 from ..auth_deps import get_principal, org_systems_subq
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/scans", tags=["scans"])
 
@@ -27,12 +28,8 @@ _MAX_SCAN_BYTES = 64 * 1024 * 1024  # 64 MiB
 
 
 async def _require_system(session: AsyncSession, system_id: int, principal: Principal) -> System:
-    sys = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if sys is None or (principal.org_id is not None and sys.organization_id != principal.org_id):
-        raise HTTPException(404, "system not found")
-    return sys
+    """Delegates to the one definition; see ``auth_deps.require_system_in_scope``."""
+    return await require_system_in_scope(session, system_id, principal)
 
 
 @router.post("/ingest", status_code=201)

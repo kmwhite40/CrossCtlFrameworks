@@ -41,6 +41,7 @@ from ...models import (
 )
 from ..auth_deps import get_principal, require_role
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/fedramp/20x", tags=["fedramp-20x"])
 
@@ -52,14 +53,8 @@ _ASSESSOR_RE = (
 
 
 async def _require_system(session: AsyncSession, system_id: int, principal: Principal) -> System:
-    system = (
-        await session.execute(select(System).where(System.id == system_id))
-    ).scalar_one_or_none()
-    if system is None:
-        raise HTTPException(404, "system not found")
-    if principal.org_id is not None and system.organization_id != principal.org_id:
-        raise HTTPException(404, "system not found")
-    return system
+    """Delegates to the one definition; see ``auth_deps.require_system_in_scope``."""
+    return await require_system_in_scope(session, system_id, principal)
 
 
 def _ksi_out(k: KSI) -> dict[str, Any]:

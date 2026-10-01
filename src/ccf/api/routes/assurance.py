@@ -13,6 +13,7 @@ from ...auth import Principal
 from ...models_assurance import AssuranceNode
 from ..auth_deps import get_principal
 from ..deps import get_session
+from .systems import require_system_in_scope
 
 router = APIRouter(prefix="/api/assurance", tags=["assurance"])
 
@@ -36,6 +37,12 @@ async def system_graph(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """The connected subgraph around a system — its authorization digital twin."""
+    # Validated before the graph query, which is keyed on the entity id and has
+    # no notion of whether that system still exists. Without this a deleted
+    # system returned its whole subgraph, and a system in another tenant
+    # returned an empty one with a 200 -- the only endpoint of thirty-one that
+    # answered anything at all for a foreign id.
+    await require_system_in_scope(session, system_id, principal)
     return await impact.subgraph(
         session, org_id=principal.org_id, entity_type="system",
         entity_id=str(system_id), max_hops=hops,
