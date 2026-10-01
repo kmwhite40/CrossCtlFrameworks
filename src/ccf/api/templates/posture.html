@@ -76,6 +76,16 @@
         <span class="dim" title="A passing check declares these but credits only its primary control, so they are not counted as satisfied. Evidence exists; credit does not.">
           of which {{ e.partially_evidenced|length }} have partial evidence</span>
         {% endif %}
+        {% if e.provider_attested_only %}
+        {# Provenance, not a sixth bucket. These are counted in "passing" above --
+           they are real evidence -- but the only thing vouching for them is the
+           cloud provider's own assessment of its own account, mapped to 800-53 by
+           the provider. Concord ran no check of its own here and chose neither the
+           evaluator nor the mapping, and an assessor is entitled to know which
+           part of the green on this page is which. #}
+        <span class="dim" title="Counted as passing on the provider's own attestation: the cloud provider assessed its own control and published the 800-53 mapping. Concord has no check of its own for these.">
+          of which {{ e.provider_attested_only|length }} rest on provider attestation</span>
+        {% endif %}
         {% if e.unreachable %}
         <span class="dim" title="No 800-53 control in the shipped crosswalk maps to these, so no scan can close them">
           {{ e.unreachable|length }} unreachable by scan</span>

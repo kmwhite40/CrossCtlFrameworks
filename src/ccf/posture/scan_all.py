@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..connectors.readiness import provider_readiness
 from ..logging import get_logger
+from .attested_scan import ingest_attestations
 from .checks import known_providers
 from .scan import record_manual_review_check, scan_for_system
 
@@ -159,6 +160,49 @@ async def scan_all_providers(
                     ),
                 }
             )
+    # Provider-attested control results, on the same trigger. Not a provider in
+    # the loop above: those run Concord's own checks against a connector, while
+    # this reads AWS's assessment of its own control catalog -- a different kind
+    # of evidence, labelled differently in the record (see posture.attested).
+    #
+    # In a SAVEPOINT, and that is the whole point of where it sits. The provider
+    # loop's own handler calls `session.rollback()`, which is correct there
+    # because nothing has been committed yet and a broken session would fail
+    # every later provider. Here the loop has already recorded its results and
+    # the commit is two lines below, so a bare rollback would discard every scan
+    # that just succeeded. `AsyncSession.rollback()` is also not savepoint-scoped,
+    # so an unguarded flush error would leave the outer transaction aborted and
+    # take those results down on the caller's commit anyway -- the same reasoning
+    # `control_tests.record_result` records for its waiver block.
+    try:
+        async with session.begin_nested():
+            attestations = await ingest_attestations(
+                session, system_id=system_id, actor=actor
+            )
+    except Exception as exc:
+        log.warning(
+            "posture.attested_ingest_failed",
+            system_id=system_id,
+            error=type(exc).__name__,
+        )
+        attestations = {
+            "system_id": system_id,
+            "connector": "aws_govcloud",
+            "available": False,
+            "reason": (
+                f"the provider attestation read failed ({type(exc).__name__}); "
+                "nothing was recorded for it, and the posture scan above is "
+                "unaffected"
+            ),
+            "written": 0,
+            "controls_read": 0,
+            "controls_without_a_requirement": [],
+            "unreadable_requirements": [],
+            "region": None,
+            "account_id": None,
+            "pages_read": 0,
+            "truncated": False,
+        }
     if commit:
         await session.commit()
     # `skipped_checks` is a list on every per-provider entry, so the aggregate
@@ -193,5 +237,10 @@ async def scan_all_providers(
             for r in results
             if r.get("reason")
         ],
+        # Always present, never omitted on failure: an absent key renders as
+        # nothing and reads as "no problem", while a reason reads as a thing to
+        # go and configure. Every organization in this deployment is currently in
+        # the "no AWS credential bound" case.
+        "attestations": attestations,
         "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
     }

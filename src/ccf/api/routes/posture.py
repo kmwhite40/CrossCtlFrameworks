@@ -243,6 +243,38 @@ async def scan_system_all_connectors(
     )
 
 
+@scan_router.post("/systems/{system_id}/attestations")
+async def ingest_system_attestations(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Read the cloud provider's own control results for one system.
+
+    A targeted re-run. The end-user path is ``scan-all``, which runs this as part
+    of a full scan -- the same relationship the per-connector ``scan`` route has
+    with it -- so this exists for troubleshooting and for re-reading one account
+    without re-scanning every provider.
+
+    Returns the ingest's own report rather than a bare count, because "nothing
+    was written" has several causes an operator would otherwise have to guess
+    between: no credential bound, the NIST standard not enabled in Security Hub,
+    the standard enabled but still populating, a missing IAM action, or a page
+    walk that was truncated and therefore refused.
+    """
+    from ...posture.attested_scan import ingest_attestations  # noqa: PLC0415
+
+    await require_system_in_scope(session, system_id, principal)
+    try:
+        out = await ingest_attestations(
+            session, system_id=system_id, actor=principal.email
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    await session.commit()
+    return out
+
+
 @scan_router.post("/systems/{system_id}/provider-readiness")
 async def check_system_provider_readiness(
     system_id: int,
