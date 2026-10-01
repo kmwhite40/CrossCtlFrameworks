@@ -72,6 +72,10 @@
           <strong>{{ e.manual_review|length }}</strong> <span class="dim">need manual review</span></span>
         {% endif %}
         <span title="Nothing has looked at these yet"><strong>{{ e.unaddressed|length }}</strong> <span class="dim">not yet addressed</span></span>
+        {% if e.partially_evidenced %}
+        <span class="dim" title="A passing check declares these but credits only its primary control, so they are not counted as satisfied. Evidence exists; credit does not.">
+          of which {{ e.partially_evidenced|length }} have partial evidence</span>
+        {% endif %}
         {% if e.unreachable %}
         <span class="dim" title="No 800-53 control in the shipped crosswalk maps to these, so no scan can close them">
           {{ e.unreachable|length }} unreachable by scan</span>

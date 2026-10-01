@@ -112,6 +112,11 @@ async def framework_posture(
         return _empty(baseline or None)
 
     tested: dict[str, set[str]] = {}
+    #: Controls a *passing* check declares but does not credit. A pass credits
+    #: only its primary control -- see `ccf.posture.evidence` -- so the rest had
+    #: appeared nowhere, and the page called them "not yet addressed" beside the
+    #: controls nothing had touched. Tracked to name them, not to credit them.
+    declared_by_a_pass: set[str] = set()
     for control_id, control_ids, status in (
         await session.execute(
             select(
@@ -135,6 +140,11 @@ async def framework_posture(
             folded = fold_to_control(attributed_id)
             if folded:
                 tested.setdefault(folded, set()).add(status)
+        if status == "pass":
+            for declared in non_passing_attribution(control_id, control_ids):
+                folded = fold_to_control(declared)
+                if folded:
+                    declared_by_a_pass.add(folded)
 
     implemented = {
         folded
@@ -170,6 +180,10 @@ async def framework_posture(
     ) - failing - passing
     documented = (implemented & controls) - failing - passing - manual_review
     unaddressed = controls - failing - passing - documented - manual_review
+    # A note on the remainder rather than a sixth bucket: the five above still
+    # partition the framework, and this says which part of `unaddressed` carries
+    # passing machine evidence that does not amount to credit.
+    partially_evidenced = (declared_by_a_pass & controls) & unaddressed
 
     return {
         "baseline": baseline,
@@ -179,6 +193,7 @@ async def framework_posture(
         "documented": sorted(documented),
         "manual_review": sorted(manual_review),
         "unaddressed": sorted(unaddressed),
+        "partially_evidenced": sorted(partially_evidenced),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(controls), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(controls), 1),
     }
@@ -193,6 +208,7 @@ def _empty(baseline: str | None) -> dict[str, Any]:
         "documented": [],
         "manual_review": [],
         "unaddressed": [],
+        "partially_evidenced": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
     }
@@ -335,6 +351,7 @@ async def _nist_171_posture(
     # ceiling on what any scan could evidence, a fact about the catalog rather
     # than about which checks are registered.
     unmapped_checks: set[str] = set()
+    declared_by_a_pass: set[str] = set()
     by_requirement: dict[str, set[str]] = {}
     needs_crosswalk: dict[str, set[str]] = {}
     for check_key, control_id, control_ids, status in (
@@ -359,6 +376,12 @@ async def _nist_171_posture(
             else non_passing_practice_attribution(check_key)
         )
         if declared:
+            if status == "pass":
+                # Every practice the check declares, not only the credited one.
+                for practice in non_passing_practice_attribution(check_key):
+                    declared_by_a_pass.add(
+                        practice.split("-", 1)[1] if "-" in practice else practice
+                    )
             for practice in declared:
                 # `CHECK_PRACTICES` is keyed by practice id (`IA.L2-3.5.3`); this
                 # view's denominator is the requirement number (`3.5.3`).
@@ -424,6 +447,7 @@ async def _nist_171_posture(
     ) - failing - passing
     documented = (claimed & total) - failing - passing - manual_review
     unaddressed = total - failing - passing - documented - manual_review
+    partially_evidenced = declared_by_a_pass & unaddressed
     reachable = set((await _crosswalk_reachable(session)) & total)
 
     return {
@@ -439,6 +463,7 @@ async def _nist_171_posture(
         "documented": sorted(documented, key=_requirement_sort),
         "manual_review": sorted(manual_review, key=_requirement_sort),
         "unaddressed": sorted(unaddressed, key=_requirement_sort),
+        "partially_evidenced": sorted(partially_evidenced, key=_requirement_sort),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(total), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(total), 1),
         # The honest limits of this view, beside the numbers rather than in a
@@ -504,6 +529,7 @@ def _empty_framework(
         "documented": [],
         "manual_review": [],
         "unaddressed": [],
+        "partially_evidenced": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
         "unmapped_checks": [],

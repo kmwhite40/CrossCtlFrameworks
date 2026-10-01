@@ -264,3 +264,65 @@ async def test_the_baseline_path_has_the_bucket_too() -> None:
 
     buckets = ("passing", "failing", "documented", "manual_review", "unaddressed")
     assert sum(len(out[b]) for b in buckets) == out["total"]
+
+
+@pytest.mark.asyncio
+async def test_a_control_a_passing_check_declares_is_named_not_merely_untouched() -> None:
+    """The other half of "not yet addressed" that was not true.
+
+    A passing check credits only its **primary** control -- deliberately, so one
+    narrow check cannot mark several controls satisfied. `ccf.posture.evidence`
+    owns that asymmetry and it is not changed here.
+
+    But the controls it also declares then appeared nowhere at all, and the page
+    called them "not yet addressed" alongside the hundreds nothing had touched.
+    On the live system that was eight controls with passing machine evidence
+    against them.
+
+    So they are named, as a note *inside* `unaddressed` rather than as a sixth
+    bucket: the five still partition the framework, and this says which part of
+    the remainder has evidence that does not amount to credit. An SSP author
+    writing AC-17 is better off knowing a passing check touches it.
+    """
+    org_id, system_id = await _system_with(
+        # phishing_resistant_mfa declares IA.L2-3.5.4 then IA.L2-3.5.3; a pass
+        # credits 3.5.4 only.
+        [("m365.identity.phishing_resistant_mfa", "IA-2(11)", "pass")]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    assert "3.5.4" in out["passing"], "the primary practice is credited"
+    assert "3.5.3" in out["partially_evidenced"], (
+        "a practice a passing check declares must be named rather than left "
+        "indistinguishable from one nothing has touched"
+    )
+    assert "3.5.3" in out["unaddressed"], (
+        "it is still not credited -- this is a note on the remainder, not a "
+        "sixth bucket, or the buckets would stop partitioning"
+    )
+    # Nothing touches 3.1.1 at all, so it must not appear.
+    assert "3.1.1" not in out["partially_evidenced"]
+    assert "3.1.1" in out["unaddressed"]
+
+
+@pytest.mark.asyncio
+async def test_a_credited_or_failing_control_is_not_also_partially_evidenced() -> None:
+    """The note describes the remainder, so it may not name anything accounted for."""
+    org_id, system_id = await _system_with(
+        [
+            ("m365.identity.phishing_resistant_mfa", "IA-2(11)", "pass"),
+            ("m365.identity.mfa_registered", "IA-2", "fail"),
+        ]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    assert "3.5.3" in out["failing"], "the failing check reaches it"
+    assert "3.5.3" not in out["partially_evidenced"], (
+        "a control already reported as failing must not also be noted as "
+        "merely partially evidenced"
+    )
+    for bucket in ("passing", "failing", "documented", "manual_review"):
+        overlap = set(out["partially_evidenced"]) & set(out[bucket])
+        assert overlap == set(), f"partially_evidenced overlaps {bucket}: {sorted(overlap)}"
