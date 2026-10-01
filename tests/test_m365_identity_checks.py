@@ -194,6 +194,13 @@ async def test_every_evaluator_receives_the_arguments_it_declares() -> None:
             "id": "x",
             "userPrincipalName": "x@example.test",
             "accountEnabled": False,
+            # The directory-settings shape, so the lockout evaluator can read a
+            # threshold rather than reporting it unassessable -- which this guard
+            # would otherwise mistake for a wiring omission.
+            "displayName": "Password Rule Settings",
+            "values": [{"name": "LockoutThreshold", "value": "3"}],
+            # The Intune device-restriction field, for the same reason.
+            "storageBlockRemovableStorage": True,
         }
     ]
     for check in m365.CHECKS:

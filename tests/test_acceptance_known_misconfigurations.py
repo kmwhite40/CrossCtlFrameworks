@@ -234,6 +234,62 @@ RISKY_USERS = [
 SIGNIN_AUDIT = [{"createdDateTime": _stamp(1)}]
 DIRECTORY_AUDIT = [{"activityDateTime": _stamp(2)}]
 
+#: AC-7 -- lockout IS configured correctly here, at three attempts. One of the
+#: things this tenant gets right, so the suite cannot pass by failing everything.
+PASSWORD_RULE_SETTINGS = [
+    {
+        "displayName": "Password Rule Settings",
+        "values": [
+            {"name": "LockoutThreshold", "value": "3"},
+            {"name": "LockoutDurationInSeconds", "value": "900"},
+        ],
+    },
+    {"displayName": "Consent Policy Settings", "values": [{"name": "X", "value": "1"}]},
+]
+
+#: SI-5 -- a high-severity alert nobody has touched in sixty days, beside a
+#: resolved one and a fresh one. Only the stale high is a finding: the other two
+#: are what distinguishes "left unactioned" from "an alert exists".
+SECURITY_ALERTS = [
+    {
+        "id": "al-stale",
+        "title": "Suspicious sign-in from anonymous IP",
+        "status": "new",
+        "severity": "high",
+        "createdDateTime": _stamp(60),
+    },
+    {
+        "id": "al-done",
+        "title": "Malware detected",
+        "status": "resolved",
+        "severity": "critical",
+        "createdDateTime": _stamp(120),
+    },
+    {
+        "id": "al-fresh",
+        "title": "Impossible travel",
+        "status": "new",
+        "severity": "high",
+        "createdDateTime": _stamp(1),
+    },
+]
+
+#: MP-7 -- one configuration profile sets removable storage and allows it. The
+#: second sets nothing, which must not be read as a refusal.
+DEVICE_CONFIGURATIONS = [
+    {
+        "id": "cfg-1",
+        "displayName": "Windows restrictions",
+        "@odata.type": "#microsoft.graph.windows10GeneralConfiguration",
+        "storageBlockRemovableStorage": False,
+    },
+    {
+        "id": "cfg-2",
+        "displayName": "Kiosk",
+        "@odata.type": "#microsoft.graph.windows10GeneralConfiguration",
+    },
+]
+
 
 #: check key -> (rows, the evaluator's extra keyword arguments).
 #: Every m365 platform check appears. A check added without a fixture entry
@@ -259,6 +315,9 @@ FIXTURE: dict[str, tuple[list[dict[str, Any]], dict[str, Any]]] = {
         CONDITIONAL_ACCESS,
         {"tenant_id": TENANT},
     ),
+    m365.LOCKOUT_THRESHOLD.key: (PASSWORD_RULE_SETTINGS, {"tenant_id": TENANT}),
+    m365.SECURITY_ALERTS_TRIAGED.key: (SECURITY_ALERTS, {"tenant_id": TENANT}),
+    m365.REMOVABLE_STORAGE_BLOCKED.key: (DEVICE_CONFIGURATIONS, {"tenant_id": TENANT}),
 }
 
 #: What a person reading the fixture says each check must conclude.
@@ -277,6 +336,9 @@ EXPECTED_VERDICTS = {
     m365.SESSION_LOCK_ENFORCED.key: "fail",
     m365.STORAGE_ENCRYPTION_REQUIRED.key: "fail",
     m365.SESSION_REAUTHENTICATION_REQUIRED.key: "pass",
+    m365.LOCKOUT_THRESHOLD.key: "pass",
+    m365.SECURITY_ALERTS_TRIAGED.key: "fail",
+    m365.REMOVABLE_STORAGE_BLOCKED.key: "fail",
 }
 FAILING_CHECKS = {k for k, v in EXPECTED_VERDICTS.items() if v == "fail"}
 
@@ -296,8 +358,12 @@ EXPECTED_FAILING_CONTROLS = {
     "AC-2(12)",  # risky_users_resolved
     "AC-11",  # session_lock_enforced
     "SC-28",  # storage_encryption_required
+    "SI-4",  # alerts_triaged -- a stale high-severity alert nobody actioned
+    "MP-7",  # removable_storage_blocked
 }
-EXPECTED_PASSING_CONTROLS = {"AU-2", "AC-12"}
+#: AC-7 joins these: lockout is one of the things this tenant has configured
+#: correctly, and a fixture where every check fails would prove far less.
+EXPECTED_PASSING_CONTROLS = {"AU-2", "AC-12", "AC-7"}
 
 
 class _FakeGraph:
@@ -445,7 +511,7 @@ CROSSWALK_ROWS = [
 #: 3.1.10; storage_encryption -> 3.1.19 and 3.13.16; compliance_enforced ->
 #: 3.4.2; mfa_registered, legacy_auth_blocked and phishing_resistant_mfa ->
 #: 3.5.3; phishing_resistant_mfa and phishable_methods -> 3.5.4; stale_accounts
-#: -> 3.5.6.
+#: -> 3.5.6; removable_storage -> 3.8.7; alerts_triaged -> 3.14.3.
 EXPECTED_FAILING_REQUIREMENTS = {
     "3.1.1",
     "3.1.5",
@@ -455,7 +521,9 @@ EXPECTED_FAILING_REQUIREMENTS = {
     "3.5.3",
     "3.5.4",
     "3.5.6",
+    "3.8.7",
     "3.13.16",
+    "3.14.3",
 }
 #: Both audit checks pass and declare 3.3.1 and 3.3.2; a pass credits the
 #: **primary** practice only, so 3.3.1 is reported and 3.3.2 is not. That
@@ -472,7 +540,9 @@ EXPECTED_FAILING_REQUIREMENTS = {
 #: 3.1.11 was also here, from AC-12 through the crosswalk. Its check
 #: (session_reauthentication_required) is the other exclusion: sign-in frequency
 #: forces re-authentication, it does not terminate a session.
-EXPECTED_PASSING_REQUIREMENTS = {"3.3.1"}
+#: 3.1.8 joins it: the lockout threshold is three, which is one of the things
+#: this tenant has right.
+EXPECTED_PASSING_REQUIREMENTS = {"3.1.8", "3.3.1"}
 
 
 @dataclass
@@ -808,22 +878,24 @@ async def test_framework_posture_names_the_failing_requirements(broken_tenant) -
             "m365.policy.session_reauthentication_required",
         }
 
-        # 10 of 110 assessed -- 9 failing plus 3.3.1. It was 13 while a
+        # 13 of 110 assessed -- 11 failing plus 3.1.8 and 3.3.1. It was 13 while a
         # relatedness crosswalk spread each verdict across neighbouring
         # requirements; the smaller number is the one the evidence supports, and
         # it is still a percentage of the framework rather than of what was
         # checked.
-        assert posture["assessed_pct"] == 9.1
+        assert posture["assessed_pct"] == 11.8
 
         # The gap report, on the same scan, still answers its own question.
         assert gaps["failing"] == len(FAILING_CHECKS)
         assert gaps["passing"] == len(EXPECTED_VERDICTS) - len(FAILING_CHECKS)
         assert gaps["open"] == len(FAILING_CHECKS), "nothing accepted, so all are open"
         assert gaps["accepted"] == 0
-        # 2 MFA users + 1 stale user + 1 device + 1 risky user, plus the seven
-        # tenant-wide failures: they share one resource id but are seven
-        # separate rows, one per check, so the tenant is not counted once.
-        assert gaps["resources_failing"] == 12
+        # 2 MFA users + 1 stale user + 1 device + 1 risky user + 1 stale security
+        # alert, plus the eight tenant-wide failures: those share one resource id
+        # but are eight separate rows, one per check, so the tenant is not counted
+        # once. The alert is its own resource because the check judges alerts
+        # individually -- a failure names the one to go and work.
+        assert gaps["resources_failing"] == 14
     finally:
         await _cleanup(org_id, seeded)
 
