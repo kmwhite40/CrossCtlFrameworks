@@ -355,6 +355,28 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   opened from there. **Do not fix a scan-coverage gap by editing the
   responsibility table**: that moves SSP origination and a score reported to the
   DoD. `tests/test_scan_scope_is_not_responsibility.py` pins both halves.
+- **The msgraph check suite IS verified against a live tenant**, which is worth
+  stating because the other integrations are not. All 19 registered msgraph checks
+  were run against the GCC High tenant bound to org 2
+  (`graph.microsoft.us`, `cloud = "usgov"`):
+
+  * every endpoint answers 200 with substantive data — 129 users, 85 managed
+    devices, 23 Conditional Access policies, 823 security alerts, 15 device
+    configuration profiles, 7 compliance policies, 2 terms-of-use agreements;
+  * every evaluator runs: **5 fail, 14 pass, 0 raised, 0 manual_review_required**;
+  * the passes were inspected against the raw rows rather than trusted. Two were
+    checked in detail: both terms-of-use agreements really do set
+    `isViewingBeforeAcceptanceRequired`, and all 48 risky users really are
+    `remediated` or `dismissed`.
+
+  Reproduce by reading each `m365.ENDPOINTS` path through
+  `MsGraphConnector._get_all` — passing `m365.FIRST_PAGE_ONLY.get(key)`, or the two
+  audit checks walk a tenant's whole sign-in log and earn a 429 — then driving
+  `MsGraphConnector._evaluate` over the rows.
+
+  This is how the AT-2 check was caught: `$metadata` is published per-cloud, and
+  only the tenant settles whether a check can run. **Verifying a check against the
+  model is necessary and not sufficient.**
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
 - **AWS Security Hub attestation ingest is unverified against a live account** —
