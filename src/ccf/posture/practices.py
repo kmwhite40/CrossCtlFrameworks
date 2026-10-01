@@ -193,6 +193,24 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # high-severity ones are not sitting unactioned. An alert left `new` for
     # months is the absence of the response the requirement asks for.
     "m365.security.alerts_triaged": ("SI.L2-3.14.3",),
+    # -- Awareness and training ----------------------------------------------
+    # AT.L2-3.2.1  "Ensure that managers, systems administrators, and users of
+    #               organizational systems are made aware of the security risks
+    #               associated with their activities and of the applicable
+    #               policies, standards, and procedures related to the security
+    #               of those systems."
+    #
+    # A completed phishing campaign *with training attached* is awareness of a
+    # security risk delivered to users, which is what 3.2.1 asks for, with no
+    # argument in between.
+    #
+    # Deliberately not 3.2.2 ("Ensure that personnel are trained to carry out
+    # their assigned information security-related duties and responsibilities").
+    # That is role-based training for people holding security duties; a
+    # tenant-wide phishing simulation evidences nothing about whether an
+    # administrator was trained for their role, and listing it would file a
+    # finding against a requirement this check never observed.
+    "m365.awareness.training_current": ("AT.L2-3.2.1",),
 }
 
 #: Checks deliberately left unmapped, and the argument that would be needed.
@@ -202,6 +220,17 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
 #: honest outcome: the verdict exists, the document cannot place it, and both
 #: facts are visible.
 UNMAPPED: dict[str, str] = {
+    "m365.identity.system_use_notification": (
+        "800-171 carries no system use notification requirement. AC-8 was "
+        "tailored out of the 110: the AC family's practices govern access "
+        "enforcement, flow control, least privilege and session handling, and "
+        "none asks whether a notification is displayed before logon. The closest "
+        "candidate, 3.1.9 (provide privacy and security notices consistent with "
+        "applicable CUI rules), is still wrong -- it is about CUI-specific "
+        "notices, while this check reads a tenant-wide terms-of-use agreement "
+        "that may say nothing about CUI. The check keeps its 800-53 AC-8 "
+        "attribution, which is the framework that does ask for it."
+    ),
     "aws.iam.access_key_rotation": (
         "800-171 has no authenticator-lifetime requirement. 3.5.5 and 3.5.6 "
         "govern identifiers, not credential age, and reading a 90-day key "

@@ -172,4 +172,8 @@ def test_the_mapped_share_is_stated_not_implied() -> None:
     covers. Update it deliberately, along with the runbook.
     """
     registered = _registered_check_keys()
-    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (40, 36, 4)
+    # 42/37/5 as of the AC-8 and AT-2 checks: AT-2 maps to AT.L2-3.2.1 (a new
+    # practice, and the first in the AT family any check reaches), AC-8 is
+    # deliberately unmapped because 800-171 carries no system use notification
+    # requirement.
+    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (42, 37, 5)
