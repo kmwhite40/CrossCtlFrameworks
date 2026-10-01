@@ -332,12 +332,6 @@ SESSION_REAUTHENTICATION_REQUIRED = PostureCheck(
 )
 
 
-#: AT-2 is an annual obligation, so an awareness programme is evidenced by
-#: something having happened inside a year. 365 rather than a rounder number
-#: because that is what the control says; a shorter window would report a
-#: compliant tenant as failing between campaigns.
-AWARENESS_TRAINING_DAYS = 365
-
 SYSTEM_USE_NOTIFICATION = PostureCheck(
     key="m365.identity.system_use_notification",
     title="A system use notification is displayed before access is granted",
@@ -353,19 +347,6 @@ SYSTEM_USE_NOTIFICATION = PostureCheck(
     # would put this check's verdict against controls it never observed.
     control_ids=("AC-8",),
     required_permissions=("Agreement.Read.All",),
-)
-
-AWARENESS_TRAINING_CURRENT = PostureCheck(
-    key="m365.awareness.training_current",
-    title="Security awareness training has been delivered within the year",
-    provider="msgraph",
-    resource_type="m365_tenant",
-    expected=(
-        f"an attack-simulation campaign with training attached, completed within "
-        f"{AWARENESS_TRAINING_DAYS} days"
-    ),
-    control_ids=("AT-2", "AT-2(3)"),
-    required_permissions=("AttackSimulation.Read.All",),
 )
 
 CHECKS: tuple[PostureCheck, ...] = (
@@ -385,7 +366,6 @@ CHECKS: tuple[PostureCheck, ...] = (
     SESSION_REAUTHENTICATION_REQUIRED,    LOCKOUT_THRESHOLD,
     SECURITY_ALERTS_TRIAGED,
     SYSTEM_USE_NOTIFICATION,
-    AWARENESS_TRAINING_CURRENT,
     REMOVABLE_STORAGE_BLOCKED,
 )
 
@@ -450,14 +430,20 @@ ENDPOINTS: dict[str, str] = {
     # device *restriction*, so it is set on windows10GeneralConfiguration rather
     # than on the compliance policies the lock and encryption checks read.
     REMOVABLE_STORAGE_BLOCKED.key: "/v1.0/deviceManagement/deviceConfigurations",
-    # Both in the v1.0 model, verified against Graph's published $metadata rather
-    # than taken from documentation prose: `agreement` carries
-    # isViewingBeforeAcceptanceRequired, and `simulation` carries status,
-    # completionDateTime and trainingSetting. A property name guessed wrong here
-    # produces a check that reports manual_review_required forever and reads as a
-    # tenant problem.
+    # Verified against the live GCC High tenant, not only against Graph's
+    # published $metadata: this returns agreements carrying
+    # isViewingBeforeAcceptanceRequired on graph.microsoft.us.
+    #
+    # The AT-2 check that shipped beside this one has been removed, and the reason
+    # is why this comment now says "verified against the tenant". It read
+    # /v1.0/security/attackSimulation/simulations, which IS in the v1.0 model --
+    # but the model published at graph.microsoft.com is the *commercial* one, and
+    # graph.microsoft.us answers `400 BadRequest: Resource not found for the
+    # segment 'attackSimulation'` on both v1.0 and beta while /v1.0/security
+    # itself answers 200. A cloud capability gap, not a licensing one, which would
+    # answer 403. The check would have reported manual_review_required forever on
+    # every GCC High tenant and read as a tenant problem.
     SYSTEM_USE_NOTIFICATION.key: "/v1.0/identityGovernance/termsOfUse/agreements",
-    AWARENESS_TRAINING_CURRENT.key: "/v1.0/security/attackSimulation/simulations",
 }
 
 
@@ -1396,121 +1382,6 @@ def evaluate_system_use_notification(
     )
 
 
-#: Simulation statuses that mean the campaign actually ran to completion. A
-#: scheduled or running campaign is an intention, and AT-2 asks what users
-#: received. Values from Graph's ``simulationStatus`` enum.
-_SIMULATION_COMPLETE = frozenset({"succeeded", "completed"})
-
-
-def evaluate_awareness_training_current(
-    rows: list[dict[str, Any]], *, tenant_id: str
-) -> list[ResourceFinding]:
-    """AT-2 / AT-2(3): did awareness training actually reach users this year?
-
-    Three things have to hold together, and each is a way this check could
-    overclaim if dropped:
-
-    * the campaign **completed** -- a scheduled simulation is an intention;
-    * it carries **training** -- a phishing test with no training attached is a
-      measurement of users, not awareness training, and AT-2 is about what users
-      were taught;
-    * it completed **within the year**, because AT-2 is an annual obligation and a
-      campaign from three years ago evidences a programme the tenant once had.
-
-    An unreadable or absent completion date is ``manual_review_required``, not a
-    failure: "stale" inferred from a timestamp Concord could not parse is the same
-    overclaim ``_tenant_finding(unassessable=...)`` exists for.
-
-    The newest qualifying campaign decides, so an old one cannot drag down a
-    tenant that also ran a recent one.
-    """
-    if not rows:
-        return _tenant_finding(
-            tenant_id,
-            passed=False,
-            observed="no attack-simulation campaign exists for this tenant",
-            detail={"simulations": 0},
-        )
-
-    now = datetime.now(UTC)
-    best_age: int | None = None
-    best_name = ""
-    unreadable_dates: list[str] = []
-    no_training: list[str] = []
-    not_completed = 0
-    for row in rows:
-        name = str(row.get("displayName") or row.get("id") or "unnamed")
-        status = str(row.get("status") or "").strip().lower()
-        if status not in _SIMULATION_COMPLETE:
-            not_completed += 1
-            continue
-        if not row.get("trainingSetting"):
-            no_training.append(name)
-            continue
-        completed = _parse_graph_datetime(row.get("completionDateTime"))
-        if completed is None:
-            unreadable_dates.append(name)
-            continue
-        age = (now - completed).days
-        if best_age is None or age < best_age:
-            best_age, best_name = age, name
-
-    if best_age is not None and best_age <= AWARENESS_TRAINING_DAYS:
-        return _tenant_finding(
-            tenant_id,
-            passed=True,
-            observed=(
-                f"{best_name!r} completed with training {best_age} days ago, within "
-                f"the {AWARENESS_TRAINING_DAYS}-day window"
-            ),
-            detail={"simulations": len(rows), "newest_days": best_age},
-        )
-    if best_age is not None:
-        return _tenant_finding(
-            tenant_id,
-            passed=False,
-            observed=(
-                f"the newest completed campaign with training ({best_name!r}) "
-                f"finished {best_age} days ago, past the "
-                f"{AWARENESS_TRAINING_DAYS}-day window"
-            ),
-            detail={"simulations": len(rows), "newest_days": best_age},
-        )
-    # Nothing qualified. Which reason it was decides whether this is a finding or
-    # a review: a date Concord could not read is not evidence of anything.
-    if unreadable_dates and not no_training:
-        return _tenant_finding(
-            tenant_id,
-            passed=False,
-            observed=(
-                f"{len(unreadable_dates)} completed campaign(s) reported no readable "
-                f"completion date ({', '.join(unreadable_dates[:5])})"
-            ),
-            detail={"simulations": len(rows), "unreadable": unreadable_dates[:20]},
-            unassessable=True,
-        )
-    if no_training:
-        return _tenant_finding(
-            tenant_id,
-            passed=False,
-            observed=(
-                f"{len(no_training)} completed campaign(s) had no training attached "
-                f"({', '.join(no_training[:5])}), so no awareness training was "
-                "delivered by them"
-            ),
-            detail={"simulations": len(rows), "without_training": no_training[:20]},
-        )
-    return _tenant_finding(
-        tenant_id,
-        passed=False,
-        observed=(
-            f"{not_completed} campaign(s) exist but none has completed, so no "
-            "training has been delivered"
-        ),
-        detail={"simulations": len(rows), "not_completed": not_completed},
-    )
-
-
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     MFA_REGISTERED.key: evaluate_mfa_registered,
     LEGACY_AUTH_BLOCKED.key: evaluate_legacy_auth_blocked,
@@ -1530,5 +1401,4 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     SECURITY_ALERTS_TRIAGED.key: evaluate_security_alerts_triaged,
     REMOVABLE_STORAGE_BLOCKED.key: evaluate_removable_storage_blocked,
     SYSTEM_USE_NOTIFICATION.key: evaluate_system_use_notification,
-    AWARENESS_TRAINING_CURRENT.key: evaluate_awareness_training_current,
 }

@@ -91,13 +91,6 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # Blocked or not; nothing to tune.
     m365.REMOVABLE_STORAGE_BLOCKED.key: (),
     m365.SYSTEM_USE_NOTIFICATION.key: (),
-    # No parameter yet, deliberately. `AWARENESS_TRAINING_DAYS` is 365 because
-    # AT-2 is an annual obligation, not because 365 is a tunable default -- a
-    # pack lowering it to 30 would report a compliant tenant as failing between
-    # campaigns, and raising it would claim training that has lapsed. If this
-    # ever becomes parameterizable it needs the provider's `expected` template
-    # to re-render with it, which is what `parameterize` exists to guarantee.
-    m365.AWARENESS_TRAINING_CURRENT.key: (),
     aws.SECURITY_GROUP_ADMIN_INGRESS.key: (),
     # Nor here: a flow log is either delivering or it is not. "How much logging
     # is enough" is a retention question, which `azure.monitor.log_retention`

@@ -143,7 +143,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 42 checks touching 45 of the 288 controls in a
+- **Posture check coverage is 41 checks touching 47 of the 288 controls in a
   FedRAMP Moderate baseline** — roughly 16%. Re-measure with the command below
   rather than trusting this sentence; the intersection is not asserted by a test
   (see the note following the table) and the last two figures stated from
@@ -153,18 +153,35 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
   | Provider | Checks | Controls evidenced |
   |---|---|---|
-  | `msgraph` (Entra / Intune) | 19 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-7, AC-7(1), AC-8, AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AC-20(2), AT-2, AT-2(3), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), IR-4, MP-7, SC-28, SC-28(1), SI-2, SI-4, SI-5 |
+  | `msgraph` (Entra / Intune) | 18 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-7, AC-7(1), AC-8, AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AC-20(2), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), IR-4, MP-7, SC-28, SC-28(1), SI-2, SI-4, SI-5 |
   | `aws_govcloud` | 13 | AC-3, AC-4, AU-2, AU-9, AU-9(3), AU-12, CM-6, CM-7, IA-2, IA-2(1), IA-5, IA-5(1), RA-5, RA-5(2), SC-7, SC-7(3), SC-28, SC-28(1), SI-2, SI-2(2), SI-4 |
   | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `gcp` | 3 | AU-4, AU-11, CM-2, CM-6, SC-12, SC-28, SC-28(1) |
   | `puppetdb` | 2 | CM-2, CM-6, CM-8 |
 
-  `AC-8` and the `AT-2` pair were added because **no provider could reach them
-  at all**, and `AT-2` is the first control in the AT family any check evidences.
-  Both read v1.0 Graph endpoints whose properties were verified against
-  Microsoft's published `$metadata` rather than taken from documentation prose: a
-  property name guessed wrong produces a check that reports
-  `manual_review_required` forever and reads as a tenant problem.
+  `AC-8` was added because **no provider could reach it at all**. It reads
+  `/v1.0/identityGovernance/termsOfUse/agreements`, verified against the live GCC
+  High tenant — not only against Graph's published `$metadata` — and the property
+  that decides it, `isViewingBeforeAcceptanceRequired`, is present there.
+
+  An `AT-2` check shipped beside it and was **removed after being verified against
+  that tenant**, which is why the sentence above now says "verified against the
+  tenant" rather than "verified against the metadata". It read
+  `/v1.0/security/attackSimulation/simulations`, which genuinely is in the v1.0
+  model — but the model published at `graph.microsoft.com` is the **commercial**
+  one, and `graph.microsoft.us` answers `400 BadRequest: Resource not found for
+  the segment 'attackSimulation'` on both `/v1.0` and `/beta`, while
+  `/v1.0/security` itself answers 200. That is a cloud capability gap, not a
+  licensing one, which would answer 403. The check would have reported
+  `manual_review_required` on every scan of every GCC High tenant for ever, and
+  read as a tenant problem rather than a platform one.
+
+  **The AT family therefore still has zero coverage**, and closing it needs either
+  a Graph surface this cloud serves or per-cloud check applicability, which
+  Concord does not have today: a check is either registered for a provider or it
+  is not, with no notion of the sovereign clouds it can actually run in. That is
+  the mechanism that would let this check return for commercial tenants without
+  misreporting GCC High ones.
 
   Three of the distinct controls these checks evidence — `AC-2(12)`,
   `AU-9(3)` and `IA-2(11)` — are **not** in the Moderate baseline, which is why
@@ -223,7 +240,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
-- **A CMMC SSP shows evidence for 29 of the 110 practices**, from the 37 of 42
+- **A CMMC SSP shows evidence for 28 of the 110 practices**, from the 36 of 41
   checks that declare one. This is a *different* number from the two above and
   from the per-provider table: those count controls a check evidences, while
   this counts practices a **CMMC document can actually display**.
@@ -253,10 +270,9 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   split are asserted by `tests/test_check_practice_mapping_is_sound.py`.
 
   Practices covered, by domain: **AC** 3.1.1, 3.1.5, 3.1.8, 3.1.10, 3.1.19,
-  3.1.22 · **AT** 3.2.1 · **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2, 3.4.7
-  · **IA** 3.5.3, 3.5.4, 3.5.6, 3.5.7, 3.5.8 · **MP** 3.8.7 · **RA** 3.11.2 ·
-  **SC** 3.13.1, 3.13.5, 3.13.6, 3.13.8, 3.13.10, 3.13.16 · **SI** 3.14.1,
-  3.14.3, 3.14.6.
+  3.1.22 · **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2, 3.4.7 · **IA** 3.5.3,
+  3.5.4, 3.5.6, 3.5.7, 3.5.8 · **MP** 3.8.7 · **RA** 3.11.2 · **SC** 3.13.1,
+  3.13.5, 3.13.6, 3.13.8, 3.13.10, 3.13.16 · **SI** 3.14.1, 3.14.3, 3.14.6.
 
   The two network-boundary checks added four practices (3.4.7, 3.13.1, 3.13.6,
   3.14.6) and **no** new Moderate-baseline controls: the 800-53 ids they declare
@@ -266,15 +282,13 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   things, and this is the clearest illustration of it the coverage data has
   produced.
 
-  The `AC-8` and `AT-2` checks are the opposite case, and the reason they were
-  chosen: both controls were reachable by nothing, so both numbers moved.
-  `AT.L2-3.2.1` is the first practice in the AT family any check evidences,
-  taking the practice count to 29 of 110. `AC-8` is deliberately **unmapped** on
+  The `AC-8` check is the opposite case, and the reason it was chosen: the control
+  was reachable by nothing. It is deliberately **unmapped** on
   the CMMC side -- 800-171 carries no system use notification requirement, and
   the closest candidate (3.1.9, CUI-specific privacy and security notices) is
   about something else -- so it raises 800-53 coverage and not practice coverage.
   The argument is recorded in `ccf.posture.practices.UNMAPPED` rather than left
-  as an omission.
+  as an omission. The practice count is unchanged at 28 of 110 for that reason.
 - **An SSP reports its own system's evidence, not its organization's.** Two
   systems sharing one Microsoft 365 tenant each carry their own control tests
   and their own POA&M for a tenant-level finding, which is correct — each system
@@ -317,7 +331,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   msgraph connector with fourteen working checks scanned none of them. M365 now
   falls back to a domain-level answer derived from the scoring placemat.
 
-  All 42 registered checks are scannable today, and
+  All 41 registered checks are scannable today, and
   `tests/test_every_check_can_be_scanned.py` fails if that stops being true —
   its allowlist of unscannable checks is empty on purpose.
 
