@@ -704,6 +704,7 @@ async def record_result(
     failing: int = 0,
     expected: str | None = None,
     resources: Sequence[ResourceFinding] = (),
+    open_remediation: bool = True,
 ) -> ControlTestResult:
     """Persist one test result, update the test, and alert on fail/warn.
 
@@ -715,6 +716,28 @@ async def record_result(
     ``evaluated``/``failing``/``expected``/``resources`` are the posture
     additions (0068) and all default to empty, so every pre-existing caller
     behaves exactly as before.
+
+    ``open_remediation=False`` records the result and suppresses only the
+    *consequences* of a failure -- the notification, the remediation Task and
+    the POA&M. The status, the resource rows, ``last_status`` and every rollup
+    that reads them are untouched, so the evidence is identical either way and
+    ``effective_verdict`` still reports the failure. It exists for one caller
+    (``posture.attested_scan``) and one reason: a provider attestation is
+    recorded as one row per (provider control, 800-53 requirement) pair, which
+    is what stops one automated check crediting several controls, so a single
+    failing Security Hub control is three or four rows. Opening a Task and a
+    POA&M per row would file four weaknesses for one misconfigured bucket, and
+    an assessor reading that list would see four times the work that exists.
+    Grouping those into one POA&M cannot be done here, where the dedupe key is
+    this test's own id.
+
+    This is **not** a waiver and must not be used as one: a waiver is a recorded
+    decision to accept a specific risk, with an owner and an expiry, and it is
+    visible as such (see ``governance.waivers``). This flag says the finding is
+    already represented in the remediation queue by whatever check or scanner
+    groups it correctly. Defaulting it to ``False`` anywhere else would empty
+    the queue silently, which is why it defaults to ``True`` and every other
+    caller keeps the behaviour it had.
     """
     if status not in VALIDATION_STATUSES:
         raise ValueError(f"status must be one of {VALIDATION_STATUSES}")
@@ -823,7 +846,18 @@ async def record_result(
     # previous_status must still be captured before the reassignment above, or
     # it would always equal status ("pass") and recovery would never fire.
     if status in ("fail", "warn"):
-        if coverage is None or not coverage.suppress:
+        if not open_remediation:
+            # Evidence recorded above; consequences deliberately skipped. Logged
+            # so an operator asking why a failing control has no POA&M finds the
+            # answer rather than inferring a bug.
+            log.info(
+                "control_tests.remediation_suppressed",
+                control_test_id=test.id,
+                control_id=test.control_id,
+                status=status,
+                check_source=test.check_source,
+            )
+        elif coverage is None or not coverage.suppress:
             await _alert_on_failure(session, test, status, detail or "")
         else:
             # How often the platform declines to act on a finding is the
