@@ -272,3 +272,63 @@ async def test_the_operations_page_renders_with_both_percentages_absent() -> Non
 
     assert r.status_code == 200, r.text[:400]
     assert "No open POA&amp;M to track" in r.text or "No open POA&M to track" in r.text
+
+
+async def test_a_programme_that_has_closed_nothing_reports_no_mttr() -> None:
+    """The most prominent instance: a 34px headline reading "0 days".
+
+    ``mttr.latest`` was ``0.0`` when no POA&M had ever been closed, and
+    ``dashboard.html`` renders it as a large number followed by the word "days".
+    A programme that has never remediated anything therefore read as one that
+    remediates instantly -- the same defect as ``on_track_pct``, in the largest
+    type on the page.
+    """
+    org_id = await _org()
+    async with session_scope() as s:
+        out = await dashboard_overview(s, org_id=org_id)
+
+    assert out["mttr"]["closed_total"] == 0
+    assert out["mttr"]["latest"] is None, (
+        "0 days mean-time-to-remediate over zero closures reads as instantaneous "
+        "remediation"
+    )
+    assert out["mttr"]["months_with_data"] == 0
+
+
+async def test_a_real_mttr_is_still_reported() -> None:
+    """So the fix is not "always blank"."""
+    org_id = await _org()
+    async with session_scope() as s:
+        system = (
+            await s.execute(select(System).where(System.organization_id == org_id))
+        ).scalars().first()
+        assert system is not None
+        today = date.today()
+        s.add(
+            POAM(
+                system_id=system.id,
+                title="closed one",
+                weakness="w",
+                severity="moderate",
+                status="completed",
+                identified_on=today - timedelta(days=10),
+                closed_on=today,
+            )
+        )
+        await s.flush()
+        out = await dashboard_overview(s, org_id=org_id)
+
+    assert out["mttr"]["closed_total"] == 1
+    assert out["mttr"]["latest"] == 10.0
+    assert out["mttr"]["months_with_data"] >= 1
+
+
+async def test_the_months_with_data_count_lets_the_chart_be_read_honestly() -> None:
+    """A month with no closures is carried as 0.0 because the sparkline primitive
+    cannot take a gap, so the dips would read as improvement. The count is what
+    lets the page caption it instead of leaving the reader to guess."""
+    org_id = await _org()
+    async with session_scope() as s:
+        out = await dashboard_overview(s, org_id=org_id)
+    assert len(out["mttr"]["series"]) == 12
+    assert out["mttr"]["months_with_data"] <= 12

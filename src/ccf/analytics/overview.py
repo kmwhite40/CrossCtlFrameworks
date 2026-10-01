@@ -198,10 +198,25 @@ async def _mttr_trend(
         key = (closed_on.year, closed_on.month)
         if key in sums:
             sums[key].append(max((closed_on - identified_on).days, 0))
+    # A month with no closures has no mean. It is carried as 0.0 because the
+    # sparkline primitive does arithmetic on every point and cannot take a gap --
+    # so `months_with_data` is returned beside the series and the page captions it,
+    # rather than letting a reader take the dips for improvement.
     series = [round(sum(v) / len(v), 1) if v else 0.0 for v in (sums[k] for k in keys)]
     closed_total = sum(len(sums[k]) for k in keys)
-    latest = next((s for s in reversed(series) if s), 0.0)
-    return {"series": series, "closed_total": closed_total, "latest": latest}
+    months_with_data = sum(1 for k in keys if sums[k])
+    # `None`, never `0.0`, when nothing has been closed. The page renders this as a
+    # 34px headline followed by the word "days", so a programme that has never
+    # closed a POA&M read "0 days" -- remediation so fast it is instantaneous. The
+    # most prominent instance of the same defect `on_track_pct` had: a number over
+    # no data, in the direction that flatters.
+    latest = next((s for s in reversed(series) if s), None)
+    return {
+        "series": series,
+        "closed_total": closed_total,
+        "months_with_data": months_with_data,
+        "latest": latest,
+    }
 
 
 async def _control_tests(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:

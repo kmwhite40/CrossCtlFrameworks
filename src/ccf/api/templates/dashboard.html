@@ -169,9 +169,21 @@
       </div>
       <div class="ovw-card">
         <div class="ovw-card__title">Findings MTTR</div>
+        {# None when nothing has been closed. It used to be 0.0, which rendered
+           here as a 34px "0 days" -- a programme that has never closed a POA&M
+           reading as one that remediates instantly. #}
+        {% if d.mttr.latest is none %}
+        <div class="ovw-mttr" style="color:var(--text-secondary)">&mdash;</div>
+        <div class="ovw-card__sub">No POA&amp;M closed in the last 12 months</div>
+        {% else %}
         <div class="ovw-mttr">{{ d.mttr.latest }}<span> days</span></div>
-        <div class="ovw-card__sub">avg · {{ d.mttr.closed_total }} closed / yr</div>
+        <div class="ovw-card__sub">avg · {{ d.mttr.closed_total }} closed / yr
+          {% if d.mttr.months_with_data < 12 %}·
+          <span class="dim">{{ d.mttr.months_with_data }} of 12 months had closures</span>
+          {% endif %}
+        </div>
         {{ sparkline(d.mttr.series, height=48, color='var(--accent)') }}
+        {% endif %}
       </div>
     </div>
 
