@@ -1,0 +1,201 @@
+""""Could not assess this" is not "nobody has looked at this".
+
+Found by reading the compliance-posture page. For a live system it said:
+
+    3 satisfied · 9 failing · 0 documented only · 276 not yet addressed
+
+The platform had in fact recorded a verdict for far more than twelve of those
+288 controls. Eighteen carried an explicit ``manual_review_required`` -- Concord
+looked, could not judge, and said so -- and they were being displayed inside
+"not yet addressed", which means nobody has looked.
+
+That is the wrong way round in the way that matters. ``manual_review_required``
+is the **actionable** bucket: it names the controls needing human evidence, which
+is work somebody has to schedule. Burying them among the hundreds nobody has
+touched guarantees they are never scheduled, and it understates how much of the
+baseline the platform has actually reached.
+
+Both framework paths had it: the FIPS-199 baseline view and the 800-171
+requirement view compute `failing`, `passing`, `documented` and then sweep
+everything else into `unaddressed`, so a verdict that is neither pass nor fail
+disappears into the remainder.
+
+The buckets still sum to the total. That is asserted here, because a fifth
+bucket carved out of a remainder is exactly where a denominator silently stops
+closing.
+"""
+
+from __future__ import annotations
+
+import itertools
+from datetime import UTC, datetime
+
+import pytest
+from alembic import command
+from alembic.config import Config
+
+from ccf.analytics.framework_posture import system_framework_posture
+from ccf.config import get_settings
+from ccf.db import session_scope
+from ccf.models import Organization, System, SystemProfile
+from ccf.models_grc import ControlTest
+from ccf.scoring.seed import seed_scoring_controls
+
+pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+_SEQ = itertools.count()
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _migrate() -> None:
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
+    command.upgrade(cfg, "head")
+
+
+async def _system_with(verdicts: list[tuple[str, str, str]]) -> tuple[int, int]:
+    """verdicts: (check_key, primary control id, status). Returns (org, system)."""
+    tag = next(_SEQ)
+    async with session_scope() as session:
+        await seed_scoring_controls(session)
+    async with session_scope() as session:
+        org = Organization(name=f"ManualReview Org {tag}")
+        session.add(org)
+        await session.flush()
+        system = System(organization_id=org.id, name=f"mr-{tag}")
+        session.add(system)
+        await session.flush()
+        session.add(
+            SystemProfile(
+                system_id=system.id,
+                answers={},
+                environment_type="cloud",
+                cloud_platform="m365_gcc_high",
+                frameworks=["NIST_800_171"],
+                derivation={},
+            )
+        )
+        for check_key, control_id, status in verdicts:
+            session.add(
+                ControlTest(
+                    organization_id=org.id,
+                    system_id=system.id,
+                    name=check_key,
+                    check_key=check_key,
+                    source="generated",
+                    control_id=control_id,
+                    control_ids=[control_id],
+                    last_status=status,
+                    last_tested_at=datetime.now(UTC),
+                    method="api",
+                )
+            )
+        return int(org.id), int(system.id)
+
+
+@pytest.mark.asyncio
+async def test_a_manual_review_verdict_is_its_own_bucket() -> None:
+    """The reported defect, on the 800-171 view."""
+    org_id, system_id = await _system_with(
+        [("m365.identity.stale_accounts", "AC-2", "manual_review_required")]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    # stale_accounts maps to IA.L2-3.5.6 -> requirement 3.5.6.
+    assert "3.5.6" in out["manual_review"], (
+        "a recorded manual_review_required verdict must be reported as such"
+    )
+    assert "3.5.6" not in out["unaddressed"], (
+        "'not yet addressed' means nobody looked; this was looked at and could "
+        "not be judged"
+    )
+    assert "3.5.6" not in out["passing"]
+    assert "3.5.6" not in out["failing"]
+
+
+@pytest.mark.asyncio
+async def test_the_buckets_still_sum_to_the_total() -> None:
+    """A fifth bucket carved out of a remainder is where a denominator stops closing."""
+    org_id, system_id = await _system_with(
+        [
+            ("m365.identity.stale_accounts", "AC-2", "manual_review_required"),
+            ("m365.identity.mfa_registered", "IA-2", "fail"),
+            ("m365.audit.signin_records_current", "AU-2", "pass"),
+        ]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    buckets = ("passing", "failing", "documented", "manual_review", "unaddressed")
+    counted = sum(len(out[b]) for b in buckets)
+    assert counted == out["total"], (
+        f"{counted} across {buckets} but total is {out['total']} -- the buckets "
+        "no longer partition the framework"
+    )
+    # And they are genuinely disjoint, not merely the right size.
+    seen: set[str] = set()
+    for bucket in buckets:
+        overlap = seen & set(out[bucket])
+        assert overlap == set(), f"{bucket} overlaps an earlier bucket: {sorted(overlap)}"
+        seen |= set(out[bucket])
+
+
+@pytest.mark.asyncio
+async def test_a_failing_verdict_still_outranks_manual_review() -> None:
+    """Two checks on one requirement, one failing: the requirement is failing.
+
+    Manual review must not dilute a finding. The precedence is the same one the
+    module already applies to a documented claim -- the customer is being told
+    what to fix.
+    """
+    org_id, system_id = await _system_with(
+        [
+            ("m365.identity.mfa_registered", "IA-2", "fail"),
+            ("m365.policy.legacy_auth_blocked", "IA-2", "manual_review_required"),
+        ]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    # Both map to IA.L2-3.5.3 -> 3.5.3.
+    assert "3.5.3" in out["failing"]
+    assert "3.5.3" not in out["manual_review"]
+
+
+@pytest.mark.asyncio
+async def test_a_pass_outranks_manual_review_from_another_check() -> None:
+    """A requirement with a pass and a manual review is not 'unassessable'.
+
+    Previously `passing` required `statuses == {"pass"}` exactly, so any other
+    verdict on the same requirement knocked it out of both buckets and into the
+    remainder -- satisfied by one check and reported as untouched.
+    """
+    org_id, system_id = await _system_with(
+        [
+            ("m365.audit.signin_records_current", "AU-2", "pass"),
+            ("m365.audit.directory_changes_recorded", "AU-2", "manual_review_required"),
+        ]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    # Both map primarily to AU.L2-3.3.1 -> 3.3.1.
+    assert "3.3.1" in out["passing"], (
+        "a requirement a check passed is not untouched because another check "
+        "could not be judged"
+    )
+    assert "3.3.1" not in out["unaddressed"]
+
+
+@pytest.mark.asyncio
+async def test_a_requirement_nothing_touched_is_still_unaddressed() -> None:
+    """The bucket must not become empty; it is the one a customer most needs."""
+    org_id, system_id = await _system_with(
+        [("m365.identity.stale_accounts", "AC-2", "manual_review_required")]
+    )
+    async with session_scope() as session:
+        out = await system_framework_posture(session, org_id=org_id, system_id=system_id)
+
+    assert out["unaddressed"], "most of the 110 requirements are genuinely untouched"
+    assert "3.1.1" in out["unaddressed"], "nothing in this fixture reaches 3.1.1"

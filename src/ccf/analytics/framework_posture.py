@@ -154,9 +154,22 @@ async def framework_posture(
     # ever *adds* satisfaction -- there, a rule must not overrule an assessor;
     # here, the customer is being told what to fix.
     failing = {c for c, statuses in tested.items() if "fail" in statuses} & controls
-    passing = {c for c, statuses in tested.items() if statuses == {"pass"}} & controls
-    documented = (implemented & controls) - failing - passing
-    unaddressed = controls - failing - passing - documented
+    # `"pass" in statuses` rather than `statuses == {"pass"}`. The equality form
+    # meant any other verdict on the same control -- most often a
+    # `manual_review_required` from a second check -- knocked it out of
+    # `passing` *and* out of `failing`, so a control one check had satisfied was
+    # reported as untouched. Failing still outranks everything, above.
+    passing = {c for c, statuses in tested.items() if "pass" in statuses} & controls - failing
+    # Looked at and could not be judged. Reported on its own because it is the
+    # actionable bucket -- these are the controls needing human evidence -- and
+    # because sweeping it into `unaddressed` said nobody had looked when Concord
+    # had looked and said so.
+    manual_review = (
+        {c for c, statuses in tested.items() if "manual_review_required" in statuses}
+        & controls
+    ) - failing - passing
+    documented = (implemented & controls) - failing - passing - manual_review
+    unaddressed = controls - failing - passing - documented - manual_review
 
     return {
         "baseline": baseline,
@@ -164,6 +177,7 @@ async def framework_posture(
         "passing": sorted(passing),
         "failing": sorted(failing),
         "documented": sorted(documented),
+        "manual_review": sorted(manual_review),
         "unaddressed": sorted(unaddressed),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(controls), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(controls), 1),
@@ -177,6 +191,7 @@ def _empty(baseline: str | None) -> dict[str, Any]:
         "passing": [],
         "failing": [],
         "documented": [],
+        "manual_review": [],
         "unaddressed": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
@@ -394,9 +409,21 @@ async def _nist_171_posture(
 
     total = set(practices)
     failing = {r for r, statuses in by_requirement.items() if "fail" in statuses} & total
-    passing = {r for r, statuses in by_requirement.items() if statuses == {"pass"}} & total
-    documented = (claimed & total) - failing - passing
-    unaddressed = total - failing - passing - documented
+    # See the baseline path above: the equality form reported a requirement one
+    # check had passed as untouched whenever another check could not be judged.
+    passing = (
+        {r for r, statuses in by_requirement.items() if "pass" in statuses} & total
+    ) - failing
+    manual_review = (
+        {
+            r
+            for r, statuses in by_requirement.items()
+            if "manual_review_required" in statuses
+        }
+        & total
+    ) - failing - passing
+    documented = (claimed & total) - failing - passing - manual_review
+    unaddressed = total - failing - passing - documented - manual_review
     reachable = set((await _crosswalk_reachable(session)) & total)
 
     return {
@@ -410,6 +437,7 @@ async def _nist_171_posture(
         "passing": sorted(passing, key=_requirement_sort),
         "failing": sorted(failing, key=_requirement_sort),
         "documented": sorted(documented, key=_requirement_sort),
+        "manual_review": sorted(manual_review, key=_requirement_sort),
         "unaddressed": sorted(unaddressed, key=_requirement_sort),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(total), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(total), 1),
@@ -474,6 +502,7 @@ def _empty_framework(
         "passing": [],
         "failing": [],
         "documented": [],
+        "manual_review": [],
         "unaddressed": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
