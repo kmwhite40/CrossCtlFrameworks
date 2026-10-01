@@ -381,14 +381,39 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
     own checks is never overridden by an attestation and an attestation is never
     overridden by a tenant pack rule that merely ran later.
 
-  The Microsoft half of the same idea **does not work** and was not built.
-  Microsoft Secure Score returns 224 discrete control states, but
-  `complianceInformation` is empty on all 200 `secureScoreControlProfiles` in
-  the live tenant here, and `implementationStatus` is free prose rather than a
-  verdict — measured, not assumed. So Microsoft publishes no 800-53 mapping to
-  read, and the "one API read, many controls" mechanism has no Microsoft
-  equivalent short of hand-authoring a 224-entry crosswalk of Microsoft's own
-  product taxonomy.
+  The Microsoft half of the same idea **does not work**, and this is now measured
+  rather than inferred. `secureScoreControlProfile.complianceInformation` is where
+  Microsoft would publish a framework mapping — Graph's v1.0 model declares it as
+  `Collection(complianceInformation)` = `[{certificationName,
+  certificationControls: [{name, url}]}]`, verified against the published
+  `$metadata`. Read against the live GCC High tenant (`graph.microsoft.us`,
+  org 2's bound credential, all pages):
+
+  | | |
+  |---|---|
+  | Secure Score control profiles | **417** |
+  | with a non-empty `complianceInformation` | **0** |
+  | with an 800-53 certification | **0** |
+  | distinct certification names seen | **0** |
+
+  The last row is the one that settles it. `ccf.posture.attested.securescore_mapping`
+  reports *every* certification name it saw, matched or rejected, precisely so a
+  wrong 800-53 matcher cannot be mistaken for absent data — and it saw none at
+  all. Microsoft is not publishing ISO, PCI or anything else there either; the
+  field is simply unused. (An earlier note here said "200 profiles"; that was a
+  single page of results, and the real figure is 417.)
+
+  `implementationStatus` on `controlScores` is free prose rather than a verdict,
+  so it is not a substitute.
+
+  **Consequence, stated plainly:** the "one API read, many controls" mechanism has
+  no Microsoft equivalent. Raising M365 800-53 coverage beyond Concord's own
+  checks requires either more native checks — each one an evaluator Concord wrote
+  and can defend — or hand-authoring a crosswalk from Microsoft's product
+  taxonomy, which would be roughly sixty compliance assertions Concord makes
+  itself, at `platform` trust rather than provider-attested. Re-run the
+  measurement against any other tenant before committing to the second: the
+  function takes profiles and returns the table above.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their
   label, guidance and choices from the catalog; FedRAMP's own assigned values
   are not available to import.
