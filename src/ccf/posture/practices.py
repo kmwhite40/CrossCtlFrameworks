@@ -113,6 +113,13 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # there is nothing to monitor, which is what both requirements ask for; 3.13.1
     # leads because the boundary is what a VPC is.
     "aws.vpc.flow_logs_enabled": ("SC.L2-3.13.1", "SI.L2-3.14.6"),
+    # SC.L2-3.13.5  "Implement subnetworks for publicly accessible system
+    #                components that are physically or logically separated from
+    #                internal networks."
+    # A publicly accessible database is the plainest machine-readable violation:
+    # an internal component sitting on the public network rather than behind the
+    # subnetwork that should separate it.
+    "aws.rds.not_publicly_accessible": ("SC.L2-3.13.5",),
     # ── Audit and accountability ─────────────────────────────────────────────
     # AU.L2-3.3.1  "Create and retain system audit logs and records to the
     #               extent needed to enable the monitoring, analysis,

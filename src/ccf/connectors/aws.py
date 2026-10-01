@@ -320,6 +320,9 @@ class AwsGovCloudConnector(ConfigConnector):
                 aws_checks.SECURITY_GROUP_ADMIN_INGRESS.key
             ]: self._read_security_groups,
             aws_checks.ENDPOINTS[aws_checks.VPC_FLOW_LOGS.key]: self._read_vpcs_with_flow_logs,
+            aws_checks.ENDPOINTS[
+                aws_checks.RDS_NOT_PUBLICLY_ACCESSIBLE.key
+            ]: self._read_db_instances,
         }
 
     def _iam(self) -> Any:
@@ -507,6 +510,26 @@ class AwsGovCloudConnector(ConfigConnector):
 
     def _ec2(self) -> Any:
         return self._session().client("ec2", region_name=self._region())
+
+    def _read_db_instances(self) -> list[dict[str, Any]]:
+        """``rds.describe_db_instances`` -- every instance, paginated.
+
+        Paginated for the same reason the security groups are: an account past
+        the first page would have its later databases silently unassessed, and
+        the check would report a clean pass over a partial fleet.
+        """
+        rds = self._session().client("rds", region_name=self._region())
+        out: list[dict[str, Any]] = []
+        marker: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"MaxRecords": 100}
+            if marker:
+                kwargs["Marker"] = marker
+            answer = rds.describe_db_instances(**kwargs)
+            out.extend(answer.get("DBInstances") or [])
+            marker = answer.get("Marker")
+            if not marker:
+                return out
 
     def _read_security_groups(self) -> list[dict[str, Any]]:
         """``ec2.describe_security_groups`` -- every group, paginated.

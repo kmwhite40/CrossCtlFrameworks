@@ -95,6 +95,8 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # is enough" is a retention question, which `azure.monitor.log_retention`
     # and `gcp.logging.retention` already parameterize on their own terms.
     aws.VPC_FLOW_LOGS.key: (),
+    # Publicly accessible or not; there is no threshold to tune.
+    aws.RDS_NOT_PUBLICLY_ACCESSIBLE.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.

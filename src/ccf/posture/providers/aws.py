@@ -219,6 +219,23 @@ _ADMIN_PORTS: tuple[int, ...] = (22, 3389)
 _ANY_IPV4 = "0.0.0.0/0"
 _ANY_IPV6 = "::/0"
 
+#: RDS lifecycle states where the instance has not settled on its final
+#: configuration. Failing one would make every deployment briefly
+#: non-compliant, which teaches an operator to ignore the check.
+_RDS_UNSETTLED_STATES: frozenset[str] = frozenset(
+    {"creating", "modifying", "backing-up", "deleting", "rebooting", "starting"}
+)
+
+RDS_NOT_PUBLICLY_ACCESSIBLE = PostureCheck(
+    key="aws.rds.not_publicly_accessible",
+    title="No database instance is reachable from the internet",
+    provider="aws_govcloud",
+    resource_type="aws_db_instance",
+    expected="no RDS instance has PubliclyAccessible enabled",
+    control_ids=("SC-7", "SC-7(3)", "AC-4"),
+    required_permissions=("rds:DescribeDBInstances",),
+)
+
 SECURITY_GROUP_ADMIN_INGRESS = PostureCheck(
     key="aws.ec2.security_groups_no_public_admin_ingress",
     title="No security group exposes SSH or RDP to the internet",
@@ -262,6 +279,7 @@ CHECKS: tuple[PostureCheck, ...] = (
     EBS_ENCRYPTION_BY_DEFAULT,
     SECURITY_GROUP_ADMIN_INGRESS,
     VPC_FLOW_LOGS,
+    RDS_NOT_PUBLICLY_ACCESSIBLE,
 )
 
 #: The four settings that together make a bucket non-public. All four are
@@ -310,6 +328,7 @@ ENDPOINTS: dict[str, str] = {
     # that response alone would make an unmonitored VPC invisible rather than
     # failing.
     VPC_FLOW_LOGS.key: "ec2.describe_flow_logs",
+    RDS_NOT_PUBLICLY_ACCESSIBLE.key: "rds.describe_db_instances",
 }
 
 #: Evaluators that need to be told which account they are judging, because
@@ -322,6 +341,7 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
         EBS_ENCRYPTION_BY_DEFAULT.key,
         SECURITY_GROUP_ADMIN_INGRESS.key,
         VPC_FLOW_LOGS.key,
+        RDS_NOT_PUBLICLY_ACCESSIBLE.key,
     }
 )
 
@@ -973,6 +993,80 @@ def evaluate_vpc_flow_logs(
     return findings
 
 
+def evaluate_rds_not_publicly_accessible(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per database, so a failure names what to go and fix.
+
+    ``PubliclyAccessible`` is read rather than inferred. Classifying subnets as
+    public or private from their route tables is the alternative, and it gets a
+    NAT gateway wrong -- this field is what actually decides whether the
+    instance's endpoint resolves to a public address.
+
+    An instance that does not report the field is ``manual_review_required``:
+    absent is not false, and reading it as private would report an unverified
+    database as compliant. An account with no instances is ``not_applicable``
+    rather than ``pass`` -- it genuinely may run no RDS, and passing would assert
+    a separation nothing observed.
+    """
+    if not rows:
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="not_applicable",
+                observed="the account runs no RDS instances",
+                detail={"rows_examined": 0},
+            )
+        ]
+    findings: list[ResourceFinding] = []
+    for db in rows:
+        name = str(db.get("DBInstanceIdentifier") or "unknown")
+        status = str(db.get("DBInstanceStatus") or "").strip().lower()
+        detail = {
+            "engine": db.get("Engine"),
+            "status": db.get("DBInstanceStatus"),
+        }
+        if status in _RDS_UNSETTLED_STATES:
+            findings.append(
+                ResourceFinding(
+                    resource_id=name,
+                    resource_type="aws_db_instance",
+                    verdict="not_applicable",
+                    observed=f"not assessed while the instance is {status}",
+                    detail=detail,
+                )
+            )
+            continue
+        if "PubliclyAccessible" not in db:
+            findings.append(
+                ResourceFinding(
+                    resource_id=name,
+                    resource_type="aws_db_instance",
+                    verdict="manual_review_required",
+                    observed="the instance did not report whether it is publicly accessible",
+                    detail=detail,
+                )
+            )
+            continue
+        public = db.get("PubliclyAccessible") is True
+        findings.append(
+            ResourceFinding(
+                resource_id=name,
+                resource_type="aws_db_instance",
+                verdict="fail" if public else "pass",
+                observed=(
+                    "the instance is publicly accessible, so it is not separated from "
+                    "the public network"
+                    if public
+                    else "the instance is not publicly accessible"
+                ),
+                detail=detail,
+            )
+        )
+    return findings
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     ROOT_MFA_ENABLED.key: evaluate_root_mfa,
     PASSWORD_POLICY.key: evaluate_password_policy,
@@ -984,4 +1078,5 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     EBS_ENCRYPTION_BY_DEFAULT.key: evaluate_ebs_encryption_by_default,
     SECURITY_GROUP_ADMIN_INGRESS.key: evaluate_security_group_admin_ingress,
     VPC_FLOW_LOGS.key: evaluate_vpc_flow_logs,
+    RDS_NOT_PUBLICLY_ACCESSIBLE.key: evaluate_rds_not_publicly_accessible,
 }

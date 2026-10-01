@@ -172,4 +172,4 @@ def test_the_mapped_share_is_stated_not_implied() -> None:
     covers. Update it deliberately, along with the runbook.
     """
     registered = _registered_check_keys()
-    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (37, 33, 4)
+    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (38, 34, 4)
