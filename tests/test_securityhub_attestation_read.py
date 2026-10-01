@@ -38,7 +38,10 @@ from typing import Any
 import pytest
 
 from ccf.config import get_settings
+from ccf.connectors import connector_keys, get_connector
 from ccf.connectors.aws import AwsGovCloudConnector
+from ccf.connectors.gcp import GcpConnector
+from ccf.connectors.msgraph import MsGraphConnector
 from ccf.posture.attested import NIST_80053_R5_STANDARD_ID, REQUIREMENT_PREFIX
 
 GOV_ARN = (
@@ -530,3 +533,56 @@ async def test_the_sample_covers_every_page(monkeypatch: pytest.MonkeyPatch) -> 
     out = await _connector(shub, monkeypatch).securityhub_attestations(sample=True)
     ids = [f["Compliance"]["SecurityControlId"] for f in out["redacted_findings"]]
     assert ids == ["S3.8", "IAM.4", "CloudTrail.1"]
+
+
+# --------------------------------------------------------------------------
+# The base-class default: a connector that publishes no attestation
+# --------------------------------------------------------------------------
+
+
+async def test_a_connector_without_attestations_reports_the_honest_negative() -> None:
+    """Declared on ``ConfigConnector`` rather than only on the AWS connector.
+
+    ``posture.attested_scan`` resolves a connector through ``_connector_for_org``,
+    which is typed to the base class, so without this the ingest would need a cast
+    or a ``getattr`` -- and both turn "this provider publishes no attestation" into
+    a runtime surprise rather than a typed answer. mypy caught exactly that.
+
+    The default returns ``available: False`` *with a reason* rather than an empty
+    result. ``scan``'s ``[]`` default is unambiguous; an empty attestation is not --
+    it is indistinguishable from a provider that publishes none, which is the
+    confusion ``posture.attested`` exists to prevent.
+    """
+    out = await MsGraphConnector(credential=None).securityhub_attestations()
+    assert out["available"] is False
+    assert out["controls"] == ()
+    assert "msgraph" in out["reason"]
+    assert "no provider-published control attestation" in out["reason"]
+    # Present and empty, never missing: the ingest reads these unconditionally.
+    assert out["unreadable_requirements"] == []
+    assert out["truncated"] is False
+    assert out["pages_read"] == 0
+    assert "redacted_findings" not in out
+
+
+async def test_the_base_default_honours_the_sample_flag() -> None:
+    """A caller that asked for a sample should not have to handle two shapes
+    depending on which connector answered."""
+    out = await GcpConnector(credential=None).securityhub_attestations(sample=True)
+    assert out["redacted_findings"] == []
+
+
+async def test_every_registered_connector_answers_without_raising() -> None:
+    """The contract the ingest relies on: implementations MUST NOT raise.
+
+    Swept over the registry rather than asserted for one connector, so a new
+    connector overriding this method badly fails here instead of at scan time.
+    """
+    for key in sorted(connector_keys()):
+        conn = get_connector(key, credential=None)
+        if conn is None:
+            continue
+        out = await conn.securityhub_attestations()
+        assert out["available"] is False, f"{key} claimed an attestation with no credential"
+        assert out["reason"], f"{key} reported unavailable with no reason"
+        assert out["controls"] == (), key
