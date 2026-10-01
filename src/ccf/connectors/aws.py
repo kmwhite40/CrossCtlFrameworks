@@ -71,6 +71,7 @@ from typing import Any, ClassVar
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture import attested
 from ..posture.providers import aws as aws_checks
 from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
 from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
@@ -805,3 +806,250 @@ class AwsGovCloudConnector(ConfigConnector):
         if code:
             return f"AWS returned {code}; could not evaluate this check"
         return f"could not evaluate this check ({type(error).__name__})"
+
+    # ── Provider-attested control results ───────────────────────────────────
+    #
+    # A second, different kind of evidence from `scan` above. `scan` runs
+    # Concord's own checks, each evidencing controls a human chose. This reads
+    # AWS's assessment of its *own* control catalog, together with the 800-53
+    # mapping AWS publishes for it, so it reaches controls Concord has no check
+    # for. The judgement stays pure in `ccf.posture.attested`; this method is
+    # transport only, exactly as `scan` delegates to `posture.providers.aws`.
+
+    #: Pages of `get_findings` one call will read before stopping. 100 findings
+    #: a page, so 60 pages is 6,000 findings -- comfortably past a single
+    #: account's NIST standard, and bounded, because a delegated-administrator
+    #: account's findings store is not. Reaching the cap sets `truncated`.
+    SECURITYHUB_MAX_PAGES: ClassVar[int] = 60
+
+    #: `get_findings` page size. The service maximum.
+    SECURITYHUB_PAGE_SIZE: ClassVar[int] = 100
+
+    async def securityhub_attestations(
+        self, *, max_pages: int | None = None
+    ) -> dict[str, Any]:
+        """AWS's own NIST 800-53 Rev 5 control results for this account/region.
+
+        Returns a dict that always answers three questions a reader needs and
+        that an empty result cannot answer on its own:
+
+        ``available``
+            Whether these controls are a usable assessment. ``False`` for an
+            unconfigured connector, a standard that is not enabled, a standard
+            that is enabled but not ``READY``, and any provider refusal.
+        ``reason``
+            Why not, naming the AWS error code or the standard's status. ``None``
+            only when ``available`` is true and nothing was truncated. Without
+            this, "no attestations" is indistinguishable from "every control
+            passed", which is the shape that makes a posture report unusable.
+        ``truncated``
+            Whether paging stopped early -- at the cap, or at an error partway
+            through. A truncated read is never ``available``: publishing page one
+            of an account as the whole account is the sharpest version of the
+            one-page defect, because the data looks real.
+
+        Security Hub is regional, so ``region`` and ``account_id`` are reported:
+        an attestation from ``us-gov-west-1`` says nothing about resources in
+        ``us-gov-east-1``, and a reader comparing Concord against the console
+        needs to know which findings these were.
+
+        Never raises, for the same reason :meth:`scan` never does.
+        """
+        region = self._region()
+        account_id = str((self.credential or {}).get("account_id") or "")
+
+        def _empty(reason: str, *, truncated: bool = False) -> dict[str, Any]:
+            return {
+                "available": False,
+                "reason": reason,
+                "controls": (),
+                "unreadable_requirements": [],
+                "pages_read": 0,
+                "truncated": truncated,
+                "region": region,
+                "account_id": account_id,
+                "standard_id": attested.NIST_80053_R5_STANDARD_ID,
+            }
+
+        if not self.is_configured():
+            return _empty(
+                "the AWS connector is not configured for this organization, so "
+                "Security Hub was not read"
+            )
+
+        cap = self.SECURITYHUB_MAX_PAGES if max_pages is None else max(1, max_pages)
+
+        def _read() -> dict[str, Any]:
+            client = self._session().client("securityhub", region_name=region)
+            status = self._securityhub_standard_status(client)
+            if status is None:
+                return {
+                    "error": (
+                        f"the NIST SP 800-53 Rev 5 standard is not enabled in "
+                        f"Security Hub for {region}, so AWS publishes no 800-53 "
+                        "control results for this account"
+                    ),
+                    "truncated": False,
+                }
+            if status != "READY":
+                return {
+                    "error": (
+                        f"the NIST SP 800-53 Rev 5 standard is enabled but its "
+                        f"status is {status}, not READY; its control results are "
+                        "not current and were not read"
+                    ),
+                    "truncated": False,
+                }
+            return self._securityhub_findings(client, cap=cap)
+
+        try:
+            read = await asyncio.to_thread(_read)
+        except Exception as e:  # pragma: no cover - defended, not expected
+            log.warning("connector.aws.securityhub_unreadable", error=str(e)[:200])
+            return _empty(self._securityhub_failure(e))
+
+        if read.get("error"):
+            return _empty(str(read["error"]), truncated=bool(read.get("truncated")))
+
+        findings = read["findings"]
+        controls = attested.attested_controls(findings)
+        unreadable: list[str] = []
+        for control in controls:
+            for entry in control.unreadable_requirements:
+                if entry not in unreadable:
+                    unreadable.append(entry)
+        truncated = bool(read.get("truncated"))
+        reason = None
+        if truncated:
+            reason = (
+                f"the findings read was truncated after {read['pages_read']} pages; "
+                "these controls describe part of the account, not all of it"
+            )
+        log.info(
+            "connector.aws.securityhub_read",
+            region=region,
+            controls=len(controls),
+            findings=len(findings),
+            pages=read["pages_read"],
+            truncated=truncated,
+        )
+        return {
+            "available": not truncated,
+            "reason": reason,
+            "controls": controls,
+            "unreadable_requirements": unreadable,
+            "pages_read": read["pages_read"],
+            "truncated": truncated,
+            "region": region,
+            "account_id": account_id,
+            "standard_id": attested.NIST_80053_R5_STANDARD_ID,
+        }
+
+    @staticmethod
+    def _securityhub_standard_status(client: Any) -> str | None:
+        """``StandardsStatus`` for the NIST 800-53 Rev 5 subscription, or None.
+
+        Matched on the ARN's standard suffix rather than a full ARN, because the
+        partition differs (``arn:aws-us-gov:`` in GovCloud, ``arn:aws:``
+        commercial) and deriving the partition here would duplicate what boto3
+        already does from the region.
+
+        Paginated: an account with many standards enabled can page this list,
+        and stopping at page one would report an enabled standard as absent.
+        """
+        token: str | None = None
+        suffix = attested.NIST_80053_R5_STANDARD_ID
+        while True:
+            kwargs: dict[str, Any] = {}
+            if token:
+                kwargs["NextToken"] = token
+            answer = client.get_enabled_standards(**kwargs)
+            for sub in answer.get("StandardsSubscriptions") or []:
+                arn = str(sub.get("StandardsArn") or "")
+                if arn.endswith(suffix):
+                    return str(sub.get("StandardsStatus") or "")
+            token = answer.get("NextToken")
+            if not token:
+                return None
+
+    def _securityhub_findings(self, client: Any, *, cap: int) -> dict[str, Any]:
+        """Every page of ACTIVE NIST-standard findings, up to ``cap`` pages.
+
+        Filtered server-side to the NIST standard and to ``ACTIVE``: an
+        ARCHIVED finding is about a resource that no longer exists, and counting
+        it fails a control over a deleted bucket. Filtering here rather than in
+        the pure layer also means the page budget is spent on 800-53 findings
+        instead of on CIS and PCI findings that would be discarded.
+
+        An error partway through returns what was read *and* the error, so the
+        caller can refuse to publish a partial account rather than having to
+        choose between a crash and a plausible-looking prefix.
+        """
+        filters = {
+            "ComplianceAssociatedStandardsId": [
+                {
+                    "Value": attested.NIST_80053_R5_STANDARD_ID,
+                    "Comparison": "EQUALS",
+                }
+            ],
+            "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+        }
+        findings: list[dict[str, Any]] = []
+        token: str | None = None
+        pages = 0
+        while pages < cap:
+            kwargs: dict[str, Any] = {
+                "Filters": filters,
+                "MaxResults": self.SECURITYHUB_PAGE_SIZE,
+            }
+            if token:
+                kwargs["NextToken"] = token
+            try:
+                answer = client.get_findings(**kwargs)
+            except Exception as e:
+                log.warning(
+                    "connector.aws.securityhub_page_failed",
+                    page=pages + 1,
+                    error=str(e)[:200],
+                )
+                return {
+                    "findings": findings,
+                    "pages_read": pages,
+                    "truncated": True,
+                    "error": self._securityhub_failure(e),
+                }
+            pages += 1
+            findings.extend(answer.get("Findings") or [])
+            token = answer.get("NextToken")
+            if not token:
+                return {"findings": findings, "pages_read": pages, "truncated": False}
+        return {"findings": findings, "pages_read": pages, "truncated": True}
+
+    @staticmethod
+    def _securityhub_failure(error: Exception) -> str:
+        """Why Security Hub could not be read, naming the AWS error code.
+
+        The code is the whole value of this string: ``InvalidAccessException``
+        means Security Hub is not enabled in this region and an operator should
+        enable it, while ``AccessDeniedException`` means the role is missing
+        ``securityhub:GetFindings`` and an operator should grant it. A single
+        "could not read" sends them to the wrong place half the time -- the
+        judgement ``_describe_failure`` already makes for the posture checks.
+        """
+        response = getattr(error, "response", None)
+        code = ""
+        if isinstance(response, dict):
+            code = str((response.get("Error") or {}).get("Code") or "")
+        if code == "InvalidAccessException":
+            return (
+                f"{code}: Security Hub is not enabled in this region, so there "
+                "are no provider-attested control results to read"
+            )
+        if code in ("AccessDenied", "AccessDeniedException"):
+            return (
+                f"{code}: could not read Security Hub; requires "
+                "securityhub:GetEnabledStandards and securityhub:GetFindings"
+            )
+        if code:
+            return f"{code}: could not read Security Hub findings"
+        return f"could not read Security Hub findings ({type(error).__name__})"
