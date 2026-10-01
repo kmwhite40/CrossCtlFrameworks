@@ -319,6 +319,52 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   DoD. `tests/test_scan_scope_is_not_responsibility.py` pins both halves.
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
+- **AWS Security Hub attestation ingest is unverified against a live account** —
+  the same status as eMASS, and for the same reason: no organization in this
+  deployment has an AWS credential bound, so the code has never read a real
+  findings store. What *was* verified is the API contract rather than prose: the
+  operations, the `ComplianceStatus` enum (`PASSED` / `WARNING` / `FAILED` /
+  `NOT_AVAILABLE`), the `Compliance.SecurityControlId` /
+  `RelatedRequirements` / `AssociatedStandards` members and the `NextToken`
+  pagination were read out of botocore's `securityhub` service model
+  (API version 2018-10-26), not inferred. Everything else is driven against a
+  stubbed boto3 session.
+
+  Two numbers nobody should state until a real account has been read: how many
+  of the 288 Moderate controls AWS's mapping actually reaches, and what share of
+  `RelatedRequirements` entries Concord cannot place. Both are *measured* by the
+  ingest rather than assumed — `POST /api/systems/{id}/attestations` returns
+  `controls_read`, `written`, `unreadable_requirements` and
+  `controls_without_a_requirement` — so the way to find out is to bind a
+  credential and read the report, not to estimate from AWS's documentation.
+
+  What the design guarantees without a live account, because each is pinned by a
+  test and a mutation:
+
+  - no status becomes a `pass` by default. `NOT_AVAILABLE`, an unrecognised
+    status, a non-string status and a missing `Compliance` block all resolve to
+    `manual_review_required`;
+  - a truncated page walk is never published. The read reports
+    `available: false` and the ingest writes nothing, leaving the previous
+    complete assessment in place to go stale on its own;
+  - one Security Hub control relating to several requirements becomes one row
+    per requirement, so a single automated check cannot mark three controls
+    satisfied;
+  - a failing attestation opens no POA&M and no remediation Task, because the
+    same split would file three weaknesses for one misconfigured resource. The
+    verdict is still recorded in full;
+  - `effective_verdict` ranks platform > attested > pack, so one of Concord's
+    own checks is never overridden by an attestation and an attestation is never
+    overridden by a tenant pack rule that merely ran later.
+
+  The Microsoft half of the same idea **does not work** and was not built.
+  Microsoft Secure Score returns 224 discrete control states, but
+  `complianceInformation` is empty on all 200 `secureScoreControlProfiles` in
+  the live tenant here, and `implementationStatus` is free prose rather than a
+  verdict — measured, not assumed. So Microsoft publishes no 800-53 mapping to
+  read, and the "one API read, many controls" mechanism has no Microsoft
+  equivalent short of hand-authoring a 224-entry crosswalk of Microsoft's own
+  product taxonomy.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their
   label, guidance and choices from the catalog; FedRAMP's own assigned values
   are not available to import.
