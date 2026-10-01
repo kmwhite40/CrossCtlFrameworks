@@ -7,6 +7,18 @@ authorization-package export — so Concord can continuously assess itself.
 
 from __future__ import annotations
 
-from .service import export_package, init_self_assurance, run_self_assessment, status
+from .service import (
+    SelfAssuranceNotInitialisedError,
+    export_package,
+    init_self_assurance,
+    run_self_assessment,
+    status,
+)
 
-__all__ = ["export_package", "init_self_assurance", "run_self_assessment", "status"]
+__all__ = [
+    "SelfAssuranceNotInitialisedError",
+    "export_package",
+    "init_self_assurance",
+    "run_self_assessment",
+    "status",
+]

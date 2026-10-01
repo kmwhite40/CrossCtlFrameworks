@@ -53,7 +53,7 @@ from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ...posture.checks import checks_for
 from ...posture.types import ResourceFinding
-from ..auth_deps import require_role, resolve_caller_org
+from ..auth_deps import require_platform_admin, require_role, resolve_caller_org
 from ..deps import get_session
 from .grc import (
     _emit_access_decision,
@@ -1532,9 +1532,17 @@ async def packs_install_ui(
 
 
 # ── Concord self-assurance ───────────────────────────────────────────────────
+#: These two are the server-rendered twin of ``routes.self_assurance``, and they
+#: act on **Concord's own** assurance boundary rather than the caller's tenant.
+#: They shipped with no gate at all -- not even ``require_role`` -- so any
+#: authenticated tenant user could read the vendor's assurance status, and the
+#: POST executed a platform self-assessment and committed it. An API gate is
+#: worth nothing while the page beside it does the same work ungated.
 @router.get("/admin/self-assurance", response_class=HTMLResponse)
 async def self_assurance_page(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _principal: Principal = Depends(require_platform_admin()),
 ) -> HTMLResponse:
     from ...self_assurance import status as self_status  # noqa: PLC0415
 
@@ -1546,11 +1554,19 @@ async def self_assurance_page(
 
 @router.post("/admin/self-assurance/run")
 async def self_assurance_run_ui(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _principal: Principal = Depends(require_platform_admin()),
 ) -> RedirectResponse:
-    from ...self_assurance import run_self_assessment  # noqa: PLC0415
+    from ...self_assurance import (  # noqa: PLC0415
+        SelfAssuranceNotInitialisedError,
+        run_self_assessment,
+    )
 
-    await run_self_assessment(session, actor=_actor(request))
+    try:
+        await run_self_assessment(session, actor=_actor(request))
+    except SelfAssuranceNotInitialisedError as exc:
+        raise HTTPException(409, str(exc)) from exc
     await session.commit()
     return RedirectResponse("/admin/self-assurance", status_code=303)
 
