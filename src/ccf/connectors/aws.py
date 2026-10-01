@@ -323,6 +323,8 @@ class AwsGovCloudConnector(ConfigConnector):
             aws_checks.ENDPOINTS[
                 aws_checks.RDS_NOT_PUBLICLY_ACCESSIBLE.key
             ]: self._read_db_instances,
+            aws_checks.ENDPOINTS[aws_checks.INSPECTOR_ENABLED.key]: self._read_inspector_status,
+            aws_checks.ENDPOINTS[aws_checks.PATCH_COMPLIANCE.key]: self._read_patch_states,
         }
 
     def _iam(self) -> Any:
@@ -510,6 +512,59 @@ class AwsGovCloudConnector(ConfigConnector):
 
     def _ec2(self) -> Any:
         return self._session().client("ec2", region_name=self._region())
+
+    def _read_inspector_status(self) -> list[dict[str, Any]]:
+        """``inspector2.batch_get_account_status`` for this account only.
+
+        Scoped to the caller's own account id rather than passed an empty list,
+        which in a delegated-administrator setup returns every member account --
+        this check speaks for one account and must not silently judge others.
+
+        The id comes from STS here rather than from the async `_account_id`,
+        because the reader table is synchronous (it runs in a worker thread) and
+        a declared `account_id` on the credential is honoured first either way.
+        """
+        client = self._session().client("inspector2", region_name=self._region())
+        declared = (self.credential or {}).get("account_id")
+        if isinstance(declared, str) and declared:
+            account = declared
+        else:
+            sts = self._session().client("sts", region_name=self._region())
+            account = str(sts.get_caller_identity().get("Account") or "unknown")
+        answer = client.batch_get_account_status(accountIds=[account])
+        return list(answer.get("accounts") or [])
+
+    def _read_patch_states(self) -> list[dict[str, Any]]:
+        """``ssm.describe_instance_patch_states`` for every managed instance.
+
+        Two calls: Systems Manager will not report patch state for instances it
+        does not manage, so the instance ids come from the inventory first.
+        Paginated, like the other fleet reads -- an account past the first page
+        would otherwise get a clean pass over a partial fleet.
+        """
+        ssm = self._session().client("ssm", region_name=self._region())
+        instance_ids: list[str] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"MaxResults": 50}
+            if token:
+                kwargs["NextToken"] = token
+            answer = ssm.describe_instance_information(**kwargs)
+            instance_ids.extend(
+                str(i["InstanceId"])
+                for i in answer.get("InstanceInformationList") or []
+                if i.get("InstanceId")
+            )
+            token = answer.get("NextToken")
+            if not token:
+                break
+        out: list[dict[str, Any]] = []
+        # describe_instance_patch_states takes at most 50 ids per call.
+        for start in range(0, len(instance_ids), 50):
+            batch = instance_ids[start : start + 50]
+            answer = ssm.describe_instance_patch_states(InstanceIds=batch)
+            out.extend(answer.get("InstancePatchStates") or [])
+        return out
 
     def _read_db_instances(self) -> list[dict[str, Any]]:
         """``rds.describe_db_instances`` -- every instance, paginated.

@@ -120,6 +120,18 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # an internal component sitting on the public network rather than behind the
     # subnetwork that should separate it.
     "aws.rds.not_publicly_accessible": ("SC.L2-3.13.5",),
+    # ── Vulnerability and flaw management ────────────────────────────────────
+    # RA.L2-3.11.2  "Scan for vulnerabilities in organizational systems and
+    #                applications periodically and when new vulnerabilities
+    #                affecting those systems and applications are identified."
+    # Inspector being enabled *is* that scanning. It says nothing about whether
+    # findings are remediated, which is 3.11.3 and deliberately not claimed here.
+    "aws.inspector.enabled": ("RA.L2-3.11.2",),
+    # SI.L2-3.14.1  "Identify, report, and correct system flaws in a timely
+    #                manner."
+    # Patch state is the record of whether flaws are corrected. Missing and
+    # failed patches are both uncorrected flaws.
+    "aws.ssm.patch_compliance": ("SI.L2-3.14.1",),
     # ── Audit and accountability ─────────────────────────────────────────────
     # AU.L2-3.3.1  "Create and retain system audit logs and records to the
     #               extent needed to enable the monitoring, analysis,

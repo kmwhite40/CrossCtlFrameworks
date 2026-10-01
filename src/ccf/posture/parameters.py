@@ -97,6 +97,12 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     aws.VPC_FLOW_LOGS.key: (),
     # Publicly accessible or not; there is no threshold to tune.
     aws.RDS_NOT_PUBLICLY_ACCESSIBLE.key: (),
+    # Enabled or not; nothing to tune.
+    aws.INSPECTOR_ENABLED.key: (),
+    # No parameter, and the reason is worth recording: the tunable thing would be
+    # how many missing patches are tolerable, and the answer for 3.14.1 is none.
+    # A threshold here would let a package define its way out of the requirement.
+    aws.PATCH_COMPLIANCE.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.

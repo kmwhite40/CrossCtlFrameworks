@@ -111,7 +111,10 @@ def test_an_unanswered_domain_not_on_the_list_still_needs_review() -> None:
     is ever written, it must arrive through a deliberate entry rather than
     inherit a default.
     """
-    for domain in ("AT", "CA", "IR", "MP", "PS", "RA"):
+    # RA left this list when `aws.inspector.enabled` shipped: enabling Inspector
+    # is an account setting only the customer can turn on, so the domain is now
+    # deliberately overridden. The rest remain unanswered and unoverridden.
+    for domain in ("AT", "CA", "IR", "MP", "PS"):
         assert ("aws_govcloud", domain) not in SCAN_SCOPE_OVERRIDES
         assert responsibility_for("aws_govcloud", domain) == "unknown"
         assert scan_scope_for("aws_govcloud", domain) == "manual_scope_review", (
@@ -243,6 +246,7 @@ async def test_readiness_itself_reports_the_new_scope_not_the_old_one() -> None:
         "aws.iam.access_key_rotation",
         "aws.iam.password_policy",
         "aws.iam.root_mfa_enabled",
+        "aws.inspector.enabled",
     }, f"unexpected set of override-scanned checks: {sorted(with_reason)}"
 
 

@@ -226,6 +226,30 @@ _RDS_UNSETTLED_STATES: frozenset[str] = frozenset(
     {"creating", "modifying", "backing-up", "deleting", "rebooting", "starting"}
 )
 
+#: Inspector resource-type states that mean scanning is actually happening.
+#: `SUSPENDED` is its paused state, so it is not one of them.
+_INSPECTOR_ACTIVE = frozenset({"ENABLED"})
+
+INSPECTOR_ENABLED = PostureCheck(
+    key="aws.inspector.enabled",
+    title="Amazon Inspector scans every resource type",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="Inspector is enabled for EC2, ECR and Lambda in this account",
+    control_ids=("RA-5", "RA-5(2)"),
+    required_permissions=("inspector2:BatchGetAccountStatus",),
+)
+
+PATCH_COMPLIANCE = PostureCheck(
+    key="aws.ssm.patch_compliance",
+    title="Every managed instance is patched",
+    provider="aws_govcloud",
+    resource_type="aws_instance",
+    expected="no Systems Manager-managed instance has missing or failed patches",
+    control_ids=("SI-2", "SI-2(2)", "CM-6"),
+    required_permissions=("ssm:DescribeInstancePatchStates",),
+)
+
 RDS_NOT_PUBLICLY_ACCESSIBLE = PostureCheck(
     key="aws.rds.not_publicly_accessible",
     title="No database instance is reachable from the internet",
@@ -280,6 +304,8 @@ CHECKS: tuple[PostureCheck, ...] = (
     SECURITY_GROUP_ADMIN_INGRESS,
     VPC_FLOW_LOGS,
     RDS_NOT_PUBLICLY_ACCESSIBLE,
+    INSPECTOR_ENABLED,
+    PATCH_COMPLIANCE,
 )
 
 #: The four settings that together make a bucket non-public. All four are
@@ -329,6 +355,8 @@ ENDPOINTS: dict[str, str] = {
     # failing.
     VPC_FLOW_LOGS.key: "ec2.describe_flow_logs",
     RDS_NOT_PUBLICLY_ACCESSIBLE.key: "rds.describe_db_instances",
+    INSPECTOR_ENABLED.key: "inspector2.batch_get_account_status",
+    PATCH_COMPLIANCE.key: "ssm.describe_instance_patch_states",
 }
 
 #: Evaluators that need to be told which account they are judging, because
@@ -342,6 +370,8 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
         SECURITY_GROUP_ADMIN_INGRESS.key,
         VPC_FLOW_LOGS.key,
         RDS_NOT_PUBLICLY_ACCESSIBLE.key,
+        INSPECTOR_ENABLED.key,
+        PATCH_COMPLIANCE.key,
     }
 )
 
@@ -1067,6 +1097,120 @@ def evaluate_rds_not_publicly_accessible(
     return findings
 
 
+def evaluate_inspector_enabled(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """Is Inspector scanning every resource type, not merely switched on?
+
+    "Any resource type enabled" is the trap. An account scanning container images
+    while every EC2 instance goes unscanned has not met 3.11.2, so the verdict is
+    all-of and the finding names which half is dark.
+
+    What this does *not* claim: that findings are being remediated. That is
+    3.11.3, and it stays uncovered -- scanning and fixing are different
+    requirements, and a check that implied both would overstate.
+    """
+    status = rows[0] if rows else None
+    if not status or not status.get("resourceState"):
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="manual_review_required",
+                observed="the account did not report an Inspector status",
+                detail={"rows_examined": len(rows)},
+            )
+        ]
+    state = status.get("resourceState") or {}
+    disabled = sorted(
+        name
+        for name, value in state.items()
+        if str((value or {}).get("status", "")).upper() not in _INSPECTOR_ACTIVE
+    )
+    return [
+        ResourceFinding(
+            resource_id=account_id,
+            resource_type="aws_account",
+            verdict="fail" if disabled else "pass",
+            observed=(
+                "Inspector is not scanning " + ", ".join(disabled)
+                if disabled
+                else "Inspector is enabled for every reported resource type"
+            ),
+            detail={
+                "disabled": disabled,
+                "states": {k: (v or {}).get("status") for k, v in state.items()},
+            },
+        )
+    ]
+
+
+def evaluate_patch_compliance(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per instance: are there uncorrected flaws on it?
+
+    Missing and failed are counted together. Reading only ``MissingCount`` is the
+    easy miss -- a patch that was attempted and failed is reported as failed, not
+    missing, so the instance reads clean while the flaw is still present.
+
+    An instance with neither count is ``manual_review_required``: never scanned by
+    Patch Manager is not the same as patched. An account with no managed instances
+    is ``not_applicable`` rather than ``pass``, because it may genuinely run none
+    and passing would assert patching that nothing observed.
+    """
+    if not rows:
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="not_applicable",
+                observed="no Systems Manager-managed instances were reported",
+                detail={"rows_examined": 0},
+            )
+        ]
+    findings: list[ResourceFinding] = []
+    for row in rows:
+        name = str(row.get("InstanceId") or "unknown")
+        if "MissingCount" not in row and "FailedCount" not in row:
+            findings.append(
+                ResourceFinding(
+                    resource_id=name,
+                    resource_type="aws_instance",
+                    verdict="manual_review_required",
+                    observed="the instance reported no patch compliance data",
+                    detail={"status": row.get("PatchComplianceStatus")},
+                )
+            )
+            continue
+        missing = int(row.get("MissingCount") or 0)
+        failed = int(row.get("FailedCount") or 0)
+        uncorrected = missing + failed
+        parts = []
+        if missing:
+            parts.append(f"{missing} missing")
+        if failed:
+            parts.append(f"{failed} failed")
+        findings.append(
+            ResourceFinding(
+                resource_id=name,
+                resource_type="aws_instance",
+                verdict="fail" if uncorrected else "pass",
+                observed=(
+                    "patches: " + " and ".join(parts)
+                    if uncorrected
+                    else "no missing or failed patches"
+                ),
+                detail={
+                    "missing": missing,
+                    "failed": failed,
+                    "status": row.get("PatchComplianceStatus"),
+                },
+            )
+        )
+    return findings
+
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     ROOT_MFA_ENABLED.key: evaluate_root_mfa,
     PASSWORD_POLICY.key: evaluate_password_policy,
@@ -1079,4 +1223,6 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     SECURITY_GROUP_ADMIN_INGRESS.key: evaluate_security_group_admin_ingress,
     VPC_FLOW_LOGS.key: evaluate_vpc_flow_logs,
     RDS_NOT_PUBLICLY_ACCESSIBLE.key: evaluate_rds_not_publicly_accessible,
+    INSPECTOR_ENABLED.key: evaluate_inspector_enabled,
+    PATCH_COMPLIANCE.key: evaluate_patch_compliance,
 }
