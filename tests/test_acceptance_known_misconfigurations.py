@@ -431,36 +431,48 @@ CROSSWALK_ROWS = [
     ),
 ]
 
-#: Every requirement the failing controls reach, traced through the rows above.
-#: AC-2 + AC-2(3) + AC-2(12) + AC-3 + AC-17 -> 3.1.1; AC-6 + AC-6(1) -> 3.1.5,
-#: and AC-6 also -> 3.1.6; AC-11 + AC-11(1) -> 3.1.10; AC-19(5) -> 3.1.19;
-#: AU-6 -> 3.3.1; CM-2 + CM-6 -> 3.4.1; IA-2 + IA-2(11) -> 3.5.1; IA-2(1) +
-#: IA-2(2) -> 3.5.3; SC-28 (and SC-28(1) by fallback) -> 3.13.16; SI-2 ->
-#: 3.14.1; SI-4 -> 3.14.6.
+#: Every requirement the failing checks reach, traced through
+#: ``ccf.posture.practices.CHECK_PRACTICES``.
+#:
+#: These used to be traced through the catalog crosswalk instead, and the set was
+#: wider: it also held 3.1.6, 3.4.1, 3.5.1, 3.14.1 and 3.14.6. Those came from
+#: *relatedness* -- ``IA-2`` relates to 3.5.1 ("Identify system users"), so a
+#: failing MFA-registration check marked 3.5.1 failing, a requirement it never
+#: observed. The crosswalk is no longer an attribution source for a registered
+#: check; it still answers ``unreachable``, which is a different question.
+#:
+#: guest_invites -> 3.1.1; default_user_permissions -> 3.1.5; session_lock ->
+#: 3.1.10; storage_encryption -> 3.1.19 and 3.13.16; compliance_enforced ->
+#: 3.4.2; mfa_registered, legacy_auth_blocked and phishing_resistant_mfa ->
+#: 3.5.3; phishing_resistant_mfa and phishable_methods -> 3.5.4; stale_accounts
+#: -> 3.5.6.
 EXPECTED_FAILING_REQUIREMENTS = {
     "3.1.1",
     "3.1.5",
-    "3.1.6",
     "3.1.10",
     "3.1.19",
-    "3.3.1",
-    "3.4.1",
-    "3.5.1",
+    "3.4.2",
     "3.5.3",
+    "3.5.4",
+    "3.5.6",
     "3.13.16",
-    "3.14.1",
-    "3.14.6",
 }
-#: AC-12 -> 3.1.11, and nothing else survives clean.
+#: Both audit checks pass and declare 3.3.1 and 3.3.2; a pass credits the
+#: **primary** practice only, so 3.3.1 is reported and 3.3.2 is not. That
+#: asymmetry is the rule in ``ccf.posture.evidence``, applied to practices.
 #:
-#: 3.3.1 is the one to read twice. Both audit checks pass, and AU-2 maps there
-#: -- but the risky-user check FAILS and declares AU-6, which maps there too.
-#: A requirement any failing test bears on is failing, so 3.3.1 is reported as
-#: failing rather than passing. That is the whole point of attributing a
-#: non-passing verdict to every control its check declares: before this, AU-6
-#: was invisible and the audit requirement read clean while unresolved risky
-#: users sat in the tenant.
-EXPECTED_PASSING_REQUIREMENTS = {"3.1.11"}
+#: 3.3.1 reads clean here, and under the old crosswalk attribution it did not:
+#: the risky-user check failed and related to AU-6, which the crosswalk placed on
+#: 3.3.1, so the audit requirement was reported failing. That check is now one of
+#: the two deliberate exclusions in ``practices.UNMAPPED`` -- Identity Protection
+#: risk detections are not a named 800-171 practice -- so it reaches nothing and
+#: is named in ``unmapped_checks`` instead of dragging a requirement down with a
+#: relationship nobody asserted.
+#:
+#: 3.1.11 was also here, from AC-12 through the crosswalk. Its check
+#: (session_reauthentication_required) is the other exclusion: sign-in frequency
+#: forces re-authentication, it does not terminate a session.
+EXPECTED_PASSING_REQUIREMENTS = {"3.3.1"}
 
 
 @dataclass
@@ -789,11 +801,19 @@ async def test_framework_posture_names_the_failing_requirements(broken_tenant) -
         assert set(posture["failing"]) == EXPECTED_FAILING_REQUIREMENTS
         assert set(posture["passing"]) == EXPECTED_PASSING_REQUIREMENTS
         assert posture["unmappable_controls"] == []
+        # The two checks `practices.UNMAPPED` excludes, named rather than silently
+        # contributing nothing.
+        assert set(posture["unmapped_checks"]) == {
+            "m365.identity.risky_users_resolved",
+            "m365.policy.session_reauthentication_required",
+        }
 
-        # 13 of 110 assessed. The number is small because the crosswalk and the
-        # check catalog are both partial, and it is reported rather than a
-        # percentage of what was checked.
-        assert posture["assessed_pct"] == 11.8
+        # 10 of 110 assessed -- 9 failing plus 3.3.1. It was 13 while a
+        # relatedness crosswalk spread each verdict across neighbouring
+        # requirements; the smaller number is the one the evidence supports, and
+        # it is still a percentage of the framework rather than of what was
+        # checked.
+        assert posture["assessed_pct"] == 9.1
 
         # The gap report, on the same scan, still answers its own question.
         assert gaps["failing"] == len(FAILING_CHECKS)

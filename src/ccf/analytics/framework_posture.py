@@ -41,7 +41,13 @@ from ..models import (
     SystemProfile,
 )
 from ..models_grc import ControlTest
-from ..posture.evidence import non_passing_attribution, pass_attribution
+from ..posture.evidence import (
+    non_passing_attribution,
+    non_passing_practice_attribution,
+    pass_attribution,
+    pass_practice_attribution,
+)
+from ..posture.practices import UNMAPPED
 from ..scoring.engine import MET_STATES
 
 #: Baseline name -> the catalog column that records membership.
@@ -275,7 +281,7 @@ async def _nist_171_posture(
     machine evidence contradicts is not a satisfied requirement.
 
     Two things are reported that the baseline path has no equivalent for:
-    ``unmappable_controls`` names tested controls the crosswalk could not place,
+    ``unmapped_checks`` names checks whose verdict places no requirement,
     and ``unreachable`` names requirements no 800-53 control maps to at all --
     the ceiling on what any scan can evidence here.
     """
@@ -293,10 +299,36 @@ async def _nist_171_posture(
         return _empty_framework(applied, reason="the 800-171 requirement matrix is not loaded")
 
     tested: dict[str, set[str]] = {}
-    for control_id, control_ids, status in (
+    # Requirements a verdict bears on come from the check's **authored** mapping,
+    # not from the catalog crosswalk.
+    #
+    # Both existed, and they disagreed. On a live system the dashboard called
+    # 3.1.1, 3.1.5, 3.1.6, 3.5.1 and 3.5.3 failing while the SSP reported 3.1.1,
+    # 3.1.5, 3.5.3 and 3.5.6 -- two surfaces, one system, different answers. The
+    # crosswalk is a *relatedness* map: `IA-2` relates to 3.5.1 ("Identify system
+    # users"), 3.5.2 and 3.5.3, so a failing MFA-registration check marked 3.5.1
+    # failing, a requirement it never observed. `CHECK_PRACTICES` says what the
+    # check asserts and quotes the requirement text beside each entry.
+    #
+    # This narrows what is reported as failing, which is the point: the narrower
+    # set is the one the evidence supports. Checks `practices.UNMAPPED`
+    # deliberately excludes now reach nothing and are named in `unmapped_checks`,
+    # rather than acquiring requirements through a looser map.
+    #
+    # The crosswalk keeps `unreachable` below, which is a different question and
+    # still its own: which requirements no 800-53 control maps to at all -- the
+    # ceiling on what any scan could evidence, a fact about the catalog rather
+    # than about which checks are registered.
+    unmapped_checks: set[str] = set()
+    by_requirement: dict[str, set[str]] = {}
+    needs_crosswalk: dict[str, set[str]] = {}
+    for check_key, control_id, control_ids, status in (
         await session.execute(
             select(
-                ControlTest.control_id, ControlTest.control_ids, ControlTest.last_status
+                ControlTest.check_key,
+                ControlTest.control_id,
+                ControlTest.control_ids,
+                ControlTest.last_status,
             ).where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id.is_not(None),
@@ -304,18 +336,43 @@ async def _nist_171_posture(
             )
         )
     ).all():
+        # Named apart from the `practices` mapping above, which is the
+        # requirement matrix rather than this row's attribution.
+        declared = (
+            pass_practice_attribution(check_key)
+            if status == "pass"
+            else non_passing_practice_attribution(check_key)
+        )
+        if declared:
+            for practice in declared:
+                # `CHECK_PRACTICES` is keyed by practice id (`IA.L2-3.5.3`); this
+                # view's denominator is the requirement number (`3.5.3`).
+                requirement = practice.split("-", 1)[1] if "-" in practice else practice
+                tested.setdefault(requirement, set()).add(status)
+                by_requirement.setdefault(requirement, set()).add(status)
+            continue
+        if check_key and str(check_key) in UNMAPPED:
+            # A deliberate exclusion. Falling through to the crosswalk here would
+            # undo the decision recorded in `practices.UNMAPPED` -- that no
+            # requirement matches what the check measures without an argument in
+            # between -- by reaching one through a looser map.
+            unmapped_checks.add(str(check_key))
+            continue
+        # Everything else: an authored (human) control test, or a check from a
+        # pack, neither of which is in the authored table at all. The crosswalk is
+        # the only mapping that exists for them, so it is used here and only here.
         attributed = (
             pass_attribution(control_id)
             if status == "pass"
             else non_passing_attribution(control_id, control_ids)
         )
         for attributed_id in attributed:
-            tested.setdefault(attributed_id, set()).add(status)
+            needs_crosswalk.setdefault(attributed_id, set()).add(status)
 
-    mapped, unmappable = await practices_for_controls(session, set(tested))
-    by_requirement: dict[str, set[str]] = {}
-    for control_id, statuses in tested.items():
-        for requirement in mapped.get(control_id, ()):  # unmapped contribute nothing
+    mapped, unmappable = await practices_for_controls(session, set(needs_crosswalk))
+    for control_id, statuses in needs_crosswalk.items():
+        for requirement in mapped.get(control_id, ()):  # unplaceable contribute nothing
+            tested.setdefault(requirement, set()).add(status)
             by_requirement.setdefault(requirement, set()).update(statuses)
 
     # A claimed implementation state, from the SPRS matrix. Only an *assessed*
@@ -358,6 +415,7 @@ async def _nist_171_posture(
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(total), 1),
         # The honest limits of this view, beside the numbers rather than in a
         # footnote somebody has to go and find.
+        "unmapped_checks": sorted(unmapped_checks),
         "unmappable_controls": sorted(unmappable),
         "unreachable": sorted(total - reachable, key=_requirement_sort),
         "practice_ids": {r: practices[r] for r in sorted(total, key=_requirement_sort)},
@@ -419,7 +477,7 @@ def _empty_framework(
         "unaddressed": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
-        "unmappable_controls": [],
+        "unmapped_checks": [],
         "unreachable": [],
         "practice_ids": {},
         "reason": reason,
@@ -488,7 +546,7 @@ async def system_framework_posture(
             "framework_source": applied.source,
             "denominator": applied.denominator,
             "unit": "control",
-            "unmappable_controls": [],
+            "unmapped_checks": [],
             "unreachable": [],
             "practice_ids": {},
             "reason": None,
