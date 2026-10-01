@@ -326,3 +326,61 @@ async def test_a_credited_or_failing_control_is_not_also_partially_evidenced() -
     for bucket in ("passing", "failing", "documented", "manual_review"):
         overlap = set(out["partially_evidenced"]) & set(out[bucket])
         assert overlap == set(), f"partially_evidenced overlaps {bucket}: {sorted(overlap)}"
+
+
+@pytest.mark.asyncio
+async def test_the_baseline_path_note_excludes_credited_controls_too() -> None:
+    """Second mutation to walk through the 800-171-only fixtures.
+
+    The overlap assertion above runs on the requirement path, so mutating the
+    *baseline* path's note to stop excluding credited controls passed every
+    case. Both paths compute this, so both need the assertion.
+    """
+    tag = next(_SEQ)
+    async with session_scope() as session:
+        for identifier in ("AC-02", "IA-02"):
+            existing = (
+                await session.execute(select(Control).where(Control.identifier == identifier))
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    Control(identifier=identifier, sequence_control=identifier, fisma_mod=True)
+                )
+            else:
+                existing.fisma_mod = True
+        await session.flush()
+
+    async with session_scope() as session:
+        org = Organization(name=f"Baseline Note Org {tag}")
+        session.add(org)
+        await session.flush()
+        system = System(organization_id=org.id, name=f"basenote-{tag}", baseline="moderate")
+        session.add(system)
+        await session.flush()
+        # Primary IA-2 is credited; AC-2 is declared but not credited.
+        session.add(
+            ControlTest(
+                organization_id=org.id,
+                system_id=system.id,
+                name="m365.identity.mfa_registered",
+                check_key="m365.identity.mfa_registered",
+                source="generated",
+                control_id="IA-2",
+                control_ids=["IA-2", "AC-2"],
+                last_status="pass",
+                last_tested_at=datetime.now(UTC),
+                method="api",
+            )
+        )
+        await session.flush()
+        out = await system_framework_posture(session, org_id=org.id, system_id=system.id)
+
+    assert out["denominator"] == "fips199_baseline"
+    assert "IA-2" in out["passing"], "the primary control is credited"
+    assert "AC-2" in out["partially_evidenced"], "the declared one is named"
+    assert "IA-2" not in out["partially_evidenced"], (
+        "a credited control must not also be noted as merely partially evidenced"
+    )
+    for bucket in ("passing", "failing", "documented", "manual_review"):
+        overlap = set(out["partially_evidenced"]) & set(out[bucket])
+        assert overlap == set(), f"partially_evidenced overlaps {bucket}: {sorted(overlap)}"
