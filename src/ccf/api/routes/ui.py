@@ -1316,7 +1316,16 @@ async def reports_page(
     organizations = (
         (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
     )
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    systems = (
+        (
+            await session.execute(
+                # See /governance above: a deleted system is not offered in a list.
+                select(System).where(System.deleted_at.is_(None)).order_by(System.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
     families = (
         (await session.execute(select(ControlFamily).order_by(ControlFamily.code))).scalars().all()
     )
@@ -1994,7 +2003,13 @@ async def governance_page(
     systems = (
         (
             await session.execute(
-                _scoped(select(System), System.organization_id).order_by(System.name)
+                # A deleted system must not appear in a list either: DATA-04 says
+                # its id can no longer scope new scans, evidence or POA&Ms, so
+                # offering it in a picker is an invitation to try. Swept by
+                # tests/test_deleted_systems_are_not_listed.py.
+                _scoped(select(System), System.organization_id)
+                .where(System.deleted_at.is_(None))
+                .order_by(System.name)
             )
         )
         .scalars()

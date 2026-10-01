@@ -37,9 +37,20 @@
   <div class="kpi card"><div class="kpi__label">Resources failing</div>
     <div class="kpi__value">{{ g.resources_failing }}</div>
     <div class="dim" style="font-size:12px">of {{ g.resources_evaluated }} evaluated</div></div>
+  {# `passing` is now only `pass`. It used to be everything that was not a
+     failure, so a control Concord could not judge was counted here, in green,
+     with "no action needed" written under it. #}
   <div class="kpi card"><div class="kpi__label">Controls passing</div>
     <div class="kpi__value" style="color:var(--ok-500)">{{ g.passing }}</div>
-    <div class="dim" style="font-size:12px">no action needed</div></div>
+    <div class="dim" style="font-size:12px">assessed and satisfied</div></div>
+  {# Shown whenever there are any, and not folded into either neighbour: these
+     are the controls somebody has to go and look at, which is different work
+     from fixing a failure and is not the absence of work. #}
+  {% if g.manual_review %}
+  <div class="kpi card"><div class="kpi__label">Need a human</div>
+    <div class="kpi__value" style="color:var(--info-500, #6b8afd)">{{ g.manual_review }}</div>
+    <div class="dim" style="font-size:12px">assessed, could not be judged</div></div>
+  {% endif %}
   <div class="kpi card"><div class="kpi__label">Open remediation</div>
     <div class="kpi__value">{{ g.open_tasks }}</div>
     <div class="dim" style="font-size:12px"><a href="/governance">work queue</a></div></div>
@@ -86,6 +97,33 @@
           {% if x.failing > x.examples|length %}
           <div class="dim" style="font-size:11px">+{{ x.failing - x.examples|length }} more</div>{% endif %}
         </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</section>
+{% endif %}
+
+{% if g.review %}
+<section class="card" style="margin-bottom:20px">
+  <div class="card__header">
+    <div class="card__title">Assessed, but not judged</div>
+    <span class="chip chip--warn">{{ g.review|length }}</span>
+  </div>
+  <p class="dim" style="margin:0 12px 10px;font-size:13px">
+    A check ran and could not conclude — most often a connector with no
+    credential, or a provider reporting that information was missing. These are
+    not failures and they are not satisfied controls; each needs someone to look.
+  </p>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Control</th><th>What was checked</th><th>System</th><th>Why</th></tr></thead>
+    <tbody>
+      {% for x in g.review %}
+      <tr>
+        <td><strong>{{ x.control_id }}</strong></td>
+        <td><a href="/control-tests/{{ x.test_id }}">{{ x.check }}</a></td>
+        <td class="dim">{{ x.system }}</td>
+        <td class="dim">{{ x.detail or x.status }}</td>
       </tr>
       {% endfor %}
     </tbody>

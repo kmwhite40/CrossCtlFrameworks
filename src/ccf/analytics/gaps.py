@@ -45,6 +45,14 @@ EXAMPLES_PER_GAP = 4
 _WORST_FIRST = (ControlTestResult.failing.desc(), ControlTest.control_id.asc())
 
 
+#: Verdicts that mean Concord assessed the control and could not confirm it.
+#: Grouped, because what an operator does about them is identical -- go and look.
+#: The same pairing `ccf.analytics.framework_posture` makes, deliberately: two
+#: surfaces disagreeing about which bucket a `warn` belongs in is how one number
+#: on a dashboard stops matching another.
+_NEEDS_A_HUMAN: frozenset[str] = frozenset({"warn", "manual_review_required"})
+
+
 async def compliance_gaps(
     session: AsyncSession, org_id: int | None, *, today: date | None = None
 ) -> dict[str, Any]:
@@ -64,12 +72,15 @@ async def compliance_gaps(
         "open": 0,
         "accepted": 0,
         "passing": 0,
+        "manual_review": 0,
+        "not_in_scope": 0,
         "resources_evaluated": 0,
         "resources_failing": 0,
         "open_tasks": 0,
         "last_assessed": None,
         "gaps": [],
         "clean": [],
+        "review": [],
         "systems_assessed": 0,
     }
     if org_id is None:
@@ -104,6 +115,8 @@ async def compliance_gaps(
     if not rows:
         return empty
 
+    review: list[dict[str, Any]] = []
+    not_in_scope = 0
     result_ids = [res.id for _t, res, _s in rows if res.status == "fail"]
     examples: dict[int, list[str]] = {}
     # Per-resource findings for the failing results, which is what `cover`
@@ -197,8 +210,15 @@ async def compliance_gaps(
             if coverage.suppress:
                 accepted_count += 1
             gaps.append(entry)
-        else:
+        elif result.status == "pass":
             clean.append(entry)
+        elif result.status in _NEEDS_A_HUMAN:
+            review.append(entry)
+        else:
+            # `not_applicable` / `not_tested`. Counted, not listed: there is
+            # nothing to act on, and a list of them on the landing page would
+            # compete with the ones there are.
+            not_in_scope += 1
 
     # Outstanding work first. `_WORST_FIRST` already ordered by how much is
     # broken; this is a stable partition on top of it, so an accepted row keeps
@@ -220,13 +240,30 @@ async def compliance_gaps(
         "failing": len(gaps),
         "open": len(gaps) - accepted_count,
         "accepted": accepted_count,
+        # Only `pass`. This read `len(clean)` over everything that was not a
+        # failure, so `manual_review_required`, `warn`, `not_applicable` and
+        # `not_tested` were all reported as passing controls -- in green, on the
+        # page an operator lands on at sign-in. Measured before the fix: five
+        # control tests, one passing, four reported as passing.
         "passing": len(clean),
+        # Concord looked and could not confirm. `warn` and
+        # `manual_review_required` together, the grouping `framework_posture`
+        # uses, because what is actionable about them is the same: a human has to
+        # look. These are the controls an AWS account with Security Hub
+        # half-enabled produces in bulk.
+        "manual_review": len(review),
+        # Nothing was in scope (`not_applicable`) or no test has run
+        # (`not_tested`). Separated from `manual_review` because there is nothing
+        # to schedule, and from `passing` because neither asserts the control is
+        # satisfied.
+        "not_in_scope": not_in_scope,
         "resources_evaluated": evaluated,
         "resources_failing": failing_resources,
         "open_tasks": open_tasks,
         "last_assessed": last_assessed,
         "gaps": gaps,
         "clean": clean,
+        "review": review,
         "systems_assessed": len(systems),
     }
 
