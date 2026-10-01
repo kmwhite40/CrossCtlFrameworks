@@ -37,6 +37,7 @@ from typing import Any
 from ccf.analytics.gaps import compliance_gaps
 from ccf.db import session_scope
 from ccf.governance.control_tests import record_result
+from ccf.governance.insights import executive
 from ccf.models import Organization, System
 from ccf.models_grc import ControlTest
 
@@ -201,3 +202,32 @@ async def test_a_review_row_carries_what_it_needs_to_be_acted_on() -> None:
     assert row["control_id"] == "AC-3"
     assert row["system"]
     assert row["detail"]
+
+
+async def test_the_executive_rollup_carries_the_whole_partition() -> None:
+    """The same numbers reach leadership, so the same partition has to hold there.
+
+    ``governance.insights`` passes assessed, failing and passing into the
+    executive view. While ``passing`` meant "everything that did not fail" those
+    three added up by accident; now that it means ``pass``, a consumer computing
+    ``assessed - failing - passing`` has a remainder, and it needs somewhere to go
+    other than a reader's assumption.
+
+    This is the aggregation-layer version of the defect: a dashboard that
+    disagrees with its source is worse than no dashboard, and an executive summary
+    whose numbers do not account for each other is the same thing one level up.
+    """
+    org_id, _ = await _org_with(SCENARIO)
+    async with session_scope() as session:
+        out = await executive(session, org_id=org_id)
+    ct = out["control_tests"]
+
+    assert ct["passing"] == 1
+    assert ct["failing"] == 1
+    assert ct["manual_review"] == 2
+    assert ct["not_in_scope"] == 2
+    total = ct["passing"] + ct["failing"] + ct["manual_review"] + ct["not_in_scope"]
+    assert total == ct["assessed"], (
+        f"the executive rollup does not account for {ct['assessed'] - total} of "
+        f"the {ct['assessed']} controls it says were assessed"
+    )
