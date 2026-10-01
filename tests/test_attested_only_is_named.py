@@ -52,10 +52,20 @@ _SEQ = itertools.count()
 async def _moderate_system(session: Any, controls: list[str]) -> System:
     """A system on the FIPS-199 Moderate baseline with a known control set.
 
-    Seeded with ``fisma_mod=True`` rows rather than a framework profile: the
-    baseline path is the one the 800-53 numbers come from, and a fixture that
-    declares a framework never executes it -- the gap two earlier mutations
-    walked straight through.
+    Seeded with ``fisma_mod`` rows rather than a framework profile: the baseline
+    path is the one the 800-53 numbers come from, and a fixture that declares a
+    framework never executes it -- the gap two earlier mutations walked straight
+    through.
+
+    ``fisma_high`` is set alongside ``fisma_mod`` because FIPS-199 baselines nest
+    (Low ⊂ Moderate ⊂ High). Setting Moderate alone puts a control in Moderate
+    and not in High, which breaks that invariant for the whole shared catalog --
+    and the break surfaces in
+    ``test_framework_posture.py::test_each_baseline_is_a_distinct_and_growing_set``
+    rather than here. It is order-dependent: if an earlier test already created
+    the identifier with High set, flipping ``fisma_mod`` on the existing row is
+    harmless, so the failure comes and goes with collection order. That is the
+    shape that makes an unrelated module look broken.
     """
     n = next(_SEQ)
     org = Organization(name=f"AttestedOnlyOrg{n}")
@@ -74,10 +84,14 @@ async def _moderate_system(session: Any, controls: list[str]) -> System:
                     identifier=identifier,
                     sequence_control=identifier,
                     fisma_mod=True,
+                    # See the note in `_moderate_system`'s docstring: Moderate
+                    # implies High, or the shared catalog stops nesting.
+                    fisma_high=True,
                 )
             )
         else:
             existing.fisma_mod = True
+            existing.fisma_high = True
     await session.flush()
     return sys_
 

@@ -115,7 +115,11 @@ async def _system_with_test(
             if (
                 await s.execute(select(Control).where(Control.identifier == identifier))
             ).scalar_one_or_none() is None:
-                s.add(Control(identifier=identifier, fisma_mod=True))
+                # fisma_high alongside fisma_mod: FIPS-199 baselines nest, and
+                # a Moderate-only row breaks that invariant for the whole shared
+                # catalog -- surfacing in test_framework_posture.py rather than
+                # here, and only when collection order puts this file first.
+                s.add(Control(identifier=identifier, fisma_mod=True, fisma_high=True))
         org = Organization(name=f"Evidence Org {tag}")
         s.add(org)
         await s.flush()

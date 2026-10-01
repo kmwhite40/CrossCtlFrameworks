@@ -126,10 +126,21 @@ async def _one_control_one_status(status: str) -> dict[str, object]:
         ).scalars().first()
         if existing is None:
             session.add(
-                Control(identifier="AC-03", sequence_control="AC-03", fisma_mod=True)
+                Control(
+                    identifier="AC-03",
+                    sequence_control="AC-03",
+                    fisma_mod=True,
+                    # Moderate implies High. FIPS-199 baselines nest, these rows
+                    # are shared catalog state, and setting Moderate alone breaks
+                    # the nesting invariant for the whole table -- surfacing in
+                    # test_framework_posture.py, not here, and only depending on
+                    # collection order.
+                    fisma_high=True,
+                )
             )
         else:
             existing.fisma_mod = True
+            existing.fisma_high = True
         await session.flush()
         org = Organization(name=f"BucketOrg{n}")
         session.add(org)

@@ -223,10 +223,18 @@ async def test_the_baseline_path_has_the_bucket_too() -> None:
             ).scalar_one_or_none()
             if existing is None:
                 session.add(
-                    Control(identifier=identifier, sequence_control=identifier, fisma_mod=True)
+                    Control(
+                        identifier=identifier,
+                        sequence_control=identifier,
+                        fisma_mod=True,
+                        # Moderate implies High: FIPS-199 baselines nest, and
+                        # these rows are shared catalog state.
+                        fisma_high=True,
+                    )
                 )
             else:
                 existing.fisma_mod = True
+                existing.fisma_high = True
         await session.flush()
 
     async with session_scope() as session:
@@ -344,10 +352,18 @@ async def test_the_baseline_path_note_excludes_credited_controls_too() -> None:
             ).scalar_one_or_none()
             if existing is None:
                 session.add(
-                    Control(identifier=identifier, sequence_control=identifier, fisma_mod=True)
+                    Control(
+                        identifier=identifier,
+                        sequence_control=identifier,
+                        fisma_mod=True,
+                        # Moderate implies High: FIPS-199 baselines nest, and
+                        # these rows are shared catalog state.
+                        fisma_high=True,
+                    )
                 )
             else:
                 existing.fisma_mod = True
+                existing.fisma_high = True
         await session.flush()
 
     async with session_scope() as session:
