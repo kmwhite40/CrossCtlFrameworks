@@ -33,11 +33,12 @@ from datetime import UTC, datetime
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import select
 
 from ccf.analytics.framework_posture import system_framework_posture
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, System, SystemProfile
+from ccf.models import Control, Organization, System, SystemProfile
 from ccf.models_grc import ControlTest
 from ccf.scoring.seed import seed_scoring_controls
 
@@ -199,3 +200,67 @@ async def test_a_requirement_nothing_touched_is_still_unaddressed() -> None:
 
     assert out["unaddressed"], "most of the 110 requirements are genuinely untouched"
     assert "3.1.1" in out["unaddressed"], "nothing in this fixture reaches 3.1.1"
+
+
+@pytest.mark.asyncio
+async def test_the_baseline_path_has_the_bucket_too() -> None:
+    """The FIPS-199 view, which the cases above do not reach.
+
+    Every fixture so far declares a framework in its intake profile and carries
+    no baseline, so `resolve_applied_framework` routes it to the 800-171 path --
+    and emptying the *baseline* path's manual-review bucket passed all of them.
+    A mutation surviving is the only reason this test exists.
+
+    The baseline needs catalog rows carrying FIPS-199 membership, which the test
+    database does not load, so two are seeded here. That is also why this path
+    had no coverage: it is the one that needs a catalog.
+    """
+    tag = next(_SEQ)
+    async with session_scope() as session:
+        for identifier in ("AC-02", "IA-02"):
+            existing = (
+                await session.execute(select(Control).where(Control.identifier == identifier))
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    Control(identifier=identifier, sequence_control=identifier, fisma_mod=True)
+                )
+            else:
+                existing.fisma_mod = True
+        await session.flush()
+
+    async with session_scope() as session:
+        org = Organization(name=f"Baseline Org {tag}")
+        session.add(org)
+        await session.flush()
+        system = System(organization_id=org.id, name=f"base-{tag}", baseline="moderate")
+        session.add(system)
+        await session.flush()
+        session.add(
+            ControlTest(
+                organization_id=org.id,
+                system_id=system.id,
+                name="m365.identity.stale_accounts",
+                check_key="m365.identity.stale_accounts",
+                source="generated",
+                control_id="AC-2",
+                control_ids=["AC-2"],
+                last_status="manual_review_required",
+                last_tested_at=datetime.now(UTC),
+                method="api",
+            )
+        )
+        await session.flush()
+        out = await system_framework_posture(session, org_id=org.id, system_id=system.id)
+
+    assert out["denominator"] == "fips199_baseline", (
+        f"this test must exercise the baseline path, got {out['denominator']!r}"
+    )
+    assert out["total"], "the seeded baseline must resolve to controls"
+    assert "AC-2" in out["manual_review"], (
+        "the baseline path reported a manual-review verdict as something else"
+    )
+    assert "AC-2" not in out["unaddressed"]
+
+    buckets = ("passing", "failing", "documented", "manual_review", "unaddressed")
+    assert sum(len(out[b]) for b in buckets) == out["total"]
