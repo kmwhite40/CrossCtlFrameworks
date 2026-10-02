@@ -21,9 +21,11 @@ adds is a second caller.
 
 The per-provider failure containment is the part to preserve exactly. One
 provider's exception must not discard the providers that already succeeded, and
-the ``session.rollback()`` in that path is load-bearing rather than tidy: a
-failed scan can leave the session unusable, turning one provider's fault into
-every provider's.
+a failed scan can leave the session unusable, turning one provider's fault into
+every provider's. Both are handled by a per-provider SAVEPOINT. The bare
+``session.rollback()`` that used to be here did keep the session usable, but it
+also discarded every earlier provider's results -- nothing commits between
+providers -- while the response still listed them as recorded.
 """
 
 from __future__ import annotations
@@ -133,39 +135,45 @@ async def scan_all_providers(
             )
             continue
         try:
-            manual_results = [
-                await record_manual_review_check(
+            # A SAVEPOINT per provider, so a failure undoes exactly this
+            # provider's writes. It replaced a bare `session.rollback()`, which
+            # discarded every *earlier* provider's recorded results -- nothing
+            # commits between providers -- while the response went on listing
+            # them as recorded; and under the scheduler (`commit=False`) it ended
+            # the scheduler's whole shared transaction. Rolling back to the
+            # savepoint also leaves the session usable, which is what the bare
+            # rollback was there to guarantee.
+            async with session.begin_nested():
+                manual_results = [
+                    await record_manual_review_check(
+                        session,
+                        system_id=system_id,
+                        connector_key=key,
+                        check=check,
+                        reason=check["scan_applicability"],
+                        actor=actor,
+                    )
+                    for check in readiness["checks"]
+                    if check["scan_applicability"] != "scan"
+                ]
+                api_check_keys = {
+                    str(check["check_key"])
+                    for check in readiness["checks"]
+                    if check["scan_applicability"] == "scan"
+                }
+                out = await scan_for_system(
                     session,
                     system_id=system_id,
                     connector_key=key,
-                    check=check,
-                    reason=check["scan_applicability"],
                     actor=actor,
+                    check_keys=api_check_keys,
                 )
-                for check in readiness["checks"]
-                if check["scan_applicability"] != "scan"
-            ]
-            api_check_keys = {
-                str(check["check_key"])
-                for check in readiness["checks"]
-                if check["scan_applicability"] == "scan"
-            }
-            out = await scan_for_system(
-                session,
-                system_id=system_id,
-                connector_key=key,
-                actor=actor,
-                check_keys=api_check_keys,
-            )
-            out["readiness"] = readiness
-            out["manual_review_results"] = manual_results
-            results.append(out)
+                out["readiness"] = readiness
+                out["manual_review_results"] = manual_results
+                results.append(out)
         except Exception as exc:  # reported per provider, never swallowed
-            # One provider's failure must not discard the providers that worked.
-            # The rollback is required, not tidiness: a failed scan can leave the
-            # session in a state where every later provider's flush fails too,
-            # which would turn one provider's fault into all of them.
-            await session.rollback()
+            # Already rolled back to the savepoint above: this provider's writes
+            # are gone, earlier providers' are kept, and the session is usable.
             log.warning(
                 "posture.scan_all_provider_failed",
                 system_id=system_id,
@@ -192,15 +200,13 @@ async def scan_all_providers(
     # this reads AWS's assessment of its own control catalog -- a different kind
     # of evidence, labelled differently in the record (see posture.attested).
     #
-    # In a SAVEPOINT, and that is the whole point of where it sits. The provider
-    # loop's own handler calls `session.rollback()`, which is correct there
-    # because nothing has been committed yet and a broken session would fail
-    # every later provider. Here the loop has already recorded its results and
-    # the commit is two lines below, so a bare rollback would discard every scan
-    # that just succeeded. `AsyncSession.rollback()` is also not savepoint-scoped,
-    # so an unguarded flush error would leave the outer transaction aborted and
-    # take those results down on the caller's commit anyway -- the same reasoning
-    # `control_tests.record_result` records for its waiver block.
+    # In a SAVEPOINT, for the same reason each provider above is: the loop has
+    # already recorded its results and the commit is two lines below, so a bare
+    # rollback would discard every scan that just succeeded. `AsyncSession.rollback()`
+    # is also not savepoint-scoped, so an unguarded flush error would leave the
+    # outer transaction aborted and take those results down on the caller's
+    # commit anyway -- the same reasoning `control_tests.record_result` records
+    # for its waiver block.
     try:
         async with session.begin_nested():
             attestations = await ingest_attestations(
