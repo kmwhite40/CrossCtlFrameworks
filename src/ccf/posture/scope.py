@@ -26,19 +26,24 @@ environment. Two maps that already exist are composed rather than replaced:
 ``cloud_platform`` answer -> platform). A third hand-maintained table mapping
 answers straight to connectors is exactly how two tables come to disagree.
 
-A connector is in scope when **either**:
+**The system's declared environment decides.** One platform per system is the
+product's model -- the intake questionnaire offers exactly one of
+``m365_gcc_high``, ``azure_gov``, ``aws_govcloud``, ``gcp`` and ``none`` -- so a
+system that says it is M365 is measured against M365, and not also against AWS
+because some *other* system in the organization has an AWS connector bound. An
+organization running both kinds of environment is the normal case, and a scope
+widened by an org-wide setting cannot express it.
 
-1. the organization has a ``ConnectorConfig`` row for it -- configured or
-   half-configured, because finishing one is real work and that is the case
-   ``manual_review_required`` exists for; **or**
-2. the system's declared ``cloud_platform`` maps to its platform.
+When a system declares **no** environment, a configured connector is the only
+evidence of intent left and is honoured as a fallback; the reason returned says to
+declare the environment, because that is the setting that actually decides.
 
-Nothing is inferred otherwise. An undeclared platform with no configured
-connector means Concord cannot say which clouds the system has, and guessing is
-how an M365 tenant came to hold thirteen AWS verdicts. ``none`` is a deliberate
-answer ("this system uses no cloud") and pulls in nothing -- the same answer
-``onboarding.NO_CLOUD`` exists for, after a customer who said they run no cloud
-received a Microsoft 365 SSP.
+``puppetdb`` maps to no cloud platform -- it is infrastructure the customer runs --
+so no environment can imply it and it is assessed only when configured.
+
+Nothing else is inferred. ``none`` is a deliberate answer ("this system uses no
+cloud") and pulls in nothing: the same answer ``onboarding.NO_CLOUD`` exists for,
+after a customer who said they run no cloud received a Microsoft 365 SSP.
 """
 
 from __future__ import annotations
@@ -127,44 +132,66 @@ async def provider_scope(
     out: dict[str, ProviderScope] = {}
     for connector in sorted(known_providers()):
         connector_platform = _CONNECTOR_PLATFORM.get(connector)
+
+        # A connector that maps to no cloud platform -- puppetdb is infrastructure
+        # the customer runs -- can never be implied by an environment, so it is
+        # assessed only when somebody configures it. Decided first, because
+        # neither branch below has anything to say about it.
+        if connector_platform is None:
+            in_scope = connector in configured
+            out[connector] = ProviderScope(
+                connector,
+                in_scope,
+                (
+                    f"this organization has configured the {connector} connector"
+                    if in_scope
+                    else f"{connector} maps to no cloud platform, so it is "
+                    "assessed only when this organization configures it"
+                ),
+            )
+            continue
+
+        if platform is not None:
+            # **The declared environment decides.** One platform per system is the
+            # product's model -- the intake questionnaire asks for exactly one --
+            # so a system that says it is M365 is measured against M365 and not
+            # also against AWS because some *other* system in the organization has
+            # an AWS connector bound. An organization running both kinds of
+            # environment is the normal case, and a scope widened by an org-wide
+            # setting cannot express it.
+            matches = connector_platform == platform
+            out[connector] = ProviderScope(
+                connector,
+                matches,
+                (
+                    f"this system's environment is {declared!r}, which is the "
+                    f"{connector_platform} platform this connector assesses"
+                    if matches
+                    else f"this system's environment is {declared!r}; {connector} "
+                    f"assesses {connector_platform}, so its checks do not apply. "
+                    "Change the system's environment to measure it instead"
+                ),
+            )
+            continue
+
+        # Nothing declared. A configured connector is the only evidence of intent
+        # left, so it is honoured as a fallback -- but the reason says to declare
+        # the environment, because that is the setting that actually decides.
         if connector in configured:
             out[connector] = ProviderScope(
                 connector,
                 True,
-                f"this organization has configured the {connector} connector, so "
-                "its checks are assessed whatever the system's declared platform",
-            )
-            continue
-        if connector_platform is not None and connector_platform == platform:
-            out[connector] = ProviderScope(
-                connector,
-                True,
-                f"the system declares cloud platform {declared!r}, which is the "
-                f"{connector_platform} platform this connector assesses",
-            )
-            continue
-        if connector_platform is None:
-            out[connector] = ProviderScope(
-                connector,
-                False,
-                f"{connector} maps to no cloud platform, so it is assessed only "
-                "when this organization configures it",
-            )
-            continue
-        if platform is None:
-            out[connector] = ProviderScope(
-                connector,
-                False,
-                "this system declares no recognised cloud platform, so Concord "
-                f"cannot tell whether it uses {connector_platform}; declare the "
-                f"platform on the system or configure the {connector} connector",
+                f"this organization has configured the {connector} connector and "
+                "this system declares no environment; set the system's environment "
+                "to choose what is measured",
             )
             continue
         out[connector] = ProviderScope(
             connector,
             False,
-            f"this system is a {platform} environment and {connector} assesses "
-            f"{connector_platform}, so its checks do not apply here",
+            "this system declares no environment, so Concord cannot tell whether "
+            f"it uses {connector_platform}; set the system's environment or "
+            f"configure the {connector} connector",
         )
     return out
 

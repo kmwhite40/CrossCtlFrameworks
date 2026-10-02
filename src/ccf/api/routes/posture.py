@@ -282,7 +282,12 @@ async def check_system_provider_readiness(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Verify every scan provider before running a live audit."""
-    await require_system_in_scope(session, system_id, principal)
+    from ...posture.scope import provider_scope  # noqa: PLC0415
+
+    system = await require_system_in_scope(session, system_id, principal)
+    # Verifying AWS from an M365 system's page would persist a readiness verdict
+    # for a connector this environment is not measured against.
+    scope = await provider_scope(session, system=system)
     rows = [
         await provider_readiness(
             session,
@@ -291,6 +296,7 @@ async def check_system_provider_readiness(
             persist=True,
         )
         for key in sorted(known_providers())
+        if key in scope and scope[key].in_scope
     ]
     await session.commit()
     return {
@@ -393,7 +399,12 @@ async def get_live_audit_workflow(
             "scan_summary": sync["summary"],
         }
 
-    if audit_plan["summary"]["providers_ready"] < audit_plan["summary"]["providers"]:
+    if not audit_plan["summary"]["providers"]:
+        # Nothing to measure with: no environment chosen and nothing configured.
+        # "0 of 0 providers ready" would read as complete, and the next step
+        # after it -- run the audit -- assesses nothing.
+        next_action = "choose_environment"
+    elif audit_plan["summary"]["providers_ready"] < audit_plan["summary"]["providers"]:
         next_action = "verify_connectors"
     elif not evaluations:
         next_action = "run_live_audit"
@@ -417,7 +428,8 @@ async def get_live_audit_workflow(
                 "key": "verify_connectors",
                 "status": (
                     "complete"
-                    if audit_plan["summary"]["providers_ready"]
+                    if audit_plan["summary"]["providers"]
+                    and audit_plan["summary"]["providers_ready"]
                     == audit_plan["summary"]["providers"]
                     else "needs_attention"
                 ),
@@ -466,6 +478,7 @@ async def get_live_audit_workflow(
                 for p in audit_plan["providers"]
                 if not p["ready"]
             ],
+            "providers_out_of_scope": audit_plan["providers_out_of_scope"],
         },
         "control_evaluations": {
             "total": len(evaluations),

@@ -135,29 +135,56 @@ async def test_a_gcp_environment_reaches_the_gcp_connector() -> None:
 # --------------------------------------------------------------------------
 
 
-async def test_a_configured_connector_is_in_scope_even_off_platform() -> None:
-    """An operator who configured AWS on a Microsoft system meant to.
+async def test_the_declared_environment_wins_over_an_off_platform_connector() -> None:
+    """The defect the user reported: an M365 environment assessed against AWS.
 
-    Scope follows the operator's own actions before it follows a questionnaire
-    answer -- a hybrid estate is real, and the intake records one platform.
+    The organization has an AWS connector bound -- for its *other* system. This
+    system says it is M365, so it is measured against M365 and nothing else.
+    Letting an org-wide setting widen it is exactly how a Microsoft tenant came to
+    hold thirteen AWS verdicts.
     """
     scope = await _scope(
         cloud_platform="m365_gcc_high", configured=("msgraph", "aws_govcloud")
     )
     assert scope["msgraph"] is True
-    assert scope["aws_govcloud"] is True
+    assert scope["aws_govcloud"] is False
     assert scope["gcp"] is False
+    assert scope["azure_arm"] is False
 
 
-async def test_a_half_configured_connector_is_still_in_scope() -> None:
-    """A ``ConnectorConfig`` row with no credential is work in progress.
+@pytest.mark.parametrize(
+    ("declared", "connector"),
+    [
+        ("m365_gcc_high", "msgraph"),
+        ("azure_gov", "azure_arm"),
+        ("aws_govcloud", "aws_govcloud"),
+        ("gcp", "gcp"),
+    ],
+)
+async def test_each_environment_measures_exactly_its_own_connector(
+    declared: str, connector: str
+) -> None:
+    """The four choices, each with every other cloud connector configured.
 
-    This is the case ``manual_review_required`` was built for: somebody started
-    binding a connector and has not finished, and the check must keep saying so.
-    Scope keys on the row existing, not on the credential being usable.
+    Every off-platform connector is bound, so a scope that consulted the
+    organization's configuration at all would widen here.
     """
-    scope = await _scope(cloud_platform="m365_gcc_high", configured=("aws_govcloud",))
+    cloud = ("msgraph", "azure_arm", "aws_govcloud", "gcp")
+    scope = await _scope(cloud_platform=declared, configured=cloud)
+    in_scope = sorted(k for k in cloud if scope[k])
+    assert in_scope == [connector], (declared, in_scope)
+
+
+async def test_a_configured_connector_is_the_fallback_when_nothing_is_declared() -> None:
+    """No environment chosen: the operator's configuration is the only signal left.
+
+    A ``ConnectorConfig`` row with no credential still counts -- somebody started
+    binding it, and ``manual_review_required`` exists to keep saying so. Scope
+    keys on the row existing, not on the credential being usable.
+    """
+    scope = await _scope(cloud_platform=None, configured=("aws_govcloud",))
     assert scope["aws_govcloud"] is True
+    assert scope["msgraph"] is False
 
 
 async def test_puppetdb_is_only_ever_in_scope_when_configured() -> None:
@@ -264,12 +291,11 @@ async def test_every_answer_carries_a_reason_a_reader_can_act_on() -> None:
         assert scope.connector == key
 
 
-async def test_the_reason_distinguishes_configured_from_platform_derived() -> None:
-    """Two different routes into scope, and a reader needs to know which.
+async def test_an_excluded_configured_connector_says_how_to_measure_it() -> None:
+    """The operator bound msgraph and it is not being assessed here.
 
-    "You configured this" and "your declared platform implies this" lead to
-    different conversations when a provider is assessed and the operator did not
-    expect it.
+    That surprises somebody, so the reason must name the environment that
+    excluded it and the setting that would change it -- not merely "out of scope".
     """
     _org_id, system_id = await _system(
         cloud_platform="aws_govcloud", configured=("msgraph",)
@@ -278,10 +304,25 @@ async def test_the_reason_distinguishes_configured_from_platform_derived() -> No
         system = await session.get(System, system_id)
         out = await provider_scope(session, system=system)
 
-    assert "configured" in out["msgraph"].reason.lower()
-    assert "aws_govcloud" in out["aws_govcloud"].reason or "platform" in out[
-        "aws_govcloud"
-    ].reason.lower()
+    assert out["msgraph"].in_scope is False
+    assert "aws_govcloud" in out["msgraph"].reason
+    assert "change the system's environment" in out["msgraph"].reason.lower()
+    assert out["aws_govcloud"].in_scope is True
+    assert "aws_govcloud" in out["aws_govcloud"].reason
+
+
+async def test_the_fallback_reason_says_to_declare_the_environment() -> None:
+    """A configured connector honoured only because nothing was declared must say
+    so: the reader should know the decisive setting is unset."""
+    _org_id, system_id = await _system(cloud_platform=None, configured=("msgraph",))
+    async with session_scope() as session:
+        system = await session.get(System, system_id)
+        out = await provider_scope(session, system=system)
+
+    reason = out["msgraph"].reason.lower()
+    assert out["msgraph"].in_scope is True
+    assert "configured" in reason
+    assert "declares no environment" in reason
 
 
 async def test_scope_is_per_system_not_per_organization() -> None:
@@ -374,8 +415,9 @@ async def test_an_in_scope_provider_without_a_credential_still_needs_a_human() -
     real work to do, and `manual_review_required` is how the product says so.
     Narrowing scope must not silence that.
     """
+    # An AWS environment whose AWS connector row exists but has no credential.
     org_id, system_id = await _system(
-        cloud_platform="m365_gcc_high", configured=("msgraph", "aws_govcloud")
+        cloud_platform="aws_govcloud", configured=("aws_govcloud",)
     )
     await _scan(org_id, system_id)
 
@@ -528,3 +570,63 @@ async def test_an_authored_test_is_never_retired() -> None:
 
     assert left == 1, "an authored test was retired"
     assert out["retired_checks"] == []
+
+
+async def test_retirement_reports_every_row_it_removes_across_providers() -> None:
+    """The report must account for all of them, not just the first provider.
+
+    Observed on live data: a scan deleted 23 rows across four out-of-scope
+    providers and reported 13 -- the aws_govcloud count alone. A retirement that
+    removes evidence it does not name is the silent deletion
+    `retire_out_of_scope_checks` documents refusing to do.
+    """
+    org_id, system_id = await _system(
+        cloud_platform="m365_gcc_high", configured=("msgraph",)
+    )
+    seeded = {"aws_govcloud": 4, "gcp": 3, "azure_arm": 2, "puppetdb": 1}
+    async with session_scope() as session:
+        for connector, n in seeded.items():
+            for i in range(n):
+                test = ControlTest(
+                    organization_id=org_id,
+                    system_id=system_id,
+                    control_id="AC-3",
+                    control_ids=["AC-3"],
+                    name=f"{connector}.check{i}",
+                    method="connector",
+                    source="generated",
+                    check_key=f"{connector}.check{i}",
+                    check_source="platform",
+                    connector_type=connector,
+                )
+                session.add(test)
+                await session.flush()
+                await record_result(
+                    session, test, status="manual_review_required", detail="x"
+                )
+
+    out = await _scan(org_id, system_id)
+
+    async with session_scope() as session:
+        left = (
+            await session.execute(
+                select(func.count())
+                .select_from(ControlTest)
+                .where(
+                    ControlTest.system_id == system_id,
+                    ControlTest.connector_type.notin_(("msgraph",)),
+                )
+            )
+        ).scalar_one()
+
+    assert left == 0, f"{left} out-of-scope rows survived"
+    reported = len(out["retired_checks"])
+    assert reported == sum(seeded.values()), (
+        f"removed {sum(seeded.values())} rows and reported {reported}; "
+        f"by connector: "
+        f"{ {c: sum(1 for r in out['retired_checks'] if r['connector'] == c) for c in seeded} }"
+    )
+    by_connector = {
+        c: sum(1 for r in out["retired_checks"] if r["connector"] == c) for c in seeded
+    }
+    assert by_connector == seeded, by_connector
