@@ -1050,7 +1050,11 @@ async def scans_page(
 ) -> HTMLResponse:
     org = _principal_org(request)
     ing_stmt = select(ScanIngestion).order_by(ScanIngestion.id.desc()).limit(50)
-    sys_stmt = select(System).order_by(System.name)
+    # Deleted systems are excluded here as they are everywhere else: DATA-04
+    # says a deleted system's id can no longer scope new scans, evidence or
+    # POA&Ms, and a customer who deleted it was told it is gone. Swept by
+    # tests/test_deleted_systems_are_not_listed.py.
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         sys_stmt = sys_stmt.where(System.organization_id == org)
     ingestions = (await session.execute(ing_stmt)).scalars().all()
@@ -1393,7 +1397,11 @@ async def assurance_page(
     org = _principal_org(request)
     latest = await assurance_impact.latest_build(session, org)
     node_stmt = select(AssuranceNode)
-    sys_stmt = select(System).order_by(System.name)
+    # Deleted systems are excluded here as they are everywhere else: DATA-04
+    # says a deleted system's id can no longer scope new scans, evidence or
+    # POA&Ms, and a customer who deleted it was told it is gone. Swept by
+    # tests/test_deleted_systems_are_not_listed.py.
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
         node_stmt = node_stmt.where(AssuranceNode.organization_id == org)
         sys_stmt = sys_stmt.where(System.organization_id == org)

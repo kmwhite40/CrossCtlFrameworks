@@ -41,6 +41,7 @@ from ..models import (
     SystemProfile,
 )
 from ..models_grc import ControlTest
+from ..posture.attested import CHECK_SOURCE as ATTESTED_CHECK_SOURCE
 from ..posture.evidence import (
     non_passing_attribution,
     non_passing_practice_attribution,
@@ -112,10 +113,27 @@ async def framework_posture(
         return _empty(baseline or None)
 
     tested: dict[str, set[str]] = {}
-    for control_id, control_ids, status in (
+    #: Controls a *passing* check declares but does not credit. A pass credits
+    #: only its primary control -- see `ccf.posture.evidence` -- so the rest had
+    #: appeared nowhere, and the page called them "not yet addressed" beside the
+    #: controls nothing had touched. Tracked to name them, not to credit them.
+    declared_by_a_pass: set[str] = set()
+    #: Controls credited by a passing *provider attestation* and, separately, by
+    #: one of Concord's own checks. The note below is the difference: AWS saying
+    #: its control S3.8 passed and that it relates S3.8 to AC-3 is real evidence
+    #: and is not Concord having assessed AC-3 -- Concord chose neither the
+    #: evaluator nor the mapping. `posture.scan.trust_tier` ranks that for one
+    #: verdict; this states it across a whole framework, so a reader can see how
+    #: much of the green is Concord's own work.
+    passed_by_attestation: set[str] = set()
+    passed_by_concord: set[str] = set()
+    for control_id, control_ids, status, check_source in (
         await session.execute(
             select(
-                ControlTest.control_id, ControlTest.control_ids, ControlTest.last_status
+                ControlTest.control_id,
+                ControlTest.control_ids,
+                ControlTest.last_status,
+                ControlTest.check_source,
             ).where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id.is_not(None),
@@ -135,6 +153,30 @@ async def framework_posture(
             folded = fold_to_control(attributed_id)
             if folded:
                 tested.setdefault(folded, set()).add(status)
+        if status == "pass":
+            for declared in non_passing_attribution(control_id, control_ids):
+                folded = fold_to_control(declared)
+                if folded:
+                    declared_by_a_pass.add(folded)
+            # Keyed off the credited control, not the declared tuple: the note
+            # qualifies what appears in `passing`, and only a primary control is
+            # credited by a pass.
+            #
+            # Read off `attributed` rather than re-calling `pass_attribution` and
+            # indexing it. This was `pass_attribution(control_id)[0] if control_id
+            # else None`, which raises IndexError on a whitespace-only control_id:
+            # `"  "` is truthy, so the guard let it through, and
+            # `pass_attribution` strips it to `""` and returns `[]`. The code this
+            # replaced *iterated* the list and so was safe. `ControlTest.control_id`
+            # is NOT NULL but not non-empty, and authored tests take whatever the
+            # API is given -- one such row would 500 the posture page for the whole
+            # system.
+            credited = fold_to_control(attributed[0]) if attributed else None
+            if credited:
+                if check_source == ATTESTED_CHECK_SOURCE:
+                    passed_by_attestation.add(credited)
+                else:
+                    passed_by_concord.add(credited)
 
     implemented = {
         folded
@@ -154,9 +196,53 @@ async def framework_posture(
     # ever *adds* satisfaction -- there, a rule must not overrule an assessor;
     # here, the customer is being told what to fix.
     failing = {c for c, statuses in tested.items() if "fail" in statuses} & controls
-    passing = {c for c, statuses in tested.items() if statuses == {"pass"}} & controls
-    documented = (implemented & controls) - failing - passing
-    unaddressed = controls - failing - passing - documented
+    # `"pass" in statuses` rather than `statuses == {"pass"}`. The equality form
+    # meant any other verdict on the same control -- most often a
+    # `manual_review_required` from a second check -- knocked it out of
+    # `passing` *and* out of `failing`, so a control one check had satisfied was
+    # reported as untouched. Failing still outranks everything, above.
+    passing = {c for c, statuses in tested.items() if "pass" in statuses} & controls - failing
+    # Looked at and could not be judged. Reported on its own because it is the
+    # actionable bucket -- these are the controls needing human evidence -- and
+    # because sweeping it into `unaddressed` said nobody had looked when Concord
+    # had looked and said so.
+    # `warn` belongs here, with `manual_review_required`, and the two are grouped
+    # rather than split because what is actionable about them is identical: a
+    # human has to look.
+    #
+    # `warn` was named in none of these sets until the Security Hub ingest mapped
+    # AWS's WARNING onto it, and `unaddressed` below is a remainder rather than a
+    # decision -- so a control Concord had assessed and had something to say
+    # about would have been reported as one nobody had looked at. That is the same
+    # defect `manual_review` was carved out of `unaddressed` to fix, and it was
+    # about to recur with a different status.
+    #
+    # It is not `failing`: AWS's WARNING means "some information is missing or
+    # this check is not supported for your configuration", and reporting that as
+    # a failed control overstates a finding in a document a regulator acts on.
+    # It is not `passing` either, because nothing was satisfied.
+    #
+    # `tests/test_every_verdict_lands_in_a_bucket.py` now asserts a bucket for
+    # every member of VALIDATION_STATUSES, so the next status added to the
+    # vocabulary fails there rather than joining the remainder silently.
+    manual_review = (
+        {
+            c
+            for c, statuses in tested.items()
+            if statuses & {"manual_review_required", "warn"}
+        }
+        & controls
+    ) - failing - passing
+    documented = (implemented & controls) - failing - passing - manual_review
+    unaddressed = controls - failing - passing - documented - manual_review
+    # A note on the remainder rather than a sixth bucket: the five above still
+    # partition the framework, and this says which part of `unaddressed` carries
+    # passing machine evidence that does not amount to credit.
+    partially_evidenced = (declared_by_a_pass & controls) & unaddressed
+    # "Only AWS", not "AWS at all": an attestation agreeing with Concord's own
+    # passing check is not a caveat, and listing it would make the note grow
+    # with coverage until it meant nothing.
+    provider_attested_only = (passed_by_attestation - passed_by_concord) & passing
 
     return {
         "baseline": baseline,
@@ -164,7 +250,10 @@ async def framework_posture(
         "passing": sorted(passing),
         "failing": sorted(failing),
         "documented": sorted(documented),
+        "manual_review": sorted(manual_review),
         "unaddressed": sorted(unaddressed),
+        "partially_evidenced": sorted(partially_evidenced),
+        "provider_attested_only": sorted(provider_attested_only),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(controls), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(controls), 1),
     }
@@ -177,7 +266,10 @@ def _empty(baseline: str | None) -> dict[str, Any]:
         "passing": [],
         "failing": [],
         "documented": [],
+        "manual_review": [],
         "unaddressed": [],
+        "partially_evidenced": [],
+        "provider_attested_only": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
     }
@@ -298,7 +390,13 @@ async def _nist_171_posture(
     if not practices:
         return _empty_framework(applied, reason="the 800-171 requirement matrix is not loaded")
 
-    tested: dict[str, set[str]] = {}
+    # `tested` used to be built here and never read -- three writes, no reader,
+    # and the crosswalk write below used a `status` leaked from the loop above it
+    # rather than the row's own. Removed rather than fixed: a dict nobody reads
+    # cannot be verified by anything, so the wrong value in it would have stayed
+    # wrong until some later reader trusted it. `by_requirement` is the one this
+    # path actually measures from.
+    #
     # Requirements a verdict bears on come from the check's **authored** mapping,
     # not from the catalog crosswalk.
     #
@@ -320,15 +418,26 @@ async def _nist_171_posture(
     # ceiling on what any scan could evidence, a fact about the catalog rather
     # than about which checks are registered.
     unmapped_checks: set[str] = set()
+    declared_by_a_pass: set[str] = set()
     by_requirement: dict[str, set[str]] = {}
     needs_crosswalk: dict[str, set[str]] = {}
-    for check_key, control_id, control_ids, status in (
+    #: See the baseline path: which passing evidence is AWS's own attestation and
+    #: which is Concord's own check, so the note below can say "only AWS" rather
+    #: than "AWS at all".
+    passed_by_attestation: set[str] = set()
+    passed_by_concord: set[str] = set()
+    #: control id -> the check_sources whose *passing* verdicts reached it, kept
+    #: beside `needs_crosswalk` because the crosswalk expansion happens after
+    #: this loop and the row's source is not recoverable there.
+    crosswalk_pass_sources: dict[str, set[str]] = {}
+    for check_key, control_id, control_ids, status, check_source in (
         await session.execute(
             select(
                 ControlTest.check_key,
                 ControlTest.control_id,
                 ControlTest.control_ids,
                 ControlTest.last_status,
+                ControlTest.check_source,
             ).where(
                 ControlTest.system_id == system_id,
                 ControlTest.control_id.is_not(None),
@@ -344,12 +453,24 @@ async def _nist_171_posture(
             else non_passing_practice_attribution(check_key)
         )
         if declared:
+            if status == "pass":
+                # Every practice the check declares, not only the credited one.
+                for practice in non_passing_practice_attribution(check_key):
+                    declared_by_a_pass.add(
+                        practice.split("-", 1)[1] if "-" in practice else practice
+                    )
             for practice in declared:
                 # `CHECK_PRACTICES` is keyed by practice id (`IA.L2-3.5.3`); this
                 # view's denominator is the requirement number (`3.5.3`).
                 requirement = practice.split("-", 1)[1] if "-" in practice else practice
-                tested.setdefault(requirement, set()).add(status)
                 by_requirement.setdefault(requirement, set()).add(status)
+                if status == "pass":
+                    target = (
+                        passed_by_attestation
+                        if check_source == ATTESTED_CHECK_SOURCE
+                        else passed_by_concord
+                    )
+                    target.add(requirement)
             continue
         if check_key and str(check_key) in UNMAPPED:
             # A deliberate exclusion. Falling through to the crosswalk here would
@@ -368,12 +489,26 @@ async def _nist_171_posture(
         )
         for attributed_id in attributed:
             needs_crosswalk.setdefault(attributed_id, set()).add(status)
+            if status == "pass":
+                # Belt and braces, and recorded as such: mutating this guard away
+                # is not independently observable, because the note below is
+                # restricted to `passing` and a requirement cannot be passing
+                # without some row having actually passed it. Kept because the set
+                # is named `crosswalk_pass_sources` and a reader should be able to
+                # trust that, not because a test fails without it.
+                crosswalk_pass_sources.setdefault(attributed_id, set()).add(
+                    str(check_source or "")
+                )
 
     mapped, unmappable = await practices_for_controls(session, set(needs_crosswalk))
     for control_id, statuses in needs_crosswalk.items():
+        sources = crosswalk_pass_sources.get(control_id, set())
         for requirement in mapped.get(control_id, ()):  # unplaceable contribute nothing
-            tested.setdefault(requirement, set()).add(status)
             by_requirement.setdefault(requirement, set()).update(statuses)
+            if ATTESTED_CHECK_SOURCE in sources:
+                passed_by_attestation.add(requirement)
+            if sources - {ATTESTED_CHECK_SOURCE}:
+                passed_by_concord.add(requirement)
 
     # A claimed implementation state, from the SPRS matrix. Only an *assessed*
     # state counts: a state the intake derivation computed from a platform
@@ -394,9 +529,25 @@ async def _nist_171_posture(
 
     total = set(practices)
     failing = {r for r, statuses in by_requirement.items() if "fail" in statuses} & total
-    passing = {r for r, statuses in by_requirement.items() if statuses == {"pass"}} & total
-    documented = (claimed & total) - failing - passing
-    unaddressed = total - failing - passing - documented
+    # See the baseline path above: the equality form reported a requirement one
+    # check had passed as untouched whenever another check could not be judged.
+    passing = (
+        {r for r, statuses in by_requirement.items() if "pass" in statuses} & total
+    ) - failing
+    # `warn` grouped with `manual_review_required`, for the reasoning the baseline
+    # path above states in full.
+    manual_review = (
+        {
+            r
+            for r, statuses in by_requirement.items()
+            if statuses & {"manual_review_required", "warn"}
+        }
+        & total
+    ) - failing - passing
+    documented = (claimed & total) - failing - passing - manual_review
+    unaddressed = total - failing - passing - documented - manual_review
+    partially_evidenced = declared_by_a_pass & unaddressed
+    provider_attested_only = (passed_by_attestation - passed_by_concord) & passing
     reachable = set((await _crosswalk_reachable(session)) & total)
 
     return {
@@ -410,7 +561,10 @@ async def _nist_171_posture(
         "passing": sorted(passing, key=_requirement_sort),
         "failing": sorted(failing, key=_requirement_sort),
         "documented": sorted(documented, key=_requirement_sort),
+        "manual_review": sorted(manual_review, key=_requirement_sort),
         "unaddressed": sorted(unaddressed, key=_requirement_sort),
+        "partially_evidenced": sorted(partially_evidenced, key=_requirement_sort),
+        "provider_attested_only": sorted(provider_attested_only, key=_requirement_sort),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(total), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(total), 1),
         # The honest limits of this view, beside the numbers rather than in a
@@ -474,10 +628,28 @@ def _empty_framework(
         "passing": [],
         "failing": [],
         "documented": [],
+        "manual_review": [],
         "unaddressed": [],
+        "partially_evidenced": [],
+        # Present and empty, never absent. This shape is returned by four
+        # reachable paths -- system not found, no framework declared, an
+        # unmeasurable framework, and the 800-171 matrix not loaded -- and the
+        # populated path carries this key, so a Python consumer indexing it
+        # KeyErrors on exactly the systems least likely to be exercised. Jinja
+        # renders a missing key as falsy, which is worse than an error: "nothing
+        # rests on provider attestation" and "this payload forgot to say" look
+        # identical. `tests/test_attested_only_is_named.py` pins the two shapes
+        # to the same key set.
+        "provider_attested_only": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
         "unmapped_checks": [],
+        # Pre-existing drift, found by the key-set guard rather than by anything
+        # failing: the 800-171 path returns this and the empty shape did not. A
+        # consumer reading it to answer "did a verdict land on no requirement"
+        # got a KeyError on precisely the systems where the answer is "we could
+        # not measure at all".
+        "unmappable_controls": [],
         "unreachable": [],
         "practice_ids": {},
         "reason": reason,

@@ -47,13 +47,17 @@
       </div>
 
       {% if e.total %}
-      {# Four segments over the framework's own denominator. Widths are shares of
-         the total, so the bar is the coverage picture rather than a rating. #}
+      {# Segments over the framework's own denominator. Widths are shares of the
+         total, so the bar is the coverage picture rather than a rating.
+         `manual_review` is its own segment: it used to be swept into the
+         remainder, which told a reader nobody had looked at controls Concord had
+         looked at and could not judge. #}
       <div class="bar-row__track" style="margin-top:8px;height:12px;display:flex">
         {% for width, colour, label in [
              (100 * e.passing|length / e.total, 'var(--ok-500)', 'satisfied'),
              (100 * e.failing|length / e.total, 'var(--err-500)', 'failing'),
              (100 * e.documented|length / e.total, 'var(--warn-500)', 'documented only'),
+             (100 * e.manual_review|length / e.total, 'var(--info-500, #6b8afd)', 'needs manual review'),
            ] %}
           {% if width %}<span style="width:{{ width|round(2) }}%;background:{{ colour }}"
              title="{{ label }}"></span>{% endif %}
@@ -63,7 +67,25 @@
         <span><strong style="color:var(--ok-500)">{{ e.passing|length }}</strong> <span class="dim">satisfied</span></span>
         <span><strong style="color:var(--err-500)">{{ e.failing|length }}</strong> <span class="dim">failing</span></span>
         <span><strong>{{ e.documented|length }}</strong> <span class="dim">documented only</span></span>
-        <span><strong>{{ e.unaddressed|length }}</strong> <span class="dim">not yet addressed</span></span>
+        {% if e.manual_review %}
+        <span title="Concord assessed these and could not judge them, or judged them inconclusive — most often a connector it has no credential for, or a provider check reporting that information was missing. They need human evidence, which is work to schedule.">
+          <strong>{{ e.manual_review|length }}</strong> <span class="dim">need manual review</span></span>
+        {% endif %}
+        <span title="Nothing has looked at these yet"><strong>{{ e.unaddressed|length }}</strong> <span class="dim">not yet addressed</span></span>
+        {% if e.partially_evidenced %}
+        <span class="dim" title="A passing check declares these but credits only its primary control, so they are not counted as satisfied. Evidence exists; credit does not.">
+          of which {{ e.partially_evidenced|length }} have partial evidence</span>
+        {% endif %}
+        {% if e.provider_attested_only %}
+        {# Provenance, not a sixth bucket. These are counted in "passing" above --
+           they are real evidence -- but the only thing vouching for them is the
+           cloud provider's own assessment of its own account, mapped to 800-53 by
+           the provider. Concord ran no check of its own here and chose neither the
+           evaluator nor the mapping, and an assessor is entitled to know which
+           part of the green on this page is which. #}
+        <span class="dim" title="Counted as passing on the provider's own attestation: the cloud provider assessed its own control and published the 800-53 mapping. Concord has no check of its own for these.">
+          of which {{ e.provider_attested_only|length }} rest on provider attestation</span>
+        {% endif %}
         {% if e.unreachable %}
         <span class="dim" title="No 800-53 control in the shipped crosswalk maps to these, so no scan can close them">
           {{ e.unreachable|length }} unreachable by scan</span>
@@ -72,6 +94,14 @@
       {% if e.failing %}
       <div style="margin-top:8px">
         {% for c in e.failing %}<a class="chip chip--err" style="margin:0 6px 6px 0" href="/dashboard">{{ c }}</a>{% endfor %}
+      </div>
+      {% endif %}
+      {% if e.manual_review %}
+      {# Listed, not just counted. These are the ones somebody has to act on, and
+         a bare number gives a reader nothing to schedule. #}
+      <div style="margin-top:4px">
+        {% for c in e.manual_review[:12] %}<span class="chip chip--warn" style="margin:0 6px 6px 0">{{ c }}</span>{% endfor %}
+        {% if e.manual_review|length > 12 %}<span class="dim" style="font-size:12px">+{{ e.manual_review|length - 12 }} more</span>{% endif %}
       </div>
       {% endif %}
       {% else %}

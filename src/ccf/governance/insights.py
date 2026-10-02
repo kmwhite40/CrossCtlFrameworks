@@ -258,6 +258,13 @@ async def executive(session: AsyncSession, *, org_id: int | None = None) -> dict
             "assessed": gaps["assessed"],
             "failing": gaps["failing"],
             "passing": gaps["passing"],
+            # The rest of the partition, so a consumer computing
+            # `assessed - failing - passing` has somewhere to put the remainder
+            # instead of attributing it to nothing. `passing` used to mean
+            # "everything that did not fail" and these were inside it; now they
+            # are named. See ccf.analytics.gaps.
+            "manual_review": gaps["manual_review"],
+            "not_in_scope": gaps["not_in_scope"],
             "resources_failing": gaps["resources_failing"],
             "resources_evaluated": gaps["resources_evaluated"],
             "last_assessed": gaps["last_assessed"],

@@ -110,3 +110,47 @@ class ConfigConnector(abc.ABC):
         :meth:`capture` does.
         """
         return []
+
+    async def securityhub_attestations(
+        self, *, max_pages: int | None = None, sample: bool = False
+    ) -> dict[str, Any]:
+        """The provider's own control results, with its own framework mapping.
+
+        A third kind of read, distinct from both :meth:`capture` and
+        :meth:`scan`. Those two assess configuration against expectations
+        *Concord* authored. This returns the provider's assessment of its **own**
+        control catalog together with the 800-53 mapping the provider publishes
+        for it -- so it reaches controls Concord has no check for, and the
+        attribution is the provider's claim rather than Concord's. See
+        :mod:`ccf.posture.attested`.
+
+        Declared here rather than only on the connector that implements it
+        because ``posture.attested_scan`` resolves a connector through
+        ``_connector_for_org``, which is typed to this base class. Without the
+        declaration the ingest would need a cast or a ``getattr``, and both of
+        those turn "this provider does not publish attestations" into a runtime
+        surprise instead of a typed answer.
+
+        The default is the honest negative: available ``False`` with a reason.
+        That matters more here than for :meth:`scan`, whose ``[]`` is
+        unambiguous -- an empty attestation and a provider that publishes none
+        would otherwise be indistinguishable, which is the confusion the whole
+        module is shaped to avoid. Implementations MUST NOT raise, for the same
+        reason :meth:`scan` must not.
+        """
+        return {
+            "available": False,
+            "reason": (
+                f"the {self.key} connector reads no provider-published control "
+                "attestation; only AWS Security Hub publishes an 800-53 mapping "
+                "Concord can read today"
+            ),
+            "controls": (),
+            "unreadable_requirements": [],
+            "pages_read": 0,
+            "truncated": False,
+            "region": None,
+            "account_id": None,
+            "standard_id": None,
+            **({"redacted_findings": []} if sample else {}),
+        }

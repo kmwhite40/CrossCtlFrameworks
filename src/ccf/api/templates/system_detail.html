@@ -30,6 +30,43 @@
 </div>
 
 {#
+  The environment decides what this system is measured against: one of the four
+  connectors, or none. ccf.posture.scope makes it authoritative -- other
+  connectors the organization has bound for its other systems do not widen it.
+  Unset is stated as unset, not defaulted: a guessed environment is how a
+  Microsoft tenant came to hold thirteen AWS verdicts.
+#}
+{% set env_labels = dict(environment_options) %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header">
+    <div>
+      <div class="card__title">Environment</div>
+      <div class="card__subtitle">
+        {% if environment in env_labels %}
+          Measured as <strong>{{ env_labels[environment] }}</strong>{% if environment == 'none' %} — no cloud connector is assessed{% endif %}.
+        {% elif environment %}
+          Declared as <code>{{ environment }}</code>, which Concord does not recognise — choose one below.
+        {% else %}
+          Not chosen. Until it is, only connectors this organization has configured are assessed.
+        {% endif %}
+      </div>
+    </div>
+    {% if can_set_environment %}
+    <form method="post" action="/systems/{{ sys.id }}/environment" class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+      <label for="env-select" class="dim" style="font-size:13px">Environment</label>
+      <select id="env-select" name="cloud_platform" class="select select--sm" required>
+        {% if environment not in env_labels %}<option value="" selected disabled>Choose…</option>{% endif %}
+        {% for code, label in environment_options %}
+          <option value="{{ code }}" {% if code == environment %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="check"></i> Save</button>
+    </form>
+    {% endif %}
+  </div>
+</section>
+
+{#
   The guided onboarding path -- six steps, per system, above the counts below.
   Those counts are not a second display of the same thing: they are the
   evidence behind these steps. See
@@ -130,6 +167,12 @@
       {% endfor %}
     </tbody>
   </table></div>
+  {% if live_audit_workflow.audit_plan.providers_out_of_scope %}
+    <div class="card__body dim" style="font-size:13px">
+      Not assessed for this environment:
+      {% for p in live_audit_workflow.audit_plan.providers_out_of_scope %}{{ p.connector }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    </div>
+  {% endif %}
   {% if live_audit_workflow.audit_plan.providers_unavailable %}
     <div class="card__body row" style="gap:8px;flex-wrap:wrap">
       {% for p in live_audit_workflow.audit_plan.providers_unavailable %}

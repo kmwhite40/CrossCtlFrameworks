@@ -36,6 +36,7 @@ import pytest
 from ccf.connectors.readiness import provider_readiness
 from ccf.db import session_scope
 from ccf.models import Organization
+from ccf.posture.checks import checks_for
 from ccf.ssp import constants
 from ccf.ssp.responsibility import (
     SCAN_SCOPE_OVERRIDES,
@@ -110,7 +111,10 @@ def test_an_unanswered_domain_not_on_the_list_still_needs_review() -> None:
     is ever written, it must arrive through a deliberate entry rather than
     inherit a default.
     """
-    for domain in ("AT", "CA", "IR", "MP", "PS", "RA"):
+    # RA left this list when `aws.inspector.enabled` shipped: enabling Inspector
+    # is an account setting only the customer can turn on, so the domain is now
+    # deliberately overridden. The rest remain unanswered and unoverridden.
+    for domain in ("AT", "CA", "IR", "MP", "PS"):
         assert ("aws_govcloud", domain) not in SCAN_SCOPE_OVERRIDES
         assert responsibility_for("aws_govcloud", domain) == "unknown"
         assert scan_scope_for("aws_govcloud", domain) == "manual_scope_review", (
@@ -211,7 +215,15 @@ async def test_readiness_itself_reports_the_new_scope_not_the_old_one() -> None:
         await session.rollback()
 
     checks = readiness["checks"]
-    assert len(checks) == 8, "the AWS suite must be present for this to mean anything"
+    # Derived from the registry, not hardcoded. This said `== 8` and broke the
+    # moment two AWS checks were added -- a literal beside the thing it counts
+    # measures when the suite last changed, not whether the suite is present.
+    expected = len(checks_for("aws_govcloud"))
+    assert expected, "the AWS provider must register checks"
+    assert len(checks) == expected, (
+        "readiness did not describe every registered AWS check, so the "
+        "assertions below would be covering a subset"
+    )
 
     not_scanning = [
         (c["check_key"], c["scan_applicability"])
@@ -234,6 +246,7 @@ async def test_readiness_itself_reports_the_new_scope_not_the_old_one() -> None:
         "aws.iam.access_key_rotation",
         "aws.iam.password_policy",
         "aws.iam.root_mfa_enabled",
+        "aws.inspector.enabled",
     }, f"unexpected set of override-scanned checks: {sorted(with_reason)}"
 
 

@@ -143,22 +143,49 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 32 checks touching 37 of the 288 controls in a
-  FedRAMP Moderate baseline** — roughly 13%. Every registered connector now
+- **Posture check coverage is 42 checks touching 48 of the 288 controls in a
+  FedRAMP Moderate baseline** — roughly 17%. Re-measure with the command below
+  rather than trusting this sentence; the intersection is not asserted by a test
+  (see the note following the table) and the last two figures stated from
+  inference rather than measurement were both wrong. Every registered connector now
   ships checks, so binding a credential to any of them produces verdicts rather
   than an empty scan. By provider:
 
   | Provider | Checks | Controls evidenced |
   |---|---|---|
-  | `msgraph` (Entra / Intune) | 14 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), SC-28, SC-28(1), SI-2, SI-4 |
-  | `aws_govcloud` | 8 | AC-3, AC-4, AU-2, AU-9, AU-9(3), AU-12, IA-2, IA-2(1), IA-5, IA-5(1), SC-7, SC-28, SC-28(1) |
+  | `msgraph` (Entra / Intune) | 19 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-7, AC-7(1), AC-8, AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AC-20(2), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), IA-3, IR-4, MP-7, SC-28, SC-28(1), SI-2, SI-4, SI-5 |
+  | `aws_govcloud` | 13 | AC-3, AC-4, AU-2, AU-9, AU-9(3), AU-12, CM-6, CM-7, IA-2, IA-2(1), IA-5, IA-5(1), RA-5, RA-5(2), SC-7, SC-7(3), SC-28, SC-28(1), SI-2, SI-2(2), SI-4 |
   | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `gcp` | 3 | AU-4, AU-11, CM-2, CM-6, SC-12, SC-28, SC-28(1) |
   | `puppetdb` | 2 | CM-2, CM-6, CM-8 |
 
-  Three of the 40 distinct controls these checks evidence — `AC-2(12)`,
+  `AC-8` was added because **no provider could reach it at all**. It reads
+  `/v1.0/identityGovernance/termsOfUse/agreements`, verified against the live GCC
+  High tenant — not only against Graph's published `$metadata` — and the property
+  that decides it, `isViewingBeforeAcceptanceRequired`, is present there.
+
+  An `AT-2` check shipped beside it and was **removed after being verified against
+  that tenant**, which is why the sentence above now says "verified against the
+  tenant" rather than "verified against the metadata". It read
+  `/v1.0/security/attackSimulation/simulations`, which genuinely is in the v1.0
+  model — but the model published at `graph.microsoft.com` is the **commercial**
+  one, and `graph.microsoft.us` answers `400 BadRequest: Resource not found for
+  the segment 'attackSimulation'` on both `/v1.0` and `/beta`, while
+  `/v1.0/security` itself answers 200. That is a cloud capability gap, not a
+  licensing one, which would answer 403. The check would have reported
+  `manual_review_required` on every scan of every GCC High tenant for ever, and
+  read as a tenant problem rather than a platform one.
+
+  **The AT family therefore still has zero coverage**, and closing it needs either
+  a Graph surface this cloud serves or per-cloud check applicability, which
+  Concord does not have today: a check is either registered for a provider or it
+  is not, with no notion of the sovereign clouds it can actually run in. That is
+  the mechanism that would let this check return for commercial tenants without
+  misreporting GCC High ones.
+
+  Three of the distinct controls these checks evidence — `AC-2(12)`,
   `AU-9(3)` and `IA-2(11)` — are **not** in the Moderate baseline, which is why
-  the "37 of 288" figure is lower than the control count. They are not wasted:
+  the intersection figure is lower than the control count. They are not wasted:
   a High-baseline system is held to them, and `GET
   /api/systems/{id}/framework-posture` reports against whichever baseline the
   system actually carries. But nobody should read 40 as Moderate coverage.
@@ -173,7 +200,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   The check total and every control id in the table are asserted against the
   registry by `tests/test_runbook_states_real_coverage.py`, in both directions —
   the table may neither name a control no check evidences nor omit one that a
-  check does. **The "37 of 288" intersection is not asserted**: baseline
+  check does. **The baseline intersection is not asserted**: baseline
   membership lives in `controls.fisma_mod`, which a catalog ingest loads and the
   test database therefore does not have, so a guard over it would skip forever.
   Re-measure it after adding or removing a check:
@@ -213,7 +240,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
-- **A CMMC SSP shows evidence for 18 of the 110 practices**, from the 28 of 32
+- **A CMMC SSP shows evidence for 29 of the 110 practices**, from the 37 of 42
   checks that declare one. This is a *different* number from the two above and
   from the per-provider table: those count controls a check evidences, while
   this counts practices a **CMMC document can actually display**.
@@ -231,18 +258,37 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   supply it: `framework_mappings` stores the 800-171 side as prose and reaches
   14 of the 32 checks, none of them the four that were failing.
 
-  Four checks are deliberately unmapped, in `practices.UNMAPPED` with the
+  Five checks are deliberately unmapped, in `practices.UNMAPPED` with the
   argument recorded — 800-171 has no authenticator-lifetime requirement for key
   rotation; "a Defender plan is on the Standard tier" does not say which
   protection runs; Identity Protection risk detections are not a named practice;
-  and Conditional Access sign-in frequency is not session termination. Their
+  Conditional Access sign-in frequency is not session termination; and 800-171
+  carries no system use notification requirement, so the AC-8 check raises
+  800-53 coverage without raising practice coverage. Their
   findings keep appearing in `generate_statements`' `findings_unmatched_controls`
   rather than disappearing into a zero. The practice ids and the mapped/unmapped
   split are asserted by `tests/test_check_practice_mapping_is_sound.py`.
 
-  Practices covered, by domain: **AC** 3.1.1, 3.1.5, 3.1.10, 3.1.19, 3.1.22 ·
-  **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2 · **IA** 3.5.3, 3.5.4, 3.5.6,
-  3.5.7, 3.5.8 · **SC** 3.13.8, 3.13.10, 3.13.16.
+  Practices covered, by domain: **AC** 3.1.1, 3.1.5, 3.1.8, 3.1.10, 3.1.19,
+  3.1.22 · **AU** 3.3.1, 3.3.2, 3.3.8 · **CM** 3.4.1, 3.4.2, 3.4.7 · **IA** 3.5.1,
+  3.5.3, 3.5.4, 3.5.6, 3.5.7, 3.5.8 · **MP** 3.8.7 · **RA** 3.11.2 · **SC** 3.13.1,
+  3.13.5, 3.13.6, 3.13.8, 3.13.10, 3.13.16 · **SI** 3.14.1, 3.14.3, 3.14.6.
+
+  The two network-boundary checks added four practices (3.4.7, 3.13.1, 3.13.6,
+  3.14.6) and **no** new Moderate-baseline controls: the 800-53 ids they declare
+  were already covered by other checks, and the one genuinely new id, `CM-7`, is
+  not in the Moderate baseline. That is why the baseline intersection above did
+  not move while the practice count did -- the two numbers measure different
+  things, and this is the clearest illustration of it the coverage data has
+  produced.
+
+  The `AC-8` check is the opposite case, and the reason it was chosen: the control
+  was reachable by nothing. It is deliberately **unmapped** on
+  the CMMC side -- 800-171 carries no system use notification requirement, and
+  the closest candidate (3.1.9, CUI-specific privacy and security notices) is
+  about something else -- so it raises 800-53 coverage and not practice coverage.
+  The argument is recorded in `ccf.posture.practices.UNMAPPED` rather than left
+  as an omission. The practice count is unchanged at 28 of 110 for that reason.
 - **An SSP reports its own system's evidence, not its organization's.** Two
   systems sharing one Microsoft 365 tenant each carry their own control tests
   and their own POA&M for a tenant-level finding, which is correct — each system
@@ -285,7 +331,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   msgraph connector with fourteen working checks scanned none of them. M365 now
   falls back to a domain-level answer derived from the scoring placemat.
 
-  All 32 registered checks are scannable today, and
+  All 42 registered checks are scannable today, and
   `tests/test_every_check_can_be_scanned.py` fails if that stops being true —
   its allowlist of unscannable checks is empty on purpose.
 
@@ -309,8 +355,131 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   opened from there. **Do not fix a scan-coverage gap by editing the
   responsibility table**: that moves SSP origination and a score reported to the
   DoD. `tests/test_scan_scope_is_not_responsibility.py` pins both halves.
+- **The msgraph check suite IS verified against a live tenant**, which is worth
+  stating because the other integrations are not. All 19 registered msgraph checks
+  were run against the GCC High tenant bound to org 2
+  (`graph.microsoft.us`, `cloud = "usgov"`):
+
+  * every endpoint answers 200 with substantive data — 129 users, 85 managed
+    devices, 23 Conditional Access policies, 823 security alerts, 15 device
+    configuration profiles, 7 compliance policies, 2 terms-of-use agreements;
+  * every evaluator runs: **5 fail, 14 pass, 0 raised, 0 manual_review_required**;
+  * the passes were inspected against the raw rows rather than trusted. Two were
+    checked in detail: both terms-of-use agreements really do set
+    `isViewingBeforeAcceptanceRequired`, and all 48 risky users really are
+    `remediated` or `dismissed`.
+
+  Reproduce by reading each `m365.ENDPOINTS` path through
+  `MsGraphConnector._get_all` — passing `m365.FIRST_PAGE_ONLY.get(key)`, or the two
+  audit checks walk a tenant's whole sign-in log and earn a 429 — then driving
+  `MsGraphConnector._evaluate` over the rows.
+
+  This is how the AT-2 check was caught: `$metadata` is published per-cloud, and
+  only the tenant settles whether a check can run. **Verifying a check against the
+  model is necessary and not sufficient.**
+- **Both workers have now run a job end to end inside their deployed
+  containers** (2026-10-02). Neither has completed a job that needs a model,
+  because no organization in this deployment has an AI provider configured.
+  The jobs ran in a separate synthetic organization, "Worker verification
+  (synthetic)" (org 12), on a synthetic policy, so no customer data was
+  processed. With no provider configured, nothing could reach one.
+
+  | | prep job 1 | assessment job 1 |
+  |---|---|---|
+  | claimed | first poll, attempt 1, `prep-worker` | within 20 s, attempt 1, `assessment-worker` |
+  | stages | parse, screen, expand **complete** (7 units); classify **failed** | 77 objectives: 76 `insufficient_evidence`, 1 `failed` |
+  | recorded reason | `no enabled AI provider configured for organization 12` | the same, on AC-02b -- the one objective keyword retrieval found evidence for |
+  | terminal state | `failed`, not requeued | `done`, proposal `complete` |
+
+  What this verifies: enqueue, `FOR UPDATE SKIP LOCKED` claim, tenant scoping,
+  stage persistence, and a failure recorded with its true reason rather than
+  retried for ever. What it does not verify: a model call, classification,
+  embedding, or a verdict other than `insufficient_evidence`. Those need an AI
+  provider configured per organization (`/ai/settings`; embeddings default to
+  OpenAI `text-embedding-3-small`, see `CCF_PREP_EMBED_PROVIDER`).
+
+  Two observations from the run, not yet addressed:
+
+  * AC-2 was assessed as **77 objectives, including `AC-02_ODP[01..03]`** --
+    organization-defined parameter rows, which are not assessment objectives.
+    The same catalog-rows-are-not-controls shape counted elsewhere.
+  * The proposal reads `complete` with one objective `failed`. The failure is
+    recorded on the objective and the log says `objectives_evaluated=76
+    objectives_total=77`, but the proposal's own state does not.
+
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
+- **AWS Security Hub attestation ingest is unverified against a live account** —
+  the same status as eMASS, and for the same reason: no organization in this
+  deployment has an AWS credential bound, so the code has never read a real
+  findings store. What *was* verified is the API contract rather than prose: the
+  operations, the `ComplianceStatus` enum (`PASSED` / `WARNING` / `FAILED` /
+  `NOT_AVAILABLE`), the `Compliance.SecurityControlId` /
+  `RelatedRequirements` / `AssociatedStandards` members and the `NextToken`
+  pagination were read out of botocore's `securityhub` service model
+  (API version 2018-10-26), not inferred. Everything else is driven against a
+  stubbed boto3 session.
+
+  Two numbers nobody should state until a real account has been read: how many
+  of the 288 Moderate controls AWS's mapping actually reaches, and what share of
+  `RelatedRequirements` entries Concord cannot place. Both are *measured* by the
+  ingest rather than assumed — `POST /api/systems/{id}/attestations` returns
+  `controls_read`, `written`, `unreadable_requirements` and
+  `controls_without_a_requirement` — so the way to find out is to bind a
+  credential and read the report, not to estimate from AWS's documentation.
+
+  What the design guarantees without a live account, because each is pinned by a
+  test and a mutation:
+
+  - no status becomes a `pass` by default. `NOT_AVAILABLE`, an unrecognised
+    status, a non-string status and a missing `Compliance` block all resolve to
+    `manual_review_required`;
+  - a truncated page walk is never published. The read reports
+    `available: false` and the ingest writes nothing, leaving the previous
+    complete assessment in place to go stale on its own;
+  - one Security Hub control relating to several requirements becomes one row
+    per requirement, so a single automated check cannot mark three controls
+    satisfied;
+  - a failing attestation opens no POA&M and no remediation Task, because the
+    same split would file three weaknesses for one misconfigured resource. The
+    verdict is still recorded in full;
+  - `effective_verdict` ranks platform > attested > pack, so one of Concord's
+    own checks is never overridden by an attestation and an attestation is never
+    overridden by a tenant pack rule that merely ran later.
+
+  The Microsoft half of the same idea **does not work**, and this is now measured
+  rather than inferred. `secureScoreControlProfile.complianceInformation` is where
+  Microsoft would publish a framework mapping — Graph's v1.0 model declares it as
+  `Collection(complianceInformation)` = `[{certificationName,
+  certificationControls: [{name, url}]}]`, verified against the published
+  `$metadata`. Read against the live GCC High tenant (`graph.microsoft.us`,
+  org 2's bound credential, all pages):
+
+  | | |
+  |---|---|
+  | Secure Score control profiles | **417** |
+  | with a non-empty `complianceInformation` | **0** |
+  | with an 800-53 certification | **0** |
+  | distinct certification names seen | **0** |
+
+  The last row is the one that settles it. `ccf.posture.attested.securescore_mapping`
+  reports *every* certification name it saw, matched or rejected, precisely so a
+  wrong 800-53 matcher cannot be mistaken for absent data — and it saw none at
+  all. Microsoft is not publishing ISO, PCI or anything else there either; the
+  field is simply unused. (An earlier note here said "200 profiles"; that was a
+  single page of results, and the real figure is 417.)
+
+  `implementationStatus` on `controlScores` is free prose rather than a verdict,
+  so it is not a substitute.
+
+  **Consequence, stated plainly:** the "one API read, many controls" mechanism has
+  no Microsoft equivalent. Raising M365 800-53 coverage beyond Concord's own
+  checks requires either more native checks — each one an evaluator Concord wrote
+  and can defend — or hand-authoring a crosswalk from Microsoft's product
+  taxonomy, which would be roughly sixty compliance assertions Concord makes
+  itself, at `platform` trust rather than provider-attested. Re-run the
+  measurement against any other tenant before committing to the second: the
+  function takes profiles and returns the table above.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their
   label, guidance and choices from the catalog; FedRAMP's own assigned values
   are not available to import.

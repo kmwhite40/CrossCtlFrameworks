@@ -10,6 +10,7 @@ from ..analytics.framework_posture import resolve_applied_framework, system_fram
 from ..connectors.readiness import provider_readiness
 from ..models import System
 from .checks import known_providers
+from .scope import provider_scope
 
 
 async def live_audit_plan(
@@ -40,6 +41,13 @@ async def live_audit_plan(
         else None
     )
 
+    # Only the providers this system's environment is measured against. The plan
+    # used to verify every registered provider, so an M365 system read "1 of 5
+    # providers ready", was told to verify AWS for ever, and had its framework
+    # items marked ``covered_by_automated_check`` by AWS checks that never run
+    # against it. Out-of-scope providers are named with the reason rather than
+    # dropped, so a reader can see what was excluded and why.
+    scope = await provider_scope(session, system=system)
     providers = [
         await provider_readiness(
             session,
@@ -48,6 +56,12 @@ async def live_audit_plan(
             persist=persist_readiness,
         )
         for key in sorted(known_providers())
+        if key in scope and scope[key].in_scope
+    ]
+    out_of_scope = [
+        {"connector": key, "reason": scope[key].reason}
+        for key in sorted(known_providers())
+        if key in scope and not scope[key].in_scope
     ]
 
     api_checks: list[dict[str, Any]] = []
@@ -130,6 +144,7 @@ async def live_audit_plan(
         "framework_posture": framework_posture,
         "framework_controls": framework_items,
         "providers": providers,
+        "providers_out_of_scope": out_of_scope,
         "api_checks": api_checks,
         "manual_review_required": manual_review,
         "framework_manual_review_required": framework_manual_review,

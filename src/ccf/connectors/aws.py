@@ -71,6 +71,7 @@ from typing import Any, ClassVar
 
 from ..config import get_settings
 from ..logging import get_logger
+from ..posture import attested
 from ..posture.providers import aws as aws_checks
 from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
 from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
@@ -316,6 +317,15 @@ class AwsGovCloudConnector(ConfigConnector):
             aws_checks.ENDPOINTS[
                 aws_checks.EBS_ENCRYPTION_BY_DEFAULT.key
             ]: self._read_ebs_encryption_default,
+            aws_checks.ENDPOINTS[
+                aws_checks.SECURITY_GROUP_ADMIN_INGRESS.key
+            ]: self._read_security_groups,
+            aws_checks.ENDPOINTS[aws_checks.VPC_FLOW_LOGS.key]: self._read_vpcs_with_flow_logs,
+            aws_checks.ENDPOINTS[
+                aws_checks.RDS_NOT_PUBLICLY_ACCESSIBLE.key
+            ]: self._read_db_instances,
+            aws_checks.ENDPOINTS[aws_checks.INSPECTOR_ENABLED.key]: self._read_inspector_status,
+            aws_checks.ENDPOINTS[aws_checks.PATCH_COMPLIANCE.key]: self._read_patch_states,
         }
 
     def _iam(self) -> Any:
@@ -501,6 +511,125 @@ class AwsGovCloudConnector(ConfigConnector):
             ("ServerSideEncryptionConfigurationNotFoundError",),
         )
 
+    def _ec2(self) -> Any:
+        return self._session().client("ec2", region_name=self._region())
+
+    def _read_inspector_status(self) -> list[dict[str, Any]]:
+        """``inspector2.batch_get_account_status`` for this account only.
+
+        Scoped to the caller's own account id rather than passed an empty list,
+        which in a delegated-administrator setup returns every member account --
+        this check speaks for one account and must not silently judge others.
+
+        The id comes from STS here rather than from the async `_account_id`,
+        because the reader table is synchronous (it runs in a worker thread) and
+        a declared `account_id` on the credential is honoured first either way.
+        """
+        client = self._session().client("inspector2", region_name=self._region())
+        declared = (self.credential or {}).get("account_id")
+        if isinstance(declared, str) and declared:
+            account = declared
+        else:
+            sts = self._session().client("sts", region_name=self._region())
+            account = str(sts.get_caller_identity().get("Account") or "unknown")
+        answer = client.batch_get_account_status(accountIds=[account])
+        return list(answer.get("accounts") or [])
+
+    def _read_patch_states(self) -> list[dict[str, Any]]:
+        """``ssm.describe_instance_patch_states`` for every managed instance.
+
+        Two calls: Systems Manager will not report patch state for instances it
+        does not manage, so the instance ids come from the inventory first.
+        Paginated, like the other fleet reads -- an account past the first page
+        would otherwise get a clean pass over a partial fleet.
+        """
+        ssm = self._session().client("ssm", region_name=self._region())
+        instance_ids: list[str] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"MaxResults": 50}
+            if token:
+                kwargs["NextToken"] = token
+            answer = ssm.describe_instance_information(**kwargs)
+            instance_ids.extend(
+                str(i["InstanceId"])
+                for i in answer.get("InstanceInformationList") or []
+                if i.get("InstanceId")
+            )
+            token = answer.get("NextToken")
+            if not token:
+                break
+        out: list[dict[str, Any]] = []
+        # describe_instance_patch_states takes at most 50 ids per call.
+        for start in range(0, len(instance_ids), 50):
+            batch = instance_ids[start : start + 50]
+            answer = ssm.describe_instance_patch_states(InstanceIds=batch)
+            out.extend(answer.get("InstancePatchStates") or [])
+        return out
+
+    def _read_db_instances(self) -> list[dict[str, Any]]:
+        """``rds.describe_db_instances`` -- every instance, paginated.
+
+        Paginated for the same reason the security groups are: an account past
+        the first page would have its later databases silently unassessed, and
+        the check would report a clean pass over a partial fleet.
+        """
+        rds = self._session().client("rds", region_name=self._region())
+        out: list[dict[str, Any]] = []
+        marker: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"MaxRecords": 100}
+            if marker:
+                kwargs["Marker"] = marker
+            answer = rds.describe_db_instances(**kwargs)
+            out.extend(answer.get("DBInstances") or [])
+            marker = answer.get("Marker")
+            if not marker:
+                return out
+
+    def _read_security_groups(self) -> list[dict[str, Any]]:
+        """``ec2.describe_security_groups`` -- every group, paginated.
+
+        Paginated rather than a single call: an account past the first page would
+        otherwise have its later groups silently unassessed, and the check would
+        report a clean pass over a partial fleet. That is the failure mode a
+        truncation this quiet produces, so the pages are followed.
+        """
+        ec2 = self._ec2()
+        out: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"MaxResults": 1000}
+            if token:
+                kwargs["NextToken"] = token
+            answer = ec2.describe_security_groups(**kwargs)
+            out.extend(answer.get("SecurityGroups") or [])
+            token = answer.get("NextToken")
+            if not token:
+                return out
+
+    def _read_vpcs_with_flow_logs(self) -> list[dict[str, Any]]:
+        """Every VPC, each carrying the flow logs that cover it.
+
+        Two calls joined here rather than in the evaluator. The denominator is
+        every VPC, and a VPC with no flow log has no row in
+        ``describe_flow_logs`` at all -- so a check reading only that response
+        would make an unmonitored VPC invisible instead of failing it, which is
+        the whole thing this check exists to catch.
+        """
+        ec2 = self._ec2()
+        vpcs = (ec2.describe_vpcs().get("Vpcs") or [])
+        logs = (ec2.describe_flow_logs().get("FlowLogs") or [])
+        by_vpc: dict[str, list[dict[str, Any]]] = {}
+        for log in logs:
+            resource = log.get("ResourceId")
+            if resource:
+                by_vpc.setdefault(str(resource), []).append(log)
+        return [
+            {**vpc, "FlowLogs": by_vpc.get(str(vpc.get("VpcId")), [])}
+            for vpc in vpcs
+        ]
+
     def _read_ebs_encryption_default(self) -> list[dict[str, Any]]:
         """``ec2.get_ebs_encryption_by_default``, tagged with the region read.
 
@@ -677,3 +806,266 @@ class AwsGovCloudConnector(ConfigConnector):
         if code:
             return f"AWS returned {code}; could not evaluate this check"
         return f"could not evaluate this check ({type(error).__name__})"
+
+    # ── Provider-attested control results ───────────────────────────────────
+    #
+    # A second, different kind of evidence from `scan` above. `scan` runs
+    # Concord's own checks, each evidencing controls a human chose. This reads
+    # AWS's assessment of its *own* control catalog, together with the 800-53
+    # mapping AWS publishes for it, so it reaches controls Concord has no check
+    # for. The judgement stays pure in `ccf.posture.attested`; this method is
+    # transport only, exactly as `scan` delegates to `posture.providers.aws`.
+
+    #: Pages of `get_findings` one call will read before stopping. 100 findings
+    #: a page, so 60 pages is 6,000 findings -- comfortably past a single
+    #: account's NIST standard, and bounded, because a delegated-administrator
+    #: account's findings store is not. Reaching the cap sets `truncated`.
+    SECURITYHUB_MAX_PAGES: ClassVar[int] = 60
+
+    #: `get_findings` page size. The service maximum.
+    SECURITYHUB_PAGE_SIZE: ClassVar[int] = 100
+
+    async def securityhub_attestations(
+        self, *, max_pages: int | None = None, sample: bool = False
+    ) -> dict[str, Any]:
+        """AWS's own NIST 800-53 Rev 5 control results for this account/region.
+
+        Returns a dict that always answers three questions a reader needs and
+        that an empty result cannot answer on its own:
+
+        ``available``
+            Whether these controls are a usable assessment. ``False`` for an
+            unconfigured connector, a standard that is not enabled, a standard
+            that is enabled but not ``READY``, and any provider refusal.
+        ``reason``
+            Why not, naming the AWS error code or the standard's status. ``None``
+            only when ``available`` is true and nothing was truncated. Without
+            this, "no attestations" is indistinguishable from "every control
+            passed", which is the shape that makes a posture report unusable.
+        ``redacted_findings``
+            Present only when ``sample=True``: each finding reduced by
+            :func:`ccf.posture.attested.redact_finding` to the fields the parser
+            reads, with every resource id, account number and operator note
+            removed. Redacted here, inside the connector, so identifying values
+            never leave it -- the probe's ``--save-fixture`` writes these to disk.
+        ``truncated``
+            Whether paging stopped early -- at the cap, or at an error partway
+            through. A truncated read is never ``available``: publishing page one
+            of an account as the whole account is the sharpest version of the
+            one-page defect, because the data looks real.
+
+        Security Hub is regional, so ``region`` and ``account_id`` are reported:
+        an attestation from ``us-gov-west-1`` says nothing about resources in
+        ``us-gov-east-1``, and a reader comparing Concord against the console
+        needs to know which findings these were.
+
+        Never raises, for the same reason :meth:`scan` never does.
+        """
+        region = self._region()
+        account_id = str((self.credential or {}).get("account_id") or "")
+
+        def _empty(reason: str, *, truncated: bool = False) -> dict[str, Any]:
+            return {
+                "available": False,
+                "reason": reason,
+                "controls": (),
+                "unreadable_requirements": [],
+                "pages_read": 0,
+                "truncated": truncated,
+                "region": region,
+                "account_id": account_id,
+                "standard_id": attested.NIST_80053_R5_STANDARD_ID,
+                **({"redacted_findings": []} if sample else {}),
+            }
+
+        if not self.is_configured():
+            return _empty(
+                "the AWS connector is not configured for this organization, so "
+                "Security Hub was not read"
+            )
+
+        cap = self.SECURITYHUB_MAX_PAGES if max_pages is None else max(1, max_pages)
+
+        def _read() -> dict[str, Any]:
+            client = self._session().client("securityhub", region_name=region)
+            status = self._securityhub_standard_status(client)
+            if status is None:
+                return {
+                    "error": (
+                        f"the NIST SP 800-53 Rev 5 standard is not enabled in "
+                        f"Security Hub for {region}, so AWS publishes no 800-53 "
+                        "control results for this account"
+                    ),
+                    "truncated": False,
+                }
+            if status != "READY":
+                return {
+                    "error": (
+                        f"the NIST SP 800-53 Rev 5 standard is enabled but its "
+                        f"status is {status}, not READY; its control results are "
+                        "not current and were not read"
+                    ),
+                    "truncated": False,
+                }
+            return self._securityhub_findings(client, cap=cap)
+
+        try:
+            read = await asyncio.to_thread(_read)
+        except Exception as e:  # pragma: no cover - defended, not expected
+            log.warning("connector.aws.securityhub_unreadable", error=str(e)[:200])
+            return _empty(self._securityhub_failure(e))
+
+        if read.get("error"):
+            return _empty(str(read["error"]), truncated=bool(read.get("truncated")))
+
+        findings = read["findings"]
+        controls = attested.attested_controls(findings)
+        unreadable: list[str] = []
+        for control in controls:
+            for entry in control.unreadable_requirements:
+                if entry not in unreadable:
+                    unreadable.append(entry)
+        truncated = bool(read.get("truncated"))
+        reason = None
+        if truncated:
+            reason = (
+                f"the findings read was truncated after {read['pages_read']} pages; "
+                "these controls describe part of the account, not all of it"
+            )
+        log.info(
+            "connector.aws.securityhub_read",
+            region=region,
+            controls=len(controls),
+            findings=len(findings),
+            pages=read["pages_read"],
+            truncated=truncated,
+        )
+        return {
+            "available": not truncated,
+            "reason": reason,
+            "controls": controls,
+            "unreadable_requirements": unreadable,
+            "pages_read": read["pages_read"],
+            "truncated": truncated,
+            "region": region,
+            "account_id": account_id,
+            "standard_id": attested.NIST_80053_R5_STANDARD_ID,
+            **(
+                {
+                    "redacted_findings": [
+                        attested.redact_finding(f) for f in findings
+                    ]
+                }
+                if sample
+                else {}
+            ),
+        }
+
+    @staticmethod
+    def _securityhub_standard_status(client: Any) -> str | None:
+        """``StandardsStatus`` for the NIST 800-53 Rev 5 subscription, or None.
+
+        Matched on the ARN's standard suffix rather than a full ARN, because the
+        partition differs (``arn:aws-us-gov:`` in GovCloud, ``arn:aws:``
+        commercial) and deriving the partition here would duplicate what boto3
+        already does from the region.
+
+        Paginated: an account with many standards enabled can page this list,
+        and stopping at page one would report an enabled standard as absent.
+        """
+        token: str | None = None
+        suffix = attested.NIST_80053_R5_STANDARD_ID
+        while True:
+            kwargs: dict[str, Any] = {}
+            if token:
+                kwargs["NextToken"] = token
+            answer = client.get_enabled_standards(**kwargs)
+            for sub in answer.get("StandardsSubscriptions") or []:
+                arn = str(sub.get("StandardsArn") or "")
+                if arn.endswith(suffix):
+                    return str(sub.get("StandardsStatus") or "")
+            token = answer.get("NextToken")
+            if not token:
+                return None
+
+    def _securityhub_findings(self, client: Any, *, cap: int) -> dict[str, Any]:
+        """Every page of ACTIVE NIST-standard findings, up to ``cap`` pages.
+
+        Filtered server-side to the NIST standard and to ``ACTIVE``: an
+        ARCHIVED finding is about a resource that no longer exists, and counting
+        it fails a control over a deleted bucket. Filtering here rather than in
+        the pure layer also means the page budget is spent on 800-53 findings
+        instead of on CIS and PCI findings that would be discarded.
+
+        An error partway through returns what was read *and* the error, so the
+        caller can refuse to publish a partial account rather than having to
+        choose between a crash and a plausible-looking prefix.
+        """
+        filters = {
+            "ComplianceAssociatedStandardsId": [
+                {
+                    "Value": attested.NIST_80053_R5_STANDARD_ID,
+                    "Comparison": "EQUALS",
+                }
+            ],
+            "RecordState": [{"Value": "ACTIVE", "Comparison": "EQUALS"}],
+        }
+        findings: list[dict[str, Any]] = []
+        token: str | None = None
+        pages = 0
+        while pages < cap:
+            kwargs: dict[str, Any] = {
+                "Filters": filters,
+                "MaxResults": self.SECURITYHUB_PAGE_SIZE,
+            }
+            if token:
+                kwargs["NextToken"] = token
+            try:
+                answer = client.get_findings(**kwargs)
+            except Exception as e:
+                log.warning(
+                    "connector.aws.securityhub_page_failed",
+                    page=pages + 1,
+                    error=str(e)[:200],
+                )
+                return {
+                    "findings": findings,
+                    "pages_read": pages,
+                    "truncated": True,
+                    "error": self._securityhub_failure(e),
+                }
+            pages += 1
+            findings.extend(answer.get("Findings") or [])
+            token = answer.get("NextToken")
+            if not token:
+                return {"findings": findings, "pages_read": pages, "truncated": False}
+        return {"findings": findings, "pages_read": pages, "truncated": True}
+
+    @staticmethod
+    def _securityhub_failure(error: Exception) -> str:
+        """Why Security Hub could not be read, naming the AWS error code.
+
+        The code is the whole value of this string: ``InvalidAccessException``
+        means Security Hub is not enabled in this region and an operator should
+        enable it, while ``AccessDeniedException`` means the role is missing
+        ``securityhub:GetFindings`` and an operator should grant it. A single
+        "could not read" sends them to the wrong place half the time -- the
+        judgement ``_describe_failure`` already makes for the posture checks.
+        """
+        response = getattr(error, "response", None)
+        code = ""
+        if isinstance(response, dict):
+            code = str((response.get("Error") or {}).get("Code") or "")
+        if code == "InvalidAccessException":
+            return (
+                f"{code}: Security Hub is not enabled in this region, so there "
+                "are no provider-attested control results to read"
+            )
+        if code in ("AccessDenied", "AccessDeniedException"):
+            return (
+                f"{code}: could not read Security Hub; requires "
+                "securityhub:GetEnabledStandards and securityhub:GetFindings"
+            )
+        if code:
+            return f"{code}: could not read Security Hub findings"
+        return f"could not read Security Hub findings ({type(error).__name__})"

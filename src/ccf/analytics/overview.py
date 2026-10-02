@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..governance.risk import band
@@ -91,6 +91,26 @@ async def _catalog(session: AsyncSession) -> dict[str, Any]:
     }
 
 
+def coverage_ratio(mapped_controls: int | None, total_controls: int) -> float | None:
+    """Share of the catalog a framework maps, or ``None`` when there is no catalog.
+
+    Pure, and separated from the query for one reason: the ``total_controls == 0``
+    branch is the whole point and it cannot be reached through
+    :func:`_framework_tiles` in a test database that other tests seed controls
+    into. A mutation reverting the ``None`` to ``0.0`` survived the suite because
+    of exactly that. The decision is testable here; the query is not the part
+    worth guarding.
+
+    ``None`` rather than ``0.0``: 0% reads as a finding about the framework --
+    "this framework covers none of the controls" -- when the fact is that there
+    are no controls to cover. The same sentence ``framework_posture`` states for
+    an undeclared baseline.
+    """
+    if not total_controls:
+        return None
+    return round(100 * (mapped_controls or 0) / total_controls, 1)
+
+
 async def _framework_tiles(session: AsyncSession, limit: int = 6) -> list[dict[str, Any]]:
     """Top frameworks by mapping volume, with a coverage ratio for a gauge.
 
@@ -114,7 +134,7 @@ async def _framework_tiles(session: AsyncSession, limit: int = 6) -> list[dict[s
     ).all()
     tiles: list[dict[str, Any]] = []
     for code, name, mapped_controls, mappings in rows:
-        pct = round(100 * (mapped_controls or 0) / total_controls, 1) if total_controls else 0.0
+        pct = coverage_ratio(mapped_controls, total_controls)
         tiles.append(
             {
                 "code": code,
@@ -178,10 +198,25 @@ async def _mttr_trend(
         key = (closed_on.year, closed_on.month)
         if key in sums:
             sums[key].append(max((closed_on - identified_on).days, 0))
+    # A month with no closures has no mean. It is carried as 0.0 because the
+    # sparkline primitive does arithmetic on every point and cannot take a gap --
+    # so `months_with_data` is returned beside the series and the page captions it,
+    # rather than letting a reader take the dips for improvement.
     series = [round(sum(v) / len(v), 1) if v else 0.0 for v in (sums[k] for k in keys)]
     closed_total = sum(len(sums[k]) for k in keys)
-    latest = next((s for s in reversed(series) if s), 0.0)
-    return {"series": series, "closed_total": closed_total, "latest": latest}
+    months_with_data = sum(1 for k in keys if sums[k])
+    # `None`, never `0.0`, when nothing has been closed. The page renders this as a
+    # 34px headline followed by the word "days", so a programme that has never
+    # closed a POA&M read "0 days" -- remediation so fast it is instantaneous. The
+    # most prominent instance of the same defect `on_track_pct` had: a number over
+    # no data, in the direction that flatters.
+    latest = next((s for s in reversed(series) if s), None)
+    return {
+        "series": series,
+        "closed_total": closed_total,
+        "months_with_data": months_with_data,
+        "latest": latest,
+    }
 
 
 async def _control_tests(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
@@ -197,6 +232,25 @@ async def _control_tests(session: AsyncSession, org_id: int | None = None) -> di
     row lands in exactly one bucket, so the buckets always sum to ``total``.
     """
     stmt = select(ControlTest.last_status, func.count()).group_by(ControlTest.last_status)
+    # Scoped to **live** systems, the way `_ksi_states`, `_risk_by_band` and
+    # `_mttr_trend` below already are. Filtering on `organization_id` alone counted
+    # soft-deleted systems: measured on one real organization, /dashboard reported
+    # 80 control tests assessed while this reported 112, the difference being a
+    # deleted system holding 32 of them. A customer who deleted that system was
+    # told it was gone and still saw its verdicts shaping the pass / fail /
+    # manual-review proportions here.
+    #
+    # Applied unconditionally for the reason `org_system_subq` documents: an
+    # unscoped (`org_id is None`) dashboard counted them too.
+    #
+    # A control test with no system -- an org-wide authored test -- is kept, which
+    # a bare `IN (live systems)` would drop.
+    stmt = stmt.where(
+        or_(
+            ControlTest.system_id.is_(None),
+            ControlTest.system_id.in_(posture.org_system_subq(org_id)),
+        )
+    )
     if org_id is not None:
         stmt = stmt.where(ControlTest.organization_id == org_id)
     rows = (await session.execute(stmt)).all()
@@ -238,6 +292,19 @@ async def _tasks_by_priority(session: AsyncSession, org_id: int | None = None) -
         select(Task.priority, func.count())
         .where(Task.status.in_(("open", "in_progress")))
         .group_by(Task.priority)
+    )
+    # Same scoping as the control tests above, and for a sharper reason: a
+    # remediation task against a deleted system was opened by that system's
+    # failing control test, which is no longer counted either -- so leaving the
+    # task here reports work nobody can do.
+    #
+    # `Task.system_id` is nullable and an org-wide task is real work, so the null
+    # is kept explicitly rather than dropped by the subquery.
+    stmt = stmt.where(
+        or_(
+            Task.system_id.is_(None),
+            Task.system_id.in_(posture.org_system_subq(org_id)),
+        )
     )
     if org_id is not None:
         stmt = stmt.where(Task.organization_id == org_id)
@@ -299,7 +366,17 @@ async def dashboard_overview(
             "overdue": overdue,
             "no_due_date": no_due_date,
             "on_track": on_track,
-            "on_track_pct": round(100 * on_track / open_total, 1) if open_total else 100.0,
+            # `None`, never `100.0`, when nothing is open. The page renders this
+            # as a full gauge labelled with the number, so 100% over an empty
+            # queue draws a complete green dial for a tenant that has scanned
+            # nothing -- read as "this programme is on top of its weaknesses".
+            #
+            # It is the mirror of the rule `framework_posture` already applies in
+            # the other direction: coverage of an undeclared baseline is None
+            # because "reporting 0% would read as a finding about the system".
+            # 100% over nothing reads as an achievement just as wrongly, and is
+            # the more dangerous of the two because it reassures.
+            "on_track_pct": round(100 * on_track / open_total, 1) if open_total else None,
         },
         "poam_buckets": poam.get("buckets", {}),
         # Residual risk (risk_accepted) and the "completed but no closed_on"

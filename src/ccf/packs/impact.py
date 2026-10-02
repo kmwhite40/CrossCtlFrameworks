@@ -225,7 +225,7 @@ async def build_config_change_impact(
     # this a rule this pack never owned would be reported as retiring.
     # A NULL check_source (a 'generated' row from before migration 0070, not
     # yet rescanned) is deliberately excluded rather than guessed at, the same
-    # self-healing tradeoff posture.scan._is_platform_sourced documents: the
+    # self-healing tradeoff posture.scan.trust_tier documents: the
     # row acquires a real check_source on its next scan.
     check_source = f"pack:{pack_key}"
     tests_stmt = (

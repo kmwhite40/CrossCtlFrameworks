@@ -77,6 +77,10 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # AC.L2-3.1.5   "Employ the principle of least privilege, including for
     #                specific security functions and privileged accounts."
     "m365.policy.default_user_permissions_restricted": ("AC.L2-3.1.5",),
+    # AC.L2-3.1.8   "Limit unsuccessful logon attempts."
+    # A lockout threshold is the limit, stated as a number. Nothing else in the
+    # tenant expresses this requirement.
+    "m365.identity.lockout_threshold_enforced": ("AC.L2-3.1.8",),
     # AC.L2-3.1.10  "Use session lock with pattern-hiding displays to prevent
     #                access and viewing of data after a period of inactivity."
     "m365.device.session_lock_enforced": ("AC.L2-3.1.10",),
@@ -88,6 +92,46 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # AC.L2-3.1.22  "Control CUI posted or processed on publicly accessible
     #                systems."
     "aws.s3.public_access_blocked": ("AC.L2-3.1.22",),
+    # ── Boundary protection ──────────────────────────────────────────────────
+    # CM.L2-3.4.7   "Restrict, disable, or prevent the use of nonessential
+    #                programs, functions, ports, protocols, and services."
+    # SC.L2-3.13.6  "Deny network communications traffic by default and allow
+    #                network communications traffic by exception."
+    # SSH and RDP reachable from the whole internet is the canonical failure of
+    # both: a nonessential port left open, and traffic permitted by default. The
+    # check is narrow on purpose (only 22 and 3389, only 0.0.0.0/0 and ::/0), so
+    # a load balancer on 443 is not a finding.
+    "aws.ec2.security_groups_no_public_admin_ingress": (
+        "CM.L2-3.4.7",
+        "SC.L2-3.13.6",
+    ),
+    # SC.L2-3.13.1  "Monitor, control, and protect communications ... at the
+    #                external boundaries and key internal boundaries."
+    # SI.L2-3.14.6  "Monitor organizational systems, including inbound and
+    #                outbound communications traffic, to detect attacks."
+    # Flow logs are the record of traffic crossing the VPC boundary. Without one
+    # there is nothing to monitor, which is what both requirements ask for; 3.13.1
+    # leads because the boundary is what a VPC is.
+    "aws.vpc.flow_logs_enabled": ("SC.L2-3.13.1", "SI.L2-3.14.6"),
+    # SC.L2-3.13.5  "Implement subnetworks for publicly accessible system
+    #                components that are physically or logically separated from
+    #                internal networks."
+    # A publicly accessible database is the plainest machine-readable violation:
+    # an internal component sitting on the public network rather than behind the
+    # subnetwork that should separate it.
+    "aws.rds.not_publicly_accessible": ("SC.L2-3.13.5",),
+    # ── Vulnerability and flaw management ────────────────────────────────────
+    # RA.L2-3.11.2  "Scan for vulnerabilities in organizational systems and
+    #                applications periodically and when new vulnerabilities
+    #                affecting those systems and applications are identified."
+    # Inspector being enabled *is* that scanning. It says nothing about whether
+    # findings are remediated, which is 3.11.3 and deliberately not claimed here.
+    "aws.inspector.enabled": ("RA.L2-3.11.2",),
+    # SI.L2-3.14.1  "Identify, report, and correct system flaws in a timely
+    #                manner."
+    # Patch state is the record of whether flaws are corrected. Missing and
+    # failed patches are both uncorrected flaws.
+    "aws.ssm.patch_compliance": ("SI.L2-3.14.1",),
     # ── Audit and accountability ─────────────────────────────────────────────
     # AU.L2-3.3.1  "Create and retain system audit logs and records to the
     #               extent needed to enable the monitoring, analysis,
@@ -136,6 +180,34 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     #                disclosure of CUI during transmission unless otherwise
     #                protected by alternative physical safeguards."
     "azure.storage.https_only": ("SC.L2-3.13.8",),
+    # ── Media protection ─────────────────────────────────────────────────────
+    # MP.L2-3.8.7   "Control the use of removable media on system components."
+    # A device restriction blocking removable storage is that control, expressed
+    # on the component. Distinct from 3.8.6, which is about *encrypting* CUI on
+    # media -- the device-encryption check carries that one.
+    "m365.device.removable_storage_blocked": ("MP.L2-3.8.7",),
+    # ── Flaw and threat response ─────────────────────────────────────────────
+    # SI.L2-3.14.3  "Monitor system security alerts and advisories and take
+    #                action in response."
+    # The check observes both halves: alerts are being surfaced, and the
+    # high-severity ones are not sitting unactioned. An alert left `new` for
+    # months is the absence of the response the requirement asks for.
+    "m365.security.alerts_triaged": ("SI.L2-3.14.3",),
+    # IA.L2-3.5.1  "Identify system users, processes acting on behalf of users,
+    #               and devices."
+    #
+    # The **devices** clause, observed directly: a Conditional Access policy that
+    # grants only on a compliant or hybrid-joined device identifies the device
+    # before granting access.
+    #
+    # 3.5.1 is deliberately *refused* elsewhere in this table, and the distinction
+    # is the point. `tests/test_one_check_to_requirement_mapping.py` records that
+    # the catalog crosswalk relates IA-2 to 3.5.1, so a failing MFA-registration
+    # check once marked 3.5.1 failing -- a requirement it never observed, because
+    # registering a second factor says nothing about whether users are
+    # *identified*. This check is the opposite case: device identification is
+    # exactly what it reads, and 3.5.1 is the only requirement that asks for it.
+    "m365.policy.device_compliance_required": ("IA.L2-3.5.1",),
 }
 
 #: Checks deliberately left unmapped, and the argument that would be needed.
@@ -145,6 +217,17 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
 #: honest outcome: the verdict exists, the document cannot place it, and both
 #: facts are visible.
 UNMAPPED: dict[str, str] = {
+    "m365.identity.system_use_notification": (
+        "800-171 carries no system use notification requirement. AC-8 was "
+        "tailored out of the 110: the AC family's practices govern access "
+        "enforcement, flow control, least privilege and session handling, and "
+        "none asks whether a notification is displayed before logon. The closest "
+        "candidate, 3.1.9 (provide privacy and security notices consistent with "
+        "applicable CUI rules), is still wrong -- it is about CUI-specific "
+        "notices, while this check reads a tenant-wide terms-of-use agreement "
+        "that may say nothing about CUI. The check keeps its 800-53 AC-8 "
+        "attribution, which is the framework that does ask for it."
+    ),
     "aws.iam.access_key_rotation": (
         "800-171 has no authenticator-lifetime requirement. 3.5.5 and 3.5.6 "
         "govern identifiers, not credential age, and reading a 90-day key "

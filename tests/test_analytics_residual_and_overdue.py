@@ -293,9 +293,27 @@ async def test_dashboard_overview_sla_excludes_no_due_date_from_on_track() -> No
 
 
 @pytest.mark.asyncio
-async def test_dashboard_overview_sla_on_track_pct_defaults_to_100_when_no_open_poams() -> None:
+async def test_dashboard_overview_reports_no_sla_percentage_when_nothing_is_open() -> None:
+    """No open POA&M means there is no on-track ratio, not a perfect one.
+
+    This test previously asserted ``100.0`` and carried no argument for it -- a
+    bare characterisation of what the code did. That is why the number survived:
+    ``dashboard.html`` renders it as a full gauge labelled with the value, so a
+    tenant that had scanned nothing showed a complete green dial reading "100%",
+    read as "this programme is on top of its weaknesses".
+
+    It is the mirror of a rule the codebase already applies in the other
+    direction. ``framework_posture`` returns ``None`` for a system with no declared
+    baseline because "reporting 0% would read as a finding about the system";
+    100% over an empty set reads as an achievement just as wrongly, and is the more
+    dangerous of the two because it reassures rather than alarms.
+
+    The counts beside it are unchanged, and they are what the page renders instead.
+    """
     org_id, _sys_id = await _org_and_system("NoOpenOrg")
     async with session_scope() as s:
         dash = await overview.dashboard_overview(s, org_id=org_id)
     assert dash["sla"]["open"] == 0
-    assert dash["sla"]["on_track_pct"] == 100.0
+    assert dash["sla"]["on_track_pct"] is None
+    assert dash["sla"]["overdue"] == 0
+    assert dash["sla"]["on_track"] == 0

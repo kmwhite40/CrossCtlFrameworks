@@ -75,6 +75,36 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # algorithm for an assessor. Adding a parameter would mean adding a judgment.
     aws.S3_DEFAULT_ENCRYPTION.key: (),
     aws.EBS_ENCRYPTION_BY_DEFAULT.key: (),
+    # No parameter, deliberately. The tunable thing would be *which* ports count
+    # as administrative, and widening that list is how this check turns into "no
+    # unrestricted ingress at all" -- which fails every public load balancer on
+    # 443 and is the shape an operator learns to ignore. A package that needs a
+    # different boundary rule wants its own check, not a looser version of this
+    # one.
+    # 3.1.8 is organization-defined -- DoD guidance commonly says three, FedRAMP
+    # Moderate says not more than three in fifteen minutes -- so the bound is a
+    # parameter and the expectation re-renders with it.
+    m365.LOCKOUT_THRESHOLD.key: ("max_attempts",),
+    # How long a high-severity alert may sit before it is a finding is a
+    # programme decision, not a product one.
+    m365.SECURITY_ALERTS_TRIAGED.key: ("threshold_days",),
+    # Blocked or not; nothing to tune.
+    m365.REMOVABLE_STORAGE_BLOCKED.key: (),
+    m365.SYSTEM_USE_NOTIFICATION.key: (),
+    m365.DEVICE_COMPLIANCE_REQUIRED.key: (),
+    aws.SECURITY_GROUP_ADMIN_INGRESS.key: (),
+    # Nor here: a flow log is either delivering or it is not. "How much logging
+    # is enough" is a retention question, which `azure.monitor.log_retention`
+    # and `gcp.logging.retention` already parameterize on their own terms.
+    aws.VPC_FLOW_LOGS.key: (),
+    # Publicly accessible or not; there is no threshold to tune.
+    aws.RDS_NOT_PUBLICLY_ACCESSIBLE.key: (),
+    # Enabled or not; nothing to tune.
+    aws.INSPECTOR_ENABLED.key: (),
+    # No parameter, and the reason is worth recording: the tunable thing would be
+    # how many missing patches are tolerable, and the answer for 3.14.1 is none.
+    # A threshold here would let a package define its way out of the requirement.
+    aws.PATCH_COMPLIANCE.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.
@@ -82,6 +112,8 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
 EXPECTED_TEMPLATES: dict[str, str] = {
     m365.STALE_ACCOUNTS.key: m365.STALE_ACCOUNTS_EXPECTED,
     m365.SESSION_LOCK_ENFORCED.key: m365.SESSION_LOCK_EXPECTED,
+    m365.LOCKOUT_THRESHOLD.key: m365.LOCKOUT_EXPECTED,
+    m365.SECURITY_ALERTS_TRIAGED.key: m365.ALERT_TRIAGE_EXPECTED,
     aws.ACCESS_KEY_ROTATION.key: aws.ACCESS_KEY_ROTATION_EXPECTED,
 }
 

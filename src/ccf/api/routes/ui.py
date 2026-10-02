@@ -979,12 +979,21 @@ async def system_detail(
         session=session,
         principal=principal,
     )
+    profile = (
+        await session.execute(
+            select(SystemProfile).where(SystemProfile.system_id == system_id)
+        )
+    ).scalars().first()
     return templates.TemplateResponse(
         request,
         "system_detail.html",
         {
             "active": "systems",
             "sys": sys,
+            "environment": profile.cloud_platform if profile is not None else None,
+            "environment_options": ENVIRONMENT_OPTIONS,
+            "can_set_environment": principal.is_global
+            or principal.role in ENVIRONMENT_SETTER_ROLES,
             "impl_counts": {s: n for s, n in impl_counts},
             "poams": poams,
             "evidence_count": evidence_count,
@@ -1002,6 +1011,90 @@ async def system_detail(
             "finding_rollup": await system_finding_rollup(session, system_id),
         },
     )
+
+
+#: The environments a system can be measured as, with the label the page shows.
+#: The codes are the intake questionnaire's ``cloud_platform`` options, read from
+#: it rather than restated, so the two cannot drift; ``none`` is a deliberate
+#: "this system uses no cloud" and measures nothing.
+_ENVIRONMENT_LABELS: dict[str, str] = {
+    "m365_gcc_high": "Microsoft 365 (GCC High)",
+    "azure_gov": "Azure Government",
+    "aws_govcloud": "AWS GovCloud",
+    "gcp": "Google Cloud",
+    "none": "No cloud",
+}
+ENVIRONMENT_OPTIONS: tuple[tuple[str, str], ...] = tuple(
+    (code, _ENVIRONMENT_LABELS.get(code, code))
+    for code in next(
+        q["options"]
+        for q in automation_engine.QUESTIONNAIRE
+        if q["id"] == "cloud_platform"
+    )
+)
+#: Choosing the environment decides which provider's checks a system is measured
+#: against, so it is an administrator's decision -- the same tier that binds the
+#: connectors themselves.
+ENVIRONMENT_SETTER_ROLES = ("admin",)
+
+
+@router.post("/systems/{system_id}/environment")
+async def system_set_environment(
+    system_id: int,
+    cloud_platform: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ENVIRONMENT_SETTER_ROLES)),
+) -> RedirectResponse:
+    """Choose which environment -- and so which connector -- a system is measured as.
+
+    ``ccf.posture.scope`` makes this answer authoritative: an M365 system is
+    assessed against Microsoft Graph and nothing else, whatever other connectors
+    the organization has bound for its other systems. Before this route the
+    answer could be given once, at intake, and never changed.
+    """
+    sys = await require_system_in_scope(session, system_id, principal)
+    value = cloud_platform.strip()
+    if value not in {code for code, _ in ENVIRONMENT_OPTIONS}:
+        # Refused rather than stored: an unrecognised code resolves to no platform
+        # in ``scope._platform_for_system``, which would silently fall back to
+        # org configuration -- a typo changing what is measured.
+        raise HTTPException(400, f"unknown environment {value!r}")
+    profile = (
+        await session.execute(
+            select(SystemProfile).where(SystemProfile.system_id == sys.id)
+        )
+    ).scalars().first()
+    previous = profile.cloud_platform if profile is not None else None
+    if profile is None:
+        # Systems created outside the intake flow have no profile at all.
+        profile = SystemProfile(system_id=sys.id, answers={})
+        session.add(profile)
+    profile.cloud_platform = value
+    # Keep the stored questionnaire answers in step, so the intake record and the
+    # column agree on what this system is.
+    profile.answers = {**(profile.answers or {}), "cloud_platform": value}
+    await session.flush()
+    # Applied now, not at the next scan: verdicts from a provider this
+    # environment no longer uses must stop crediting it the moment the choice
+    # changes, or the posture page is wrong until somebody presses "Run audit".
+    from ...posture.scope import apply_provider_scope  # noqa: PLC0415
+
+    applied = await apply_provider_scope(session, system=sys, actor=principal.email)
+    await record_event(
+        session,
+        actor=principal.email,
+        action="system_environment_set",
+        entity_type="system",
+        entity_id=str(sys.id),
+        diff={
+            "cloud_platform": {"from": previous, "to": value},
+            "retired_checks": len(applied["retired"]),
+            "withdrawn_checks": len(applied["withdrawn"]),
+        },
+        organization_id=sys.organization_id,
+    )
+    await session.commit()
+    return RedirectResponse(f"/systems/{system_id}", status_code=303)
 
 
 @router.post("/systems/{system_id}/live-audit/verify")
@@ -1316,7 +1409,16 @@ async def reports_page(
     organizations = (
         (await session.execute(select(Organization).order_by(Organization.name))).scalars().all()
     )
-    systems = (await session.execute(select(System).order_by(System.name))).scalars().all()
+    systems = (
+        (
+            await session.execute(
+                # See /governance above: a deleted system is not offered in a list.
+                select(System).where(System.deleted_at.is_(None)).order_by(System.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
     families = (
         (await session.execute(select(ControlFamily).order_by(ControlFamily.code))).scalars().all()
     )
@@ -1994,7 +2096,13 @@ async def governance_page(
     systems = (
         (
             await session.execute(
-                _scoped(select(System), System.organization_id).order_by(System.name)
+                # A deleted system must not appear in a list either: DATA-04 says
+                # its id can no longer scope new scans, evidence or POA&Ms, so
+                # offering it in a picker is an invitation to try. Swept by
+                # tests/test_deleted_systems_are_not_listed.py.
+                _scoped(select(System), System.organization_id)
+                .where(System.deleted_at.is_(None))
+                .order_by(System.name)
             )
         )
         .scalars()

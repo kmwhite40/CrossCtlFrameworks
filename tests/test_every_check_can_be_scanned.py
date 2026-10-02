@@ -134,7 +134,7 @@ def test_the_gap_is_measured_not_just_guarded() -> None:
         1 for ck, check in _all_checks() if _applicability(ck, check)[0] != "scan"
     )
     assert blocked == len(UNSCANNABLE)
-    assert (total, blocked) == (32, 0), (
+    assert (total, blocked) == (42, 0), (
         f"{blocked} of {total} registered checks cannot be scanned; update this "
         "assertion deliberately, and the runbook's section 7 with it"
     )

@@ -21,9 +21,11 @@ adds is a second caller.
 
 The per-provider failure containment is the part to preserve exactly. One
 provider's exception must not discard the providers that already succeeded, and
-the ``session.rollback()`` in that path is load-bearing rather than tidy: a
-failed scan can leave the session unusable, turning one provider's fault into
-every provider's.
+a failed scan can leave the session unusable, turning one provider's fault into
+every provider's. Both are handled by a per-provider SAVEPOINT. The bare
+``session.rollback()`` that used to be here did keep the session usable, but it
+also discarded every earlier provider's results -- nothing commits between
+providers -- while the response still listed them as recorded.
 """
 
 from __future__ import annotations
@@ -34,8 +36,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..connectors.readiness import provider_readiness
 from ..logging import get_logger
+from ..models import System
+from .attested_scan import ingest_attestations
 from .checks import known_providers
 from .scan import record_manual_review_check, scan_for_system
+from .scope import apply_provider_scope
 
 log = get_logger(__name__)
 
@@ -68,7 +73,32 @@ async def scan_all_providers(
     no ambient scope for a caller to forget to set.
     """
     results: list[dict[str, Any]] = []
+
+    # Which providers this *environment* is assessed against. One organization
+    # runs both Microsoft and AWS systems, so the question is per system.
+    #
+    # Before this, the loop below ran every registered provider and recorded a
+    # manual_review_required row for every check of each one that was not ready.
+    # On a Microsoft-only organization that put 13 aws_govcloud, 3 gcp and 2
+    # puppetdb verdicts on every system -- 23 of 42 control tests for clouds the
+    # customer does not have, all in the bucket /dashboard calls "Need a human".
+    # There is no human action for "enable Amazon Inspector" on a tenant with no
+    # AWS. See ccf.posture.scope.
+    system = await session.get(System, system_id)
+    if system is None:
+        raise ValueError(f"unknown system: {system_id}")
+    # Out-of-scope providers are not scanned. Rows a previous scan wrote for them
+    # are retired (never held a verdict) or withdrawn (did), or they would keep
+    # claiming a verdict for ever -- see `scope.apply_provider_scope`.
+    applied = await apply_provider_scope(session, system=system, actor=actor)
+    scope = applied["scope"]
+    out_of_scope: list[dict[str, Any]] = applied["out_of_scope"]
+    retired: list[dict[str, Any]] = applied["retired"]
+
     for key in sorted(known_providers()):
+        provider = scope.get(key)
+        if provider is not None and not provider.in_scope:
+            continue
         readiness = await provider_readiness(
             session,
             organization_id=organization_id,
@@ -105,39 +135,45 @@ async def scan_all_providers(
             )
             continue
         try:
-            manual_results = [
-                await record_manual_review_check(
+            # A SAVEPOINT per provider, so a failure undoes exactly this
+            # provider's writes. It replaced a bare `session.rollback()`, which
+            # discarded every *earlier* provider's recorded results -- nothing
+            # commits between providers -- while the response went on listing
+            # them as recorded; and under the scheduler (`commit=False`) it ended
+            # the scheduler's whole shared transaction. Rolling back to the
+            # savepoint also leaves the session usable, which is what the bare
+            # rollback was there to guarantee.
+            async with session.begin_nested():
+                manual_results = [
+                    await record_manual_review_check(
+                        session,
+                        system_id=system_id,
+                        connector_key=key,
+                        check=check,
+                        reason=check["scan_applicability"],
+                        actor=actor,
+                    )
+                    for check in readiness["checks"]
+                    if check["scan_applicability"] != "scan"
+                ]
+                api_check_keys = {
+                    str(check["check_key"])
+                    for check in readiness["checks"]
+                    if check["scan_applicability"] == "scan"
+                }
+                out = await scan_for_system(
                     session,
                     system_id=system_id,
                     connector_key=key,
-                    check=check,
-                    reason=check["scan_applicability"],
                     actor=actor,
+                    check_keys=api_check_keys,
                 )
-                for check in readiness["checks"]
-                if check["scan_applicability"] != "scan"
-            ]
-            api_check_keys = {
-                str(check["check_key"])
-                for check in readiness["checks"]
-                if check["scan_applicability"] == "scan"
-            }
-            out = await scan_for_system(
-                session,
-                system_id=system_id,
-                connector_key=key,
-                actor=actor,
-                check_keys=api_check_keys,
-            )
-            out["readiness"] = readiness
-            out["manual_review_results"] = manual_results
-            results.append(out)
+                out["readiness"] = readiness
+                out["manual_review_results"] = manual_results
+                results.append(out)
         except Exception as exc:  # reported per provider, never swallowed
-            # One provider's failure must not discard the providers that worked.
-            # The rollback is required, not tidiness: a failed scan can leave the
-            # session in a state where every later provider's flush fails too,
-            # which would turn one provider's fault into all of them.
-            await session.rollback()
+            # Already rolled back to the savepoint above: this provider's writes
+            # are gone, earlier providers' are kept, and the session is usable.
             log.warning(
                 "posture.scan_all_provider_failed",
                 system_id=system_id,
@@ -159,6 +195,47 @@ async def scan_all_providers(
                     ),
                 }
             )
+    # Provider-attested control results, on the same trigger. Not a provider in
+    # the loop above: those run Concord's own checks against a connector, while
+    # this reads AWS's assessment of its own control catalog -- a different kind
+    # of evidence, labelled differently in the record (see posture.attested).
+    #
+    # In a SAVEPOINT, for the same reason each provider above is: the loop has
+    # already recorded its results and the commit is two lines below, so a bare
+    # rollback would discard every scan that just succeeded. `AsyncSession.rollback()`
+    # is also not savepoint-scoped, so an unguarded flush error would leave the
+    # outer transaction aborted and take those results down on the caller's
+    # commit anyway -- the same reasoning `control_tests.record_result` records
+    # for its waiver block.
+    try:
+        async with session.begin_nested():
+            attestations = await ingest_attestations(
+                session, system_id=system_id, actor=actor
+            )
+    except Exception as exc:
+        log.warning(
+            "posture.attested_ingest_failed",
+            system_id=system_id,
+            error=type(exc).__name__,
+        )
+        attestations = {
+            "system_id": system_id,
+            "connector": "aws_govcloud",
+            "available": False,
+            "reason": (
+                f"the provider attestation read failed ({type(exc).__name__}); "
+                "nothing was recorded for it, and the posture scan above is "
+                "unaffected"
+            ),
+            "written": 0,
+            "controls_read": 0,
+            "controls_without_a_requirement": [],
+            "unreadable_requirements": [],
+            "region": None,
+            "account_id": None,
+            "pages_read": 0,
+            "truncated": False,
+        }
     if commit:
         await session.commit()
     # `skipped_checks` is a list on every per-provider entry, so the aggregate
@@ -193,5 +270,20 @@ async def scan_all_providers(
             for r in results
             if r.get("reason")
         ],
+        # Always present, never omitted on failure: an absent key renders as
+        # nothing and reads as "no problem", while a reason reads as a thing to
+        # go and configure. Every organization in this deployment is currently in
+        # the "no AWS credential bound" case.
+        "attestations": attestations,
+        # Named, not silent. A provider that did not run because this environment
+        # does not have it is a different fact from one that broke or holds no
+        # credential, and an operator seeing fewer checks than they expected needs
+        # to be able to tell which.
+        "providers_out_of_scope": out_of_scope,
+        # Rows a previous scan wrote for a provider now out of scope, removed so
+        # they stop claiming a verdict. Reported because deleting evidence
+        # silently is worse than leaving it.
+        "retired_checks": retired,
+        "withdrawn_checks": applied["withdrawn"],
         "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
     }

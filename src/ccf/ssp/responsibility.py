@@ -298,6 +298,10 @@ SCAN_SCOPE_OVERRIDES: dict[tuple[str, str], str] = {
         "IA",
     ): "IAM users, password policy and access keys are created and rotated by the customer",
     (
+        "aws_govcloud",
+        "RA",
+    ): "Enabling Amazon Inspector is an account setting only the customer can turn on",
+    (
         "puppetdb",
         "CM",
     ): "PuppetDB is infrastructure the customer runs; there is no provider to inherit from",

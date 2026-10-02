@@ -148,13 +148,33 @@ async def customer_workspace(session: AsyncSession, org_id: int | None) -> dict[
     if posture and posture["total"]:
         covered = len(posture["passing"]) + len(posture["failing"])
         unit = posture["unit"] or "control"
+        # Every bucket, because "of {total}" is an accounting claim.
+        #
+        # This named three of the five `framework_posture` partitions into --
+        # satisfied, failing, not yet addressed -- while citing the whole
+        # framework as the denominator, so a reader subtracting them got a
+        # remainder belonging to nothing on the page. The two it dropped are the
+        # two that most change what somebody does next: `documented` is a claim
+        # owed evidence, and `manual_review` is work to schedule. Omitting them
+        # from a sentence that says "of {total}" silently reassigns them to "not
+        # yet addressed" in the reader's head, which is the opposite of what
+        # either means.
+        #
+        # Built as a list of non-zero parts so the sentence stays readable on a
+        # healthy system, and asserted to sum to the total by
+        # tests/test_workspace_posture_sentence_adds_up.py -- parsed out of this
+        # string, so a future edit that drops a bucket fails there.
+        parts = [
+            (len(posture["passing"]), "satisfied"),
+            (len(posture["failing"]), "failing"),
+            (len(posture["documented"]), "documented, awaiting evidence"),
+            (len(posture["manual_review"]), "could not be judged"),
+            (len(posture["unaddressed"]), "not yet addressed"),
+        ]
+        said = ", ".join(f"{n} {label}" for n, label in parts if n) or "0 assessed"
         steps.append(_step(
             "posture", "Current posture", "done" if covered else "todo",
-            (
-                f"{len(posture['passing'])} satisfied, {len(posture['failing'])} failing, "
-                f"{len(posture['unaddressed'])} not yet addressed of {posture['total']} "
-                f"{unit}s in {posture['framework_label']}."
-            ),
+            f"{said} of {posture['total']} {unit}s in {posture['framework_label']}.",
             "Open posture", "/posture"))
     else:
         # Say what is missing. "No baseline declared" was wrong for a system

@@ -183,8 +183,12 @@ async def poam_aging(
     ``on_track + overdue + no_due_date == open_total``.
     """
     stmt = select(POAM).where(POAM.status.in_(POAM_ACTIVE_STATUSES))
-    if org_id is not None:
-        stmt = stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
+    # Applied unconditionally, not gated on `org_id is not None`.
+    # `org_system_subq(None)` is every *live* system by design, so the global
+    # (platform-admin) view excludes deleted systems too. Gated, it counted them:
+    # the same defect `_ksi_states` records fixing in `analytics.overview`, and
+    # `POAM.system_id` is NOT NULL so there is no org-wide POA&M to preserve.
+    stmt = stmt.where(POAM.system_id.in_(org_system_subq(org_id)))
     rows = (await session.execute(stmt)).scalars().all()
     buckets = {"0-30": 0, "31-60": 0, "61-90": 0, "90+": 0, "unknown": 0}
     overdue = 0

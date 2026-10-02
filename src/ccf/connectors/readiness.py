@@ -54,6 +54,27 @@ async def _config_row(
     ).scalars().first()
 
 
+#: Field names ``provider_readiness`` computes itself, which a provider's
+#: ``verify()`` return may not overwrite when it is flattened into the payload.
+#: ``connected`` and ``reason`` are excluded because the payload carries its own
+#: derived versions of both.
+_RESERVED_READINESS_KEYS: frozenset[str] = frozenset(
+    {
+        "connected",
+        "reason",
+        "connector",
+        "status",
+        "ready",
+        "configured",
+        "checked_at",
+        "checks",
+        "checks_expected",
+        "required_permissions",
+        "provider",
+    }
+)
+
+
 async def provider_readiness(
     session: AsyncSession,
     *,
@@ -147,10 +168,22 @@ async def provider_readiness(
             "checks": checks,
             "required_permissions": required_permissions,
             "reason": reason,
+            # Flattened for callers that read provider detail off the top level,
+            # *and* nested under `provider` below. The exclusion list is the
+            # payload's own field names, not just `connected`/`reason`.
+            #
+            # A dict literal lets later keys win, and this spread sits after every
+            # computed field — so a connector whose `verify()` happened to return
+            # `status` or `ready` would silently overwrite the readiness verdict.
+            # This payload is persisted (`cfg.readiness_detail`) and
+            # `cfg.readiness_status` is set from `out["status"]`, so a provider's
+            # own word would have become Concord's recorded readiness. No shipped
+            # connector returns a colliding key today; the hazard is that nothing
+            # stopped the next one.
             **{
                 k: v
                 for k, v in verification.items()
-                if k not in {"connected", "reason"} and v is not None
+                if k not in _RESERVED_READINESS_KEYS and v is not None
             },
             "provider": {
                 k: v
