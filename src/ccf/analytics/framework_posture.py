@@ -631,9 +631,25 @@ def _empty_framework(
         "manual_review": [],
         "unaddressed": [],
         "partially_evidenced": [],
+        # Present and empty, never absent. This shape is returned by four
+        # reachable paths -- system not found, no framework declared, an
+        # unmeasurable framework, and the 800-171 matrix not loaded -- and the
+        # populated path carries this key, so a Python consumer indexing it
+        # KeyErrors on exactly the systems least likely to be exercised. Jinja
+        # renders a missing key as falsy, which is worse than an error: "nothing
+        # rests on provider attestation" and "this payload forgot to say" look
+        # identical. `tests/test_attested_only_is_named.py` pins the two shapes
+        # to the same key set.
+        "provider_attested_only": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
         "unmapped_checks": [],
+        # Pre-existing drift, found by the key-set guard rather than by anything
+        # failing: the 800-171 path returns this and the empty shape did not. A
+        # consumer reading it to answer "did a verdict land on no requirement"
+        # got a KeyError on precisely the systems where the answer is "we could
+        # not measure at all".
+        "unmappable_controls": [],
         "unreachable": [],
         "practice_ids": {},
         "reason": reason,

@@ -608,3 +608,61 @@ async def test_a_blank_control_id_does_not_crash_the_posture_page() -> None:
     # The real row is still credited, and the blank ones contribute nothing.
     assert "AC-3" in out["passing"]
     assert out["provider_attested_only"] == ["AC-3"]
+
+
+async def test_every_framework_payload_shape_has_the_same_keys() -> None:
+    """The empty shape is a second definition of the payload, and it drifted.
+
+    ``_empty_framework`` is returned by four reachable paths -- system not found,
+    no framework declared, an unmeasurable framework, the 800-171 matrix not
+    loaded -- and it was missing ``provider_attested_only`` while the populated
+    path carried it. A Python consumer indexing that key KeyErrors on exactly the
+    systems least likely to be exercised, and Jinja renders a missing key as
+    falsy, so "nothing rests on provider attestation" and "this payload forgot to
+    say" render identically.
+
+    Asserted as equal key sets rather than by listing keys, so the next field
+    added to one definition and not the other fails here. The same guard
+    ``compliance_gaps`` needed for the same reason.
+    """
+    async with session_scope() as session:
+        # Populated: a system whose framework resolves and has a verdict.
+        n = next(_SEQ)
+        await seed_scoring_controls(session)
+        org = Organization(name=f"ShapeOrg{n}")
+        session.add(org)
+        await session.flush()
+        live = System(organization_id=org.id, name=f"ShapeSys{n}", baseline=None)
+        session.add(live)
+        await session.flush()
+        session.add(
+            SystemProfile(
+                system_id=live.id,
+                answers={},
+                environment_type="cloud",
+                cloud_platform="aws_govcloud",
+                frameworks=["NIST_800_171"],
+            )
+        )
+        await session.flush()
+        populated = await system_framework_posture(
+            session, org_id=org.id, system_id=live.id
+        )
+
+        # Empty: no framework declared at all, which takes the _empty_framework path.
+        bare = System(organization_id=org.id, name=f"BareSys{n}")
+        session.add(bare)
+        await session.flush()
+        empty = await system_framework_posture(session, org_id=org.id, system_id=bare.id)
+
+        # And the "system not found" path, which is a third construction site.
+        missing = await system_framework_posture(session, org_id=org.id, system_id=-1)
+
+    assert empty.get("reason"), "the empty shape must say why, not just zero"
+    assert set(empty) == set(populated), (
+        f"empty shape is missing {sorted(set(populated) - set(empty))} and has "
+        f"extra {sorted(set(empty) - set(populated))}"
+    )
+    assert set(missing) == set(populated), (
+        f"not-found shape is missing {sorted(set(populated) - set(missing))}"
+    )
