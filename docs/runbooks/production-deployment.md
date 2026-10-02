@@ -377,6 +377,26 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   This is how the AT-2 check was caught: `$metadata` is published per-cloud, and
   only the tenant settles whether a check can run. **Verifying a check against the
   model is necessary and not sufficient.**
+- **No job has ever run end to end through a deployed worker**, and the evidence
+  repository is empty. Measured against the dev database:
+
+  | | |
+  |---|---|
+  | `assessment_jobs` | **0 rows, any status** |
+  | `prep_jobs` | **0 rows, any status** |
+  | `evidence` / `evidence_objects` | **0 / 0** |
+  | `control_test_results` | 2,971, newest the same day |
+
+  So posture scanning is live and producing results, while the queue-backed
+  workers have never had a job to claim. Both containers poll correctly and log
+  `{"claimed": 0, ...}` — §2a is right that this is what healthy-and-idle looks
+  like, but it is also what never-exercised looks like, and the two are
+  indistinguishable from the logs. The claim loop has unit tests; what is
+  unverified is a real job completing inside a container.
+
+  Closing it needs one job enqueued and watched through to `done`. It is listed
+  here rather than done because it writes to a live database, and deciding that is
+  not the platform's call to make on an operator's behalf.
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
 - **AWS Security Hub attestation ingest is unverified against a live account** —
