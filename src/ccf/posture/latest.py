@@ -13,9 +13,15 @@ divergent notion cannot appear the next time someone reads this table.
 
 from __future__ import annotations
 
-from sqlalchemy import Subquery, select
+from sqlalchemy import Subquery, or_, select
 
 from ..models_grc import ControlTest, ControlTestResult
+
+#: ``evidence_ref`` of the result recorded when a check leaves a system's scope
+#: (``ccf.posture.scope.withdraw_out_of_scope_checks``). Defined here because the
+#: definition of "latest" below has to recognise it, and ``scope`` imports this
+#: module rather than the other way round.
+OUT_OF_SCOPE_EVIDENCE_REF = "ccf:scope:outside-environment"
 
 
 def latest_result_ids() -> Subquery:
@@ -44,6 +50,16 @@ def latest_result_ids() -> Subquery:
     has no entry here, which is correct: there is nothing informative to
     protect or report.
 
+    **One zero-resource result is informative:** the one recorded when a check
+    leaves the system's scope (:data:`OUT_OF_SCOPE_EVIDENCE_REF`). It is not an
+    outage, it is a determination -- this environment is not measured by that
+    provider -- and skipping it would fall back to the last verdict from before
+    the environment changed, so an AWS ``pass`` would go on crediting a system
+    that is now Microsoft 365. It is matched on the marker rather than on
+    ``not_applicable``, because a scan whose collection page came back empty
+    also rolls up to ``not_applicable`` with nothing evaluated, and that is
+    exactly the outage this exclusion exists for.
+
     Returned as a subquery to be joined, not a list of ids to be passed around:
     the join keeps the whole question in one statement, so a caller cannot
     accidentally scope it to a stale snapshot.
@@ -52,7 +68,10 @@ def latest_result_ids() -> Subquery:
         select(ControlTestResult.id)
         .where(
             ControlTestResult.control_test_id == ControlTest.id,
-            ControlTestResult.evaluated > 0,
+            or_(
+                ControlTestResult.evaluated > 0,
+                ControlTestResult.evidence_ref == OUT_OF_SCOPE_EVIDENCE_REF,
+            ),
         )
         .order_by(ControlTestResult.run_at.desc(), ControlTestResult.id.desc())
         .limit(1)

@@ -49,6 +49,7 @@ after a customer who said they run no cloud received a Microsoft 365 SSP.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +60,7 @@ from ..models import System, SystemProfile
 from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
 from ..models_waivers import Waiver
 from .checks import known_providers
+from .latest import OUT_OF_SCOPE_EVIDENCE_REF
 
 #: Result statuses that mean a check never actually assessed anything, so a row
 #: carrying only these holds no history worth keeping.
@@ -196,7 +198,13 @@ async def provider_scope(
     return out
 
 
-__all__ = ["ProviderScope", "provider_scope", "retire_out_of_scope_checks"]
+__all__ = [
+    "ProviderScope",
+    "apply_provider_scope",
+    "provider_scope",
+    "retire_out_of_scope_checks",
+    "withdraw_out_of_scope_checks",
+]
 
 
 async def retire_out_of_scope_checks(
@@ -274,3 +282,123 @@ async def retire_out_of_scope_checks(
     if retired:
         await session.flush()
     return retired
+
+
+async def withdraw_out_of_scope_checks(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    connector_key: str,
+    reason: str,
+    actor: str,
+) -> list[dict[str, str]]:
+    """Record that a check no longer applies, for rows retirement declined.
+
+    :func:`retire_out_of_scope_checks` deletes only rows that never held a real
+    verdict, which leaves the dangerous case: a system scanned as AWS and then
+    re-declared as Microsoft 365 kept its AWS ``pass`` rows, nothing refreshes
+    them (the scan skips out-of-scope providers), and every posture reader went on
+    crediting controls from them.
+
+    Fixed on the write side, not in the readers. About fifteen places read a
+    verdict -- framework posture, gaps, findings, the dashboard, SSP completeness
+    and sync, FedRAMP 20x validation, the live-audit evaluations -- and two of
+    them build their own notion of "latest". A scope filter in each would be
+    fifteen copies of one rule, and the sixteenth reader would not have it.
+    Recording the change as the check's current result reaches all of them
+    through whatever path each already uses.
+
+    The result is ``not_applicable``: existing vocabulary, credited by nothing,
+    and -- deliberately, in ``record_result`` -- never treated as a recovery, so a
+    POA&M opened by an earlier ``fail`` stays open. A weakness that left scope was
+    not fixed. History is kept; the earlier results remain beneath this one, and
+    if the system's environment changes back, the next scan records a real
+    verdict over it.
+
+    Generated rows only, as for retirement: a human's authored test is theirs.
+    Idempotent -- a row whose latest result is already this withdrawal is left
+    alone, so repeated scans do not stack results.
+    """
+    from ..governance.control_tests import record_result  # noqa: PLC0415
+
+    tests = (
+        (
+            await session.execute(
+                select(ControlTest).where(
+                    ControlTest.system_id == system_id,
+                    ControlTest.connector_type == connector_key,
+                    ControlTest.source == "generated",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    withdrawn: list[dict[str, str]] = []
+    for test in tests:
+        latest_ref = (
+            await session.execute(
+                select(ControlTestResult.evidence_ref)
+                .where(ControlTestResult.control_test_id == test.id)
+                .order_by(ControlTestResult.run_at.desc(), ControlTestResult.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if latest_ref == OUT_OF_SCOPE_EVIDENCE_REF:
+            continue
+        await record_result(
+            session,
+            test,
+            status="not_applicable",
+            detail=f"Not assessed for this system: {reason}",
+            evidence_ref=OUT_OF_SCOPE_EVIDENCE_REF,
+            actor=actor,
+            open_remediation=False,
+        )
+        withdrawn.append(
+            {
+                "check_key": str(test.check_key or ""),
+                "control_id": str(test.control_id or ""),
+                "connector": connector_key,
+            }
+        )
+    return withdrawn
+
+
+async def apply_provider_scope(
+    session: AsyncSession, *, system: System, actor: str
+) -> dict[str, Any]:
+    """Bring a system's existing checks into line with its scope.
+
+    For every provider the system is not measured against: retire the rows that
+    never held a verdict, then withdraw the rest. One function, called by the scan
+    and by the environment selector, so the page is right the moment the
+    environment changes rather than after the next scan.
+    """
+    scope = await provider_scope(session, system=system)
+    out_of_scope: list[dict[str, str]] = []
+    retired: list[dict[str, str]] = []
+    withdrawn: list[dict[str, str]] = []
+    for key in sorted(known_providers()):
+        provider = scope.get(key)
+        if provider is None or provider.in_scope:
+            continue
+        out_of_scope.append({"connector": key, "reason": provider.reason})
+        retired.extend(
+            await retire_out_of_scope_checks(session, system_id=system.id, connector_key=key)
+        )
+        withdrawn.extend(
+            await withdraw_out_of_scope_checks(
+                session,
+                system_id=system.id,
+                connector_key=key,
+                reason=provider.reason,
+                actor=actor,
+            )
+        )
+    return {
+        "scope": scope,
+        "out_of_scope": out_of_scope,
+        "retired": retired,
+        "withdrawn": withdrawn,
+    }

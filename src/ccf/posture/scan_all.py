@@ -38,7 +38,7 @@ from ..models import System
 from .attested_scan import ingest_attestations
 from .checks import known_providers
 from .scan import record_manual_review_check, scan_for_system
-from .scope import provider_scope, retire_out_of_scope_checks
+from .scope import apply_provider_scope
 
 log = get_logger(__name__)
 
@@ -85,24 +85,17 @@ async def scan_all_providers(
     system = await session.get(System, system_id)
     if system is None:
         raise ValueError(f"unknown system: {system_id}")
-    scope = await provider_scope(session, system=system)
-    out_of_scope: list[dict[str, Any]] = []
-    retired: list[dict[str, Any]] = []
+    # Out-of-scope providers are not scanned. Rows a previous scan wrote for them
+    # are retired (never held a verdict) or withdrawn (did), or they would keep
+    # claiming a verdict for ever -- see `scope.apply_provider_scope`.
+    applied = await apply_provider_scope(session, system=system, actor=actor)
+    scope = applied["scope"]
+    out_of_scope: list[dict[str, Any]] = applied["out_of_scope"]
+    retired: list[dict[str, Any]] = applied["retired"]
 
     for key in sorted(known_providers()):
         provider = scope.get(key)
         if provider is not None and not provider.in_scope:
-            # Nothing recorded: with no row the controls simply land in
-            # `unaddressed`, which is true -- Concord has no evidence for them.
-            # Rows a previous scan wrote are retired here, or they would keep
-            # claiming a verdict forever; `retire_out_of_scope_checks` only
-            # removes rows that never carried a real one.
-            retired.extend(
-                await retire_out_of_scope_checks(
-                    session, system_id=system_id, connector_key=key
-                )
-            )
-            out_of_scope.append({"connector": key, "reason": provider.reason})
             continue
         readiness = await provider_readiness(
             session,
@@ -285,5 +278,6 @@ async def scan_all_providers(
         # they stop claiming a verdict. Reported because deleting evidence
         # silently is worse than leaving it.
         "retired_checks": retired,
+        "withdrawn_checks": applied["withdrawn"],
         "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
     }

@@ -114,7 +114,7 @@ async def test_the_change_is_audited_with_before_and_after() -> None:
             )
         ).scalars().all()
     assert len(rows) == 1
-    assert rows[0].diff == {"cloud_platform": {"from": "aws_govcloud", "to": "gcp"}}
+    assert rows[0].diff["cloud_platform"] == {"from": "aws_govcloud", "to": "gcp"}
 
 
 @pytest.mark.parametrize("value", ["aws", "M365_GCC_HIGH", "", "azure_commercial"])

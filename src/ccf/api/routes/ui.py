@@ -1073,13 +1073,24 @@ async def system_set_environment(
     # Keep the stored questionnaire answers in step, so the intake record and the
     # column agree on what this system is.
     profile.answers = {**(profile.answers or {}), "cloud_platform": value}
+    await session.flush()
+    # Applied now, not at the next scan: verdicts from a provider this
+    # environment no longer uses must stop crediting it the moment the choice
+    # changes, or the posture page is wrong until somebody presses "Run audit".
+    from ...posture.scope import apply_provider_scope  # noqa: PLC0415
+
+    applied = await apply_provider_scope(session, system=sys, actor=principal.email)
     await record_event(
         session,
         actor=principal.email,
         action="system_environment_set",
         entity_type="system",
         entity_id=str(sys.id),
-        diff={"cloud_platform": {"from": previous, "to": value}},
+        diff={
+            "cloud_platform": {"from": previous, "to": value},
+            "retired_checks": len(applied["retired"]),
+            "withdrawn_checks": len(applied["withdrawn"]),
+        },
         organization_id=sys.organization_id,
     )
     await session.commit()
