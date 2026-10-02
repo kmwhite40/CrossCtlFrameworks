@@ -34,9 +34,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..connectors.readiness import provider_readiness
 from ..logging import get_logger
+from ..models import System
 from .attested_scan import ingest_attestations
 from .checks import known_providers
 from .scan import record_manual_review_check, scan_for_system
+from .scope import provider_scope, retire_out_of_scope_checks
 
 log = get_logger(__name__)
 
@@ -69,7 +71,39 @@ async def scan_all_providers(
     no ambient scope for a caller to forget to set.
     """
     results: list[dict[str, Any]] = []
+
+    # Which providers this *environment* is assessed against. One organization
+    # runs both Microsoft and AWS systems, so the question is per system.
+    #
+    # Before this, the loop below ran every registered provider and recorded a
+    # manual_review_required row for every check of each one that was not ready.
+    # On a Microsoft-only organization that put 13 aws_govcloud, 3 gcp and 2
+    # puppetdb verdicts on every system -- 23 of 42 control tests for clouds the
+    # customer does not have, all in the bucket /dashboard calls "Need a human".
+    # There is no human action for "enable Amazon Inspector" on a tenant with no
+    # AWS. See ccf.posture.scope.
+    system = await session.get(System, system_id)
+    if system is None:
+        raise ValueError(f"unknown system: {system_id}")
+    scope = await provider_scope(session, system=system)
+    out_of_scope: list[dict[str, Any]] = []
+    retired: list[dict[str, Any]] = []
+
     for key in sorted(known_providers()):
+        provider = scope.get(key)
+        if provider is not None and not provider.in_scope:
+            # Nothing recorded: with no row the controls simply land in
+            # `unaddressed`, which is true -- Concord has no evidence for them.
+            # Rows a previous scan wrote are retired here, or they would keep
+            # claiming a verdict forever; `retire_out_of_scope_checks` only
+            # removes rows that never carried a real one.
+            retired.extend(
+                await retire_out_of_scope_checks(
+                    session, system_id=system_id, connector_key=key
+                )
+            )
+            out_of_scope.append({"connector": key, "reason": provider.reason})
+            continue
         readiness = await provider_readiness(
             session,
             organization_id=organization_id,
@@ -242,5 +276,14 @@ async def scan_all_providers(
         # go and configure. Every organization in this deployment is currently in
         # the "no AWS credential bound" case.
         "attestations": attestations,
+        # Named, not silent. A provider that did not run because this environment
+        # does not have it is a different fact from one that broke or holds no
+        # credential, and an operator seeing fewer checks than they expected needs
+        # to be able to tell which.
+        "providers_out_of_scope": out_of_scope,
+        # Rows a previous scan wrote for a provider now out of scope, removed so
+        # they stop claiming a verdict. Reported because deleting evidence
+        # silently is worse than leaving it.
+        "retired_checks": retired,
         "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
     }

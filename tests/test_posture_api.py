@@ -15,7 +15,12 @@ from ccf.cli import app as cli_app
 from ccf.db import session_scope
 from ccf.governance.control_tests import GENERATED_PLAN
 from ccf.models import POAM, Organization, System
-from ccf.models_grc import ControlTest, ControlTestResourceResult, ControlTestResult
+from ccf.models_grc import (
+    ConnectorConfig,
+    ControlTest,
+    ControlTestResourceResult,
+    ControlTestResult,
+)
 from ccf.posture import audit_plan as audit_plan_module
 
 _SEQ = itertools.count()
@@ -337,6 +342,23 @@ async def test_scan_all_keeps_the_providers_that_worked_when_one_fails(
         sys_ = System(organization_id=org.id, name=f"ScanAllSys-{next(_SEQ)}")
         s.add(sys_)
         await s.flush()
+        # Every provider these tests exercise is put *in scope* explicitly.
+        # `scan_all_providers` now resolves provider scope per environment
+        # (ccf.posture.scope): a system with no declared cloud platform and no
+        # configured connector is assessed against nothing, because a
+        # Microsoft-only tenant was being given thirteen AWS verdicts. The
+        # subject of this test is unchanged -- it is about the scan's own
+        # behaviour, not about scope -- so it declares an environment the way a
+        # real organization does.
+        for connector_type in ("msgraph", "aws_govcloud", "azure_arm", "gcp", "puppetdb"):
+            s.add(
+                ConnectorConfig(
+                    organization_id=org.id,
+                    name=f"{connector_type} fixture",
+                    connector_type=connector_type,
+                )
+            )
+        await s.flush()
         system_id = sys_.id
 
     calls: list[str] = []
@@ -411,6 +433,23 @@ async def test_scan_all_does_not_reuse_the_per_provider_key_for_its_own_total(
         await s.flush()
         sys_ = System(organization_id=org.id, name=f"ScanAllShapeSys-{next(_SEQ)}")
         s.add(sys_)
+        await s.flush()
+        # Every provider these tests exercise is put *in scope* explicitly.
+        # `scan_all_providers` now resolves provider scope per environment
+        # (ccf.posture.scope): a system with no declared cloud platform and no
+        # configured connector is assessed against nothing, because a
+        # Microsoft-only tenant was being given thirteen AWS verdicts. The
+        # subject of this test is unchanged -- it is about the scan's own
+        # behaviour, not about scope -- so it declares an environment the way a
+        # real organization does.
+        for connector_type in ("msgraph", "aws_govcloud", "azure_arm", "gcp", "puppetdb"):
+            s.add(
+                ConnectorConfig(
+                    organization_id=org.id,
+                    name=f"{connector_type} fixture",
+                    connector_type=connector_type,
+                )
+            )
         await s.flush()
         system_id = sys_.id
 
@@ -565,6 +604,23 @@ async def test_scan_all_scans_only_api_applicable_checks(
         sys_ = System(organization_id=org.id, name=f"ScanAllApplicableSys-{next(_SEQ)}")
         s.add(sys_)
         await s.flush()
+        # Every provider these tests exercise is put *in scope* explicitly.
+        # `scan_all_providers` now resolves provider scope per environment
+        # (ccf.posture.scope): a system with no declared cloud platform and no
+        # configured connector is assessed against nothing, because a
+        # Microsoft-only tenant was being given thirteen AWS verdicts. The
+        # subject of this test is unchanged -- it is about the scan's own
+        # behaviour, not about scope -- so it declares an environment the way a
+        # real organization does.
+        for connector_type in ("msgraph", "aws_govcloud", "azure_arm", "gcp", "puppetdb"):
+            s.add(
+                ConnectorConfig(
+                    organization_id=org.id,
+                    name=f"{connector_type} fixture",
+                    connector_type=connector_type,
+                )
+            )
+        await s.flush()
         system_id = sys_.id
 
     scanned_keys: set[str] | None = None
@@ -649,6 +705,23 @@ async def test_scan_all_records_manual_review_required_for_unavailable_provider(
         await s.flush()
         sys_ = System(organization_id=org.id, name=f"ManualReviewSys-{next(_SEQ)}")
         s.add(sys_)
+        await s.flush()
+        # Every provider these tests exercise is put *in scope* explicitly.
+        # `scan_all_providers` now resolves provider scope per environment
+        # (ccf.posture.scope): a system with no declared cloud platform and no
+        # configured connector is assessed against nothing, because a
+        # Microsoft-only tenant was being given thirteen AWS verdicts. The
+        # subject of this test is unchanged -- it is about the scan's own
+        # behaviour, not about scope -- so it declares an environment the way a
+        # real organization does.
+        for connector_type in ("msgraph", "aws_govcloud", "azure_arm", "gcp", "puppetdb"):
+            s.add(
+                ConnectorConfig(
+                    organization_id=org.id,
+                    name=f"{connector_type} fixture",
+                    connector_type=connector_type,
+                )
+            )
         await s.flush()
         system_id = sys_.id
 
