@@ -377,26 +377,36 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   This is how the AT-2 check was caught: `$metadata` is published per-cloud, and
   only the tenant settles whether a check can run. **Verifying a check against the
   model is necessary and not sufficient.**
-- **No job has ever run end to end through a deployed worker**, and the evidence
-  repository is empty. Measured against the dev database:
+- **Both workers have now run a job end to end inside their deployed
+  containers** (2026-10-02). Neither has completed a job that needs a model,
+  because no organization in this deployment has an AI provider configured.
+  The jobs ran in a separate synthetic organization, "Worker verification
+  (synthetic)" (org 12), on a synthetic policy, so no customer data was
+  processed. With no provider configured, nothing could reach one.
 
-  | | |
-  |---|---|
-  | `assessment_jobs` | **0 rows, any status** |
-  | `prep_jobs` | **0 rows, any status** |
-  | `evidence` / `evidence_objects` | **0 / 0** |
-  | `control_test_results` | 2,971, newest the same day |
+  | | prep job 1 | assessment job 1 |
+  |---|---|---|
+  | claimed | first poll, attempt 1, `prep-worker` | within 20 s, attempt 1, `assessment-worker` |
+  | stages | parse, screen, expand **complete** (7 units); classify **failed** | 77 objectives: 76 `insufficient_evidence`, 1 `failed` |
+  | recorded reason | `no enabled AI provider configured for organization 12` | the same, on AC-02b -- the one objective keyword retrieval found evidence for |
+  | terminal state | `failed`, not requeued | `done`, proposal `complete` |
 
-  So posture scanning is live and producing results, while the queue-backed
-  workers have never had a job to claim. Both containers poll correctly and log
-  `{"claimed": 0, ...}` — §2a is right that this is what healthy-and-idle looks
-  like, but it is also what never-exercised looks like, and the two are
-  indistinguishable from the logs. The claim loop has unit tests; what is
-  unverified is a real job completing inside a container.
+  What this verifies: enqueue, `FOR UPDATE SKIP LOCKED` claim, tenant scoping,
+  stage persistence, and a failure recorded with its true reason rather than
+  retried for ever. What it does not verify: a model call, classification,
+  embedding, or a verdict other than `insufficient_evidence`. Those need an AI
+  provider configured per organization (`/ai/settings`; embeddings default to
+  OpenAI `text-embedding-3-small`, see `CCF_PREP_EMBED_PROVIDER`).
 
-  Closing it needs one job enqueued and watched through to `done`. It is listed
-  here rather than done because it writes to a live database, and deciding that is
-  not the platform's call to make on an operator's behalf.
+  Two observations from the run, not yet addressed:
+
+  * AC-2 was assessed as **77 objectives, including `AC-02_ODP[01..03]`** --
+    organization-defined parameter rows, which are not assessment objectives.
+    The same catalog-rows-are-not-controls shape counted elsewhere.
+  * The proposal reads `complete` with one objective `failed`. The failure is
+    recorded on the objective and the log says `objectives_evaluated=76
+    objectives_total=77`, but the proposal's own state does not.
+
 - **eMASS integration is unverified against a live instance** — written from
   the published specification and exercised only against a fake.
 - **AWS Security Hub attestation ingest is unverified against a live account** —
