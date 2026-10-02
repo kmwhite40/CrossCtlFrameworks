@@ -49,6 +49,7 @@ from ..posture.evidence import (
     pass_practice_attribution,
 )
 from ..posture.practices import UNMAPPED
+from ..posture.securescore import CHECK_SOURCE as SECURESCORE_CHECK_SOURCE
 from ..scoring.engine import MET_STATES
 
 #: Baseline name -> the catalog column that records membership.
@@ -127,6 +128,11 @@ async def framework_posture(
     #: much of the green is Concord's own work.
     passed_by_attestation: set[str] = set()
     passed_by_concord: set[str] = set()
+    #: Controls credited by Concord's Secure Score crosswalk: Microsoft measured,
+    #: Concord authored the attribution. Kept apart from both sets above -- left
+    #: in `passed_by_concord` it would be reported as Concord's own verified
+    #: check, which is the one thing it is not. See `ccf.posture.securescore`.
+    passed_by_securescore: set[str] = set()
     for control_id, control_ids, status, check_source in (
         await session.execute(
             select(
@@ -175,6 +181,8 @@ async def framework_posture(
             if credited:
                 if check_source == ATTESTED_CHECK_SOURCE:
                     passed_by_attestation.add(credited)
+                elif check_source == SECURESCORE_CHECK_SOURCE:
+                    passed_by_securescore.add(credited)
                 else:
                     passed_by_concord.add(credited)
 
@@ -243,6 +251,11 @@ async def framework_posture(
     # passing check is not a caveat, and listing it would make the note grow
     # with coverage until it meant nothing.
     provider_attested_only = (passed_by_attestation - passed_by_concord) & passing
+    # Credited by nothing stronger than Concord's Secure Score crosswalk. A
+    # control AWS also attests is already named above, so it is not named twice.
+    securescore_crosswalk_only = (
+        passed_by_securescore - passed_by_concord - passed_by_attestation
+    ) & passing
 
     return {
         "baseline": baseline,
@@ -254,6 +267,7 @@ async def framework_posture(
         "unaddressed": sorted(unaddressed),
         "partially_evidenced": sorted(partially_evidenced),
         "provider_attested_only": sorted(provider_attested_only),
+        "securescore_crosswalk_only": sorted(securescore_crosswalk_only),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(controls), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(controls), 1),
     }
@@ -270,6 +284,7 @@ def _empty(baseline: str | None) -> dict[str, Any]:
         "unaddressed": [],
         "partially_evidenced": [],
         "provider_attested_only": [],
+        "securescore_crosswalk_only": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
     }
@@ -426,6 +441,8 @@ async def _nist_171_posture(
     #: than "AWS at all".
     passed_by_attestation: set[str] = set()
     passed_by_concord: set[str] = set()
+    #: See the baseline path: Concord's Secure Score crosswalk, never Concord's own.
+    passed_by_securescore: set[str] = set()
     #: control id -> the check_sources whose *passing* verdicts reached it, kept
     #: beside `needs_crosswalk` because the crosswalk expansion happens after
     #: this loop and the row's source is not recoverable there.
@@ -465,12 +482,12 @@ async def _nist_171_posture(
                 requirement = practice.split("-", 1)[1] if "-" in practice else practice
                 by_requirement.setdefault(requirement, set()).add(status)
                 if status == "pass":
-                    target = (
-                        passed_by_attestation
-                        if check_source == ATTESTED_CHECK_SOURCE
-                        else passed_by_concord
-                    )
-                    target.add(requirement)
+                    if check_source == ATTESTED_CHECK_SOURCE:
+                        passed_by_attestation.add(requirement)
+                    elif check_source == SECURESCORE_CHECK_SOURCE:
+                        passed_by_securescore.add(requirement)
+                    else:
+                        passed_by_concord.add(requirement)
             continue
         if check_key and str(check_key) in UNMAPPED:
             # A deliberate exclusion. Falling through to the crosswalk here would
@@ -507,7 +524,9 @@ async def _nist_171_posture(
             by_requirement.setdefault(requirement, set()).update(statuses)
             if ATTESTED_CHECK_SOURCE in sources:
                 passed_by_attestation.add(requirement)
-            if sources - {ATTESTED_CHECK_SOURCE}:
+            if SECURESCORE_CHECK_SOURCE in sources:
+                passed_by_securescore.add(requirement)
+            if sources - {ATTESTED_CHECK_SOURCE, SECURESCORE_CHECK_SOURCE}:
                 passed_by_concord.add(requirement)
 
     # A claimed implementation state, from the SPRS matrix. Only an *assessed*
@@ -548,6 +567,9 @@ async def _nist_171_posture(
     unaddressed = total - failing - passing - documented - manual_review
     partially_evidenced = declared_by_a_pass & unaddressed
     provider_attested_only = (passed_by_attestation - passed_by_concord) & passing
+    securescore_crosswalk_only = (
+        passed_by_securescore - passed_by_concord - passed_by_attestation
+    ) & passing
     reachable = set((await _crosswalk_reachable(session)) & total)
 
     return {
@@ -565,6 +587,9 @@ async def _nist_171_posture(
         "unaddressed": sorted(unaddressed, key=_requirement_sort),
         "partially_evidenced": sorted(partially_evidenced, key=_requirement_sort),
         "provider_attested_only": sorted(provider_attested_only, key=_requirement_sort),
+        "securescore_crosswalk_only": sorted(
+            securescore_crosswalk_only, key=_requirement_sort
+        ),
         "addressed_pct": round(100 * (len(passing) + len(documented)) / len(total), 1),
         "assessed_pct": round(100 * (len(passing) + len(failing)) / len(total), 1),
         # The honest limits of this view, beside the numbers rather than in a
@@ -641,6 +666,7 @@ def _empty_framework(
         # identical. `tests/test_attested_only_is_named.py` pins the two shapes
         # to the same key set.
         "provider_attested_only": [],
+        "securescore_crosswalk_only": [],
         "addressed_pct": 0.0,
         "assessed_pct": 0.0,
         "unmapped_checks": [],
