@@ -35,6 +35,7 @@ from ccf.analytics.overview import dashboard_overview
 from ccf.analytics.posture import poam_aging
 from ccf.db import session_scope
 from ccf.governance.control_tests import record_result
+from ccf.governance.insights import executive
 from ccf.models import POAM, Organization, Risk, System, Task
 from ccf.models_grc import ControlTest
 
@@ -309,3 +310,111 @@ async def test_an_org_wide_control_test_with_no_system_still_counts() -> None:
     ct = out["control_tests"]
     assert ct["total"] == 1, f"an org-wide control test was dropped: {ct}"
     assert ct["pass"] == 1
+
+
+# ---------------------------------------------------------------------------
+# The cross-surface invariant, made permanent
+# ---------------------------------------------------------------------------
+#
+# The 80-vs-112 defect above was found by hand, comparing two surfaces against one
+# real organization. That comparison is the durable asset, not the fix: these
+# functions bucket the same rows by different routes -- `compliance_gaps` reads the
+# latest `ControlTestResult`, `_control_tests` reads `ControlTest.last_status` --
+# so they can drift apart for reasons beyond system scoping, and nothing was
+# asserting they do not.
+
+
+async def _org_with_a_verdict_of_each_kind() -> int:
+    """One organization carrying every verdict, on a live and a deleted system."""
+    n = next(_SEQ)
+    async with session_scope() as session:
+        org = Organization(name=f"AgreeAllOrg{n}")
+        session.add(org)
+        await session.flush()
+        live = System(organization_id=org.id, name=f"live-{n}", baseline="moderate")
+        gone = System(
+            organization_id=org.id,
+            name=f"gone-{n}",
+            baseline="moderate",
+            deleted_at=datetime.now(UTC),
+        )
+        session.add_all([live, gone])
+        await session.flush()
+        statuses = ("pass", "fail", "warn", "manual_review_required", "not_applicable")
+        for system in (live, gone):
+            for status in statuses:
+                test = ControlTest(
+                    organization_id=org.id,
+                    system_id=system.id,
+                    control_id="AC-3",
+                    control_ids=["AC-3"],
+                    name=f"{system.name}-{status}",
+                    method="connector",
+                    source="generated",
+                    check_key=f"demo.{system.name}.{status}",
+                    check_source="platform",
+                )
+                session.add(test)
+                await session.flush()
+                await record_result(
+                    session, test, status=status, detail=status, open_remediation=False
+                )
+        return org.id
+
+
+async def test_the_dashboard_and_operations_agree_on_every_verdict_bucket() -> None:
+    """Not just the total: each bucket, because a total can agree by luck.
+
+    ``compliance_gaps`` groups ``warn`` with ``manual_review_required`` (both mean a
+    human has to look) while ``_control_tests`` keeps them apart, so the mapping is
+    stated here rather than assumed -- and that mapping is itself the thing most
+    likely to drift when somebody adds a verdict to the vocabulary.
+    """
+    org_id = await _org_with_a_verdict_of_each_kind()
+    async with session_scope() as session:
+        gaps = await compliance_gaps(session, org_id)
+        ov = (await dashboard_overview(session, org_id=org_id))["control_tests"]
+
+    assert gaps["assessed"] == ov["total"], (
+        f"/dashboard says {gaps['assessed']} assessed, /operations says {ov['total']}"
+    )
+    assert gaps["passing"] == ov["pass"]
+    assert gaps["failing"] == ov["fail"]
+    assert gaps["manual_review"] == ov["warn"] + ov["manual_review_required"], (
+        "compliance_gaps groups warn with manual_review_required; _control_tests "
+        "keeps them separate. The two must still sum to the same thing."
+    )
+    assert gaps["not_in_scope"] == ov["not_applicable"] + ov["untested"]
+
+
+async def test_the_executive_rollup_agrees_with_both() -> None:
+    """Three surfaces, one set of rows. The executive view is the one a leader
+    reads, so it is the worst place for a number that disagrees with the page it
+    was derived from."""
+    org_id = await _org_with_a_verdict_of_each_kind()
+    async with session_scope() as session:
+        gaps = await compliance_gaps(session, org_id)
+        ex = (await executive(session, org_id=org_id))["control_tests"]
+        ov = (await dashboard_overview(session, org_id=org_id))["control_tests"]
+
+    for key in ("assessed", "failing", "passing", "manual_review", "not_in_scope"):
+        assert ex[key] == gaps[key], f"executive.{key} disagrees with compliance_gaps"
+    assert ex["assessed"] == ov["total"]
+
+
+async def test_the_poam_total_agrees_across_the_surfaces_that_report_it() -> None:
+    """``sla.open`` and ``findings_total`` are the same quantity on one page, and
+    ``poam_aging`` is where both come from. A page that reported them differently
+    would be disagreeing with itself."""
+    async with session_scope() as session:
+        org = Organization(name=f"PoamAgreeOrg{next(_SEQ)}")
+        session.add(org)
+        await session.flush()
+        await _system_with_data(session, org.id, deleted=False)
+        await _system_with_data(session, org.id, deleted=True)
+        ov = await dashboard_overview(session, org_id=org.id)
+        aging = await poam_aging(session, org_id=org.id, today=date.today())
+
+    assert ov["sla"]["open"] == aging["open_total"]
+    assert ov["findings_total"] == aging["open_total"]
+    assert ov["sla"]["open"] == 1, "a deleted system's POA&M reached a surface"
