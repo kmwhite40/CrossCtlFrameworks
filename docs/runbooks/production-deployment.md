@@ -473,13 +473,38 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   so it is not a substitute.
 
   **Consequence, stated plainly:** the "one API read, many controls" mechanism has
-  no Microsoft equivalent. Raising M365 800-53 coverage beyond Concord's own
-  checks requires either more native checks — each one an evaluator Concord wrote
-  and can defend — or hand-authoring a crosswalk from Microsoft's product
-  taxonomy, which would be roughly sixty compliance assertions Concord makes
-  itself, at `platform` trust rather than provider-attested. Re-run the
-  measurement against any other tenant before committing to the second: the
-  function takes profiles and returns the table above.
+  no Microsoft equivalent. Concord therefore reads Secure Score through a
+  **crosswalk it authored itself** (`ccf.posture.securescore`, 2026-10-02):
+
+  | | |
+  |---|---|
+  | profiles mapped | **157**, in 27 families, each with one stated rationale |
+  | of the tenant's 224 scored profiles | 157 mapped, **67 deliberately not** (named in every report) |
+  | controls named | every one checked against the bundled 800-53 Rev. 5 catalog, none withdrawn |
+  | verdicts on the live tenant (dry run) | 114 `pass`, 40 `fail`, 3 `manual_review_required` |
+
+  How it stays honest, because every attribution is Concord's claim:
+
+  * **Labelled as a crosswalk everywhere.** Its own `check_source`
+    (`crosswalk:securescore`), its own trust tier below a provider's own mapping,
+    and its own posture bucket, `securescore_crosswalk_only`, shown on `/posture`.
+    It is never counted among the controls Concord verified.
+  * **Full points or it is not a pass.** Device profiles are fleet ratios
+    (`7.83 / 8` = some devices non-compliant), so a part-score is a `fail` with the
+    fraction stated.
+  * **An administrator's assertion is not an observation.** "Resolved through
+    third party" earns full points with nothing observed, and "ignored" means risk
+    accepted. Both are `manual_review_required`. The live tenant has both, e.g.
+    Linux real-time antivirus at 10/10 marked `ThirdParty`.
+  * **No automatic POA&Ms.** A failure is recorded and shown; filing it is a
+    human's decision, since the control attribution is Concord's.
+  * **Read only when Microsoft 365 is the system's environment**, the same gate
+    the AWS Security Hub read now has (it previously ran for every system).
+
+  Every profile id was read from the live tenant's list. Another tenant's
+  licensing decides which are scored; unscored ones produce no row. Review the
+  families in `ccf/posture/securescore.py` before relying on them in a package:
+  the rationale on each is the claim being made.
 - **FedRAMP-assigned ODP values are not in the data.** Parameters carry their
   label, guidance and choices from the catalog; FedRAMP's own assigned values
   are not available to import.

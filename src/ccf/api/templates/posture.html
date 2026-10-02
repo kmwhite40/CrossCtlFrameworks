@@ -86,6 +86,14 @@
         <span class="dim" title="Counted as passing on the provider's own attestation: the cloud provider assessed its own control and published the 800-53 mapping. Concord has no check of its own for these.">
           of which {{ e.provider_attested_only|length }} rest on provider attestation</span>
         {% endif %}
+        {% if e.securescore_crosswalk_only %}
+        {# Weaker than the note above, and said so. Microsoft measured these (a
+           Secure Score at full points) but publishes no 800-53 mapping, so the
+           attribution to each control is Concord's own crosswalk -- not an
+           observation of the control, and not Microsoft's claim. #}
+        <span class="dim" title="Counted as passing on Microsoft Secure Score through a crosswalk Concord authored: Microsoft measured the setting, Concord chose which 800-53 control it evidences. Microsoft publishes no such mapping.">
+          of which {{ e.securescore_crosswalk_only|length }} rest on Concord's Secure Score crosswalk</span>
+        {% endif %}
         {% if e.unreachable %}
         <span class="dim" title="No 800-53 control in the shipped crosswalk maps to these, so no scan can close them">
           {{ e.unreachable|length }} unreachable by scan</span>

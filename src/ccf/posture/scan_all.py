@@ -41,6 +41,8 @@ from .attested_scan import ingest_attestations
 from .checks import known_providers
 from .scan import record_manual_review_check, scan_for_system
 from .scope import apply_provider_scope
+from .securescore_scan import ingest_securescore
+from .securescore_scan import report as securescore_report
 
 log = get_logger(__name__)
 
@@ -207,35 +209,62 @@ async def scan_all_providers(
     # outer transaction aborted and take those results down on the caller's
     # commit anyway -- the same reasoning `control_tests.record_result` records
     # for its waiver block.
+    #
+    # Only when AWS is this system's environment. It ran unconditionally, so an
+    # M365 system in an organization with AWS bound for a *different* system was
+    # given AWS Security Hub verdicts -- the defect `scope` fixed for the provider
+    # loop, still open on this path.
+    aws_scope = scope.get("aws_govcloud")
     try:
-        async with session.begin_nested():
-            attestations = await ingest_attestations(
-                session, system_id=system_id, actor=actor
+        if aws_scope is not None and not aws_scope.in_scope:
+            attestations = _attestations_not_read(
+                system_id, f"not read: {aws_scope.reason}"
             )
+        else:
+            async with session.begin_nested():
+                attestations = await ingest_attestations(
+                    session, system_id=system_id, actor=actor
+                )
     except Exception as exc:
         log.warning(
             "posture.attested_ingest_failed",
             system_id=system_id,
             error=type(exc).__name__,
         )
-        attestations = {
-            "system_id": system_id,
-            "connector": "aws_govcloud",
-            "available": False,
-            "reason": (
-                f"the provider attestation read failed ({type(exc).__name__}); "
-                "nothing was recorded for it, and the posture scan above is "
-                "unaffected"
+        attestations = _attestations_not_read(
+            system_id,
+            f"the provider attestation read failed ({type(exc).__name__}); "
+            "nothing was recorded for it, and the posture scan above is unaffected",
+        )
+    # Microsoft Secure Score through Concord's crosswalk (posture.securescore),
+    # on the same trigger and under the same two rules as the attestation read
+    # above: only when Microsoft 365 is this system's environment, and in its own
+    # SAVEPOINT so a failure here cannot cost the results already recorded.
+    graph_scope = scope.get("msgraph")
+    try:
+        if graph_scope is not None and not graph_scope.in_scope:
+            securescore = securescore_report(
+                system_id, available=False, reason=f"not read: {graph_scope.reason}"
+            )
+        else:
+            async with session.begin_nested():
+                securescore = await ingest_securescore(
+                    session, system_id=system_id, actor=actor
+                )
+    except Exception as exc:
+        log.warning(
+            "posture.securescore_ingest_failed",
+            system_id=system_id,
+            error=type(exc).__name__,
+        )
+        securescore = securescore_report(
+            system_id,
+            available=False,
+            reason=(
+                f"the Secure Score read failed ({type(exc).__name__}); nothing was "
+                "recorded for it, and the posture scan above is unaffected"
             ),
-            "written": 0,
-            "controls_read": 0,
-            "controls_without_a_requirement": [],
-            "unreadable_requirements": [],
-            "region": None,
-            "account_id": None,
-            "pages_read": 0,
-            "truncated": False,
-        }
+        )
     if commit:
         await session.commit()
     # `skipped_checks` is a list on every per-provider entry, so the aggregate
@@ -275,6 +304,7 @@ async def scan_all_providers(
         # go and configure. Every organization in this deployment is currently in
         # the "no AWS credential bound" case.
         "attestations": attestations,
+        "securescore": securescore,
         # Named, not silent. A provider that did not run because this environment
         # does not have it is a different fact from one that broke or holds no
         # credential, and an operator seeing fewer checks than they expected needs
@@ -286,4 +316,27 @@ async def scan_all_providers(
         "retired_checks": retired,
         "withdrawn_checks": applied["withdrawn"],
         "framework_posture_url": f"/api/systems/{system_id}/framework-posture",
+    }
+
+
+def _attestations_not_read(system_id: int, reason: str) -> dict[str, Any]:
+    """The attestation report when nothing was read, in one shape.
+
+    Two paths produce it -- out of scope, and a failed read -- and two hand-built
+    dicts is how a payload's keys drift apart (the empty framework payload did,
+    twice). Same keys as ``ingest_attestations``'s unavailable report.
+    """
+    return {
+        "system_id": system_id,
+        "connector": "aws_govcloud",
+        "available": False,
+        "reason": reason,
+        "written": 0,
+        "controls_read": 0,
+        "controls_without_a_requirement": [],
+        "unreadable_requirements": [],
+        "region": None,
+        "account_id": None,
+        "pages_read": 0,
+        "truncated": False,
     }

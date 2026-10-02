@@ -322,6 +322,56 @@ class MsGraphConnector(ConfigConnector):
         except Exception as e:
             return {"connected": False, "reason": _aad_reason(e)}
 
+    async def securescore_snapshot(self) -> dict[str, Any]:
+        """Every Secure Score control profile and the tenant's latest scores.
+
+        Two reads: the profiles (417 on the live GCC High tenant, more than one
+        page) carry ``maxScore`` and the admin's ``controlStateUpdates``; the
+        newest ``secureScores`` entry carries the per-profile ``controlScores``.
+        Requires ``SecurityEvents.Read.All``.
+
+        Never raises: an unusable read returns ``available: False`` with the
+        reason, so the ingest records nothing rather than recording an empty
+        snapshot as if the tenant had been scored and found to have nothing.
+        """
+        empty: dict[str, Any] = {"profiles": [], "control_scores": [], "scored_on": None}
+        if not self.is_configured():
+            return {
+                **empty,
+                "available": False,
+                "reason": "graph credentials not configured for this organization",
+            }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                token = await self._token(client)
+                if not token:
+                    return {**empty, "available": False, "reason": "no Graph token"}
+                headers = {"Authorization": f"Bearer {token}"}
+                profiles = await self._get_all(
+                    client, "/v1.0/security/secureScoreControlProfiles", headers
+                )
+                # The newest score only: the collection is a daily history, and
+                # only today's answers the question.
+                scores = await self._get_all(
+                    client, "/v1.0/security/secureScores?$top=1", headers, max_pages=1
+                )
+        except Exception as e:  # never raises; the reason is the record
+            return {**empty, "available": False, "reason": _aad_reason(e)}
+        if not scores:
+            return {
+                **empty,
+                "available": False,
+                "reason": "the tenant returned no Secure Score",
+            }
+        latest = scores[0]
+        return {
+            "available": True,
+            "reason": None,
+            "profiles": profiles,
+            "control_scores": list(latest.get("controlScores") or []),
+            "scored_on": latest.get("createdDateTime"),
+        }
+
     async def capture(self) -> list[CapturedParameter]:
         if not self.is_configured():
             return []
