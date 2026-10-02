@@ -161,7 +161,17 @@ async def framework_posture(
             # Keyed off the credited control, not the declared tuple: the note
             # qualifies what appears in `passing`, and only a primary control is
             # credited by a pass.
-            credited = fold_to_control(pass_attribution(control_id)[0]) if control_id else None
+            #
+            # Read off `attributed` rather than re-calling `pass_attribution` and
+            # indexing it. This was `pass_attribution(control_id)[0] if control_id
+            # else None`, which raises IndexError on a whitespace-only control_id:
+            # `"  "` is truthy, so the guard let it through, and
+            # `pass_attribution` strips it to `""` and returns `[]`. The code this
+            # replaced *iterated* the list and so was safe. `ControlTest.control_id`
+            # is NOT NULL but not non-empty, and authored tests take whatever the
+            # API is given -- one such row would 500 the posture page for the whole
+            # system.
+            credited = fold_to_control(attributed[0]) if attributed else None
             if credited:
                 if check_source == ATTESTED_CHECK_SOURCE:
                     passed_by_attestation.add(credited)

@@ -562,3 +562,49 @@ async def test_the_171_note_is_only_about_requirements_concord_did_not_reach() -
         "a requirement Concord's own pack check also reached was caveated as "
         f"attested-only: {out['provider_attested_only']}"
     )
+
+
+async def test_a_blank_control_id_does_not_crash_the_posture_page() -> None:
+    """Found by reviewing my own commit, not by a failing test.
+
+    The attested-only note was computed as
+    ``pass_attribution(control_id)[0] if control_id else None``. A whitespace-only
+    ``control_id`` is **truthy**, so the guard let it through, and
+    ``pass_attribution`` strips it to ``""`` and returns ``[]`` -- an ``IndexError``
+    that 500s ``/posture`` for the whole system. The code it replaced iterated the
+    list and was therefore safe; indexing it was the regression.
+
+    ``ControlTest.control_id`` is NOT NULL but not non-empty, and an authored test
+    takes whatever the API is handed, so one such row is enough. Reading the
+    credited control off the list the loop already built is both safe and shorter.
+    """
+    async with session_scope() as session:
+        sys_ = await _moderate_system(session, ["AC-03"])
+        for control_id, status in (("   ", "pass"), ("", "pass"), ("\t", "pass")):
+            session.add(
+                ControlTest(
+                    organization_id=sys_.organization_id,
+                    system_id=sys_.id,
+                    control_id=control_id,
+                    control_ids=[control_id],
+                    name=f"blank-{len(control_id)}",
+                    method="manual",
+                    source="authored",
+                    last_status=status,
+                )
+            )
+        session.add(
+            _test_row(
+                sys_,
+                control_id="AC-3",
+                check_key="aws.securityhub.S3.8::AC-3",
+                check_source=CHECK_SOURCE,
+                status="pass",
+            )
+        )
+        await session.flush()
+        out = await framework_posture(session, system_id=sys_.id, org_id=None)
+
+    # The real row is still credited, and the blank ones contribute nothing.
+    assert "AC-3" in out["passing"]
+    assert out["provider_attested_only"] == ["AC-3"]
