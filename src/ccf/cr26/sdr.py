@@ -29,10 +29,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..fedramp20x import frr_scope
 from ..fedramp20x.applicability import system_scope
 from ..fedramp20x.catalog import current_ksis
 from ..fedramp20x.methods import tier0_check_status
-from ..fedramp20x.rules import frr_ids, ksi_ids, load_rules
+from ..fedramp20x.rules import ConsolidatedRules, frr_ids, ksi_ids, load_rules
 from ..models import (
     KSI,
     KSIAssessorReview,
@@ -1081,6 +1082,28 @@ class SdrSeedResult:
     out_of_scope_ksi_ids: list[str]
     #: The ruleset revision both checks were made against.
     rules_version: str
+    #: MUST / MUST NOT requirements this system owes under every certification
+    #: scenario still possible for its Class and Path
+    #: (``ccf.fedramp20x.frr_scope``) with no authored ``fedRampRequirements``
+    #: entry. The requirements half of the to-do list, as ``omitted_ksi_ids``
+    #: is the indicators half. Empty when no Class is recorded.
+    frr_unaddressed: list[str]
+
+
+async def _frr_unaddressed(
+    session: AsyncSession,
+    system: System,
+    rendered: list[dict[str, Any]],
+    rules: ConsolidatedRules,
+) -> list[str]:
+    """Hard requirements owed in every possible scenario, not yet authored."""
+    scoped = frr_scope.scope(rules, system.certification_class, system.certification_path)
+    authored = {str(e.get("frrID")) for e in rendered}
+    return sorted(
+        r["id"]
+        for r in scoped["owed"]
+        if r["force"] in frr_scope.HARD and r["id"] not in authored
+    )
 
 
 async def _current(
@@ -1222,5 +1245,6 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         omitted_requirements=omitted_requirements,
         undefined_ksi_ids=undefined,
         out_of_scope_ksi_ids=out_of_scope,
+        frr_unaddressed=await _frr_unaddressed(session, system, rendered_requirements, rules),
         rules_version=rules.version,
     )

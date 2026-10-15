@@ -6,6 +6,27 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — which FedRAMP process requirements a system owes
+- The SDR's `fedRampRequirements` was entirely authored, and Concord could
+  not say which of the 245 FRR requirements a system owes.
+  `ccf.fedramp20x.frr_scope` derives it from the rules: a requirement is
+  owed when its subset's `applicability` lists the system's Class and the
+  scenario's type and path, and it `affects` Providers.
+- **Scenarios come from the rules, not a cross product.** Subsets that name
+  a single type show that 20x is Program-only, Rev5 is Program or Agency,
+  and Class A exists only under 20x. Type is not recorded, so the answer is
+  `owed` (every scenario still possible) plus `conditional` entries that
+  name the scenarios they depend on. Class C on the Agency path owes 163,
+  all certain. Class A on the Agency path is reported as impossible.
+- Class A also owes what `FRC-CLA-MFR`/`RFR`/`OFR` name (51 in all), which
+  subset applicability alone undercounts. Force comes from the requirement
+  or its class variant and is never borrowed from another class. Processes
+  marked `placeholder` are left out.
+- `GET /api/fedramp/20x/systems/{id}/requirements` returns the scope. The SDR
+  seed reports `frr_unaddressed`: MUST / MUST NOT requirements owed in every
+  possible scenario with no authored entry. That is the requirements half of
+  the to-do list, beside `omitted_ksi_ids`.
+
 ### Fixed — the scheduler's alerts reached no one
 - The scheduler ran the alert digest unscoped, so every overdue-task, ATO,
   POA&M, policy/vendor/risk review, training and access-review alert was

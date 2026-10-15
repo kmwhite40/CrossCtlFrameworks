@@ -331,6 +331,29 @@ async def link_dependency(
     return row
 
 
+@router.get("/systems/{system_id}/requirements")
+async def system_requirements(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """FedRAMP process requirements this system owes, by its Class and Path.
+
+    ``owed`` holds in every certification scenario still possible; each
+    ``conditional`` entry names the scenarios it depends on, because Concord
+    does not record certification type.
+    """
+    system = await _require_system(session, system_id, principal)
+    from ...fedramp20x import frr_scope  # noqa: PLC0415
+    from ...fedramp20x.rules import load_rules  # noqa: PLC0415
+
+    return {
+        "certification_class": system.certification_class,
+        "certification_path": system.certification_path,
+        **frr_scope.scope(load_rules(), system.certification_class, system.certification_path),
+    }
+
+
 @router.get("/marketplace/products")
 async def search_marketplace(
     q: str = Query(..., min_length=2, max_length=128),

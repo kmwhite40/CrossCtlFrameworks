@@ -367,6 +367,7 @@ async def seed_sdr_document(
         "omitted_requirements": result.omitted_requirements,
         "undefined_ksi_ids": result.undefined_ksi_ids,
         "out_of_scope_ksi_ids": result.out_of_scope_ksi_ids,
+        "frr_unaddressed": result.frr_unaddressed,
         "rules_version": result.rules_version,
     }
 
