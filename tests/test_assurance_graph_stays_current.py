@@ -196,3 +196,63 @@ def test_the_staleness_limit_follows_the_configured_cadence() -> None:
     settings = get_settings()
     expected = timedelta(hours=max(1.0, settings.scheduler_interval_hours) * 2)
     assert _assurance_staleness_limit() == expected
+
+
+# ---------------------------------------------------------------------------
+# A partial build is a build, and an incomplete one
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_partial_build_warns_and_names_what_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counting only ``ok`` runs hid a graph that rebuilt every cycle with a part
+    missing: PASS on an older clean run, or "Nd old" aged from it."""
+    from ccf.assurance import builder  # noqa: PLC0415
+
+    org_id, _ = await _org_with_a_system()
+    try:
+        async with session_scope() as s:
+            await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
+            clean = await _check_assurance_graph_freshness(s)
+        assert clean.status == PASS, clean.message  # the positive case
+
+        # The clean run is now old; the partial one below is fresh.
+        aged = datetime.now(UTC) - _assurance_staleness_limit() - timedelta(hours=1)
+        async with session_scope() as s:
+            await s.execute(
+                text(
+                    "UPDATE ccf.assurance_build_runs SET finished_at = :t "
+                    "WHERE organization_id = :o AND status = 'ok'"
+                ),
+                {"t": aged, "o": org_id},
+            )
+
+        async def broken(session, org, g):  # type: ignore[no-untyped-def]
+            raise RuntimeError("risk register offline")
+
+        monkeypatch.setattr(builder, "_risks", broken)
+        async with session_scope() as s:
+            result = await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
+            check = await _check_assurance_graph_freshness(s)
+        assert result["assurance_graph"]["partial"] == [f"risks@{org_id}"]
+        assert check.status == WARN, check.message
+        assert "incomplete" in check.message and "risks" in check.message
+        # It rebuilt this cycle: the partial run is not reported as days old.
+        assert "old" not in check.message and "built 0d ago" in check.message
+        assert check.remediation
+    finally:
+        await _cleanup(org_id)
+
+
+@pytest.mark.asyncio
+async def test_a_clean_cycle_reports_no_partial_graph() -> None:
+    org_id, _ = await _org_with_a_system()
+    try:
+        async with session_scope() as s:
+            result = await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
+        assert result["assurance_graph"]["organizations_processed"] == [org_id]
+        assert result["assurance_graph"]["partial"] == []
+    finally:
+        await _cleanup(org_id)

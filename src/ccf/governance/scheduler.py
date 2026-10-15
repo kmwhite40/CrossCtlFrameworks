@@ -291,6 +291,7 @@ async def _run_per_tenant_cycle(
                         "nodes": run.node_count,
                         "edges": run.edge_count,
                         "status": run.status,
+                        "failed": sorted(((run.detail or {}).get("failed") or {}).keys()),
                     }
                 )
         except Exception as e:
@@ -328,6 +329,14 @@ async def _run_per_tenant_cycle(
             "organizations_processed": [r["organization_id"] for r in assurance_results],
             "nodes": sum(r["nodes"] for r in assurance_results),
             "edges": sum(r["edges"] for r in assurance_results),
+            # A build that ran with a part missing is not a clean one; the
+            # summary names it ("risks@3") rather than reporting counts alone.
+            "partial": [
+                f"{part}@{r['organization_id']}"
+                for r in assurance_results
+                if r["status"] == "partial"
+                for part in (r["failed"] or ["unknown"])
+            ],
         },
         "pack_sync": {
             "organizations_processed": [r["organization_id"] for r in pack_sync_results],
@@ -448,6 +457,10 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         "derive_systems": int(derive.get("systems") or 0),
         "assurance_nodes": int(assurance.get("nodes") or 0),
         "assurance_edges": int(assurance.get("edges") or 0),
+        # How many organizations' graphs were built with a part missing.
+        # Always present, like ``failures``: zero is the reading that makes a
+        # non-zero one legible.
+        "assurance_partial": len({p.rsplit("@", 1)[-1] for p in _parts(assurance)}),
         "fedramp_scanned": int(fedramp.get("systems_scanned") or 0),
         # An int, not a list. `len()` here passed every hand-written test and
         # crashed the first real cycle that had drift, because `0 or []` is
@@ -463,7 +476,15 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         )
     if global_failures:
         summary["failed_global_steps"] = sorted(set(global_failures))
+    if _parts(assurance):
+        summary["assurance_partial_parts"] = sorted(set(_parts(assurance)))
     return summary
+
+
+def _parts(assurance: dict[str, Any]) -> list[str]:
+    """The assurance step's ``part@org`` list, or ``[]`` for any other shape."""
+    parts = assurance.get("partial")
+    return [str(p) for p in parts] if isinstance(parts, list) else []
 
 
 async def run_cycle() -> dict[str, Any]:

@@ -916,6 +916,27 @@ async def test_the_nav_and_the_assurance_page_link_to_the_graph() -> None:
     assert 'href="/graph"' in html and f'href="/graph?system_id={sid}"' in html
 
 
+async def test_the_assurance_page_marks_a_partial_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    assert (await _build(org))[0] == "ok"
+    html = (await _page("/assurance")).text
+    assert '<span class="chip chip--ok">built</span>' in html  # the positive case
+    assert 'data-build-status="partial"' not in html
+
+    async def broken(session: Any, org_id: int, g: Any) -> None:
+        raise RuntimeError("risk register offline")
+
+    monkeypatch.setattr(builder, "_risks", broken)
+    assert (await _build(org))[0] == "partial"
+    html = (await _page("/assurance")).text
+    assert 'data-build-status="partial"' in html
+    assert '<span class="chip chip--ok">built</span>' not in html
+    assert "Not built: risks." in html
+
+
 async def test_rebuild_returns_only_to_a_fixed_destination() -> None:
     _org, sid = await _org_and_system()
     back = await _post("/assurance/rebuild", {"return_to": "graph", "system_id": str(sid)})

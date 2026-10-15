@@ -95,7 +95,7 @@ class AssuranceGraphBuildRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     node_count: Mapped[int] = mapped_column(Integer, default=0)
     edge_count: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|partial
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 

@@ -618,11 +618,17 @@ async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
             "assurance_graph_freshness", FAIL, "assurance_build_runs table missing.",
             "Run migrations.",
         )
+    # The latest *finished* build, ``ok`` or ``partial``. Counting only ``ok``
+    # runs made a graph that rebuilt every cycle with a part missing look
+    # either stale ("Nd old", aged from the last clean run) or healthy (PASS on
+    # an older clean run). A partial build is a build: it is aged, and its
+    # missing parts are named.
     row = (
         await session.execute(
             text(
-                "SELECT node_count, edge_count, finished_at FROM ccf.assurance_build_runs "
-                "WHERE status = 'ok' ORDER BY id DESC LIMIT 1"
+                "SELECT node_count, edge_count, finished_at, status, detail "
+                "FROM ccf.assurance_build_runs "
+                "WHERE status IN ('ok', 'partial') ORDER BY id DESC LIMIT 1"
             )
         )
     ).first()
@@ -631,14 +637,21 @@ async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
             "assurance_graph_freshness", WARN, "Assurance graph has not been built yet.",
             "Run `ccf assurance graph-rebuild` or POST /api/assurance/graph/rebuild.",
         )
-    nodes, edges, finished_at = row[0], row[1], row[2]
+    nodes, edges, finished_at, status = row[0], row[1], row[2], row[3]
+    missing = ""
+    if status == "partial":
+        failed = sorted(((row[4] or {}).get("failed") or {}).keys())
+        missing = (
+            f"; incomplete: {', '.join(failed) if failed else 'a part'} failed to build"
+        )
     if finished_at is None:
-        # `status = 'ok'` with no finish time is a row that cannot be aged.
+        # A finished build with no finish time is a row that cannot be aged.
         # Reported rather than treated as current: an unmeasurable age is not a
         # fresh one.
         return Check(
             "assurance_graph_freshness", WARN,
-            f"Assurance graph build recorded no finish time ({nodes} nodes, {edges} edges).",
+            f"Assurance graph build recorded no finish time ({nodes} nodes, {edges} edges)"
+            f"{missing}.",
             "Rebuild the graph so its age can be established.",
         )
     age = datetime.now(UTC) - _as_utc(finished_at)
@@ -647,8 +660,14 @@ async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
         return Check(
             "assurance_graph_freshness", WARN,
             f"Assurance graph is {age.days}d old ({nodes} nodes, {edges} edges); "
-            f"expected a rebuild within {limit.days}d.",
+            f"expected a rebuild within {limit.days}d{missing}.",
             "Enable CCF_SCHEDULER_ENABLED, or run `ccf assurance graph-rebuild`.",
+        )
+    if missing:
+        return Check(
+            "assurance_graph_freshness", WARN,
+            f"Assurance graph built {age.days}d ago ({nodes} nodes, {edges} edges){missing}.",
+            "Open /assurance or /graph to read each failure, fix its source, then rebuild.",
         )
     return Check(
         "assurance_graph_freshness", PASS,

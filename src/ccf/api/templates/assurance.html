@@ -6,8 +6,11 @@
 
 <div class="row" style="gap:12px;align-items:center;margin-bottom:16px">
   {% if latest %}
-  <span class="chip chip--ok">built</span>
+  {% if latest.status == "ok" %}<span class="chip chip--ok">built</span>
+  {% elif latest.status == "partial" %}<span class="chip chip--warn" data-build-status="partial">partial</span>
+  {% else %}<span class="chip chip--warn">{{ latest.status }}</span>{% endif %}
   <span class="dim">{{ latest.node_count }} nodes · {{ latest.edge_count }} edges · {{ latest.finished_at.strftime('%Y-%m-%d %H:%M') if latest.finished_at else '—' }}</span>
+  {% if latest.status == "partial" %}<span class="dim">Not built: {{ ((latest.detail or {}).get("failed") or {}).keys()|sort|join(", ") or "a part of the graph" }}. Open a system's graph for each error.</span>{% endif %}
   {% else %}
   <span class="chip chip--warn">not built</span>
   <span class="dim">Rebuild to populate the graph.</span>
