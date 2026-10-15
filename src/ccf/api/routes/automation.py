@@ -31,7 +31,7 @@ from ...models import (
     System,
     SystemProfile,
 )
-from ..auth_deps import get_principal, resolve_caller_org
+from ..auth_deps import get_principal, require_platform_admin, resolve_caller_org
 from ..deps import get_session
 from .systems import require_system_in_scope
 
@@ -275,7 +275,13 @@ async def propagate(
 
 
 @router.post("/automation/run-cycle")
-async def run_cycle(principal: Principal = Depends(get_principal)) -> dict[str, Any]:
+async def run_cycle(
+    # The cycle polls platform sources and runs every tenant's jobs, so it is a
+    # platform operation: a tenant member (any role but viewer could, before)
+    # must not be able to drive every other tenant's ConMon, digests and
+    # connector collection on demand.
+    principal: Principal = Depends(require_platform_admin()),
+) -> dict[str, Any]:
     """Manually run one full automation cycle (poll + ConMon + digest + collect)."""
     return await scheduler.run_cycle()
 

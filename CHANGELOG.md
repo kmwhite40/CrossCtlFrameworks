@@ -6,6 +6,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — any tenant member could run every tenant's automation cycle
+- `POST /api/automation/run-cycle` runs `scheduler.run_cycle`: platform
+  source polling plus every tenant's ConMon, digest and collection jobs. It
+  was gated only on being signed in, so a member of one tenant who could
+  write could drive all of them on demand. It now requires a platform-wide
+  (unscoped) administrator, as `POST /ksis/seed` does.
+
 ### Fixed — one member's "read all" silenced every member's alerts
 - `notifications.read_at` was one column on an org-wide broadcast row.
   Marking a notification read, or "read all", marked it read for **everyone**

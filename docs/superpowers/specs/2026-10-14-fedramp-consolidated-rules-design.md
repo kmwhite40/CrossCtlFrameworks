@@ -143,3 +143,26 @@ statement; a shared 800-53 control does not qualify a check. Failing → KSI at
 most `warn`. Passing → evidence. Neither → `pass`. Only tier-0 results count.
 Methods that ran on the system count toward FRC-CSX-VVK and are named in the
 SDR's `ksiTests`.
+
+## 7. Which FRR requirements a provider owes (follow-on)
+
+The SDR's `fedRampRequirements` is entirely authored; Concord could not say
+which of the 245 FRR IDs a system owes. The dataset can, with care:
+
+- A requirement applies to a provider when its subset's `applicability`
+  lists the system's Class and (if recorded) Path and the requirement's
+  `affects` (or the subset's) includes `Providers`.
+- **Type is not recorded**, and the 20x and Rev5 sets differ (Class C,
+  Program: 155 vs 159). So the answer is three lists, never one: owed under
+  either type, owed only if 20x, owed only if Rev5. An Agency path is Rev5
+  only (no 20x subset lists it), which collapses the split.
+- **Class A** additionally owes what `FRC-CLA-MFR` (MUST), `FRC-CLA-RFR`
+  (SHOULD) and `FRC-CLA-OFR` (MAY) name in `related`; subset applicability
+  alone undercounts it.
+- Force is the requirement's `force`, or its class variant's; a class with no
+  variant is reported as "no force stated", never borrowed from another class.
+- Processes whose `info.status` is `placeholder` or `empty` are excluded.
+
+The SDR seed reports `frr_unaddressed`: MUST / MUST NOT requirements owed
+under either type that have no authored entry. Reported beside the document,
+like `omitted_ksi_ids`; nothing is written into it.
