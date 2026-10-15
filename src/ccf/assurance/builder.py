@@ -86,6 +86,7 @@ async def _contribute(
     await run("systems", _systems)
     await run("controls", _controls)
     await run("ksis", _ksis)
+    await run("capabilities", _capabilities)
     await run("poams", _poams)
     await run("risks", _risks)
     await run("vendors", _vendors)
@@ -178,25 +179,72 @@ async def _controls(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
+    from ..fedramp20x import rules  # noqa: PLC0415
     from ..fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
-    from ..models import KSIState, System  # noqa: PLC0415
+    from ..models import KSI, KSIState, System  # noqa: PLC0415
 
-    sys_ids = [
-        r for r in (
-            await session.execute(select(System.id).where(System.organization_id == org_id))
-        ).scalars().all()
-    ]
-    if not sys_ids:
-        return
-    for st in (
+    source = f"fedramp-rules@{rules.load_rules().version}"
+    rows = (
         await session.execute(
-            select(KSIState).where(
-                KSIState.system_id.in_(sys_ids), KSIState.ksi_id.in_(current_ksi_ids())
-            )
+            select(KSIState, KSI)
+            .join(KSI, KSI.id == KSIState.ksi_id)
+            .join(System, System.id == KSIState.system_id)
+            .where(System.organization_id == org_id, KSIState.ksi_id.in_(current_ksi_ids()))
         )
-    ).scalars().all():
-        kk = g.node("ksi", f"{st.system_id}:{st.ksi_id}", f"KSI {st.ksi_id}", st.status)
+    ).all()
+    for st, ksi in rows:
+        kk = g.node("ksi", f"{st.system_id}:{st.ksi_id}", ksi.identifier, st.status,
+                    system_id=st.system_id)
         g.edge(("system", str(st.system_id)), kk, "assessed_by", "ksi_states")
+        for ref in ksi.nist_refs or []:
+            c = canonicalize(str(ref))
+            if c is not None:  # drawn only if the system implements it (node exists)
+                g.edge(kk, ("control", f"{st.system_id}:{c.value}"), "maps_to", source)
+
+
+async def _capabilities(session: AsyncSession, org_id: int, g: _Graph) -> None:
+    """Capability nodes per system they are bound to, linked to what they claim."""
+    from ..capability.derive import bound_capability_ids  # noqa: PLC0415
+    from ..fedramp20x.catalog import current_ksis  # noqa: PLC0415
+    from ..models import System  # noqa: PLC0415
+    from ..models_capability import Capability, CapabilityControl, CapabilityKsi  # noqa: PLC0415
+
+    ksi_ids = {k.identifier: k.id for k in (await session.execute(current_ksis())).scalars()}
+    sys_ids = (
+        await session.execute(select(System.id).where(System.organization_id == org_id))
+    ).scalars().all()
+    for sid in sys_ids:
+        caps = (
+            await session.execute(
+                select(Capability).where(Capability.id.in_(bound_capability_ids(sid)))
+            )
+        ).scalars().all()
+        if not caps:
+            continue
+        cap_ids = [c.id for c in caps]
+        for cap in caps:
+            g.node("capability", f"{sid}:{cap.id}", cap.title, cap.status,
+                   system_id=sid, key=cap.key, responsible_role=cap.responsible_role)
+        for cap_id, raw in (
+            await session.execute(
+                select(CapabilityControl.capability_id, CapabilityControl.control_id)
+                .where(CapabilityControl.capability_id.in_(cap_ids))
+            )
+        ).all():
+            c = canonicalize(raw)
+            if c is not None:
+                g.edge(("capability", f"{sid}:{cap_id}"), ("control", f"{sid}:{c.value}"),
+                       "implements", "capability_controls")
+        for cap_id, ident in (
+            await session.execute(
+                select(CapabilityKsi.capability_id, CapabilityKsi.ksi_identifier)
+                .where(CapabilityKsi.capability_id.in_(cap_ids))
+            )
+        ).all():
+            kid = ksi_ids.get(ident)
+            if kid is not None:  # a retired or unknown KSI is not drawn
+                g.edge(("capability", f"{sid}:{cap_id}"), ("ksi", f"{sid}:{kid}"),
+                       "satisfies", "capability_ksis")
 
 
 async def _poams(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -245,14 +293,45 @@ async def _vendors(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _connectors(session: AsyncSession, org_id: int, g: _Graph) -> None:
-    from ..models_grc import ConnectorConfig  # noqa: PLC0415
+    """Connector -> the connector tests it produced; never connector -> system.
 
-    for c in (
+    A test records its ``connector_type``, not which connector produced it. With
+    exactly one connector of that type in the org the link is a fact; with two,
+    it would be a guess, so neither is linked and the node says why.
+    """
+    from ..models_grc import ConnectorConfig, ControlTest  # noqa: PLC0415
+
+    conns = (
         await session.execute(
             select(ConnectorConfig).where(ConnectorConfig.organization_id == org_id)
         )
-    ).scalars().all():
-        g.node("connector", c.id, c.name, c.status, connector_type=c.connector_type)
+    ).scalars().all()
+    per_type: dict[str, int] = {}
+    for c in conns:
+        per_type[c.connector_type] = per_type.get(c.connector_type, 0) + 1
+    tests: dict[str, list[int]] = {}
+    for tid, ctype in (
+        await session.execute(
+            select(ControlTest.id, ControlTest.connector_type).where(
+                ControlTest.organization_id == org_id, ControlTest.method == "connector"
+            )
+        )
+    ).all():
+        if ctype:
+            tests.setdefault(ctype, []).append(tid)
+    for c in conns:
+        n = per_type[c.connector_type]
+        reason = None
+        if n > 1 and tests.get(c.connector_type):
+            reason = (
+                f"{n} {c.connector_type} connectors are configured and a test does not "
+                "record which one produced it, so none is linked."
+            )
+        ck = g.node("connector", c.id, c.name, c.status, connector_type=c.connector_type,
+                    unlinked_reason=reason)
+        if n == 1:
+            for tid in tests.get(c.connector_type, []):
+                g.edge(ck, ("control_test", str(tid)), "produced", "control_tests")
 
 
 async def _scans(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -274,13 +353,21 @@ async def _scans(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 async def _control_tests(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from ..models_grc import ControlTest  # noqa: PLC0415
+    from ..posture.evidence import evidenced_controls  # noqa: PLC0415
 
     for t in (
         await session.execute(select(ControlTest).where(ControlTest.organization_id == org_id))
     ).scalars().all():
-        tk = g.node("control_test", t.id, t.name, t.last_status, control_id=t.control_id)
-        if t.system_id is not None:
-            g.edge(tk, ("system", str(t.system_id)), "tests", "control_tests")
+        tk = g.node("control_test", t.id, t.name, t.last_status, control_id=t.control_id,
+                    system_id=t.system_id)
+        if t.system_id is None:
+            continue
+        g.edge(tk, ("system", str(t.system_id)), "tests", "control_tests")
+        for raw in evidenced_controls(t.control_id, t.control_ids):
+            c = canonicalize(raw)
+            if c is not None:
+                g.edge(tk, ("control", f"{t.system_id}:{c.value}"), "evidences",
+                       t.check_source or "control_tests")
 
 
 async def _evidence_objects(session: AsyncSession, org_id: int, g: _Graph) -> None:

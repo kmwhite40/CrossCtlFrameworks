@@ -331,3 +331,174 @@ async def test_an_agent_reaches_a_control_by_row_id_or_by_canonical_id() -> None
     edges = {(e[0].split(":")[0], e[1], e[3]) for e in await _edges(org)}
     assert ("ai_agent", f"control:{sid}:AC-2", "ai_agents") in edges
     assert ("ai_agent", f"control:{sid}:AU-2", "ai_agents") in edges
+
+
+# ── Task 3: capabilities, KSIs, tests and connectors ─────────────────────────
+
+
+async def _capability(org_id: int, system_id: int, *, controls: list[str],
+                      ksis: tuple[str, ...] = (), title: str = "MFA") -> int:
+    from ccf.models import SystemComponent  # noqa: PLC0415
+    from ccf.models_capability import (  # noqa: PLC0415
+        Capability,
+        CapabilityComponent,
+        CapabilityControl,
+        CapabilityKsi,
+    )
+
+    async with session_scope() as s:
+        cap = Capability(organization_id=org_id, key=f"cap-{next(_SEQ)}", title=title,
+                         status="implemented")
+        comp = SystemComponent(organization_id=org_id, system_id=system_id, type="software",
+                               title=f"IdP {next(_SEQ)}")
+        s.add_all([cap, comp])
+        await s.flush()
+        s.add(CapabilityComponent(organization_id=org_id, capability_id=cap.id,
+                                  component_id=comp.id))
+        s.add_all([CapabilityControl(organization_id=org_id, capability_id=cap.id,
+                                     control_id=c) for c in controls])
+        s.add_all([CapabilityKsi(organization_id=org_id, capability_id=cap.id,
+                                 ksi_identifier=k) for k in ksis])
+        await s.flush()
+        return cap.id
+
+
+async def _seeded_ksi_with_a_control() -> tuple[int, str, str]:
+    """``(ksi row id, identifier, canonical control)`` for a current KSI."""
+    from ccf.catalog.canonical import canonicalize  # noqa: PLC0415
+    from ccf.fedramp20x import catalog  # noqa: PLC0415
+
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    async with session_scope() as s:
+        for k in (await s.execute(catalog.current_ksis())).scalars():
+            for ref in k.nist_refs or []:
+                c = canonicalize(str(ref))
+                if c is not None:
+                    return k.id, k.identifier, c.value
+    raise AssertionError("no current KSI names an 800-53 control")
+
+
+async def test_a_capability_links_to_the_controls_and_ksis_it_claims() -> None:
+    from ccf.models import KSIState  # noqa: PLC0415
+
+    ksi_id, ksi_ident, control = await _seeded_ksi_with_a_control()
+    org, sid = await _org_and_system()
+    await _implement(sid, control)
+    async with session_scope() as s:
+        s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
+    cap = await _capability(org, sid, controls=[control], ksis=[ksi_ident])
+    await _build(org)
+    edges = await _edges(org)
+    assert (f"capability:{sid}:{cap}", f"control:{sid}:{control}", "implements",
+            "capability_controls") in edges
+    assert (f"capability:{sid}:{cap}", f"ksi:{sid}:{ksi_id}", "satisfies",
+            "capability_ksis") in edges
+
+
+async def test_a_ksi_links_to_the_controls_the_system_implements_only() -> None:
+    from ccf.fedramp20x import rules  # noqa: PLC0415
+    from ccf.models import KSIState  # noqa: PLC0415
+
+    ksi_id, ksi_ident, control = await _seeded_ksi_with_a_control()
+    org, sid = await _org_and_system()
+    await _implement(sid, control)
+    async with session_scope() as s:
+        s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
+    await _build(org)
+    nodes = await _nodes(org)
+    assert nodes[f"ksi:{sid}:{ksi_id}"]["label"] == ksi_ident
+    ksi_edges = [e for e in await _edges(org) if e[0] == f"ksi:{sid}:{ksi_id}"]
+    assert ksi_edges == [(f"ksi:{sid}:{ksi_id}", f"control:{sid}:{control}", "maps_to",
+                          f"fedramp-rules@{rules.load_rules().version}")]
+
+
+async def test_control_ids_written_differently_meet_on_one_node() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "IA-02")  # catalog spelling
+    cap = await _capability(org, sid, controls=["ia-2"])  # capability spelling
+    await _build(org)
+    assert (f"capability:{sid}:{cap}", f"control:{sid}:IA-2", "implements",
+            "capability_controls") in await _edges(org)
+
+
+async def test_a_capability_from_another_tenant_is_not_drawn() -> None:
+    """Bound by id to org A's component, owned by org B: not in A's graph."""
+    from ccf.models import SystemComponent  # noqa: PLC0415
+    from ccf.models_capability import (  # noqa: PLC0415
+        Capability,
+        CapabilityComponent,
+        CapabilityControl,
+    )
+
+    org_a, sid_a = await _org_and_system()
+    org_b, _sid_b = await _org_and_system()
+    await _implement(sid_a, "IA-02")
+    async with session_scope() as s:  # unscoped: RLS cannot make this pass
+        comp = SystemComponent(organization_id=org_a, system_id=sid_a, type="software",
+                               title="A's IdP")
+        cap = Capability(organization_id=org_b, key=f"b-{next(_SEQ)}", title="B's MFA",
+                         status="implemented")
+        s.add_all([comp, cap])
+        await s.flush()
+        s.add(CapabilityComponent(organization_id=org_b, capability_id=cap.id,
+                                  component_id=comp.id))
+        s.add(CapabilityControl(organization_id=org_b, capability_id=cap.id,
+                                control_id="IA-2"))
+    await _build(org_a)
+    assert not [k for k in await _nodes(org_a) if k.startswith("capability:")]
+
+
+async def test_a_test_evidences_every_control_it_declares_with_its_check_source() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "IA-02")
+    await _implement(sid, "IA-05")
+    async with session_scope() as s:
+        t = ControlTest(organization_id=org, system_id=sid, control_id="IA-2",
+                        control_ids=["IA-2", "IA-5"], name="Secure Score: MFA",
+                        method="automated", check_source="crosswalk:securescore")
+        s.add(t)
+        await s.flush()
+        tid = t.id
+    await _build(org)
+    edges = await _edges(org)
+    for control in ("IA-2", "IA-5"):
+        assert (f"control_test:{tid}", f"control:{sid}:{control}", "evidences",
+                "crosswalk:securescore") in edges
+
+
+async def _connector_test(org: int, sid: int, ctype: str) -> int:
+    async with session_scope() as s:
+        t = ControlTest(organization_id=org, system_id=sid, control_id="AC-2",
+                        name=f"{ctype} check", method="connector", connector_type=ctype)
+        s.add(t)
+        await s.flush()
+        return t.id
+
+
+async def test_a_connector_reaches_a_system_only_through_its_tests() -> None:
+    org, sid = await _org_and_system()
+    other = await _system(org)
+    tid = await _connector_test(org, sid, "aws")
+    async with session_scope() as s:
+        c = ConnectorConfig(organization_id=org, name="AWS prod", connector_type="aws")
+        s.add(c)
+        await s.flush()
+        cid = c.id
+    await _build(org)
+    edges = await _edges(org)
+    assert (f"connector:{cid}", f"control_test:{tid}", "produced", "control_tests") in edges
+    assert not [e for e in edges if e[0] == f"connector:{cid}" and e[1] == f"system:{other}"]
+
+
+async def test_two_connectors_of_one_type_are_not_guessed_between() -> None:
+    org, sid = await _org_and_system()
+    await _connector_test(org, sid, "m365")
+    async with session_scope() as s:
+        s.add_all([ConnectorConfig(organization_id=org, name=f"Tenant {n}",
+                                   connector_type="m365") for n in (1, 2)])
+    await _build(org)
+    assert not [e for e in await _edges(org) if e[0].startswith("connector:")]
+    reasons = [v["metadata"].get("unlinked_reason") for k, v in (await _nodes(org)).items()
+               if k.startswith("connector:")]
+    assert all(r and "2 m365 connectors" in r for r in reasons)
