@@ -250,6 +250,22 @@ async def test_an_agent_system_id_that_names_no_system_is_skipped() -> None:
     assert (f"ai_agent:{aid}", f"system:{sid}", "accesses", "ai_agents") in await _edges(org)
 
 
+async def test_an_agent_system_id_of_non_ascii_digits_is_skipped() -> None:
+    """``"²".isdigit()`` is true and ``int("²")`` raises; so are Arabic-Indic digits."""
+    from ccf.models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org, _first = await _org_and_system()
+    sid = await _system(org)
+    async with session_scope() as s:
+        a = AiAgent(organization_id=org, name="Odd bot", system_ids=["²", "١٢", str(sid)])
+        s.add(a)
+        await s.flush()
+        aid = a.id
+    status, detail = await _build(org)
+    assert status == "ok", detail
+    assert (await _nodes(org))[f"ai_agent:{aid}"]["metadata"]["system_ids"] == [sid]
+
+
 async def test_a_deleted_system_is_not_a_node_or_a_boundary() -> None:
     from datetime import UTC, datetime  # noqa: PLC0415
 
@@ -280,6 +296,64 @@ async def test_a_deleted_system_is_not_a_node_or_a_boundary() -> None:
     ids = await scoped()
     assert ("system", str(gone)) not in ids
     assert ("system", str(sid)) in ids and any(t == "ai_agent" for t, _ in ids)
+
+
+async def test_a_deleted_system_contributes_nothing_of_its_own() -> None:
+    """DATA-04: a deleted system is gone, with every row that hangs off it.
+
+    Only ``_systems`` used to filter it, so its controls, KSIs, capabilities,
+    POA&Ms, risks, scans, tests and evidence objects were drawn as unconnected
+    nodes (inflating /assurance and reachable from an unscoped trace).
+    """
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from ccf.models import KSIState, Risk, ScanIngestion  # noqa: PLC0415
+    from ccf.models_evidence import EvidenceObject  # noqa: PLC0415
+
+    ksi_id, ksi_ident, control = await _seeded_ksi_with_a_control()
+    org, live = await _org_and_system()
+    gone = await _system(org)
+    ids: dict[int, dict[str, int]] = {}
+    for sid in (live, gone):
+        await _implement(sid, control)
+        cap = await _capability(org, sid, controls=[control], ksis=[ksi_ident])
+        async with session_scope() as s:
+            s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
+            poam = POAM(system_id=sid, title="p", severity="high", status="open")
+            risk = Risk(system_id=sid, title="r")
+            scan = ScanIngestion(organization_id=org, system_id=sid, scanner="nessus")
+            test = ControlTest(organization_id=org, system_id=sid, control_id=control,
+                               name="t", method="automated")
+            ev = EvidenceObject(organization_id=org, system_id=sid, title="e")
+            s.add_all([poam, risk, scan, test, ev])
+            await s.flush()
+            ids[sid] = {"poam": poam.id, "risk": risk.id, "scan": scan.id,
+                        "control_test": test.id, "evidence_object": ev.id, "capability": cap}
+
+    def keys(sid: int) -> set[str]:
+        i = ids[sid]
+        return {
+            f"control:{sid}:{control}", f"ksi:{sid}:{ksi_id}",
+            f"capability:{sid}:{i['capability']}", f"poam:{i['poam']}",
+            f"risk:{i['risk']}", f"scan:{i['scan']}",
+            f"control_test:{i['control_test']}",
+            f"evidence_object:{i['evidence_object']}",
+        }
+
+    # Positive counterpart: with both systems live, every kind is present.
+    assert (await _build(org))[0] == "ok"
+    nodes = await _nodes(org)
+    assert keys(live) <= set(nodes) and keys(gone) <= set(nodes)
+
+    async with session_scope() as s:
+        sysm = await s.get(System, gone)
+        assert sysm is not None
+        sysm.deleted_at = datetime.now(UTC)
+    status, detail = await _build(org)
+    assert status == "ok", detail
+    nodes = await _nodes(org)
+    assert keys(live) <= set(nodes)  # the live system's equivalents remain
+    assert not (keys(gone) & set(nodes)), keys(gone) & set(nodes)
 
 
 async def test_a_connector_is_not_linked_to_systems_it_does_not_feed() -> None:
@@ -1110,3 +1184,11 @@ async def test_a_system_id_that_is_not_a_number_is_not_found(bad: str) -> None:
     assert (await _page(f"/graph?system_id={sid}")).status_code == 200  # the positive case
     r = await _page(f"/graph?system_id={bad}")
     assert r.status_code == 404
+
+
+async def test_an_over_long_system_id_is_not_found_rather_than_an_error() -> None:
+    """``int()`` raises ValueError past 4,300 digits: that was a 500."""
+    _org, sid = await _org_and_system()
+    assert (await _page(f"/graph?system_id={sid}")).status_code == 200  # the positive case
+    assert (await _page(f"/graph?system_id={'1' * 5000}")).status_code == 404
+    assert (await _page(f"/graph?system_id={'1' * 19}")).status_code == 404

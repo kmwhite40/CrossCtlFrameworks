@@ -1442,7 +1442,9 @@ async def graph_page(
     raw = (system_id or "").strip()
     if not raw:
         chosen: int | None = None
-    elif raw.isascii() and raw.isdigit():
+    # 18 digits is plenty for a bigint id; a longer run is no id (and ``int()``
+    # raises past 4,300 digits, which was a 500).
+    elif raw.isascii() and raw.isdigit() and len(raw) <= 18:
         chosen = int(raw)
     else:
         raise HTTPException(404, "System not found")

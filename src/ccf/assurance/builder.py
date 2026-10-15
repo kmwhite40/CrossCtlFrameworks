@@ -103,6 +103,25 @@ async def _contribute(
     return stats, failed
 
 
+async def _live_system_ids(session: AsyncSession, org_id: int) -> list[int]:
+    """The org's systems that still exist (DATA-04: a deleted system is gone).
+
+    Every contributor that reads per-system rows filters through this, so a
+    deleted system leaves no unconnected nodes behind.
+    """
+    from ..models import System  # noqa: PLC0415
+
+    return list(
+        (
+            await session.execute(
+                select(System.id).where(
+                    System.organization_id == org_id, System.deleted_at.is_(None)
+                )
+            )
+        ).scalars().all()
+    )
+
+
 async def _systems(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from ..models import System  # noqa: PLC0415
 
@@ -153,7 +172,7 @@ async def _controls(session: AsyncSession, org_id: int, g: _Graph) -> None:
             select(ControlImplementation, Control.identifier, Control.sequence_control)
             .join(Control, Control.id == ControlImplementation.control_id)
             .join(System, System.id == ControlImplementation.system_id)
-            .where(System.organization_id == org_id)
+            .where(System.organization_id == org_id, System.deleted_at.is_(None))
             .options(selectinload(ControlImplementation.evidence))
         )
     ).all()
@@ -203,7 +222,11 @@ async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
             select(KSIState, KSI)
             .join(KSI, KSI.id == KSIState.ksi_id)
             .join(System, System.id == KSIState.system_id)
-            .where(System.organization_id == org_id, KSIState.ksi_id.in_(current_ksi_ids()))
+            .where(
+                System.organization_id == org_id,
+                System.deleted_at.is_(None),
+                KSIState.ksi_id.in_(current_ksi_ids()),
+            )
         )
     ).all()
     for st, ksi in rows:
@@ -223,14 +246,10 @@ async def _capabilities(session: AsyncSession, org_id: int, g: _Graph) -> None:
     """Capability nodes per system they are bound to, linked to what they claim."""
     from ..capability.derive import bound_capability_ids  # noqa: PLC0415
     from ..fedramp20x.catalog import current_ksis  # noqa: PLC0415
-    from ..models import System  # noqa: PLC0415
     from ..models_capability import Capability, CapabilityControl, CapabilityKsi  # noqa: PLC0415
 
     ksi_ids = {k.identifier: k.id for k in (await session.execute(current_ksis())).scalars()}
-    sys_ids = (
-        await session.execute(select(System.id).where(System.organization_id == org_id))
-    ).scalars().all()
-    for sid in sys_ids:
+    for sid in await _live_system_ids(session, org_id):
         caps = (
             await session.execute(
                 select(Capability).where(Capability.id.in_(bound_capability_ids(sid)))
@@ -265,13 +284,9 @@ async def _capabilities(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _poams(session: AsyncSession, org_id: int, g: _Graph) -> None:
-    from ..models import POAM, System  # noqa: PLC0415
+    from ..models import POAM  # noqa: PLC0415
 
-    sys_ids = [
-        r for r in (
-            await session.execute(select(System.id).where(System.organization_id == org_id))
-        ).scalars().all()
-    ]
+    sys_ids = await _live_system_ids(session, org_id)
     if not sys_ids:
         return
     for p in (
@@ -282,13 +297,9 @@ async def _poams(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _risks(session: AsyncSession, org_id: int, g: _Graph) -> None:
-    from ..models import Risk, System  # noqa: PLC0415
+    from ..models import Risk  # noqa: PLC0415
 
-    sys_ids = [
-        r for r in (
-            await session.execute(select(System.id).where(System.organization_id == org_id))
-        ).scalars().all()
-    ]
+    sys_ids = await _live_system_ids(session, org_id)
     if not sys_ids:
         return
     for r in (
@@ -352,13 +363,9 @@ async def _connectors(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _scans(session: AsyncSession, org_id: int, g: _Graph) -> None:
-    from ..models import ScanIngestion, System  # noqa: PLC0415
+    from ..models import ScanIngestion  # noqa: PLC0415
 
-    sys_ids = [
-        r for r in (
-            await session.execute(select(System.id).where(System.organization_id == org_id))
-        ).scalars().all()
-    ]
+    sys_ids = await _live_system_ids(session, org_id)
     if not sys_ids:
         return
     for s in (
@@ -372,9 +379,12 @@ async def _control_tests(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from ..models_grc import ControlTest  # noqa: PLC0415
     from ..posture.evidence import evidenced_controls  # noqa: PLC0415
 
+    live = set(await _live_system_ids(session, org_id))
     for t in (
         await session.execute(select(ControlTest).where(ControlTest.organization_id == org_id))
     ).scalars().all():
+        if t.system_id is not None and t.system_id not in live:
+            continue  # its system is deleted
         tk = g.node("control_test", t.id, t.name, t.last_status, control_id=t.control_id,
                     system_id=t.system_id)
         if t.system_id is None:
@@ -390,11 +400,14 @@ async def _control_tests(session: AsyncSession, org_id: int, g: _Graph) -> None:
 async def _evidence_objects(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from ..models_evidence import EvidenceObject  # noqa: PLC0415
 
+    live = set(await _live_system_ids(session, org_id))
     for o in (
         await session.execute(
             select(EvidenceObject).where(EvidenceObject.organization_id == org_id)
         )
     ).scalars().all():
+        if o.system_id is not None and o.system_id not in live:
+            continue  # its system is deleted
         ek = g.node("evidence_object", o.id, o.title, o.status, framework=o.framework)
         if o.system_id is not None:
             g.edge(("system", str(o.system_id)), ek, "documented_by", "evidence_objects")
@@ -410,7 +423,8 @@ def _system_id(value: Any) -> int | None:
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.strip().isdigit():
+    # ASCII only: ``"²".isdigit()`` is true and ``int("²")`` raises.
+    if isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
         return int(value.strip())
     return None
 

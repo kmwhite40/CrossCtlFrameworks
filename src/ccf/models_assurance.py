@@ -70,7 +70,7 @@ class AssuranceEdge(Base):
     )
     relationship_type: Mapped[str] = mapped_column(String(48))
     #: Where this edge comes from: a table (``poams``), a dataset at a version
-    #: (``fedramp-rules@2026.10.13.01``) or a check source
+    #: (``fedramp-rules:2026.10.13.01``, the form ``KSI.source`` records) or a check source
     #: (``crosswalk:securescore``). An edge with no source is not stored.
     source: Mapped[str] = mapped_column(String(96))
     edge_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
