@@ -713,3 +713,22 @@ async def test_the_seed_button_is_only_offered_where_it_works(
     assert "Seed KSI catalog" in system_page
     assert "Seed KSI catalog" not in tenant_page  # a tenant admin's click was a silent 403
     assert "ccf fedramp20x seed-ksi" in tenant_page
+
+
+def test_every_term_a_ksi_uses_has_fedramps_definition() -> None:
+    defs = rules.ksi_definitions(rules.load_rules())
+    assert len(defs) == 46
+    unresolved = [(k, d["term"]) for k, rows in defs.items() for d in rows if not d["definition"]]
+    assert unresolved == []
+    rat = {d["term"]: d for d in defs["KSI-CED-RAT"]}
+    assert rat["Persistently"]["id"].startswith("FRD-")
+
+
+async def test_the_ksi_api_returns_the_definitions() -> None:
+    async with _client() as c:
+        body = (await c.get("/api/fedramp/20x/ksis/KSI-CED-RAT")).json()
+    assert {d["term"] for d in body["definitions"]} == {
+        "Incident",
+        "Persistently",
+        "Vulnerability Response",
+    }

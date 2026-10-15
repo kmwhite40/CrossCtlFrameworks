@@ -125,7 +125,12 @@ async def get_ksi(
     k = (await session.execute(stmt)).scalar_one_or_none()
     if k is None:
         raise HTTPException(404, "KSI not found")
-    return _ksi_out(k)
+    from ...fedramp20x.rules import ksi_definitions, load_rules  # noqa: PLC0415
+
+    out = _ksi_out(k)
+    # FedRAMP's own meaning of each defined term the statement uses (FRD).
+    out["definitions"] = ksi_definitions(load_rules()).get(k.identifier, [])
+    return out
 
 
 @router.post("/ksis/seed")

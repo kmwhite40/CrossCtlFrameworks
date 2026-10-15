@@ -27,6 +27,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
    KSI readiness number (`no_ksis_owed`) rather than one computed from
    dependencies alone.
 
+### Added — FedRAMP's definitions beside each KSI
+- `GET /api/fedramp/20x/ksis/{id}` returns `definitions`: the FedRAMP
+  Definitions (FRD) entry for every defined term the indicator's statement
+  uses. FedRAMP's guidance says "Use the FRD meaning whenever a defined term
+  appears". All 13 terms the 46 KSIs use resolve today. A term without an
+  entry would come back with no definition, never an invented one.
+
 ### Fixed — from a whole-branch review
 - **The Marketplace data files were not packaged.** The Docker image installs
   the wheel, which did not contain `fedramp20x/marketplace_data/`. In the

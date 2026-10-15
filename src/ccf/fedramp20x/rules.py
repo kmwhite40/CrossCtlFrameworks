@@ -204,3 +204,33 @@ def load_rule_overlay(path: str | Path | None = None) -> dict[str, dict[str, Any
     doc = json.loads(p.read_text(encoding="utf-8"))
     rules: dict[str, dict[str, Any]] = doc.get("rules", {})
     return rules
+
+
+def ksi_definitions(rules: ConsolidatedRules) -> dict[str, list[dict[str, Any]]]:
+    """For each KSI, the FedRAMP definitions (FRD) of the terms its statement uses.
+
+    FedRAMP's AGENTS.md: "Use the FRD meaning whenever a defined term appears
+    in a rule or indicator." A term with no FRD entry is returned with
+    ``definition`` None rather than an invented meaning.
+    """
+    by_term: dict[str, tuple[str, dict[str, Any]]] = {}
+    for bucket in rules.data["FRD"]["data"].values():
+        for fid, entry in bucket.items():
+            for name in [entry.get("term"), *(entry.get("alts") or [])]:
+                if name:
+                    by_term[str(name)] = (fid, entry)
+    out: dict[str, list[dict[str, Any]]] = {}
+    for theme in rules.data["KSI"].values():
+        for ident, ind in theme["indicators"].items():
+            rows = []
+            for term in ind.get("terms") or []:
+                found = by_term.get(term)
+                rows.append(
+                    {
+                        "term": term,
+                        "id": found[0] if found else None,
+                        "definition": found[1].get("definition") if found else None,
+                    }
+                )
+            out[ident] = rows
+    return out
