@@ -32,7 +32,7 @@ NodeKey = tuple[str, str]
 class _Graph:
     def __init__(self) -> None:
         self.nodes: dict[NodeKey, dict[str, Any]] = {}
-        self.edges: list[tuple[NodeKey, NodeKey, str, float]] = []
+        self.edges: list[tuple[NodeKey, NodeKey, str, str]] = []
 
     def node(
         self, entity_type: str, entity_id: Any, label: str,
@@ -45,36 +45,53 @@ class _Graph:
         }
         return key
 
-    def edge(self, src: NodeKey, tgt: NodeKey, rel: str, confidence: float = 1.0) -> None:
+    def edge(self, src: NodeKey, tgt: NodeKey, rel: str, source: str) -> None:
+        """Record a sourced edge between two nodes already in the graph.
+
+        Both endpoints must exist when this is called, so contributor order in
+        :func:`_contribute` matters: an edge to a node added later is dropped.
+        """
+        if not source:
+            raise ValueError(f"edge {src} -> {tgt} ({rel}) has no source")
         if src in self.nodes and tgt in self.nodes:
-            self.edges.append((src, tgt, rel, confidence))
+            self.edges.append((src, tgt, rel, source))
 
 
-async def _contribute(session: AsyncSession, org_id: int, g: _Graph) -> dict[str, int]:
-    """Populate ``g`` from every available source; returns per-source node counts."""
+async def _contribute(
+    session: AsyncSession, org_id: int, g: _Graph
+) -> tuple[dict[str, int], dict[str, str]]:
+    """Populate ``g`` from every source: ``(node counts, failed contributors)``.
+
+    Each contributor runs in its own savepoint. A failed statement aborts a
+    Postgres transaction, so without one, every contributor after the first
+    failure would fail too, and the rebuild's own deletes with them.
+    """
     stats: dict[str, int] = {}
+    failed: dict[str, str] = {}
 
-    async def run(name: str, coro: Any) -> None:
+    async def run(name: str, contributor: Any) -> None:
+        before = len(g.nodes)
         try:
-            before = len(g.nodes)
-            await coro
+            async with session.begin_nested():
+                await contributor(session, org_id, g)
             stats[name] = len(g.nodes) - before
-        except Exception as exc:  # optional module/table absent → skip this slice
+        except Exception as exc:  # recorded and shown, never silent
             log.warning("assurance.source_failed", source=name, error=str(exc)[:200])
             stats[name] = 0
+            failed[name] = f"{type(exc).__name__}: {str(exc)[:200]}"
 
-    await run("systems", _systems(session, org_id, g))
-    await run("controls", _controls(session, org_id, g))
-    await run("ksis", _ksis(session, org_id, g))
-    await run("poams", _poams(session, org_id, g))
-    await run("risks", _risks(session, org_id, g))
-    await run("vendors", _vendors(session, org_id, g))
-    await run("connectors", _connectors(session, org_id, g))
-    await run("scans", _scans(session, org_id, g))
-    await run("control_tests", _control_tests(session, org_id, g))
-    await run("evidence_objects", _evidence_objects(session, org_id, g))
-    await run("ai_agents", _ai_agents(session, org_id, g))
-    return stats
+    await run("systems", _systems)
+    await run("controls", _controls)
+    await run("ksis", _ksis)
+    await run("poams", _poams)
+    await run("risks", _risks)
+    await run("vendors", _vendors)
+    await run("scans", _scans)
+    await run("control_tests", _control_tests)
+    await run("connectors", _connectors)
+    await run("evidence_objects", _evidence_objects)
+    await run("ai_agents", _ai_agents)
+    return stats, failed
 
 
 async def _systems(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -111,10 +128,10 @@ async def _controls(session: AsyncSession, org_id: int, g: _Graph) -> None:
     for impl in impls:
         label = impl.control.identifier if impl.control else f"impl-{impl.id}"
         ck = g.node("control", impl.id, label, impl.status, system_id=impl.system_id)
-        g.edge(("system", str(impl.system_id)), ck, "has_control")
+        g.edge(("system", str(impl.system_id)), ck, "has_control", "control_implementations")
         for ev in impl.evidence or []:
             ek = g.node("evidence", ev.id, ev.title or f"evidence-{ev.id}", ev.kind)
-            g.edge(ck, ek, "supported_by")
+            g.edge(ck, ek, "supported_by", "evidence")
             _ = Evidence  # keep import meaningful for type-checkers
 
 
@@ -137,7 +154,7 @@ async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
         )
     ).scalars().all():
         kk = g.node("ksi", f"{st.system_id}:{st.ksi_id}", f"KSI {st.ksi_id}", st.status)
-        g.edge(("system", str(st.system_id)), kk, "assessed_by")
+        g.edge(("system", str(st.system_id)), kk, "assessed_by", "ksi_states")
 
 
 async def _poams(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -154,7 +171,7 @@ async def _poams(session: AsyncSession, org_id: int, g: _Graph) -> None:
         await session.execute(select(POAM).where(POAM.system_id.in_(sys_ids)))
     ).scalars().all():
         pk = g.node("poam", p.id, p.title, p.status, severity=p.severity)
-        g.edge(("system", str(p.system_id)), pk, "has_poam")
+        g.edge(("system", str(p.system_id)), pk, "has_poam", "poams")
 
 
 async def _risks(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -172,7 +189,7 @@ async def _risks(session: AsyncSession, org_id: int, g: _Graph) -> None:
     ).scalars().all():
         rk = g.node("risk", r.id, r.title, r.status)
         if r.system_id is not None:
-            g.edge(rk, ("system", str(r.system_id)), "threatens")
+            g.edge(rk, ("system", str(r.system_id)), "threatens", "risks")
 
 
 async def _vendors(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -186,23 +203,14 @@ async def _vendors(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _connectors(session: AsyncSession, org_id: int, g: _Graph) -> None:
-    from ..models import System  # noqa: PLC0415
     from ..models_grc import ConnectorConfig  # noqa: PLC0415
 
-    conns = (
+    for c in (
         await session.execute(
             select(ConnectorConfig).where(ConnectorConfig.organization_id == org_id)
         )
-    ).scalars().all()
-    sys_ids = [
-        r for r in (
-            await session.execute(select(System.id).where(System.organization_id == org_id))
-        ).scalars().all()
-    ]
-    for c in conns:
-        ck = g.node("connector", c.id, c.name, c.status, connector_type=c.connector_type)
-        for sid in sys_ids:  # connector feeds evidence for the org's systems
-            g.edge(ck, ("system", str(sid)), "feeds_evidence_for", 0.6)
+    ).scalars().all():
+        g.node("connector", c.id, c.name, c.status, connector_type=c.connector_type)
 
 
 async def _scans(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -219,7 +227,7 @@ async def _scans(session: AsyncSession, org_id: int, g: _Graph) -> None:
         await session.execute(select(ScanIngestion).where(ScanIngestion.system_id.in_(sys_ids)))
     ).scalars().all():
         sk = g.node("scan", s.id, f"{s.scanner} scan #{s.id}", scanner=s.scanner)
-        g.edge(sk, ("system", str(s.system_id)), "scanned")
+        g.edge(sk, ("system", str(s.system_id)), "scanned", "scan_ingestions")
 
 
 async def _control_tests(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -230,7 +238,7 @@ async def _control_tests(session: AsyncSession, org_id: int, g: _Graph) -> None:
     ).scalars().all():
         tk = g.node("control_test", t.id, t.name, t.last_status, control_id=t.control_id)
         if t.system_id is not None:
-            g.edge(tk, ("system", str(t.system_id)), "tests")
+            g.edge(tk, ("system", str(t.system_id)), "tests", "control_tests")
 
 
 async def _evidence_objects(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -243,7 +251,7 @@ async def _evidence_objects(session: AsyncSession, org_id: int, g: _Graph) -> No
     ).scalars().all():
         ek = g.node("evidence_object", o.id, o.title, o.status, framework=o.framework)
         if o.system_id is not None:
-            g.edge(("system", str(o.system_id)), ek, "documented_by")
+            g.edge(("system", str(o.system_id)), ek, "documented_by", "evidence_objects")
 
 
 async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -261,13 +269,13 @@ async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
             ("poam", [], "n/a"),
         ]
         if a.system_id is not None:
-            g.edge(ak, ("system", str(a.system_id)), "accesses", 0.9)
+            g.edge(ak, ("system", str(a.system_id)), "accesses", "ai_agents")
         for ttype, ids, rel in targets:
             for tid in ids:
                 # Only connect to nodes the builder already created this run.
-                g.edge(ak, (ttype, str(tid)), rel, 0.7)
+                g.edge(ak, (ttype, str(tid)), rel, "ai_agents")
         for rid in list(a.risk_ids or []):
-            g.edge(ak, ("risk", str(rid)), "introduces_risk", 0.7)
+            g.edge(ak, ("risk", str(rid)), "introduces_risk", "ai_agents")
 
 
 async def rebuild_org(session: AsyncSession, org_id: int) -> AssuranceGraphBuildRun:
@@ -277,7 +285,7 @@ async def rebuild_org(session: AsyncSession, org_id: int) -> AssuranceGraphBuild
     await session.flush()
 
     g = _Graph()
-    stats = await _contribute(session, org_id, g)
+    stats, failed = await _contribute(session, org_id, g)
 
     # Replace the org's graph wholesale.
     await session.execute(delete(AssuranceEdge).where(AssuranceEdge.organization_id == org_id))
@@ -297,7 +305,7 @@ async def rebuild_org(session: AsyncSession, org_id: int) -> AssuranceGraphBuild
 
     seen: set[tuple[int, int, str]] = set()
     edge_count = 0
-    for src, tgt, rel, conf in g.edges:
+    for src, tgt, rel, source in g.edges:
         sid, tid = key_to_id.get(src), key_to_id.get(tgt)
         if sid is None or tid is None or (sid, tid, rel) in seen:
             continue
@@ -305,16 +313,17 @@ async def rebuild_org(session: AsyncSession, org_id: int) -> AssuranceGraphBuild
         session.add(
             AssuranceEdge(
                 organization_id=org_id, source_node_id=sid, target_node_id=tid,
-                relationship_type=rel, confidence=conf,
+                relationship_type=rel, source=source,
             )
         )
         edge_count += 1
 
     run.node_count = len(g.nodes)
     run.edge_count = edge_count
-    run.status = "ok"
+    # "partial", not "ok": a slice is missing, and the page says which.
+    run.status = "partial" if failed else "ok"
     run.finished_at = datetime.now(UTC)
-    run.detail = {"sources": stats}
+    run.detail = {"sources": stats, "failed": failed}
     await session.flush()
     return run
 

@@ -136,7 +136,7 @@ async def subgraph(
     ).scalars().all()
     kept_edges = [
         {"source": e.source_node_id, "target": e.target_node_id,
-         "relationship_type": e.relationship_type, "confidence": e.confidence}
+         "relationship_type": e.relationship_type, "provenance": e.source}
         for e in edges
         if e.source_node_id in seen and e.target_node_id in seen
     ]
