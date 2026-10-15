@@ -1036,3 +1036,77 @@ async def test_the_legend_is_server_rendered_without_script() -> None:
     html = (await _page(f"/graph?system_id={sid2}")).text
     assert 'id="graph-legend"' in html and "var(--danger)" in html
     assert 'id="graph-notice"' in html and "hidden" not in html.split('id="graph-notice"')[1][:60]
+
+
+# ── Final review fixes: the page ─────────────────────────────────────────────
+
+
+async def test_another_parts_failure_does_not_blame_the_build_for_a_late_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(session: Any, org_id: int, g: Any) -> None:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(builder, "_risks", broken)
+    org, _sid = await _org_and_system()
+    assert (await _build(org))[0] == "partial"
+    late = await _system(org)
+    visible = (await _page(f"/graph?system_id={late}")).text.split(
+        '<script type="application/json"')[0]
+    assert "Part of the graph could not be built" in visible  # the failure is still shown
+    assert "added after the last build" in visible
+    assert "because part of the build failed" not in visible
+
+
+async def test_with_no_owners_recorded_the_page_says_so_instead_of_a_picker() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    assert (await _build(org))[0] == "ok"
+    html = (await _page(f"/graph?system_id={sid}")).text
+    assert 'id="graph-canvas"' in html  # a drawn graph, so the controls row is rendered
+    assert "No owners are recorded for this system's controls." in html
+    assert 'id="graph-owner"' not in html
+
+
+async def test_with_an_owner_recorded_the_page_offers_the_picker() -> None:
+    from ccf.models import User  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    async with session_scope() as s:
+        u = User(email=f"own{next(_SEQ)}@g.test", full_name="Olu Owner", organization_id=org)
+        s.add(u)
+        await s.flush()
+        uid = u.id
+    await _implement(sid, "AC-02", owner_user_id=uid)
+    assert (await _build(org))[0] == "ok"
+    html = (await _page(f"/graph?system_id={sid}")).text
+    assert 'id="graph-owner"' in html
+    assert "No owners are recorded" not in html
+
+
+async def test_the_page_embeds_the_node_limit_and_says_it_is_drawing() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    assert (await _build(org))[0] == "ok"
+    html = (await _page(f"/graph?system_id={sid}")).text
+    assert 'data-limit="3000"' in html
+    # Server-rendered, so a page whose script never runs does not show a blank notice.
+    notice = html.split('id="graph-notice"')[1].split("</p>")[0]
+    assert "Drawing the graph…" in notice
+
+
+async def test_choose_a_system_with_nothing_chosen_is_the_picker_not_an_error() -> None:
+    _org, _sid = await _org_and_system()
+    r = await _page("/graph?system_id=")
+    assert r.status_code == 200
+    assert "Choose a system to draw its graph." in r.text
+    r = await _page("/graph?system_id=%20")
+    assert r.status_code == 200 and "Choose a system to draw its graph." in r.text
+
+
+@pytest.mark.parametrize("bad", ["abc", "1.5", "-3", "١٢"])
+async def test_a_system_id_that_is_not_a_number_is_not_found(bad: str) -> None:
+    _org, sid = await _org_and_system()
+    assert (await _page(f"/graph?system_id={sid}")).status_code == 200  # the positive case
+    r = await _page(f"/graph?system_id={bad}")
+    assert r.status_code == 404

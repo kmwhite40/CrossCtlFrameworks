@@ -91,9 +91,9 @@ async def test_the_handler_itself_refuses_a_foreign_system_on_an_unscoped_sessio
     assert token_a
     async with session_scope() as s:
         # the owning org succeeds, so the refusal below is the org check
-        own = await graph_page(request_of(org_a), sid_a, s)  # type: ignore[arg-type]
+        own = await graph_page(request_of(org_a), str(sid_a), s)  # type: ignore[arg-type]
         assert own.status_code == 200
     async with session_scope() as s:
         with pytest.raises(HTTPException) as err:
-            await graph_page(request_of(org_a), sid_b, s)  # type: ignore[arg-type]
+            await graph_page(request_of(org_a), str(sid_b), s)  # type: ignore[arg-type]
     assert err.value.status_code == 404

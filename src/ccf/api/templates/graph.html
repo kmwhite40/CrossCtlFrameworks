@@ -54,7 +54,7 @@
 
 {% if view.root is none %}
 <section class="card"><div class="card__body" style="text-align:center;padding:32px">
-  {% if view.failed_contributors %}<p>This system could not be loaded into the graph because part of the build failed (see above).</p>
+  {% if 'systems' in view.failed_contributors %}<p>This system could not be loaded into the graph because part of the build failed (see above).</p>
   {% else %}<p>This system is not in the graph yet: it was added after the last build.</p>{% endif %}
 </div></section>
 {% elif not view.edges %}
@@ -66,13 +66,13 @@
     <legend class="dim">Show</legend>
     {% for t in node_types %}<label style="margin-right:8px"><input type="checkbox" data-graph-type value="{{ t }}" checked> {{ t|replace('_', ' ') }}</label>{% endfor %}
   </fieldset>
-  <label>Owner
+  {% if has_owners %}<label>Owner
     <select id="graph-owner"><option value="">Everyone</option></select>
-  </label>
+  </label>{% else %}<p class="dim" id="graph-no-owners" style="margin:0">No owners are recorded for this system's controls.</p>{% endif %}
   <label>Find control <input type="search" id="graph-search" placeholder="AC-2" autocomplete="off"></label>
   <button type="button" class="btn btn--ghost btn--sm" id="graph-table-toggle" aria-controls="graph-tables" aria-expanded="false">Table</button>
 </div>
-<p id="graph-notice" class="dim" role="status" aria-live="polite"></p>
+<p id="graph-notice" class="dim" role="status" aria-live="polite">Drawing the graph…</p>
 <div class="row" style="gap:12px;align-items:stretch;flex-wrap:wrap">
   <div id="graph-canvas" role="img" aria-label="Graph of {{ selected.name }}; the same data is in the table." style="flex:1 1 480px;min-height:560px;border:1px solid var(--shell-border);border-radius:8px"></div>
   <aside id="graph-panel" class="card" style="flex:0 1 300px;padding:12px" hidden></aside>
