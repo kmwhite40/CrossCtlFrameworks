@@ -1461,7 +1461,7 @@ async def graph_page(
     node_types = sorted({n["entity_type"] for n in view["nodes"]}) if view else []
     # ``owner_user_id`` is rarely recorded; a picker with only "Everyone" in
     # it would offer a filter over nothing, so the page says so instead.
-    has_owners = bool(view) and any(
+    has_owners = view is not None and any(
         (n.get("metadata") or {}).get("owners") for n in view["nodes"]
     )
     return templates.TemplateResponse(
