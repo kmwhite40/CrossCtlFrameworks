@@ -304,12 +304,18 @@ async def _overlay_drift(session: AsyncSession) -> list[str]:
     seeded = (
         await session.execute(
             text(
-                f"SELECT identifier, {', '.join(fields)} FROM ccf.ksis "
+                "SELECT identifier, rule, methods, validation_method, "
+                "validation_frequency, automation_level FROM ccf.ksis "
                 "WHERE retired_at IS NULL"
             )
         )
     ).all()
-    return sorted(str(r[0]) for r in seeded if r[0] in want and tuple(r[1:]) != want[r[0]])
+    # By name, so a column dropped from the SELECT raises instead of comparing short.
+    return sorted(
+        str(r.identifier)
+        for r in seeded
+        if r.identifier in want and tuple(r._mapping[f] for f in fields) != want[r.identifier]
+    )
 
 
 async def _check_ksi_loaded(session: AsyncSession) -> Check:
