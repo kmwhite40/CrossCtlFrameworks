@@ -8,12 +8,13 @@ and per-org rollup keys collapsed every tenant into one ``...:None`` row.
 from __future__ import annotations
 
 import itertools
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 
 from ccf.config import get_settings
 from ccf.db import session_scope
@@ -23,6 +24,17 @@ from ccf.models import Notification, Organization, System
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 _SEQ = itertools.count()
+
+
+@pytest.fixture(autouse=True)
+async def _only_this_tests_notifications() -> AsyncIterator[None]:
+    """Remove the notifications a test created: run_all and the scheduler write
+    for whichever orgs they are given, and later modules count notifications."""
+    async with session_scope() as s:
+        before = (await s.execute(select(func.max(Notification.id)))).scalar() or 0
+    yield
+    async with session_scope() as s:
+        await s.execute(delete(Notification).where(Notification.id > before))
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -58,6 +70,13 @@ async def test_the_scheduled_cycle_stores_each_orgs_alert_under_that_org(
         return []
 
     monkeypatch.setattr(scheduler, "poll_sources", no_poll)
+
+    # Only this test's organizations: the real cycle would otherwise escalate
+    # every other module's overdue tasks in the shared database.
+    async def only_ours(session: object) -> list[int]:
+        return [a_org, b_org]
+
+    monkeypatch.setattr(scheduler, "_active_org_ids", only_ours)
     try:
         await scheduler.run_cycle()
         async with session_scope() as s:
@@ -92,8 +111,13 @@ async def test_an_unscoped_digest_raises_only_platform_alerts() -> None:
     assert found is None  # no org-less org alert is ever written again
 
 
-async def test_run_all_covers_every_org() -> None:
+async def test_run_all_covers_every_org(monkeypatch: pytest.MonkeyPatch) -> None:
     org, sysm = await _org_with_expiring_ato("Digest All")
+
+    async def only_ours(session: object) -> list[int]:
+        return [org]
+
+    monkeypatch.setattr(digest, "active_org_ids", only_ours)
     async with session_scope() as s:
         out = await digest.run_all(s, today=datetime.now(UTC).date())
         n = (
@@ -104,12 +128,19 @@ async def test_run_all_covers_every_org() -> None:
         await s.delete(n)
 
 
-async def test_the_governance_page_scan_still_raises_org_alerts_unscoped() -> None:
+async def test_the_governance_page_scan_still_raises_org_alerts_unscoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
 
     from ccf.api.main import create_app  # noqa: PLC0415
 
     org, sysm = await _org_with_expiring_ato("Digest Page")
+
+    async def only_ours(session: object) -> list[int]:
+        return [org]
+
+    monkeypatch.setattr(digest, "active_org_ids", only_ours)
     async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
         r = await c.post("/governance/scan", follow_redirects=False)
         assert r.status_code == 303

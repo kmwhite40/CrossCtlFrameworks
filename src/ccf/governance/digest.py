@@ -367,6 +367,16 @@ async def run_platform(session: AsyncSession, *, today: date) -> dict[str, Any]:
     return counts
 
 
+async def active_org_ids(session: AsyncSession) -> list[int]:
+    """Every organization not soft-deleted -- whose alerts ``run_all`` raises."""
+    from ..models import Organization  # noqa: PLC0415
+
+    rows = await session.execute(
+        select(Organization.id).where(Organization.deleted_at.is_(None))
+    )
+    return sorted(rows.scalars().all())
+
+
 async def run_all(session: AsyncSession, *, today: date) -> dict[str, Any]:
     """Platform alerts plus every active organization's, each under its own org.
 
@@ -374,12 +384,7 @@ async def run_all(session: AsyncSession, *, today: date) -> dict[str, Any]:
     scheduler instead runs :func:`run` per tenant inside its per-tenant cycle,
     where each slice is RLS-bound to its organization.
     """
-    from ..models import Organization  # noqa: PLC0415
-
     out: dict[str, Any] = {"platform": await run_platform(session, today=today)}
-    org_ids = (
-        await session.execute(select(Organization.id).where(Organization.deleted_at.is_(None)))
-    ).scalars().all()
-    for oid in org_ids:
+    for oid in await active_org_ids(session):
         out[str(oid)] = await run(session, today=today, org_id=oid)
     return out
