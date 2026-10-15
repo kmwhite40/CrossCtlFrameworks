@@ -11,6 +11,7 @@ import itertools
 import json
 import shutil
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -525,10 +526,80 @@ async def test_a_system_owing_no_ksis_gets_no_readiness_number() -> None:
 
     async with session_scope() as s:
         snaps = (
-            await s.execute(
-                select(FedRAMP20xReadinessSnapshot).where(
-                    FedRAMP20xReadinessSnapshot.system_id == sid
+            (
+                await s.execute(
+                    select(FedRAMP20xReadinessSnapshot).where(
+                        FedRAMP20xReadinessSnapshot.system_id == sid
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert snaps == []  # nothing charted for a system with nothing to score
+
+
+async def test_owing_no_ksis_resets_the_profile_and_drops_the_gauge() -> None:
+    from ccf.api.metrics import FEDRAMP20X_READINESS  # noqa: PLC0415
+    from ccf.models import FedRAMP20xProfile  # noqa: PLC0415
+
+    sid = await _system("B", "program")
+    async with session_scope() as s:
+        s.add(FedRAMP20xProfile(system_id=sid, readiness_status="validation_in_progress"))
+    async with session_scope() as s:
+        await readiness.score_system(s, system_id=sid, persist=True)  # scored: gauge set
+    async with session_scope() as s:
+        system = await s.get(System, sid)
+        system.certification_path = "agency"  # type: ignore[union-attr]
+    async with session_scope() as s:
+        await readiness.score_system(s, system_id=sid, persist=True)
+        profile = (
+            await s.execute(select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == sid))
+        ).scalar_one()
+    assert profile.readiness_status == "not_started"
+    labels = {tuple(sorted(lbl.items())) for lbl in _gauge_labels(FEDRAMP20X_READINESS)}
+    assert (("system_id", str(sid)),) not in labels
+
+
+def _gauge_labels(gauge: object) -> list[dict]:
+    return [
+        dict(sample.labels)
+        for metric in gauge.collect()  # type: ignore[attr-defined]
+        for sample in metric.samples
+    ]
+
+
+async def test_an_unseeded_catalog_gives_no_number_either() -> None:
+    sid = await _system(None)
+    async with session_scope() as s:
+        await s.execute(KSI.__table__.update().values(retired_at=datetime.now(UTC)))
+    try:
+        async with session_scope() as s:
+            score = await readiness.score_system(s, system_id=sid, persist=False)
+        assert score["readiness_pct"] is None and score["status"] == "not_started"
+    finally:
+        async with session_scope() as s:
+            await catalog.seed_ksis(s)
+
+
+async def test_the_validate_event_never_says_none_percent() -> None:
+    from ccf.models import Event  # noqa: PLC0415
+
+    sid = await _system("C", "agency")
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        r = await c.post(f"/api/fedramp/20x/systems/{sid}/validate")
+        assert r.status_code == 200
+    async with session_scope() as s:
+        ev = (
+            (
+                await s.execute(
+                    select(Event)
+                    .where(Event.entity_type == "system", Event.entity_id == str(sid))
+                    .order_by(Event.id.desc())
+                )
+            )
+            .scalars()
+            .first()
+        )
+    assert ev is not None and "None%" not in (ev.summary or "")
+    assert "no readiness figure (no_ksis_owed)" in (ev.summary or "")

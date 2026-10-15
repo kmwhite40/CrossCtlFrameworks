@@ -27,6 +27,27 @@ the project adheres to [Semantic Versioning](https://semver.org/).
    KSI readiness number (`no_ksis_owed`) rather than one computed from
    dependencies alone.
 
+### Fixed — from review of the last three commits
+- The package-data guard test translated globs with `fnmatch`, where `*`
+  crosses `/`, so `rules_data/*.json` "covered" a nested file the wheel
+  leaves out. It now uses setuptools' semantics: `*` stays in one segment,
+  `**` spans segments, and hidden entries are excluded. The semantics are
+  pinned by their own test.
+- A system that owes no KSIs left its CSO profile's readiness status and its
+  Prometheus gauge series at their last values. The profile returns to
+  `not_started`, unless parked at a submission state, and the gauge series is
+  dropped. An unseeded catalog now also gives no readiness number. The
+  validate event (and its webhooks) and `ccf package list` no longer print
+  "None%".
+- The overlay-drift check compares every overlay field (`rule`, `methods`,
+  `validation_method`, `validation_frequency`, `automation_level`) and names
+  the drifted KSIs.
+- A KSI's `definitions` is null, not an empty list, when the dataset cannot
+  be read or the KSI is retired, so "unknown" differs from "uses no defined
+  terms".
+- The governance-scan test no longer runs ConMon across other modules'
+  organizations.
+
 ### Added — FedRAMP's definitions beside each KSI
 - `GET /api/fedramp/20x/ksis/{id}` returns `definitions`: the FedRAMP
   Definitions (FRD) entry for every defined term the indicator's statement

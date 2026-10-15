@@ -442,9 +442,7 @@ async def test_an_sdr_citing_a_phase_one_ksi_names_it() -> None:
     kept = {e["ksiId"] for e in result.document.document["keySecurityIndicators"]}
     assert kept == {"KSI-IAM-01", "KSI-CED-RAT"}  # the narrative is not destroyed
     ced = next(
-        e
-        for e in result.document.document["keySecurityIndicators"]
-        if e["ksiId"] == "KSI-CED-RAT"
+        e for e in result.document.document["keySecurityIndicators"] if e["ksiId"] == "KSI-CED-RAT"
     )
     # No rule is authored for it, so no test exists to name.
     assert ced["ksiTests"] == []
@@ -732,3 +730,13 @@ async def test_the_ksi_api_returns_the_definitions() -> None:
         "Persistently",
         "Vulnerability Response",
     }
+
+
+async def test_a_retired_ksi_has_unknown_not_empty_definitions() -> None:
+    sid = await _system("Defs")
+    await _phase_one_row(sid)
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    async with _client() as c:
+        body = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-01")).json()
+    assert body["retired"] is True and body["definitions"] is None

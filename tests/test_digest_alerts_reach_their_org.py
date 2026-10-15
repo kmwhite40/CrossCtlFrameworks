@@ -141,6 +141,14 @@ async def test_the_governance_page_scan_still_raises_org_alerts_unscoped(
         return [org]
 
     monkeypatch.setattr(digest, "active_org_ids", only_ours)
+    from ccf.governance import conmon  # noqa: PLC0415
+
+    async def no_conmon(session: object, **_: object) -> dict:
+        return {}
+
+    # Unscoped, the page's ConMon scan walks every org's implementations in the
+    # shared database; this test is about the digest half only.
+    monkeypatch.setattr(conmon, "scan", no_conmon)
     async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
         r = await c.post("/governance/scan", follow_redirects=False)
         assert r.status_code == 303

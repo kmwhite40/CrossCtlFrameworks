@@ -288,18 +288,28 @@ async def _overlay_drift(session: AsyncSession) -> list[str]:
 
     An unreadable overlay is reported as drift (named), not swallowed.
     """
+    fields = (
+        "rule",
+        "methods",
+        "validation_method",
+        "validation_frequency",
+        "automation_level",
+    )
     try:
         from ..fedramp20x.catalog import load_records  # noqa: PLC0415
 
-        want = {r["identifier"]: (r["rule"], r["methods"]) for r in load_records()}
+        want = {r["identifier"]: tuple(r.get(f) for f in fields) for r in load_records()}
     except Exception as exc:
         return [f"(overlay unreadable: {exc})"]
     seeded = (
         await session.execute(
-            text("SELECT identifier, rule, methods FROM ccf.ksis WHERE retired_at IS NULL")
+            text(
+                f"SELECT identifier, {', '.join(fields)} FROM ccf.ksis "
+                "WHERE retired_at IS NULL"
+            )
         )
     ).all()
-    return sorted(str(r[0]) for r in seeded if r[0] in want and (r[1], r[2]) != want[r[0]])
+    return sorted(str(r[0]) for r in seeded if r[0] in want and tuple(r[1:]) != want[r[0]])
 
 
 async def _check_ksi_loaded(session: AsyncSession) -> Check:
@@ -351,7 +361,7 @@ async def _check_ksi_loaded(session: AsyncSession) -> Check:
             "fedramp20x_ksi_catalog_loaded",
             WARN,
             f"{len(behind)} seeded KSIs predate FedRAMP Consolidated Rules {rules.version} "
-            "or Concord's current rule overlay.",
+            f"or Concord's current rule overlay: {', '.join(behind[:5])}.",
             "Run `ccf fedramp20x seed-ksi`.",
         )
     return Check(

@@ -297,10 +297,28 @@ async def score_system(
     # weighted blend fell back to dependency readiness alone and printed
     # "Overall 100%" beside "Scored on 0 KSIs" for every Agency-path system.
     # No number, a status that says why, and no snapshot or gauge to chart it.
-    no_ksis_owed = not ksis and bool(current)
+    # Likewise an unseeded catalog: nothing scored is not 0% or 100%.
+    no_ksis_owed = not ksis
     if no_ksis_owed:
         payload["readiness_pct"] = None
-        payload["status"] = "no_ksis_owed"
+        payload["status"] = "no_ksis_owed" if current else "not_started"
+        if persist:
+            # Not charted -- but nothing stale left behind either: the profile
+            # returns to not_started (unless a person parked it at a submission
+            # state) and this system's gauge series is dropped.
+            if profile is not None and profile.readiness_status not in (
+                "submitted",
+                "authorized",
+                "continuous_monitoring",
+            ):
+                profile.readiness_status = "not_started"
+                await session.flush()
+            try:
+                from ..api.metrics import FEDRAMP20X_READINESS  # noqa: PLC0415
+
+                FEDRAMP20X_READINESS.remove(str(system_id))
+            except Exception:
+                pass
     if persist and not no_ksis_owed:
         session.add(
             FedRAMP20xReadinessSnapshot(

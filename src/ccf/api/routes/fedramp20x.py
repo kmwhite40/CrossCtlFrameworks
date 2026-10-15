@@ -125,11 +125,19 @@ async def get_ksi(
     k = (await session.execute(stmt)).scalar_one_or_none()
     if k is None:
         raise HTTPException(404, "KSI not found")
-    from ...fedramp20x.rules import ksi_definitions, load_rules  # noqa: PLC0415
+    from ...fedramp20x.rules import RulesDatasetError, ksi_definitions, load_rules  # noqa: PLC0415
 
     out = _ksi_out(k)
     # FedRAMP's own meaning of each defined term the statement uses (FRD).
-    out["definitions"] = ksi_definitions(load_rules()).get(k.identifier, [])
+    # None -- not [] -- when the dataset cannot be read or the KSI is retired,
+    # so "uses no defined terms" stays distinguishable from "unknown".
+    try:
+        defs = ksi_definitions(load_rules())
+    except RulesDatasetError:
+        out["definitions"] = None
+    else:
+        # A phase-one (retired) id is not in FedRAMP's dataset: None, not [].
+        out["definitions"] = defs.get(k.identifier)
     return out
 
 
@@ -180,8 +188,12 @@ async def validate(
         verb="validated",
         entity_type="system",
         entity_id=system_id,
-        summary=f"20x validation: {score['readiness_pct']}% ready, "
-        f"{score['high_risk_findings']} high-risk findings",
+        summary=(
+            f"20x validation: {score['readiness_pct']}% ready, "
+            if score["readiness_pct"] is not None
+            else f"20x validation: no readiness figure ({score['status']}), "
+        )
+        + f"{score['high_risk_findings']} high-risk findings",
         org_id=principal.org_id,
         actor=principal.email,
         payload={"readiness": score, "count": len(results)},

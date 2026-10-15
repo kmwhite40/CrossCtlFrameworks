@@ -1512,7 +1512,8 @@ def package_list() -> None:
             return [(p.id, p.label, p.readiness_pct, p.fact_count) for p in rows]
 
     for pid, label, pct, facts in asyncio.run(_run()):
-        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {pct}%, {facts} facts")
+        shown = "—" if pct is None else f"{pct}%"
+        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {shown}, {facts} facts")
 
 
 @package_app.command(name="diff")
