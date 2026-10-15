@@ -94,6 +94,21 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - `GET /api/assurance/graph/systems/{id}` gains `scope=system`, `built_at`,
   `build_status` and `failed_contributors`.
 
+### Fixed — follow-ups from the whole-branch review of the compliance graph
+- The `assurance_graph_freshness` check judges **each organization's own
+  latest build**. It read only the newest run platform-wide, so in a cycle over
+  N organizations a partial or stale graph in any but the last one read PASS.
+  It now warns naming the organizations and what failed, the stalest decides
+  the age, and PASS needs every organization fresh and complete.
+- A deleted system's controls, KSIs, capabilities, POA&Ms, risks, scans,
+  tests and evidence objects are no longer drawn as unconnected nodes, nor
+  counted on `/assurance` (DATA-04).
+- An AI agent's `system_ids` entry of non-ASCII digits (`"²"`, `"١٢"`) is
+  skipped instead of failing the agents slice.
+- `/graph?system_id=` with more than 18 digits is a 404, not a 500.
+- If parsing or drawing throws, `/graph` replaces "Drawing the graph…" with
+  "The graph could not be drawn" and opens the tables.
+
 ### Fixed — from review of the last three commits
 - The package-data guard test translated globs with `fnmatch`, where `*`
   crosses `/`, so `rules_data/*.json` "covered" a nested file the wheel

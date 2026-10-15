@@ -16,12 +16,20 @@
 
   // The notice is server-rendered as "Drawing the graph…". If the library did
   // not load, say so and open the tables rather than leave an empty canvas.
-  if (!window.cytoscape) {
+  // Any throw while parsing or drawing ends here too: the notice must not be
+  // left saying "Drawing the graph…" over a canvas that will never appear.
+  function cannotDraw() {
     notice.textContent = "The graph could not be drawn; the table below has the same data.";
     showTables(true);
+  }
+  if (!window.cytoscape) { cannotDraw(); return; }
+  var view;
+  try {
+    view = JSON.parse(dataEl.textContent);
+  } catch (err) {
+    cannotDraw();
     return;
   }
-  var view = JSON.parse(dataEl.textContent);
   var limit = Number(dataEl.getAttribute("data-limit"));
   var canvas = document.getElementById("graph-canvas");
   var panel = document.getElementById("graph-panel");
@@ -78,6 +86,15 @@
   }
 
   function draw() {
+    try {
+      drawGraph();
+    } catch (err) {
+      if (cy) { try { cy.destroy(); } catch (e) { /* already unusable */ } cy = null; }
+      cannotDraw();
+    }
+  }
+
+  function drawGraph() {
     var types = visibleTypes();
     var nodes = view.nodes.filter(function (n) {
       return n.id === view.root.id || types[n.entity_type];
