@@ -8,12 +8,15 @@ controls / KSIs / systems / packages depend on a piece of stale evidence.
 from __future__ import annotations
 
 from collections import deque
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models_assurance import AssuranceEdge, AssuranceGraphBuildRun, AssuranceNode
+
+if TYPE_CHECKING:
+    from ..models import System
 
 
 async def latest_build(
@@ -132,17 +135,21 @@ async def subgraph(
     foreign: set[int] = set()
     boundary: set[int] = set()
     if within_system is not None:
-        for nid, etype, eid, meta in (
+        for nid, etype, eid, raw_meta in (
             await session.execute(
                 select(AssuranceNode.id, AssuranceNode.entity_type, AssuranceNode.entity_id,
                        AssuranceNode.node_metadata)
                 .where(AssuranceNode.organization_id == root.organization_id)
             )
         ).all():
-            owner = (meta or {}).get("system_id")
+            meta = raw_meta or {}
+            if meta.get("system_id") is not None:
+                owners = {int(meta["system_id"])}
+            else:
+                owners = {int(x) for x in meta.get("system_ids") or []}
             if etype == "system" and eid != str(within_system):
                 boundary.add(nid)
-            elif owner is not None and int(owner) != within_system:
+            elif owners and within_system not in owners:
                 foreign.add(nid)
 
     seen: set[int] = {root.id}
@@ -175,7 +182,7 @@ async def subgraph(
 
 
 async def system_view(
-    session: AsyncSession, *, system: Any, hops: int = 6, within_system: bool = True
+    session: AsyncSession, *, system: System, hops: int = 6, within_system: bool = True
 ) -> dict[str, Any]:
     """One system's graph plus the build it came from. The page and the API
     both call this, so their nodes, edges and states cannot disagree."""

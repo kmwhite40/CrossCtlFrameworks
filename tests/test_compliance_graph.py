@@ -600,5 +600,37 @@ async def test_another_system_is_a_boundary_and_is_not_walked_past() -> None:
                                   max_hops=6, within_system=sid)
     labels = {(n["entity_type"], n["label"]) for n in g["nodes"]}
     assert ("system", (await _nodes(org))[f"system:{other}"]["label"]) in labels
+    # The precondition this test proves the boundary with: a POA&M names no system.
+    poams = [v for k, v in (await _nodes(org)).items() if k.startswith("poam:")]
+    assert len(poams) == 2 and all("system_id" not in v["metadata"] for v in poams)
     assert ("poam", "Own finding") in labels
     assert ("poam", "Their finding") not in labels
+
+
+async def test_system_scope_does_not_leak_through_a_shared_vendor() -> None:
+    from ccf.models import Risk, Vendor  # noqa: PLC0415
+    from ccf.models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    other = await _system(org)
+    async with session_scope() as s:
+        v = Vendor(organization_id=org, name="Shared vendor")
+        r = Risk(system_id=other, title="Their risk")
+        s.add_all([v, r])
+        await s.flush()
+        s.add_all([
+            AiAgent(organization_id=org, name="Agent A", system_id=sid, vendor_ids=[v.id]),
+            AiAgent(organization_id=org, name="Agent B", system_id=other,
+                    vendor_ids=[v.id], risk_ids=[r.id]),
+            AiAgent(organization_id=org, name="Agent Both", system_id=sid,
+                    system_ids=[sid, other]),
+        ])
+    assert (await _build(org))[0] == "ok"
+    async with session_scope() as s:
+        g = await impact.subgraph(s, org_id=org, entity_type="system", entity_id=str(sid),
+                                  max_hops=6, within_system=sid)
+    labels = {(n["entity_type"], n["label"]) for n in g["nodes"]}
+    assert {("ai_agent", "Agent A"), ("vendor", "Shared vendor"),
+            ("ai_agent", "Agent Both")} <= labels
+    assert ("ai_agent", "Agent B") not in labels
+    assert ("risk", "Their risk") not in labels

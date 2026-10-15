@@ -277,7 +277,7 @@ async def _risks(session: AsyncSession, org_id: int, g: _Graph) -> None:
     for r in (
         await session.execute(select(Risk).where(Risk.system_id.in_(sys_ids)))
     ).scalars().all():
-        rk = g.node("risk", r.id, r.title, r.status)
+        rk = g.node("risk", r.id, r.title, r.status, system_id=r.system_id)
         if r.system_id is not None:
             g.edge(rk, ("system", str(r.system_id)), "threatens", "risks")
 
@@ -389,8 +389,10 @@ async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
     for a in (
         await session.execute(select(AiAgent).where(AiAgent.organization_id == org_id))
     ).scalars().all():
+        owning = sorted({int(x) for x in [a.system_id, *(a.system_ids or [])]
+                         if x is not None})
         ak = g.node("ai_agent", a.id, a.name, a.approval_status,
-                    risk_rating=a.risk_rating, autonomy=a.autonomy_level)
+                    risk_rating=a.risk_rating, autonomy=a.autonomy_level, system_ids=owning)
         targets: list[tuple[str, list[Any], str]] = [
             ("system", list(a.system_ids or []), "accesses"),
             ("vendor", list(a.vendor_ids or []), "depends_on"),
