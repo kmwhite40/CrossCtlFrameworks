@@ -1095,14 +1095,22 @@ app.add_typer(fedramp20x_app, name="fedramp20x")
 
 @fedramp20x_app.command(name="seed-ksi")
 def fr20x_seed_ksi(
-    path: Path = typer.Option(None, "--path", help="Catalog JSON (defaults to bundled seed)"),
+    rules_dir: Path = typer.Option(
+        None, "--rules-dir", help="Vendored FedRAMP rules directory (defaults to bundled)"
+    ),
+    overlay: Path = typer.Option(
+        None, "--rules-overlay", help="Concord validation-rule overlay (defaults to bundled)"
+    ),
 ) -> None:
-    """Seed / refresh the FedRAMP 20x KSI catalog (idempotent)."""
+    """Seed / refresh the KSI catalog from FedRAMP's Consolidated Rules (idempotent).
+
+    Indicators the dataset no longer defines are retired, never deleted.
+    """
     from .fedramp20x.catalog import seed_ksis  # noqa: PLC0415
 
     async def _run() -> None:
         async with session_scope() as session:
-            result = await seed_ksis(session, path)
+            result = await seed_ksis(session, rules_dir, overlay)
         console.print(f"[green]KSI catalog seeded[/green] — {result}")
 
     asyncio.run(_run())
@@ -1192,6 +1200,7 @@ def fr20x_gaps(system_id: int = typer.Option(..., "--system-id")) -> None:
                     .where(
                         KSIState.system_id == system_id,
                         KSIState.status.in_(("fail", "warn", "manual_review_required")),
+                        KSI.retired_at.is_(None),
                     )
                     .order_by(KSI.sort_order)
                 )

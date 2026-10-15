@@ -2877,7 +2877,10 @@ async def fedramp20x_page(
             (
                 await session.execute(
                     select(KSIException)
-                    .where(KSIException.system_id == system_id)
+                    .where(
+                        KSIException.system_id == system_id,
+                        KSIException.ksi_id.in_(ksi_catalog.current_ksi_ids()),
+                    )
                     .order_by(KSIException.created_at.desc())
                 )
             )
@@ -2987,8 +2990,10 @@ async def fedramp20x_record_review(
     from ...fedramp20x import ASSESSOR_STATUSES  # noqa: PLC0415
     from ...models import KSIAssessorReview, KSIState  # noqa: PLC0415
 
-    if status in ASSESSOR_STATUSES and await _fedramp20x_system_visible(
-        request, session, system_id
+    if (
+        status in ASSESSOR_STATUSES
+        and await _fedramp20x_system_visible(request, session, system_id)
+        and await _ksi_is_current(session, ksi_id)
     ):
         session.add(
             KSIAssessorReview(
@@ -3029,6 +3034,7 @@ async def fedramp20x_add_exception(
         rationale.strip()
         and status in ("open", "accepted", "closed")
         and await _fedramp20x_system_visible(request, session, system_id)
+        and await _ksi_is_current(session, ksi_id)
     ):
         session.add(
             KSIException(
@@ -3040,6 +3046,15 @@ async def fedramp20x_add_exception(
         )
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+async def _ksi_is_current(session: AsyncSession, ksi_id: int) -> bool:
+    """A form write may only target a KSI FedRAMP's current rules define."""
+    from ...fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
+    from ...models import KSI  # noqa: PLC0415
+
+    stmt = current_ksi_ids().where(KSI.id == ksi_id)
+    return (await session.execute(stmt)).first() is not None
 
 
 async def _fedramp20x_system_visible(

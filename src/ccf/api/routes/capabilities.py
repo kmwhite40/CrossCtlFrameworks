@@ -27,7 +27,8 @@ from ...auth import Principal
 from ...capability.derive import derive_for_system
 from ...capability.service import capabilities_for_control, framework_reach
 from ...catalog.canonical import canonicalize
-from ...models import Risk, System, SystemComponent
+from ...fedramp20x.catalog import current_ksi_ids
+from ...models import KSI, Risk, System, SystemComponent
 from ...models_capability import (
     Capability,
     CapabilityComponent,
@@ -390,6 +391,21 @@ async def set_ksis(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     cap = await _get_or_404(session, capability_id, principal)
+    # Stored as free strings, so nothing else would stop a typo or a retired
+    # phase-one id becoming an edge to an indicator FedRAMP does not define.
+    current = set(
+        (
+            await session.execute(
+                select(KSI.identifier).where(KSI.id.in_(current_ksi_ids()))
+            )
+        ).scalars()
+    )
+    unknown = sorted({v for v in body.ksi_identifiers if v not in current})
+    if unknown:
+        raise HTTPException(
+            status_code=422,
+            detail=f"not a current FedRAMP KSI: {unknown}",
+        )
     stored = await _replace_edges(
         session,
         model=CapabilityKsi,

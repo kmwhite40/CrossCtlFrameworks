@@ -264,34 +264,64 @@ async def _check_auth_posture(_s: AsyncSession) -> Check:
 
 async def _check_ksi_catalog_file(_s: AsyncSession) -> Check:
     try:
-        from ..fedramp20x.catalog import catalog_path, load_records  # noqa: PLC0415
+        from ..fedramp20x.catalog import load_records  # noqa: PLC0415
+        from ..fedramp20x.rules import load_rules  # noqa: PLC0415
 
-        path = catalog_path()
+        version = load_rules().version
         n = len(load_records())
-        return Check("fedramp20x_ksi_catalog_file", PASS, f"Catalog readable ({n} KSIs) at {path}.")
+        return Check(
+            "fedramp20x_ksi_catalog_file",
+            PASS,
+            f"FedRAMP Consolidated Rules {version} verified ({n} KSIs).",
+        )
     except Exception as exc:
         return Check(
             "fedramp20x_ksi_catalog_file",
             FAIL,
             f"Catalog not loadable: {exc}",
-            "Ensure data/fedramp_20x_ksi_catalog.json exists.",
+            "Re-vendor ccf/fedramp20x/rules_data/ and its MANIFEST.json.",
         )
 
 
 async def _check_ksi_loaded(session: AsyncSession) -> Check:
-    n = await _count(session, "ccf.ksis")
-    if n is None:
+    if not await _regclass(session, "ccf.ksis"):
         return Check(
             "fedramp20x_ksi_catalog_loaded", FAIL, "ksis table missing.", "Run migrations."
         )
-    if n == 0:
+    current = set(
+        (
+            await session.execute(text("SELECT identifier FROM ccf.ksis WHERE retired_at IS NULL"))
+        ).scalars()
+    )
+    if not current:
         return Check(
             "fedramp20x_ksi_catalog_loaded",
             WARN,
             "KSI catalog not seeded.",
             "Run `ccf fedramp20x seed-ksi`.",
         )
-    return Check("fedramp20x_ksi_catalog_loaded", PASS, f"{n} KSIs seeded.")
+    try:
+        from ..fedramp20x.rules import ksi_ids, load_rules  # noqa: PLC0415
+
+        rules = load_rules()
+        pinned = set(ksi_ids(rules))
+    except Exception as exc:
+        return Check("fedramp20x_ksi_catalog_loaded", WARN, f"Pinned dataset unreadable: {exc}")
+    if current != pinned:
+        stale = len(current - pinned)
+        missing = len(pinned - current)
+        return Check(
+            "fedramp20x_ksi_catalog_loaded",
+            WARN,
+            f"Seeded KSIs do not match FedRAMP Consolidated Rules {rules.version}: "
+            f"{stale} not in the dataset, {missing} of its indicators not seeded.",
+            "Run `ccf fedramp20x seed-ksi`.",
+        )
+    return Check(
+        "fedramp20x_ksi_catalog_loaded",
+        PASS,
+        f"{len(current)} KSIs seeded from FedRAMP Consolidated Rules {rules.version}.",
+    )
 
 
 async def _check_ksi_mappings(session: AsyncSession) -> Check:
@@ -299,10 +329,15 @@ async def _check_ksi_mappings(session: AsyncSession) -> Check:
         return Check("fedramp20x_ksi_control_mappings", WARN, "ksis table missing.")
     mapped = (
         await session.execute(
-            text("SELECT count(*) FROM ccf.ksis WHERE jsonb_array_length(nist_refs) > 0")
+            text(
+                "SELECT count(*) FROM ccf.ksis"
+                " WHERE retired_at IS NULL AND jsonb_array_length(nist_refs) > 0"
+            )
         )
     ).scalar()
-    total = await _count(session, "ccf.ksis") or 0
+    total = (
+        await session.execute(text("SELECT count(*) FROM ccf.ksis WHERE retired_at IS NULL"))
+    ).scalar() or 0
     if total == 0:
         return Check("fedramp20x_ksi_control_mappings", WARN, "No KSIs seeded.")
     if mapped:

@@ -6,6 +6,41 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — the KSI catalog is FedRAMP's Consolidated Rules for 2026, not Concord's phase-one summary
+- **Every SDR Concord produced cited KSIs the current rules do not define.**
+  The catalog was the 2025 phase-one set (51 indicators, `KSI-IAM-01` …, wording
+  summarized, mappings "Concord's REPRESENTATIVE interpretation"). FedRAMP's
+  2026 Consolidated Rules define 46 with a new ID scheme (`KSI-CED-RAT`), drop
+  TPR, add SCR, and keep no phase-one ID. The catalog is now built from
+  `FedRAMP/rules` @ `a89d784` (dataset `2026.10.13.01`), vendored under
+  `ccf/fedramp20x/rules_data/` with a sha256 `MANIFEST.json` and validated against
+  FedRAMP's own JSON Schema on load. Statements and control mappings are FedRAMP's
+  verbatim; `cmmc_refs` is empty because FedRAMP publishes none.
+- **Found via myctrl.tools, taken from FedRAMP.** The aggregator names
+  `FedRAMP/rules` as its KSI source but served a copy three months old. Its
+  crosswalks (97% inferred via a bridge catalog), truncated control text,
+  licence labels and CIS-derived guidance were reviewed and not imported; see
+  `docs/superpowers/specs/2026-10-14-fedramp-consolidated-rules-design.md`.
+- **Retired, never deleted.** Migration `0093` adds `ksis.retired_at` and
+  `statement_by_class`. `seed_ksis` retires rows the dataset no longer defines —
+  tenant state, results, reviews and exceptions cascade from `ksis`, so a delete
+  would erase history. Every reader goes through `catalog.current_ksis()` /
+  `current_ksi_ids()`; writes against a retired KSI return 409; capability↔KSI
+  links accept current IDs only (422). **Operator step: run
+  `ccf fedramp20x seed-ksi` after deploying.** Until then the reliability check
+  `fedramp20x_ksi_catalog_loaded` warns that the seeded catalog does not match
+  the pinned dataset.
+- **Validation rules start empty.** No phase-one rule is carried onto a 2026
+  indicator, so all 46 evaluate as `manual` until a rule is authored in
+  `rules_data/ksi_rules.json` against that indicator's own statement. Readiness
+  will drop on upgrade; that is the honest number.
+- **Deliverables name what the rules do not define.** The SDR seed reports
+  `undefined_ksi_ids` (authored narrative on a phase-one ID is kept, not
+  destroyed) and notes any `frrID` absent from the 245 FRR IDs. An SCN naming
+  a retired KSI is flagged. The upstream is registered in `DEFAULT_SOURCES` as
+  `fedramp_consolidated_rules` (watched, `auto_ingest=False`), baselined to the
+  pinned digest.
+
 ### Added — the CR26 vocabulary: Accepted Weaknesses, and Certification Class and Path (P9a-i)
 - **CR26 eliminates the provider-side POA&M and replaces it with a list of
   Accepted Weaknesses, and this platform already stored the weakness** —

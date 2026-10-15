@@ -29,6 +29,8 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..fedramp20x.catalog import current_ksis
+from ..fedramp20x.rules import frr_ids, ksi_ids, load_rules
 from ..models import (
     KSI,
     KSIAssessorReview,
@@ -580,16 +582,24 @@ def merge_indicators(
 
 def merge_requirements(
     authored: Sequence[Any],
+    *,
+    known_frr_ids: frozenset[str] | None = None,
+    rules_version: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, str]]]:
     """Filter and repair ``fedRampRequirements``, entirely authored narrative.
 
-    Unlike ``keySecurityIndicators``, nothing here is derived: there is no
-    machine-readable FedRAMP ruleset to check an ``frrID`` against (see
-    :func:`seed_sdr`'s docstring), and each entry's ``frrImplementation`` is a
-    written description of how the offering meets the requirement -- exactly
-    the kind of content only a human can supply, like ``ksiImplementation``.
-    So this function has no ``derived`` half to merge in; it only decides
-    which authored entries are honest enough to keep.
+    Unlike ``keySecurityIndicators``, nothing here is derived: each entry's
+    ``frrImplementation`` is a written description of how the offering meets
+    the requirement -- exactly the kind of content only a human can supply,
+    like ``ksiImplementation``. So this function has no ``derived`` half to
+    merge in; it only decides which authored entries are honest enough to keep.
+
+    ``known_frr_ids`` is the requirement-ID set of the pinned FedRAMP
+    Consolidated Rules (:func:`ccf.fedramp20x.rules.frr_ids`). An entry whose
+    ``frrID`` is not in it is **kept** -- its narrative is human work, and a
+    typo'd ID is the commonest cause -- but named on the to-do list, because
+    the document would otherwise cite a requirement the current rules do not
+    define and nothing in its JSON would say so. ``None`` skips the check.
 
     The returned list is an operator TO-DO LIST, not a list of absences --
     the same distinction the VER family's ninth omission case draws (spec
@@ -778,6 +788,14 @@ def merge_requirements(
                 # is true of the not-a-list branch above but false here.
                 notes.append((frr_id, f"{field} entry dropped: not a string"))
 
+        if known_frr_ids is not None and frr_id not in known_frr_ids:
+            notes.append(
+                (
+                    frr_id,
+                    "frrID not defined by FedRAMP Consolidated Rules "
+                    f"{rules_version or '(pinned)'}: kept, correct before submission",
+                )
+            )
         if frr_id in seen_ids:
             notes.append((frr_id, "duplicate authored entry kept"))
         seen_ids.add(frr_id)
@@ -927,7 +945,7 @@ async def _derived_indicators(
     ``ksi_validation_results.ksi_identifier``, since the foreign key is the
     column the database actually guarantees.
     """
-    ksis = (await session.execute(select(KSI))).scalars().all()
+    ksis = (await session.execute(current_ksis())).scalars().all()
     if not ksis:
         return {}
 
@@ -1031,6 +1049,15 @@ class SdrSeedResult:
     #: schema-invalid field silently emptied -- because that gap is just as
     #: real and just as invisible in the document's own JSON.
     omitted_requirements: list[tuple[str, str]]
+    #: ``keySecurityIndicators`` entries whose ``ksiId`` the pinned FedRAMP
+    #: Consolidated Rules do not define. They are KEPT (see
+    #: :func:`merge_indicators`: a narrative is human work), and the document
+    #: validates, so this list is the only thing that says the deliverable
+    #: cites an indicator FedRAMP's current rules do not have -- typically a
+    #: phase-one ``KSI-IAM-01`` written before the 2026 catalog cut-over.
+    undefined_ksi_ids: list[str]
+    #: The ruleset revision both checks were made against.
+    rules_version: str
 
 
 async def _current(
@@ -1134,9 +1161,15 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     )
     document["keySecurityIndicators"] = merged
 
+    rules = load_rules()
+    defined_ksis = ksi_ids(rules)
+    undefined = sorted({e["ksiId"] for e in merged if e["ksiId"] not in defined_ksis})
+
     authored_requirements = document.get("fedRampRequirements")
     rendered_requirements, omitted_requirements = merge_requirements(
-        authored_requirements if isinstance(authored_requirements, list) else []
+        authored_requirements if isinstance(authored_requirements, list) else [],
+        known_frr_ids=frr_ids(rules),
+        rules_version=rules.version,
     )
     document["fedRampRequirements"] = rendered_requirements
 
@@ -1149,4 +1182,6 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         controls_with_dropped_parts=dropped_parts,
         rendered_control_count=len(controls),
         omitted_requirements=omitted_requirements,
+        undefined_ksi_ids=undefined,
+        rules_version=rules.version,
     )

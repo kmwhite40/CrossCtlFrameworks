@@ -26,6 +26,7 @@ from ..models import (
     KSIState,
 )
 from ..models_waivers import Waiver
+from .catalog import current_ksi_ids, current_ksis
 
 # Sub-score weights for the overall readiness percentage. Pass-rate dominates;
 # the rest are supporting signals. Weights sum to 1.0.
@@ -173,9 +174,15 @@ async def score_system(
     session: AsyncSession, *, system_id: int, persist: bool = True
 ) -> dict[str, Any]:
     """Load state, compute readiness, and (optionally) persist a snapshot."""
-    ksis = list((await session.execute(select(KSI))).scalars().all())
+    ksis = list((await session.execute(current_ksis())).scalars().all())
     states = list(
-        (await session.execute(select(KSIState).where(KSIState.system_id == system_id)))
+        (
+            await session.execute(
+                select(KSIState).where(
+                    KSIState.system_id == system_id, KSIState.ksi_id.in_(current_ksi_ids())
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -191,7 +198,10 @@ async def score_system(
     reviews = list(
         (
             await session.execute(
-                select(KSIAssessorReview).where(KSIAssessorReview.system_id == system_id)
+                select(KSIAssessorReview).where(
+                    KSIAssessorReview.system_id == system_id,
+                    KSIAssessorReview.ksi_id.in_(current_ksi_ids()),
+                )
             )
         )
         .scalars()
@@ -203,7 +213,9 @@ async def score_system(
             for e in (
                 await session.execute(
                     select(KSIException).where(
-                        KSIException.system_id == system_id, KSIException.status == "open"
+                        KSIException.system_id == system_id,
+                        KSIException.status == "open",
+                        KSIException.ksi_id.in_(current_ksi_ids()),
                     )
                 )
             )

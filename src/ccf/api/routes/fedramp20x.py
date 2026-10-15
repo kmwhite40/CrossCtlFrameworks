@@ -73,8 +73,29 @@ def _ksi_out(k: KSI) -> dict[str, Any]:
         "nist_refs": list(k.nist_refs or []),
         "cmmc_refs": list(k.cmmc_refs or []),
         "provider_services": list(k.provider_services or []),
+        "statement_by_class": dict(k.statement_by_class or {}),
         "rule": k.rule,
+        "source": k.source,
+        "retired": k.retired_at is not None,
+        "retired_at": k.retired_at.isoformat() if k.retired_at else None,
     }
+
+
+async def _writable_ksi(session: AsyncSession, ksi_id: int) -> KSI:
+    """The KSI a write targets: 404 if unknown, 409 if FedRAMP no longer defines it.
+
+    A retired indicator keeps its history readable, but nothing new may be
+    recorded against it -- a review or exception on it would count toward
+    nothing and claim work against a requirement that no longer exists.
+    """
+    k = await session.get(KSI, ksi_id)
+    if k is None:
+        raise HTTPException(404, "KSI not found")
+    if k.retired_at is not None:
+        raise HTTPException(
+            409, f"{k.identifier} is retired: FedRAMP's current rules do not define it"
+        )
+    return k
 
 
 # --- KSI catalog ------------------------------------------------------------
@@ -166,6 +187,8 @@ async def list_validations(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
     ksi: str | None = None,
+    *,
+    include_retired: bool = False,
     limit: int = Query(200, le=1000),
 ) -> list[dict[str, Any]]:
     await _require_system(session, system_id, principal)
@@ -175,6 +198,8 @@ async def list_validations(
         .order_by(KSIValidationResult.validated_at.desc())
         .limit(limit)
     )
+    if not include_retired:
+        stmt = stmt.where(KSIValidationResult.ksi_id.in_(catalog.current_ksi_ids()))
     if ksi:
         stmt = stmt.where(KSIValidationResult.ksi_identifier == ksi)
     rows = (await session.execute(stmt)).scalars().all()
@@ -475,6 +500,7 @@ async def create_review(
     principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
+    await _writable_ksi(session, body.ksi_id)
     rv = KSIAssessorReview(**body.model_dump())
     session.add(rv)
     # Reflect the assessor verdict on the KSI state.
@@ -516,6 +542,7 @@ async def update_review(
     if rv is None:
         raise HTTPException(404, "review not found")
     await _require_system(session, rv.system_id, principal)
+    await _writable_ksi(session, rv.ksi_id)
     for field_name, value in body.model_dump(exclude_none=True).items():
         setattr(rv, field_name, value)
     rv.reviewed_at = datetime.now(UTC)
@@ -550,10 +577,14 @@ async def list_reviews(
     principal: Principal = Depends(get_principal),
     system_id: int | None = None,
     ksi_id: int | None = None,
+    *,
+    include_retired: bool = False,
     limit: int = Query(200, le=1000),
 ) -> list[dict[str, Any]]:
     """List assessor reviews (history), newest first, org-scoped."""
     stmt = select(KSIAssessorReview).order_by(KSIAssessorReview.reviewed_at.desc()).limit(limit)
+    if not include_retired:
+        stmt = stmt.where(KSIAssessorReview.ksi_id.in_(catalog.current_ksi_ids()))
     if system_id is not None:
         await _require_system(session, system_id, principal)
         stmt = stmt.where(KSIAssessorReview.system_id == system_id)
@@ -604,15 +635,17 @@ async def list_exceptions(
     system_id: int,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
+    include_retired: bool = False,
 ) -> list[dict[str, Any]]:
     await _require_system(session, system_id, principal)
-    rows = (
-        await session.execute(
-            select(KSIException)
-            .where(KSIException.system_id == system_id)
-            .order_by(KSIException.created_at.desc())
-        )
-    ).scalars().all()
+    stmt = (
+        select(KSIException)
+        .where(KSIException.system_id == system_id)
+        .order_by(KSIException.created_at.desc())
+    )
+    if not include_retired:
+        stmt = stmt.where(KSIException.ksi_id.in_(catalog.current_ksi_ids()))
+    rows = (await session.execute(stmt)).scalars().all()
     return [_exc_out(e) for e in rows]
 
 
@@ -623,6 +656,7 @@ async def create_exception(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
+    await _writable_ksi(session, body.ksi_id)
     exc = KSIException(
         system_id=body.system_id,
         ksi_id=body.ksi_id,
@@ -659,6 +693,7 @@ async def update_exception(
     if exc is None:
         raise HTTPException(404, "exception not found")
     await _require_system(session, exc.system_id, principal)
+    await _writable_ksi(session, exc.ksi_id)
     data = body.model_dump(exclude_none=True)
     if "expires_on" in data:
         exc.expires_on = date.fromisoformat(data.pop("expires_on"))

@@ -119,6 +119,7 @@ async def _controls(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
+    from ..fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
     from ..models import KSIState, System  # noqa: PLC0415
 
     sys_ids = [
@@ -129,7 +130,11 @@ async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
     if not sys_ids:
         return
     for st in (
-        await session.execute(select(KSIState).where(KSIState.system_id.in_(sys_ids)))
+        await session.execute(
+            select(KSIState).where(
+                KSIState.system_id.in_(sys_ids), KSIState.ksi_id.in_(current_ksi_ids())
+            )
+        )
     ).scalars().all():
         kk = g.node("ksi", f"{st.system_id}:{st.ksi_id}", f"KSI {st.ksi_id}", st.status)
         g.edge(("system", str(st.system_id)), kk, "assessed_by")

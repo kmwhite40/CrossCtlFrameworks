@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..fedramp20x.catalog import current_ksi_ids
 from ..governance.risk import band
 from ..models import (
     Control,
@@ -275,7 +276,10 @@ async def _ksi_states(session: AsyncSession, org_id: int | None = None) -> dict[
     # Applied unconditionally: `org_system_subq(None)` is every *live*
     # system, so the global view excludes deleted systems too. Gated on
     # `org_id is not None`, an unscoped dashboard counted them.
-    stmt = stmt.where(KSIState.system_id.in_(posture.org_system_subq(org_id)))
+    stmt = stmt.where(
+        KSIState.system_id.in_(posture.org_system_subq(org_id)),
+        KSIState.ksi_id.in_(current_ksi_ids()),
+    )
     rows = (await session.execute(stmt)).all()
     out = {
         "pass": 0, "warn": 0, "fail": 0, "not_tested": 0,

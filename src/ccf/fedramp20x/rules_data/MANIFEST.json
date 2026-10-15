@@ -1,0 +1,16 @@
+{
+  "dataset_version": "2026.10.13.01",
+  "last_updated": "2026-10-13",
+  "source_url": "https://github.com/FedRAMP/rules",
+  "upstream_commit_sha": "a89d78477ddea98dc57eca24f5007794c2b4eeb6",
+  "retrieved_at": "2026-10-14",
+  "license": "Public domain (US government work, 17 U.S.C. 105)",
+  "files": {
+    "fedramp-consolidated-rules.json": {
+      "sha256": "fb48d677a85d77fb72735a325de2c1945a1e0ceab1d2e655292fe9ebe3e4e0b4"
+    },
+    "fedramp-consolidated-rules.schema.json": {
+      "sha256": "eb4710bee0b06d0f8f803302ac2e88b934ef2bc942d0b548738c7304f0cb418f"
+    }
+  }
+}

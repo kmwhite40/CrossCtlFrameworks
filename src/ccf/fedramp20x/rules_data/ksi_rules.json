@@ -1,0 +1,18 @@
+{
+  "$comment": [
+    "Concord-authored machine-readable validation rules for FedRAMP 2026 KSIs.",
+    "Keyed by the 2026 indicator ID. FedRAMP authors the statement, name and",
+    "control mappings (fedramp-consolidated-rules.json); Concord authors only",
+    "what is here. An indicator absent from this file evaluates as manual.",
+    "",
+    "Deliberately empty at the 2026 cut-over: no phase-one rule is carried onto",
+    "a 2026 indicator. A rule is added only after reading that indicator's own",
+    "statement -- most 2026 KSIs require an effectiveness review persistently",
+    "performed, which no connector capture demonstrates.",
+    "",
+    "Each entry: {\"rule\": {...}, \"validation_method\", \"validation_frequency\",",
+    "\"automation_level\", \"rationale\"}. Rule kinds are those evaluated by",
+    "ccf.fedramp20x.validation."
+  ],
+  "rules": {}
+}

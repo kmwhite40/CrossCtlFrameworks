@@ -1,0 +1,93 @@
+# FedRAMP Consolidated Rules as an authoritative source
+
+**Status:** design, approved direction (retire + fresh start), implementing
+**Extends:** `etl/sources.py`, `fedramp20x/catalog.py`, `cr26/sdr.py`, `cr26/scn.py`
+**Adds:** `fedramp20x/rules.py`, `fedramp20x/rules_data/`, migration `0093`
+**Replaces:** `fedramp20x/ksi_catalog.json` (51 phase-one KSIs, Concord's wording)
+
+## 1. How this was found, and what was not taken
+
+The request was to review <https://myctrl.tools> and integrate what Concord
+can use without duplicating a mechanism it already has. The site is a CC BY
+4.0 aggregator of 102 frameworks with a public read-only API
+(`/api/v1/{frameworks,controls,crosswalks,guidance,search}`). Measured
+2026-10-14 against `data_version 2026.10.15`:
+
+| Offering | Taken? | Why |
+|---|---|---|
+| Crosswalks | **No** | 35,935 mappings into 800-53, 97% `related-via-bridge`: transitive inference through an intermediate catalog, not published by either framework. Spot checks fan out: CMMC 3.8.3 (media sanitization) → PM-5 (system inventory). `framework_mappings` carries no per-row provenance, so imported rows would be indistinguishable from the workbook's. |
+| Control text | **No** | API descriptions are cut at ~200 characters and some are paraphrase (CSF PR.AA-01 is not NIST's wording). |
+| Licence labels | **No** | 18 frameworks tagged `proprietary` (ISO, SOC 2, PCI, TISAX) and 3 `cc-by-nd`; the site's CC BY label cannot relicense them. The labels are also wrong in places — CIS Controls is CC BY-NC-SA, not CC BY-ND. |
+| Technology guidance | **No** | Commands map to a whole technology (AWS → 15 controls), not to the control a command verifies, and derive from CIS Benchmarks, whose terms restrict commercial use. |
+| `data_source` pointer for FedRAMP 20x KSI | **Yes, as a pointer** | `github.com/FedRAMP/rules`, public domain. Concord takes the dataset **from FedRAMP**, not from the aggregator: myctrl serves `2026.07.14.01`; upstream is `2026.10.13.01`. |
+
+## 2. The defect this closes
+
+Concord's KSI catalog is the 2025 phase-one set: 51 indicators
+(`KSI-IAM-01` …), wording "summarized", 800-53/CMMC mappings "Concord's
+REPRESENTATIVE interpretation". Its own header says to replace it "when
+FedRAMP publishes final machine-readable KSI definitions". FedRAMP has.
+
+The 2026 Consolidated Rules define **46** indicators with a different ID
+scheme (`KSI-CED-RAT`), drop the TPR theme, add SCR, and carry FedRAMP's
+own control mappings. **No phase-one ID exists in the 2026 dataset**, and
+FedRAMP publishes no old→new correspondence.
+
+Concord renders CR26 Security Decision Records — a 2026 deliverable — with
+`keySecurityIndicators[].ksiId` drawn from the phase-one catalog. **Every
+SDR Concord produces today cites indicators the current rules do not
+define.** `cr26/sdr.py:merge_requirements` also says "there is no
+machine-readable FedRAMP ruleset to check an `frrID` against". There now is:
+245 FRR requirement IDs, every one Concord's code cites among them.
+
+## 3. Decisions
+
+1. **Upstream, pinned, verified.** `rules_data/fedramp-consolidated-rules.json`
+   and its JSON Schema are vendored with a `MANIFEST.json` (sha256, upstream
+   commit, retrieved date, dataset version). Load verifies the hashes and
+   validates the dataset against the vendored schema, as FedRAMP's
+   `AGENTS.md` instructs. Registered in `DEFAULT_SOURCES` as a watched
+   `generic` source (`auto_ingest=False`), the same posture as the CR26
+   schemas, so the existing poller reports upstream drift.
+2. **Two authors, two files.** FedRAMP's statements, names, themes and
+   control mappings come only from the dataset. Concord's machine-readable
+   validation rules live in `rules_data/ksi_rules.json`, keyed by the 2026
+   IDs. It starts **empty**: phase-one rules are not carried onto 2026
+   indicators, so every 2026 KSI evaluates as `manual` until a rule is
+   authored for it on its own statement. `cmmc_refs` is empty — FedRAMP
+   publishes none.
+3. **Retire, never delete.** Tenant tables reference `ccf.ksis` with
+   `ON DELETE CASCADE`. `seed_ksis` sets `retired_at` on any row absent from
+   the dataset (and clears it if one returns), the pattern the workbook ETL
+   uses for controls. Tenant state on retired KSIs stays in the database for
+   history and is excluded from every list, score, package and deliverable.
+4. **One definition of "current".** `catalog.current_ksis()` and
+   `catalog.current_ksi_ids()` are the only filters; every reader uses them.
+   The guard is behavioural: a test seeds one retired and one current KSI
+   with tenant state and asserts each consumer omits the retired one.
+5. **Class variants are kept, not chosen.** Five indicators state
+   `varies_by_class` (class B marked **Optional**). Concord holds no
+   FedRAMP service class for a system, so the variants are stored verbatim
+   in `statement_by_class` and the description labels each by class.
+   Scoring does not change on class; recording the class is follow-up work.
+6. **Deliverables name what the pinned ruleset does not define.** In the
+   SDR, an authored `ksiId` or `frrID` absent from the pinned dataset is
+   **kept and named** — `undefined_ksi_ids` on the seed result, and a note
+   on `omitted_requirements` — with the dataset version. *Revised during
+   implementation:* the design first said "omit", but the stored document is
+   where that narrative lives, and `merge_indicators` already decided, for
+   stated reasons, that a catalog revision must not destroy human work.
+   Derived indicators come from current KSIs only. An SCN entry naming a
+   retired KSI is flagged as such. Capability↔KSI links accept current
+   identifiers only (422 otherwise).
+7. **Writes to a retired KSI are refused** (409) — state, reviews,
+   exceptions. Reads by identifier still resolve, flagged `retired`.
+
+## 4. Not in scope
+
+- Authoring validation rules for the 46 indicators (each needs its own
+  reading of the statement; no phase-one rule is reused).
+- A FedRAMP service-class field on the 20x profile.
+- The `CTL` section: 79 controls, 14 with parameters. Not the FedRAMP Rev. 5
+  parameter overlay — that gap (`GSA/fedramp-automation`) stays open.
+- FRD definitions surfaced in the UI.

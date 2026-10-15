@@ -326,7 +326,11 @@ async def seed_sdr_document(
       the only signal such a gap ever produces. Most entries name something
       dropped from the document; some name a repair to an entry that is
       still PRESENT -- a duplicate ``frrID`` kept rather than discarded, or a
-      schema-invalid optional field silently emptied.
+      schema-invalid optional field silently emptied. An ``frrID`` the pinned
+      FedRAMP Consolidated Rules do not define is one such kept-and-named entry.
+    * ``undefined_ksi_ids`` -- indicators the document cites that the pinned
+      Consolidated Rules (``rules_version``) do not define. Kept, because the
+      narrative is human work; named, because the document validates anyway.
 
     Like the CPO seed, the result is **invalid by design**:
     ``certificationPackageOverviewUri`` is required at the root and cannot be
@@ -345,6 +349,8 @@ async def seed_sdr_document(
         "controls_with_dropped_parts": result.controls_with_dropped_parts,
         "rendered_control_count": result.rendered_control_count,
         "omitted_requirements": result.omitted_requirements,
+        "undefined_ksi_ids": result.undefined_ksi_ids,
+        "rules_version": result.rules_version,
     }
 
 

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import zipfile
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
+from pathlib import Path
 from types import SimpleNamespace as N
 
 import pytest
@@ -29,7 +31,6 @@ from ccf.fedramp20x import (
 from ccf.fedramp20x.readiness import compute_readiness
 from ccf.fedramp20x.validation import SystemContext, evaluate_rule, normalize_control
 from ccf.models import (
-    KSI,
     CaptureSnapshot,
     Control,
     ControlImplementation,
@@ -54,6 +55,24 @@ def _migrate() -> None:
 
 def _client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t")
+
+
+#: Test-only validation rules on real 2026 indicators. The shipped overlay is
+#: empty, so without this every catalog KSI is ``manual`` and nothing below
+#: would reach the engine's control-state, capture or dependency paths.
+ENGINE_RULES = Path(__file__).parent / "fixtures" / "ksi_rules_engine.json"
+
+
+async def _seed_engine(s: object) -> dict[str, int]:
+    return await catalog.seed_ksis(s, overlay_path=ENGINE_RULES)  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+async def _restore_shipped_catalog() -> AsyncIterator[None]:
+    """``ksis`` is global; leave it as shipped so later modules never see test rules."""
+    yield
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
 
 
 # --- pure unit tests --------------------------------------------------------
@@ -402,7 +421,7 @@ async def _fresh_system(name: str = "Cso20x") -> int:
             sys = System(organization_id=org.id, name=name, baseline="moderate")
             s.add(sys)
             await s.flush()
-        # An implemented IA-2 so KSI-IAM-01 (control_state IA-2) validates to pass.
+        # An implemented IA-2 so KSI-IAM-APM (test rule: control_state IA-2) passes.
         ctrl = (
             await s.execute(select(Control).where(Control.identifier == "IA-2"))
         ).scalar_one_or_none()
@@ -428,23 +447,23 @@ async def test_seed_catalog_is_idempotent() -> None:
         # Second run updates existing rows rather than creating duplicates.
         assert second["created"] == 0
         assert second["total"] == first["total"]
-        rows = (await s.execute(select(KSI))).scalars().all()
+        rows = (await s.execute(catalog.current_ksis())).scalars().all()
         assert len(rows) == first["total"]
 
 
 @pytest.mark.asyncio
 async def test_validate_and_score_via_service() -> None:
     async with session_scope() as s:
-        await catalog.seed_ksis(s)
+        await _seed_engine(s)
     sid = await _fresh_system()
     async with session_scope() as s:
         results = await validation.validate_system(s, system_id=sid)
         assert results, "expected one result per KSI"
         by_id = {r["ksi_identifier"]: r for r in results}
-        # IA-2 implemented -> KSI-IAM-01 passes.
-        assert by_id["KSI-IAM-01"]["validation_status"] == "pass"
-        # A manual KSI (CNA-06 high availability) requires assessor review.
-        assert by_id["KSI-CNA-06"]["assessor_review_required"] is True
+        # IA-2 implemented -> KSI-IAM-APM passes.
+        assert by_id["KSI-IAM-APM"]["validation_status"] == "pass"
+        # An indicator with no authored rule is manual and needs assessor review.
+        assert by_id["KSI-CNA-OFA"]["assessor_review_required"] is True
 
         score = await readiness.score_system(s, system_id=sid, persist=True)
         assert 0 <= score["readiness_pct"] <= 100
@@ -463,9 +482,11 @@ async def test_api_flow_end_to_end() -> None:
         assert seed.status_code == 200 and seed.json()["total"] > 0
 
         ksis = (await c.get("/api/fedramp/20x/ksis")).json()
-        assert any(k["identifier"] == "KSI-IAM-01" for k in ksis)
-        one = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-01")).json()
+        assert any(k["identifier"] == "KSI-IAM-APM" for k in ksis)
+        one = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-APM")).json()
         assert one["nist_refs"]
+        async with session_scope() as s:
+            await _seed_engine(s)
 
         sid = await _fresh_system("ApiCso")
 
@@ -553,7 +574,7 @@ async def test_fedramp20x_ui_pages_and_forms() -> None:
 
         # Assessor review form records + reflects on KSI state.
         await c.post(f"/api/fedramp/20x/systems/{sid}/validate")
-        ksi = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-01")).json()
+        ksi = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-APM")).json()
         await c.post(
             f"/fedramp20x/{sid}/assessor-review",
             data={"ksi_id": str(ksi["id"]), "status": "accepted", "assessor": "3PAO"},
@@ -608,7 +629,7 @@ async def test_exceptions_traceability_and_findings_poam() -> None:
     async with _client() as c:
         await c.post("/api/fedramp/20x/ksis/seed")
         sid = await _fresh_system("BatchCso")
-        ksi = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-01")).json()
+        ksi = (await c.get("/api/fedramp/20x/ksis/KSI-IAM-APM")).json()
 
         # KSI exception CRUD.
         exc = await c.post(
@@ -623,9 +644,9 @@ async def test_exceptions_traceability_and_findings_poam() -> None:
         )
         assert patched.json()["status"] == "accepted"
 
-        # Reverse traceability: IA-2 supports KSI-IAM-01.
+        # Reverse traceability: FedRAMP maps KSI-IAM-APM to IA-2.
         trace = (await c.get("/api/fedramp/20x/controls/IA-2/ksis")).json()
-        assert any(k["identifier"] == "KSI-IAM-01" for k in trace["ksis"])
+        assert any(k["identifier"] == "KSI-IAM-APM" for k in trace["ksis"])
 
         # Assessor "finding_opened" auto-opens a POA&M; list endpoint returns history.
         await c.post(f"/api/fedramp/20x/systems/{sid}/validate")
@@ -645,7 +666,7 @@ async def test_exceptions_traceability_and_findings_poam() -> None:
 @pytest.mark.asyncio
 async def test_continuous_monitoring_detects_drift() -> None:
     async with session_scope() as s:
-        await catalog.seed_ksis(s)
+        await _seed_engine(s)
     sid = await _fresh_system("MonCso")
 
     # A system enters continuous monitoring once it has KSI state — validate once.
@@ -703,7 +724,7 @@ def test_any_of_returns_best_verdict() -> None:
 @pytest.mark.asyncio
 async def test_connector_capture_drives_validation() -> None:
     async with session_scope() as s:
-        await catalog.seed_ksis(s)
+        await _seed_engine(s)
     sid = await _fresh_system("CapCso")
     # Resolve the system's org and record a connector capture for it.
     async with session_scope() as s:
@@ -727,12 +748,12 @@ async def test_connector_capture_drives_validation() -> None:
                 )
             )
     # Each of these KSIs is any_of[connector_capture(...), control_state(...)]; the live
-    # capture drives them to pass — SVC-03 has no SC-28 implementation at all.
+    # capture drives them to pass — SVC-SIN has no SC-28 implementation at all.
     async with session_scope() as s:
         results = {
             r["ksi_identifier"]: r for r in await validation.validate_system(s, system_id=sid)
         }
-        for ident in ("KSI-MLA-01", "KSI-SVC-03", "KSI-IAM-01"):
+        for ident in ("KSI-MLA-OSM", "KSI-SVC-SIN", "KSI-IAM-APM"):
             assert results[ident]["validation_status"] == "pass", ident
             assert results[ident]["source"] == "connector_capture", ident
 
@@ -740,7 +761,7 @@ async def test_connector_capture_drives_validation() -> None:
 @pytest.mark.asyncio
 async def test_validation_emits_prometheus_metrics() -> None:
     async with session_scope() as s:
-        await catalog.seed_ksis(s)
+        await _seed_engine(s)
     sid = await _fresh_system("MetricCso")
 
     def _pass_count() -> float:
@@ -756,7 +777,7 @@ async def test_validation_emits_prometheus_metrics() -> None:
 @pytest.mark.asyncio
 async def test_dependency_context_flows_into_validation() -> None:
     async with session_scope() as s:
-        await catalog.seed_ksis(s)
+        await _seed_engine(s)
     sid = await _fresh_system("DepCso")
     async with session_scope() as s:
         s.add(FedRAMPDependency(system_id=sid, name="RDS", fedramp_status="not_authorized"))
@@ -764,5 +785,5 @@ async def test_dependency_context_flows_into_validation() -> None:
         results = {
             r["ksi_identifier"]: r for r in await validation.validate_system(s, system_id=sid)
         }
-        # A non-authorized dependency fails the dependency KSI (TPR-02).
-        assert results["KSI-TPR-02"]["validation_status"] == "fail"
+        # A non-authorized dependency fails the dependency rule (on KSI-SCR-MIT).
+        assert results["KSI-SCR-MIT"]["validation_status"] == "fail"

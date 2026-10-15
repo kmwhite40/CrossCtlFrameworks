@@ -54,10 +54,15 @@ def _fact(ftype: str, key: str, value: str | None, digest: str | None = None, **
 
 
 async def _ksi_facts(session: AsyncSession, system_id: int) -> list[Fact]:
+    from ..fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
     from ..models import KSIState  # noqa: PLC0415
 
     rows = (
-        await session.execute(select(KSIState).where(KSIState.system_id == system_id))
+        await session.execute(
+            select(KSIState).where(
+                KSIState.system_id == system_id, KSIState.ksi_id.in_(current_ksi_ids())
+            )
+        )
     ).scalars().all()
     return [_fact("ksi", str(r.ksi_id), r.status) for r in rows]
 

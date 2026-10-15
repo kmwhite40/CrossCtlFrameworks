@@ -56,6 +56,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .analytics.posture import systems_scorecard
+from .fedramp20x.catalog import current_ksi_ids
 from .governance import automation
 from .governance.control_tests import organization_capture_is_live
 from .models import KSIState, SSPProject, System, SystemProfile
@@ -495,7 +496,11 @@ async def _step_close_gaps(
 
     ksi_rows = list(
         (
-            await session.execute(select(KSIState).where(KSIState.system_id == system.id))
+            await session.execute(
+                select(KSIState).where(
+                    KSIState.system_id == system.id, KSIState.ksi_id.in_(current_ksi_ids())
+                )
+            )
         )
         .scalars()
         .all()

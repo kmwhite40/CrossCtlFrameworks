@@ -210,6 +210,28 @@ DEFAULT_SOURCES += [
     for _kind, (_filename, _rule) in _CR26_KINDS_FOR_SOURCES.items()
 ]
 
+# --- FedRAMP Consolidated Rules ----------------------------------------------
+# The machine-readable ruleset the KSI catalog is built from (definitions, FRR
+# process rules, KSIs). Watched, not ingested, like the CR26 schemas beside it:
+# the vendored, hash-pinned copy under ``ccf/fedramp20x/rules_data/`` is what
+# the platform reads, and a changed upstream is a person's decision to
+# re-vendor and re-seed -- KSIs can be added, renamed or retired by it.
+_FEDRAMP_RULES_KEY = "fedramp_consolidated_rules"
+_FEDRAMP_RULES_FILE = "fedramp-consolidated-rules.json"
+
+DEFAULT_SOURCES += [
+    {
+        "key": _FEDRAMP_RULES_KEY,
+        "name": "FedRAMP Consolidated Rules for 2026 (FRD, FRR, KSI)",
+        "authority": "FedRAMP",
+        "kind": "generic",
+        "url": f"https://raw.githubusercontent.com/FedRAMP/rules/main/{_FEDRAMP_RULES_FILE}",
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": False,
+    },
+]
+
 
 def sha256_bytes(body: bytes) -> str:
     """Content digest. Shared with :mod:`ccf.packs.sync`."""
@@ -672,6 +694,17 @@ def _oscal_spec_seed_digests() -> dict[str, str]:
     return {_OSCAL_SPEC_SSP_KEY: str(sha)}
 
 
+_FEDRAMP_RULES_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "fedramp20x" / "rules_data" / "MANIFEST.json"
+)
+
+
+def _fedramp_rules_seed_digests() -> dict[str, str]:
+    """``fedramp_consolidated_rules`` -> the sha256 the vendored manifest pins."""
+    manifest = json.loads(_FEDRAMP_RULES_MANIFEST.read_text(encoding="utf-8"))
+    return {_FEDRAMP_RULES_KEY: str(manifest["files"][_FEDRAMP_RULES_FILE]["sha256"])}
+
+
 #: ``CatalogSource.key`` -> the reader that can produce its seed-time
 #: ``last_sha256``. One mechanism for every row that must not start life with
 #: a NULL drift baseline (see :func:`seed_sources`'s docstring for why that is
@@ -683,6 +716,7 @@ def _oscal_spec_seed_digests() -> dict[str, str]:
 _SEED_DIGEST_READERS: dict[str, Callable[[], dict[str, str]]] = {
     **{f"{_CR26_KEY_PREFIX}{kind}": _cr26_seed_digests for kind in _CR26_KINDS_FOR_SOURCES},
     _OSCAL_SPEC_SSP_KEY: _oscal_spec_seed_digests,
+    _FEDRAMP_RULES_KEY: _fedramp_rules_seed_digests,
 }
 
 

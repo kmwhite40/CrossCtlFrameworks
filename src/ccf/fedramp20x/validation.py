@@ -39,6 +39,7 @@ from ..models import (
 )
 from ..models_grc import ControlTest
 from ..posture.evidence import non_passing_attribution, pass_attribution
+from .catalog import current_ksis
 
 # Best-to-worst ranking used to pick the winning verdict of an ``any_of`` rule.
 # Public because ccf.posture.rollup shares it -- but note the two uses select
@@ -415,7 +416,7 @@ async def validate_system(
 ) -> list[dict[str, Any]]:
     """Validate every KSI for a system; record history + state. Returns result dicts."""
     if ksis is None:
-        ksis = list((await session.execute(select(KSI).order_by(KSI.sort_order))).scalars().all())
+        ksis = list((await session.execute(current_ksis())).scalars().all())
     started = time.perf_counter()
     ctx = await build_context(session, system_id)
     now = datetime.now(UTC)

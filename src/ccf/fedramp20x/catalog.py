@@ -1,26 +1,33 @@
 """Load and query the FedRAMP 20x KSI catalog.
 
-The catalog ships as ``data/fedramp_20x_ksi_catalog.json`` (repo) so it can be
-updated as FedRAMP 20x evolves without a code change. ``seed_ksis`` performs an
-idempotent upsert keyed on ``identifier`` — the same pattern as the CMMC scoring
-seed — so re-running picks up catalog edits without duplicating rows.
+The catalog is FedRAMP's: indicator IDs, names, statements, themes and control
+mappings are read from the vendored Consolidated Rules dataset
+(:mod:`ccf.fedramp20x.rules`). The one Concord-authored part is the
+machine-readable validation ``rule`` (``rules_data/ksi_rules.json``); an
+indicator with no authored rule evaluates as ``manual``.
+
+``seed_ksis`` upserts on ``identifier`` and **retires** -- never deletes --
+any row the dataset no longer defines. Every per-system KSI table references
+``ccf.ksis`` with ``ON DELETE CASCADE``, so a delete would take a customer's
+history with it. Retired rows stay readable for history and are excluded from
+every list, score, package and deliverable: read the catalog through
+:func:`current_ksis` / :func:`current_ksi_ids`, the only definition of
+"current" in the codebase.
 """
 
 from __future__ import annotations
 
-import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..config import get_settings
 from ..models import KSI
+from .rules import RulesDatasetError, ksi_records, load_rule_overlay, load_rules
 
-CATALOG_FILENAME = "fedramp_20x_ksi_catalog.json"
-
-# Fields copied verbatim from a catalog record onto the KSI row.
+# Fields copied from a catalog record onto the KSI row.
 _FIELDS = (
     "category",
     "category_name",
@@ -34,67 +41,59 @@ _FIELDS = (
     "nist_refs",
     "cmmc_refs",
     "provider_services",
+    "statement_by_class",
     "rule",
     "sort_order",
     "source",
 )
 
+#: What an indicator with no Concord-authored rule carries. ``manual`` is the
+#: honest default: nothing has been written that could evaluate it.
+_UNAUTHORED = {
+    "rule": {"kind": "manual"},
+    "validation_method": "manual",
+    "validation_frequency": None,
+    "automation_level": "manual",
+    "evidence_required": True,
+}
 
-def _candidate_paths() -> list[Path]:
-    """Ordered locations to look for the catalog.
-
-    The repo ``data/`` copy is the human-editable override and wins when present;
-    the packaged ``ksi_catalog.json`` (shipped in the wheel/Docker image) is the
-    always-available fallback so seeding works even when ``data/`` is absent.
-    """
-    settings = get_settings()
-    # src/ccf/fedramp20x/catalog.py -> parents[3] == repo root
-    repo_root = Path(__file__).resolve().parents[3]
-    return [
-        repo_root / "data" / CATALOG_FILENAME,
-        settings.data_dir / CATALOG_FILENAME,
-        Path.cwd() / "data" / CATALOG_FILENAME,
-        Path(__file__).with_name("ksi_catalog.json"),  # packaged fallback
-    ]
+_OVERLAY_FIELDS = ("rule", "validation_method", "validation_frequency", "automation_level")
 
 
-def catalog_path(path: str | Path | None = None) -> Path:
-    """Resolve the catalog file path, raising if none of the candidates exist."""
-    if path is not None:
-        return Path(path)
-    for candidate in _candidate_paths():
-        if candidate.is_file():
-            return candidate
-    tried = ", ".join(str(p) for p in _candidate_paths())
-    raise FileNotFoundError(f"FedRAMP 20x KSI catalog not found. Looked in: {tried}")
-
-
-def load_catalog(path: str | Path | None = None) -> dict[str, Any]:
-    """Load the raw catalog document (version, categories, ksis)."""
-    doc: dict[str, Any] = json.loads(catalog_path(path).read_text(encoding="utf-8"))
-    return doc
-
-
-def load_records(path: str | Path | None = None) -> list[dict[str, Any]]:
-    """Return the KSI records with the category display name denormalized on each."""
-    doc = load_catalog(path)
-    cat_names = {c["key"]: c["name"] for c in doc.get("categories", [])}
-    version = doc.get("version")
-    records: list[dict[str, Any]] = []
-    for i, ksi in enumerate(doc.get("ksis", [])):
-        rec = dict(ksi)
-        rec.setdefault("category_name", cat_names.get(rec.get("category", ""), rec.get("category")))
-        rec.setdefault("sort_order", i)
-        rec.setdefault("source", f"fedramp-20x-catalog:{version}" if version else "fedramp-20x")
-        records.append(rec)
+def load_records(
+    rules_dir: str | Path | None = None, overlay_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """The current catalog: FedRAMP's indicators, plus Concord's rules where authored."""
+    records = ksi_records(load_rules(rules_dir))
+    known = {r["identifier"] for r in records}
+    overlay = load_rule_overlay(overlay_path)
+    stray = sorted(set(overlay) - known)
+    if stray:
+        # A rule keyed to an indicator FedRAMP does not define would evaluate
+        # nothing and silently vanish; refuse it instead.
+        raise RulesDatasetError(f"ksi_rules.json has rules for undefined indicators: {stray}")
+    for i, rec in enumerate(records):
+        rec.update(_UNAUTHORED)
+        authored = overlay.get(rec["identifier"])
+        if authored:
+            rec.update({k: authored[k] for k in _OVERLAY_FIELDS if k in authored})
+        rec["sort_order"] = i
     return records
 
 
-async def seed_ksis(session: AsyncSession, path: str | Path | None = None) -> dict[str, int]:
-    """Idempotently upsert the KSI catalog. Returns {'created', 'updated', 'total'}."""
-    records = load_records(path)
+async def seed_ksis(
+    session: AsyncSession,
+    rules_dir: str | Path | None = None,
+    overlay_path: str | Path | None = None,
+) -> dict[str, int]:
+    """Upsert the catalog and retire what it no longer defines.
+
+    Returns ``{'created', 'updated', 'retired', 'total'}``; ``retired`` counts
+    rows newly retired by this call. A row that reappears is un-retired.
+    """
+    records = load_records(rules_dir, overlay_path)
     existing = {k.identifier: k for k in (await session.execute(select(KSI))).scalars().all()}
-    created = updated = 0
+    created = updated = retired = 0
     for rec in records:
         ident = rec["identifier"]
         row = existing.get(ident)
@@ -107,12 +106,29 @@ async def seed_ksis(session: AsyncSession, path: str | Path | None = None) -> di
         for field in _FIELDS:
             if field in rec:
                 setattr(row, field, rec[field])
+        row.retired_at = None
+    wanted = {r["identifier"] for r in records}
+    now = datetime.now(UTC)
+    for ident, row in existing.items():
+        if ident not in wanted and row.retired_at is None:
+            row.retired_at = now
+            retired += 1
     await session.flush()
-    return {"created": created, "updated": updated, "total": len(records)}
+    return {"created": created, "updated": updated, "retired": retired, "total": len(records)}
+
+
+def current_ksis() -> Select[tuple[KSI]]:
+    """``SELECT`` over the KSIs the catalog currently defines, in catalog order."""
+    return select(KSI).where(KSI.retired_at.is_(None)).order_by(KSI.sort_order, KSI.identifier)
+
+
+def current_ksi_ids() -> Select[tuple[int]]:
+    """Subquery of current KSI primary keys, for filtering per-system tables."""
+    return select(KSI.id).where(KSI.retired_at.is_(None))
 
 
 async def list_ksis(session: AsyncSession, category: str | None = None) -> list[KSI]:
-    stmt = select(KSI).order_by(KSI.sort_order, KSI.identifier)
+    stmt = current_ksis()
     if category:
         stmt = stmt.where(KSI.category == category)
     return list((await session.execute(stmt)).scalars().all())

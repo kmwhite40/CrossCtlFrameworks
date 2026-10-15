@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "TEST-ONLY rule overlay. Exercises the KSI validation engine end to end",
+    "through real 2026 catalog rows without the shipped catalog claiming any",
+    "of these rules. The shipped overlay (ccf/fedramp20x/rules_data/ksi_rules.json)",
+    "is empty; nothing here is an assertion about what these indicators require."
+  ],
+  "rules": {
+    "KSI-IAM-APM": {
+      "rule": {"kind": "any_of", "rules": [
+        {"kind": "connector_capture", "captures": ["mfa_enforced"]},
+        {"kind": "control_state", "controls": ["IA-2"], "states": ["implemented", "inherited"]}
+      ]},
+      "validation_method": "automated", "validation_frequency": "continuous",
+      "automation_level": "automated"
+    },
+    "KSI-MLA-OSM": {
+      "rule": {"kind": "any_of", "rules": [
+        {"kind": "connector_capture", "captures": ["audit_retention_period"]},
+        {"kind": "control_state", "controls": ["AU-6"], "states": ["implemented", "inherited"]}
+      ]},
+      "validation_method": "automated", "validation_frequency": "continuous",
+      "automation_level": "automated"
+    },
+    "KSI-SVC-SIN": {
+      "rule": {"kind": "any_of", "rules": [
+        {"kind": "connector_capture", "captures": ["encryption_at_rest"]},
+        {"kind": "control_state", "controls": ["SC-28"], "states": ["implemented", "inherited"]}
+      ]},
+      "validation_method": "automated", "validation_frequency": "continuous",
+      "automation_level": "automated"
+    },
+    "KSI-IAM-ELP": {
+      "rule": {"kind": "control_state", "controls": ["IA-2"], "states": ["implemented", "inherited"]},
+      "validation_method": "automated", "validation_frequency": "continuous",
+      "automation_level": "automated"
+    },
+    "KSI-SCR-MIT": {
+      "rule": {"kind": "dependency_authorized"},
+      "validation_method": "automated", "validation_frequency": "quarterly",
+      "automation_level": "automated"
+    }
+  }
+}

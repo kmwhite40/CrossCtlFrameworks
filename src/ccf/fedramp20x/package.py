@@ -28,7 +28,6 @@ from sqlalchemy.orm import selectinload
 
 from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
-    KSI,
     POAM,
     FedRAMP20xProfile,
     FedRAMPDependency,
@@ -38,6 +37,7 @@ from ..models import (
     KSIValidationResult,
     System,
 )
+from .catalog import current_ksi_ids, current_ksis
 from .readiness import score_system
 
 
@@ -74,7 +74,10 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
             select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
         )
     ).scalar_one_or_none()
-    ksis = list((await session.execute(select(KSI).order_by(KSI.sort_order))).scalars().all())
+    # Per-KSI state, validation and review are looked up through ``ksis``, so
+    # restricting ``ksis`` to current indicators is what keeps retired ones out;
+    # the exception list below is emitted as-is and is filtered itself.
+    ksis = list((await session.execute(current_ksis())).scalars().all())
     states = {
         s.ksi_id: s
         for s in (await session.execute(select(KSIState).where(KSIState.system_id == system_id)))
@@ -106,7 +109,14 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
         .all()
     )
     exceptions = list(
-        (await session.execute(select(KSIException).where(KSIException.system_id == system_id)))
+        (
+            await session.execute(
+                select(KSIException).where(
+                    KSIException.system_id == system_id,
+                    KSIException.ksi_id.in_(current_ksi_ids()),
+                )
+            )
+        )
         .scalars()
         .all()
     )

@@ -1754,8 +1754,11 @@ class ScanIngestion(Base):
 class KSI(Base):
     """A FedRAMP 20x Key Security Indicator (reference catalog, org-agnostic).
 
-    Seeded from ``data/fedramp_20x_ksi_catalog.json`` via ``ccf.fedramp20x.catalog``.
-    ``rule`` is the machine-readable validation spec the validation engine evaluates.
+    Seeded from FedRAMP's Consolidated Rules dataset via ``ccf.fedramp20x.catalog``.
+    ``rule`` is the machine-readable validation spec the validation engine evaluates;
+    it is Concord-authored (``rules_data/ksi_rules.json``), everything else is FedRAMP's.
+    A row the dataset no longer defines is retired (``retired_at``), never deleted --
+    tenant history cascades from it. Read through ``catalog.current_ksis``.
     """
 
     __tablename__ = "ksis"
@@ -1777,6 +1780,11 @@ class KSI(Base):
     rule: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str | None] = mapped_column(String(255))
+    # FedRAMP's varies_by_class statements, verbatim: class key ("b", "c") -> statement.
+    statement_by_class: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

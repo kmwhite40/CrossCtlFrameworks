@@ -610,8 +610,8 @@ async def test_the_route_reports_an_omitted_fedramp_requirement_to_the_caller() 
             kind="sdr",
             document={
                 "fedRampRequirements": [
-                    {"frrID": "SDR-CSO-GOOD", "frrImplementation": ["We meet it."]},
-                    {"frrID": "SDR-CSO-BLANK", "frrImplementation": ["", "   "]},
+                    {"frrID": "SDR-CSO-FRR", "frrImplementation": ["We meet it."]},
+                    {"frrID": "SDR-CSO-MTD", "frrImplementation": ["", "   "]},
                 ]
             },
         )
@@ -621,9 +621,9 @@ async def test_the_route_reports_an_omitted_fedramp_requirement_to_the_caller() 
     assert resp.status_code == 200, resp.text
     body = resp.json()
     doc_ids = [e["frrID"] for e in body["document"]["fedRampRequirements"]]
-    assert doc_ids == ["SDR-CSO-GOOD"]
+    assert doc_ids == ["SDR-CSO-FRR"]
     assert body["omitted_requirements"] == [
-        ["SDR-CSO-BLANK", "no implementation statement"]
+        ["SDR-CSO-MTD", "no implementation statement"]
     ]
 
 
@@ -971,7 +971,7 @@ async def test_an_unusable_fedramp_requirement_is_omitted_and_reported() -> None
             kind="sdr",
             document={
                 "fedRampRequirements": [
-                    {"frrID": "SDR-CSO-GOOD", "frrImplementation": ["We meet it."]},
+                    {"frrID": "SDR-CSO-FRR", "frrImplementation": ["We meet it."]},
                     {"frrID": "", "frrImplementation": ["Orphaned -- no id."]},
                     {"frrID": "SDR-CSO-EMPTY", "frrImplementation": ["", "   "]},
                 ]
@@ -982,7 +982,7 @@ async def test_an_unusable_fedramp_requirement_is_omitted_and_reported() -> None
         result = await seed_sdr(s, system_id=fx.system_id)
 
     doc_ids = [e["frrID"] for e in result.document.document["fedRampRequirements"]]
-    assert doc_ids == ["SDR-CSO-GOOD"]
+    assert doc_ids == ["SDR-CSO-FRR"]
     assert ("fedRampRequirements[1]", "no frrID") in result.omitted_requirements
     assert (
         "SDR-CSO-EMPTY",
