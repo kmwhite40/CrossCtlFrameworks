@@ -70,6 +70,12 @@ class Readiness:
     high_risk_findings: int
     expired_validations: int
     manual_review_burden: int
+    #: KSIs whose verdict is a person's (manual rule) but which a curated
+    #: automated method contradicts -- shown as ``warn``. Reported, never
+    #: blended, and still counted in ``manual_review_burden``: ``warn`` ranks
+    #: above ``manual_review_required``, so without this a failing check would
+    #: make the burden look smaller.
+    contradicted_by_methods: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -113,7 +119,13 @@ def compute_readiness(
 
     passed = sum(1 for s in states if s.status == "pass")
     failed = sum(1 for s in states if s.status == "fail")
-    manual = sum(1 for s in states if s.status == "manual_review_required")
+    manual_rule = {
+        k.id for k in ksis if ((getattr(k, "rule", None) or {}).get("kind") or "manual") == "manual"
+    }
+    contradicted = sum(1 for s in states if s.status == "warn" and s.ksi_id in manual_rule)
+    manual = (
+        sum(1 for s in states if s.status == "manual_review_required") + contradicted
+    )
     expired = sum(
         1 for s in states if s.next_validation_due is not None and s.next_validation_due < today
     )
@@ -167,6 +179,7 @@ def compute_readiness(
         high_risk_findings=failed + dep_high_risk,
         expired_validations=expired,
         manual_review_burden=manual,
+        contradicted_by_methods=contradicted,
     )
 
     # Weighted overall (skip sub-scores that are None and renormalize).

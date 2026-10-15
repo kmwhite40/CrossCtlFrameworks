@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..fedramp20x.applicability import system_scope
 from ..fedramp20x.catalog import current_ksis
+from ..fedramp20x.methods import tier0_check_status
 from ..fedramp20x.rules import frr_ids, ksi_ids, load_rules
 from ..models import (
     KSI,
@@ -890,22 +891,24 @@ def _assessment_statements(review: KSIAssessorReview | None) -> list[str]:
     return [statement]
 
 
-def _tests(ksi: KSI) -> list[str]:
-    """The tests used to validate this indicator: curated methods, then the rule.
+def _tests(ksi: KSI, check_status: Mapping[str, str] | None = None) -> list[str]:
+    """The tests used to validate this indicator on this system.
 
     A curated method (:mod:`ccf.fedramp20x.methods`) is a real automated test
-    of the system -- a Concord posture check -- so it is named, by title and
-    key. The rule's ``kind`` is named too unless it is ``manual``, which is the
-    absence of a defined test, not a test: naming it would present an
-    untested indicator as having one.
+    -- a Concord posture check -- but only on a system where it has actually
+    run (``check_status``, from ``methods.tier0_check_status``). An M365-only
+    system's SDR must not list AWS checks as tests it uses. The rule's
+    ``kind`` is named too unless it is ``manual``, which is the absence of a
+    defined test, not a test.
     """
-    from ..fedramp20x.methods import platform_checks  # noqa: PLC0415
+    from ..fedramp20x.methods import RAN, platform_checks  # noqa: PLC0415
 
     checks = platform_checks()
+    status = check_status or {}
     out = [
         f"Automated: {checks[m['check']].title} ({m['check']})"
         for m in (ksi.methods or [])
-        if m.get("check") in checks
+        if m.get("check") in checks and status.get(m["check"]) in RAN
     ]
     method = (ksi.validation_method or "").strip()
     kind = str((ksi.rule or {}).get("kind") or "").strip()
@@ -961,6 +964,7 @@ async def _derived_indicators(
     # Classes B-D; a Class A provider is not required to file one, but if it
     # does, the indicators it addresses are FRC-CLA-MFR's seven.)
     ksis = scope.owed(list((await session.execute(current_ksis())).scalars().all()))
+    check_status = await tier0_check_status(session, system_id)
     if not ksis:
         return {}
 
@@ -1001,7 +1005,7 @@ async def _derived_indicators(
         facts: dict[str, Any] = {
             "ksiValidation": _validation_statements(result),
             "ksiAssessment": _assessment_statements(reviews.get(ksi.id)),
-            "ksiTests": _tests(ksi),
+            "ksiTests": _tests(ksi, check_status),
             "ksiEvidence": _evidence(result),
         }
         state = states.get(ksi.id)

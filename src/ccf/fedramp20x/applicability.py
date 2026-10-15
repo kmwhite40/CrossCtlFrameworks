@@ -184,17 +184,24 @@ def for_class(
 ) -> ClassScope:
     """The scope for one Class/Path pair (either may be ``None``)."""
     ids = ksi_ids(rules)
-    if certification_class is None:
-        return ClassScope(
-            _uniform(ids, UNSCOPED, None),
-            "No Certification Class is recorded, so every current KSI is scored.",
-        )
-    cls = certification_class.upper()
     path = certification_path.capitalize() if certification_path else None
     twentyx_paths = _subset_paths(rules, "IVV", "20x", "CSX") | _subset_paths(
         rules, "FRC", "all", "CLA"
     )
     allowed = "/".join(sorted(twentyx_paths))
+    if certification_class is None:
+        if path is not None and path not in twentyx_paths:
+            # The path alone settles it: no KSI rule applies off the 20x paths.
+            return ClassScope(
+                _uniform(ids, NOT_REQUIRED, _REV5_RULE),
+                f"The {path} path is Rev5 only: FedRAMP's KSI rules apply to 20x "
+                f"{allowed} certifications.",
+            )
+        return ClassScope(
+            _uniform(ids, UNSCOPED, None),
+            "No Certification Class is recorded, so every current KSI is scored.",
+        )
+    cls = certification_class.upper()
 
     if path is not None and path not in twentyx_paths:
         if cls == "A":
@@ -240,6 +247,15 @@ def for_class(
                 by_id[k] = Applicability(REQUIRED, _ALL_KSIS_RULE)
 
     path_words = f"on the {path} path" if path else "with no Certification Path recorded"
+    if cls == "A":
+        # Class A exists only as a 20x certification (no Rev5 subset lists it),
+        # so the class alone settles the type.
+        return ClassScope(
+            by_id,
+            f"FedRAMP's KSI rules for a Class A certification (20x only), applied to a "
+            f"system {path_words}.",
+            automation=automation_requirement(rules, cls),
+        )
     return ClassScope(
         by_id,
         f"FedRAMP's KSI rules for a 20x Class {cls} certification, applied to a system "
@@ -318,10 +334,12 @@ class SystemScope:
                 "rule": _AUTOMATION_RULE,
                 "force": auto.force,
                 "min_automated_methods_per_ksi": auto.min_methods,
+                # With no minimum (Class A: MAY) "meeting" is vacuous -- every
+                # KSI would meet zero -- so report how many have ANY instead.
                 "ksis_meeting": sum(
                     1
                     for k in owed
-                    if automated_method_count(k, check_status) >= auto.min_methods
+                    if automated_method_count(k, check_status) >= max(auto.min_methods, 1)
                 ),
                 "ksis_owed": len(owed),
             }

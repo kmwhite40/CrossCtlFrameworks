@@ -309,7 +309,7 @@ async def test_the_page_says_what_the_score_covers() -> None:
         page_a = (await c.get(f"/fedramp20x?system_id={a}")).text
         page_none = (await c.get(f"/fedramp20x?system_id={none}")).text
     assert "Scored on 7 KSIs: 7 required. 39 not required." in page_a
-    assert "if this system is certified under Rev5, these KSIs are not what it owes" in page_a
+    assert "Class A certification (20x only)" in page_a
     assert ">not required</span>" in page_a
     assert "No Certification Class is recorded" in page_none
     assert "Scored on 46 KSIs: 46 unscoped." in page_none
@@ -440,7 +440,7 @@ async def test_a_class_a_package_drops_out_of_scope_exceptions_and_says_its_scop
         pkg = await package.build_package(s, system_id=sid)
     assert pkg["exceptions"] == []
     md = package.render_markdown(pkg)
-    assert "**KSI scope:** FedRAMP's KSI rules for a 20x Class A certification" in md
+    assert "**KSI scope:** FedRAMP's KSI rules for a Class A certification (20x only)" in md
     assert "| KSI | Category | Applicability | Status | Assessor |" in md
     assert "| KSI-CED-RAT | CED | required |" in md
 
@@ -484,3 +484,23 @@ async def test_drift_on_a_ksi_the_class_does_not_owe_is_not_alerted() -> None:
     # KSI-IAM-ELP regressed pass -> fail, but Class A does not owe it; the
     # owed KSI-IAM-APM falls to manual review, which is not a regression.
     assert row["regressions"] == 0
+
+
+def test_class_a_is_not_conditional_on_type() -> None:
+    sc = ap.for_class(rules.load_rules(), "A", "program")
+    assert not sc.conditional_on_20x  # no Rev5 subset lists Class A
+    assert "20x only" in sc.basis
+
+
+def test_the_agency_path_settles_it_even_without_a_class() -> None:
+    sc = ap.for_class(rules.load_rules(), None, "agency")
+    assert {a.status for a in sc.by_identifier.values()} == {"not_required"}
+
+
+async def test_class_a_vvk_counts_ksis_with_any_method_not_all_of_them() -> None:
+    sid = await _system("A")
+    async with session_scope() as s:
+        score = await readiness.score_system(s, system_id=sid, persist=False)
+    auto = score["automation_requirement"]
+    assert auto["min_automated_methods_per_ksi"] == 0
+    assert auto["ksis_meeting"] == 0 and auto["ksis_owed"] == 7
