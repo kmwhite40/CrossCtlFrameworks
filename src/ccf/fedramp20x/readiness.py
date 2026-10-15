@@ -294,3 +294,25 @@ async def score_system(
         except Exception:
             pass
     return payload
+
+
+#: KSI states that are still someone's work.
+GAP_STATUSES = ("fail", "warn", "manual_review_required")
+
+
+async def open_gaps(session: AsyncSession, *, system_id: int) -> list[dict[str, str]]:
+    """Current KSIs this system is failing, warning on, or owes a manual review for."""
+    rows = (
+        await session.execute(
+            select(KSI.identifier, KSI.name, KSIState.status)
+            .join(KSIState, KSIState.ksi_id == KSI.id)
+            .where(
+                KSIState.system_id == system_id,
+                KSIState.status.in_(GAP_STATUSES),
+                KSI.id.in_(current_ksi_ids()),
+            )
+            .order_by(KSI.sort_order, KSI.identifier)
+        )
+    ).all()
+    return [{"ksi": r[0], "name": r[1], "status": r[2]} for r in rows]
+

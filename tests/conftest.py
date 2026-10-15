@@ -106,6 +106,42 @@ def _delete_keyed_cr26_documents_before_wipe(cfg: Config) -> None:
         engine.dispose()
 
 
+def _delete_retired_ksis_before_wipe(cfg: Config) -> None:
+    """Delete every retired ``ccf.ksis`` row immediately before the total wipe.
+
+    Migration ``0093_ksi_retirement``'s ``downgrade()`` refuses to run while a
+    retired KSI exists: pre-0093 code reads every row as current, so dropping
+    ``retired_at`` would silently make the retired phase-one catalog current
+    again beside the 2026 one. Correct, and it must stay strict -- a migration
+    cannot tell a test database from a real one.
+
+    ``clean_migrated_db`` is not that downgrade. It goes to ``base``, which
+    drops ``ccf.ksis`` and everything cascading from it one step later, so
+    removing the retired rows first changes nothing about the outcome. It is
+    the same reasoning, and the same single exempt caller, as
+    :func:`_delete_keyed_cr26_documents_before_wipe` for 0081.
+
+    Found the hard way: one test that leaked a retired KSI made the guard
+    raise out of this fixture, erroring every module of every later session.
+    Guarded to be a no-op before 0093 exists or before anything is migrated.
+    """
+    engine = create_engine(cfg.get_main_option("sqlalchemy.url"))
+    try:
+        with engine.begin() as conn:
+            has_column = conn.execute(
+                text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = 'ccf' AND table_name = 'ksis' "
+                    "AND column_name = 'retired_at'"
+                )
+            ).first()
+            if has_column is None:
+                return
+            conn.execute(text("DELETE FROM ccf.ksis WHERE retired_at IS NOT NULL"))
+    finally:
+        engine.dispose()
+
+
 @pytest.fixture(autouse=True)
 def _structlog_configuration_is_restored() -> Iterator[None]:
     """Undo any structlog reconfiguration a test performs.
@@ -158,6 +194,7 @@ def clean_migrated_db() -> None:
     # every table anyway, so this is the one caller allowed to clear a row
     # migration 0081's downgrade() would otherwise refuse to run past.
     _delete_keyed_cr26_documents_before_wipe(cfg)
+    _delete_retired_ksis_before_wipe(cfg)
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
 

@@ -1189,23 +1189,11 @@ def fr20x_export(
 @fedramp20x_app.command(name="list-gaps")
 def fr20x_gaps(system_id: int = typer.Option(..., "--system-id")) -> None:
     """List KSIs that are failing, warning, or need manual/assessor review."""
-    from .models import KSI, KSIState  # noqa: PLC0415
+    from .fedramp20x.readiness import open_gaps  # noqa: PLC0415
 
-    async def _run() -> list[dict[str, object]]:
+    async def _run() -> list[dict[str, str]]:
         async with session_scope() as session:
-            rows = (
-                await session.execute(
-                    select(KSI.identifier, KSI.name, KSIState.status)
-                    .join(KSIState, KSIState.ksi_id == KSI.id)
-                    .where(
-                        KSIState.system_id == system_id,
-                        KSIState.status.in_(("fail", "warn", "manual_review_required")),
-                        KSI.retired_at.is_(None),
-                    )
-                    .order_by(KSI.sort_order)
-                )
-            ).all()
-            return [{"ksi": r[0], "name": r[1], "status": r[2]} for r in rows]
+            return await open_gaps(session, system_id=system_id)
 
     gaps = asyncio.run(_run())
     if not gaps:

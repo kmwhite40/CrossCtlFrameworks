@@ -628,3 +628,31 @@ async def test_a_phase_one_sdr_entry_loses_its_frozen_status_and_reads_report_it
         got = await c.get(f"/api/systems/{sid}/cr26-documents/sdr")
     assert got.status_code == 200, got.text
     assert got.json()["undefined_ksi_ids"] == ["KSI-IAM-01"]
+
+
+async def test_the_suite_reset_clears_retired_ksis_its_wipe_would_destroy() -> None:
+    """``clean_migrated_db`` must not be blocked by 0093's downgrade guard."""
+    from tests.conftest import _delete_retired_ksis_before_wipe  # noqa: PLC0415
+
+    sid = await _system("Wipe")
+    kid = await _phase_one_row(sid, "KSI-INR-01")
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
+    _delete_retired_ksis_before_wipe(cfg)
+    async with session_scope() as s:
+        assert await s.get(KSI, kid) is None
+        current = (await s.execute(catalog.current_ksis())).scalars().all()
+        assert len(current) == 46  # only retired rows went
+
+
+async def test_open_gaps_lists_current_ksis_only() -> None:
+    sid = await _system("Gaps")
+    await _phase_one_row(sid)  # retired below, with a failing state
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+        await validation.validate_system(s, system_id=sid)
+        gaps = await readiness.open_gaps(s, system_id=sid)
+    assert {g["ksi"] for g in gaps} == rules.ksi_ids(rules.load_rules())
+    assert {g["status"] for g in gaps} == {"manual_review_required"}
