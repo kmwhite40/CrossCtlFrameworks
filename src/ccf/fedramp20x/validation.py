@@ -417,6 +417,9 @@ async def validate_system(
     """Validate every KSI for a system; record history + state. Returns result dicts."""
     if ksis is None:
         ksis = list((await session.execute(current_ksis())).scalars().all())
+    else:
+        # Never record new state against an indicator FedRAMP no longer defines.
+        ksis = [k for k in ksis if k.retired_at is None]
     started = time.perf_counter()
     ctx = await build_context(session, system_id)
     now = datetime.now(UTC)

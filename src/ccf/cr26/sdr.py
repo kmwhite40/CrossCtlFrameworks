@@ -898,6 +898,11 @@ def _tests(ksi: KSI) -> list[str]:
     """
     method = (ksi.validation_method or "").strip()
     kind = str((ksi.rule or {}).get("kind") or "").strip()
+    if kind == "manual":
+        # A manual rule is the absence of a defined test, not a test: every
+        # 2026 KSI with no authored rule carries it, and naming it here would
+        # present an untested indicator as having one.
+        return []
     if method and kind:
         return [f"{method} validation (rule kind: {kind})"]
     if method:
@@ -1153,17 +1158,28 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     document["securityControls"] = controls
 
     authored = document.get("keySecurityIndicators")
+    derived = await _derived_indicators(session, system_id)
     merged, omitted = merge_indicators(
         [entry for entry in authored if isinstance(entry, dict)]
         if isinstance(authored, list)
         else [],
-        await _derived_indicators(session, system_id),
+        derived,
     )
     document["keySecurityIndicators"] = merged
 
     rules = load_rules()
     defined_ksis = ksi_ids(rules)
     undefined = sorted({e["ksiId"] for e in merged if e["ksiId"] not in defined_ksis})
+    for entry in merged:
+        if entry["ksiId"] in derived or entry["ksiId"] in defined_ksis:
+            continue
+        # merge_indicators keeps an unrecognised entry's last derived facts so
+        # the document stays valid. For an indicator this seed did not refresh
+        # AND FedRAMP no longer defines, they never will refresh -- writes to a
+        # retired KSI are refused -- so an optional implementation status left
+        # there is a frozen claim. Drop it; the required arrays stay as the
+        # history they are.
+        entry.pop("ksiImplementationStatus", None)
 
     authored_requirements = document.get("fedRampRequirements")
     rendered_requirements, omitted_requirements = merge_requirements(

@@ -187,7 +187,8 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
         "disclaimer": (
             "Foundation output. Not an official FedRAMP submission. OSCAL-shaped "
             "sections are validated against a Concord OSCAL-subset schema, not the "
-            "official OSCAL schema. KSI catalog is representative and evolving."
+            "official OSCAL schema. KSI statements and control mappings are FedRAMP's "
+            "Consolidated Rules; validation rules are Concord's."
         ),
         "system": {
             "id": system.id,

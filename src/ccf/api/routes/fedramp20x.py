@@ -39,7 +39,7 @@ from ...models import (
     KSIValidationResult,
     System,
 )
-from ..auth_deps import get_principal, require_role
+from ..auth_deps import get_principal, require_platform_admin, require_role
 from ..deps import get_session
 from .systems import require_system_in_scope
 
@@ -129,7 +129,9 @@ async def get_ksi(
 @router.post("/ksis/seed")
 async def seed_ksis(
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin")),
+    # ``ccf.ksis`` is global: a seed retires indicators for every tenant, so
+    # it is a platform operation, not a tenant admin's.
+    principal: Principal = Depends(require_platform_admin()),
 ) -> dict[str, int]:
     result = await catalog.seed_ksis(session)
     await bus.emit(
@@ -198,7 +200,8 @@ async def list_validations(
         .order_by(KSIValidationResult.validated_at.desc())
         .limit(limit)
     )
-    if not include_retired:
+    # Asking for one indicator by name is asking for its history, retired or not.
+    if not include_retired and not ksi:
         stmt = stmt.where(KSIValidationResult.ksi_id.in_(catalog.current_ksi_ids()))
     if ksi:
         stmt = stmt.where(KSIValidationResult.ksi_identifier == ksi)

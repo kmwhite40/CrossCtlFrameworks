@@ -54,8 +54,9 @@ class ConsolidatedRules:
 def _verify(d: Path) -> dict[str, Any]:
     manifest: dict[str, Any] = json.loads((d / "MANIFEST.json").read_text(encoding="utf-8"))
     files: dict[str, Any] = manifest.get("files", {})
-    # Every file this module reads MUST be pinned: a manifest that drops an
-    # entry would otherwise let that file load unverified.
+    # Both FedRAMP files MUST be pinned: a manifest that drops an entry would
+    # otherwise let that file load unverified. (``ksi_rules.json`` is Concord's
+    # own authored overlay, reviewed like code, and is not pinned here.)
     unlisted = sorted({DATASET_FILE, SCHEMA_FILE} - files.keys())
     if unlisted:
         raise RulesDatasetError(f"MANIFEST.json does not pin: {unlisted}")
@@ -72,9 +73,10 @@ def _verify(d: Path) -> dict[str, Any]:
 def _validate(data: Any, schema: dict[str, Any]) -> None:
     import jsonschema  # noqa: PLC0415 -- a hard dependency; imported where used
 
-    errors = sorted(
-        jsonschema.Draft202012Validator(schema).iter_errors(data), key=lambda e: list(e.path)
+    validator = jsonschema.Draft202012Validator(
+        schema, format_checker=jsonschema.Draft202012Validator.FORMAT_CHECKER
     )
+    errors = sorted(validator.iter_errors(data), key=lambda e: list(e.path))
     if errors:
         first = errors[0]
         where = "/".join(str(p) for p in first.path) or "<root>"
@@ -122,6 +124,19 @@ def _control_id(raw: str) -> str:
     return canon.value
 
 
+#: Theme statuses FedRAMP uses for a theme that defines nothing yet. Its
+#: indicators, if any, are not requirements, so the catalog does not carry them.
+_INACTIVE_THEME = frozenset({"placeholder", "empty"})
+
+
+def _active_themes(rules: ConsolidatedRules) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (key, theme)
+        for key, theme in rules.data["KSI"].items()
+        if theme.get("status") not in _INACTIVE_THEME
+    ]
+
+
 def ksi_records(rules: ConsolidatedRules) -> list[dict[str, Any]]:
     """One catalog record per indicator, in the dataset's own order.
 
@@ -131,7 +146,7 @@ def ksi_records(rules: ConsolidatedRules) -> list[dict[str, Any]]:
     labels each one -- no class's text is chosen or copied onto another.
     """
     records: list[dict[str, Any]] = []
-    for theme_key, theme in rules.data["KSI"].items():
+    for theme_key, theme in _active_themes(rules):
         for ident, ind in theme["indicators"].items():
             by_class = {
                 str(cls): str(variant["statement"])
@@ -178,7 +193,9 @@ def frr_ids(rules: ConsolidatedRules) -> frozenset[str]:
 
 
 def ksi_ids(rules: ConsolidatedRules) -> frozenset[str]:
-    return frozenset(ident for theme in rules.data["KSI"].values() for ident in theme["indicators"])
+    return frozenset(
+        ident for _key, theme in _active_themes(rules) for ident in theme["indicators"]
+    )
 
 
 def load_rule_overlay(path: str | Path | None = None) -> dict[str, dict[str, Any]]:

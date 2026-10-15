@@ -257,7 +257,9 @@ class AwsGovCloudConnector(ConfigConnector):
         ]
 
     async def _capture_ebs_encryption(self) -> list[CapturedParameter]:
-        """EC2 default EBS encryption → encryption-at-rest signal (KSI-SVC-03).
+        """EC2 default EBS encryption → encryption-at-rest signal.
+
+        Fed phase-one KSI-SVC-03; no 2026 KSI rule consumes it yet.
 
         Emits ``3.13.16`` — the 800-171 practice an AWS GovCloud project's
         entries are actually keyed on — with ``SC-28`` carried in ``detail``.

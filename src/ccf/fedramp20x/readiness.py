@@ -115,11 +115,17 @@ def compute_readiness(
     expired = sum(
         1 for s in states if s.next_validation_due is not None and s.next_validation_due < today
     )
+    # A state with no due date cannot be shown to be inside a monitoring
+    # cycle, so it is not "fresh". Every phase-one KSI carried a frequency, so
+    # this changes nothing for them; a 2026 KSI with no authored rule has no
+    # frequency, and counting it fresh forever reported 100% ConMon coverage
+    # for indicators nothing monitors.
     fresh = sum(
         1
         for s in states
         if s.status not in ("not_tested",)
-        and (s.next_validation_due is None or s.next_validation_due >= today)
+        and s.next_validation_due is not None
+        and s.next_validation_due >= today
     )
 
     automated = sum(1 for k in ksis if (k.automation_level or "") == "automated")

@@ -39,6 +39,7 @@ from ...cr26.scn import seed_scn
 from ...cr26.sdr import seed_sdr
 from ...cr26.store import DELIVERABLE_KINDS, put_document
 from ...cr26.ver import VerSeedResult, seed_avi, seed_vdr, seed_ver_history
+from ...fedramp20x.rules import ksi_ids, load_rules
 from ...models import System
 from ...models_cr26 import DOCUMENT_KEY_MAX_LENGTH, Cr26Document
 from ..auth_deps import get_principal, require_role
@@ -80,7 +81,22 @@ def _summary(row: Cr26Document) -> dict[str, Any]:
 
 
 def _full(row: Cr26Document) -> dict[str, Any]:
-    return {**_summary(row), "document": row.document}
+    out = {**_summary(row), "document": row.document}
+    if row.kind == "sdr":
+        # Recomputed on every read, not only returned by the seed: the stored
+        # document validates whether or not it cites indicators FedRAMP's
+        # current rules define, so this is the only place a reader learns it.
+        defined = ksi_ids(load_rules())
+        entries = (row.document or {}).get("keySecurityIndicators")
+        out["undefined_ksi_ids"] = sorted(
+            {
+                e["ksiId"]
+                for e in (entries if isinstance(entries, list) else [])
+                if isinstance(e, dict) and isinstance(e.get("ksiId"), str)
+                and e["ksiId"] not in defined
+            }
+        )
+    return out
 
 
 async def _owned_system(

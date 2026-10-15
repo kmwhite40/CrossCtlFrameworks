@@ -58,6 +58,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Pre-0093 code reads every ``ccf.ksis`` row as current. Dropping the
+    # column after a cut-over seed would silently merge the retired phase-one
+    # catalog into the 2026 one -- 97 "current" KSIs, doubled readiness
+    # denominators, SDRs over both sets. Refuse rather than corrupt; deleting
+    # the retired rows is a decision about tenant history (it cascades), so it
+    # is left to a person.
+    retired = op.get_bind().execute(
+        sa.text("SELECT count(*) FROM ccf.ksis WHERE retired_at IS NOT NULL")
+    ).scalar()
+    if retired:
+        raise RuntimeError(
+            f"refusing to downgrade 0093: {retired} retired KSI(s) would become current "
+            "again. Decide what happens to them (and the tenant history that cascades "
+            "from them) before downgrading."
+        )
     op.drop_index("ix_ccf_ksis_retired_at", table_name="ksis", schema="ccf")
     op.drop_column("ksis", "statement_by_class", schema="ccf")
     op.drop_column("ksis", "retired_at", schema="ccf")

@@ -14,8 +14,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   TPR, add SCR, and keep no phase-one ID. The catalog is now built from
   `FedRAMP/rules` @ `a89d784` (dataset `2026.10.13.01`), vendored under
   `ccf/fedramp20x/rules_data/` with a sha256 `MANIFEST.json` and validated against
-  FedRAMP's own JSON Schema on load. Statements and control mappings are FedRAMP's
-  verbatim; `cmmc_refs` is empty because FedRAMP publishes none.
+  FedRAMP's own JSON Schema (formats enforced) on load. Statements are FedRAMP's
+  verbatim, except the five indicators FedRAMP states per class: their
+  description is Concord's labelled join ("Class B: … / Class C: …") and the
+  verbatim variants are in `statement_by_class`. Control mappings are FedRAMP's,
+  re-spelled canonically (`at-2.2` → `AT-2(2)`); `KSI-PIY-RES` maps to none.
+  `cmmc_refs` is empty because FedRAMP publishes none. Themes FedRAMP marks
+  `placeholder` or `empty` contribute no indicators.
 - **Found via myctrl.tools, taken from FedRAMP.** The aggregator names
   `FedRAMP/rules` as its KSI source but served a copy three months old. Its
   crosswalks (97% inferred via a bridge catalog), truncated control text,
@@ -26,17 +31,29 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   tenant state, results, reviews and exceptions cascade from `ksis`, so a delete
   would erase history. Every reader goes through `catalog.current_ksis()` /
   `current_ksi_ids()`; writes against a retired KSI return 409; capability↔KSI
-  links accept current IDs only (422). **Operator step: run
-  `ccf fedramp20x seed-ksi` after deploying.** Until then the reliability check
-  `fedramp20x_ksi_catalog_loaded` warns that the seeded catalog does not match
-  the pinned dataset.
+  links accept current IDs only (422). The seed endpoint now requires a
+  platform administrator: `ccf.ksis` is global, and a tenant admin could
+  otherwise retire indicators for every tenant. **Operator steps: rebuild and
+  run the migrator image (`docker compose build api migrator && docker compose
+  up migrator` — `build api` alone leaves `0093` unapplied, and every KSI read
+  then fails on the missing `retired_at`), then run `ccf fedramp20x seed-ksi`.**
+  Until the seed, the reliability check `fedramp20x_ksi_catalog_loaded` warns
+  that the seeded catalog does not match the pinned dataset, including rows
+  seeded from an older revision under unchanged IDs. Downgrading `0093` is
+  refused while retired rows exist: it would make both catalogs current.
 - **Validation rules start empty.** No phase-one rule is carried onto a 2026
   indicator, so all 46 evaluate as `manual` until a rule is authored in
   `rules_data/ksi_rules.json` against that indicator's own statement. Readiness
-  will drop on upgrade; that is the honest number.
-- **Deliverables name what the rules do not define.** The SDR seed reports
-  `undefined_ksi_ids` (authored narrative on a phase-one ID is kept, not
-  destroyed) and notes any `frrID` absent from the 245 FRR IDs. An SCN naming
+  will drop on upgrade; that is the honest number. ConMon coverage no longer
+  counts a state with no due date as fresh — unauthored KSIs have no frequency,
+  and counting them would have reported 100% coverage of indicators nothing
+  monitors. An SDR's `ksiTests` is empty for a manual rule rather than naming
+  "manual validation" as if a test existed.
+- **Deliverables name what the rules do not define.** The SDR seed — and every
+  read of the stored SDR — reports `undefined_ksi_ids`; authored narrative on a
+  phase-one ID is kept, not destroyed, but its frozen `ksiImplementationStatus`
+  is dropped, since nothing can refresh it. Any `frrID` absent from the 245
+  FRR IDs is noted. An SCN naming
   a retired KSI is flagged. The upstream is registered in `DEFAULT_SOURCES` as
   `fedramp_consolidated_rules` (watched, `auto_ingest=False`), baselined to the
   pinned digest.

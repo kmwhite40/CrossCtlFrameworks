@@ -288,11 +288,12 @@ async def _check_ksi_loaded(session: AsyncSession) -> Check:
         return Check(
             "fedramp20x_ksi_catalog_loaded", FAIL, "ksis table missing.", "Run migrations."
         )
-    current = set(
-        (
-            await session.execute(text("SELECT identifier FROM ccf.ksis WHERE retired_at IS NULL"))
-        ).scalars()
-    )
+    rows = (
+        await session.execute(
+            text("SELECT identifier, source FROM ccf.ksis WHERE retired_at IS NULL")
+        )
+    ).all()
+    current = {r[0] for r in rows}
     if not current:
         return Check(
             "fedramp20x_ksi_catalog_loaded",
@@ -315,6 +316,17 @@ async def _check_ksi_loaded(session: AsyncSession) -> Check:
             WARN,
             f"Seeded KSIs do not match FedRAMP Consolidated Rules {rules.version}: "
             f"{stale} not in the dataset, {missing} of its indicators not seeded.",
+            "Run `ccf fedramp20x seed-ksi`.",
+        )
+    # Same identifiers is not the same content: a re-vendored dataset can
+    # change statements and mappings under unchanged IDs. ``source`` records
+    # the revision each row was seeded from.
+    behind = sorted(r[0] for r in rows if r[1] != rules.source_label)
+    if behind:
+        return Check(
+            "fedramp20x_ksi_catalog_loaded",
+            WARN,
+            f"{len(behind)} seeded KSIs predate FedRAMP Consolidated Rules {rules.version}.",
             "Run `ccf fedramp20x seed-ksi`.",
         )
     return Check(

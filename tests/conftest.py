@@ -234,7 +234,7 @@ async def isolate_ksi_rows() -> AsyncIterator[None]:
 
     ``clean_migrated_db`` resets the schema once per *session*, so a row a
     test leaves behind is visible to every later module -- and ``ksis`` is
-    global reference data seeded from ``fedramp20x/ksi_catalog.json``, not
+    global reference data seeded from ``fedramp20x/rules_data/``, not
     tenant working data. ``tests/test_fedramp20x.py`` asserts an **exact row
     count** against it, and the suite runs alphabetically, so a ``test_cr26_*``
     module that invents a KSI poisons it: measured as ``assert 64 == 51``.

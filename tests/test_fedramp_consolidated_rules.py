@@ -214,7 +214,14 @@ async def _phase_one_row(system_id: int, ident: str = "KSI-IAM-01") -> int:
     """A phase-one KSI with a system's whole history hanging off it."""
     async with session_scope() as s:
         await s.execute(delete(KSI).where(KSI.identifier == ident))
-        k = KSI(identifier=ident, category="IAM", name="Phishing-resistant MFA", sort_order=-1)
+        # IA-2, so a consumer that indexes KSIs by control could actually find it.
+        k = KSI(
+            identifier=ident,
+            category="IAM",
+            name="Phishing-resistant MFA",
+            sort_order=-1,
+            nist_refs=["IA-2"],
+        )
         s.add(k)
         await s.flush()
         s.add(KSIState(system_id=system_id, ksi_id=k.id, status="fail"))
@@ -434,6 +441,13 @@ async def test_an_sdr_citing_a_phase_one_ksi_names_it() -> None:
     assert result.rules_version == "2026.10.13.01"
     kept = {e["ksiId"] for e in result.document.document["keySecurityIndicators"]}
     assert kept == {"KSI-IAM-01", "KSI-CED-RAT"}  # the narrative is not destroyed
+    ced = next(
+        e
+        for e in result.document.document["keySecurityIndicators"]
+        if e["ksiId"] == "KSI-CED-RAT"
+    )
+    # No rule is authored for it, so no test exists to name.
+    assert ced["ksiTests"] == []
 
 
 async def test_reliability_warns_when_the_database_is_not_on_the_pinned_catalog() -> None:
@@ -450,3 +464,167 @@ async def test_reliability_warns_when_the_database_is_not_on_the_pinned_catalog(
         stale = await reliability._check_ksi_loaded(s)
         assert stale.status == reliability.WARN
         assert "1 not in the dataset, 1 of its indicators not seeded" in stale.message
+
+
+# --- review findings, each pinned -----------------------------------------
+
+#: Pinned here, outside MANIFEST.json, so editing the dataset and its manifest
+#: together cannot pass unnoticed.
+_PINNED_SHA256 = {
+    rules.DATASET_FILE: "fb48d677a85d77fb72735a325de2c1945a1e0ceab1d2e655292fe9ebe3e4e0b4",
+    rules.SCHEMA_FILE: "eb4710bee0b06d0f8f803302ac2e88b934ef2bc942d0b548738c7304f0cb418f",
+}
+
+
+def test_the_vendored_bytes_match_digests_pinned_outside_the_manifest() -> None:
+    import hashlib  # noqa: PLC0415
+
+    for name, want in _PINNED_SHA256.items():
+        assert hashlib.sha256((rules.DATA_DIR / name).read_bytes()).hexdigest() == want
+
+
+def test_schema_formats_are_enforced(tmp_path: Path) -> None:
+    d = _copy_data(tmp_path)
+    data = json.loads((d / rules.DATASET_FILE).read_text())
+    data["info"]["last_updated"] = "2026-13-45"
+    (d / rules.DATASET_FILE).write_text(json.dumps(data))
+    _repin(d, rules.DATASET_FILE)
+    with pytest.raises(rules.RulesDatasetError, match="schema violation"):
+        rules.load_rules(d)
+
+
+def test_a_placeholder_theme_contributes_no_indicators(tmp_path: Path) -> None:
+    d = _copy_data(tmp_path)
+    data = json.loads((d / rules.DATASET_FILE).read_text())
+    data["KSI"]["CED"]["status"] = "placeholder"
+    (d / rules.DATASET_FILE).write_text(json.dumps(data))
+    _repin(d, rules.DATASET_FILE)
+    r = rules.load_rules(d)
+    assert "KSI-CED-RAT" not in rules.ksi_ids(r)
+    assert all(rec["category"] != "CED" for rec in rules.ksi_records(r))
+
+
+async def test_unauthored_ksis_are_not_counted_as_continuously_monitored() -> None:
+    sid = await _system("Conmon")
+    async with session_scope() as s:
+        await validation.validate_system(s, system_id=sid)
+        score = await readiness.score_system(s, system_id=sid, persist=False)
+    # 46 manual indicators with no frequency: nothing monitors them.
+    assert score["conmon_coverage"] == 0
+    assert score["automation_coverage"] == 0
+
+
+async def test_an_explicit_ksi_list_cannot_record_state_on_a_retired_ksi() -> None:
+    sid = await _system("Explicit")
+    retired_id = await _phase_one_row(sid, "KSI-IAM-02")
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+        retired = await s.get(KSI, retired_id)
+        assert retired is not None and retired.retired_at is not None
+        results = await validation.validate_system(s, system_id=sid, ksis=[retired])
+        assert results == []
+
+
+async def test_a_tenant_admin_cannot_seed_the_global_catalog() -> None:
+    from ccf.api.auth_deps import get_principal  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    app = create_app()
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        user_id=1, email="admin@tenant.example", org_id=1, role="admin"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post("/api/fedramp/20x/ksis/seed")
+    assert r.status_code == 403
+
+
+async def test_reliability_warns_when_rows_predate_the_pinned_revision() -> None:
+    async with session_scope() as s:
+        await s.execute(
+            KSI.__table__.update()
+            .where(KSI.identifier == "KSI-CED-RAT")
+            .values(source="fedramp-rules:2026.07.14.01")
+        )
+        check = await reliability._check_ksi_loaded(s)
+        assert check.status == reliability.WARN
+        assert "1 seeded KSIs predate" in check.message
+
+
+async def test_the_mappings_check_counts_only_current_ksis() -> None:
+    sid = await _system("Mappings")
+    await _phase_one_row(sid, "KSI-IAM-03")
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+        check = await reliability._check_ksi_mappings(s)
+    # FedRAMP maps KSI-PIY-RES (executive support) to no control, so 45 of the
+    # 46 current indicators carry a mapping; the retired IA-2 row must not
+    # lift that to 46/47.
+    assert check.message.startswith("45/46 ")
+
+
+async def test_the_ui_review_form_refuses_a_retired_ksi() -> None:
+    sid = await _system("UiReview")
+    retired_id = await _phase_one_row(sid)
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
+    async with _client() as c:
+        await c.post(
+            f"/fedramp20x/{sid}/assessor-review",
+            data={"ksi_id": str(retired_id), "status": "closed", "assessor": "3PAO"},
+            follow_redirects=False,
+        )
+    async with session_scope() as s:
+        statuses = (
+            (
+                await s.execute(
+                    select(KSIAssessorReview.status).where(KSIAssessorReview.ksi_id == retired_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert statuses == ["accepted"]  # only the one _phase_one_row wrote
+
+
+async def test_a_phase_one_sdr_entry_loses_its_frozen_status_and_reads_report_it() -> None:
+    from ccf.cr26.sdr import seed_sdr  # noqa: PLC0415
+    from ccf.cr26.store import put_document  # noqa: PLC0415
+
+    sid = await _system("SdrStale")
+    async with session_scope() as s:
+        org_id = (await s.get(System, sid)).organization_id  # type: ignore[union-attr]
+        await put_document(
+            s,
+            system_id=sid,
+            kind="sdr",
+            document={
+                "keySecurityIndicators": [
+                    {
+                        "ksiId": "KSI-IAM-01",
+                        "ksiImplementation": ["Written in 2025."],
+                        "ksiImplementationStatus": "Implemented",
+                        "ksiValidation": ["pass at 2026-01-01"],
+                    }
+                ]
+            },
+        )
+    async with session_scope() as s:
+        result = await seed_sdr(s, system_id=sid)
+    entry = next(
+        e for e in result.document.document["keySecurityIndicators"] if e["ksiId"] == "KSI-IAM-01"
+    )
+    assert "ksiImplementationStatus" not in entry
+    assert entry["ksiImplementation"] == ["Written in 2025."]
+    assert entry["ksiValidation"] == ["pass at 2026-01-01"]  # history, kept
+
+    from ccf.api.auth_deps import get_principal  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    app = create_app()
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        user_id=1, email="isso@tenant.example", org_id=org_id, role="admin"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        got = await c.get(f"/api/systems/{sid}/cr26-documents/sdr")
+    assert got.status_code == 200, got.text
+    assert got.json()["undefined_ksi_ids"] == ["KSI-IAM-01"]
