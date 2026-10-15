@@ -2985,6 +2985,10 @@ async def fedramp20x_record_review(
     assessor: str = Form(""),
     notes: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    # The same gate as ``POST /api/fedramp/20x/assessor-reviews``. Without it
+    # any signed-in user -- a viewer -- could record an "accepted" 3PAO review
+    # through the form that the API refuses them.
+    _principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> RedirectResponse:
     """Record an assessor review for one KSI and reflect it on the KSI state."""
     from ...fedramp20x import ASSESSOR_STATUSES  # noqa: PLC0415
@@ -3026,6 +3030,8 @@ async def fedramp20x_add_exception(
     rationale: str = Form(...),
     status: str = Form("open"),
     session: AsyncSession = Depends(get_session),
+    # The same gate as ``POST /api/fedramp/20x/exceptions``.
+    _principal: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
     """Record a KSI exception / deviation for a system."""
     from ...models import KSIException  # noqa: PLC0415
