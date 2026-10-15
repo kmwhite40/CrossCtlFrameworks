@@ -511,3 +511,94 @@ async def test_two_connectors_of_one_type_are_not_guessed_between() -> None:
                if k.startswith("connector:")]
     assert len(reasons) == 2
     assert all(r and "2 m365 connectors" in r for r in reasons)
+
+
+# ── Task 4: system scope and the shared view ─────────────────────────────────
+
+
+async def _two_systems_sharing_a_connector() -> tuple[int, int, int]:
+    org, sid = await _org_and_system()
+    other = await _system(org)
+    await _implement(sid, "AC-02")
+    await _implement(other, "AU-02")
+    await _connector_test(org, sid, "aws")
+    await _connector_test(org, other, "aws")
+    async with session_scope() as s:
+        s.add(ConnectorConfig(organization_id=org, name="AWS", connector_type="aws"))
+    # Every absence asserted below is only meaningful if the build succeeded.
+    assert (await _build(org))[0] == "ok"
+    return org, sid, other
+
+
+async def test_connected_scope_reaches_other_systems_through_shared_nodes() -> None:
+    org, sid, other = await _two_systems_sharing_a_connector()
+    async with session_scope() as s:
+        g = await impact.subgraph(s, org_id=org, entity_type="system", entity_id=str(sid),
+                                  max_hops=6)
+    assert any(n["entity_id"] == f"{other}:AU-2" for n in g["nodes"])
+
+
+async def test_system_scope_stops_at_another_systems_nodes() -> None:
+    org, sid, other = await _two_systems_sharing_a_connector()
+    async with session_scope() as s:
+        g = await impact.subgraph(s, org_id=org, entity_type="system", entity_id=str(sid),
+                                  max_hops=6, within_system=sid)
+    ids = {(n["entity_type"], n["entity_id"]) for n in g["nodes"]}
+    assert ("control", f"{sid}:AC-2") in ids
+    assert ("control", f"{other}:AU-2") not in ids
+    assert not [n for n in g["nodes"] if n["entity_type"] == "control_test"
+                and n["metadata"].get("system_id") == other]
+
+
+async def test_system_view_carries_the_build_and_its_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(session: Any, org_id: int, g: Any) -> None:
+        raise RuntimeError("risk register offline")
+
+    monkeypatch.setattr(builder, "_risks", broken)
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    await _build(org)
+    async with session_scope() as s:
+        sysm = await s.get(System, sid)
+        v = await impact.system_view(s, system=sysm)
+    assert v["build_status"] == "partial" and v["built_at"]
+    assert v["failed_contributors"] == {"risks": "RuntimeError: risk register offline"}
+
+
+async def test_the_api_returns_the_same_view_with_scope() -> None:
+    from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
+
+    from ccf.api.main import create_app  # noqa: PLC0415
+
+    _org, sid, other = await _two_systems_sharing_a_connector()
+    async with AsyncClient(transport=ASGITransport(app=create_app()),
+                           base_url="http://t") as c:
+        body = (await c.get(f"/api/assurance/graph/systems/{sid}?scope=system")).json()
+        bad = await c.get(f"/api/assurance/graph/systems/{sid}?scope=everything")
+    assert body["build_status"] == "ok" and body["failed_contributors"] == {}
+    assert any(n["entity_id"] == f"{sid}:AC-2" for n in body["nodes"])
+    assert all(e["provenance"] for e in body["edges"])
+    assert not any(n["entity_id"] == f"{other}:AU-2" for n in body["nodes"])
+    assert bad.status_code == 422
+
+
+async def test_another_system_is_a_boundary_and_is_not_walked_past() -> None:
+    from ccf.models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    other = await _system(org)
+    async with session_scope() as s:
+        s.add(POAM(system_id=sid, title="Own finding", status="open", severity="low"))
+        s.add(POAM(system_id=other, title="Their finding", status="open", severity="low"))
+        s.add(AiAgent(organization_id=org, name="Shared bot", system_id=sid,
+                      system_ids=[sid, other]))
+    assert (await _build(org))[0] == "ok"
+    async with session_scope() as s:
+        g = await impact.subgraph(s, org_id=org, entity_type="system", entity_id=str(sid),
+                                  max_hops=6, within_system=sid)
+    labels = {(n["entity_type"], n["label"]) for n in g["nodes"]}
+    assert ("system", (await _nodes(org))[f"system:{other}"]["label"]) in labels
+    assert ("poam", "Own finding") in labels
+    assert ("poam", "Their finding") not in labels
