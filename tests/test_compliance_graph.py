@@ -753,3 +753,92 @@ async def test_rebuild_returns_only_to_a_fixed_destination() -> None:
     # "graph" without a system id has nowhere to return to
     r = await _post("/assurance/rebuild", {"return_to": "graph"})
     assert r.headers["location"] == "/assurance"
+
+
+# ── Task 6 fix round 1 ───────────────────────────────────────────────────────
+
+
+async def test_with_a_failed_contributor_absence_is_not_stated_as_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(session: Any, org_id: int, g: Any) -> None:
+        raise RuntimeError("offline")
+
+    # A failed ``risks`` contributor: the system is built but has no edges.
+    monkeypatch.setattr(builder, "_risks", broken)
+    org, sid = await _org_and_system()
+    await _build(org)
+    visible = (await _page(f"/graph?system_id={sid}")).text.split(
+        '<script type="application/json"')[0]
+    assert "No relationships in the parts that were built." in visible
+    assert "No recorded relationships" not in visible
+
+
+async def test_with_the_systems_contributor_failed_the_page_does_not_blame_a_late_add(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(session: Any, org_id: int, g: Any) -> None:
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(builder, "_systems", broken)
+    org, sid = await _org_and_system()
+    await _build(org)
+    visible = (await _page(f"/graph?system_id={sid}")).text
+    assert "because part of the build failed" in visible
+    assert "added after the last build" not in visible
+
+
+async def test_choose_a_system_and_the_picker_excludes_deleted_names() -> None:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    org, live = await _org_and_system()
+    gone = await _system(org)
+    async with session_scope() as s:
+        live_name = (await s.get(System, live)).name
+        gone_name = (await s.get(System, gone)).name
+        (await s.get(System, gone)).deleted_at = datetime.now(UTC)
+    html = (await _page("/graph")).text
+    assert "Choose a system to draw its graph." in html
+    assert live_name in html and gone_name not in html
+
+
+async def test_an_organization_with_no_systems_says_so() -> None:
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    from ccf.api.routes.ui_grc import graph_page  # noqa: PLC0415
+
+    async with session_scope() as s:
+        empty = Organization(name=f"Empty Org {next(_SEQ)}")
+        s.add(empty)
+        await s.flush()
+        org_id = empty.id
+    request = SimpleNamespace(state=SimpleNamespace(principal=SimpleNamespace(org_id=org_id)))
+    async with session_scope() as s:
+        resp = await graph_page(request, None, s)  # type: ignore[arg-type]
+    assert "No systems yet." in resp.body.decode()
+
+
+async def test_the_page_lists_nodes_in_a_stable_order() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    await _implement(sid, "AU-02")
+    assert (await _build(org))[0] == "ok"
+    async with session_scope() as s:
+        v = await impact.system_view(s, system=await s.get(System, sid))
+    keys = [(n["entity_type"], n["label"], n["id"]) for n in v["nodes"]]
+    assert len(keys) > 2 and keys == sorted(keys)
+    ekeys = [(e["source"], e["target"], e["relationship_type"]) for e in v["edges"]]
+    assert ekeys == sorted(ekeys)
+
+
+async def test_the_legend_is_server_rendered_without_script() -> None:
+    _org, sid = await _org_and_system()
+    html = (await _page(f"/graph?system_id={sid}")).text
+    # not-built page has no legend; the built one does
+    assert 'id="graph-legend"' not in html
+    org, sid2 = await _org_and_system()
+    await _implement(sid2, "AC-02")
+    assert (await _build(org))[0] == "ok"
+    html = (await _page(f"/graph?system_id={sid2}")).text
+    assert 'id="graph-legend"' in html and "var(--danger)" in html
+    assert 'id="graph-notice"' in html and "hidden" not in html.split('id="graph-notice"')[1][:60]

@@ -166,7 +166,8 @@ async def subgraph(
                 queue.append((neighbor, depth + 1))
 
     nodes = (
-        await session.execute(select(AssuranceNode).where(AssuranceNode.id.in_(seen)))
+        await session.execute(select(AssuranceNode).where(AssuranceNode.id.in_(seen)).order_by(
+            AssuranceNode.entity_type, AssuranceNode.label, AssuranceNode.id))
     ).scalars().all()
     kept_edges = [
         {"source": e.source_node_id, "target": e.target_node_id,
@@ -174,6 +175,7 @@ async def subgraph(
         for e in edges
         if e.source_node_id in seen and e.target_node_id in seen
     ]
+    kept_edges.sort(key=lambda e: (e["source"], e["target"], e["relationship_type"]))
     return {
         "root": _node_out(root),
         "nodes": [_node_out(n) for n in nodes],

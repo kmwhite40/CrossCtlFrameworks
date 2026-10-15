@@ -59,10 +59,9 @@
     if (nodes.length > limit) {
       notice.textContent = nodes.length + " nodes match these filters; the graph draws at most " +
         limit + ". Untick a node type to draw it, or open the table.";
-      notice.hidden = false;
       return;
     }
-    notice.hidden = true;
+    notice.textContent = "";
     var shown = {};
     nodes.forEach(function (n) { shown[n.id] = true; });
     var elements = nodes.map(function (n) {
@@ -150,11 +149,13 @@
     if (href) {
       var a = document.createElement("a");
       a.href = href;
-      a.textContent = "Open record";
+      a.textContent = LIST_TYPES[n.entity_type] ? "Open list" : "Open record";
       panel.appendChild(a);
     }
     panel.hidden = false;
   }
+
+  var LIST_TYPES = { poam: 1, risk: 1, evidence_object: 1, ai_agent: 1 };
 
   // Only routes that exist in ui*.py; a type with no record page gets no link.
   function recordLink(n) {
@@ -178,19 +179,26 @@
   ownerSelect.addEventListener("change", applyOwner);
   document.getElementById("graph-search").addEventListener("change", function (evt) {
     var q = evt.target.value.trim().toUpperCase();
-    if (!cy || !q) return;
-    var hit = cy.nodes().filter(function (node) {
-      return node.data("type") === "control" && String(node.data("label")).toUpperCase() === q;
-    });
-    if (hit.length) {
+    if (!q) { notice.textContent = ""; return; }
+    // Look in the data, not the drawn set: a control can be in the graph and not drawn.
+    var found = view.nodes.filter(function (n) {
+      return n.entity_type === "control" && String(n.label).toUpperCase() === q;
+    })[0];
+    if (!found) {
+      notice.textContent = "No control " + q + " in this system's graph.";
+      return;
+    }
+    var hit = cy ? cy.nodes().filter(function (node) { return node.data("nid") === found.id; }) : null;
+    if (hit && hit.length) {
+      notice.textContent = "";
       cy.elements().unselect();
       hit.select();
       cy.animate({ center: { eles: hit }, zoom: 1.5 });
-      showPanel(byId[hit[0].data("nid")]);
     } else {
-      notice.textContent = "No control " + q + " in this system's graph.";
-      notice.hidden = false;
+      notice.textContent = "Control " + q + " is in this system's graph but is not drawn " +
+        "(its type is unticked or the graph is over the node limit). Its details are shown.";
     }
+    showPanel(found);
   });
   var toggle = document.getElementById("graph-table-toggle");
   toggle.addEventListener("click", function () {

@@ -54,10 +54,11 @@
 
 {% if view.root is none %}
 <section class="card"><div class="card__body" style="text-align:center;padding:32px">
-  <p>This system is not in the graph yet: it was added after the last build.</p>
+  {% if view.failed_contributors %}<p>This system could not be loaded into the graph because part of the build failed (see above).</p>
+  {% else %}<p>This system is not in the graph yet: it was added after the last build.</p>{% endif %}
 </div></section>
 {% elif not view.edges %}
-<section class="card"><div class="card__body dim" style="text-align:center;padding:32px">No recorded relationships for this system.</div></section>
+<section class="card"><div class="card__body dim" style="text-align:center;padding:32px">{% if view.failed_contributors %}No relationships in the parts that were built.{% else %}No recorded relationships for this system.{% endif %}</div></section>
 {% else %}
 
 <div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:8px">
@@ -71,12 +72,15 @@
   <label>Find control <input type="search" id="graph-search" placeholder="AC-2" autocomplete="off"></label>
   <button type="button" class="btn btn--ghost btn--sm" id="graph-table-toggle" aria-controls="graph-tables" aria-expanded="false">Table</button>
 </div>
-<p id="graph-notice" class="dim" role="status" hidden></p>
+<p id="graph-notice" class="dim" role="status" aria-live="polite"></p>
 <div class="row" style="gap:12px;align-items:stretch;flex-wrap:wrap">
   <div id="graph-canvas" role="img" aria-label="Graph of {{ selected.name }}; the same data is in the table." style="flex:1 1 480px;min-height:560px;border:1px solid var(--shell-border);border-radius:8px"></div>
   <aside id="graph-panel" class="card" style="flex:0 1 300px;padding:12px" hidden></aside>
 </div>
-<p class="dim" style="margin-top:8px">Colour is status: implemented, partial or planned, not implemented, inherited, not applicable. Shapes: square = system, diamond = capability, hexagon = KSI, circle = everything else.</p>
+<ul id="graph-legend" aria-label="Colour key" class="row dim" style="gap:12px;flex-wrap:wrap;list-style:none;padding:0;margin:8px 0 0">
+  {% for name, token in [("Implemented","--success"),("Partial or planned","--warning"),("Not implemented","--danger"),("Inherited","--accent"),("Not applicable","--text-muted"),("No status","--text-secondary")] %}<li><span aria-hidden="true" style="display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:-1px;margin-right:4px;background:var({{ token }})"></span>{{ name }}</li>{% endfor %}
+</ul>
+<p class="dim" style="margin-top:8px">Colour is status only. Shapes: square = system, diamond = capability, hexagon = KSI, circle = everything else.</p>
 
 <section id="graph-tables" hidden style="margin-top:16px">
   <div class="card" style="margin-bottom:16px">
