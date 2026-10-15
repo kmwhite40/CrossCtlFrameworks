@@ -344,3 +344,35 @@ async def test_the_stalest_org_decides_the_age(monkeypatch: pytest.MonkeyPatch) 
     finally:
         await _cleanup(org_a)
         await _cleanup(org_b)
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_organizations_old_build_is_not_judged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scheduler rebuilds live organizations only, so a deleted one's last
+    run would warn forever with nothing able to clear it."""
+    live, _ = await _org_with_a_system()
+    gone, _ = await _org_with_a_system()
+    try:
+        await _build_org(live, broken=False, monkeypatch=monkeypatch)
+        await _build_org(gone, broken=True, monkeypatch=monkeypatch)
+        async with session_scope() as s:
+            pinned = await _check_assurance_graph_freshness(s, organization_ids=[live, gone])
+            default_before = await _check_assurance_graph_freshness(s)
+        # While it exists the partial org is judged (the positive counterpart).
+        assert pinned.status == WARN and f"org {gone} (risks)" in pinned.message
+        assert f"org {gone} (" in default_before.message
+        async with session_scope() as s:
+            await s.execute(
+                text("UPDATE ccf.organizations SET deleted_at = now() WHERE id = :o"),
+                {"o": gone},
+            )
+        async with session_scope() as s:
+            default = await _check_assurance_graph_freshness(s)
+            live_only = await _check_assurance_graph_freshness(s, organization_ids=[live])
+        assert f"org {gone} (" not in default.message and f"org {gone}," not in default.message
+        assert live_only.status == PASS, live_only.message  # the live org is still judged
+    finally:
+        await _cleanup(live)
+        await _cleanup(gone)

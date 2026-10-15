@@ -18,8 +18,12 @@
   // not load, say so and open the tables rather than leave an empty canvas.
   // Any throw while parsing or drawing ends here too: the notice must not be
   // left saying "Drawing the graph…" over a canvas that will never appear.
+  var drawFailed = false;
+  var drawNotice = "";
   function cannotDraw() {
-    notice.textContent = "The graph could not be drawn; the table below has the same data.";
+    drawFailed = true;
+    drawNotice = "The graph could not be drawn; the table below has the same data.";
+    notice.textContent = drawNotice;
     showTables(true);
   }
   if (!window.cytoscape) { cannotDraw(); return; }
@@ -27,6 +31,7 @@
   try {
     view = JSON.parse(dataEl.textContent);
   } catch (err) {
+    console.error(err);
     cannotDraw();
     return;
   }
@@ -37,7 +42,6 @@
   var ownerSelect = document.getElementById("graph-owner");
   // What the last draw said (empty, or the over-limit message). A search
   // message replaces it; clearing the search puts it back.
-  var drawNotice = "";
   // cose is a force-directed layout: its cost grows with the square of the
   // node count, and above a few hundred nodes it can hold the page for
   // seconds. It has never been measured here at the 3,000-node cap, so above
@@ -86,9 +90,11 @@
   }
 
   function draw() {
+    drawFailed = false;
     try {
       drawGraph();
     } catch (err) {
+      console.error(err);
       if (cy) { try { cy.destroy(); } catch (e) { /* already unusable */ } cy = null; }
       cannotDraw();
     }
@@ -260,6 +266,8 @@
       cy.elements().unselect();
       hit.select();
       cy.animate({ center: { eles: hit }, zoom: 1.5 });
+    } else if (drawFailed) {
+      notice.textContent = drawNotice;
     } else {
       notice.textContent = "Control " + found.label + " is in this system's graph but is not drawn " +
         "(its type is unticked or the graph is over the node limit). Its details are shown.";

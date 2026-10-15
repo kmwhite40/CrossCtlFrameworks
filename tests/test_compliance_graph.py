@@ -257,7 +257,7 @@ async def test_an_agent_system_id_of_non_ascii_digits_is_skipped() -> None:
     org, _first = await _org_and_system()
     sid = await _system(org)
     async with session_scope() as s:
-        a = AiAgent(organization_id=org, name="Odd bot", system_ids=["²", "١٢", str(sid)])
+        a = AiAgent(organization_id=org, name="Odd bot", system_ids=["²", "١٢", "1" * 5000, str(sid)])
         s.add(a)
         await s.flush()
         aid = a.id

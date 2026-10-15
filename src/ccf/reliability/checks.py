@@ -641,7 +641,15 @@ async def _check_assurance_graph_freshness(
     )
     order = "ORDER BY organization_id, id DESC"
     if organization_ids is None:
-        stmt = text(latest + order)
+        # Only live organizations: the scheduler rebuilds those alone, so a
+        # deleted organization's last run would age into a warning no rebuild
+        # can clear.
+        stmt = text(
+            latest
+            + "AND organization_id IN (SELECT id FROM ccf.organizations "
+            "WHERE deleted_at IS NULL) "
+            + order
+        )
         params: dict[str, Any] = {}
     else:
         stmt = text(latest + "AND organization_id = ANY(:orgs) " + order)

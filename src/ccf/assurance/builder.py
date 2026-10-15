@@ -424,8 +424,11 @@ def _system_id(value: Any) -> int | None:
     if isinstance(value, int):
         return value
     # ASCII only: ``"²".isdigit()`` is true and ``int("²")`` raises.
-    if isinstance(value, str) and value.strip().isascii() and value.strip().isdigit():
-        return int(value.strip())
+    # Capped like /graph's ``system_id``: ``int()`` raises past 4,300 digits.
+    if isinstance(value, str):
+        v = value.strip()
+        if v.isascii() and v.isdigit() and len(v) <= 18:
+            return int(v)
     return None
 
 
