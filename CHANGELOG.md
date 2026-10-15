@@ -22,6 +22,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
    Graphs built before this release carry the old edge labels and lack the
    `system_ids` / `system_id` stamps on AI-agent and risk nodes, so `/graph`
    would show another system's agents and risks reached through a shared vendor.
+   A KSI's links to controls are labelled with that KSI row's own `source`, so
+   a graph shows whichever catalog its rows came from when it was built. After
+   step 3 replaces the rows, the next rebuild (the scheduler's, or another
+   `graph-rebuild`) labels them from the new catalog.
 2. `ccf sources-seed`. This registers the watched FedRAMP rules dataset, the
    Marketplace data and its schema. Existing rows are untouched.
 3. `ccf fedramp20x seed-ksi`. This moves the catalog to the 46 FedRAMP 2026
@@ -38,15 +42,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - **`/graph`** draws one system: its controls, and the capabilities, KSIs,
   tests, POA&Ms, evidence and connectors linked to them, coloured by status.
   A table view shows the same nodes and links for screen readers and audit.
+- `/graph` shows what `GET /api/assurance/graph/systems/{id}?scope=system&hops=6`
+  returns; the page and the API read the same view.
 - **Every link names its source** (`poams`, `capability_controls`,
-  `fedramp-rules@<version>`, `crosswalk:securescore`, ...), shown on hover, in
-  the node panel and in the table. Nothing is inferred: frameworks that meet
-  only through an 800-53 control are shown as a path through it. A capability
-  is linked to the controls it `addresses`.
+  `crosswalk:securescore`, ...), shown on hover, in the node panel and in the
+  table. A KSI's link to a control carries the KSI row's own `source` (for
+  example `fedramp-rules:<version>`), and a row that records none draws no
+  such link. Nothing is inferred: frameworks that meet only through an 800-53
+  control are shown as a path through it. A capability is linked to the
+  controls it `addresses`.
 - The page states every condition in words, including any part of the build
-  that failed. The node panel links "Open record" (or "Open list" for types
-  with no single record). The control search says whether a control is drawn,
-  in the graph but not drawn, or absent from the graph.
+  that failed, and blames the build for a missing system only when the
+  systems part itself failed. The node panel links "Open record" (or "Open
+  list" for types with no single record). The control search accepts the
+  catalog's spellings (`AC-02`, `ac-2`, `AC-02(01)`) and says whether a control
+  is drawn, in the graph but not drawn, or absent from the graph; clearing it
+  restores the page's notice. The owner filter is offered only when a node
+  names an owner; otherwise the page says no owners are recorded.
+- Up to 500 drawn nodes are laid out with `cose`, larger graphs with
+  `concentric`; the page draws at most 3,000. If the drawing library does not
+  load, the page says so and opens the tables.
 - Inspired by myctrl.tools/graph; none of its data is used (its crosswalks are
   97% bridge-inferred and carry no provenance).
 
@@ -64,7 +79,18 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   risks through a shared vendor.
 - A part of the graph that fails to build is recorded and named on the page;
   the build is `partial`, not `ok`. Each part now runs in its own savepoint,
-  so one failure no longer takes the rest of the build down with it.
+  so one failure no longer takes the rest of the build down with it, and
+  whatever the failed part had added before it failed is removed.
+- A `partial` build is visible outside `/graph`: `/assurance` shows a
+  "partial" chip and the failed parts, the `assurance_graph_freshness` check
+  warns and names them, and the scheduler's cycle summary counts
+  `assurance_partial` and names each `assurance_partial_parts` entry.
+- A deleted system is no longer a graph node. An AI agent's `system_ids`
+  entry that is not a system id (such as `"prod"`) is skipped instead of
+  failing the agents part of the build.
+- Capability derivation no longer lists a capability twice in a control's
+  `derived_from` when it is bound to the system through two components.
+  Existing rows are rewritten on the next derive run.
 - `GET /api/assurance/graph/systems/{id}` gains `scope=system`, `built_at`,
   `build_status` and `failed_contributors`.
 
