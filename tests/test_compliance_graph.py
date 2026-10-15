@@ -372,11 +372,10 @@ async def _seeded_ksi_with_a_control() -> tuple[int, str, str]:
         await catalog.seed_ksis(s)
     async with session_scope() as s:
         for k in (await s.execute(catalog.current_ksis())).scalars():
-            for ref in k.nist_refs or []:
-                c = canonicalize(str(ref))
-                if c is not None:
-                    return k.id, k.identifier, c.value
-    raise AssertionError("no current KSI names an 800-53 control")
+            refs = {c.value for r in k.nist_refs or [] if (c := canonicalize(str(r)))}
+            if len(refs) >= 2:
+                return k.id, k.identifier, sorted(refs)[0]
+    raise AssertionError("no current KSI names two distinct 800-53 controls")
 
 
 async def test_a_capability_links_to_the_controls_and_ksis_it_claims() -> None:
@@ -388,24 +387,30 @@ async def test_a_capability_links_to_the_controls_and_ksis_it_claims() -> None:
     async with session_scope() as s:
         s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
     cap = await _capability(org, sid, controls=[control], ksis=[ksi_ident])
-    await _build(org)
+    assert (await _build(org))[0] == "ok"
     edges = await _edges(org)
-    assert (f"capability:{sid}:{cap}", f"control:{sid}:{control}", "implements",
+    assert (f"capability:{sid}:{cap}", f"control:{sid}:{control}", "addresses",
             "capability_controls") in edges
     assert (f"capability:{sid}:{cap}", f"ksi:{sid}:{ksi_id}", "satisfies",
             "capability_ksis") in edges
 
 
 async def test_a_ksi_links_to_the_controls_the_system_implements_only() -> None:
+    from ccf.catalog.canonical import canonicalize  # noqa: PLC0415
     from ccf.fedramp20x import rules  # noqa: PLC0415
-    from ccf.models import KSIState  # noqa: PLC0415
+    from ccf.models import KSI, KSIState  # noqa: PLC0415
 
     ksi_id, ksi_ident, control = await _seeded_ksi_with_a_control()
+    async with session_scope() as s:
+        ksi = await s.get(KSI, ksi_id)
+        assert ksi is not None
+        refs = {c.value for r in ksi.nist_refs or [] if (c := canonicalize(str(r)))}
+    assert len(refs) >= 2 and control in refs  # the KSI maps to more than the one implemented
     org, sid = await _org_and_system()
     await _implement(sid, control)
     async with session_scope() as s:
         s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
-    await _build(org)
+    assert (await _build(org))[0] == "ok"
     nodes = await _nodes(org)
     assert nodes[f"ksi:{sid}:{ksi_id}"]["label"] == ksi_ident
     ksi_edges = [e for e in await _edges(org) if e[0] == f"ksi:{sid}:{ksi_id}"]
@@ -417,8 +422,8 @@ async def test_control_ids_written_differently_meet_on_one_node() -> None:
     org, sid = await _org_and_system()
     await _implement(sid, "IA-02")  # catalog spelling
     cap = await _capability(org, sid, controls=["ia-2"])  # capability spelling
-    await _build(org)
-    assert (f"capability:{sid}:{cap}", f"control:{sid}:IA-2", "implements",
+    assert (await _build(org))[0] == "ok"
+    assert (f"capability:{sid}:{cap}", f"control:{sid}:IA-2", "addresses",
             "capability_controls") in await _edges(org)
 
 
@@ -434,6 +439,7 @@ async def test_a_capability_from_another_tenant_is_not_drawn() -> None:
     org_a, sid_a = await _org_and_system()
     org_b, _sid_b = await _org_and_system()
     await _implement(sid_a, "IA-02")
+    own = await _capability(org_a, sid_a, controls=["IA-2"], title="A's MFA")
     async with session_scope() as s:  # unscoped: RLS cannot make this pass
         comp = SystemComponent(organization_id=org_a, system_id=sid_a, type="software",
                                title="A's IdP")
@@ -445,8 +451,10 @@ async def test_a_capability_from_another_tenant_is_not_drawn() -> None:
                                   component_id=comp.id))
         s.add(CapabilityControl(organization_id=org_b, capability_id=cap.id,
                                 control_id="IA-2"))
-    await _build(org_a)
-    assert not [k for k in await _nodes(org_a) if k.startswith("capability:")]
+    assert (await _build(org_a))[0] == "ok"
+    caps = {k: v for k, v in (await _nodes(org_a)).items() if k.startswith("capability:")}
+    assert list(caps) == [f"capability:{sid_a}:{own}"]
+    assert caps[f"capability:{sid_a}:{own}"]["label"] == "A's MFA"
 
 
 async def test_a_test_evidences_every_control_it_declares_with_its_check_source() -> None:
@@ -460,7 +468,7 @@ async def test_a_test_evidences_every_control_it_declares_with_its_check_source(
         s.add(t)
         await s.flush()
         tid = t.id
-    await _build(org)
+    assert (await _build(org))[0] == "ok"
     edges = await _edges(org)
     for control in ("IA-2", "IA-5"):
         assert (f"control_test:{tid}", f"control:{sid}:{control}", "evidences",
@@ -478,17 +486,17 @@ async def _connector_test(org: int, sid: int, ctype: str) -> int:
 
 async def test_a_connector_reaches_a_system_only_through_its_tests() -> None:
     org, sid = await _org_and_system()
-    other = await _system(org)
+    await _system(org)  # a second system the connector must not be tied to
     tid = await _connector_test(org, sid, "aws")
     async with session_scope() as s:
         c = ConnectorConfig(organization_id=org, name="AWS prod", connector_type="aws")
         s.add(c)
         await s.flush()
         cid = c.id
-    await _build(org)
+    assert (await _build(org))[0] == "ok"
     edges = await _edges(org)
     assert (f"connector:{cid}", f"control_test:{tid}", "produced", "control_tests") in edges
-    assert not [e for e in edges if e[0] == f"connector:{cid}" and e[1] == f"system:{other}"]
+    assert not [e for e in edges if e[0] == f"connector:{cid}" and e[1].startswith("system:")]
 
 
 async def test_two_connectors_of_one_type_are_not_guessed_between() -> None:
@@ -497,8 +505,9 @@ async def test_two_connectors_of_one_type_are_not_guessed_between() -> None:
     async with session_scope() as s:
         s.add_all([ConnectorConfig(organization_id=org, name=f"Tenant {n}",
                                    connector_type="m365") for n in (1, 2)])
-    await _build(org)
+    assert (await _build(org))[0] == "ok"
     assert not [e for e in await _edges(org) if e[0].startswith("connector:")]
     reasons = [v["metadata"].get("unlinked_reason") for k, v in (await _nodes(org)).items()
                if k.startswith("connector:")]
+    assert len(reasons) == 2
     assert all(r and "2 m365 connectors" in r for r in reasons)

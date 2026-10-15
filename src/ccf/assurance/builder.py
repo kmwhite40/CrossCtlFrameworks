@@ -234,7 +234,7 @@ async def _capabilities(session: AsyncSession, org_id: int, g: _Graph) -> None:
             c = canonicalize(raw)
             if c is not None:
                 g.edge(("capability", f"{sid}:{cap_id}"), ("control", f"{sid}:{c.value}"),
-                       "implements", "capability_controls")
+                       "addresses", "capability_controls")
         for cap_id, ident in (
             await session.execute(
                 select(CapabilityKsi.capability_id, CapabilityKsi.ksi_identifier)
