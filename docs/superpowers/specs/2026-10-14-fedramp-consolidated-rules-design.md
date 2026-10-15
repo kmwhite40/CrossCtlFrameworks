@@ -91,3 +91,35 @@ machine-readable FedRAMP ruleset to check an `frrID` against". There now is:
 - The `CTL` section: 79 controls, 14 with parameters. Not the FedRAMP Rev. 5
   parameter overlay — that gap (`GSA/fedramp-automation`) stays open.
 - FRD definitions surfaced in the UI.
+
+## 5. Class-scoped KSI applicability (follow-on)
+
+`System.certification_class` (A–D, migration-era CR26 vocabulary) already
+exists and is deliberately independent of `baseline`. The dataset says what
+each class owes, so Concord derives applicability from it rather than
+authoring it:
+
+| Class | Applicable KSIs | Source in the dataset |
+|---|---|---|
+| A | the 7 KSI IDs in `FRC-CLA-MFR.related` ("MUST address … the following") | `FRR.FRC.data.all.CLA.FRC-CLA-MFR` |
+| B, C, D | all KSIs ("MUST include all Key Security Indicators in a FedRAMP independent assessment at least once per year") | `FRR.IVV.data.20x.CSX.IVV-CSX-AIA.varies_by_class.{b,c,d}` |
+| B | the 5 `varies_by_class` KSIs whose class-B statement begins `**Optional:**` are **optional** | each KSI's `varies_by_class.b` |
+| D | the same 5 publish no class-D statement; they remain required (IVV-CSX-AIA), and the description says no D wording is published | — |
+| none | not CR26-certified, or not recorded: every current KSI, labelled unscoped | — |
+
+Each classification cites the rule that produced it. Tests pin the exact
+upstream text this depends on (the IVV-CSX-AIA "all Key Security Indicators"
+wording per class, the FRC-CLA-MFR KSI list, the `**Optional:**` prefix), so
+a re-vendored dataset that changes any of them fails a test instead of
+silently re-scoping every Class A system.
+
+Readiness counts only required KSIs; optional and not-required ones are
+reported beside the score, never in it. The SDR's derived indicators — and so
+its to-do list — cover required and optional KSIs for the system's class.
+Validation still runs every current KSI: evaluating is cheap and the history
+is useful if a class changes.
+
+`FRC-CSX-VVK` (minimum automated methods per KSI: A MAY, B ≥1 SHOULD, C ≥2
+MUST, D ≥4 MUST) is reported as a class requirement against the count of
+automated leaf rules Concord holds per KSI; with the rule overlay empty that
+count is 0, which is the true answer.

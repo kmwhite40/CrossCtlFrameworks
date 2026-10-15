@@ -26,6 +26,7 @@ from ..models import (
     KSIState,
 )
 from ..models_waivers import Waiver
+from .applicability import system_scope
 from .catalog import current_ksi_ids, current_ksis
 
 # Sub-score weights for the overall readiness percentage. Pass-rate dominates;
@@ -179,8 +180,18 @@ def compute_readiness(
 async def score_system(
     session: AsyncSession, *, system_id: int, persist: bool = True
 ) -> dict[str, Any]:
-    """Load state, compute readiness, and (optionally) persist a snapshot."""
-    ksis = list((await session.execute(current_ksis())).scalars().all())
+    """Load state, compute readiness, and (optionally) persist a snapshot.
+
+    Scored on the KSIs this system's Certification Class owes
+    (:mod:`ccf.fedramp20x.applicability`): a Class A system on FedRAMP's seven,
+    not all 46. Optional and not-required KSIs are reported in ``ksi_scope``
+    beside the score and never counted in it -- their states, reviews and
+    exceptions included.
+    """
+    current = list((await session.execute(current_ksis())).scalars().all())
+    scope = await system_scope(session, system_id)
+    ksis = scope.counted(current)
+    counted_ids = {k.id for k in ksis}
     states = list(
         (
             await session.execute(
@@ -192,6 +203,7 @@ async def score_system(
         .scalars()
         .all()
     )
+    states = [s for s in states if s.ksi_id in counted_ids]
     deps = list(
         (
             await session.execute(
@@ -213,6 +225,7 @@ async def score_system(
         .scalars()
         .all()
     )
+    reviews = [rv for rv in reviews if rv.ksi_id in counted_ids]
     open_exc = len(
         [
             e
@@ -227,6 +240,7 @@ async def score_system(
             )
             .scalars()
             .all()
+            if e.ksi_id in counted_ids
         ]
     )
     profile = (
@@ -258,6 +272,7 @@ async def score_system(
         active_waivers=active_waiver_count,
     )
     payload = r.as_dict()
+    payload.update(scope.summary(current))
     if persist:
         session.add(
             FedRAMP20xReadinessSnapshot(

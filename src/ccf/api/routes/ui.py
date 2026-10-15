@@ -2825,6 +2825,7 @@ async def fedramp20x_page(
 ) -> HTMLResponse:
     from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
     from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
+    from ...fedramp20x.applicability import system_scope  # noqa: PLC0415
     from ...models import (  # noqa: PLC0415
         KSI,
         FedRAMP20xProfile,
@@ -2852,8 +2853,11 @@ async def fedramp20x_page(
     dependencies: list[FedRAMPDependency] = []
     exceptions: list[KSIException] = []
     ksi_names: dict[int, str] = {k.id: k.identifier for k in ksis}
+    applicability: dict[int, str] = {}
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
+        scope = await system_scope(session, system_id)
+        applicability = {k.id: scope.status(k.identifier) for k in ksis}
         for s in (
             await session.execute(select(KSIState).where(KSIState.system_id == system_id))
         ).scalars():
@@ -2897,6 +2901,7 @@ async def fedramp20x_page(
             "ksi_total": len(ksis),
             "ksis": ksis,
             "ksi_names": ksi_names,
+            "applicability": applicability,
             "systems": systems,
             "system_id": system_id,
             "readiness": readiness,

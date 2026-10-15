@@ -6,6 +6,37 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — 20x readiness, packages and SDRs are scoped to what the Certification Class owes
+- **A Class A system was scored against 46 KSIs; FedRAMP requires seven of
+  it.** `FRC-CLA-MFR` lists them in its machine-readable `related` field.
+  Classes B–D owe every KSI (`IVV-CSX-AIA`: "MUST include all Key Security
+  Indicators"), and five KSIs are explicitly **Optional** for Class B. The
+  new `ccf.fedramp20x.applicability` derives all of this from the vendored
+  rules using the existing `System.certification_class`. Nothing reads
+  `baseline`, and nothing is authored by Concord. Each decision cites the rule
+  that produced it.
+- Readiness counts only required KSIs (states, reviews and open exceptions
+  alike) and reports `ksi_scope` and `certification_class` beside the score.
+  A system with no recorded class stays unscoped and is labelled as such. The
+  SDR's derived indicators, and so its to-do list, and the authorization
+  package cover required and optional KSIs only, with each package entry
+  carrying its applicability.
+- `FRC-CSX-VVK` (automated validation methods per KSI: A MAY, B ≥1, C ≥2,
+  D ≥4) is reported against the automated leaf checks Concord's rules hold.
+  With the rule overlay empty that is 0, which is the true answer.
+- Tests pin the upstream wording this parses, including that Class A's
+  `IVV-CSX-AIA` variant defers to its alternative framework. A re-vendored
+  dataset that moves any of it then fails a test instead of re-scoping
+  systems silently.
+- The 20x readiness tiles no longer render "—%" for an absent value.
+
+### Fixed — the 20x assessor-review and exception forms had no role check
+- Any signed-in user could record an "accepted" 3PAO review or a KSI
+  exception through the page. The API refuses both to anyone but
+  admin/assessor and admin respectively, and the forms now use the same gates.
+  Profile and dependency writes are open to every role in both the UI and the
+  API; that is unchanged and is a separate question.
+
 ### Changed — the KSI catalog is FedRAMP's Consolidated Rules for 2026, not Concord's phase-one summary
 - **Every SDR Concord produced cited KSIs the current rules do not define.**
   The catalog was the 2025 phase-one set (51 indicators, `KSI-IAM-01` …, wording

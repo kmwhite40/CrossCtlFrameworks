@@ -60,17 +60,27 @@
   <h2 class="card__title" style="margin:0">20x readiness</h2>
   <span class="card__subtitle">Status: <strong title="Stored value: {{ readiness.status }}">{{ readiness.status | cr26_label }}</strong></span>
 </div>
+{% set scope = readiness.ksi_scope %}
+<p class="card__subtitle" style="margin:-4px 0 12px" data-testid="ksi-scope">
+  {% if readiness.certification_class %}
+    Scored on the {{ scope.required }} KSI{{ '' if scope.required == 1 else 's' }} FedRAMP requires of a Class {{ readiness.certification_class }} offering{% if scope.optional %}; {{ scope.optional }} optional, reported but not scored{% endif %}{% if scope.not_required %}; {{ scope.not_required }} not required for this class{% endif %}.
+    {% set auto = readiness.automation_requirement %}
+    {% if auto %}Automated validation ({{ auto.rule }}, {{ auto.force }}): {% if auto.min_automated_methods_per_ksi %}{{ auto.ksis_meeting }} of {{ auto.ksis_owed }} KSIs have the {{ auto.min_automated_methods_per_ksi }} automated method{{ '' if auto.min_automated_methods_per_ksi == 1 else 's' }} required for each.{% else %}optional for this class.{% endif %}{% endif %}
+  {% else %}
+    No Certification Class is recorded for this system, so it is scored on all {{ scope.unscoped }} current KSIs. Record its class to scope readiness to what FedRAMP requires of it.
+  {% endif %}
+</p>
 
 <div class="cols-4" style="margin-bottom:16px">
   <div class="kpi"><div class="kpi__label">Overall</div><div class="kpi__value">{{ readiness.readiness_pct }}%</div></div>
-  <div class="kpi"><div class="kpi__label">KSI pass rate</div><div class="kpi__value">{{ readiness.ksi_pass_rate if readiness.ksi_pass_rate is not none else '—' }}%</div></div>
-  <div class="kpi"><div class="kpi__label">Automation</div><div class="kpi__value">{{ readiness.automation_coverage if readiness.automation_coverage is not none else '—' }}%</div></div>
-  <div class="kpi"><div class="kpi__label">Evidence</div><div class="kpi__value">{{ readiness.evidence_completeness if readiness.evidence_completeness is not none else '—' }}%</div></div>
+  <div class="kpi"><div class="kpi__label">KSI pass rate</div><div class="kpi__value">{{ readiness.ksi_pass_rate ~ '%' if readiness.ksi_pass_rate is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Automation</div><div class="kpi__value">{{ readiness.automation_coverage ~ '%' if readiness.automation_coverage is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Evidence</div><div class="kpi__value">{{ readiness.evidence_completeness ~ '%' if readiness.evidence_completeness is not none else '—' }}</div></div>
 </div>
 
 <div class="cols-4" style="margin-bottom:16px">
-  <div class="kpi"><div class="kpi__label">Assessor</div><div class="kpi__value">{{ readiness.assessor_completion if readiness.assessor_completion is not none else '—' }}%</div></div>
-  <div class="kpi"><div class="kpi__label">Dependencies</div><div class="kpi__value">{{ readiness.dependency_readiness if readiness.dependency_readiness is not none else '—' }}%</div></div>
+  <div class="kpi"><div class="kpi__label">Assessor</div><div class="kpi__value">{{ readiness.assessor_completion ~ '%' if readiness.assessor_completion is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Dependencies</div><div class="kpi__value">{{ readiness.dependency_readiness ~ '%' if readiness.dependency_readiness is not none else '—' }}</div></div>
   <div class="kpi"><div class="kpi__label">High-risk findings</div><div class="kpi__value {% if readiness.high_risk_findings %}kpi__value--danger{% endif %}">{{ readiness.high_risk_findings }}</div></div>
   <div class="kpi"><div class="kpi__label">Manual review</div><div class="kpi__value">{{ readiness.manual_review_burden }}</div></div>
 </div>
@@ -194,7 +204,11 @@
       {% for k in items %}
         <tr>
           <td><code>{{ k.identifier }}</code></td>
-          <td>{{ k.name }}</td>
+          <td>{{ k.name }}
+            {% set ap = applicability.get(k.id) %}
+            {% if ap == 'not_required' %}<span class="chip chip--ghost" title="FedRAMP does not require this KSI of a Class {{ readiness.certification_class }} offering (FRC-CLA-MFR)">not required, Class {{ readiness.certification_class }}</span>
+            {% elif ap == 'optional' %}<span class="chip chip--ghost" title="FedRAMP marks this KSI Optional for Class {{ readiness.certification_class }}">optional, Class {{ readiness.certification_class }}</span>{% endif %}
+          </td>
           <td class="dim">{{ k.automation_level }}</td>
           <td class="dim">{{ k.nist_refs | join(', ') }}</td>
           {% if system_id %}

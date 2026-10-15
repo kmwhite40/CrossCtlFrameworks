@@ -37,6 +37,7 @@ from ..models import (
     KSIValidationResult,
     System,
 )
+from .applicability import OWED, SystemScope, system_scope
 from .catalog import current_ksi_ids, current_ksis
 from .readiness import score_system
 
@@ -61,6 +62,15 @@ async def _latest_validation(
     return latest
 
 
+def _applicability(scope: SystemScope, identifier: str) -> dict[str, Any]:
+    found = scope.by_identifier.get(identifier)
+    return {
+        "status": scope.status(identifier),
+        "rule": found.rule if found else None,
+        "note": found.note if found else None,
+    }
+
+
 async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, Any]:
     """Build the structured 20x authorization package for a system."""
     system = (
@@ -77,7 +87,15 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
     # Per-KSI state, validation and review are looked up through ``ksis``, so
     # restricting ``ksis`` to current indicators is what keeps retired ones out;
     # the exception list below is emitted as-is and is filtered itself.
-    ksis = list((await session.execute(current_ksis())).scalars().all())
+    # Only what this system's Certification Class owes (required or optional):
+    # a Class A package carries FedRAMP's seven KSIs, not 39 more it was never
+    # asked to address shown as "not_tested".
+    scope = await system_scope(session, system_id)
+    ksis = [
+        k
+        for k in (await session.execute(current_ksis())).scalars().all()
+        if scope.status(k.identifier) in OWED
+    ]
     states = {
         s.ksi_id: s
         for s in (await session.execute(select(KSIState).where(KSIState.system_id == system_id)))
@@ -154,6 +172,7 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
                 "automation_level": k.automation_level,
                 "nist_refs": list(k.nist_refs or []),
                 "cmmc_refs": list(k.cmmc_refs or []),
+                "applicability": _applicability(scope, k.identifier),
                 "status": status,
                 "last_validated_at": st.last_validated_at.isoformat()
                 if st and st.last_validated_at

@@ -29,6 +29,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..fedramp20x.applicability import OWED, system_scope
 from ..fedramp20x.catalog import current_ksis
 from ..fedramp20x.rules import frr_ids, ksi_ids, load_rules
 from ..models import (
@@ -950,7 +951,14 @@ async def _derived_indicators(
     ``ksi_validation_results.ksi_identifier``, since the foreign key is the
     column the database actually guarantees.
     """
-    ksis = (await session.execute(current_ksis())).scalars().all()
+    scope = await system_scope(session, system_id)
+    # The indicators this system's Certification Class owes -- required or
+    # optional. A Class A SDR's to-do list is FedRAMP's seven, not all 46.
+    ksis = [
+        k
+        for k in (await session.execute(current_ksis())).scalars().all()
+        if scope.status(k.identifier) in OWED
+    ]
     if not ksis:
         return {}
 
