@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..catalog.canonical import canonicalize
 from ..logging import get_logger
 from ..models import Organization
 from ..models_assurance import (
@@ -33,6 +34,8 @@ class _Graph:
     def __init__(self) -> None:
         self.nodes: dict[NodeKey, dict[str, Any]] = {}
         self.edges: list[tuple[NodeKey, NodeKey, str, str]] = []
+        #: implementation row id -> the control node it folded into
+        self.impl_index: dict[str, NodeKey] = {}
 
     def node(
         self, entity_type: str, entity_id: Any, label: str,
@@ -103,36 +106,75 @@ async def _systems(session: AsyncSession, org_id: int, g: _Graph) -> None:
         g.node("system", s.id, s.name, s.ato_status, baseline=s.baseline)
 
 
+#: Worst first. A control is only as implemented as its least-implemented row.
+STATUS_ORDER: tuple[str, ...] = (
+    "not_implemented", "planned", "partial", "inherited", "implemented", "not_applicable",
+)
+
+
+def _worst(statuses: Any) -> str | None:
+    ranked = [s for s in statuses if s in STATUS_ORDER]
+    return min(ranked, key=STATUS_ORDER.index) if ranked else None
+
+
+def fold_control(identifier: str, sequence_control: str | None) -> tuple[str, bool]:
+    """The control a catalog row belongs to: ``(id, placed)``.
+
+    ``controls`` holds assessment objectives and ODP rows as well as controls,
+    so one node per row overstates the graph about fourfold. A row is the
+    control it names; otherwise it attaches through ``sequence_control`` (the
+    same rule as ``catalog/baseline_delta.py``); otherwise it is shown as
+    recorded with ``placed=False`` -- reported, never guessed or dropped.
+    """
+    for raw in (identifier, sequence_control):
+        c = canonicalize(raw)
+        if c is not None:
+            return c.value, True
+    return identifier, False
+
+
 async def _controls(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from sqlalchemy.orm import selectinload  # noqa: PLC0415
 
-    from ..models import ControlImplementation, Evidence, System  # noqa: PLC0415
+    from ..models import Control, ControlImplementation, System, User  # noqa: PLC0415
 
-    sys_ids = [
-        r for r in (
-            await session.execute(select(System.id).where(System.organization_id == org_id))
-        ).scalars().all()
-    ]
-    if not sys_ids:
-        return
-    impls = (
+    rows = (
         await session.execute(
-            select(ControlImplementation)
-            .options(
-                selectinload(ControlImplementation.control),
-                selectinload(ControlImplementation.evidence),
-            )
-            .where(ControlImplementation.system_id.in_(sys_ids))
+            select(ControlImplementation, Control.identifier, Control.sequence_control)
+            .join(Control, Control.id == ControlImplementation.control_id)
+            .join(System, System.id == ControlImplementation.system_id)
+            .where(System.organization_id == org_id)
+            .options(selectinload(ControlImplementation.evidence))
         )
-    ).scalars().all()
-    for impl in impls:
-        label = impl.control.identifier if impl.control else f"impl-{impl.id}"
-        ck = g.node("control", impl.id, label, impl.status, system_id=impl.system_id)
-        g.edge(("system", str(impl.system_id)), ck, "has_control", "control_implementations")
-        for ev in impl.evidence or []:
-            ek = g.node("evidence", ev.id, ev.title or f"evidence-{ev.id}", ev.kind)
-            g.edge(ck, ek, "supported_by", "evidence")
-            _ = Evidence  # keep import meaningful for type-checkers
+    ).all()
+    owner_ids = {r[0].owner_user_id for r in rows if r[0].owner_user_id is not None}
+    owners: dict[int, str] = {}
+    if owner_ids:
+        for u in (
+            await session.execute(select(User).where(User.id.in_(owner_ids)))
+        ).scalars():
+            owners[u.id] = u.full_name or u.email
+
+    grouped: dict[tuple[int, str], list[Any]] = {}
+    placed: dict[tuple[int, str], bool] = {}
+    for impl, identifier, sequence_control in rows:
+        cid, ok = fold_control(identifier, sequence_control)
+        grouped.setdefault((impl.system_id, cid), []).append(impl)
+        placed[(impl.system_id, cid)] = ok
+
+    for (sid, cid), impls in grouped.items():
+        ck = g.node(
+            "control", f"{sid}:{cid}", cid, _worst(i.status for i in impls),
+            system_id=sid, rows=len(impls), placed=placed[(sid, cid)],
+            owners=sorted({owners[i.owner_user_id] for i in impls
+                           if i.owner_user_id in owners}),
+        )
+        g.edge(("system", str(sid)), ck, "has_control", "control_implementations")
+        for impl in impls:
+            g.impl_index[str(impl.id)] = ck
+            for ev in impl.evidence or []:
+                ek = g.node("evidence", ev.id, ev.title or f"evidence-{ev.id}", ev.kind)
+                g.edge(ck, ek, "supported_by", "evidence")
 
 
 async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
@@ -265,7 +307,6 @@ async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
         targets: list[tuple[str, list[Any], str]] = [
             ("system", list(a.system_ids or []), "accesses"),
             ("vendor", list(a.vendor_ids or []), "depends_on"),
-            ("control", list(a.control_ids or []), "governed_by"),
             ("poam", [], "n/a"),
         ]
         if a.system_id is not None:
@@ -274,6 +315,19 @@ async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
             for tid in ids:
                 # Only connect to nodes the builder already created this run.
                 g.edge(ak, (ttype, str(tid)), rel, "ai_agents")
+        # control_ids is free-form: an implementation row id (what the graph
+        # keyed controls by before) or a control id. Neither is guessed past.
+        agent_systems = {str(s) for s in [a.system_id, *(a.system_ids or [])] if s is not None}
+        for tid in a.control_ids or []:
+            key = g.impl_index.get(str(tid))
+            if key is not None:
+                g.edge(ak, key, "governed_by", "ai_agents")
+                continue
+            c = canonicalize(str(tid))
+            if c is None:
+                continue
+            for sid in agent_systems:
+                g.edge(ak, ("control", f"{sid}:{c.value}"), "governed_by", "ai_agents")
         for rid in list(a.risk_ids or []):
             g.edge(ak, ("risk", str(rid)), "introduces_risk", "ai_agents")
 

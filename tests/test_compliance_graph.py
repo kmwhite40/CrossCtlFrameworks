@@ -253,3 +253,81 @@ def test_migration_0098_labels_old_edges_then_drops_confidence(
     calls.clear()
     mod.downgrade()
     assert [c[:2] for c in calls] == [("add", "confidence"), ("drop", "source")]
+
+
+# ── Task 2: control nodes are real controls ──────────────────────────────────
+
+
+def test_fold_control_places_rows_on_the_control_they_decompose() -> None:
+    assert builder.fold_control("AC-02", None) == ("AC-2", True)
+    assert builder.fold_control("AC-02(01)", None) == ("AC-2(1)", True)
+    assert builder.fold_control("AC-02a.[01]", "AC-02") == ("AC-2", True)
+    assert builder.fold_control("AC-02_ODP[01]", "AC-02") == ("AC-2", True)
+    # Neither names a control: shown as recorded, never dropped or guessed.
+    assert builder.fold_control("AC-06(01).b", "AC-06(01).b") == ("AC-06(01).b", False)
+
+
+async def test_objective_rows_fold_into_one_node_and_the_worst_status_wins() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02", "implemented")
+    await _implement(sid, f"AC-02a.[01]x{next(_SEQ)}", "planned", sequence_control="AC-02")
+    await _build(org)
+    nodes = await _nodes(org)
+    controls = {k: v for k, v in nodes.items() if k.startswith("control:")}
+    assert list(controls) == [f"control:{sid}:AC-2"]
+    node = controls[f"control:{sid}:AC-2"]
+    assert node["status"] == "planned" and node["metadata"]["rows"] == 2
+    assert node["metadata"]["placed"] is True
+
+
+async def test_a_row_that_names_no_control_is_shown_unplaced() -> None:
+    org, sid = await _org_and_system()
+    ident = f"ZZ-weird-{next(_SEQ)}"
+    await _implement(sid, ident, "partial")
+    await _build(org)
+    node = (await _nodes(org))[f"control:{sid}:{ident}"]
+    assert node["metadata"]["placed"] is False
+
+
+async def test_owners_of_every_folded_row_are_listed() -> None:
+    from ccf.models import User  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    async with session_scope() as s:
+        a = User(email=f"a{next(_SEQ)}@g.test", full_name="Ana Owner", organization_id=org)
+        b = User(email=f"b{next(_SEQ)}@g.test", full_name=None, organization_id=org)
+        s.add_all([a, b])
+        await s.flush()
+        a_id, b_id, b_email = a.id, b.id, b.email
+    await _implement(sid, "AC-03", owner_user_id=a_id)
+    await _implement(sid, f"AC-03b.x{next(_SEQ)}", sequence_control="AC-03", owner_user_id=b_id)
+    await _build(org)
+    owners = (await _nodes(org))[f"control:{sid}:AC-3"]["metadata"]["owners"]
+    assert owners == sorted(["Ana Owner", b_email])
+
+
+async def test_evidence_still_reaches_its_system_through_the_folded_control() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02", evidence_title="screenshot")
+    await _build(org)
+    edges = await _edges(org)
+    has_control = (f"system:{sid}", f"control:{sid}:AC-2", "has_control", "control_implementations")
+    assert has_control in edges
+    assert any(
+        e[0] == f"control:{sid}:AC-2" and e[1].startswith("evidence:") for e in edges
+    )
+
+
+async def test_an_agent_reaches_a_control_by_row_id_or_by_canonical_id() -> None:
+    from ccf.models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    impl_id = await _implement(sid, "AC-02")
+    await _implement(sid, "AU-02")
+    async with session_scope() as s:
+        s.add(AiAgent(organization_id=org, name="Triage bot", system_id=sid,
+                      control_ids=[impl_id, "au-2"]))
+    await _build(org)
+    edges = {(e[0].split(":")[0], e[1], e[3]) for e in await _edges(org)}
+    assert ("ai_agent", f"control:{sid}:AC-2", "ai_agents") in edges
+    assert ("ai_agent", f"control:{sid}:AU-2", "ai_agents") in edges
