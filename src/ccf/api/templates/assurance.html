@@ -37,7 +37,7 @@
         <td><strong>{{ s.name }}</strong></td>
         <td class="dim">{{ s.baseline or '—' }}</td>
         <td class="dim">{{ s.ato_status or '—' }}</td>
-        <td><a class="btn btn--ghost btn--sm" href="/api/assurance/graph/systems/{{ s.id }}" target="_blank" rel="noopener"><i data-lucide="share-2"></i> Subgraph JSON</a></td>
+        <td><a class="btn btn--ghost btn--sm" href="/graph?system_id={{ s.id }}"><i data-lucide="share-2"></i> Open graph</a></td>
       </tr>{% endfor %}
     </tbody>
   </table></div>

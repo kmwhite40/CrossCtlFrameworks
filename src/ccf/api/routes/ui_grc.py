@@ -1423,14 +1423,61 @@ async def assurance_page(
     )
 
 
+#: The page draws at most this many nodes; above it, it asks for a filter.
+_GRAPH_NODE_LIMIT = 3000
+
+
+@router.get("/graph", response_class=HTMLResponse)
+async def graph_page(
+    request: Request,
+    system_id: int | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """One system's assurance graph: every edge sourced, nothing inferred."""
+    from ...assurance import impact as assurance_impact  # noqa: PLC0415
+
+    org = _principal_org(request)
+    # Deleted systems are excluded as everywhere else (DATA-04); a foreign or
+    # deleted id is a 404, never an empty graph that implies "no relationships".
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    selected = next((s for s in systems if s.id == system_id), None)
+    if system_id is not None and selected is None:
+        raise HTTPException(404, "System not found")
+    view = await assurance_impact.system_view(session, system=selected) if selected else None
+    labels = {n["id"]: n["label"] for n in view["nodes"]} if view else {}
+    node_types = sorted({n["entity_type"] for n in view["nodes"]}) if view else []
+    return templates.TemplateResponse(
+        request,
+        "graph.html",
+        {
+            "active": "graph",
+            "systems": systems,
+            "selected": selected,
+            "view": view,
+            "labels": labels,
+            "node_types": node_types,
+            "node_limit": _GRAPH_NODE_LIMIT,
+        },
+    )
+
+
 @router.post("/assurance/rebuild")
 async def assurance_rebuild(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request,
+    return_to: str = Form("assurance"),
+    system_id: int | None = Form(None),
+    session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     from ...assurance import builder as assurance_builder  # noqa: PLC0415
 
     await assurance_builder.rebuild(session, org_id=_principal_org(request))
     await session.commit()
+    # Only two fixed destinations: a free-form return URL would be an open redirect.
+    if return_to == "graph" and system_id is not None:
+        return RedirectResponse(f"/graph?system_id={int(system_id)}", status_code=303)
     return RedirectResponse("/assurance", status_code=303)
 
 

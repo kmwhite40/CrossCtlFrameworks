@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Compliance graph · Concord{% endblock %}
+{% block heading %}Compliance graph{% endblock %}
+{% block subtitle %}<p class="page__subtitle">One system's controls and what is linked to them. Every link names where it comes from; nothing is inferred.</p>{% endblock %}
+{% block content %}
+
+<nav class="row" aria-label="Graph layer" style="gap:8px;margin-bottom:12px">
+  <span class="chip chip--ok" aria-current="page">System posture</span>
+</nav>
+
+<form method="get" action="/graph" class="row" style="gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
+  <label for="graph-system">System</label>
+  <select id="graph-system" name="system_id">
+    <option value="">Choose a system</option>
+    {% for s in systems %}<option value="{{ s.id }}" {% if selected and s.id == selected.id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}
+  </select>
+  <button class="btn btn--sm" type="submit">Show</button>
+</form>
+
+{% macro rebuild_form(label) %}
+<form method="post" action="/assurance/rebuild">
+  <input type="hidden" name="return_to" value="graph">
+  <input type="hidden" name="system_id" value="{{ selected.id }}">
+  <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="refresh-cw"></i> {{ label }}</button>
+</form>
+{% endmacro %}
+
+{% if not systems %}
+<section class="card"><div class="card__body dim" style="text-align:center;padding:32px">No systems yet.</div></section>
+{% elif not selected %}
+<section class="card"><div class="card__body dim" style="text-align:center;padding:32px">Choose a system to draw its graph.</div></section>
+{% elif view.build_status is none %}
+<section class="card"><div class="card__body" style="text-align:center;padding:32px">
+  <p><strong>Not built yet.</strong> The graph is built from Concord's records; nothing has been built for this organization.</p>
+  {{ rebuild_form("Build graph") }}
+</div></section>
+{% else %}
+
+{% if view.failed_contributors %}
+<section class="card" role="alert" style="margin-bottom:16px;border-color:var(--warning)">
+  <div class="card__header"><div class="card__title">Part of the graph could not be built</div></div>
+  <div class="card__body">
+    <p>These parts are missing from the graph below. Missing is not the same as having no relationships.</p>
+    <ul>{% for name, err in view.failed_contributors.items() %}<li><strong>{{ name }}</strong>: {{ err }}</li>{% endfor %}</ul>
+  </div>
+</section>
+{% endif %}
+
+<div class="row" style="gap:12px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+  <span class="dim">{% if view.built_at %}Built {{ view.built_at[:16]|replace('T', ' ') }} UTC{% else %}Build {{ view.build_status }}, not finished{% endif %}</span>
+  <span style="flex:1"></span>
+  {{ rebuild_form("Rebuild") }}
+</div>
+
+{% if view.root is none %}
+<section class="card"><div class="card__body" style="text-align:center;padding:32px">
+  <p>This system is not in the graph yet: it was added after the last build.</p>
+</div></section>
+{% elif not view.edges %}
+<section class="card"><div class="card__body dim" style="text-align:center;padding:32px">No recorded relationships for this system.</div></section>
+{% else %}
+
+<div class="row" style="gap:16px;flex-wrap:wrap;align-items:flex-start;margin-bottom:8px">
+  <fieldset style="border:0;padding:0">
+    <legend class="dim">Show</legend>
+    {% for t in node_types %}<label style="margin-right:8px"><input type="checkbox" data-graph-type value="{{ t }}" checked> {{ t|replace('_', ' ') }}</label>{% endfor %}
+  </fieldset>
+  <label>Owner
+    <select id="graph-owner"><option value="">Everyone</option></select>
+  </label>
+  <label>Find control <input type="search" id="graph-search" placeholder="AC-2" autocomplete="off"></label>
+  <button type="button" class="btn btn--ghost btn--sm" id="graph-table-toggle" aria-controls="graph-tables" aria-expanded="false">Table</button>
+</div>
+<p id="graph-notice" class="dim" role="status" hidden></p>
+<div class="row" style="gap:12px;align-items:stretch;flex-wrap:wrap">
+  <div id="graph-canvas" role="img" aria-label="Graph of {{ selected.name }}; the same data is in the table." style="flex:1 1 480px;min-height:560px;border:1px solid var(--shell-border);border-radius:8px"></div>
+  <aside id="graph-panel" class="card" style="flex:0 1 300px;padding:12px" hidden></aside>
+</div>
+<p class="dim" style="margin-top:8px">Colour is status: implemented, partial or planned, not implemented, inherited, not applicable. Shapes: square = system, diamond = capability, hexagon = KSI, circle = everything else.</p>
+
+<section id="graph-tables" hidden style="margin-top:16px">
+  <div class="card" style="margin-bottom:16px">
+    <div class="card__header"><div class="card__title">Nodes</div><span class="dim">{{ view.nodes|length }}</span></div>
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Type</th><th>Name</th><th>Status</th><th>Owners</th></tr></thead>
+      <tbody>{% for n in view.nodes %}<tr data-graph-node-row>
+        <td>{{ n.entity_type|replace('_', ' ') }}</td><td>{{ n.label }}</td><td>{{ n.status or '—' }}</td>
+        <td>{{ (n.metadata.owners or [])|join(', ') or '—' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+  <div class="card">
+    <div class="card__header"><div class="card__title">Links</div><span class="dim">{{ view.edges|length }}</span></div>
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>From</th><th>Relationship</th><th>To</th><th>Source</th></tr></thead>
+      <tbody>{% for e in view.edges %}<tr data-graph-edge-row>
+        <td>{{ labels[e.source] }}</td><td>{{ e.relationship_type|replace('_', ' ') }}</td>
+        <td>{{ labels[e.target] }}</td><td><code>{{ e.provenance }}</code></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+</section>
+
+<script type="application/json" id="graph-data" data-limit="{{ node_limit }}">{{ view|tojson }}</script>
+<script src="/static/vendor/cytoscape.min.js"></script>
+<script src="/static/js/graph.js?v={{ asset_v }}"></script>
+{% endif %}
+{% endif %}
+<script>if(window.lucide)lucide.createIcons();</script>
+{% endblock %}

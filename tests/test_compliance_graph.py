@@ -634,3 +634,122 @@ async def test_system_scope_does_not_leak_through_a_shared_vendor() -> None:
             ("ai_agent", "Agent Both")} <= labels
     assert ("ai_agent", "Agent B") not in labels
     assert ("risk", "Their risk") not in labels
+
+
+# ── Task 6: the /graph page ──────────────────────────────────────────────────
+
+
+async def _page(path: str) -> Any:
+    from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
+
+    from ccf.api.main import create_app  # noqa: PLC0415
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()),
+                           base_url="http://t") as c:
+        return await c.get(path)
+
+
+async def _post(path: str, data: dict[str, str]) -> Any:
+    from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
+
+    from ccf.api.main import create_app  # noqa: PLC0415
+
+    async with AsyncClient(transport=ASGITransport(app=create_app()),
+                           base_url="http://t") as c:
+        return await c.post(path, data=data, follow_redirects=False)
+
+
+async def test_the_page_draws_a_built_system_with_tables_matching_the_view() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02", evidence_title="screenshot")
+    assert (await _build(org))[0] == "ok"
+    r = await _page(f"/graph?system_id={sid}")
+    assert r.status_code == 200
+    async with session_scope() as s:
+        v = await impact.system_view(s, system=await s.get(System, sid))
+    html = r.text
+    assert len(v["nodes"]) > 1 and len(v["edges"]) > 0
+    assert html.count('data-graph-node-row') == len(v["nodes"])
+    assert html.count('data-graph-edge-row') == len(v["edges"])
+    assert "control_implementations" in html  # provenance is shown, not hidden
+    assert '/static/vendor/cytoscape.min.js' in html and 'id="graph-data"' in html
+
+
+async def test_the_page_says_not_built_rather_than_drawing_nothing() -> None:
+    _org, sid = await _org_and_system()
+    r = await _page(f"/graph?system_id={sid}")
+    assert "Not built yet" in r.text and 'name="return_to" value="graph"' in r.text
+    assert 'id="graph-canvas"' not in r.text
+
+
+async def test_a_system_added_after_the_build_says_so() -> None:
+    org, _sid = await _org_and_system()
+    assert (await _build(org))[0] == "ok"
+    late = await _system(org)
+    r = await _page(f"/graph?system_id={late}")
+    assert "not in the graph yet" in r.text and 'id="graph-canvas"' not in r.text
+
+
+async def test_a_system_with_no_relationships_says_so() -> None:
+    org, sid = await _org_and_system()
+    assert (await _build(org))[0] == "ok"
+    r = await _page(f"/graph?system_id={sid}")
+    assert "No recorded relationships" in r.text and 'id="graph-canvas"' not in r.text
+
+
+async def test_a_failed_contributor_is_named_on_the_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def broken(session: Any, org_id: int, g: Any) -> None:
+        raise RuntimeError("risk register offline")
+
+    monkeypatch.setattr(builder, "_risks", broken)
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    await _build(org)
+    html = (await _page(f"/graph?system_id={sid}")).text
+    # The embedded JSON also carries the failure, so look only at the visible page.
+    visible = html.split('<script type="application/json"')[0]
+    assert "Part of the graph could not be built" in visible
+    assert "<strong>risks</strong>: RuntimeError: risk register offline" in visible
+
+
+async def test_a_title_with_markup_is_shown_as_text() -> None:
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    await _capability(org, sid, controls=["AC-2"], title='<img src=x onerror="alert(1)">')
+    assert (await _build(org))[0] == "ok"
+    html = (await _page(f"/graph?system_id={sid}")).text
+    assert "&lt;img src=x" in html  # the table shows it as text (the positive case)
+    assert '<img src=x onerror="alert(1)">' not in html
+    assert "\\u003cimg" in html  # the embedded data escapes it too
+
+
+async def test_a_deleted_system_is_not_drawn() -> None:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    await _build(org)
+    assert (await _page(f"/graph?system_id={sid}")).status_code == 200
+    async with session_scope() as s:
+        (await s.get(System, sid)).deleted_at = datetime.now(UTC)
+    r = await _page(f"/graph?system_id={sid}")
+    assert r.status_code == 404
+
+
+async def test_the_nav_and_the_assurance_page_link_to_the_graph() -> None:
+    _org, sid = await _org_and_system()
+    html = (await _page("/assurance")).text
+    assert 'href="/graph"' in html and f'href="/graph?system_id={sid}"' in html
+
+
+async def test_rebuild_returns_only_to_a_fixed_destination() -> None:
+    _org, sid = await _org_and_system()
+    back = await _post("/assurance/rebuild", {"return_to": "graph", "system_id": str(sid)})
+    assert back.status_code == 303 and back.headers["location"] == f"/graph?system_id={sid}"
+    for hostile in ("https://evil.example/", "//evil.example", "/admin"):
+        r = await _post("/assurance/rebuild", {"return_to": hostile, "system_id": str(sid)})
+        assert r.status_code == 303 and r.headers["location"] == "/assurance"
+    # "graph" without a system id has nowhere to return to
+    r = await _post("/assurance/rebuild", {"return_to": "graph"})
+    assert r.headers["location"] == "/assurance"
