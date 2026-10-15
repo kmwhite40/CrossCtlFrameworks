@@ -207,6 +207,81 @@ async def test_a_failed_contributor_is_recorded_and_the_rest_still_build(
     assert any(k.startswith("control_test:") for k in await _nodes(org))
 
 
+async def test_a_contributor_that_fails_part_way_leaves_nothing_behind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def half_then_broken(session: Any, org_id: int, g: Any) -> None:
+        rk = g.node("risk", 999_999, "half-written risk", "open")
+        sk = next(k for k in g.nodes if k[0] == "system")
+        g.edge(rk, sk, "threatens", "risks")
+        g.impl_index["half"] = rk
+        raise RuntimeError("risk register went away mid-read")
+
+    monkeypatch.setattr(builder, "_risks", half_then_broken)
+    org, sid = await _org_and_system()
+    await _implement(sid, "AC-02")
+    status, detail = await _build(org)
+    assert status == "partial" and "risks" in detail["failed"]
+    assert detail["sources"]["risks"] == 0
+    nodes = await _nodes(org)
+    # The slices that did build are there (the positive case) ...
+    assert f"system:{sid}" in nodes and f"control:{sid}:AC-2" in nodes
+    # ... and the failed one is absent, as the page says it is.
+    assert not [k for k in nodes if k.startswith("risk:")]
+    assert not [e for e in await _edges(org) if e[2] == "threatens"]
+
+
+async def test_an_agent_system_id_that_names_no_system_is_skipped() -> None:
+    from ccf.models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org, _first = await _org_and_system()
+    # A second system, so its id is never 1: ``True == 1`` would hide a bool slip.
+    sid = await _system(org)
+    assert sid != 1
+    async with session_scope() as s:
+        a = AiAgent(organization_id=org, name="Loose bot", system_ids=["prod", str(sid), True])
+        s.add(a)
+        await s.flush()
+        aid = a.id
+    status, detail = await _build(org)
+    assert status == "ok", detail
+    node = (await _nodes(org))[f"ai_agent:{aid}"]
+    assert node["metadata"]["system_ids"] == [sid]
+    assert (f"ai_agent:{aid}", f"system:{sid}", "accesses", "ai_agents") in await _edges(org)
+
+
+async def test_a_deleted_system_is_not_a_node_or_a_boundary() -> None:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from ccf.models_ai_agents import AiAgent  # noqa: PLC0415
+
+    org, sid = await _org_and_system()
+    gone = await _system(org)
+    async with session_scope() as s:
+        s.add(AiAgent(organization_id=org, name="Spanning bot", system_id=sid,
+                      system_ids=[sid, gone]))
+    assert (await _build(org))[0] == "ok"
+
+    async def scoped() -> set[tuple[str, str]]:
+        async with session_scope() as s:
+            g = await impact.subgraph(s, org_id=org, entity_type="system",
+                                      entity_id=str(sid), max_hops=6, within_system=sid)
+        return {(n["entity_type"], n["entity_id"]) for n in g["nodes"]}
+
+    # While it exists it is a node and the agent shows it as a boundary.
+    assert f"system:{gone}" in await _nodes(org)
+    assert ("system", str(gone)) in await scoped()
+    async with session_scope() as s:
+        sysm = await s.get(System, gone)
+        assert sysm is not None
+        sysm.deleted_at = datetime.now(UTC)
+    assert (await _build(org))[0] == "ok"
+    assert f"system:{gone}" not in await _nodes(org)
+    ids = await scoped()
+    assert ("system", str(gone)) not in ids
+    assert ("system", str(sid)) in ids and any(t == "ai_agent" for t, _ in ids)
+
+
 async def test_a_connector_is_not_linked_to_systems_it_does_not_feed() -> None:
     org, _sid = await _org_and_system()
     async with session_scope() as s:
@@ -397,7 +472,6 @@ async def test_a_capability_links_to_the_controls_and_ksis_it_claims() -> None:
 
 async def test_a_ksi_links_to_the_controls_the_system_implements_only() -> None:
     from ccf.catalog.canonical import canonicalize  # noqa: PLC0415
-    from ccf.fedramp20x import rules  # noqa: PLC0415
     from ccf.models import KSI, KSIState  # noqa: PLC0415
 
     ksi_id, ksi_ident, control = await _seeded_ksi_with_a_control()
@@ -405,6 +479,8 @@ async def test_a_ksi_links_to_the_controls_the_system_implements_only() -> None:
         ksi = await s.get(KSI, ksi_id)
         assert ksi is not None
         refs = {c.value for r in ksi.nist_refs or [] if (c := canonicalize(str(r)))}
+        row_source = ksi.source
+    assert row_source  # a seeded row records where its mappings came from
     assert len(refs) >= 2 and control in refs  # the KSI maps to more than the one implemented
     org, sid = await _org_and_system()
     await _implement(sid, control)
@@ -414,8 +490,105 @@ async def test_a_ksi_links_to_the_controls_the_system_implements_only() -> None:
     nodes = await _nodes(org)
     assert nodes[f"ksi:{sid}:{ksi_id}"]["label"] == ksi_ident
     ksi_edges = [e for e in await _edges(org) if e[0] == f"ksi:{sid}:{ksi_id}"]
+    # The edge names the row's own source, not the vendored dataset's version.
     assert ksi_edges == [(f"ksi:{sid}:{ksi_id}", f"control:{sid}:{control}", "maps_to",
-                          f"fedramp-rules@{rules.load_rules().version}")]
+                          row_source)]
+
+
+async def _ksi_system_with_source(source: str | None) -> tuple[int, int, int, str]:
+    """``(org, system, ksi id, control)`` built with the KSI row's ``source``
+    set to ``source``. The caller restores the row (shared catalog)."""
+    from ccf.models import KSI, KSIState  # noqa: PLC0415
+
+    ksi_id, _ident, control = await _seeded_ksi_with_a_control()
+    async with session_scope() as s:
+        row = await s.get(KSI, ksi_id)
+        assert row is not None
+        row.source = source
+    org, sid = await _org_and_system()
+    await _implement(sid, control)
+    async with session_scope() as s:
+        s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
+    return org, sid, ksi_id, control
+
+
+async def _restore_ksi_source(ksi_id: int, source: str | None) -> None:
+    from ccf.models import KSI  # noqa: PLC0415
+
+    async with session_scope() as s:
+        row = await s.get(KSI, ksi_id)
+        assert row is not None
+        row.source = source
+
+
+async def _ksi_source(ksi_id: int) -> str | None:
+    from ccf.models import KSI  # noqa: PLC0415
+
+    async with session_scope() as s:
+        row = await s.get(KSI, ksi_id)
+        assert row is not None
+        return row.source
+
+
+async def test_a_ksi_edge_names_a_phase_one_rows_own_source() -> None:
+    """A row seeded from the earlier catalog is not labelled as FedRAMP's dataset."""
+    ksi_id, _ident, _control = await _seeded_ksi_with_a_control()
+    original = await _ksi_source(ksi_id)
+    phase_one = "fedramp-20x-catalog:phase-one-test"
+    try:
+        org, sid, ksi_id, control = await _ksi_system_with_source(phase_one)
+        assert (await _build(org))[0] == "ok"
+        maps = [e for e in await _edges(org) if e[2] == "maps_to"]
+        assert maps == [(f"ksi:{sid}:{ksi_id}", f"control:{sid}:{control}", "maps_to",
+                         phase_one)]
+    finally:
+        await _restore_ksi_source(ksi_id, original)
+
+
+@pytest.mark.parametrize("missing", [None, "", "   "])
+async def test_a_ksi_row_with_no_source_draws_no_mapping(missing: str | None) -> None:
+    ksi_id, _ident, _control = await _seeded_ksi_with_a_control()
+    original = await _ksi_source(ksi_id)
+    try:
+        org, sid, ksi_id, _control = await _ksi_system_with_source(missing)
+        assert (await _build(org))[0] == "ok"
+        edges = await _edges(org)
+        # The KSI is still drawn and assessed (the positive case) ...
+        assert (f"system:{sid}", f"ksi:{sid}:{ksi_id}", "assessed_by", "ksi_states") in edges
+        # ... but nothing claims where its control mapping came from.
+        assert not [e for e in edges if e[2] == "maps_to"]
+    finally:
+        await _restore_ksi_source(ksi_id, original)
+
+
+async def test_a_retired_ksi_is_not_drawn_and_maps_nothing() -> None:
+    from datetime import UTC, datetime  # noqa: PLC0415
+
+    from ccf.models import KSI, KSIState  # noqa: PLC0415
+
+    ksi_id, _ident, control = await _seeded_ksi_with_a_control()
+    org, sid = await _org_and_system()
+    await _implement(sid, control)
+    async with session_scope() as s:
+        s.add(KSIState(system_id=sid, ksi_id=ksi_id, status="pass"))
+    # Current: drawn and mapped (the positive counterpart).
+    assert (await _build(org))[0] == "ok"
+    assert f"ksi:{sid}:{ksi_id}" in await _nodes(org)
+    assert [e for e in await _edges(org) if e[2] == "maps_to"]
+    try:
+        async with session_scope() as s:
+            row = await s.get(KSI, ksi_id)
+            assert row is not None
+            row.retired_at = datetime.now(UTC)
+        assert (await _build(org))[0] == "ok"
+        assert f"ksi:{sid}:{ksi_id}" not in await _nodes(org)
+        assert not [e for e in await _edges(org) if e[2] == "maps_to"]
+        assert f"control:{sid}:{control}" in await _nodes(org)
+    finally:
+        async with session_scope() as s:
+            row = await s.get(KSI, ksi_id)
+            assert row is not None
+            row.retired_at = None
 
 
 async def test_control_ids_written_differently_meet_on_one_node() -> None:

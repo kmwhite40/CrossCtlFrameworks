@@ -74,11 +74,16 @@ async def _contribute(
 
     async def run(name: str, contributor: Any) -> None:
         before = len(g.nodes)
+        # A contributor that fails part-way has already added some nodes and
+        # edges. The page says a failed part is missing, so it must be: put the
+        # graph back as it was before this contributor ran.
+        saved = (dict(g.nodes), list(g.edges), dict(g.impl_index))
         try:
             async with session.begin_nested():
                 await contributor(session, org_id, g)
             stats[name] = len(g.nodes) - before
         except Exception as exc:  # recorded and shown, never silent
+            g.nodes, g.edges, g.impl_index = saved
             log.warning("assurance.source_failed", source=name, error=str(exc)[:200])
             stats[name] = 0
             failed[name] = f"{type(exc).__name__}: {str(exc)[:200]}"
@@ -101,8 +106,12 @@ async def _contribute(
 async def _systems(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from ..models import System  # noqa: PLC0415
 
+    # A deleted system is gone everywhere else (DATA-04), so it is not a node;
+    # every edge to it is then dropped by ``_Graph.edge``.
     for s in (
-        await session.execute(select(System).where(System.organization_id == org_id))
+        await session.execute(
+            select(System).where(System.organization_id == org_id, System.deleted_at.is_(None))
+        )
     ).scalars().all():
         g.node("system", s.id, s.name, s.ato_status, baseline=s.baseline)
 
@@ -179,11 +188,16 @@ async def _controls(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
-    from ..fedramp20x import rules  # noqa: PLC0415
+    """KSI nodes per system, and KSI -> control edges sourced by the KSI row.
+
+    A KSI's ``nist_refs`` came from wherever its row was seeded from, which
+    ``KSI.source`` records (FedRAMP's rules dataset, or an earlier catalog).
+    The edge carries that row's own source, never the version of whatever file
+    happens to be vendored now; a row that records no source draws no edge.
+    """
     from ..fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
     from ..models import KSI, KSIState, System  # noqa: PLC0415
 
-    source = f"fedramp-rules@{rules.load_rules().version}"
     rows = (
         await session.execute(
             select(KSIState, KSI)
@@ -196,6 +210,9 @@ async def _ksis(session: AsyncSession, org_id: int, g: _Graph) -> None:
         kk = g.node("ksi", f"{st.system_id}:{st.ksi_id}", ksi.identifier, st.status,
                     system_id=st.system_id)
         g.edge(("system", str(st.system_id)), kk, "assessed_by", "ksi_states")
+        source = (ksi.source or "").strip()
+        if not source:
+            continue
         for ref in ksi.nist_refs or []:
             c = canonicalize(str(ref))
             if c is not None:  # drawn only if the system implements it (node exists)
@@ -383,18 +400,34 @@ async def _evidence_objects(session: AsyncSession, org_id: int, g: _Graph) -> No
             g.edge(("system", str(o.system_id)), ek, "documented_by", "evidence_objects")
 
 
+def _system_id(value: Any) -> int | None:
+    """``value`` as a system id, or None when it is not one.
+
+    ``AiAgent.system_ids`` is free-form JSON. An entry such as ``"prod"`` names
+    no system: it is skipped rather than allowed to fail the whole slice.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
 async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
     from ..models_ai_agents import AiAgent  # noqa: PLC0415
 
     for a in (
         await session.execute(select(AiAgent).where(AiAgent.organization_id == org_id))
     ).scalars().all():
-        owning = sorted({int(x) for x in [a.system_id, *(a.system_ids or [])]
-                         if x is not None})
+        owning = sorted({i for x in [a.system_id, *(a.system_ids or [])]
+                         if (i := _system_id(x)) is not None})
         ak = g.node("ai_agent", a.id, a.name, a.approval_status,
                     risk_rating=a.risk_rating, autonomy=a.autonomy_level, system_ids=owning)
         targets: list[tuple[str, list[Any], str]] = [
-            ("system", list(a.system_ids or []), "accesses"),
+            ("system", [i for x in a.system_ids or [] if (i := _system_id(x)) is not None],
+             "accesses"),
             ("vendor", list(a.vendor_ids or []), "depends_on"),
             ("poam", [], "n/a"),
         ]
@@ -406,7 +439,7 @@ async def _ai_agents(session: AsyncSession, org_id: int, g: _Graph) -> None:
                 g.edge(ak, (ttype, str(tid)), rel, "ai_agents")
         # control_ids is free-form: an implementation row id (what the graph
         # keyed controls by before) or a control id. Neither is guessed past.
-        agent_systems = {str(s) for s in [a.system_id, *(a.system_ids or [])] if s is not None}
+        agent_systems = {str(s) for s in owning}
         for tid in a.control_ids or []:
             key = g.impl_index.get(str(tid))
             if key is not None:
