@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..fedramp20x.applicability import OWED, system_scope
+from ..fedramp20x.applicability import system_scope
 from ..fedramp20x.catalog import current_ksis
 from ..fedramp20x.rules import frr_ids, ksi_ids, load_rules
 from ..models import (
@@ -891,26 +891,27 @@ def _assessment_statements(review: KSIAssessorReview | None) -> list[str]:
 
 
 def _tests(ksi: KSI) -> list[str]:
-    """The test used to validate this indicator: method plus rule kind.
+    """The tests used to validate this indicator: curated methods, then the rule.
 
-    ``KSI.rule`` is the machine-readable validation spec the 20x engine
-    evaluates; its ``kind`` is the only part of it that names a test rather
-    than restating the requirement.
+    A curated method (:mod:`ccf.fedramp20x.methods`) is a real automated test
+    of the system -- a Concord posture check -- so it is named, by title and
+    key. The rule's ``kind`` is named too unless it is ``manual``, which is the
+    absence of a defined test, not a test: naming it would present an
+    untested indicator as having one.
     """
+    from ..fedramp20x.methods import platform_checks  # noqa: PLC0415
+
+    checks = platform_checks()
+    out = [
+        f"Automated: {checks[m['check']].title} ({m['check']})"
+        for m in (ksi.methods or [])
+        if m.get("check") in checks
+    ]
     method = (ksi.validation_method or "").strip()
     kind = str((ksi.rule or {}).get("kind") or "").strip()
-    if kind == "manual":
-        # A manual rule is the absence of a defined test, not a test: every
-        # 2026 KSI with no authored rule carries it, and naming it here would
-        # present an untested indicator as having one.
-        return []
-    if method and kind:
-        return [f"{method} validation (rule kind: {kind})"]
-    if method:
-        return [f"{method} validation"]
-    if kind:
-        return [f"rule kind: {kind}"]
-    return []
+    if kind and kind != "manual":
+        out.append(f"{method} validation (rule kind: {kind})" if method else f"rule kind: {kind}")
+    return out
 
 
 def _evidence(result: KSIValidationResult | None) -> list[dict[str, str]]:
@@ -939,10 +940,14 @@ def _evidence(result: KSIValidationResult | None) -> list[dict[str, str]]:
 async def _derived_indicators(
     session: AsyncSession, system_id: int
 ) -> dict[str, dict[str, Any]]:
-    """Every catalog indicator's derived facts for this system, by ``ksiId``.
+    """Derived facts for every indicator this system owes, by ``ksiId``.
+
+    "Owes" is :mod:`ccf.fedramp20x.applicability`: required or optional for
+    its Certification Class and Path, or every current indicator when no
+    class is recorded.
 
     Keyed on :attr:`KSI.identifier` because that is what the document's
-    ``ksiId`` carries. Every catalog KSI appears, including ones this system
+    ``ksiId`` carries. Every owed KSI appears, including ones this system
     has never validated: an indicator with nothing recorded still belongs on
     the deliverable's to-do list, which is what :func:`merge_indicators`
     turns the unauthored ones into.
@@ -952,13 +957,10 @@ async def _derived_indicators(
     column the database actually guarantees.
     """
     scope = await system_scope(session, system_id)
-    # The indicators this system's Certification Class owes -- required or
-    # optional. A Class A SDR's to-do list is FedRAMP's seven, not all 46.
-    ksis = [
-        k
-        for k in (await session.execute(current_ksis())).scalars().all()
-        if scope.status(k.identifier) in OWED
-    ]
+    # Only what the Class/Path owes. (FedRAMP's SDR rules themselves apply to
+    # Classes B-D; a Class A provider is not required to file one, but if it
+    # does, the indicators it addresses are FRC-CLA-MFR's seven.)
+    ksis = scope.owed(list((await session.execute(current_ksis())).scalars().all()))
     if not ksis:
         return {}
 
@@ -1069,6 +1071,10 @@ class SdrSeedResult:
     #: cites an indicator FedRAMP's current rules do not have -- typically a
     #: phase-one ``KSI-IAM-01`` written before the 2026 catalog cut-over.
     undefined_ksi_ids: list[str]
+    #: Authored entries on KSIs FedRAMP defines but this system's Certification
+    #: Class/Path does not owe (``ccf.fedramp20x.applicability``). Kept as
+    #: human work, no longer refreshed, status claim dropped.
+    out_of_scope_ksi_ids: list[str]
     #: The ruleset revision both checks were made against.
     rules_version: str
 
@@ -1178,14 +1184,18 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
     rules = load_rules()
     defined_ksis = ksi_ids(rules)
     undefined = sorted({e["ksiId"] for e in merged if e["ksiId"] not in defined_ksis})
+    out_of_scope = sorted(
+        {e["ksiId"] for e in merged if e["ksiId"] not in derived and e["ksiId"] in defined_ksis}
+    )
     for entry in merged:
-        if entry["ksiId"] in derived or entry["ksiId"] in defined_ksis:
+        if entry["ksiId"] in derived:
             continue
-        # merge_indicators keeps an unrecognised entry's last derived facts so
-        # the document stays valid. For an indicator this seed did not refresh
-        # AND FedRAMP no longer defines, they never will refresh -- writes to a
-        # retired KSI are refused -- so an optional implementation status left
-        # there is a frozen claim. Drop it; the required arrays stay as the
+        # merge_indicators keeps an entry it did not refresh with its last
+        # derived facts, so the document stays valid. Whether the indicator is
+        # retired or simply not owed by this system's Certification Class, this
+        # seed did not refresh it and the next will not either -- so an
+        # optional implementation status left there is a frozen claim that can
+        # outlive a later failure. Drop it; the required arrays stay as the
         # history they are.
         entry.pop("ksiImplementationStatus", None)
 
@@ -1207,5 +1217,6 @@ async def seed_sdr(session: AsyncSession, *, system_id: int) -> SdrSeedResult:
         rendered_control_count=len(controls),
         omitted_requirements=omitted_requirements,
         undefined_ksi_ids=undefined,
+        out_of_scope_ksi_ids=out_of_scope,
         rules_version=rules.version,
     )

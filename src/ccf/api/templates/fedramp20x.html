@@ -61,15 +61,19 @@
   <span class="card__subtitle">Status: <strong title="Stored value: {{ readiness.status }}">{{ readiness.status | cr26_label }}</strong></span>
 </div>
 {% set scope = readiness.ksi_scope %}
-<p class="card__subtitle" style="margin:-4px 0 12px" data-testid="ksi-scope">
-  {% if readiness.certification_class %}
-    Scored on the {{ scope.required }} KSI{{ '' if scope.required == 1 else 's' }} FedRAMP requires of a Class {{ readiness.certification_class }} offering{% if scope.optional %}; {{ scope.optional }} optional, reported but not scored{% endif %}{% if scope.not_required %}; {{ scope.not_required }} not required for this class{% endif %}.
-    {% set auto = readiness.automation_requirement %}
-    {% if auto %}Automated validation ({{ auto.rule }}, {{ auto.force }}): {% if auto.min_automated_methods_per_ksi %}{{ auto.ksis_meeting }} of {{ auto.ksis_owed }} KSIs have the {{ auto.min_automated_methods_per_ksi }} automated method{{ '' if auto.min_automated_methods_per_ksi == 1 else 's' }} required for each.{% else %}optional for this class.{% endif %}{% endif %}
-  {% else %}
-    No Certification Class is recorded for this system, so it is scored on all {{ scope.unscoped }} current KSIs. Record its class to scope readiness to what FedRAMP requires of it.
-  {% endif %}
-</p>
+<div class="card__subtitle" style="margin:-4px 0 12px" data-testid="ksi-scope">
+  <p style="margin:0 0 4px">{{ readiness.ksi_scope_basis }}</p>
+  {% if readiness.ksi_scope_problem %}<p style="margin:0 0 4px"><strong>Scope problem:</strong> {{ readiness.ksi_scope_problem }}</p>{% endif %}
+  <p style="margin:0 0 4px">
+    Scored on {{ readiness.ksi_total }} KSI{{ '' if readiness.ksi_total == 1 else 's' }}:
+    {%- if scope.required %} {{ scope.required }} required{% endif %}
+    {%- if scope.unscoped %}{{ ',' if scope.required }} {{ scope.unscoped }} unscoped{% if readiness.certification_class and not readiness.ksi_scope_problem %} (current KSIs FedRAMP's pinned rules do not define — re-seed the catalog){% endif %}{% endif %}.
+    {%- if scope.optional %} {{ scope.optional }} optional, reported but not scored.{% endif %}
+    {%- if scope.not_required %} {{ scope.not_required }} not required.{% endif %}
+  </p>
+  {% set auto = readiness.automation_requirement %}
+  {% if auto %}<p style="margin:0">Automated validation ({{ auto.rule }}): {% if auto.min_automated_methods_per_ksi %}each KSI {{ auto.force }} have at least {{ auto.min_automated_methods_per_ksi }} automated method{{ '' if auto.min_automated_methods_per_ksi == 1 else 's' }}; {{ auto.ksis_meeting }} of {{ auto.ksis_owed }} do.{% else %}{{ auto.force }} — optional for this class.{% endif %}</p>{% endif %}
+</div>
 
 <div class="cols-4" style="margin-bottom:16px">
   <div class="kpi"><div class="kpi__label">Overall</div><div class="kpi__value">{{ readiness.readiness_pct }}%</div></div>
@@ -164,7 +168,7 @@
 
 <section class="card" style="margin-bottom:12px">
   <div class="card__header"><div class="card__title">KSI exceptions</div>
-    <div class="card__subtitle">Documented deviations (risk acceptances) that count against readiness.</div></div>
+    <div class="card__subtitle">Documented deviations (risk acceptances). Those on KSIs this system owes count against readiness.</div></div>
   <div class="card__body">
     <table class="data">
       <thead><tr><th>KSI</th><th>Status</th><th>Rationale</th></tr></thead>
@@ -206,8 +210,8 @@
           <td><code>{{ k.identifier }}</code></td>
           <td>{{ k.name }}
             {% set ap = applicability.get(k.id) %}
-            {% if ap == 'not_required' %}<span class="chip chip--ghost" title="FedRAMP does not require this KSI of a Class {{ readiness.certification_class }} offering (FRC-CLA-MFR)">not required, Class {{ readiness.certification_class }}</span>
-            {% elif ap == 'optional' %}<span class="chip chip--ghost" title="FedRAMP marks this KSI Optional for Class {{ readiness.certification_class }}">optional, Class {{ readiness.certification_class }}</span>{% endif %}
+            {% if ap == 'not_required' %}<span class="chip chip--ghost" title="{{ readiness.ksi_scope_basis }}">not required</span>
+            {% elif ap == 'optional' %}<span class="chip chip--ghost" title="FedRAMP marks this KSI Optional for Class {{ readiness.certification_class }}">optional</span>{% endif %}
           </td>
           <td class="dim">{{ k.automation_level }}</td>
           <td class="dim">{{ k.nist_refs | join(', ') }}</td>

@@ -37,7 +37,7 @@ from ..models import (
     KSIValidationResult,
     System,
 )
-from .applicability import OWED, SystemScope, system_scope
+from .applicability import SystemScope, system_scope
 from .catalog import current_ksi_ids, current_ksis
 from .readiness import score_system
 
@@ -91,11 +91,7 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
     # a Class A package carries FedRAMP's seven KSIs, not 39 more it was never
     # asked to address shown as "not_tested".
     scope = await system_scope(session, system_id)
-    ksis = [
-        k
-        for k in (await session.execute(current_ksis())).scalars().all()
-        if scope.status(k.identifier) in OWED
-    ]
+    ksis = scope.owed(list((await session.execute(current_ksis())).scalars().all()))
     states = {
         s.ksi_id: s
         for s in (await session.execute(select(KSIState).where(KSIState.system_id == system_id)))
@@ -152,6 +148,7 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
     # Readiness without persisting a snapshot (this is a read/export path).
     readiness = await score_system(session, system_id=system_id, persist=False)
 
+    owed_ids = {k.id for k in ksis}
     ksi_entries: list[dict[str, Any]] = []
     conmon_counts: dict[str, int] = {}
     for k in ksis:
@@ -267,6 +264,9 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
                 "expires_on": e.expires_on.isoformat() if e.expires_on else None,
             }
             for e in exceptions
+            # Only exceptions on KSIs this package carries; one on a KSI the
+            # Class/Path does not owe would sit beside "Open exceptions: 0".
+            if e.ksi_id in owed_ids
         ],
         "poams": [
             {
@@ -280,7 +280,7 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
         ],
         "continuous_monitoring": {
             "ksi_state_counts": conmon_counts,
-            "validation_history_count": len(latest_val),
+            "validation_history_count": sum(1 for i in latest_val if i in owed_ids),
         },
     }
 
@@ -307,6 +307,12 @@ def render_markdown(pkg: dict[str, Any]) -> str:
         f"- **ATO status:** {sys.get('ato_status') or 'n/a'}",
         "",
         "## 20x Readiness",
+        f"- **KSI scope:** {r.get('ksi_scope_basis') or 'n/a'}",
+        *(
+            [f"- **Scope problem:** {r['ksi_scope_problem']}"]
+            if r.get("ksi_scope_problem")
+            else []
+        ),
         f"- **Overall:** {r['readiness_pct']}%  ·  **Status:** {r['status']}",
         f"- **KSI pass rate:** {pct('ksi_pass_rate')}  ·  "
         f"**Automation coverage:** {pct('automation_coverage')}",
@@ -331,12 +337,15 @@ def render_markdown(pkg: dict[str, Any]) -> str:
     lines += [
         "## Key Security Indicators",
         "",
-        "| KSI | Category | Status | Assessor |",
-        "|---|---|---|---|",
+        "| KSI | Category | Applicability | Status | Assessor |",
+        "|---|---|---|---|---|",
     ]
     for k in pkg["ksis"]:
         rv = (k.get("assessor_review") or {}).get("status", "not_reviewed")
-        lines.append(f"| {k['identifier']} | {k['category']} | {k['status']} | {rv} |")
+        ap = (k.get("applicability") or {}).get("status", "unscoped")
+        lines.append(
+            f"| {k['identifier']} | {k['category']} | {ap} | {k['status']} | {rv} |"
+        )
     lines += ["", "## Dependencies", ""]
     if pkg["dependencies"]:
         lines += ["| Name | Provider | FedRAMP status | Risk |", "|---|---|---|---|"]
@@ -510,6 +519,10 @@ def to_docx(pkg: dict[str, Any]) -> bytes:
 
     r = pkg["readiness"]
     doc.add_heading("20x Readiness", level=1)
+    if r.get("ksi_scope_basis"):
+        doc.add_paragraph(f"KSI scope: {r['ksi_scope_basis']}")
+    if r.get("ksi_scope_problem"):
+        doc.add_paragraph(f"Scope problem: {r['ksi_scope_problem']}")
     for label, key in (
         ("Overall readiness", "readiness_pct"),
         ("Lifecycle status", "status"),
@@ -529,16 +542,20 @@ def to_docx(pkg: dict[str, Any]) -> bytes:
         p.add_run(str(r.get(key)))
 
     doc.add_heading("Key Security Indicators", level=1)
-    table = doc.add_table(rows=1, cols=4)
+    table = doc.add_table(rows=1, cols=5)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
-    hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "KSI", "Category", "Status", "Assessor"
+    for cell, text in zip(
+        hdr, ("KSI", "Category", "Applicability", "Status", "Assessor"), strict=True
+    ):
+        cell.text = text
     for k in pkg["ksis"]:
         row = table.add_row().cells
         row[0].text = k["identifier"]
         row[1].text = k["category"]
-        row[2].text = k["status"]
-        row[3].text = (k.get("assessor_review") or {}).get("status", "not_reviewed")
+        row[2].text = (k.get("applicability") or {}).get("status", "unscoped")
+        row[3].text = k["status"]
+        row[4].text = (k.get("assessor_review") or {}).get("status", "not_reviewed")
 
     if pkg["dependencies"]:
         doc.add_heading("Authorized dependencies", level=1)

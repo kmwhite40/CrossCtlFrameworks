@@ -23,15 +23,18 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..fedramp20x.applicability import COUNTED, SystemScope, scope_for
 from ..fedramp20x.catalog import current_ksi_ids
 from ..governance.risk import band
 from ..models import (
+    KSI,
     Control,
     Framework,
     FrameworkMapping,
     IngestionRun,
     KSIState,
     Risk,
+    System,
     Task,
     Worksheet,
 )
@@ -272,22 +275,44 @@ async def _control_tests(session: AsyncSession, org_id: int | None = None) -> di
 
 
 async def _ksi_states(session: AsyncSession, org_id: int | None = None) -> dict[str, int]:
-    stmt = select(KSIState.status, func.count()).group_by(KSIState.status)
-    # Applied unconditionally: `org_system_subq(None)` is every *live*
-    # system, so the global view excludes deleted systems too. Gated on
-    # `org_id is not None`, an unscoped dashboard counted them.
-    stmt = stmt.where(
-        KSIState.system_id.in_(posture.org_system_subq(org_id)),
-        KSIState.ksi_id.in_(current_ksi_ids()),
+    """KSI state counts over the KSIs each system's readiness counts.
+
+    Scoped per system by its Certification Class/Path
+    (:mod:`ccf.fedramp20x.applicability`), so a Class A system contributes its
+    seven KSIs here exactly as its readiness score does -- not 46, 39 of which
+    FedRAMP does not ask of it.
+    """
+    stmt = (
+        select(
+            KSIState.status,
+            KSI.identifier,
+            System.certification_class,
+            System.certification_path,
+        )
+        .join(KSI, KSI.id == KSIState.ksi_id)
+        .join(System, System.id == KSIState.system_id)
+        # Applied unconditionally: `org_system_subq(None)` is every *live*
+        # system, so the global view excludes deleted systems too. Gated on
+        # `org_id is not None`, an unscoped dashboard counted them.
+        .where(
+            KSIState.system_id.in_(posture.org_system_subq(org_id)),
+            KSIState.ksi_id.in_(current_ksi_ids()),
+        )
     )
     rows = (await session.execute(stmt)).all()
     out = {
         "pass": 0, "warn": 0, "fail": 0, "not_tested": 0,
         "manual_review_required": 0, "total": 0,
     }
-    for status, n in rows:
-        out["total"] += n
-        out[status] = out.get(status, 0) + n
+    scopes: dict[tuple[str | None, str | None], SystemScope] = {}
+    for status, identifier, cls, path in rows:
+        key = (cls, path)
+        if key not in scopes:
+            scopes[key] = scope_for(cls, path)
+        if scopes[key].status(identifier) not in COUNTED:
+            continue
+        out["total"] += 1
+        out[status] = out.get(status, 0) + 1
     return out
 
 

@@ -25,12 +25,12 @@ from ...fedramp20x import (
     catalog,
     package,
     readiness,
+    records,
     validation,
 )
 from ...governance import bus
 from ...models import (
     KSI,
-    POAM,
     FedRAMP20xProfile,
     FedRAMPDependency,
     KSIAssessorReview,
@@ -75,6 +75,7 @@ def _ksi_out(k: KSI) -> dict[str, Any]:
         "provider_services": list(k.provider_services or []),
         "statement_by_class": dict(k.statement_by_class or {}),
         "rule": k.rule,
+        "methods": list(k.methods or []),
         "source": k.source,
         "retired": k.retired_at is not None,
         "retired_at": k.retired_at.isoformat() if k.retired_at else None,
@@ -467,35 +468,6 @@ def _review_out(r: KSIAssessorReview) -> dict[str, Any]:
     }
 
 
-async def _maybe_open_finding_poam(
-    session: AsyncSession, *, system_id: int, ksi_id: int, review: KSIAssessorReview
-) -> None:
-    """When an assessor opens a finding, create an idempotent POA&M for the gap."""
-    if review.status != "finding_opened":
-        return
-    ksi = (await session.execute(select(KSI).where(KSI.id == ksi_id))).scalar_one_or_none()
-    ident = ksi.identifier if ksi else f"KSI {ksi_id}"
-    title = f"{ident} — assessor finding"
-    exists = (
-        await session.execute(
-            select(POAM.id).where(POAM.system_id == system_id, POAM.title == title)
-        )
-    ).scalar_one_or_none()
-    if exists is not None:
-        return
-    session.add(
-        POAM(
-            system_id=system_id,
-            title=title,
-            weakness=(review.finding or f"Assessor opened a finding against {ident}.").strip(),
-            severity="moderate",
-            status="open",
-            source="assessment",
-            identified_on=datetime.now(UTC).date(),
-        )
-    )
-
-
 @router.post("/assessor-reviews", status_code=201)
 async def create_review(
     body: AssessorReviewIn,
@@ -504,30 +476,7 @@ async def create_review(
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
     await _writable_ksi(session, body.ksi_id)
-    rv = KSIAssessorReview(**body.model_dump())
-    session.add(rv)
-    # Reflect the assessor verdict on the KSI state.
-    st = (
-        await session.execute(
-            select(KSIState).where(
-                KSIState.system_id == body.system_id, KSIState.ksi_id == body.ksi_id
-            )
-        )
-    ).scalar_one_or_none()
-    if st is not None:
-        st.assessor_status = body.status
-        st.reviewer_user_id = principal.user_id
-    await session.flush()
-    await _maybe_open_finding_poam(session, system_id=body.system_id, ksi_id=body.ksi_id, review=rv)
-    await bus.emit(
-        session,
-        verb="reviewed",
-        entity_type="ksi_assessor_review",
-        entity_id=rv.id,
-        summary=f"Assessor review {body.status} for KSI {body.ksi_id}",
-        org_id=principal.org_id,
-        actor=principal.email,
-    )
+    rv = await records.record_review(session, principal=principal, fields=body.model_dump())
     await session.commit()
     return _review_out(rv)
 
@@ -560,7 +509,9 @@ async def update_review(
         if st is not None:
             st.assessor_status = body.status
     await session.flush()
-    await _maybe_open_finding_poam(session, system_id=rv.system_id, ksi_id=rv.ksi_id, review=rv)
+    await records.maybe_open_finding_poam(
+        session, system_id=rv.system_id, ksi_id=rv.ksi_id, review=rv
+    )
     await bus.emit(
         session,
         verb="updated",
@@ -660,24 +611,15 @@ async def create_exception(
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
     await _writable_ksi(session, body.ksi_id)
-    exc = KSIException(
+    exc = await records.record_exception(
+        session,
+        principal=principal,
         system_id=body.system_id,
         ksi_id=body.ksi_id,
         rationale=body.rationale,
         status=body.status,
         risk_id=body.risk_id,
         expires_on=date.fromisoformat(body.expires_on) if body.expires_on else None,
-    )
-    session.add(exc)
-    await session.flush()
-    await bus.emit(
-        session,
-        verb="created",
-        entity_type="ksi_exception",
-        entity_id=exc.id,
-        summary=f"KSI exception ({body.status}) for KSI {body.ksi_id}",
-        org_id=principal.org_id,
-        actor=principal.email,
     )
     await session.commit()
     return _exc_out(exc)

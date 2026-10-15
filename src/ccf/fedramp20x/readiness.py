@@ -26,7 +26,8 @@ from ..models import (
     KSIState,
 )
 from ..models_waivers import Waiver
-from .applicability import system_scope
+from . import methods as ksi_methods
+from .applicability import counted_ksi_ids, system_scope
 from .catalog import current_ksi_ids, current_ksis
 
 # Sub-score weights for the overall readiness percentage. Pass-rate dominates;
@@ -272,7 +273,9 @@ async def score_system(
         active_waivers=active_waiver_count,
     )
     payload = r.as_dict()
-    payload.update(scope.summary(current))
+    payload.update(
+        scope.summary(current, await ksi_methods.tier0_check_status(session, system_id))
+    )
     if persist:
         session.add(
             FedRAMP20xReadinessSnapshot(
@@ -316,7 +319,12 @@ GAP_STATUSES = ("fail", "warn", "manual_review_required")
 
 
 async def open_gaps(session: AsyncSession, *, system_id: int) -> list[dict[str, str]]:
-    """Current KSIs this system is failing, warning on, or owes a manual review for."""
+    """KSIs this system owes and is failing, warning on, or owes a manual review for.
+
+    Scoped exactly as :func:`score_system` counts, so the gap list never names
+    an indicator the readiness score does not.
+    """
+    counted = await counted_ksi_ids(session, system_id)
     rows = (
         await session.execute(
             select(KSI.identifier, KSI.name, KSIState.status)
@@ -324,7 +332,7 @@ async def open_gaps(session: AsyncSession, *, system_id: int) -> list[dict[str, 
             .where(
                 KSIState.system_id == system_id,
                 KSIState.status.in_(GAP_STATUSES),
-                KSI.id.in_(current_ksi_ids()),
+                KSI.id.in_(counted),
             )
             .order_by(KSI.sort_order, KSI.identifier)
         )

@@ -25,6 +25,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import KSI
+from .methods import validate_methods
 from .rules import RulesDatasetError, ksi_records, load_rule_overlay, load_rules
 
 # Fields copied from a catalog record onto the KSI row.
@@ -42,6 +43,7 @@ _FIELDS = (
     "cmmc_refs",
     "provider_services",
     "statement_by_class",
+    "methods",
     "rule",
     "sort_order",
     "source",
@@ -74,9 +76,13 @@ def load_records(
         raise RulesDatasetError(f"ksi_rules.json has rules for undefined indicators: {stray}")
     for i, rec in enumerate(records):
         rec.update(_UNAUTHORED)
-        authored = overlay.get(rec["identifier"])
-        if authored:
-            rec.update({k: authored[k] for k in _OVERLAY_FIELDS if k in authored})
+        authored = overlay.get(rec["identifier"]) or {}
+        rec.update({k: authored[k] for k in _OVERLAY_FIELDS if k in authored})
+        rec["methods"] = validate_methods(rec["identifier"], authored.get("methods"))
+        if rec["methods"] and rec["automation_level"] == "manual":
+            # Automated checks contribute evidence; the verdict is still a
+            # person's. Not "automated", which readiness counts as coverage.
+            rec["automation_level"] = "partial"
         rec["sort_order"] = i
     return records
 

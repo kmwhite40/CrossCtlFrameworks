@@ -382,7 +382,10 @@ class System(Base):
     )
     #: CR26 Certification Class. INDEPENDENT of ``baseline`` -- see
     #: ``ccf.constants.CERTIFICATION_CLASSES``. Never derive one from the other.
-    #: Null means "not CR26-certified", correct for every Rev5-lane row.
+    #: Null means "nobody has recorded one". Not a Rev5 marker: the 2026
+    #: rules give Rev5 certifications Classes B-D too (``IVV-CSF-AIA``). Which
+    #: KSIs a class owes also depends on ``certification_path`` -- see
+    #: ``ccf.fedramp20x.applicability``.
     #: ``validate_strings=True`` for the reason given on ``pipeline_stage``.
     certification_class: Mapped[str | None] = mapped_column(
         Enum(
@@ -1785,6 +1788,11 @@ class KSI(Base):
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Concord-curated automated methods: [{"check": posture key, "rationale": str}].
+    # Evidence for the KSI, never its verdict (see ccf.fedramp20x.methods).
+    methods: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

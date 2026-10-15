@@ -6,6 +6,26 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — automated methods for FedRAMP 2026 KSIs: evidence, never a verdict
+- **18 KSIs now carry 45 curated methods**, each one of Concord's own posture
+  checks with a written rationale (`rules_data/ksi_rules.json`). The bar for
+  inclusion: the check's *failure* must contradict the KSI's statement.
+  Sharing a mapped 800-53 control is not enough. Stale-account checks share
+  IA-2 with `KSI-IAM-APM` but say nothing about phishing-resistant MFA, so
+  they are a method for `KSI-IAM-ELP` and `KSI-IAM-AAM` and not for APM.
+- A failing (or warning) method raises the KSI to `warn` and names the check.
+  A passing method is recorded as evidence. **No method makes a KSI pass**:
+  most 2026 KSIs describe a practice persistently reviewed, which no
+  configuration can prove. Only tier-0 results count (`trust_tier`), so a
+  pack or crosswalk row that reuses a key is ignored.
+- `FRC-CSX-VVK`'s count of automated methods per KSI now counts curated
+  methods that have actually **run** on the system, plus capture leaves. A
+  method whose provider is not connected counts for nothing.
+- An SDR's `ksiTests` names each method by title and key, so it lists tests
+  that exist. KSIs with methods are `automation_level: partial`, not
+  `automated`, and readiness's automation coverage does not count them.
+- Migration `0094` adds `ksis.methods`; re-run `ccf fedramp20x seed-ksi`.
+
 ### Changed — 20x readiness, packages and SDRs are scoped to what the Certification Class owes
 - **A Class A system was scored against 46 KSIs; FedRAMP requires seven of
   it.** `FRC-CLA-MFR` lists them in its machine-readable `related` field.
@@ -28,7 +48,28 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   `IVV-CSX-AIA` variant defers to its alternative framework. A re-vendored
   dataset that moves any of it then fails a test instead of re-scoping
   systems silently.
+- **Path matters too.** Every KSI rule sits in a 20x, Program-path subset.
+  An Agency-path system is Rev5 by elimination and is scored on no KSIs; its
+  Rev5 Class owes the control list in `IVV-CSF-AIA` instead. Class A on the
+  Agency path contradicts FRC-CLA and is reported as a scope problem rather
+  than resolved. On the Program path, or with no path recorded, the scope is
+  stated as conditional on the system being 20x, because Concord deliberately
+  does not record certification type.
+- Every per-system consumer now agrees with readiness about scope: CLI
+  `list-gaps` (`readiness.open_gaps`), onboarding step 4, the dashboard's KSI
+  counts, drift alerts, sealed package facts, the package's exception list and
+  validation count, and the SDR. An SDR entry this seed did not refresh,
+  retired or out of scope, loses its frozen `ksiImplementationStatus`. The
+  seed reports such entries as `out_of_scope_ksi_ids`.
+- An "automated method" (FRC-CSX-VVK) is now only a `connector_capture` leaf.
+  `control_state` and the other kinds read records an operator entered.
+- Readiness snapshots and the Prometheus gauge change denominator once at
+  deploy, and again whenever a system's class or path changes. Compare
+  snapshots across that line with care.
 - The 20x readiness tiles no longer render "—%" for an absent value.
+- The assessor-review and exception forms now go through the same code as
+  the API (`ccf.fedramp20x.records`). A review recorded on the page now
+  attributes the reviewer, opens the finding POA&M and emits the audit event.
 
 ### Fixed — the 20x assessor-review and exception forms had no role check
 - Any signed-in user could record an "accepted" 3PAO review or a KSI

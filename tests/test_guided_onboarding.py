@@ -678,6 +678,38 @@ async def test_step4_counts_the_ksis_that_are_not_passing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step4_counts_only_what_the_certification_class_owes() -> None:
+    """Class A owes FRC-CLA-MFR's seven KSIs; a failure outside them is not a gap."""
+    from ccf.fedramp20x import catalog  # noqa: PLC0415
+
+    tag = _tag()
+    org_id, sys_id = await _mk(tag)
+    try:
+        async with session_scope() as s:
+            await catalog.seed_ksis(s)
+            system = await s.get(System, sys_id)
+            assert system is not None
+            system.certification_class = "A"
+            s.add(
+                SystemProfile(
+                    system_id=sys_id,
+                    cloud_platform="m365_gcc_high",
+                    derived_at=datetime.now(UTC),
+                    derivation=_derivation(covered=2, uncovered=0),
+                )
+            )
+            ids = dict(
+                (await s.execute(select(KSI.identifier, KSI.id))).all()
+            )
+            s.add(KSIState(system_id=sys_id, ksi_id=ids["KSI-CED-RAT"], status="pass"))
+            s.add(KSIState(system_id=sys_id, ksi_id=ids["KSI-CNA-OFA"], status="fail"))
+        step = (await _steps(sys_id))["close_gaps"]
+        assert step.state == DONE, step.detail
+    finally:
+        await _drop(org_id, sys_id)
+
+
+@pytest.mark.asyncio
 async def test_step4_does_not_count_a_retired_ksi() -> None:
     """A KSI FedRAMP no longer defines is not outstanding work for anyone."""
     tag = _tag()

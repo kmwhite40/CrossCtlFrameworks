@@ -123,3 +123,23 @@ is useful if a class changes.
 MUST, D ≥4 MUST) is reported as a class requirement against the count of
 automated leaf rules Concord holds per KSI; with the rule overlay empty that
 count is 0, which is the true answer.
+
+## 6. Class *and Path*; and automated methods (follow-on)
+
+**Path.** Independent review found §5 incomplete: every KSI rule sits in a
+subset whose applicability is `types: [20x], paths: [Program]`, and Rev5
+Classes B–D owe the control list in `IVV-CSF-AIA`, not KSIs. Concord records
+Class and Path but not certification type. An Agency-path system is therefore
+Rev5 by elimination and owes no KSI. Class A on the Agency path contradicts
+FRC-CLA and is reported, not resolved. Program-path or path-less scope is
+stated as conditional on the system being 20x. Every per-system consumer
+(readiness, gaps, onboarding, dashboard, drift, package facts and exceptions,
+SDR) uses one helper, `applicability.counted_ksi_ids` / `SystemScope`.
+
+**Methods, not verdicts** (decision: user, 2026-10-15). A KSI carries a
+curated list of Concord platform posture checks (`ksis.methods`, migration
+0094). Each comes with a rationale for why its *failure* contradicts the
+statement; a shared 800-53 control does not qualify a check. Failing → KSI at
+most `warn`. Passing → evidence. Neither → `pass`. Only tier-0 results count.
+Methods that ran on the system count toward FRC-CSX-VVK and are named in the
+SDR's `ksiTests`.

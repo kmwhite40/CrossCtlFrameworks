@@ -2993,35 +2993,27 @@ async def fedramp20x_record_review(
     # The same gate as ``POST /api/fedramp/20x/assessor-reviews``. Without it
     # any signed-in user -- a viewer -- could record an "accepted" 3PAO review
     # through the form that the API refuses them.
-    _principal: Principal = Depends(require_role("admin", "assessor")),
+    principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> RedirectResponse:
-    """Record an assessor review for one KSI and reflect it on the KSI state."""
-    from ...fedramp20x import ASSESSOR_STATUSES  # noqa: PLC0415
-    from ...models import KSIAssessorReview, KSIState  # noqa: PLC0415
+    """Record an assessor review for one KSI -- the same path as the API."""
+    from ...fedramp20x import ASSESSOR_STATUSES, records  # noqa: PLC0415
 
     if (
         status in ASSESSOR_STATUSES
         and await _fedramp20x_system_visible(request, session, system_id)
         and await _ksi_is_current(session, ksi_id)
     ):
-        session.add(
-            KSIAssessorReview(
-                system_id=system_id,
-                ksi_id=ksi_id,
-                assessor=assessor.strip() or None,
-                status=status,
-                notes=notes.strip() or None,
-            )
+        await records.record_review(
+            session,
+            principal=principal,
+            fields={
+                "system_id": system_id,
+                "ksi_id": ksi_id,
+                "assessor": assessor.strip() or None,
+                "status": status,
+                "notes": notes.strip() or None,
+            },
         )
-        state = (
-            await session.execute(
-                select(KSIState).where(
-                    KSIState.system_id == system_id, KSIState.ksi_id == ksi_id
-                )
-            )
-        ).scalar_one_or_none()
-        if state is not None:
-            state.assessor_status = status
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
@@ -3036,10 +3028,10 @@ async def fedramp20x_add_exception(
     status: str = Form("open"),
     session: AsyncSession = Depends(get_session),
     # The same gate as ``POST /api/fedramp/20x/exceptions``.
-    _principal: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
-    """Record a KSI exception / deviation for a system."""
-    from ...models import KSIException  # noqa: PLC0415
+    """Record a KSI exception / deviation for a system -- the same path as the API."""
+    from ...fedramp20x import records  # noqa: PLC0415
 
     if (
         rationale.strip()
@@ -3047,13 +3039,13 @@ async def fedramp20x_add_exception(
         and await _fedramp20x_system_visible(request, session, system_id)
         and await _ksi_is_current(session, ksi_id)
     ):
-        session.add(
-            KSIException(
-                system_id=system_id,
-                ksi_id=ksi_id,
-                rationale=rationale.strip(),
-                status=status,
-            )
+        await records.record_exception(
+            session,
+            principal=principal,
+            system_id=system_id,
+            ksi_id=ksi_id,
+            rationale=rationale.strip(),
+            status=status,
         )
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)

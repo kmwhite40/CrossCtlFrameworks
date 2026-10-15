@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..governance import bus
 from ..logging import get_logger
 from ..models import KSI, FedRAMP20xProfile, KSIState, System
+from .applicability import counted_ksi_ids
 from .readiness import score_system
 from .validation import validate_system
 
@@ -56,6 +57,11 @@ async def scan_system(
         .all()
     }
     results = await validate_system(session, system_id=system.id)
+    # Drift on a KSI this system's Class/Path does not owe moves no score;
+    # alerting on it would announce a regression beside an unchanged readiness.
+    counted = {
+        ksi_ident.get(i, str(i)) for i in await counted_ksi_ids(session, system.id)
+    }
     regressions = [
         {
             "ksi": r["ksi_identifier"],
@@ -63,7 +69,8 @@ async def scan_system(
             "to": r["validation_status"],
         }
         for r in results
-        if prior.get(r["ksi_identifier"]) == "pass"
+        if r["ksi_identifier"] in counted
+        and prior.get(r["ksi_identifier"]) == "pass"
         and r["validation_status"] in _REGRESSED_TO
     ]
     readiness = await score_system(session, system_id=system.id, persist=True)
