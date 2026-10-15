@@ -301,7 +301,7 @@ Four roles. Yours decides what you can change, not what you can see.
 
 | Role | Can |
 |---|---|
-| **viewer** | Read everything in your organization. Change nothing. |
+| **viewer** | Read everything in your organization. Change nothing, except your own sign-in (MFA) and notification read-state, and two requests that grant nothing until an admin acts: registering a pack source for review, and logging a trust-portal access request. Enforced for every route in the auth gate. |
 | **control_owner** | Everything a viewer can, plus write the control implementations, evidence and POA&Ms you own. |
 | **assessor** | Record assessment results and findings. The role a 3PAO's people hold. |
 | **admin** | All of the above, plus users, connectors, settings and external portal access. |

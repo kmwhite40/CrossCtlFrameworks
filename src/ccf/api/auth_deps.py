@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, overload
 
 from fastapi import Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import RequestResponseEndpoint
@@ -272,8 +273,64 @@ _MFA_ENROLMENT_PATHS = (
 )
 
 
+#: Mutating requests a **viewer** may still make. docs/HANDBOOK.md promises a
+#: viewer can "Read everything in your organization. Change nothing." and
+#: docs/THREAT_MODEL.md rates the role "Reads only" -- but 165 of 246 write
+#: routes had no role check, so a viewer could create risks, tasks, evidence,
+#: POA&Ms and more. Rather than gate each route (and keep auditing every new
+#: one), the auth gate refuses a viewer's mutating request outright, except:
+#:
+#: * how a viewer manages their own sign-in (MFA enrolment, sign-out);
+#: * their own notification read-state, which is per-user, not org data;
+#: * POST endpoints that only read -- a query run or CSV export, and two
+#:   validators that check a posted document without storing it;
+#: * two writes earlier work decided any member may make, each because it
+#:   grants nothing on its own: registering a pack source for review (adoption
+#:   still needs an admin -- "detection is automatic; adoption is not",
+#:   tests/test_pack_sources_api_rbac.py) and logging a trust-portal access
+#:   request ("logging that someone asked is not an approval",
+#:   tests/test_trust_rbac.py).
+#:
+#: Matched on the exact path shape, never a prefix, so a new write route under
+#: one of these trees is refused until someone adds it here on purpose.
+_VIEWER_WRITE_ALLOWLIST = (
+    re.compile(r"^/api/notifications/\d+/read$"),
+    re.compile(r"^/api/notifications/read-all$"),
+    re.compile(r"^/api/queries/[^/]+/(run|export)$"),
+    re.compile(r"^/api/oscal/validate$"),
+    re.compile(r"^/api/packs/validate$"),
+    re.compile(r"^/api/packs/[^/]+/sources$"),
+    re.compile(r"^/api/trust/access-requests$"),
+    re.compile(r"^/trust/access-requests$"),
+)
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+VIEWER_ROLE = "viewer"
+
+
+def viewer_may_write(path: str) -> bool:
+    """True if a viewer's mutating request to ``path`` is allowed."""
+    if is_mfa_enrolment_path(path):
+        return True
+    return any(p.match(path) for p in _VIEWER_WRITE_ALLOWLIST)
+
+
 def is_mfa_enrolment_path(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in _MFA_ENROLMENT_PATHS)
+
+
+def _viewer_refusal(request: Request, principal: Principal, path: str) -> Response | None:
+    """A 403 for a viewer's mutating request off the allowlist, else ``None``."""
+    if (
+        principal.role != VIEWER_ROLE
+        or principal.is_global
+        or request.method.upper() not in _MUTATING_METHODS
+        or viewer_may_write(path)
+    ):
+        return None
+    detail = "the viewer role is read-only; ask an administrator for a role that can change this"
+    if path.startswith("/api"):
+        return JSONResponse({"detail": detail}, status_code=403)
+    return PlainTextResponse(detail, status_code=403)
 
 
 async def auth_gate_middleware(
@@ -287,6 +344,7 @@ async def auth_gate_middleware(
     if not get_settings().auth_enabled:
         return await call_next(request)
     path = request.url.path
+    refused: Response | None = None
     if not is_public_path(path):
         factory = get_session_factory()
         # ONE session for both questions. The gate below used to sit outside
@@ -336,4 +394,6 @@ async def auth_gate_middleware(
                 return RedirectResponse(
                     "/settings/security?enrol=required", status_code=303
                 )
-    return await call_next(request)
+
+            refused = _viewer_refusal(request, principal, path)
+    return refused if refused is not None else await call_next(request)

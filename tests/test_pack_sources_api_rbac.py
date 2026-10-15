@@ -222,10 +222,14 @@ async def test_a_viewer_cannot_adopt(tmp_path: Path) -> None:
     async with _client() as c:
         created = await _register(c, token, f"pack-{tag}", pack_source_url(path))
         source_id = created.json()["id"]
+        # Registering is a request that grants nothing, so a viewer may make
+        # it; triggering a fetch is not, so the auth gate refuses the sync --
+        # and the adoption. The route's own adoption gate is pinned by the
+        # control_owner test below, which can reach it.
         synced = await c.post(
             f"/api/pack-sources/{source_id}/sync", headers=_auth(token)
         )
-        assert synced.json()["status"] == "pending"
+        assert synced.status_code == 403, synced.text
 
         resp = await c.post(
             f"/api/pack-sources/{source_id}/adopt", headers=_auth(token)

@@ -7,24 +7,71 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added — automated methods for FedRAMP 2026 KSIs: evidence, never a verdict
-- **18 KSIs now carry 45 curated methods**, each one of Concord's own posture
-  checks with a written rationale (`rules_data/ksi_rules.json`). The bar for
-  inclusion: the check's *failure* must contradict the KSI's statement.
-  Sharing a mapped 800-53 control is not enough. Stale-account checks share
-  IA-2 with `KSI-IAM-APM` but say nothing about phishing-resistant MFA, so
-  they are a method for `KSI-IAM-ELP` and `KSI-IAM-AAM` and not for APM.
-- A failing (or warning) method raises the KSI to `warn` and names the check.
-  A passing method is recorded as evidence. **No method makes a KSI pass**:
-  most 2026 KSIs describe a practice persistently reviewed, which no
-  configuration can prove. Only tier-0 results count (`trust_tier`), so a
-  pack or crosswalk row that reuses a key is ignored.
-- `FRC-CSX-VVK`'s count of automated methods per KSI now counts curated
-  methods that have actually **run** on the system, plus capture leaves. A
-  method whose provider is not connected counts for nothing.
-- An SDR's `ksiTests` names each method by title and key, so it lists tests
-  that exist. KSIs with methods are `automation_level: partial`, not
-  `automated`, and readiness's automation coverage does not count them.
+- **13 KSIs carry 25 curated methods**, each one of Concord's own posture
+  checks (`rules_data/ksi_rules.json`). The bar for inclusion: the check's
+  *failure* must contradict the KSI's statement, and every rationale quotes
+  the statement words it contradicts. Sharing a mapped 800-53 control is not
+  enough.
+- **Independent review cut the first curation from 45 methods to 25** by
+  reading each evaluator's code. A check is not a method if it can fail while
+  the statement is met. Removed on that basis:
+  - S3 public access: reads bucket-level flags only, so private buckets
+    covered by account-level Block Public Access fail.
+  - Phishing-resistant MFA: Windows Hello and federated IdPs are invisible
+    to it.
+  - Legacy-auth block: Security Defaults blocks legacy auth too, and the
+    check still fails.
+  - MFA registration: fails for disabled and guest accounts.
+  - Inspector and Defender: the KSI accepts any monitoring service.
+  - Azure "encryption at rest": fails on a data-shape artifact.
+  - Azure Policy and GCP Org Policy: guardrails are not configuration
+    management.
+  - Alert triage: an alert in progress counts as "unactioned".
+  - Per-trail log validation, and others.
+
+  Added where a failure does contradict: Puppet runs and reporting under
+  KSI-CNA-EIS ("automatically enforce their intended operational state"), and
+  default user permissions under KSI-IAM-JIT.
+- A failing (or warning) method moves the KSI to `warn` with
+  `source: posture_method` and names the check. **No method makes a KSI
+  pass.** `warn` ranks above `manual_review_required`, so such a KSI stays in
+  `manual_review_burden` and is counted in the new
+  `contradicted_by_methods`, so a failing check never shrinks the burden.
+- A method result counts only when posture's own `effective_verdict` would
+  believe it: generated, active, scanned within 30 days, and tier 0. A
+  connector disconnected a year ago no longer "persistently validates"
+  anything.
+- Only methods that ran are evidence: no `not_run` entries in the SDR,
+  OSCAL or evidence manifest. FRC-CSX-VVK counts methods that ran. For
+  Class A (MAY, no minimum) it counts KSIs with any method, not all of them.
+  The SDR's `ksiTests` names only methods that ran on that system.
+- Class A is no longer scoped as conditional on 20x: no Rev5 subset lists
+  Class A. An Agency path with no class recorded owes no KSI.
 - Migration `0094` adds `ksis.methods`; re-run `ccf fedramp20x seed-ksi`.
+
+### Fixed — a viewer could write through 165 routes
+- `docs/HANDBOOK.md` promises a viewer can "Read everything in your
+  organization. Change nothing." and the threat model rates the role "Reads
+  only". But 165 of 246 write routes had no role check. The auth gate now
+  refuses every mutating request from a viewer (403; plain text for pages),
+  except:
+  - MFA enrolment;
+  - their own notification read-state;
+  - four POST endpoints that only read (query run and export, OSCAL
+    validate, pack validate);
+  - two requests that earlier work deliberately left open to any member,
+    because neither grants anything until an admin acts: registering a pack
+    source for review, and logging a trust-portal access request.
+
+  `docs/HANDBOOK.md` now names these exceptions instead of claiming "Change
+  nothing" outright. Tests that had used a viewer as a stand-in for "any
+  signed-in user", to test tenant isolation or the live-capture proof, now
+  use `control_owner` or an admin. Switching their expectation to 403 would
+  have made those tests prove nothing.
+
+  Paths are matched on exact shape, so a new route is refused until someone
+  allows it on purpose. A test sends every registered mutating route as a
+  viewer through the real gate.
 
 ### Changed — 20x readiness, packages and SDRs are scoped to what the Certification Class owes
 - **A Class A system was scored against 46 KSIs; FedRAMP requires seven of
