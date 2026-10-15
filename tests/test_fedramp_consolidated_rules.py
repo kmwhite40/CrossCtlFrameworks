@@ -656,3 +656,60 @@ async def test_open_gaps_lists_current_ksis_only() -> None:
         gaps = await readiness.open_gaps(s, system_id=sid)
     assert {g["ksi"] for g in gaps} == rules.ksi_ids(rules.load_rules())
     assert {g["status"] for g in gaps} == {"manual_review_required"}
+
+
+async def test_reliability_warns_when_seeded_methods_drift_from_the_overlay() -> None:
+    async with session_scope() as s:
+        await s.execute(
+            KSI.__table__.update()
+            .where(KSI.identifier == "KSI-IAM-APM")
+            .values(methods=[{"check": "aws.s3.public_access_blocked", "rationale": "old"}])
+        )
+        check = await reliability._check_ksi_loaded(s)
+    assert check.status == reliability.WARN
+    assert "current rule overlay" in check.message
+
+
+async def test_the_seed_button_is_only_offered_where_it_works(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ccf.auth import hash_password, new_api_token  # noqa: PLC0415
+    from ccf.models import User  # noqa: PLC0415
+
+    async with session_scope() as s:
+        org = Organization(name=f"Seed Button {next(_SEQ)}")
+        s.add(org)
+        await s.flush()
+        admin = User(
+            email=f"admin-{next(_SEQ)}@seed.test",
+            organization_id=org.id,
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        s.add(admin)
+        await s.flush()
+        token = admin.api_token
+        await s.execute(KSI.__table__.update().values(retired_at=datetime.now(UTC)))
+    try:
+        async with _client() as c:  # auth disabled: the SYSTEM principal can seed
+            system_page = (await c.get("/fedramp20x")).text
+        monkeypatch.setenv("CCF_AUTH_ENABLED", "true")
+        monkeypatch.setenv("CCF_AUTH_SESSION_SECRET", "test-secret")
+        get_settings.cache_clear()
+        async with AsyncClient(
+            transport=ASGITransport(app=create_app()),
+            base_url="http://t",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as c:
+            tenant_page = (await c.get("/fedramp20x")).text
+    finally:
+        monkeypatch.delenv("CCF_AUTH_ENABLED", raising=False)
+        monkeypatch.delenv("CCF_AUTH_SESSION_SECRET", raising=False)
+        get_settings.cache_clear()
+        async with session_scope() as s:
+            await catalog.seed_ksis(s)
+    assert "Seed KSI catalog" in system_page
+    assert "Seed KSI catalog" not in tenant_page  # a tenant admin's click was a silent 403
+    assert "ccf fedramp20x seed-ksi" in tenant_page

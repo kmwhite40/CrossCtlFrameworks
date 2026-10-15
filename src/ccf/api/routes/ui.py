@@ -2167,7 +2167,13 @@ async def governance_scan(
     org = _principal_org(request)
     today = datetime.now(UTC).date()
     await conmon_engine.scan(session, today=today, org_id=org)
-    await digest_engine.run(session, today=today, org_id=org)
+    # The same split as POST /api/notifications/scan: an org's own alerts, or --
+    # unscoped -- the platform's plus every organization's. ``run(org_id=None)``
+    # raises platform alerts only, so calling it here dropped every org alert.
+    if org is not None:
+        await digest_engine.run(session, today=today, org_id=org)
+    else:
+        await digest_engine.run_all(session, today=today)
     await session.commit()
     return RedirectResponse("/governance", status_code=303)
 
@@ -2933,6 +2939,9 @@ async def fedramp20x_page(
             "dependencies": dependencies,
             "dep_marketplace": dep_marketplace,
             "requirements": requirements,
+            # The seed endpoint needs an unscoped principal; a tenant user's
+            # click was a silent 403, so they get the CLI command instead.
+            "can_seed": getattr(getattr(request.state, "principal", None), "is_global", True),
             "exceptions": exceptions,
         },
     )

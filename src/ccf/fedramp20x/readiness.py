@@ -293,7 +293,15 @@ async def score_system(
     # Reported beside the score, never in it: dependency_readiness keeps
     # reading the recorded status, so linking a product cannot move a score.
     payload["marketplace_disagreements"] = await marketplace.disagreements(session, system_id)
-    if persist:
+    # Owing no KSI is not 100% (or 0%) KSI readiness: with nothing counted the
+    # weighted blend fell back to dependency readiness alone and printed
+    # "Overall 100%" beside "Scored on 0 KSIs" for every Agency-path system.
+    # No number, a status that says why, and no snapshot or gauge to chart it.
+    no_ksis_owed = not ksis and bool(current)
+    if no_ksis_owed:
+        payload["readiness_pct"] = None
+        payload["status"] = "no_ksis_owed"
+    if persist and not no_ksis_owed:
         session.add(
             FedRAMP20xReadinessSnapshot(
                 system_id=system_id,

@@ -102,3 +102,20 @@ async def test_run_all_covers_every_org() -> None:
         assert n.organization_id == org
         assert out[str(org)]["ato"] >= 1
         await s.delete(n)
+
+
+async def test_the_governance_page_scan_still_raises_org_alerts_unscoped() -> None:
+    from httpx import ASGITransport, AsyncClient  # noqa: PLC0415
+
+    from ccf.api.main import create_app  # noqa: PLC0415
+
+    org, sysm = await _org_with_expiring_ato("Digest Page")
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        r = await c.post("/governance/scan", follow_redirects=False)
+        assert r.status_code == 303
+    async with session_scope() as s:
+        n = (
+            await s.execute(select(Notification).where(Notification.dedupe_key == f"ato:{sysm}"))
+        ).scalar_one()
+        assert n.organization_id == org
+        await s.delete(n)

@@ -1156,7 +1156,8 @@ def fr20x_validate(system_id: int = typer.Option(..., "--system-id")) -> None:
     results, score = asyncio.run(_run())
     console.print(
         f"[green]Validated {len(results)} KSIs[/green] — "
-        f"readiness {score['readiness_pct']}% ({score['status']})"
+        f"readiness {score['readiness_pct'] if score['readiness_pct'] is not None else '—'}"
+        f"{'%' if score['readiness_pct'] is not None else ''} ({score['status']})"
     )
     console.print_json(json.dumps(results, default=str))
 

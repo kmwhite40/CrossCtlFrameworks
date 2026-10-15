@@ -504,3 +504,31 @@ async def test_class_a_vvk_counts_ksis_with_any_method_not_all_of_them() -> None
     auto = score["automation_requirement"]
     assert auto["min_automated_methods_per_ksi"] == 0
     assert auto["ksis_meeting"] == 0 and auto["ksis_owed"] == 7
+
+
+async def test_a_system_owing_no_ksis_gets_no_readiness_number() -> None:
+    from ccf.models import FedRAMPDependency  # noqa: PLC0415
+
+    sid = await _system("C", "agency")  # Rev5: no KSI is owed
+    async with session_scope() as s:
+        s.add(FedRAMPDependency(system_id=sid, name="RDS", fedramp_status="authorized"))
+    async with session_scope() as s:
+        score = await readiness.score_system(s, system_id=sid, persist=True)
+        pkg = await package.build_package(s, system_id=sid)
+    assert score["readiness_pct"] is None and score["status"] == "no_ksis_owed"
+    md = package.render_markdown(pkg)
+    assert "**Overall:** n/a" in md and "None" not in md.split("## Cloud")[0]
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        page = (await c.get(f"/fedramp20x?system_id={sid}")).text
+    assert '<div class="kpi__label">Overall</div><div class="kpi__value">—</div>' in page
+    from ccf.models import FedRAMP20xReadinessSnapshot  # noqa: PLC0415
+
+    async with session_scope() as s:
+        snaps = (
+            await s.execute(
+                select(FedRAMP20xReadinessSnapshot).where(
+                    FedRAMP20xReadinessSnapshot.system_id == sid
+                )
+            )
+        ).scalars().all()
+    assert snaps == []  # nothing charted for a system with nothing to score

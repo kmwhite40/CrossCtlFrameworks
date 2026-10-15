@@ -324,7 +324,7 @@ def render_markdown(pkg: dict[str, Any]) -> str:
             if r.get("ksi_scope_problem")
             else []
         ),
-        f"- **Overall:** {r['readiness_pct']}%  ·  **Status:** {r['status']}",
+        f"- **Overall:** {pct('readiness_pct')}  ·  **Status:** {r['status']}",
         f"- **KSI pass rate:** {pct('ksi_pass_rate')}  ·  "
         f"**Automation coverage:** {pct('automation_coverage')}",
         f"- **Evidence completeness:** {pct('evidence_completeness')}  ·  "
@@ -419,7 +419,14 @@ def to_oscal_shaped(pkg: dict[str, Any]) -> dict[str, Any]:
                     "uuid": "ksi-result-1",
                     "title": "KSI Validation Results",
                     "props": [
-                        {"name": "readiness-pct", "value": str(pkg["readiness"]["readiness_pct"])},
+                        {
+                            "name": "readiness-pct",
+                            "value": (
+                                "not-applicable"
+                                if pkg["readiness"]["readiness_pct"] is None
+                                else str(pkg["readiness"]["readiness_pct"])
+                            ),
+                        },
                         {"name": "readiness-status", "value": pkg["readiness"]["status"]},
                         {
                             "name": "active-waivers",
@@ -550,7 +557,8 @@ def to_docx(pkg: dict[str, Any]) -> bytes:
         p = doc.add_paragraph()
         run = p.add_run(f"{label}: ")
         run.bold = True
-        p.add_run(str(r.get(key)))
+        value = r.get(key)
+        p.add_run("—" if value is None else str(value))
 
     doc.add_heading("Key Security Indicators", level=1)
     table = doc.add_table(rows=1, cols=5)

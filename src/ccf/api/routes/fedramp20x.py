@@ -357,7 +357,7 @@ async def system_requirements(
 @router.get("/marketplace/products")
 async def search_marketplace(
     q: str = Query(..., min_length=2, max_length=128),
-    limit: int = Query(20, le=100),
+    limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
     _p: Principal = Depends(get_principal),
 ) -> list[dict[str, Any]]:

@@ -118,8 +118,10 @@ SP 800-53** through each KSI's control mapping.
   (CED/CMT/CNA/IAM/INR/MLA/PIY/RPL/SCR/SVC), seeded from the vendored, hash-pinned
   [FedRAMP Consolidated Rules for 2026](src/ccf/fedramp20x/rules_data/) (`FedRAMP/rules`,
   public domain). Statements and 800-53 mappings are FedRAMP's, verbatim; Concord's
-  validation rules live separately in `rules_data/ksi_rules.json` (empty at the 2026
-  cut-over, so every KSI starts manual). Superseded indicators are retired, never
+  validation rules and curated posture-check methods live separately in
+  `rules_data/ksi_rules.json`. There are no verdict rules yet, so every KSI's
+  verdict is manual. 13 KSIs carry methods that can raise them to `warn`, never
+  to `pass`. Superseded indicators are retired, never
   deleted. After upgrading, run `ccf fedramp20x seed-ksi`.
 - **Deterministic validation engine** — evaluates each KSI's machine-readable rule
   (`control_state` / `control_any` / `evidence_present` / `dependency_authorized` /

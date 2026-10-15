@@ -283,6 +283,25 @@ async def _check_ksi_catalog_file(_s: AsyncSession) -> Check:
         )
 
 
+async def _overlay_drift(session: AsyncSession) -> list[str]:
+    """Current KSIs whose seeded rule/methods differ from ``ksi_rules.json``.
+
+    An unreadable overlay is reported as drift (named), not swallowed.
+    """
+    try:
+        from ..fedramp20x.catalog import load_records  # noqa: PLC0415
+
+        want = {r["identifier"]: (r["rule"], r["methods"]) for r in load_records()}
+    except Exception as exc:
+        return [f"(overlay unreadable: {exc})"]
+    seeded = (
+        await session.execute(
+            text("SELECT identifier, rule, methods FROM ccf.ksis WHERE retired_at IS NULL")
+        )
+    ).all()
+    return sorted(str(r[0]) for r in seeded if r[0] in want and (r[1], r[2]) != want[r[0]])
+
+
 async def _check_ksi_loaded(session: AsyncSession) -> Check:
     if not await _regclass(session, "ccf.ksis"):
         return Check(
@@ -322,11 +341,17 @@ async def _check_ksi_loaded(session: AsyncSession) -> Check:
     # change statements and mappings under unchanged IDs. ``source`` records
     # the revision each row was seeded from.
     behind = sorted(r[0] for r in rows if r[1] != rules.source_label)
+    # Nor does it cover Concord's own overlay (ksi_rules.json): a database
+    # seeded before a method was removed keeps evaluating it, raising warns
+    # the curation no longer stands behind, under a PASS.
+    if not behind:
+        behind = await _overlay_drift(session)
     if behind:
         return Check(
             "fedramp20x_ksi_catalog_loaded",
             WARN,
-            f"{len(behind)} seeded KSIs predate FedRAMP Consolidated Rules {rules.version}.",
+            f"{len(behind)} seeded KSIs predate FedRAMP Consolidated Rules {rules.version} "
+            "or Concord's current rule overlay.",
             "Run `ccf fedramp20x seed-ksi`.",
         )
     return Check(

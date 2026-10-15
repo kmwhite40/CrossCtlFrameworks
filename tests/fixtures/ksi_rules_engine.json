@@ -3,7 +3,7 @@
     "TEST-ONLY rule overlay. Exercises the KSI validation engine end to end",
     "through real 2026 catalog rows without the shipped catalog claiming any",
     "of these rules. The shipped overlay (ccf/fedramp20x/rules_data/ksi_rules.json)",
-    "is empty; nothing here is an assertion about what these indicators require."
+    "has no verdict rules; nothing here is an assertion about what these indicators require."
   ],
   "rules": {
     "KSI-IAM-APM": {

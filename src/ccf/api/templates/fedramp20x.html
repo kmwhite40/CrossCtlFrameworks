@@ -13,12 +13,16 @@
     <div class="row between">
       <div>
         <div class="card__title">No KSI catalog loaded</div>
-        <div class="dim" style="margin-top:4px">Seed the FedRAMP 20x KSI catalog to begin.</div>
+        <div class="dim" style="margin-top:4px">
+          {% if can_seed %}Seed the FedRAMP 20x KSI catalog to begin.{% else %}The catalog is shared by every organization, so a platform operator seeds it: <code>ccf fedramp20x seed-ksi</code>.{% endif %}
+        </div>
       </div>
+      {% if can_seed %}
       <button class="btn btn--primary" hx-post="/api/fedramp/20x/ksis/seed" hx-swap="none"
               hx-on::after-request="window.location.reload()">
         <i data-lucide="download"></i> Seed KSI catalog
       </button>
+      {% endif %}
     </div>
   </div></div>
 {% else %}
@@ -76,7 +80,7 @@
 </div>
 
 <div class="cols-4" style="margin-bottom:16px">
-  <div class="kpi"><div class="kpi__label">Overall</div><div class="kpi__value">{{ readiness.readiness_pct }}%</div></div>
+  <div class="kpi"><div class="kpi__label">Overall</div><div class="kpi__value">{{ readiness.readiness_pct ~ '%' if readiness.readiness_pct is not none else '—' }}</div></div>
   <div class="kpi"><div class="kpi__label">KSI pass rate</div><div class="kpi__value">{{ readiness.ksi_pass_rate ~ '%' if readiness.ksi_pass_rate is not none else '—' }}</div></div>
   <div class="kpi"><div class="kpi__label">Automation</div><div class="kpi__value">{{ readiness.automation_coverage ~ '%' if readiness.automation_coverage is not none else '—' }}</div></div>
   <div class="kpi"><div class="kpi__label">Evidence</div><div class="kpi__value">{{ readiness.evidence_completeness ~ '%' if readiness.evidence_completeness is not none else '—' }}</div></div>

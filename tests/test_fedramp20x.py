@@ -57,9 +57,10 @@ def _client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t")
 
 
-#: Test-only validation rules on real 2026 indicators. The shipped overlay is
-#: empty, so without this every catalog KSI is ``manual`` and nothing below
-#: would reach the engine's control-state, capture or dependency paths.
+#: Test-only validation rules on real 2026 indicators. The shipped overlay has
+#: no verdict rules (only curated methods), so without this every catalog KSI's
+#: rule is ``manual`` and nothing below would reach the engine's control-state,
+#: capture or dependency paths.
 ENGINE_RULES = Path(__file__).parent / "fixtures" / "ksi_rules_engine.json"
 
 

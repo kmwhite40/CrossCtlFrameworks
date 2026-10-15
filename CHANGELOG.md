@@ -6,6 +6,46 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Upgrading — operator steps for this release, in order
+1. **Rebuild and run the migrator image**: `docker compose build api migrator
+   && docker compose up migrator`. `build api` alone leaves the migrations
+   unapplied, and the code then fails on missing columns and tables:
+   - `0093`: `ksis.retired_at` (every KSI read);
+   - `0094`: `ksis.methods`;
+   - `0095`: `marketplace_products` (the 20x page and dependency routes);
+   - `0096`: `notification_reads` (`/api/notifications`, `/governance`);
+   - `0097`: the orphaned-alert cleanup (deletes only).
+2. `ccf sources-seed`. This registers the watched FedRAMP rules dataset, the
+   Marketplace data and its schema. Existing rows are untouched.
+3. `ccf fedramp20x seed-ksi`. This moves the catalog to the 46 FedRAMP 2026
+   KSIs and retires the phase-one 51 (never deleted). Until then the reliability
+   check warns, and systems are scored on the phase-one rows as before.
+4. Optional: `ccf fedramp20x marketplace-refresh` loads the Marketplace now
+   instead of at the next scheduled poll.
+5. Expect readiness to change once, because the denominator moves to what
+   each system's Class and Path owe. A Rev5 (Agency-path) system now shows no
+   KSI readiness number (`no_ksis_owed`) rather than one computed from
+   dependencies alone.
+
+### Fixed — from a whole-branch review
+- **The Marketplace data files were not packaged.** The Docker image installs
+  the wheel, which did not contain `fedramp20x/marketplace_data/`. In the
+  image, `ccf sources-seed` therefore raised and rolled back every source's
+  registration, and the Marketplace never refreshed. The tests ran on an
+  editable install and could not see it. Now packaged, and
+  `tests/test_package_data_is_complete.py` fails for any data file under
+  `src/` that package-data misses.
+- The governance page's manual scan raised no org alerts for an unscoped
+  caller. It now uses `run_all`, as the API scan does.
+- A system that owes no KSIs (Rev5 / Agency path) showed "Overall 100%",
+  computed from dependency readiness alone, beside "Scored on 0 KSIs". It now
+  shows no number, with status `no_ksis_owed`, and is not snapshotted or
+  charted. The DOCX and OSCAL exports no longer print "None".
+- The reliability check now also compares each KSI's seeded rule and methods
+  with `ksi_rules.json`. A database seeded before the method curation was
+  revised kept evaluating removed methods under a PASS.
+- `GET /marketplace/products?limit=-1` returned a 500; `limit` is now ≥1.
+
 ### Added — which FedRAMP process requirements a system owes
 - The SDR's `fedRampRequirements` was entirely authored, and Concord could
   not say which of the 245 FRR requirements a system owes.
@@ -16,7 +56,7 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   a single type show that 20x is Program-only, Rev5 is Program or Agency,
   and Class A exists only under 20x. Type is not recorded, so the answer is
   `owed` (every scenario still possible) plus `conditional` entries that
-  name the scenarios they depend on. Class C on the Agency path owes 163,
+  name the scenarios they depend on. Class C on the Agency path owes 162,
   all certain. Class A on the Agency path is reported as impossible.
 - Class A also owes what `FRC-CLA-MFR`/`RFR`/`OFR` name (51 in all), which
   subset applicability alone undercounts. Force comes from the requirement
@@ -81,7 +121,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   source polling plus every tenant's ConMon, digest and collection jobs. It
   was gated only on being signed in, so a member of one tenant who could
   write could drive all of them on demand. It now requires a platform-wide
-  (unscoped) administrator, as `POST /ksis/seed` does.
+  (unscoped) principal, as `POST /ksis/seed` does. Every user belongs to an
+  organization (`users.organization_id` is NOT NULL), so in practice these
+  platform operations run from the CLI or with auth disabled. The 20x page
+  shows a tenant the `ccf fedramp20x seed-ksi` command, not a button that
+  would silently 403.
 
 ### Fixed — one member's "read all" silenced every member's alerts
 - `notifications.read_at` was one column on an org-wide broadcast row.
@@ -124,9 +168,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   ETag so the next poll retries. A product missing from a refresh is
   delisted, never deleted, and an empty product list is refused rather than
   allowed to delist everything.
-- `ccf fedramp20x marketplace-refresh` polls it on demand. Run `ccf
-  sources-seed` once to register the row, then rebuild and run the migrator
-  image for `0095`.
+- `ccf fedramp20x marketplace-refresh` polls it on demand, registering its
+  source row if needed. See **Upgrading** above for the order of steps.
 - Not built, and recorded why: FedRAMP's Rev. 5 baselines with assigned
   parameter values are no longer published anywhere reachable.
   `GSA/fedramp-automation` returns 404 and the FedRAMP organisation has no
@@ -181,9 +224,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   "Reads only". But most write routes (165 by a scan of route signatures)
   had no role check. The auth gate now refuses every mutating request from a
   viewer: a 403, plain text for pages, and logged as
-  `auth.viewer_write_refused`. Exactly nine (method, path) pairs are
+  `auth.viewer_write_refused`. Exactly eleven (method, path) pairs are
   excepted:
-  - own-MFA enrolment;
+  - own-MFA enrolment, and the viewer's own notification read-state (two
+    routes, re-allowed once read-state became per user);
   - read-only POSTs: query run and export, OSCAL validate, pack validate;
   - logging a trust-portal access request, which an admin then decides.
 - **Independent review removed two exceptions I had first allowed:**
@@ -218,8 +262,9 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   package cover required and optional KSIs only, with each package entry
   carrying its applicability.
 - `FRC-CSX-VVK` (automated validation methods per KSI: A MAY, B ≥1, C ≥2,
-  D ≥4) is reported against the automated leaf checks Concord's rules hold.
-  With the rule overlay empty that is 0, which is the true answer.
+  D ≥4) is reported against the automated methods a KSI has on that system:
+  capture leaves in its rule plus curated posture-check methods that have
+  actually run there (see "automated methods" above).
 - Tests pin the upstream wording this parses, including that Class A's
   `IVV-CSX-AIA` variant defers to its alternative framework. A re-vendored
   dataset that moves any of it then fails a test instead of re-scoping
@@ -237,8 +282,10 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   validation count, and the SDR. An SDR entry this seed did not refresh,
   retired or out of scope, loses its frozen `ksiImplementationStatus`. The
   seed reports such entries as `out_of_scope_ksi_ids`.
-- An "automated method" (FRC-CSX-VVK) is now only a `connector_capture` leaf.
-  `control_state` and the other kinds read records an operator entered.
+- In a validation rule, only a `connector_capture` leaf counts as an
+  automated method. `control_state` and the other kinds read records an
+  operator entered. Curated posture-check methods count too, added in a later
+  entry.
 - Readiness snapshots and the Prometheus gauge change denominator once at
   deploy, and again whenever a system's class or path changes. Compare
   snapshots across that line with care.
@@ -251,8 +298,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - Any signed-in user could record an "accepted" 3PAO review or a KSI
   exception through the page. The API refuses both to anyone but
   admin/assessor and admin respectively, and the forms now use the same gates.
-  Profile and dependency writes are open to every role in both the UI and the
-  API; that is unchanged and is a separate question.
+  (Profile and dependency writes, then open to every role, are refused to
+  viewers by the auth-gate change above.)
 
 ### Changed — the KSI catalog is FedRAMP's Consolidated Rules for 2026, not Concord's phase-one summary
 - **Every SDR Concord produced cited KSIs the current rules do not define.**
@@ -289,9 +336,11 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   that the seeded catalog does not match the pinned dataset, including rows
   seeded from an older revision under unchanged IDs. Downgrading `0093` is
   refused while retired rows exist: it would make both catalogs current.
-- **Validation rules start empty.** No phase-one rule is carried onto a 2026
-  indicator, so all 46 evaluate as `manual` until a rule is authored in
-  `rules_data/ksi_rules.json` against that indicator's own statement. Readiness
+- **Verdict rules start empty.** No phase-one rule is carried onto a 2026
+  indicator, so all 46 have a `manual` verdict rule until one is authored in
+  `rules_data/ksi_rules.json` against that indicator's own statement. Curated
+  posture-check *methods* were added later: 13 KSIs carry them, are marked
+  `partial`, and can move to `warn`, but never to `pass`. Readiness
   will drop on upgrade; that is the honest number. ConMon coverage no longer
   counts a state with no due date as fresh — unauthored KSIs have no frequency,
   and counting them would have reported 100% coverage of indicators nothing
