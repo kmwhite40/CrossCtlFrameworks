@@ -132,7 +132,12 @@
           <td data-testid="dep-marketplace">
             {% set m = dep_marketplace.get(d.id) %}
             {% if m and m.product %}
-              <a href="{{ m.product.url }}" rel="noopener" target="_blank">{{ m.product.status }}{% if m.product.impact_level %} · {{ m.product.impact_level }}{% endif %}</a>
+              <a href="{{ m.product.url }}" rel="noopener" target="_blank">{{ m.product.status }}{% if m.product.impact_level %} · {{ m.product.impact_level }}{% endif %}{% if m.product.auth_type %} · {{ m.product.auth_type }}{% endif %}</a>
+              <div class="dim" style="font-size:12px">FedRAMP data as of {{ (m.product.refreshed_at or '')[:10] }}</div>
+              <form method="post" action="/fedramp20x/{{ system_id }}/dependencies/{{ d.id }}/marketplace" style="display:inline">
+                <input type="hidden" name="marketplace_id" value="">
+                <button class="btn btn--ghost" type="submit" title="Unlink from the Marketplace record">Unlink</button>
+              </form>
             {% elif d.marketplace_id %}<span class="dim">{{ d.marketplace_id }} (not held)</span>
             {% else %}
               <form method="post" action="/fedramp20x/{{ system_id }}/dependencies/{{ d.id }}/marketplace" class="row" style="gap:4px">

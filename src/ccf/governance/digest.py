@@ -147,9 +147,23 @@ async def _personnel_and_tprm(
 
 
 async def run(session: AsyncSession, *, today: date, org_id: int | None = None) -> dict[str, Any]:
-    """Raise/refresh org-level notifications. Returns counts by category."""
+    """Raise/refresh notifications. Returns counts by category.
+
+    With ``org_id``: that organization's alerts, stored with that
+    ``organization_id`` so its members can see them. Without: platform alerts
+    only (upstream catalog drift).
+
+    It used to run every section with ``org_id=None`` from the scheduler, so
+    every overdue-task, ATO, POA&M and review alert was stored with no
+    organization -- invisible to every member under RLS and the inbox's org
+    filter -- and per-org rollup keys such as ``training-overdue:{org_id}``
+    collapsed every tenant into one ``training-overdue:None`` row. Use
+    :func:`run_all` to cover the platform and every organization.
+    """
+    if org_id is None:
+        return await run_platform(session, today=today)
     counts = {
-        "ato": 0, "catalog": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0,
+        "ato": 0, "poam": 0, "policy": 0, "vendor": 0, "risk": 0,
         "regulatory": 0, "audit": 0,
         "training": 0, "screening": 0, "access_review": 0, "questionnaire": 0,
     }
@@ -179,25 +193,6 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
                 dedupe_key=f"ato:{s.id}",
             )
             counts["ato"] += 1
-
-    # Upstream catalog drift (a source whose last poll changed).
-    for src in (
-        (await session.execute(select(CatalogSource).where(CatalogSource.last_status == "changed")))
-        .scalars()
-        .all()
-    ):
-        await bus.notify(
-            session,
-            category="catalog",
-            title=f"Catalog drift: {src.name}",
-            body=f"Upstream revision {src.revision_label or '?'} differs from ingested baseline.",
-            org_id=org_id,
-            severity="warning",
-            entity_type="catalog_source",
-            entity_id=src.id,
-            dedupe_key=f"catalog:{src.id}:{src.last_sha256}",
-        )
-        counts["catalog"] += 1
 
     # Overdue POA&M load (single rollup alert).
     poam_stmt = select(POAM).where(POAM.status.in_(POAM_ACTIVE_STATUSES))
@@ -339,3 +334,50 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
     await _personnel_and_tprm(session, today, org_id, counts)
 
     return counts
+
+
+async def run_platform(session: AsyncSession, *, today: date) -> dict[str, Any]:
+    """Platform alerts: upstream catalog drift. Stored without an organization.
+
+    Catalog sources are platform-wide, so their drift alert is one row (its
+    ``dedupe_key`` is global); raising it per organization would collide on
+    that key the moment a second tenant ran.
+    """
+    _ = today
+    counts: dict[str, Any] = {"catalog": 0}
+    # Upstream catalog drift (a source whose last poll changed).
+    for src in (
+        (await session.execute(select(CatalogSource).where(CatalogSource.last_status == "changed")))
+        .scalars()
+        .all()
+    ):
+        await bus.notify(
+            session,
+            category="catalog",
+            title=f"Catalog drift: {src.name}",
+            body=f"Upstream revision {src.revision_label or '?'} differs from ingested baseline.",
+            org_id=None,
+            severity="warning",
+            entity_type="catalog_source",
+            entity_id=src.id,
+            dedupe_key=f"catalog:{src.id}:{src.last_sha256}",
+        )
+        counts["catalog"] += 1
+
+    return counts
+
+
+async def run_all(session: AsyncSession, *, today: date) -> dict[str, Any]:
+    """Platform alerts plus every active organization's, each under its own org.
+
+    For an unscoped caller (the CLI, a platform admin's manual scan). The
+    scheduler instead runs :func:`run` per tenant inside its per-tenant cycle,
+    where each slice is RLS-bound to its organization.
+    """
+    from ..models import Organization  # noqa: PLC0415
+
+    out: dict[str, Any] = {"platform": await run_platform(session, today=today)}
+    org_ids = (await session.execute(select(Organization.id))).scalars().all()
+    for oid in org_ids:
+        out[str(oid)] = await run(session, today=today, org_id=oid)
+    return out

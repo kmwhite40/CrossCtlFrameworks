@@ -111,10 +111,74 @@ def parse(body: bytes) -> list[dict[str, Any]]:
     return rows
 
 
+#: Column widths in ccf.marketplace_products. FedRAMP's schema constrains no
+#: lengths, so a record that would not fit is skipped and reported rather than
+#: allowed to fail the whole refresh at flush time.
+_WIDTHS = {
+    "fedramp_id": 32,
+    "csp": 512,
+    "cso": 512,
+    "status": 64,
+    "impact_level": 32,
+    "auth_type": 32,
+    "independent_assessor": 512,
+    "deployment_model": 64,
+}
+
+
+def screen(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], set[str]]:
+    """Rows that can be stored, and why each other row was skipped.
+
+    One malformed upstream record must not block every other product's
+    update, day after day: it is named and left out instead.
+    """
+    kept: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    skipped_ids: set[str] = set()
+    seen: set[str] = set()
+    for row in rows:
+        fid = row["fedramp_id"]
+        too_long = [k for k, w in _WIDTHS.items() if row.get(k) and len(str(row[k])) > w]
+        if not fid:
+            skipped.append("a product with no FedRAMP ID")
+        elif too_long:
+            skipped.append(f"{fid[:40]}: {', '.join(too_long)} too long")
+            skipped_ids.add(fid)
+        elif fid in seen:
+            skipped.append(f"{fid}: listed twice; first kept")
+        else:
+            seen.add(fid)
+            kept.append(row)
+    return kept, skipped, skipped_ids
+
+
 async def apply(
     session: AsyncSession, rows: list[dict[str, Any]], *, commit_sha: str | None
 ) -> dict[str, int]:
-    """Upsert products; delist (never delete) what this refresh did not list."""
+    """Upsert products; delist (never delete) what this refresh did not list.
+
+    Runs in its own savepoint: a database error here rolls back the
+    Marketplace update only, never the other sources polled in the same
+    scheduler step (they share one transaction).
+    """
+    rows, skipped, skipped_ids = screen(rows)
+    async with session.begin_nested():
+        result = await _apply(session, rows, commit_sha=commit_sha, still_listed=skipped_ids)
+    result["skipped"] = len(skipped)
+    if skipped:
+        log.warning("fedramp20x.marketplace_rows_skipped", count=len(skipped), first=skipped[:5])
+    return result
+
+
+async def _apply(
+    session: AsyncSession,
+    rows: list[dict[str, Any]],
+    *,
+    commit_sha: str | None,
+    still_listed: set[str],
+) -> dict[str, int]:
     now = datetime.now(UTC)
     existing = {
         p.fedramp_id: p for p in (await session.execute(select(MarketplaceProduct))).scalars()
@@ -139,7 +203,10 @@ async def apply(
         product.refreshed_at = now
         product.delisted_at = None
     for fid, product in existing.items():
-        if fid not in seen and product.delisted_at is None:
+        # A skipped (malformed) row is not evidence the product left the
+        # Marketplace, but it is absent from ``seen``; delisting it would be a
+        # finding Concord invented. Only rows that were listed count.
+        if fid not in seen and fid not in still_listed and product.delisted_at is None:
             product.delisted_at = now
             delisted += 1
     await session.flush()
@@ -216,6 +283,29 @@ def compare(dep: FedRAMPDependency, product: MarketplaceProduct | None) -> list[
                 "listed",
                 "delisted",
                 f"FedRAMP no longer lists {product.cso} (since {product.delisted_at.date()}).",
+            )
+        )
+    # A value Concord has no mapping for is a finding, never silence: FedRAMP's
+    # schema has no enum, so a new status ("Revoked") would otherwise compare
+    # as agreement.
+    if product.status not in STATUS_MAP:
+        out.append(
+            Finding(
+                "fedramp_status",
+                dep.fedramp_status,
+                product.status,
+                f"The Marketplace status {product.status!r} is one Concord does not "
+                "recognise; check it by hand.",
+            )
+        )
+    if product.impact_level and product.impact_level not in IMPACT_MAP:
+        out.append(
+            Finding(
+                "impact_level",
+                dep.impact_level,
+                product.impact_level,
+                f"The Marketplace impact level {product.impact_level!r} is one Concord "
+                "does not recognise; check it by hand.",
             )
         )
     mapped = STATUS_MAP.get(product.status)
@@ -321,3 +411,37 @@ async def disagreements(session: AsyncSession, system_id: int) -> int:
     )
     found = await products_by_id(session, {d.marketplace_id for d in deps if d.marketplace_id})
     return sum(1 for d in deps if compare(d, found.get(d.marketplace_id or "")))
+
+
+async def link(
+    session: AsyncSession,
+    dep: FedRAMPDependency,
+    marketplace_id: str | None,
+    *,
+    actor: str | None,
+    org_id: int | None,
+) -> MarketplaceProduct | None:
+    """Link (or, with an empty id, unlink) a dependency -- one path for API and page.
+
+    An id Concord does not hold is refused, not stored: "not held" would then
+    be a finding the operator created by typo.
+    """
+    from ..governance import bus  # noqa: PLC0415
+
+    wanted = (marketplace_id or "").strip() or None
+    product = None
+    if wanted is not None:
+        product = (await products_by_id(session, {wanted})).get(wanted)
+        if product is None:
+            raise LookupError(f"{wanted} is not a FedRAMP Marketplace product Concord holds")
+    dep.marketplace_id = wanted
+    await bus.emit(
+        session,
+        verb="linked" if wanted else "unlinked",
+        entity_type="fedramp_dependency",
+        entity_id=dep.id,
+        summary=f"Dependency '{dep.name}' -> Marketplace {wanted or 'none'}",
+        org_id=org_id,
+        actor=actor,
+    )
+    return product

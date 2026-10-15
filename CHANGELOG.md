@@ -6,6 +6,45 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — the scheduler's alerts reached no one
+- The scheduler ran the alert digest unscoped, so every overdue-task, ATO,
+  POA&M, policy/vendor/risk review, training and access-review alert was
+  stored with no organization. RLS and the inbox both hide such rows from
+  members, so nobody saw them. Per-org rollup keys such as
+  `training-overdue:{org_id}` also collapsed every tenant into one
+  `...:None` row.
+- `digest.run` with an organization now raises only that organization's
+  alerts, stored under it. Each tenant's slice of the cycle runs it under its
+  own RLS tenant. Without an organization, the digest raises only the
+  platform's upstream catalog-drift alerts. `digest.run_all` covers both for
+  the CLI and an unscoped admin's manual scan.
+- Migration `0097` deletes the orphaned org-less digest alerts, matched on
+  the digest's own dedupe-key prefixes; catalog drift is kept. They were
+  unreachable, and their globally unique keys would have blocked the per-org
+  re-creation. The next run raises whatever still applies.
+
+### Fixed — from independent review of the Marketplace and inbox changes
+- One malformed upstream Marketplace record (an over-length field, a
+  duplicated ID) could fail the flush and abort *every* source's poll, every
+  day. Such records are now skipped and counted, and are never mistaken for
+  a delisting. The apply runs in its own savepoint.
+- A Marketplace status or impact level Concord does not recognise is now a
+  finding rather than silent agreement. The page shows the authorization
+  type and the data's refresh date, and offers Unlink. The API and the page
+  share one link path, so the page also emits the audit event. An empty ID
+  unlinks rather than storing `""`.
+- FedRAMP's upstream `data.schema.json` is watched for drift against the
+  pinned digest. The vendored schema forbids unknown fields, so a new field
+  would otherwise silently stop every refresh.
+- `POST /api/catalog/sources/{id}/check` had no role check. Catalog sources
+  are platform-wide and a check can now ingest, so it requires a platform
+  admin.
+- "Read all" is one `INSERT … SELECT`. It used to build one VALUES row per
+  notification and failed past about 11k unread, the first-run case after
+  `0096`. Unread counts now count the whole inbox, not the first page. An
+  alert whose severity escalates comes back unread for everyone. A viewer
+  may mark their own notifications read, now that read-state is per user.
+
 ### Fixed — any tenant member could run every tenant's automation cycle
 - `POST /api/automation/run-cycle` runs `scheduler.run_cycle`: platform
   source polling plus every tenant's ConMon, digest and collection jobs. It

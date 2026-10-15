@@ -233,6 +233,28 @@ DEFAULT_SOURCES += [
 ]
 
 
+# The Marketplace schema Concord validates against is vendored and sha-pinned
+# (ccf/fedramp20x/marketplace_data). It forbids unknown properties, so the first
+# field FedRAMP adds would fail every refresh; watching it means that change is
+# reported the day it happens, not discovered as stale data.
+_MARKETPLACE_SCHEMA_KEY = "fedramp_marketplace_schema"
+_MARKETPLACE_SCHEMA_FILE = "data.schema.json"
+DEFAULT_SOURCES += [
+    {
+        "key": _MARKETPLACE_SCHEMA_KEY,
+        "name": "FedRAMP Marketplace data schema",
+        "authority": "FedRAMP",
+        "kind": "generic",
+        "url": (
+            "https://raw.githubusercontent.com/FedRAMP/marketplace-fedramp-gov-data/main/"
+            f"{_MARKETPLACE_SCHEMA_FILE}"
+        ),
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": False,
+    },
+]
+
 # --- FedRAMP Marketplace ------------------------------------------------------
 # Ingested, not merely watched: see the ``marketplace`` branch of
 # ``check_source``. The scheduler's ``poll_sources`` step therefore refreshes it
@@ -758,10 +780,22 @@ def _fedramp_rules_seed_digests() -> dict[str, str]:
 #: covers every key drawn from one manifest, so :func:`seed_sources` reads
 #: that manifest at most once per call no matter how many of its keys are
 #: being newly created.
+_MARKETPLACE_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "fedramp20x" / "marketplace_data" / "MANIFEST.json"
+)
+
+
+def _marketplace_schema_seed_digests() -> dict[str, str]:
+    manifest = json.loads(_MARKETPLACE_MANIFEST.read_text(encoding="utf-8"))
+    sha = manifest["files"][_MARKETPLACE_SCHEMA_FILE]["sha256"]
+    return {_MARKETPLACE_SCHEMA_KEY: str(sha)}
+
+
 _SEED_DIGEST_READERS: dict[str, Callable[[], dict[str, str]]] = {
     **{f"{_CR26_KEY_PREFIX}{kind}": _cr26_seed_digests for kind in _CR26_KINDS_FOR_SOURCES},
     _OSCAL_SPEC_SSP_KEY: _oscal_spec_seed_digests,
     _FEDRAMP_RULES_KEY: _fedramp_rules_seed_digests,
+    _MARKETPLACE_SCHEMA_KEY: _marketplace_schema_seed_digests,
 }
 
 

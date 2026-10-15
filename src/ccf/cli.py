@@ -489,7 +489,7 @@ def notify_digest() -> None:
 
     async def _run() -> None:
         async with session_scope() as session:
-            counts = await digest.run(session, today=datetime.now(UTC).date())
+            counts = await digest.run_all(session, today=datetime.now(UTC).date())
         console.print(f"[green]Alert digest complete[/green] — {json.dumps(counts)}")
 
     asyncio.run(_run())

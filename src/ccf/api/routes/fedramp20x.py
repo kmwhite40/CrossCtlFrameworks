@@ -318,25 +318,12 @@ async def link_dependency(
     dep = await session.get(FedRAMPDependency, dependency_id)
     if dep is None or dep.system_id != system_id:
         raise HTTPException(404, "dependency not found")
-    product = None
-    if body.marketplace_id:
-        product = (await marketplace.products_by_id(session, {body.marketplace_id})).get(
-            body.marketplace_id
+    try:
+        product = await marketplace.link(
+            session, dep, body.marketplace_id, actor=principal.email, org_id=principal.org_id
         )
-        if product is None:
-            raise HTTPException(
-                422, f"{body.marketplace_id} is not a FedRAMP Marketplace product Concord holds"
-            )
-    dep.marketplace_id = body.marketplace_id
-    await bus.emit(
-        session,
-        verb="linked" if body.marketplace_id else "unlinked",
-        entity_type="fedramp_dependency",
-        entity_id=dep.id,
-        summary=f"Dependency '{dep.name}' -> Marketplace {body.marketplace_id or 'none'}",
-        org_id=principal.org_id,
-        actor=principal.email,
-    )
+    except LookupError as exc:
+        raise HTTPException(422, str(exc)) from exc
     await session.commit()
     row = _dep_out(dep)
     row["marketplace"] = marketplace.product_out(product) if product else None

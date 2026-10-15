@@ -143,6 +143,7 @@ async def _run_per_tenant_cycle(
     pack_sync_results: list[dict[str, Any]] = []
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
+    digest_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
     posture_results: list[dict[str, Any]] = []
@@ -190,6 +191,24 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "conmon"})
+        try:
+            # This organization's alerts, stored with its organization_id under
+            # its own RLS tenant, so its members' inboxes can show them.
+            async with session.begin_nested():
+                digest_results.append(
+                    {
+                        "organization_id": org_id,
+                        **await digest.run(session, today=today, org_id=org_id),
+                    }
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="digest",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "digest"})
         try:
             async with session.begin_nested():
                 result = await control_tests.run_due(session, today=today, org_id=org_id)
@@ -319,6 +338,7 @@ async def _run_per_tenant_cycle(
         "conmon": conmon_results,
         "posture_scan": posture_results,
         "control_tests": control_test_results,
+        "digest_per_org": digest_results,
         "capability_derive": {
             "organizations_processed": [r["organization_id"] for r in derive_results],
             "systems": sum(r["systems"] for r in derive_results),
@@ -492,13 +512,14 @@ async def run_cycle() -> dict[str, Any]:
             org_ids = await _active_org_ids(session)
             out.update(await _run_per_tenant_cycle(session, org_ids, today=today))
 
-            # GLOBAL: cross-module alert digest (ATO/POA&M/policy/vendor/etc.
-            # rollups spanning the whole platform) — intentionally unscoped.
-            # Same savepoint containment as above, so a digest failure can't
-            # abort the transaction out from under the fedramp20x scan below.
+            # GLOBAL: platform alerts only (upstream catalog drift). Each
+            # organization's alerts are raised in its own per-tenant slice
+            # above: run unscoped, they were stored with no organization and
+            # no member could ever see them. Same savepoint containment as
+            # above, so a failure can't abort the fedramp20x scan below.
             try:
                 async with session.begin_nested():
-                    out["digest"] = await digest.run(session, today=today)
+                    out["digest"] = await digest.run_platform(session, today=today)
             except Exception as e:
                 log.warning("scheduler.global_step_failed", step="digest", error=str(e)[:200])
                 global_failures.append("digest")

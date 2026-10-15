@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,15 +23,63 @@ from ..auth import Principal
 from ..models import Notification, NotificationRead
 
 
-def visible(principal: Principal) -> Select[tuple[Notification]]:
-    stmt = select(Notification).order_by(Notification.created_at.desc())
+def _visible_where(principal: Principal) -> list[Any]:
+    clauses: list[Any] = []
     if principal.org_id is not None:
-        stmt = stmt.where(Notification.organization_id == principal.org_id)
+        clauses.append(Notification.organization_id == principal.org_id)
     if principal.user_id is not None:
-        stmt = stmt.where(
+        clauses.append(
             or_(Notification.user_id.is_(None), Notification.user_id == principal.user_id)
         )
-    return stmt
+    return clauses
+
+
+def visible(principal: Principal) -> Select[tuple[Notification]]:
+    return (
+        select(Notification)
+        .where(*_visible_where(principal))
+        .order_by(Notification.created_at.desc())
+    )
+
+
+async def unread_count(session: AsyncSession, principal: Principal) -> int:
+    """The caller's whole unread count -- not just the page being shown."""
+    stmt = unread_only(
+        select(func.count(Notification.id)).where(*_visible_where(principal)), principal
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def mark_all_read(session: AsyncSession, principal: Principal) -> int:
+    """Everything visible to the caller, marked read for the caller only.
+
+    One ``INSERT ... SELECT``: building a VALUES row per notification hit
+    asyncpg's 32,767-parameter limit at ~11k unread, which migration 0096's
+    no-backfill start makes the first "read all" for every user.
+    """
+    if principal.user_id is None:
+        stmt = (
+            update(Notification)
+            .where(*_visible_where(principal), Notification.read_at.is_(None))
+            .values(read_at=datetime.now(UTC))
+        )
+        result = await session.execute(stmt)
+        return int(getattr(result, "rowcount", 0) or 0)
+    source = unread_only(
+        select(
+            Notification.id,
+            literal(principal.user_id),
+            Notification.organization_id,
+        ).where(*_visible_where(principal)),
+        principal,
+    )
+    ins = (
+        insert(NotificationRead)
+        .from_select(["notification_id", "user_id", "organization_id"], source)
+        .on_conflict_do_nothing(constraint="uq_notification_read_user")
+    )
+    result = await session.execute(ins)
+    return int(getattr(result, "rowcount", 0) or 0)
 
 
 async def read_ids(

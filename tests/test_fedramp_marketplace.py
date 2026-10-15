@@ -182,6 +182,7 @@ async def test_a_failed_parse_keeps_the_old_etag_so_the_next_poll_retries(
             )
         ).scalar_one()
         row.etag = "etag-old"
+        row.last_sha256 = "sha-old"
 
     async def fake_fetch(_url: str, _etag: str | None) -> tuple[int, bytes, str]:
         return 200, b'{"meta": {}, "data": {}}', "etag-new"
@@ -196,7 +197,7 @@ async def test_a_failed_parse_keeps_the_old_etag_so_the_next_poll_retries(
             )
         ).scalar_one()
         assert row.etag == "etag-old"
-        assert row.last_sha256 is None
+        assert row.last_sha256 == "sha-old"  # not advanced over unapplied data
 
 
 async def test_a_disabled_source_is_not_fetched(source: CatalogSource) -> None:
@@ -348,3 +349,111 @@ async def test_the_page_links_and_shows_a_finding(source: CatalogSource) -> None
         page = (await c.get(f"/fedramp20x?system_id={sid}")).text
     assert "FedRAMP Authorized · High" in page
     assert "Recorded impact &#39;moderate&#39;; the Marketplace lists &#39;High&#39;." in page
+
+
+# --- review fixes ----------------------------------------------------------------
+
+
+async def test_a_malformed_record_is_skipped_not_fatal_and_never_delisted(
+    source: CatalogSource, tmp_path: Path
+) -> None:
+    await _refresh()  # all four listed
+
+    def break_one(doc: dict) -> None:
+        products = doc["data"]["Products"]
+        products[0]["status"] = "X" * 200  # wider than the column
+        products.append(dict(products[1]))  # a duplicate id
+
+    await _point(f"file://{_write(tmp_path, break_one)}")
+    result = await _refresh()
+    assert result["status"] == "ingested"
+    assert result["skipped"] == 2
+    assert result["delisted"] == 0  # the skipped product did not "leave" FedRAMP
+    async with session_scope() as s:
+        cg = (
+            await s.execute(
+                select(MarketplaceProduct).where(MarketplaceProduct.fedramp_id == CLOUD_GOV)
+            )
+        ).scalar_one()
+        assert cg.delisted_at is None and cg.status == "FedRAMP Authorized"
+
+
+@pytest.mark.parametrize(
+    ("product", "field"),
+    [({"status": "Revoked"}, "fedramp_status"), ({"impact_level": "Very High"}, "impact_level")],
+)
+def test_an_unrecognised_marketplace_value_is_a_finding(product: dict, field: str) -> None:
+    found = marketplace.compare(_dep(), _product(**product))  # type: ignore[arg-type]
+    assert [f.field for f in found] == [field]
+    assert "does not recognise" in found[0].message
+
+
+async def test_an_empty_id_unlinks(source: CatalogSource) -> None:
+    await _refresh()
+    sid, did = await _system_with_dep(fedramp_status="authorized")
+    async with _client() as c:
+        url = f"/api/fedramp/20x/systems/{sid}/dependencies/{did}/marketplace"
+        await c.put(url, json={"marketplace_id": CLOUD_GOV})
+        r = await c.put(url, json={"marketplace_id": ""})
+        assert r.status_code == 200 and r.json()["marketplace_id"] is None
+        await c.post(
+            f"/fedramp20x/{sid}/dependencies/{did}/marketplace",
+            data={"marketplace_id": CLOUD_GOV},
+            follow_redirects=False,
+        )
+        await c.post(
+            f"/fedramp20x/{sid}/dependencies/{did}/marketplace",
+            data={"marketplace_id": ""},
+            follow_redirects=False,
+        )
+    async with session_scope() as s:
+        assert (await s.get(FedRAMPDependency, did)).marketplace_id is None  # type: ignore[union-attr]
+
+
+def test_the_upstream_schema_is_watched_against_the_pinned_digest() -> None:
+    spec = next(x for x in sources.DEFAULT_SOURCES if x["key"] == "fedramp_marketplace_schema")
+    assert spec["kind"] == "generic" and spec["auto_ingest"] is False
+    manifest = json.loads((marketplace._DATA_DIR / "MANIFEST.json").read_text())
+    assert sources._SEED_DIGEST_READERS[spec["key"]]() == {
+        spec["key"]: manifest["files"]["data.schema.json"]["sha256"]
+    }
+
+
+async def test_link_routes_keep_to_the_callers_tenant(source: CatalogSource) -> None:
+    from ccf.api.auth_deps import get_principal  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    await _refresh()
+    sid, did = await _system_with_dep(fedramp_status="authorized")
+    async with session_scope() as s:
+        other = Organization(name=f"Mkt Other {next(_SEQ)}")
+        s.add(other)
+        await s.flush()
+        other_id = other.id
+    app = create_app()
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        user_id=None, email="other@t", org_id=other_id, role="admin"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        api = await c.put(
+            f"/api/fedramp/20x/systems/{sid}/dependencies/{did}/marketplace",
+            json={"marketplace_id": CLOUD_GOV},
+        )
+        assert api.status_code == 404
+    async with session_scope() as s:
+        assert (await s.get(FedRAMPDependency, did)).marketplace_id is None  # type: ignore[union-attr]
+
+
+async def test_forcing_a_global_source_check_needs_a_platform_admin(
+    source: CatalogSource,
+) -> None:
+    from ccf.api.auth_deps import get_principal  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    app = create_app()
+    app.dependency_overrides[get_principal] = lambda: Principal(
+        user_id=None, email="t@t", org_id=1, role="admin"
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+        r = await c.post(f"/api/catalog/sources/{source.id}/check")
+    assert r.status_code == 403

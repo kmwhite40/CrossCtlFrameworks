@@ -15,11 +15,11 @@ import json
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
-from ..models import Event, Notification, Webhook
+from ..models import Event, Notification, NotificationRead, Webhook
 from . import delivery
 
 log = get_logger(__name__)
@@ -87,6 +87,10 @@ async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
             log.warning("webhook.dispatch_failed", url=hook.url, error=str(e)[:200])
 
 
+#: Higher is more severe; an update that raises severity re-surfaces an alert.
+_SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+
 async def notify(
     session: AsyncSession,
     *,
@@ -111,6 +115,15 @@ async def notify(
             await session.execute(select(Notification).where(Notification.dedupe_key == dedupe_key))
         ).scalar_one_or_none()
         if existing is not None:
+            if _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity, 0):
+                # Escalated (a warning became critical): it is news again, so
+                # it comes back for everyone who had read the milder version.
+                await session.execute(
+                    delete(NotificationRead).where(
+                        NotificationRead.notification_id == existing.id
+                    )
+                )
+                existing.read_at = None
             existing.title = title[:512]
             existing.severity = severity
             existing.body = body

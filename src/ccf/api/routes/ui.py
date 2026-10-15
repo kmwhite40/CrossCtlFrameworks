@@ -2114,7 +2114,7 @@ async def governance_page(
             await session.execute(_scoped(select(func.count(Vendor.id)), Vendor.organization_id))
         ).scalar_one(),
         "open_tasks": len(tasks) + len(scan_work_items),
-        "unread_alerts": sum(1 for n in notifs if n.id not in notif_read),
+        "unread_alerts": await inbox.unread_count(session, viewer_principal),
     }
     # The shared rollup, not a second one computed here. This page divided
     # passing checks by *every* result, while `live_scan_for_org` divides by the
@@ -3000,19 +3000,27 @@ async def fedramp20x_link_marketplace(
     marketplace_id: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
-    """Link a dependency to a FedRAMP Marketplace product (a person decides)."""
+    """Link (or, with an empty id, unlink) a dependency -- the API's own path."""
     from ...fedramp20x import marketplace  # noqa: PLC0415
     from ...models import FedRAMPDependency  # noqa: PLC0415
 
-    wanted = marketplace_id.strip()
-    if wanted and await _fedramp20x_system_visible(request, session, system_id):
+    principal = getattr(request.state, "principal", None)
+    if await _fedramp20x_system_visible(request, session, system_id):
         dep = await session.get(FedRAMPDependency, dependency_id)
-        held = await marketplace.products_by_id(session, {wanted})
-        # An unknown ID is refused rather than stored: "not held" would then
-        # be a finding the operator created by typo.
-        if dep is not None and dep.system_id == system_id and wanted in held:
-            dep.marketplace_id = wanted
-            await session.commit()
+        if dep is not None and dep.system_id == system_id:
+            try:
+                await marketplace.link(
+                    session,
+                    dep,
+                    marketplace_id,
+                    actor=getattr(principal, "email", None),
+                    org_id=getattr(principal, "org_id", None),
+                )
+            except LookupError:
+                # Refused, not stored; the page shows the dependency unchanged.
+                pass
+            else:
+                await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
 

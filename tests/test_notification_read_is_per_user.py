@@ -155,3 +155,58 @@ async def test_without_auth_the_system_principal_keeps_the_org_column() -> None:
     async with session_scope() as s:
         n = await s.get(Notification, nid)
         assert n is not None and n.read_at is not None
+
+
+@pytest.mark.usefixtures("auth_on")
+async def test_unread_counts_the_whole_inbox_not_the_page() -> None:
+    org, (_a, alice), _b = await _org_with_two_members()
+    for i in range(30):
+        await _notify(org, f"n{i}")
+    async with _client(alice) as c:
+        body = (await c.get("/api/notifications?limit=10")).json()
+    assert len(body["items"]) == 10 and body["unread"] == 30
+
+
+@pytest.mark.usefixtures("auth_on")
+async def test_read_all_survives_a_backlog_past_the_parameter_limit() -> None:
+    from sqlalchemy import text  # noqa: PLC0415
+
+    org, (_a, alice), _b = await _org_with_two_members()
+    async with session_scope() as s:
+        await s.execute(
+            text(
+                "INSERT INTO ccf.notifications (organization_id, category, title, severity) "
+                "SELECT :org, 'bulk', 'n' || g, 'info' FROM generate_series(1, 11000) g"
+            ),
+            {"org": org},
+        )
+    async with _client(alice) as c:
+        r = await c.post("/api/notifications/read-all")
+    assert r.status_code == 200 and r.json()["marked_read"] == 11000
+
+
+async def test_an_escalated_alert_comes_back_for_everyone() -> None:
+    from ccf.auth import Principal  # noqa: PLC0415
+    from ccf.governance import bus, inbox  # noqa: PLC0415
+
+    org, (a_id, _alice), _b = await _org_with_two_members()
+    key = f"escalate-{next(_SEQ)}"
+    who = Principal(user_id=a_id, email="a@t", org_id=org, role="control_owner")
+    async with session_scope() as s:
+        n = await bus.notify(
+            s, category="t", title="ATO in 30 days", org_id=org, severity="warning", dedupe_key=key
+        )
+        assert n is not None
+        await inbox.mark_read(s, who, [n])
+    async with session_scope() as s:
+        same = await bus.notify(
+            s, category="t", title="ATO in 29 days", org_id=org, severity="warning", dedupe_key=key
+        )
+        assert same is not None
+        assert await inbox.read_ids(s, who, [same]) == {same.id}  # same severity: stays read
+    async with session_scope() as s:
+        worse = await bus.notify(
+            s, category="t", title="ATO expired", org_id=org, severity="critical", dedupe_key=key
+        )
+        assert worse is not None
+        assert await inbox.read_ids(s, who, [worse]) == set()  # escalated: unread again

@@ -285,17 +285,19 @@ _MFA_ENROLMENT_PATHS = (
 #: viewer's mutating request outright, except exactly these (method, path):
 #:
 #: * the viewer's own MFA enrolment (each handler acts on ``principal.user_id``
-#:   only);
+#:   only), and their own notification read-state -- per user since migration
+#:   0096 (``ccf.governance.inbox``), so it changes no one else's inbox;
 #: * POST endpoints that only read -- a query run or CSV export, and two
 #:   validators that check a posted document without storing it;
 #: * logging a trust-portal access request: it records that someone asked,
 #:   cannot set its own status, and only an admin can decide it
 #:   ("logging that someone asked is not an approval", tests/test_trust_rbac.py).
 #:
-#: Deliberately NOT here, after independent review: notification read-state
-#: (``read_at`` is one column per org-wide notification, so "mark read" would
-#: let a viewer silence every user's alerts), and pack-source registration
+#: Deliberately NOT here, after independent review: pack-source registration
 #: (it starts scheduled server-side fetches of a caller-chosen URL).
+#: Notification read-state was excluded until 0096 made it per user: before,
+#: ``read_at`` was one column on an org-wide row and "mark read" silenced
+#: every member's alerts.
 #:
 #: Each entry is one method and a fully anchored path (``\Z``, not ``$``, which
 #: also matches before a trailing newline), so a new route -- or a new method on
@@ -303,6 +305,8 @@ _MFA_ENROLMENT_PATHS = (
 _VIEWER_WRITE_ALLOWLIST: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("POST", re.compile(r"/settings/security/(enroll|activate|disable)\Z")),
     ("POST", re.compile(r"/api/queries/[^/]+/(run|export)\Z")),
+    ("POST", re.compile(r"/api/notifications/\d+/read\Z")),
+    ("POST", re.compile(r"/api/notifications/read-all\Z")),
     ("POST", re.compile(r"/api/oscal/validate\Z")),
     ("POST", re.compile(r"/api/packs/validate\Z")),
     ("POST", re.compile(r"/api/trust/access-requests\Z")),

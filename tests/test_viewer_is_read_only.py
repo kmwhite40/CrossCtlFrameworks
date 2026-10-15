@@ -113,6 +113,8 @@ def _mutating_routes() -> list[tuple[str, str]]:
 #: trusted: deriving the expectation from ``viewer_may_write`` itself would let
 #: ``^/api/risks`` slip in with every test still green (review of 764e87e, M2).
 VIEWER_ALLOWED = {
+    ("POST", "/api/notifications/{notification_id}/read"),
+    ("POST", "/api/notifications/read-all"),
     ("POST", "/api/oscal/validate"),
     ("POST", "/api/packs/validate"),
     ("POST", "/api/queries/{key}/export"),
@@ -211,10 +213,9 @@ async def test_a_viewer_still_reads_and_uses_its_read_only_posts() -> None:
         assert (await c.get("/api/tasks")).status_code == 200
         r = await c.post("/api/packs/validate", json={})
         assert r.status_code == 200 and "valid" in r.json()
-        # Read-state is one column per org-wide notification: a viewer marking
-        # it would silence every user's alerts (review of 764e87e, H1).
+        # Their own read-state: per user since migration 0096.
         r = await c.post("/api/notifications/read-all")
-        assert r.status_code == 403 and _READ_ONLY in r.text
+        assert r.status_code == 200, r.text
         # Registering a pack source starts scheduled server-side fetches.
         r = await c.post("/api/packs/x/sources", json={"url": "https://example.test/p.json"})
         assert r.status_code == 403 and _READ_ONLY in r.text
@@ -254,8 +255,10 @@ async def test_a_ui_form_post_is_refused_in_plain_text() -> None:
         ("POST", "/trust/access-requests", True),
         ("POST", "/trust/access-requests/4/decide", False),
         ("POST", "/api/trust/access-requests/4/decide", False),
-        ("POST", "/api/notifications/12/read", False),
-        ("POST", "/api/notifications/read-all", False),
+        ("POST", "/api/notifications/12/read", True),
+        ("POST", "/api/notifications/read-all", True),
+        ("POST", "/api/notifications/scan", False),
+        ("DELETE", "/api/notifications/12/read", False),
         ("POST", "/api/packs/ai-agent-governance/sources", False),
         ("POST", "/api/tasks", False),
     ],

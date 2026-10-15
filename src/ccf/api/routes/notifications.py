@@ -51,7 +51,7 @@ async def list_notifications(
     rows = list((await session.execute(stmt.limit(min(limit, 500)))).scalars().all())
     read = await inbox.read_ids(session, principal, rows)
     return {
-        "unread": sum(1 for n in rows if n.id not in read),
+        "unread": await inbox.unread_count(session, principal),
         "items": [_out(n, n.id in read) for n in rows],
     }
 
@@ -78,9 +78,7 @@ async def mark_all_read(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, int]:
     """Mark everything in the caller's inbox read, for the caller only."""
-    stmt = inbox.unread_only(inbox.visible(principal), principal)
-    rows = list((await session.execute(stmt)).scalars().all())
-    marked = await inbox.mark_read(session, principal, rows)
+    marked = await inbox.mark_all_read(session, principal)
     await session.commit()
     return {"marked_read": marked}
 
@@ -91,6 +89,11 @@ async def scan(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     """Run the org-level alert digest (ATO expiry, catalog drift, reviews due)."""
-    counts = await digest.run(session, today=datetime.now(UTC).date(), org_id=principal.org_id)
+    today = datetime.now(UTC).date()
+    counts = (
+        await digest.run(session, today=today, org_id=principal.org_id)
+        if principal.org_id is not None
+        else await digest.run_all(session, today=today)
+    )
     await session.commit()
     return {"raised": counts}
