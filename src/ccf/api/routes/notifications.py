@@ -90,6 +90,9 @@ async def scan(
 ) -> dict[str, Any]:
     """Run the org-level alert digest (ATO expiry, catalog drift, reviews due)."""
     today = datetime.now(UTC).date()
+    if principal.org_id is None and principal.role != "admin":
+        # Unscoped, this scans -- and escalates tasks in -- every tenant.
+        raise HTTPException(403, "an unscoped scan of every tenant requires an administrator")
     counts = (
         await digest.run(session, today=today, org_id=principal.org_id)
         if principal.org_id is not None

@@ -153,7 +153,9 @@ which of the 245 FRR IDs a system owes. The dataset can, with care:
   lists the system's Class and (if recorded) Path and the requirement's
   `affects` (or the subset's) includes `Providers`.
 - **Type is not recorded**, and the 20x and Rev5 sets differ (Class C,
-  Program: 155 vs 159). So the answer is three lists, never one: owed under
+  Program: 154 vs 158 -- first written as 155 vs 159 from output that let
+  VDR's type-specific `20x.TFR` / `rev5.TFR` buckets count for both types;
+  a type-specific bucket is now that type only). So the answer is three lists, never one: owed under
   either type, owed only if 20x, owed only if Rev5. An Agency path is Rev5
   only (no 20x subset lists it), which collapses the split.
 - **Class A** additionally owes what `FRC-CLA-MFR` (MUST), `FRC-CLA-RFR`
@@ -163,6 +165,9 @@ which of the 245 FRR IDs a system owes. The dataset can, with care:
   variant is reported as "no force stated", never borrowed from another class.
 - Processes whose `info.status` is `placeholder` or `empty` are excluded.
 
-The SDR seed reports `frr_unaddressed`: MUST / MUST NOT requirements owed
-under either type that have no authored entry. Reported beside the document,
+Each requirement carries FedRAMP's per-type effective block (`is`, `obtain`)
+and `in_force` (required and past its obtain date for every type it is owed
+under) -- most Rev5 requirements obtain 2027-01-01. The SDR seed reports
+`frr_unaddressed`: MUST / MUST NOT requirements owed in every scenario,
+**in force today**, with no authored entry. Reported beside the document,
 like `omitted_ksi_ids`; nothing is written into it.

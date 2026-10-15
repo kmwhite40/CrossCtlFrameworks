@@ -1082,8 +1082,8 @@ class SdrSeedResult:
     out_of_scope_ksi_ids: list[str]
     #: The ruleset revision both checks were made against.
     rules_version: str
-    #: MUST / MUST NOT requirements this system owes under every certification
-    #: scenario still possible for its Class and Path
+    #: MUST / MUST NOT requirements in force today that this system owes under
+    #: every certification scenario still possible for its Class and Path
     #: (``ccf.fedramp20x.frr_scope``) with no authored ``fedRampRequirements``
     #: entry. The requirements half of the to-do list, as ``omitted_ksi_ids``
     #: is the indicators half. Empty when no Class is recorded.
@@ -1099,10 +1099,12 @@ async def _frr_unaddressed(
     """Hard requirements owed in every possible scenario, not yet authored."""
     scoped = frr_scope.scope(rules, system.certification_class, system.certification_path)
     authored = {str(e.get("frrID")) for e in rendered}
+    # Only what is in force today: a Rev5 rule that obtains 2027-01-01 is not
+    # yet owed, and putting it on today's to-do list would say it is.
     return sorted(
         r["id"]
         for r in scoped["owed"]
-        if r["force"] in frr_scope.HARD and r["id"] not in authored
+        if r["force"] in frr_scope.HARD and r["in_force"] and r["id"] not in authored
     )
 
 

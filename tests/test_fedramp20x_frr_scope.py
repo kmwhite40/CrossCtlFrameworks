@@ -134,26 +134,48 @@ async def _system(cls: str | None, path: str | None) -> int:
         return sysm.id
 
 
-async def test_the_sdr_names_hard_requirements_not_yet_authored() -> None:
-    sid = await _system("C", "agency")
-    owed_hard = {
-        r["id"] for r in frr_scope.scope(R, "C", "agency")["owed"] if r["force"] in frr_scope.HARD
-    }
-    assert "SDR-CSO-FRR" in owed_hard
+async def test_the_sdr_names_hard_requirements_in_force_and_not_yet_authored() -> None:
+    sid = await _system("A", "program")
+    owed = frr_scope.scope(R, "A", "program")["owed"]
+    in_force_hard = {r["id"] for r in owed if r["force"] in frr_scope.HARD and r["in_force"]}
+    not_yet = {r["id"] for r in owed if r["force"] in frr_scope.HARD and not r["in_force"]}
+    assert in_force_hard and not_yet  # both kinds exist today, or this proves little
+    authored = sorted(in_force_hard)[0]
     async with session_scope() as s:
         await put_document(
             s,
             system_id=sid,
             kind="sdr",
             document={
-                "fedRampRequirements": [
-                    {"frrID": "SDR-CSO-FRR", "frrImplementation": ["We file the SDR."]}
-                ]
+                "fedRampRequirements": [{"frrID": authored, "frrImplementation": ["We meet it."]}]
             },
         )
     async with session_scope() as s:
         result = await seed_sdr(s, system_id=sid)
-    assert set(result.frr_unaddressed) == owed_hard - {"SDR-CSO-FRR"}
+    assert set(result.frr_unaddressed) == in_force_hard - {authored}
+    assert not (set(result.frr_unaddressed) & not_yet)  # not owed until its obtain date
+
+
+def test_a_type_specific_bucket_is_that_type_only() -> None:
+    """VDR's 20x.TFR and rev5.TFR fall back to a shared subset listing both types."""
+    rev5_only = {r["id"] for r in frr_scope.scope(R, "C", "agency")["owed"]}
+    assert "VDR-TFR-MVX" not in rev5_only  # "...for 20x"
+    assert "VDR-TFR-MVF" in rev5_only  # "...for Rev5"
+    b = {r["id"]: r for r in frr_scope.scope(R, "B", "program")["conditional"]}
+    assert b["VDR-TFR-MVX"]["scenarios"] == ["20x/Program"]
+    assert b["VDR-TFR-MVF"]["scenarios"] == ["Rev5/Program"]
+
+
+def test_effective_dates_decide_what_is_in_force() -> None:
+    from datetime import date  # noqa: PLC0415
+
+    def mvf(today: date) -> dict:
+        owed = frr_scope.scope(R, "C", "agency", today=today)["owed"]
+        return next(r for r in owed if r["id"] == "VDR-TFR-MVF")
+
+    early, late = mvf(date(2026, 10, 15)), mvf(date(2027, 1, 2))
+    assert early["effective"]["Rev5"]["obtain"] == "2026-12-07"
+    assert early["in_force"] is False and late["in_force"] is True
 
 
 async def test_the_requirements_endpoint() -> None:
@@ -162,3 +184,20 @@ async def test_the_requirements_endpoint() -> None:
         body = (await c.get(f"/api/fedramp/20x/systems/{sid}/requirements")).json()
     assert body["certification_class"] == "A"
     assert len(body["owed"]) == len(frr_scope.scope(R, "A", "program")["owed"])
+
+
+async def test_the_page_shows_what_the_system_owes() -> None:
+    from ccf.fedramp20x import catalog  # noqa: PLC0415
+
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)  # the page renders a system only over a catalog
+    a = await _system("A", "program")
+    c = await _system("C", "program")
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as cl:
+        page_a = (await cl.get(f"/fedramp20x?system_id={a}")).text
+        page_c = (await cl.get(f"/fedramp20x?system_id={c}")).text
+    owed_a = len(frr_scope.scope(R, "A", "program")["owed"])
+    assert f"{owed_a} owed in every scenario still possible" in page_a
+    assert "depending on certification type" not in page_a  # Class A: type is certain
+    assert "depending on certification type" in page_c
+    assert "only 20x/Program" in page_c or "only Rev5/Program" in page_c

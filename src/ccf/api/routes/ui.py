@@ -2823,9 +2823,10 @@ async def fedramp20x_page(
     system_id: int | None = None,
 ) -> HTMLResponse:
     from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
-    from ...fedramp20x import marketplace  # noqa: PLC0415
+    from ...fedramp20x import frr_scope, marketplace  # noqa: PLC0415
     from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
     from ...fedramp20x.applicability import system_scope  # noqa: PLC0415
+    from ...fedramp20x.rules import load_rules  # noqa: PLC0415
     from ...models import (  # noqa: PLC0415
         KSI,
         FedRAMP20xProfile,
@@ -2855,10 +2856,21 @@ async def fedramp20x_page(
     ksi_names: dict[int, str] = {k.id: k.identifier for k in ksis}
     applicability: dict[int, str] = {}
     dep_marketplace: dict[int, dict[str, Any]] = {}
+    requirements: dict[str, Any] | None = None
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
         scope = await system_scope(session, system_id)
         applicability = {k.id: scope.status(k.identifier) for k in ksis}
+        system_row = await session.get(System, system_id)
+        if system_row is not None:
+            requirements = frr_scope.scope(
+                load_rules(), system_row.certification_class, system_row.certification_path
+            )
+            counts: dict[str, int] = {}
+            for r in requirements["owed"]:
+                key = r["force"] or "unstated"
+                counts[key] = counts.get(key, 0) + 1
+            requirements["by_force"] = sorted(counts.items(), key=lambda kv: -kv[1])
         for s in (
             await session.execute(select(KSIState).where(KSIState.system_id == system_id))
         ).scalars():
@@ -2920,6 +2932,7 @@ async def fedramp20x_page(
             "profile": profile,
             "dependencies": dependencies,
             "dep_marketplace": dep_marketplace,
+            "requirements": requirements,
             "exceptions": exceptions,
         },
     )

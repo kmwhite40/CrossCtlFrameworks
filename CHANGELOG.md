@@ -22,10 +22,20 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   subset applicability alone undercounts. Force comes from the requirement
   or its class variant and is never borrowed from another class. Processes
   marked `placeholder` are left out.
-- `GET /api/fedramp/20x/systems/{id}/requirements` returns the scope. The SDR
-  seed reports `frr_unaddressed`: MUST / MUST NOT requirements owed in every
-  possible scenario with no authored entry. That is the requirements half of
-  the to-do list, beside `omitted_ksi_ids`.
+- `GET /api/fedramp/20x/systems/{id}/requirements` returns the scope, and the
+  20x page lists it. The SDR seed reports `frr_unaddressed`: MUST / MUST NOT
+  requirements owed in every possible scenario, **in force today**, with no
+  authored entry. That is the requirements half of the to-do list, beside
+  `omitted_ksi_ids`.
+- Fixed after independent review:
+  - A type-specific bucket (VDR's `20x.TFR` / `rev5.TFR`) counted for both
+    types, so "...for 20x" came out as an owed MUST for Rev5-only systems.
+  - FedRAMP's effective dates were ignored. Most Rev5 requirements obtain
+    2027-01-01, so each requirement now carries its dates and `in_force`.
+  - A hidden dedupe-key collision under RLS aborted an org's entire digest
+    every cycle. `bus.notify` now contains it in a savepoint and logs it.
+  - `run_all` skips soft-deleted organizations.
+  - An unscoped non-admin may not scan every tenant.
 
 ### Fixed — the scheduler's alerts reached no one
 - The scheduler ran the alert digest unscoped, so every overdue-task, ATO,

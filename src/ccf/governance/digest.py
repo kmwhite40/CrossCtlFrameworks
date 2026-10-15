@@ -377,7 +377,9 @@ async def run_all(session: AsyncSession, *, today: date) -> dict[str, Any]:
     from ..models import Organization  # noqa: PLC0415
 
     out: dict[str, Any] = {"platform": await run_platform(session, today=today)}
-    org_ids = (await session.execute(select(Organization.id))).scalars().all()
+    org_ids = (
+        await session.execute(select(Organization.id).where(Organization.deleted_at.is_(None)))
+    ).scalars().all()
     for oid in org_ids:
         out[str(oid)] = await run(session, today=today, org_id=oid)
     return out

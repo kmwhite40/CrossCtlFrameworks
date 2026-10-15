@@ -21,6 +21,7 @@ Processes FedRAMP marks ``placeholder`` or ``empty`` are left out.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from .rules import ConsolidatedRules
@@ -39,6 +40,10 @@ class Requirement:
     force: str | None
     #: The (type, path) scenarios in which it is owed.
     scenarios: frozenset[tuple[str, str]] = field(default_factory=frozenset)
+    #: Per certification type: FedRAMP's ``is`` and ``obtain`` date.
+    effective: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Required and past its obtain date for every type it is owed under.
+    in_force: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -47,6 +52,8 @@ class Requirement:
             "process": self.process,
             "force": self.force,
             "scenarios": sorted(f"{t}/{p}" for t, p in self.scenarios),
+            "effective": self.effective,
+            "in_force": self.in_force,
         }
 
 
@@ -57,6 +64,17 @@ def _subsets(info: dict[str, Any], bucket: str) -> dict[str, Any]:
     nested = info.get(bucket) or {}
     out = nested.get("subsets") or {}
     return out
+
+
+#: Data bucket -> the certification type it is specific to.
+_BUCKET_TYPE = {"20x": "20x", "rev5": "Rev5"}
+
+
+def _effective(info: dict[str, Any], cert_type: str) -> dict[str, Any]:
+    """FedRAMP's effective block for one process and type: shared, or per type."""
+    block = info.get("effective") or (info.get(cert_type.lower()) or {}).get("effective") or {}
+    dates = block.get("date") or {}
+    return {"is": block.get("is"), "obtain": dates.get("obtain")}
 
 
 def _force(req: dict[str, Any], cls: str) -> str | None:
@@ -101,7 +119,11 @@ def certification_scenarios(
 
 
 def scope(
-    rules: ConsolidatedRules, certification_class: str | None, certification_path: str | None
+    rules: ConsolidatedRules,
+    certification_class: str | None,
+    certification_path: str | None,
+    *,
+    today: date | None = None,
 ) -> dict[str, Any]:
     """``{"owed": [...], "conditional": [...], "basis": str}`` for one Class/Path."""
     if certification_class is None:
@@ -138,10 +160,14 @@ def scope(
                     affects = req.get("affects") or app.get("affects") or []
                     if "Providers" not in affects:
                         continue
+                    # A type-specific bucket is that type only, even when its
+                    # subset falls back to a shared declaration listing both
+                    # (VDR's 20x.TFR and rev5.TFR do exactly that).
+                    types = set(app.get("types", []))
+                    if bucket in _BUCKET_TYPE:
+                        types &= {_BUCKET_TYPE[bucket]}
                     matched = {
-                        (t, p)
-                        for t, p in possible
-                        if t in app.get("types", []) and p in app.get("paths", [])
+                        (t, p) for t, p in possible if t in types and p in app.get("paths", [])
                     }
                     if not matched:
                         continue
@@ -152,6 +178,7 @@ def scope(
                             "process": process_key,
                             "force": _force(req, cls),
                             "scenarios": set(),
+                            "info": info,
                         },
                     )
                     entry["scenarios"] |= matched
@@ -173,16 +200,35 @@ def scope(
                         "process": rid.split("-")[0],
                         "force": force,
                         "scenarios": set(),
+                        "info": rules.data["FRR"].get(rid.split("-")[0], {}).get("info", {}),
                     },
                 )
                 entry["scenarios"] |= cla_scenarios
 
     all_possible = frozenset(possible)
+    when = (today or date.today()).isoformat()
     owed: list[Requirement] = []
     conditional: list[Requirement] = []
     for rid in sorted(hits):
         h = hits[rid]
-        req = Requirement(rid, h["name"], h["process"], h["force"], frozenset(h["scenarios"]))
+        cert_types = sorted({t for t, _ in h["scenarios"]})
+        effective = {t: _effective(h["info"], t) for t in cert_types}
+        # In force: FedRAMP says "required" and the obtain date has passed, for
+        # every type it is owed under. Most Rev5 rules obtain 2027-01-01; listing
+        # them as owed today, unmarked, would claim an obligation not yet live.
+        in_force = bool(effective) and all(
+            e["is"] == "required" and e["obtain"] is not None and e["obtain"] <= when
+            for e in effective.values()
+        )
+        req = Requirement(
+            rid,
+            h["name"],
+            h["process"],
+            h["force"],
+            frozenset(h["scenarios"]),
+            effective,
+            in_force,
+        )
         (owed if req.scenarios == all_possible else conditional).append(req)
     path_words = (
         f"the {certification_path.capitalize()} path"
@@ -195,7 +241,10 @@ def scope(
         "basis": (
             f"FedRAMP Consolidated Rules {rules.version}, Class {cls} on {path_words}. "
             "Concord does not record certification type, so requirements that "
-            "differ between 20x and Rev5 are listed as conditional."
+            "differ between 20x and Rev5 are listed as conditional. Each carries "
+            "FedRAMP's obtain date; most Rev5 requirements take effect 2027-01-01. "
+            "Requirements that apply before any certification class (no class "
+            "listed, e.g. MKT-IIP) are not shown."
         ),
     }
 
