@@ -36,7 +36,7 @@ The reach and catalog layers read the global catalog directly, because catalog r
   - or a check source (`crosswalk:securescore`).
 - **`assurance_edges.confidence` is dropped.** Under the edge policy an edge is either sourced or not stored, so the number would measure nothing.
 - `impact.py` is its only reader, and it stops returning the field.
-- The migration backfills `source` on existing rows from `relationship_type` before setting NOT NULL. The next rebuild replaces all rows anyway.
+- The migration labels existing rows `unsourced:pre-0098` before setting NOT NULL. A relationship type is not a source, so the migration doesn't pretend it is. The next rebuild replaces those rows.
 - The downgrade re-adds `confidence` with value 1.0.
 
 ### Guessed edges are removed
@@ -80,13 +80,17 @@ Instead, each node is one canonical control per system:
 ### Endpoint
 
 There is no new endpoint. `GET /api/assurance/graph/systems/{id}?hops=` already exists, is scoped by `require_system_in_scope`, and is allowed by the viewer gate because it is a GET. Its response gains:
-- `source` on every edge;
+- `provenance` on every edge (the stored `source` column). `source` and `target` already mean node ids in this response, so they keep that meaning;
 - `owner` on control nodes;
-- `built_at` and `failed_contributors` from the latest build run.
+- `built_at`, `build_status` and `failed_contributors` from the latest build run.
+- A `scope` parameter, `connected` (the default, today's behaviour) or `system`.
+  - Capabilities, connectors and AI agents connect systems to each other. So following edges outward from one system reaches other systems' controls and tests.
+  - With `scope=system`, a node that belongs to another system is not returned. Another system's own node is returned as a boundary and not expanded. The page always uses `system`.
+- The page and the API build this response with the same function (`impact.system_view`). The page's tables and the API therefore can't disagree.
 
 ### Renderer
 
-**Cytoscape.js** is vendored at an exact version into `src/ccf/api/static/vendor/`. Its sha256 is recorded with the other vendored files.
+**Cytoscape.js** is vendored at an exact version into `src/ccf/api/static/vendor/`. Its version, licence, origin URL and sha256 are recorded in a new `static/vendor/VENDOR.json`; until now no vendored file had such a record.
 - It is MIT-licensed, a single file with no dependencies, and it handles a few thousand nodes.
 - It uses the built-in `cose` layout, so no layout plugins are needed.
 - The CSP (`script-src 'self'`) needs no change.
@@ -96,12 +100,12 @@ There is no new endpoint. `GET /api/assurance/graph/systems/{id}?hops=` already 
 
 - **A layer switcher** whose only layer for now is "System posture". Later layers are added when built, never shown as disabled placeholders.
 - **A system picker.**
-- **A colour mode:** status (the default) or owner.
+- **Colour shows status only,** using the app's status tokens. `docs/DESIGN.md` reserves colour for status, so owners are not given colours. Instead an **owner picker** keeps the chosen owner's nodes at full strength and fades the rest.
 - **Node-type filters:** control, capability, KSI, control test, POA&M, risk, evidence, connector, AI agent.
 - **A control search** that centres the graph on the matching control.
 - **Node click** opens a side panel with the node's details and a link to its record page.
 - **Edge hover** shows the relationship and the source.
-- **A "Table" toggle** shows the same nodes and edges as sortable tables, because a canvas is invisible to screen readers. Tests assert against these tables.
+- **A "Table" toggle** shows the same nodes and edges as tables, because a canvas is invisible to screen readers. The server renders the tables (Jinja autoescaped), and tests assert against them. The graph data is embedded with `tojson`, and the script writes labels with `textContent` only, so a capability or POA&M title can't inject markup.
 - **A size limit:** above 3,000 nodes the page asks for a filter before it draws.
 - **Link-in:** the "Subgraph JSON" link on `/assurance` becomes "Open graph".
 
@@ -124,7 +128,7 @@ Each guard is mutation-checked: I delete the guard and confirm a test fails.
 - KSI → control edges appear only for controls the system implements, and only for current KSIs.
 - **Tenant isolation** is checked on an unscoped session, so RLS can't make the test pass vacuously.
 - `impact.py` output has no `confidence`. The migration's upgrade and downgrade are both tested.
-- The page's table view matches the API's node and edge counts. The owner colour mode is tested, as is the over-3,000-nodes message.
+- The page's table view matches the API's node and edge counts. The owner picker's data is tested, as is the over-3,000-nodes message.
 - The vendored file's sha256 matches the manifest, and the package-data test covers it.
 
 ## Out of scope
