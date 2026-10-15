@@ -15,6 +15,13 @@ the project adheres to [Semantic Versioning](https://semver.org/).
    - `0095`: `marketplace_products` (the 20x page and dependency routes);
    - `0096`: `notification_reads` (`/api/notifications`, `/governance`);
    - `0097`: the orphaned-alert cleanup (deletes only).
+   - `0098`: `assurance_edges.source` replaces `confidence`. Existing edges are
+     labelled `unsourced:pre-0098` until the graph is rebuilt.
+   **Rebuild the graph after migrating; this is required, not optional.** Run
+   `ccf assurance graph-rebuild` (or press Rebuild on `/assurance` or `/graph`).
+   Graphs built before this release carry the old edge labels and lack the
+   `system_ids` / `system_id` stamps on AI-agent and risk nodes, so `/graph`
+   would show another system's agents and risks reached through a shared vendor.
 2. `ccf sources-seed`. This registers the watched FedRAMP rules dataset, the
    Marketplace data and its schema. Existing rows are untouched.
 3. `ccf fedramp20x seed-ksi`. This moves the catalog to the 46 FedRAMP 2026
@@ -26,6 +33,40 @@ the project adheres to [Semantic Versioning](https://semver.org/).
    each system's Class and Path owe. A Rev5 (Agency-path) system now shows no
    KSI readiness number (`no_ksis_owed`) rather than one computed from
    dependencies alone.
+
+### Added — a compliance graph drawn from Concord's own records
+- **`/graph`** draws one system: its controls, and the capabilities, KSIs,
+  tests, POA&Ms, evidence and connectors linked to them, coloured by status.
+  A table view shows the same nodes and links for screen readers and audit.
+- **Every link names its source** (`poams`, `capability_controls`,
+  `fedramp-rules@<version>`, `crosswalk:securescore`, ...), shown on hover, in
+  the node panel and in the table. Nothing is inferred: frameworks that meet
+  only through an 800-53 control are shown as a path through it. A capability
+  is linked to the controls it `addresses`.
+- The page states every condition in words, including any part of the build
+  that failed. The node panel links "Open record" (or "Open list" for types
+  with no single record). The control search says whether a control is drawn,
+  in the graph but not drawn, or absent from the graph.
+- Inspired by myctrl.tools/graph; none of its data is used (its crosswalks are
+  97% bridge-inferred and carry no provenance).
+
+### Changed — the assurance graph no longer guesses
+- Connectors were linked to every system in the organization at "confidence
+  0.6". A connector is now linked to the connector tests it produced, and
+  only when it is the organization's one connector of that type.
+- `confidence` is removed from the graph and its API; edges carry
+  `provenance` instead.
+- A control is one node per system, not one per catalog row: assessment
+  objectives and ODP rows fold into the control they decompose, and the node
+  takes the worst status among them.
+- AI-agent nodes carry `system_ids` and risk nodes `system_id`, so
+  `scope=system` (and `/graph`) no longer pulls in another system's agents or
+  risks through a shared vendor.
+- A part of the graph that fails to build is recorded and named on the page;
+  the build is `partial`, not `ok`. Each part now runs in its own savepoint,
+  so one failure no longer takes the rest of the build down with it.
+- `GET /api/assurance/graph/systems/{id}` gains `scope=system`, `built_at`,
+  `build_status` and `failed_contributors`.
 
 ### Fixed — from review of the last three commits
 - The package-data guard test translated globs with `fnmatch`, where `*`
