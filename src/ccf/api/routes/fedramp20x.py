@@ -23,6 +23,7 @@ from ...fedramp20x import (
     DEPENDENCY_STATUSES,
     READINESS_STATUSES,
     catalog,
+    marketplace,
     package,
     readiness,
     records,
@@ -250,6 +251,7 @@ def _dep_out(d: FedRAMPDependency) -> dict[str, Any]:
         "service_type": d.service_type,
         "fedramp_status": d.fedramp_status,
         "marketplace_url": d.marketplace_url,
+        "marketplace_id": d.marketplace_id,
         "authorization_level": d.authorization_level,
         "impact_level": d.impact_level,
         "boundary_role": d.boundary_role,
@@ -278,7 +280,79 @@ async def list_dependencies(
     buckets: dict[str, int] = {s: 0 for s in DEPENDENCY_STATUSES}
     for d in deps:
         buckets[d.fedramp_status] = buckets.get(d.fedramp_status, 0) + 1
-    return {"dependencies": [_dep_out(d) for d in deps], "by_status": buckets}
+    products = await marketplace.products_by_id(
+        session, {d.marketplace_id for d in deps if d.marketplace_id}
+    )
+    out = []
+    for d in deps:
+        row = _dep_out(d)
+        product = products.get(d.marketplace_id or "")
+        # Shown beside the recorded values, never instead of them.
+        row["marketplace"] = marketplace.product_out(product) if product else None
+        row["marketplace_findings"] = [
+            f.as_dict() for f in marketplace.compare(d, product)
+        ]
+        out.append(row)
+    return {
+        "dependencies": out,
+        "by_status": buckets,
+        "marketplace_disagreements": sum(1 for r in out if r["marketplace_findings"]),
+    }
+
+
+class MarketplaceLinkIn(BaseModel):
+    #: A FedRAMP Marketplace ID, or null to unlink.
+    marketplace_id: str | None = Field(None, max_length=32)
+
+
+@router.put("/systems/{system_id}/dependencies/{dependency_id}/marketplace")
+async def link_dependency(
+    system_id: int,
+    dependency_id: int,
+    body: MarketplaceLinkIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Link a dependency to the Marketplace product it is (a person decides)."""
+    await _require_system(session, system_id, principal)
+    dep = await session.get(FedRAMPDependency, dependency_id)
+    if dep is None or dep.system_id != system_id:
+        raise HTTPException(404, "dependency not found")
+    product = None
+    if body.marketplace_id:
+        product = (await marketplace.products_by_id(session, {body.marketplace_id})).get(
+            body.marketplace_id
+        )
+        if product is None:
+            raise HTTPException(
+                422, f"{body.marketplace_id} is not a FedRAMP Marketplace product Concord holds"
+            )
+    dep.marketplace_id = body.marketplace_id
+    await bus.emit(
+        session,
+        verb="linked" if body.marketplace_id else "unlinked",
+        entity_type="fedramp_dependency",
+        entity_id=dep.id,
+        summary=f"Dependency '{dep.name}' -> Marketplace {body.marketplace_id or 'none'}",
+        org_id=principal.org_id,
+        actor=principal.email,
+    )
+    await session.commit()
+    row = _dep_out(dep)
+    row["marketplace"] = marketplace.product_out(product) if product else None
+    row["marketplace_findings"] = [f.as_dict() for f in marketplace.compare(dep, product)]
+    return row
+
+
+@router.get("/marketplace/products")
+async def search_marketplace(
+    q: str = Query(..., min_length=2, max_length=128),
+    limit: int = Query(20, le=100),
+    session: AsyncSession = Depends(get_session),
+    _p: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """Search FedRAMP's Marketplace by ID, provider or offering name."""
+    return [marketplace.product_out(p) for p in await marketplace.search(session, q, limit=limit)]
 
 
 @router.post("/systems/{system_id}/dependencies", status_code=201)

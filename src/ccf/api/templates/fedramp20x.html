@@ -123,16 +123,29 @@
     <div class="card__subtitle">Underlying IaaS/PaaS/SaaS the offering relies on.</div></div>
   <div class="card__body">
     <table class="data">
-      <thead><tr><th>Name</th><th>Provider</th><th>Type</th><th>FedRAMP status</th><th>Risk</th></tr></thead>
+      <thead><tr><th>Name</th><th>Provider</th><th>Type</th><th>FedRAMP status</th><th>Marketplace</th><th>Risk</th></tr></thead>
       <tbody>
       {% for d in dependencies %}
         <tr>
           <td>{{ d.name }}</td><td class="dim">{{ d.provider or '' }}</td><td class="dim">{{ d.service_type or '' }}</td>
           <td><span class="chip {{ 'chip--ok' if d.fedramp_status == 'authorized' else ('chip--warn' if d.fedramp_status in ('in_process','unknown') else 'chip--err') }}" title="Stored value: {{ d.fedramp_status }}">{{ d.fedramp_status | cr26_label }}</span></td>
+          <td data-testid="dep-marketplace">
+            {% set m = dep_marketplace.get(d.id) %}
+            {% if m and m.product %}
+              <a href="{{ m.product.url }}" rel="noopener" target="_blank">{{ m.product.status }}{% if m.product.impact_level %} · {{ m.product.impact_level }}{% endif %}</a>
+            {% elif d.marketplace_id %}<span class="dim">{{ d.marketplace_id }} (not held)</span>
+            {% else %}
+              <form method="post" action="/fedramp20x/{{ system_id }}/dependencies/{{ d.id }}/marketplace" class="row" style="gap:4px">
+                <input aria-label="FedRAMP Marketplace ID" name="marketplace_id" placeholder="FedRAMP ID (e.g. F1607067912)" size="18">
+                <button class="btn btn--ghost" type="submit">Link</button>
+              </form>
+            {% endif %}
+            {% for f in (m.findings if m else []) %}<div><span class="chip chip--warn" title="Recorded: {{ f.recorded }} · Marketplace: {{ f.marketplace }}">{{ f.message }}</span></div>{% endfor %}
+          </td>
           <td class="dim">{{ d.dependency_risk or '' }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="5" class="dim">No dependencies recorded.</td></tr>
+        <tr><td colspan="6" class="dim">No dependencies recorded.</td></tr>
       {% endfor %}
       </tbody>
     </table>

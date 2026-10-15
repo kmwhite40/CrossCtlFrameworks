@@ -233,6 +233,26 @@ DEFAULT_SOURCES += [
 ]
 
 
+# --- FedRAMP Marketplace ------------------------------------------------------
+# Ingested, not merely watched: see the ``marketplace`` branch of
+# ``check_source``. The scheduler's ``poll_sources`` step therefore refreshes it
+# daily with no job of its own; disabling this row is the operator's off switch.
+DEFAULT_SOURCES += [
+    {
+        "key": "fedramp_marketplace_data",
+        "name": "FedRAMP Marketplace (products, status, impact level)",
+        "authority": "FedRAMP",
+        "kind": "marketplace",
+        "url": (
+            "https://raw.githubusercontent.com/FedRAMP/marketplace-fedramp-gov-data/main/data.json"
+        ),
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": True,
+    },
+]
+
+
 def sha256_bytes(body: bytes) -> str:
     """Content digest. Shared with :mod:`ccf.packs.sync`."""
     return hashlib.sha256(body).hexdigest()
@@ -559,6 +579,31 @@ async def check_source(
                 ingestion_run_id=run.id,
                 ingestion_status=run.status,
             )
+            check.status = "ingested"
+            source.last_status = "ingested"
+            source.last_sha256 = sha
+            check.detail = detail
+            return _finish(session, source, check, started)
+
+        elif source.kind == "marketplace" and source.auto_ingest:
+            # FedRAMP's Marketplace: reference data (who is authorized at what
+            # level), applied as it changes. Unlike a catalog, adopting it
+            # changes no compliance meaning -- dependencies only *display* it
+            # beside their recorded values (ccf.fedramp20x.marketplace).
+            from ..fedramp20x import marketplace  # noqa: PLC0415 -- import cycle
+
+            try:
+                rows = marketplace.parse(body)
+                applied = await marketplace.apply(
+                    session, rows, commit_sha=await resolve_commit_sha(source.url)
+                )
+            except Exception:
+                # The etag was advanced above; leave it so the next poll gets a
+                # real 200 and retries, instead of a 304 that would report
+                # "unchanged" over data that was never applied.
+                source.etag = previous_etag
+                raise
+            detail.update(ingested=True, **applied)
             check.status = "ingested"
             source.last_status = "ingested"
             source.last_sha256 = sha

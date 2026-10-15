@@ -2824,6 +2824,7 @@ async def fedramp20x_page(
     system_id: int | None = None,
 ) -> HTMLResponse:
     from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
+    from ...fedramp20x import marketplace  # noqa: PLC0415
     from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
     from ...fedramp20x.applicability import system_scope  # noqa: PLC0415
     from ...models import (  # noqa: PLC0415
@@ -2854,6 +2855,7 @@ async def fedramp20x_page(
     exceptions: list[KSIException] = []
     ksi_names: dict[int, str] = {k.id: k.identifier for k in ksis}
     applicability: dict[int, str] = {}
+    dep_marketplace: dict[int, dict[str, Any]] = {}
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
         scope = await system_scope(session, system_id)
@@ -2877,6 +2879,15 @@ async def fedramp20x_page(
             .scalars()
             .all()
         )
+        products = await marketplace.products_by_id(
+            session, {d.marketplace_id for d in dependencies if d.marketplace_id}
+        )
+        for d in dependencies:
+            product = products.get(d.marketplace_id or "")
+            dep_marketplace[d.id] = {
+                "product": marketplace.product_out(product) if product else None,
+                "findings": [f.as_dict() for f in marketplace.compare(d, product)],
+            }
         exceptions = list(
             (
                 await session.execute(
@@ -2909,6 +2920,7 @@ async def fedramp20x_page(
             "assessor": assessor,
             "profile": profile,
             "dependencies": dependencies,
+            "dep_marketplace": dep_marketplace,
             "exceptions": exceptions,
         },
     )
@@ -2977,6 +2989,31 @@ async def fedramp20x_add_dependency(
             )
         )
         await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+@router.post("/fedramp20x/{system_id}/dependencies/{dependency_id}/marketplace")
+async def fedramp20x_link_marketplace(
+    request: Request,
+    system_id: int,
+    dependency_id: int,
+    *,
+    marketplace_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Link a dependency to a FedRAMP Marketplace product (a person decides)."""
+    from ...fedramp20x import marketplace  # noqa: PLC0415
+    from ...models import FedRAMPDependency  # noqa: PLC0415
+
+    wanted = marketplace_id.strip()
+    if wanted and await _fedramp20x_system_visible(request, session, system_id):
+        dep = await session.get(FedRAMPDependency, dependency_id)
+        held = await marketplace.products_by_id(session, {wanted})
+        # An unknown ID is refused rather than stored: "not held" would then
+        # be a finding the operator created by typo.
+        if dep is not None and dep.system_id == system_id and wanted in held:
+            dep.marketplace_id = wanted
+            await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
 

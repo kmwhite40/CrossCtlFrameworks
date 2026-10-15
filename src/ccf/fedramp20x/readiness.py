@@ -26,6 +26,7 @@ from ..models import (
     KSIState,
 )
 from ..models_waivers import Waiver
+from . import marketplace
 from . import methods as ksi_methods
 from .applicability import counted_ksi_ids, system_scope
 from .catalog import current_ksi_ids, current_ksis
@@ -289,6 +290,9 @@ async def score_system(
     payload.update(
         scope.summary(current, await ksi_methods.tier0_check_status(session, system_id))
     )
+    # Reported beside the score, never in it: dependency_readiness keeps
+    # reading the recorded status, so linking a product cannot move a score.
+    payload["marketplace_disagreements"] = await marketplace.disagreements(session, system_id)
     if persist:
         session.add(
             FedRAMP20xReadinessSnapshot(

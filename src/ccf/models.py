@@ -1928,6 +1928,33 @@ class KSIException(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MarketplaceProduct(Base):
+    """A FedRAMP Marketplace product -- global reference data refreshed from
+    FedRAMP's published ``data.json``. Delisted, never deleted."""
+
+    __tablename__ = "marketplace_products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fedramp_id: Mapped[str] = mapped_column(String(32), unique=True)
+    csp: Mapped[str] = mapped_column(String(512))
+    cso: Mapped[str] = mapped_column(String(512), index=True)
+    status: Mapped[str] = mapped_column(String(64))
+    impact_level: Mapped[str | None] = mapped_column(String(32))
+    auth_type: Mapped[str | None] = mapped_column(String(32))
+    auth_date: Mapped[date | None] = mapped_column(Date)
+    independent_assessor: Mapped[str | None] = mapped_column(String(512))
+    service_model: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    deployment_model: Mapped[str | None] = mapped_column(String(64))
+    leveraged_systems: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    source_commit: Mapped[str | None] = mapped_column(String(64))
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    delisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class FedRAMPDependency(Base):
     """A FedRAMP-authorized (or not) underlying service the CSO depends on."""
 
@@ -1943,6 +1970,10 @@ class FedRAMPDependency(Base):
     # authorized|in_process|not_authorized|unknown
     fedramp_status: Mapped[str] = mapped_column(String(32), default="unknown")
     marketplace_url: Mapped[str | None] = mapped_column(String(1024))
+    #: FedRAMP Marketplace ID (``F1607067912``) this dependency is linked to,
+    #: set by a person. ``ccf.fedramp20x.marketplace`` compares the linked
+    #: record with the values recorded here; it never rewrites them.
+    marketplace_id: Mapped[str | None] = mapped_column(String(32), index=True)
     authorization_level: Mapped[str | None] = mapped_column(String(32))  # jab|agency|li-saas
     impact_level: Mapped[str | None] = mapped_column(String(16))  # low|moderate|high
     boundary_role: Mapped[str | None] = mapped_column(String(255))

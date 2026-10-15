@@ -1116,6 +1116,19 @@ def fr20x_seed_ksi(
     asyncio.run(_run())
 
 
+@fedramp20x_app.command(name="marketplace-refresh")
+def fr20x_marketplace_refresh() -> None:
+    """Refresh FedRAMP Marketplace reference data now (the scheduler does it daily)."""
+    from .fedramp20x.marketplace import refresh  # noqa: PLC0415
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await refresh(session)
+        console.print(f"Marketplace: {result}")
+
+    asyncio.run(_run())
+
+
 @fedramp20x_app.command(name="readiness")
 def fr20x_readiness(system_id: int = typer.Option(..., "--system-id")) -> None:
     """Print FedRAMP 20x readiness for a system (no snapshot persisted)."""

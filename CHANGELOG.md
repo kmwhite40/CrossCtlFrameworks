@@ -6,6 +6,37 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — FedRAMP Marketplace as reference data for 20x dependencies
+- **A dependency recorded "authorized" that FedRAMP lists as merely "FedRAMP
+  Ready" used to score as authorized**, and nothing said otherwise. FedRAMP
+  publishes the Marketplace daily (`FedRAMP/marketplace-fedramp-gov-data`,
+  public domain). Concord now refreshes `ccf.marketplace_products` from its
+  `data.json`, validating it first against FedRAMP's own vendored,
+  sha-pinned `data.schema.json`.
+- A person links a dependency to a product (`marketplace_id`). The API, the
+  20x page and the package then show the Marketplace record **beside** the
+  recorded status and name each disagreement: status, impact level,
+  authorization type, a product FedRAMP has delisted, or a link to a product
+  Concord does not hold.
+  - The recorded values are never rewritten: an agency ATO not yet listed
+    is a legitimate difference.
+  - Readiness reports `marketplace_disagreements` but keeps scoring on the
+    recorded status.
+- One fetcher. The data is a `catalog_sources` row of a new kind,
+  `marketplace`, ingested by the existing poller (`check_source`), so the
+  scheduler's daily `poll_sources` step refreshes it with no new job.
+  Disabling the row is the off switch. A parse failure restores the previous
+  ETag so the next poll retries. A product missing from a refresh is
+  delisted, never deleted, and an empty product list is refused rather than
+  allowed to delist everything.
+- `ccf fedramp20x marketplace-refresh` polls it on demand. Run `ccf
+  sources-seed` once to register the row, then rebuild and run the migrator
+  image for `0095`.
+- Not built, and recorded why: FedRAMP's Rev. 5 baselines with assigned
+  parameter values are no longer published anywhere reachable.
+  `GSA/fedramp-automation` returns 404 and the FedRAMP organisation has no
+  successor.
+
 ### Added — automated methods for FedRAMP 2026 KSIs: evidence, never a verdict
 - **13 KSIs carry 25 curated methods**, each one of Concord's own posture
   checks (`rules_data/ksi_rules.json`). The bar for inclusion: the check's

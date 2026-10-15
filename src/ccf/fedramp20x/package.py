@@ -37,6 +37,7 @@ from ..models import (
     KSIValidationResult,
     System,
 )
+from . import marketplace
 from .applicability import SystemScope, system_scope
 from .catalog import current_ksi_ids, current_ksis
 from .readiness import score_system
@@ -149,6 +150,9 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
     readiness = await score_system(session, system_id=system_id, persist=False)
 
     owed_ids = {k.id for k in ksis}
+    mkt = await marketplace.products_by_id(
+        session, {d.marketplace_id for d in deps if d.marketplace_id}
+    )
     ksi_entries: list[dict[str, Any]] = []
     conmon_counts: dict[str, int] = {}
     for k in ksis:
@@ -253,6 +257,13 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
                 "boundary_role": d.boundary_role,
                 "dependency_risk": d.dependency_risk,
                 "inherited_controls": list(d.inherited_controls or []),
+                "marketplace_id": d.marketplace_id,
+                "marketplace_status": (
+                    mkt[d.marketplace_id].status if d.marketplace_id in mkt else None
+                ),
+                "marketplace_findings": [
+                    f.as_dict() for f in marketplace.compare(d, mkt.get(d.marketplace_id or ""))
+                ],
             }
             for d in deps
         ],

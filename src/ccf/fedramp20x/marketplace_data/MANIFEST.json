@@ -1,0 +1,11 @@
+{
+  "source_url": "https://github.com/FedRAMP/marketplace-fedramp-gov-data",
+  "upstream_commit_sha": "f225d98092fd16852105387006ea71dc9007c42c",
+  "retrieved_at": "2026-10-15",
+  "license": "Public domain (US government work, 17 U.S.C. 105)",
+  "files": {
+    "data.schema.json": {
+      "sha256": "88fccf12e88596ae20d922aadbbb63094659f0f3827cc030fa0e1b1a585e87c0"
+    }
+  }
+}
