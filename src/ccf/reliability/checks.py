@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -603,8 +604,10 @@ async def _check_ai_agent_governance(session: AsyncSession) -> Check:
     return Check("ai_agent_governance", PASS, "AI agent governance healthy.")
 
 
-async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
-    """The assurance graph exists **and is current**.
+async def _check_assurance_graph_freshness(
+    session: AsyncSession, organization_ids: Sequence[int] | None = None
+) -> Check:
+    """The assurance graph exists **and is current**, for every organization.
 
     This check selected ``finished_at`` and then ignored it, returning PASS for
     any graph that had ever been built successfully. A graph built once and
@@ -612,66 +615,95 @@ async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
     ``assurance_graph_freshness`` — a check asserting a property it did not
     verify, on the page an operator consults to decide whether to trust the
     platform's own view of itself.
+
+    Each organization has its own graph, so each is judged on its own latest
+    build. Reading only the single newest run platform-wide meant that in a
+    cycle over N organizations only the last one built was seen: a partial or
+    stale graph anywhere else read PASS. ``organization_ids`` narrows the check
+    to those organizations (used by tests sharing a database); the default is
+    every organization that has been built.
     """
     if not await _regclass(session, "ccf.assurance_build_runs"):
         return Check(
             "assurance_graph_freshness", FAIL, "assurance_build_runs table missing.",
             "Run migrations.",
         )
-    # The latest *finished* build, ``ok`` or ``partial``. Counting only ``ok``
-    # runs made a graph that rebuilt every cycle with a part missing look
-    # either stale ("Nd old", aged from the last clean run) or healthy (PASS on
-    # an older clean run). A partial build is a build: it is aged, and its
-    # missing parts are named.
-    row = (
-        await session.execute(
-            text(
-                "SELECT node_count, edge_count, finished_at, status, detail "
-                "FROM ccf.assurance_build_runs "
-                "WHERE status IN ('ok', 'partial') ORDER BY id DESC LIMIT 1"
-            )
-        )
-    ).first()
-    if row is None:
+    # Each organization's latest *finished* build, ``ok`` or ``partial``.
+    # Counting only ``ok`` runs made a graph that rebuilt every cycle with a
+    # part missing look either stale ("Nd old", aged from the last clean run) or
+    # healthy (PASS on an older clean run). A partial build is a build: it is
+    # aged, and its missing parts are named.
+    # ``ANY(NULL)`` is not "all", so the two scopes are two literal statements.
+    latest = (
+        "SELECT DISTINCT ON (organization_id) organization_id, node_count, "
+        "edge_count, finished_at, status, detail FROM ccf.assurance_build_runs "
+        "WHERE status IN ('ok', 'partial') "
+    )
+    order = "ORDER BY organization_id, id DESC"
+    if organization_ids is None:
+        stmt = text(latest + order)
+        params: dict[str, Any] = {}
+    else:
+        stmt = text(latest + "AND organization_id = ANY(:orgs) " + order)
+        params = {"orgs": list(organization_ids)}
+    rows = (await session.execute(stmt, params)).all()
+    if not rows:
         return Check(
             "assurance_graph_freshness", WARN, "Assurance graph has not been built yet.",
             "Run `ccf assurance graph-rebuild` or POST /api/assurance/graph/rebuild.",
         )
-    nodes, edges, finished_at, status = row[0], row[1], row[2], row[3]
+
+    def who(org: int | None) -> str:
+        return "platform" if org is None else f"org {org}"
+
+    nodes = sum(r[1] or 0 for r in rows)
+    edges = sum(r[2] or 0 for r in rows)
+    scope_text = f"{nodes} nodes, {edges} edges" + (
+        f", {len(rows)} organizations" if len(rows) > 1 else ""
+    )
+    partial = [
+        (r[0], sorted(((r[5] or {}).get("failed") or {}).keys()))
+        for r in rows if r[4] == "partial"
+    ]
     missing = ""
-    if status == "partial":
-        failed = sorted(((row[4] or {}).get("failed") or {}).keys())
-        missing = (
-            f"; incomplete: {', '.join(failed) if failed else 'a part'} failed to build"
+    if partial:
+        named = "; ".join(
+            f"{who(org)} ({', '.join(failed) if failed else 'a part'})"
+            for org, failed in partial
         )
-    if finished_at is None:
+        missing = f"; incomplete: {named} failed to build"
+    unmeasured = [r[0] for r in rows if r[3] is None]
+    if unmeasured:
         # A finished build with no finish time is a row that cannot be aged.
         # Reported rather than treated as current: an unmeasurable age is not a
         # fresh one.
         return Check(
             "assurance_graph_freshness", WARN,
-            f"Assurance graph build recorded no finish time ({nodes} nodes, {edges} edges)"
-            f"{missing}.",
+            f"Assurance graph build recorded no finish time for "
+            f"{', '.join(who(o) for o in unmeasured)} ({scope_text}){missing}.",
             "Rebuild the graph so its age can be established.",
         )
-    age = datetime.now(UTC) - _as_utc(finished_at)
+    now = datetime.now(UTC)
+    ages = {r[0]: now - _as_utc(r[3]) for r in rows}
+    age = max(ages.values())  # the stalest organization decides
     limit = _assurance_staleness_limit()
     if age > limit:
+        stale = ", ".join(who(o) for o, a in ages.items() if a > limit)
         return Check(
             "assurance_graph_freshness", WARN,
-            f"Assurance graph is {age.days}d old ({nodes} nodes, {edges} edges); "
+            f"Assurance graph is {age.days}d old for {stale} ({scope_text}); "
             f"expected a rebuild within {limit.days}d{missing}.",
             "Enable CCF_SCHEDULER_ENABLED, or run `ccf assurance graph-rebuild`.",
         )
     if missing:
         return Check(
             "assurance_graph_freshness", WARN,
-            f"Assurance graph built {age.days}d ago ({nodes} nodes, {edges} edges){missing}.",
+            f"Assurance graph built {age.days}d ago ({scope_text}){missing}.",
             "Open /assurance or /graph to read each failure, fix its source, then rebuild.",
         )
     return Check(
         "assurance_graph_freshness", PASS,
-        f"Assurance graph built {age.days}d ago ({nodes} nodes, {edges} edges).",
+        f"Assurance graph built {age.days}d ago ({scope_text}).",
     )
 
 

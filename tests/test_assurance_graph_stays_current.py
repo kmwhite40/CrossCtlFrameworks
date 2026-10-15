@@ -149,7 +149,7 @@ async def test_a_stale_graph_is_reported_stale() -> None:
     try:
         async with session_scope() as s:
             await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
-            fresh = await _check_assurance_graph_freshness(s)
+            fresh = await _check_assurance_graph_freshness(s, organization_ids=[org_id])
         assert fresh.status == PASS, fresh.message
 
         limit = _assurance_staleness_limit()
@@ -163,7 +163,7 @@ async def test_a_stale_graph_is_reported_stale() -> None:
                 {"t": aged},
             )
         async with session_scope() as s:
-            stale = await _check_assurance_graph_freshness(s)
+            stale = await _check_assurance_graph_freshness(s, organization_ids=[org_id])
         assert stale.status == WARN, stale.message
         assert "old" in stale.message
         assert stale.remediation, "a warning with no remedy is not actionable"
@@ -183,7 +183,7 @@ async def test_a_build_with_no_finish_time_is_not_treated_as_fresh() -> None:
                 text("UPDATE ccf.assurance_build_runs SET finished_at = NULL WHERE status = 'ok'")
             )
         async with session_scope() as s:
-            check = await _check_assurance_graph_freshness(s)
+            check = await _check_assurance_graph_freshness(s, organization_ids=[org_id])
         assert check.status == WARN
         assert "no finish time" in check.message
     finally:
@@ -215,7 +215,7 @@ async def test_a_partial_build_warns_and_names_what_failed(
     try:
         async with session_scope() as s:
             await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
-            clean = await _check_assurance_graph_freshness(s)
+            clean = await _check_assurance_graph_freshness(s, organization_ids=[org_id])
         assert clean.status == PASS, clean.message  # the positive case
 
         # The clean run is now old; the partial one below is fresh.
@@ -235,7 +235,7 @@ async def test_a_partial_build_warns_and_names_what_failed(
         monkeypatch.setattr(builder, "_risks", broken)
         async with session_scope() as s:
             result = await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
-            check = await _check_assurance_graph_freshness(s)
+            check = await _check_assurance_graph_freshness(s, organization_ids=[org_id])
         assert result["assurance_graph"]["partial"] == [f"risks@{org_id}"]
         assert check.status == WARN, check.message
         assert "incomplete" in check.message and "risks" in check.message
@@ -256,3 +256,91 @@ async def test_a_clean_cycle_reports_no_partial_graph() -> None:
         assert result["assurance_graph"]["partial"] == []
     finally:
         await _cleanup(org_id)
+
+
+# ---------------------------------------------------------------------------
+# Each organization is judged on its own latest build
+# ---------------------------------------------------------------------------
+
+
+async def _build_org(org_id: int, *, broken: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Build one org's graph, with the risks slice failing when ``broken``."""
+    from ccf.assurance import builder  # noqa: PLC0415
+
+    async def boom(session, org, g):  # type: ignore[no-untyped-def]
+        raise RuntimeError("risk register offline")
+
+    with monkeypatch.context() as m:
+        if broken:
+            m.setattr(builder, "_risks", boom)
+        async with session_scope() as s:
+            await _run_per_tenant_cycle(s, [org_id], today=datetime.now(UTC).date())
+
+
+@pytest.mark.asyncio
+async def test_a_partial_build_in_an_earlier_org_is_not_hidden_by_a_later_clean_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check read the single newest run platform-wide, so in a cycle over N
+    orgs only the last one built was judged."""
+    org_a, _ = await _org_with_a_system()
+    org_b, _ = await _org_with_a_system()
+    try:
+        await _build_org(org_a, broken=True, monkeypatch=monkeypatch)
+        await _build_org(org_b, broken=False, monkeypatch=monkeypatch)
+        async with session_scope() as s:
+            # Org B alone is clean and fresh (the positive counterpart) ...
+            only_b = await _check_assurance_graph_freshness(s, organization_ids=[org_b])
+            both = await _check_assurance_graph_freshness(s, organization_ids=[org_a, org_b])
+        assert only_b.status == PASS, only_b.message
+        # ... but org A, built first and partial, is not hidden behind it.
+        assert both.status == WARN, both.message
+        assert f"org {org_a} (risks)" in both.message
+        assert f"org {org_b}" not in both.message
+        assert both.remediation
+    finally:
+        await _cleanup(org_a)
+        await _cleanup(org_b)
+
+
+@pytest.mark.asyncio
+async def test_every_org_clean_and_fresh_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    org_a, _ = await _org_with_a_system()
+    org_b, _ = await _org_with_a_system()
+    try:
+        await _build_org(org_a, broken=False, monkeypatch=monkeypatch)
+        await _build_org(org_b, broken=False, monkeypatch=monkeypatch)
+        async with session_scope() as s:
+            check = await _check_assurance_graph_freshness(s, organization_ids=[org_a, org_b])
+        assert check.status == PASS, check.message
+    finally:
+        await _cleanup(org_a)
+        await _cleanup(org_b)
+
+
+@pytest.mark.asyncio
+async def test_the_stalest_org_decides_the_age(monkeypatch: pytest.MonkeyPatch) -> None:
+    org_a, _ = await _org_with_a_system()
+    org_b, _ = await _org_with_a_system()
+    try:
+        await _build_org(org_a, broken=False, monkeypatch=monkeypatch)
+        await _build_org(org_b, broken=False, monkeypatch=monkeypatch)
+        aged = datetime.now(UTC) - _assurance_staleness_limit() - timedelta(days=1, hours=1)
+        async with session_scope() as s:
+            await s.execute(
+                text(
+                    "UPDATE ccf.assurance_build_runs SET finished_at = :t "
+                    "WHERE organization_id = :o"
+                ),
+                {"t": aged, "o": org_a},
+            )
+        async with session_scope() as s:
+            fresh_b = await _check_assurance_graph_freshness(s, organization_ids=[org_b])
+            both = await _check_assurance_graph_freshness(s, organization_ids=[org_a, org_b])
+        assert fresh_b.status == PASS, fresh_b.message
+        assert both.status == WARN, both.message
+        assert "old" in both.message and f"org {org_a}" in both.message
+        assert f"org {org_b}" not in both.message
+    finally:
+        await _cleanup(org_a)
+        await _cleanup(org_b)
