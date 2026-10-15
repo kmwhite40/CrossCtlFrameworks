@@ -16,6 +16,7 @@ from ..auth import SYSTEM_PRINCIPAL, Principal, hash_token, read_session
 from ..config import get_settings
 from ..db import get_session_factory, set_session_tenant
 from ..identity import mfa_service
+from ..logging import get_logger
 from ..models import System, User
 
 SESSION_COOKIE = "concord_session"
@@ -29,6 +30,8 @@ MFA_PENDING_COOKIE = "concord_mfa_pending"
 
 # Paths reachable without authentication even when auth is enabled. Matched on
 # segment boundaries by ``is_public_path`` — never as a bare string prefix.
+log = get_logger(__name__)
+
 _PUBLIC_PREFIXES = (
     "/api/auth",
     "/auth/login",
@@ -274,44 +277,45 @@ _MFA_ENROLMENT_PATHS = (
 
 
 #: Mutating requests a **viewer** may still make. docs/HANDBOOK.md promises a
-#: viewer can "Read everything in your organization. Change nothing." and
-#: docs/THREAT_MODEL.md rates the role "Reads only" -- but 165 of 246 write
-#: routes had no role check, so a viewer could create risks, tasks, evidence,
-#: POA&Ms and more. Rather than gate each route (and keep auditing every new
-#: one), the auth gate refuses a viewer's mutating request outright, except:
+#: viewer can "Read everything in your organization" and change nothing of it,
+#: and docs/THREAT_MODEL.md rates the role "Reads only" -- but most write routes
+#: (165 by a scan of route signatures in 764e87e) carried no role check, so a
+#: viewer could create risks, tasks, evidence, POA&Ms and more. Rather than gate
+#: each route (and keep auditing every new one), the auth gate refuses a
+#: viewer's mutating request outright, except exactly these (method, path):
 #:
-#: * how a viewer manages their own sign-in (MFA enrolment, sign-out);
-#: * their own notification read-state, which is per-user, not org data;
+#: * the viewer's own MFA enrolment (each handler acts on ``principal.user_id``
+#:   only);
 #: * POST endpoints that only read -- a query run or CSV export, and two
 #:   validators that check a posted document without storing it;
-#: * two writes earlier work decided any member may make, each because it
-#:   grants nothing on its own: registering a pack source for review (adoption
-#:   still needs an admin -- "detection is automatic; adoption is not",
-#:   tests/test_pack_sources_api_rbac.py) and logging a trust-portal access
-#:   request ("logging that someone asked is not an approval",
-#:   tests/test_trust_rbac.py).
+#: * logging a trust-portal access request: it records that someone asked,
+#:   cannot set its own status, and only an admin can decide it
+#:   ("logging that someone asked is not an approval", tests/test_trust_rbac.py).
 #:
-#: Matched on the exact path shape, never a prefix, so a new write route under
-#: one of these trees is refused until someone adds it here on purpose.
-_VIEWER_WRITE_ALLOWLIST = (
-    re.compile(r"^/api/notifications/\d+/read$"),
-    re.compile(r"^/api/notifications/read-all$"),
-    re.compile(r"^/api/queries/[^/]+/(run|export)$"),
-    re.compile(r"^/api/oscal/validate$"),
-    re.compile(r"^/api/packs/validate$"),
-    re.compile(r"^/api/packs/[^/]+/sources$"),
-    re.compile(r"^/api/trust/access-requests$"),
-    re.compile(r"^/trust/access-requests$"),
+#: Deliberately NOT here, after independent review: notification read-state
+#: (``read_at`` is one column per org-wide notification, so "mark read" would
+#: let a viewer silence every user's alerts), and pack-source registration
+#: (it starts scheduled server-side fetches of a caller-chosen URL).
+#:
+#: Each entry is one method and a fully anchored path (``\Z``, not ``$``, which
+#: also matches before a trailing newline), so a new route -- or a new method on
+#: an allowlisted path -- is refused until someone adds it here on purpose.
+_VIEWER_WRITE_ALLOWLIST: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("POST", re.compile(r"/settings/security/(enroll|activate|disable)\Z")),
+    ("POST", re.compile(r"/api/queries/[^/]+/(run|export)\Z")),
+    ("POST", re.compile(r"/api/oscal/validate\Z")),
+    ("POST", re.compile(r"/api/packs/validate\Z")),
+    ("POST", re.compile(r"/api/trust/access-requests\Z")),
+    ("POST", re.compile(r"/trust/access-requests\Z")),
 )
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 VIEWER_ROLE = "viewer"
 
 
-def viewer_may_write(path: str) -> bool:
-    """True if a viewer's mutating request to ``path`` is allowed."""
-    if is_mfa_enrolment_path(path):
-        return True
-    return any(p.match(path) for p in _VIEWER_WRITE_ALLOWLIST)
+def viewer_may_write(path: str, method: str = "POST") -> bool:
+    """True if a viewer may make this mutating ``method`` request to ``path``."""
+    m = method.upper()
+    return any(m == allowed and pattern.match(path) for allowed, pattern in _VIEWER_WRITE_ALLOWLIST)
 
 
 def is_mfa_enrolment_path(path: str) -> bool:
@@ -320,13 +324,24 @@ def is_mfa_enrolment_path(path: str) -> bool:
 
 def _viewer_refusal(request: Request, principal: Principal, path: str) -> Response | None:
     """A 403 for a viewer's mutating request off the allowlist, else ``None``."""
+    method = request.method.upper()
     if (
         principal.role != VIEWER_ROLE
         or principal.is_global
-        or request.method.upper() not in _MUTATING_METHODS
-        or viewer_may_write(path)
+        or method not in _MUTATING_METHODS
+        or viewer_may_write(path, method)
     ):
         return None
+    # Logged: a refused write otherwise leaves no trace (the audit middleware
+    # records only successful mutations), and a viewer probing writes is
+    # exactly what someone reviewing access would want to see.
+    log.info(
+        "auth.viewer_write_refused",
+        method=method,
+        path=path,
+        user_id=principal.user_id,
+        org_id=principal.org_id,
+    )
     detail = "the viewer role is read-only; ask an administrator for a role that can change this"
     if path.startswith("/api"):
         return JSONResponse({"detail": detail}, status_code=403)

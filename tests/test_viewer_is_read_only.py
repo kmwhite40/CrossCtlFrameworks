@@ -109,9 +109,61 @@ def _mutating_routes() -> list[tuple[str, str]]:
     )
 
 
+#: Literal, so a widened allowlist or public prefix fails here instead of being
+#: trusted: deriving the expectation from ``viewer_may_write`` itself would let
+#: ``^/api/risks`` slip in with every test still green (review of 764e87e, M2).
+VIEWER_ALLOWED = {
+    ("POST", "/api/oscal/validate"),
+    ("POST", "/api/packs/validate"),
+    ("POST", "/api/queries/{key}/export"),
+    ("POST", "/api/queries/{key}/run"),
+    ("POST", "/api/trust/access-requests"),
+    ("POST", "/settings/security/activate"),
+    ("POST", "/settings/security/disable"),
+    ("POST", "/settings/security/enroll"),
+    ("POST", "/trust/access-requests"),
+}
+PUBLIC_MUTATING = {
+    ("DELETE", "/api/auth/mfa"),
+    ("DELETE", "/api/scim/v2/Users/{user_id}"),
+    ("PATCH", "/api/scim/v2/Users/{user_id}"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/logout"),
+    ("POST", "/api/auth/mfa/activate"),
+    ("POST", "/api/auth/mfa/enroll"),
+    ("POST", "/api/auth/mfa/verify"),
+    ("POST", "/api/portal/comments"),
+    ("POST", "/api/scim/v2/Users"),
+    ("POST", "/auth/logout"),
+    ("POST", "/login"),
+    ("POST", "/login/mfa"),
+    ("PUT", "/api/scim/v2/Users/{user_id}"),
+}
+
+
+def _raw_mutating_routes() -> set[tuple[str, str]]:
+    return {
+        (method, path)
+        for method, path in _walk(list(create_app().routes))
+        if method in {"POST", "PUT", "PATCH", "DELETE"}
+    }
+
+
+def _concrete(path: str) -> str:
+    return re.sub(r"\{[^}]+\}", "1", path)
+
+
 def test_the_app_has_the_write_surface_this_test_assumes() -> None:
     routes = _mutating_routes()
     assert len(routes) > 200  # if this collapses, the walk below proves nothing
+
+
+def test_the_viewer_exceptions_are_exactly_the_reviewed_set() -> None:
+    raw = _raw_mutating_routes()
+    public = {r for r in raw if is_public_path(_concrete(r[1]))}
+    allowed = {r for r in raw if r not in public and viewer_may_write(_concrete(r[1]), r[0])}
+    assert public == PUBLIC_MUTATING
+    assert allowed == VIEWER_ALLOWED
 
 
 async def test_every_write_route_refuses_a_viewer_unless_allowlisted() -> None:
@@ -125,7 +177,7 @@ async def test_every_write_route_refuses_a_viewer_unless_allowlisted() -> None:
                 continue  # never reaches the gate: login, SCIM, portal, ...
             r = await c.request(method, path, json={})
             refused_by_gate = r.status_code == 403 and _READ_ONLY in r.text
-            if viewer_may_write(path):
+            if viewer_may_write(path, method):
                 reached.append(f"{method} {path} -> {r.status_code}")
                 if refused_by_gate:
                     wrongly_refused.append(f"{method} {path}")
@@ -134,7 +186,7 @@ async def test_every_write_route_refuses_a_viewer_unless_allowlisted() -> None:
     assert leaked == [], leaked
     assert wrongly_refused == [], wrongly_refused
     # The allowlist is not dead code: every entry is a route the app serves.
-    assert len(reached) >= 5, reached
+    assert len(reached) == len(VIEWER_ALLOWED), reached
 
 
 async def test_a_refused_write_writes_nothing_and_a_control_owner_still_can() -> None:
@@ -157,9 +209,26 @@ async def test_a_viewer_still_reads_and_uses_its_read_only_posts() -> None:
     token, _ = await _token("viewer")
     async with _client(token) as c:
         assert (await c.get("/api/tasks")).status_code == 200
-        assert (await c.post("/api/notifications/read-all")).status_code == 200
         r = await c.post("/api/packs/validate", json={})
         assert r.status_code == 200 and "valid" in r.json()
+        # Read-state is one column per org-wide notification: a viewer marking
+        # it would silence every user's alerts (review of 764e87e, H1).
+        r = await c.post("/api/notifications/read-all")
+        assert r.status_code == 403 and _READ_ONLY in r.text
+        # Registering a pack source starts scheduled server-side fetches.
+        r = await c.post("/api/packs/x/sources", json={"url": "https://example.test/p.json"})
+        assert r.status_code == 403 and _READ_ONLY in r.text
+
+
+async def test_a_refusal_is_logged() -> None:
+    from structlog.testing import capture_logs  # noqa: PLC0415
+
+    token, _ = await _token("viewer")
+    with capture_logs() as logs:
+        async with _client(token) as c:
+            await c.post("/api/tasks", json={"title": "x"})
+    refused = [e for e in logs if e.get("event") == "auth.viewer_write_refused"]
+    assert refused and refused[0]["path"] == "/api/tasks" and refused[0]["method"] == "POST"
 
 
 async def test_a_ui_form_post_is_refused_in_plain_text() -> None:
@@ -172,22 +241,24 @@ async def test_a_ui_form_post_is_refused_in_plain_text() -> None:
 
 
 @pytest.mark.parametrize(
-    ("path", "allowed"),
+    ("method", "path", "allowed"),
     [
-        ("/api/notifications/12/read", True),
-        ("/api/notifications/12/read/extra", False),
-        ("/api/notifications/scan", False),
-        ("/api/queries/open_poams/run", True),
-        ("/api/queries/open_poams/delete", False),
-        ("/api/oscal/validate", True),
-        ("/api/oscal/validate-and-store", False),
-        ("/settings/security/enroll", True),
-        ("/api/tasks", False),
-        ("/api/packs/ai-agent-governance/sources", True),
-        ("/api/packs/ai-agent-governance/install", False),
-        ("/trust/access-requests", True),
-        ("/api/trust/access-requests/4/decide", False),
+        ("POST", "/api/queries/open_poams/run", True),
+        ("DELETE", "/api/queries/open_poams/run", False),  # method matters
+        ("POST", "/api/queries/open_poams/delete", False),
+        ("POST", "/api/oscal/validate", True),
+        ("POST", "/api/oscal/validate\n", False),  # \\Z, not $
+        ("POST", "/api/oscal/validate-and-store", False),
+        ("POST", "/settings/security/enroll", True),
+        ("POST", "/settings/security/anything-new", False),  # exact, not a prefix
+        ("POST", "/trust/access-requests", True),
+        ("POST", "/trust/access-requests/4/decide", False),
+        ("POST", "/api/trust/access-requests/4/decide", False),
+        ("POST", "/api/notifications/12/read", False),
+        ("POST", "/api/notifications/read-all", False),
+        ("POST", "/api/packs/ai-agent-governance/sources", False),
+        ("POST", "/api/tasks", False),
     ],
 )
-def test_the_allowlist_matches_exact_shapes(path: str, allowed: bool) -> None:
-    assert viewer_may_write(path) is allowed
+def test_the_allowlist_matches_exact_shapes(method: str, path: str, allowed: bool) -> None:
+    assert viewer_may_write(path, method) is allowed

@@ -20,7 +20,7 @@
 | Operator (admin) | Full | All reads + all writes. |
 | Assessor | High | Reads + writing findings / closing POA&Ms. |
 | Control owner | Medium | Reads + writing implementations + evidence for owned controls. |
-| Viewer | Low | Reads only. |
+| Viewer | Low | Reads only. Enforced centrally: the auth gate refuses a viewer's mutating request except own-MFA enrolment, read-only POSTs (query run/export, validators) and logging a trust access request (`ccf.api.auth_deps._VIEWER_WRITE_ALLOWLIST`). |
 | Unauthenticated external | **None** | Must not see any operational data. |
 
 **Current state:** local authentication + RBAC are implemented and gate the

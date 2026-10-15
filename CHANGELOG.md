@@ -80,29 +80,33 @@ the project adheres to [Semantic Versioning](https://semver.org/).
   Class A. An Agency path with no class recorded owes no KSI.
 - Migration `0094` adds `ksis.methods`; re-run `ccf fedramp20x seed-ksi`.
 
-### Fixed — a viewer could write through 165 routes
-- `docs/HANDBOOK.md` promises a viewer can "Read everything in your
-  organization. Change nothing." and the threat model rates the role "Reads
-  only". But 165 of 246 write routes had no role check. The auth gate now
-  refuses every mutating request from a viewer (403; plain text for pages),
-  except:
-  - MFA enrolment;
-  - their own notification read-state;
-  - four POST endpoints that only read (query run and export, OSCAL
-    validate, pack validate);
-  - two requests that earlier work deliberately left open to any member,
-    because neither grants anything until an admin acts: registering a pack
-    source for review, and logging a trust-portal access request.
-
-  `docs/HANDBOOK.md` now names these exceptions instead of claiming "Change
-  nothing" outright. Tests that had used a viewer as a stand-in for "any
-  signed-in user", to test tenant isolation or the live-capture proof, now
-  use `control_owner` or an admin. Switching their expectation to 403 would
-  have made those tests prove nothing.
-
-  Paths are matched on exact shape, so a new route is refused until someone
-  allows it on purpose. A test sends every registered mutating route as a
-  viewer through the real gate.
+### Fixed — a viewer could write through most write routes
+- `docs/HANDBOOK.md` promises a viewer can read everything in their
+  organization and change nothing of it, and the threat model rates the role
+  "Reads only". But most write routes (165 by a scan of route signatures)
+  had no role check. The auth gate now refuses every mutating request from a
+  viewer: a 403, plain text for pages, and logged as
+  `auth.viewer_write_refused`. Exactly nine (method, path) pairs are
+  excepted:
+  - own-MFA enrolment;
+  - read-only POSTs: query run and export, OSCAL validate, pack validate;
+  - logging a trust-portal access request, which an admin then decides.
+- **Independent review removed two exceptions I had first allowed:**
+  - Notification read-state. `read_at` is one column per org-wide
+    notification, so "mark read" would have let a viewer silence every
+    user's alerts.
+  - Pack-source registration. It starts scheduled server-side fetches of a
+    caller-chosen URL.
+- Entries are method-specific and fully anchored (`\Z`). The exhaustive test
+  compares the allowlisted and public pairs against literal golden sets
+  rather than the function under test. It also sends every registered
+  mutating route as a viewer through the real gate.
+- Tests that had used a viewer as a stand-in for "any signed-in user" now
+  use `control_owner` or an admin, so their tenant-isolation and
+  live-capture subjects still mean something.
+- **Still open:** notification read-state is org-wide for every role. Any
+  member who may write can mark every user's alerts read, and re-notifying
+  never clears `read_at`.
 
 ### Changed — 20x readiness, packages and SDRs are scoped to what the Certification Class owes
 - **A Class A system was scored against 46 KSIs; FedRAMP requires seven of
