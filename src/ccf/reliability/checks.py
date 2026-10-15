@@ -634,25 +634,25 @@ async def _check_assurance_graph_freshness(
     # healthy (PASS on an older clean run). A partial build is a build: it is
     # aged, and its missing parts are named.
     # ``ANY(NULL)`` is not "all", so the two scopes are two literal statements.
-    latest = (
-        "SELECT DISTINCT ON (organization_id) organization_id, node_count, "
-        "edge_count, finished_at, status, detail FROM ccf.assurance_build_runs "
-        "WHERE status IN ('ok', 'partial') "
-    )
-    order = "ORDER BY organization_id, id DESC"
     if organization_ids is None:
         # Only live organizations: the scheduler rebuilds those alone, so a
         # deleted organization's last run would age into a warning no rebuild
         # can clear.
         stmt = text(
-            latest
-            + "AND organization_id IN (SELECT id FROM ccf.organizations "
-            "WHERE deleted_at IS NULL) "
-            + order
+            "SELECT DISTINCT ON (organization_id) organization_id, node_count, "
+            "edge_count, finished_at, status, detail FROM ccf.assurance_build_runs "
+            "WHERE status IN ('ok', 'partial') AND organization_id IN "
+            "(SELECT id FROM ccf.organizations WHERE deleted_at IS NULL) "
+            "ORDER BY organization_id, id DESC"
         )
         params: dict[str, Any] = {}
     else:
-        stmt = text(latest + "AND organization_id = ANY(:orgs) " + order)
+        stmt = text(
+            "SELECT DISTINCT ON (organization_id) organization_id, node_count, "
+            "edge_count, finished_at, status, detail FROM ccf.assurance_build_runs "
+            "WHERE status IN ('ok', 'partial') AND organization_id = ANY(:orgs) "
+            "ORDER BY organization_id, id DESC"
+        )
         params = {"orgs": list(organization_ids)}
     rows = (await session.execute(stmt, params)).all()
     if not rows:
