@@ -49,7 +49,6 @@ from ...models import (
     IngestionRun,
     Interconnection,
     InventoryItem,
-    Notification,
     Organization,
     Policy,
     RejectedRow,
@@ -2073,17 +2072,16 @@ async def governance_page(
         for test, result in scan_attention
         if f"ctltest-fix:{test.id}" not in represented_task_keys
     ][:25]
-    notifs = (
-        (
-            await session.execute(
-                _scoped(select(Notification), Notification.organization_id)
-                .order_by(Notification.created_at.desc())
-                .limit(25)
-            )
-        )
-        .scalars()
-        .all()
+    # The caller's inbox and their own read state -- the same definition the
+    # notifications API uses (ccf.governance.inbox).
+    from ...auth import SYSTEM_PRINCIPAL  # noqa: PLC0415
+    from ...governance import inbox  # noqa: PLC0415
+
+    viewer_principal = getattr(request.state, "principal", None) or SYSTEM_PRINCIPAL
+    notifs = list(
+        (await session.execute(inbox.visible(viewer_principal).limit(25))).scalars().all()
     )
+    notif_read = await inbox.read_ids(session, viewer_principal, notifs)
     events = (
         (
             await session.execute(
@@ -2116,7 +2114,7 @@ async def governance_page(
             await session.execute(_scoped(select(func.count(Vendor.id)), Vendor.organization_id))
         ).scalar_one(),
         "open_tasks": len(tasks) + len(scan_work_items),
-        "unread_alerts": sum(1 for n in notifs if n.read_at is None),
+        "unread_alerts": sum(1 for n in notifs if n.id not in notif_read),
     }
     # The shared rollup, not a second one computed here. This page divided
     # passing checks by *every* result, while `live_scan_for_org` divides by the
@@ -2153,6 +2151,7 @@ async def governance_page(
             "tasks": tasks,
             "scan_work_items": scan_work_items,
             "notifs": notifs,
+            "notif_read": notif_read,
             "events": events,
             "systems": systems,
             "counts": counts,

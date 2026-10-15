@@ -1474,10 +1474,32 @@ class Notification(Base):
     entity_type: Mapped[str | None] = mapped_column(String(32))
     entity_id: Mapped[str | None] = mapped_column(String(64))
     dedupe_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    #: Read state for the SYSTEM principal (auth disabled) only. Users' read
+    #: state is per user, in ``NotificationRead`` -- this column on a broadcast
+    #: row let one member mark every member's alert read.
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class NotificationRead(Base):
+    """That one user has read one notification (migration 0096)."""
+
+    __tablename__ = "notification_reads"
+    __table_args__ = (
+        UniqueConstraint("notification_id", "user_id", name="uq_notification_read_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.notifications.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("ccf.users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Event(Base):

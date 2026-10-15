@@ -6,6 +6,24 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — one member's "read all" silenced every member's alerts
+- `notifications.read_at` was one column on an org-wide broadcast row.
+  Marking a notification read, or "read all", marked it read for **everyone**
+  in the organization, and `bus.notify` re-notification never clears it. Any
+  member who could write could silence everyone's overdue-task,
+  access-review and ATO-expiry alerts. Found by independent review of the
+  viewer gate.
+- Read-state is now per user (`ccf.notification_reads`, migration `0096`,
+  tenant-isolated by RLS). The API and the governance page share one
+  definition (`ccf.governance.inbox`): mark-read, read-all, unread counts and
+  `unread_only` all act on the caller's own rows. `read_at` remains only for
+  the SYSTEM principal (auth disabled), which has no user id.
+- A notification addressed to one member (`user_id`) is no longer listed for
+  the others. The list returned every row in the org.
+- No backfill: the old column records only that *someone* read a
+  notification, not who. So every user starts with existing notifications
+  unread, which re-surfaces alerts that one member had silenced for all.
+
 ### Added — FedRAMP Marketplace as reference data for 20x dependencies
 - **A dependency recorded "authorized" that FedRAMP lists as merely "FedRAMP
   Ready" used to score as authorized**, and nothing said otherwise. FedRAMP
@@ -104,9 +122,8 @@ the project adheres to [Semantic Versioning](https://semver.org/).
 - Tests that had used a viewer as a stand-in for "any signed-in user" now
   use `control_owner` or an admin, so their tenant-isolation and
   live-capture subjects still mean something.
-- **Still open:** notification read-state is org-wide for every role. Any
-  member who may write can mark every user's alerts read, and re-notifying
-  never clears `read_at`.
+- Notification read-state was org-wide for every role; fixed in the entry
+  above.
 
 ### Changed — 20x readiness, packages and SDRs are scoped to what the Certification Class owes
 - **A Class A system was scored against 46 KSIs; FedRAMP requires seven of

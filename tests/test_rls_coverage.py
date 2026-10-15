@@ -121,6 +121,9 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "identity_providers", "information_types", "interconnections", "inventory_items",
         "ksi_assessor_reviews", "ksi_exceptions", "ksi_states",
         "ksi_validation_results", "monitoring_runs", "notifications", "organizations",
+        # 0096 per-user read state -- one member's "read all" must not touch
+        # another's inbox, and never another tenant's.
+        "notification_reads",
         "pack_controls", "pack_evidence_requirements", "pack_install_runs", "pack_mappings",
         "pack_rules", "pack_test_results", "people", "poam_milestones", "poams", "policies",
         "policy_attestations", "policy_versions", "prep_classifications", "prep_embeddings",
@@ -185,7 +188,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 142
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 143
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
