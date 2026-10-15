@@ -2116,7 +2116,30 @@ Create `src/ccf/api/static/js/graph.js`:
       list.appendChild(li);
     });
     if (list.children.length) panel.appendChild(list);
+    var href = recordLink(n);
+    if (href) {
+      var a = document.createElement("a");
+      a.href = href;
+      a.textContent = "Open record";
+      panel.appendChild(a);
+    }
     panel.hidden = false;
+  }
+
+  // Only routes that exist in ui*.py; a type with no record page gets no link.
+  function recordLink(n) {
+    var meta = n.metadata || {};
+    switch (n.entity_type) {
+      case "system": return "/systems/" + encodeURIComponent(n.entity_id);
+      case "connector": return "/connectors/" + encodeURIComponent(n.entity_id);
+      case "control_test": return "/control-tests/" + encodeURIComponent(n.entity_id);
+      case "ksi": return meta.system_id ? "/fedramp20x?system_id=" + encodeURIComponent(meta.system_id) : null;
+      case "poam": return "/poams";
+      case "risk": return "/risks";
+      case "evidence_object": return "/evidence";
+      case "ai_agent": return "/ai-agents";
+      default: return null;
+    }
   }
 
   document.querySelectorAll("[data-graph-type]").forEach(function (el) {
@@ -2186,7 +2209,7 @@ No automated test runs the JavaScript. Start the app against the dev database (`
 - the canvas draws, and nodes are coloured by status;
 - unticking a type redraws without it;
 - the owner picker fades the other owners' nodes;
-- searching `AC-2` centres on it and opens the panel;
+- searching `AC-2` centres on it and opens the panel, and "Open record" goes to the right page;
 - hovering an edge shows its source;
 - the Table button shows the tables;
 - at a 375px-wide viewport there is no horizontal page scroll.
