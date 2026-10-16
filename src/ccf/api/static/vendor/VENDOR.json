@@ -1,0 +1,9 @@
+{
+  "cytoscape.min.js": {
+    "package": "cytoscape",
+    "version": "3.30.2",
+    "license": "MIT",
+    "source": "https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.2/cytoscape.min.js",
+    "sha256": "83e8c54a6bec655bfd81df07df605649c268af69aeca67a5ea2da54ea42dac81"
+  }
+}

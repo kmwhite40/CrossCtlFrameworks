@@ -1423,14 +1423,79 @@ async def assurance_page(
     )
 
 
+#: The page draws at most this many nodes; above it, it asks for a filter.
+_GRAPH_NODE_LIMIT = 3000
+
+
+@router.get("/graph", response_class=HTMLResponse)
+async def graph_page(
+    request: Request,
+    system_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """One system's assurance graph: every edge sourced, nothing inferred."""
+    from ...assurance import impact as assurance_impact  # noqa: PLC0415
+
+    # The picker's "Choose a system" option submits ``system_id=``: that is no
+    # system chosen, not a validation error. Anything else that is not an id
+    # names no system, which is a 404 like any other unknown id.
+    raw = (system_id or "").strip()
+    if not raw:
+        chosen: int | None = None
+    # 18 digits is plenty for a bigint id; a longer run is no id (and ``int()``
+    # raises past 4,300 digits, which was a 500).
+    elif raw.isascii() and raw.isdigit() and len(raw) <= 18:
+        chosen = int(raw)
+    else:
+        raise HTTPException(404, "System not found")
+    org = _principal_org(request)
+    # Deleted systems are excluded as everywhere else (DATA-04); a foreign or
+    # deleted id is a 404, never an empty graph that implies "no relationships".
+    sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
+    if org is not None:
+        sys_stmt = sys_stmt.where(System.organization_id == org)
+    systems = (await session.execute(sys_stmt)).scalars().all()
+    selected = next((s for s in systems if s.id == chosen), None)
+    if chosen is not None and selected is None:
+        raise HTTPException(404, "System not found")
+    view = await assurance_impact.system_view(session, system=selected) if selected else None
+    labels = {n["id"]: n["label"] for n in view["nodes"]} if view else {}
+    node_types = sorted({n["entity_type"] for n in view["nodes"]}) if view else []
+    # ``owner_user_id`` is rarely recorded; a picker with only "Everyone" in
+    # it would offer a filter over nothing, so the page says so instead.
+    has_owners = view is not None and any(
+        (n.get("metadata") or {}).get("owners") for n in view["nodes"]
+    )
+    return templates.TemplateResponse(
+        request,
+        "graph.html",
+        {
+            "active": "graph",
+            "systems": systems,
+            "selected": selected,
+            "view": view,
+            "labels": labels,
+            "node_types": node_types,
+            "has_owners": has_owners,
+            "node_limit": _GRAPH_NODE_LIMIT,
+        },
+    )
+
+
 @router.post("/assurance/rebuild")
 async def assurance_rebuild(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request,
+    return_to: str = Form("assurance"),
+    system_id: int | None = Form(None),
+    session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     from ...assurance import builder as assurance_builder  # noqa: PLC0415
 
     await assurance_builder.rebuild(session, org_id=_principal_org(request))
     await session.commit()
+    # Only two fixed destinations: a free-form return URL would be an open redirect.
+    if return_to == "graph" and system_id is not None:
+        return RedirectResponse(f"/graph?system_id={int(system_id)}", status_code=303)
     return RedirectResponse("/assurance", status_code=303)
 
 

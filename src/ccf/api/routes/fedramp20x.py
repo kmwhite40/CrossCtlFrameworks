@@ -23,14 +23,15 @@ from ...fedramp20x import (
     DEPENDENCY_STATUSES,
     READINESS_STATUSES,
     catalog,
+    marketplace,
     package,
     readiness,
+    records,
     validation,
 )
 from ...governance import bus
 from ...models import (
     KSI,
-    POAM,
     FedRAMP20xProfile,
     FedRAMPDependency,
     KSIAssessorReview,
@@ -39,7 +40,7 @@ from ...models import (
     KSIValidationResult,
     System,
 )
-from ..auth_deps import get_principal, require_role
+from ..auth_deps import get_principal, require_platform_admin, require_role
 from ..deps import get_session
 from .systems import require_system_in_scope
 
@@ -73,8 +74,30 @@ def _ksi_out(k: KSI) -> dict[str, Any]:
         "nist_refs": list(k.nist_refs or []),
         "cmmc_refs": list(k.cmmc_refs or []),
         "provider_services": list(k.provider_services or []),
+        "statement_by_class": dict(k.statement_by_class or {}),
         "rule": k.rule,
+        "methods": list(k.methods or []),
+        "source": k.source,
+        "retired": k.retired_at is not None,
+        "retired_at": k.retired_at.isoformat() if k.retired_at else None,
     }
+
+
+async def _writable_ksi(session: AsyncSession, ksi_id: int) -> KSI:
+    """The KSI a write targets: 404 if unknown, 409 if FedRAMP no longer defines it.
+
+    A retired indicator keeps its history readable, but nothing new may be
+    recorded against it -- a review or exception on it would count toward
+    nothing and claim work against a requirement that no longer exists.
+    """
+    k = await session.get(KSI, ksi_id)
+    if k is None:
+        raise HTTPException(404, "KSI not found")
+    if k.retired_at is not None:
+        raise HTTPException(
+            409, f"{k.identifier} is retired: FedRAMP's current rules do not define it"
+        )
+    return k
 
 
 # --- KSI catalog ------------------------------------------------------------
@@ -102,13 +125,28 @@ async def get_ksi(
     k = (await session.execute(stmt)).scalar_one_or_none()
     if k is None:
         raise HTTPException(404, "KSI not found")
-    return _ksi_out(k)
+    from ...fedramp20x.rules import RulesDatasetError, ksi_definitions, load_rules  # noqa: PLC0415
+
+    out = _ksi_out(k)
+    # FedRAMP's own meaning of each defined term the statement uses (FRD).
+    # None -- not [] -- when the dataset cannot be read or the KSI is retired,
+    # so "uses no defined terms" stays distinguishable from "unknown".
+    try:
+        defs = ksi_definitions(load_rules())
+    except RulesDatasetError:
+        out["definitions"] = None
+    else:
+        # A phase-one (retired) id is not in FedRAMP's dataset: None, not [].
+        out["definitions"] = defs.get(k.identifier)
+    return out
 
 
 @router.post("/ksis/seed")
 async def seed_ksis(
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin")),
+    # ``ccf.ksis`` is global: a seed retires indicators for every tenant, so
+    # it is a platform operation, not a tenant admin's.
+    principal: Principal = Depends(require_platform_admin()),
 ) -> dict[str, int]:
     result = await catalog.seed_ksis(session)
     await bus.emit(
@@ -150,8 +188,12 @@ async def validate(
         verb="validated",
         entity_type="system",
         entity_id=system_id,
-        summary=f"20x validation: {score['readiness_pct']}% ready, "
-        f"{score['high_risk_findings']} high-risk findings",
+        summary=(
+            f"20x validation: {score['readiness_pct']}% ready, "
+            if score["readiness_pct"] is not None
+            else f"20x validation: no readiness figure ({score['status']}), "
+        )
+        + f"{score['high_risk_findings']} high-risk findings",
         org_id=principal.org_id,
         actor=principal.email,
         payload={"readiness": score, "count": len(results)},
@@ -166,6 +208,8 @@ async def list_validations(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
     ksi: str | None = None,
+    *,
+    include_retired: bool = False,
     limit: int = Query(200, le=1000),
 ) -> list[dict[str, Any]]:
     await _require_system(session, system_id, principal)
@@ -175,6 +219,9 @@ async def list_validations(
         .order_by(KSIValidationResult.validated_at.desc())
         .limit(limit)
     )
+    # Asking for one indicator by name is asking for its history, retired or not.
+    if not include_retired and not ksi:
+        stmt = stmt.where(KSIValidationResult.ksi_id.in_(catalog.current_ksi_ids()))
     if ksi:
         stmt = stmt.where(KSIValidationResult.ksi_identifier == ksi)
     rows = (await session.execute(stmt)).scalars().all()
@@ -221,6 +268,7 @@ def _dep_out(d: FedRAMPDependency) -> dict[str, Any]:
         "service_type": d.service_type,
         "fedramp_status": d.fedramp_status,
         "marketplace_url": d.marketplace_url,
+        "marketplace_id": d.marketplace_id,
         "authorization_level": d.authorization_level,
         "impact_level": d.impact_level,
         "boundary_role": d.boundary_role,
@@ -249,7 +297,89 @@ async def list_dependencies(
     buckets: dict[str, int] = {s: 0 for s in DEPENDENCY_STATUSES}
     for d in deps:
         buckets[d.fedramp_status] = buckets.get(d.fedramp_status, 0) + 1
-    return {"dependencies": [_dep_out(d) for d in deps], "by_status": buckets}
+    products = await marketplace.products_by_id(
+        session, {d.marketplace_id for d in deps if d.marketplace_id}
+    )
+    out = []
+    for d in deps:
+        row = _dep_out(d)
+        product = products.get(d.marketplace_id or "")
+        # Shown beside the recorded values, never instead of them.
+        row["marketplace"] = marketplace.product_out(product) if product else None
+        row["marketplace_findings"] = [
+            f.as_dict() for f in marketplace.compare(d, product)
+        ]
+        out.append(row)
+    return {
+        "dependencies": out,
+        "by_status": buckets,
+        "marketplace_disagreements": sum(1 for r in out if r["marketplace_findings"]),
+    }
+
+
+class MarketplaceLinkIn(BaseModel):
+    #: A FedRAMP Marketplace ID, or null to unlink.
+    marketplace_id: str | None = Field(None, max_length=32)
+
+
+@router.put("/systems/{system_id}/dependencies/{dependency_id}/marketplace")
+async def link_dependency(
+    system_id: int,
+    dependency_id: int,
+    body: MarketplaceLinkIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Link a dependency to the Marketplace product it is (a person decides)."""
+    await _require_system(session, system_id, principal)
+    dep = await session.get(FedRAMPDependency, dependency_id)
+    if dep is None or dep.system_id != system_id:
+        raise HTTPException(404, "dependency not found")
+    try:
+        product = await marketplace.link(
+            session, dep, body.marketplace_id, actor=principal.email, org_id=principal.org_id
+        )
+    except LookupError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    await session.commit()
+    row = _dep_out(dep)
+    row["marketplace"] = marketplace.product_out(product) if product else None
+    row["marketplace_findings"] = [f.as_dict() for f in marketplace.compare(dep, product)]
+    return row
+
+
+@router.get("/systems/{system_id}/requirements")
+async def system_requirements(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """FedRAMP process requirements this system owes, by its Class and Path.
+
+    ``owed`` holds in every certification scenario still possible; each
+    ``conditional`` entry names the scenarios it depends on, because Concord
+    does not record certification type.
+    """
+    system = await _require_system(session, system_id, principal)
+    from ...fedramp20x import frr_scope  # noqa: PLC0415
+    from ...fedramp20x.rules import load_rules  # noqa: PLC0415
+
+    return {
+        "certification_class": system.certification_class,
+        "certification_path": system.certification_path,
+        **frr_scope.scope(load_rules(), system.certification_class, system.certification_path),
+    }
+
+
+@router.get("/marketplace/products")
+async def search_marketplace(
+    q: str = Query(..., min_length=2, max_length=128),
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+    _p: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    """Search FedRAMP's Marketplace by ID, provider or offering name."""
+    return [marketplace.product_out(p) for p in await marketplace.search(session, q, limit=limit)]
 
 
 @router.post("/systems/{system_id}/dependencies", status_code=201)
@@ -439,35 +569,6 @@ def _review_out(r: KSIAssessorReview) -> dict[str, Any]:
     }
 
 
-async def _maybe_open_finding_poam(
-    session: AsyncSession, *, system_id: int, ksi_id: int, review: KSIAssessorReview
-) -> None:
-    """When an assessor opens a finding, create an idempotent POA&M for the gap."""
-    if review.status != "finding_opened":
-        return
-    ksi = (await session.execute(select(KSI).where(KSI.id == ksi_id))).scalar_one_or_none()
-    ident = ksi.identifier if ksi else f"KSI {ksi_id}"
-    title = f"{ident} — assessor finding"
-    exists = (
-        await session.execute(
-            select(POAM.id).where(POAM.system_id == system_id, POAM.title == title)
-        )
-    ).scalar_one_or_none()
-    if exists is not None:
-        return
-    session.add(
-        POAM(
-            system_id=system_id,
-            title=title,
-            weakness=(review.finding or f"Assessor opened a finding against {ident}.").strip(),
-            severity="moderate",
-            status="open",
-            source="assessment",
-            identified_on=datetime.now(UTC).date(),
-        )
-    )
-
-
 @router.post("/assessor-reviews", status_code=201)
 async def create_review(
     body: AssessorReviewIn,
@@ -475,30 +576,8 @@ async def create_review(
     principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
-    rv = KSIAssessorReview(**body.model_dump())
-    session.add(rv)
-    # Reflect the assessor verdict on the KSI state.
-    st = (
-        await session.execute(
-            select(KSIState).where(
-                KSIState.system_id == body.system_id, KSIState.ksi_id == body.ksi_id
-            )
-        )
-    ).scalar_one_or_none()
-    if st is not None:
-        st.assessor_status = body.status
-        st.reviewer_user_id = principal.user_id
-    await session.flush()
-    await _maybe_open_finding_poam(session, system_id=body.system_id, ksi_id=body.ksi_id, review=rv)
-    await bus.emit(
-        session,
-        verb="reviewed",
-        entity_type="ksi_assessor_review",
-        entity_id=rv.id,
-        summary=f"Assessor review {body.status} for KSI {body.ksi_id}",
-        org_id=principal.org_id,
-        actor=principal.email,
-    )
+    await _writable_ksi(session, body.ksi_id)
+    rv = await records.record_review(session, principal=principal, fields=body.model_dump())
     await session.commit()
     return _review_out(rv)
 
@@ -516,6 +595,7 @@ async def update_review(
     if rv is None:
         raise HTTPException(404, "review not found")
     await _require_system(session, rv.system_id, principal)
+    await _writable_ksi(session, rv.ksi_id)
     for field_name, value in body.model_dump(exclude_none=True).items():
         setattr(rv, field_name, value)
     rv.reviewed_at = datetime.now(UTC)
@@ -530,7 +610,9 @@ async def update_review(
         if st is not None:
             st.assessor_status = body.status
     await session.flush()
-    await _maybe_open_finding_poam(session, system_id=rv.system_id, ksi_id=rv.ksi_id, review=rv)
+    await records.maybe_open_finding_poam(
+        session, system_id=rv.system_id, ksi_id=rv.ksi_id, review=rv
+    )
     await bus.emit(
         session,
         verb="updated",
@@ -550,10 +632,14 @@ async def list_reviews(
     principal: Principal = Depends(get_principal),
     system_id: int | None = None,
     ksi_id: int | None = None,
+    *,
+    include_retired: bool = False,
     limit: int = Query(200, le=1000),
 ) -> list[dict[str, Any]]:
     """List assessor reviews (history), newest first, org-scoped."""
     stmt = select(KSIAssessorReview).order_by(KSIAssessorReview.reviewed_at.desc()).limit(limit)
+    if not include_retired:
+        stmt = stmt.where(KSIAssessorReview.ksi_id.in_(catalog.current_ksi_ids()))
     if system_id is not None:
         await _require_system(session, system_id, principal)
         stmt = stmt.where(KSIAssessorReview.system_id == system_id)
@@ -604,15 +690,17 @@ async def list_exceptions(
     system_id: int,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
+    include_retired: bool = False,
 ) -> list[dict[str, Any]]:
     await _require_system(session, system_id, principal)
-    rows = (
-        await session.execute(
-            select(KSIException)
-            .where(KSIException.system_id == system_id)
-            .order_by(KSIException.created_at.desc())
-        )
-    ).scalars().all()
+    stmt = (
+        select(KSIException)
+        .where(KSIException.system_id == system_id)
+        .order_by(KSIException.created_at.desc())
+    )
+    if not include_retired:
+        stmt = stmt.where(KSIException.ksi_id.in_(catalog.current_ksi_ids()))
+    rows = (await session.execute(stmt)).scalars().all()
     return [_exc_out(e) for e in rows]
 
 
@@ -623,24 +711,16 @@ async def create_exception(
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
     await _require_system(session, body.system_id, principal)
-    exc = KSIException(
+    await _writable_ksi(session, body.ksi_id)
+    exc = await records.record_exception(
+        session,
+        principal=principal,
         system_id=body.system_id,
         ksi_id=body.ksi_id,
         rationale=body.rationale,
         status=body.status,
         risk_id=body.risk_id,
         expires_on=date.fromisoformat(body.expires_on) if body.expires_on else None,
-    )
-    session.add(exc)
-    await session.flush()
-    await bus.emit(
-        session,
-        verb="created",
-        entity_type="ksi_exception",
-        entity_id=exc.id,
-        summary=f"KSI exception ({body.status}) for KSI {body.ksi_id}",
-        org_id=principal.org_id,
-        actor=principal.email,
     )
     await session.commit()
     return _exc_out(exc)
@@ -659,6 +739,7 @@ async def update_exception(
     if exc is None:
         raise HTTPException(404, "exception not found")
     await _require_system(session, exc.system_id, principal)
+    await _writable_ksi(session, exc.ksi_id)
     data = body.model_dump(exclude_none=True)
     if "expires_on" in data:
         exc.expires_on = date.fromisoformat(data.pop("expires_on"))

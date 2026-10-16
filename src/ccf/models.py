@@ -382,7 +382,10 @@ class System(Base):
     )
     #: CR26 Certification Class. INDEPENDENT of ``baseline`` -- see
     #: ``ccf.constants.CERTIFICATION_CLASSES``. Never derive one from the other.
-    #: Null means "not CR26-certified", correct for every Rev5-lane row.
+    #: Null means "nobody has recorded one". Not a Rev5 marker: the 2026
+    #: rules give Rev5 certifications Classes B-D too (``IVV-CSF-AIA``). Which
+    #: KSIs a class owes also depends on ``certification_path`` -- see
+    #: ``ccf.fedramp20x.applicability``.
     #: ``validate_strings=True`` for the reason given on ``pipeline_stage``.
     certification_class: Mapped[str | None] = mapped_column(
         Enum(
@@ -1471,10 +1474,32 @@ class Notification(Base):
     entity_type: Mapped[str | None] = mapped_column(String(32))
     entity_id: Mapped[str | None] = mapped_column(String(64))
     dedupe_key: Mapped[str | None] = mapped_column(String(200), unique=True)
+    #: Read state for the SYSTEM principal (auth disabled) only. Users' read
+    #: state is per user, in ``NotificationRead`` -- this column on a broadcast
+    #: row let one member mark every member's alert read.
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class NotificationRead(Base):
+    """That one user has read one notification (migration 0096)."""
+
+    __tablename__ = "notification_reads"
+    __table_args__ = (
+        UniqueConstraint("notification_id", "user_id", name="uq_notification_read_user"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    notification_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.notifications.id", ondelete="CASCADE")
+    )
+    user_id: Mapped[int] = mapped_column(ForeignKey("ccf.users.id", ondelete="CASCADE"), index=True)
+    read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Event(Base):
@@ -1754,8 +1779,11 @@ class ScanIngestion(Base):
 class KSI(Base):
     """A FedRAMP 20x Key Security Indicator (reference catalog, org-agnostic).
 
-    Seeded from ``data/fedramp_20x_ksi_catalog.json`` via ``ccf.fedramp20x.catalog``.
-    ``rule`` is the machine-readable validation spec the validation engine evaluates.
+    Seeded from FedRAMP's Consolidated Rules dataset via ``ccf.fedramp20x.catalog``.
+    ``rule`` is the machine-readable validation spec the validation engine evaluates;
+    it is Concord-authored (``rules_data/ksi_rules.json``), everything else is FedRAMP's.
+    A row the dataset no longer defines is retired (``retired_at``), never deleted --
+    tenant history cascades from it. Read through ``catalog.current_ksis``.
     """
 
     __tablename__ = "ksis"
@@ -1777,6 +1805,16 @@ class KSI(Base):
     rule: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     source: Mapped[str | None] = mapped_column(String(255))
+    # FedRAMP's varies_by_class statements, verbatim: class key ("b", "c") -> statement.
+    statement_by_class: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Concord-curated automated methods: [{"check": posture key, "rationale": str}].
+    # Evidence for the KSI, never its verdict (see ccf.fedramp20x.methods).
+    methods: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -1912,6 +1950,33 @@ class KSIException(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class MarketplaceProduct(Base):
+    """A FedRAMP Marketplace product -- global reference data refreshed from
+    FedRAMP's published ``data.json``. Delisted, never deleted."""
+
+    __tablename__ = "marketplace_products"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    fedramp_id: Mapped[str] = mapped_column(String(32), unique=True)
+    csp: Mapped[str] = mapped_column(String(512))
+    cso: Mapped[str] = mapped_column(String(512), index=True)
+    status: Mapped[str] = mapped_column(String(64))
+    impact_level: Mapped[str | None] = mapped_column(String(32))
+    auth_type: Mapped[str | None] = mapped_column(String(32))
+    auth_date: Mapped[date | None] = mapped_column(Date)
+    independent_assessor: Mapped[str | None] = mapped_column(String(512))
+    service_model: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    deployment_model: Mapped[str | None] = mapped_column(String(64))
+    leveraged_systems: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    source_commit: Mapped[str | None] = mapped_column(String(64))
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    delisted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class FedRAMPDependency(Base):
     """A FedRAMP-authorized (or not) underlying service the CSO depends on."""
 
@@ -1927,6 +1992,10 @@ class FedRAMPDependency(Base):
     # authorized|in_process|not_authorized|unknown
     fedramp_status: Mapped[str] = mapped_column(String(32), default="unknown")
     marketplace_url: Mapped[str | None] = mapped_column(String(1024))
+    #: FedRAMP Marketplace ID (``F1607067912``) this dependency is linked to,
+    #: set by a person. ``ccf.fedramp20x.marketplace`` compares the linked
+    #: record with the values recorded here; it never rewrites them.
+    marketplace_id: Mapped[str | None] = mapped_column(String(32), index=True)
     authorization_level: Mapped[str | None] = mapped_column(String(32))  # jab|agency|li-saas
     impact_level: Mapped[str | None] = mapped_column(String(16))  # low|moderate|high
     boundary_role: Mapped[str | None] = mapped_column(String(255))

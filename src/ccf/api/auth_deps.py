@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any, overload
 
 from fastapi import Depends, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.base import RequestResponseEndpoint
@@ -15,6 +16,7 @@ from ..auth import SYSTEM_PRINCIPAL, Principal, hash_token, read_session
 from ..config import get_settings
 from ..db import get_session_factory, set_session_tenant
 from ..identity import mfa_service
+from ..logging import get_logger
 from ..models import System, User
 
 SESSION_COOKIE = "concord_session"
@@ -28,6 +30,8 @@ MFA_PENDING_COOKIE = "concord_mfa_pending"
 
 # Paths reachable without authentication even when auth is enabled. Matched on
 # segment boundaries by ``is_public_path`` — never as a bare string prefix.
+log = get_logger(__name__)
+
 _PUBLIC_PREFIXES = (
     "/api/auth",
     "/auth/login",
@@ -272,8 +276,80 @@ _MFA_ENROLMENT_PATHS = (
 )
 
 
+#: Mutating requests a **viewer** may still make. docs/HANDBOOK.md promises a
+#: viewer can "Read everything in your organization" and change nothing of it,
+#: and docs/THREAT_MODEL.md rates the role "Reads only" -- but most write routes
+#: (165 by a scan of route signatures in 764e87e) carried no role check, so a
+#: viewer could create risks, tasks, evidence, POA&Ms and more. Rather than gate
+#: each route (and keep auditing every new one), the auth gate refuses a
+#: viewer's mutating request outright, except exactly these (method, path):
+#:
+#: * the viewer's own MFA enrolment (each handler acts on ``principal.user_id``
+#:   only), and their own notification read-state -- per user since migration
+#:   0096 (``ccf.governance.inbox``), so it changes no one else's inbox;
+#: * POST endpoints that only read -- a query run or CSV export, and two
+#:   validators that check a posted document without storing it;
+#: * logging a trust-portal access request: it records that someone asked,
+#:   cannot set its own status, and only an admin can decide it
+#:   ("logging that someone asked is not an approval", tests/test_trust_rbac.py).
+#:
+#: Deliberately NOT here, after independent review: pack-source registration
+#: (it starts scheduled server-side fetches of a caller-chosen URL).
+#: Notification read-state was excluded until 0096 made it per user: before,
+#: ``read_at`` was one column on an org-wide row and "mark read" silenced
+#: every member's alerts.
+#:
+#: Each entry is one method and a fully anchored path (``\Z``, not ``$``, which
+#: also matches before a trailing newline), so a new route -- or a new method on
+#: an allowlisted path -- is refused until someone adds it here on purpose.
+_VIEWER_WRITE_ALLOWLIST: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("POST", re.compile(r"/settings/security/(enroll|activate|disable)\Z")),
+    ("POST", re.compile(r"/api/queries/[^/]+/(run|export)\Z")),
+    ("POST", re.compile(r"/api/notifications/\d+/read\Z")),
+    ("POST", re.compile(r"/api/notifications/read-all\Z")),
+    ("POST", re.compile(r"/api/oscal/validate\Z")),
+    ("POST", re.compile(r"/api/packs/validate\Z")),
+    ("POST", re.compile(r"/api/trust/access-requests\Z")),
+    ("POST", re.compile(r"/trust/access-requests\Z")),
+)
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+VIEWER_ROLE = "viewer"
+
+
+def viewer_may_write(path: str, method: str = "POST") -> bool:
+    """True if a viewer may make this mutating ``method`` request to ``path``."""
+    m = method.upper()
+    return any(m == allowed and pattern.match(path) for allowed, pattern in _VIEWER_WRITE_ALLOWLIST)
+
+
 def is_mfa_enrolment_path(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in _MFA_ENROLMENT_PATHS)
+
+
+def _viewer_refusal(request: Request, principal: Principal, path: str) -> Response | None:
+    """A 403 for a viewer's mutating request off the allowlist, else ``None``."""
+    method = request.method.upper()
+    if (
+        principal.role != VIEWER_ROLE
+        or principal.is_global
+        or method not in _MUTATING_METHODS
+        or viewer_may_write(path, method)
+    ):
+        return None
+    # Logged: a refused write otherwise leaves no trace (the audit middleware
+    # records only successful mutations), and a viewer probing writes is
+    # exactly what someone reviewing access would want to see.
+    log.info(
+        "auth.viewer_write_refused",
+        method=method,
+        path=path,
+        user_id=principal.user_id,
+        org_id=principal.org_id,
+    )
+    detail = "the viewer role is read-only; ask an administrator for a role that can change this"
+    if path.startswith("/api"):
+        return JSONResponse({"detail": detail}, status_code=403)
+    return PlainTextResponse(detail, status_code=403)
 
 
 async def auth_gate_middleware(
@@ -287,6 +363,7 @@ async def auth_gate_middleware(
     if not get_settings().auth_enabled:
         return await call_next(request)
     path = request.url.path
+    refused: Response | None = None
     if not is_public_path(path):
         factory = get_session_factory()
         # ONE session for both questions. The gate below used to sit outside
@@ -336,4 +413,6 @@ async def auth_gate_middleware(
                 return RedirectResponse(
                     "/settings/security?enrol=required", status_code=303
                 )
-    return await call_next(request)
+
+            refused = _viewer_refusal(request, principal, path)
+    return refused if refused is not None else await call_next(request)

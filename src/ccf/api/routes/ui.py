@@ -49,7 +49,6 @@ from ...models import (
     IngestionRun,
     Interconnection,
     InventoryItem,
-    Notification,
     Organization,
     Policy,
     RejectedRow,
@@ -2073,17 +2072,16 @@ async def governance_page(
         for test, result in scan_attention
         if f"ctltest-fix:{test.id}" not in represented_task_keys
     ][:25]
-    notifs = (
-        (
-            await session.execute(
-                _scoped(select(Notification), Notification.organization_id)
-                .order_by(Notification.created_at.desc())
-                .limit(25)
-            )
-        )
-        .scalars()
-        .all()
+    # The caller's inbox and their own read state -- the same definition the
+    # notifications API uses (ccf.governance.inbox).
+    from ...auth import SYSTEM_PRINCIPAL  # noqa: PLC0415
+    from ...governance import inbox  # noqa: PLC0415
+
+    viewer_principal = getattr(request.state, "principal", None) or SYSTEM_PRINCIPAL
+    notifs = list(
+        (await session.execute(inbox.visible(viewer_principal).limit(25))).scalars().all()
     )
+    notif_read = await inbox.read_ids(session, viewer_principal, notifs)
     events = (
         (
             await session.execute(
@@ -2116,7 +2114,7 @@ async def governance_page(
             await session.execute(_scoped(select(func.count(Vendor.id)), Vendor.organization_id))
         ).scalar_one(),
         "open_tasks": len(tasks) + len(scan_work_items),
-        "unread_alerts": sum(1 for n in notifs if n.read_at is None),
+        "unread_alerts": await inbox.unread_count(session, viewer_principal),
     }
     # The shared rollup, not a second one computed here. This page divided
     # passing checks by *every* result, while `live_scan_for_org` divides by the
@@ -2153,6 +2151,7 @@ async def governance_page(
             "tasks": tasks,
             "scan_work_items": scan_work_items,
             "notifs": notifs,
+            "notif_read": notif_read,
             "events": events,
             "systems": systems,
             "counts": counts,
@@ -2168,7 +2167,13 @@ async def governance_scan(
     org = _principal_org(request)
     today = datetime.now(UTC).date()
     await conmon_engine.scan(session, today=today, org_id=org)
-    await digest_engine.run(session, today=today, org_id=org)
+    # The same split as POST /api/notifications/scan: an org's own alerts, or --
+    # unscoped -- the platform's plus every organization's. ``run(org_id=None)``
+    # raises platform alerts only, so calling it here dropped every org alert.
+    if org is not None:
+        await digest_engine.run(session, today=today, org_id=org)
+    else:
+        await digest_engine.run_all(session, today=today)
     await session.commit()
     return RedirectResponse("/governance", status_code=303)
 
@@ -2824,7 +2829,10 @@ async def fedramp20x_page(
     system_id: int | None = None,
 ) -> HTMLResponse:
     from ...fedramp20x import catalog as ksi_catalog  # noqa: PLC0415
+    from ...fedramp20x import frr_scope, marketplace  # noqa: PLC0415
     from ...fedramp20x import readiness as ksi_readiness  # noqa: PLC0415
+    from ...fedramp20x.applicability import system_scope  # noqa: PLC0415
+    from ...fedramp20x.rules import load_rules  # noqa: PLC0415
     from ...models import (  # noqa: PLC0415
         KSI,
         FedRAMP20xProfile,
@@ -2852,8 +2860,23 @@ async def fedramp20x_page(
     dependencies: list[FedRAMPDependency] = []
     exceptions: list[KSIException] = []
     ksi_names: dict[int, str] = {k.id: k.identifier for k in ksis}
+    applicability: dict[int, str] = {}
+    dep_marketplace: dict[int, dict[str, Any]] = {}
+    requirements: dict[str, Any] | None = None
     if system_id is not None:
         readiness = await ksi_readiness.score_system(session, system_id=system_id, persist=False)
+        scope = await system_scope(session, system_id)
+        applicability = {k.id: scope.status(k.identifier) for k in ksis}
+        system_row = await session.get(System, system_id)
+        if system_row is not None:
+            requirements = frr_scope.scope(
+                load_rules(), system_row.certification_class, system_row.certification_path
+            )
+            counts: dict[str, int] = {}
+            for r in requirements["owed"]:
+                key = r["force"] or "unstated"
+                counts[key] = counts.get(key, 0) + 1
+            requirements["by_force"] = sorted(counts.items(), key=lambda kv: -kv[1])
         for s in (
             await session.execute(select(KSIState).where(KSIState.system_id == system_id))
         ).scalars():
@@ -2873,11 +2896,23 @@ async def fedramp20x_page(
             .scalars()
             .all()
         )
+        products = await marketplace.products_by_id(
+            session, {d.marketplace_id for d in dependencies if d.marketplace_id}
+        )
+        for d in dependencies:
+            product = products.get(d.marketplace_id or "")
+            dep_marketplace[d.id] = {
+                "product": marketplace.product_out(product) if product else None,
+                "findings": [f.as_dict() for f in marketplace.compare(d, product)],
+            }
         exceptions = list(
             (
                 await session.execute(
                     select(KSIException)
-                    .where(KSIException.system_id == system_id)
+                    .where(
+                        KSIException.system_id == system_id,
+                        KSIException.ksi_id.in_(ksi_catalog.current_ksi_ids()),
+                    )
                     .order_by(KSIException.created_at.desc())
                 )
             )
@@ -2894,6 +2929,7 @@ async def fedramp20x_page(
             "ksi_total": len(ksis),
             "ksis": ksis,
             "ksi_names": ksi_names,
+            "applicability": applicability,
             "systems": systems,
             "system_id": system_id,
             "readiness": readiness,
@@ -2901,6 +2937,11 @@ async def fedramp20x_page(
             "assessor": assessor,
             "profile": profile,
             "dependencies": dependencies,
+            "dep_marketplace": dep_marketplace,
+            "requirements": requirements,
+            # The seed endpoint needs an unscoped principal; a tenant user's
+            # click was a silent 403, so they get the CLI command instead.
+            "can_seed": getattr(getattr(request.state, "principal", None), "is_global", True),
             "exceptions": exceptions,
         },
     )
@@ -2972,6 +3013,39 @@ async def fedramp20x_add_dependency(
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
 
+@router.post("/fedramp20x/{system_id}/dependencies/{dependency_id}/marketplace")
+async def fedramp20x_link_marketplace(
+    request: Request,
+    system_id: int,
+    dependency_id: int,
+    *,
+    marketplace_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+) -> RedirectResponse:
+    """Link (or, with an empty id, unlink) a dependency -- the API's own path."""
+    from ...fedramp20x import marketplace  # noqa: PLC0415
+    from ...models import FedRAMPDependency  # noqa: PLC0415
+
+    principal = getattr(request.state, "principal", None)
+    if await _fedramp20x_system_visible(request, session, system_id):
+        dep = await session.get(FedRAMPDependency, dependency_id)
+        if dep is not None and dep.system_id == system_id:
+            try:
+                await marketplace.link(
+                    session,
+                    dep,
+                    marketplace_id,
+                    actor=getattr(principal, "email", None),
+                    org_id=getattr(principal, "org_id", None),
+                )
+            except LookupError:
+                # Refused, not stored; the page shows the dependency unchanged.
+                pass
+            else:
+                await session.commit()
+    return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
 @router.post("/fedramp20x/{system_id}/assessor-review")
 async def fedramp20x_record_review(
     request: Request,
@@ -2982,32 +3056,30 @@ async def fedramp20x_record_review(
     assessor: str = Form(""),
     notes: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    # The same gate as ``POST /api/fedramp/20x/assessor-reviews``. Without it
+    # any signed-in user -- a viewer -- could record an "accepted" 3PAO review
+    # through the form that the API refuses them.
+    principal: Principal = Depends(require_role("admin", "assessor")),
 ) -> RedirectResponse:
-    """Record an assessor review for one KSI and reflect it on the KSI state."""
-    from ...fedramp20x import ASSESSOR_STATUSES  # noqa: PLC0415
-    from ...models import KSIAssessorReview, KSIState  # noqa: PLC0415
+    """Record an assessor review for one KSI -- the same path as the API."""
+    from ...fedramp20x import ASSESSOR_STATUSES, records  # noqa: PLC0415
 
-    if status in ASSESSOR_STATUSES and await _fedramp20x_system_visible(
-        request, session, system_id
+    if (
+        status in ASSESSOR_STATUSES
+        and await _fedramp20x_system_visible(request, session, system_id)
+        and await _ksi_is_current(session, ksi_id)
     ):
-        session.add(
-            KSIAssessorReview(
-                system_id=system_id,
-                ksi_id=ksi_id,
-                assessor=assessor.strip() or None,
-                status=status,
-                notes=notes.strip() or None,
-            )
+        await records.record_review(
+            session,
+            principal=principal,
+            fields={
+                "system_id": system_id,
+                "ksi_id": ksi_id,
+                "assessor": assessor.strip() or None,
+                "status": status,
+                "notes": notes.strip() or None,
+            },
         )
-        state = (
-            await session.execute(
-                select(KSIState).where(
-                    KSIState.system_id == system_id, KSIState.ksi_id == ksi_id
-                )
-            )
-        ).scalar_one_or_none()
-        if state is not None:
-            state.assessor_status = status
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
@@ -3021,25 +3093,37 @@ async def fedramp20x_add_exception(
     rationale: str = Form(...),
     status: str = Form("open"),
     session: AsyncSession = Depends(get_session),
+    # The same gate as ``POST /api/fedramp/20x/exceptions``.
+    principal: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
-    """Record a KSI exception / deviation for a system."""
-    from ...models import KSIException  # noqa: PLC0415
+    """Record a KSI exception / deviation for a system -- the same path as the API."""
+    from ...fedramp20x import records  # noqa: PLC0415
 
     if (
         rationale.strip()
         and status in ("open", "accepted", "closed")
         and await _fedramp20x_system_visible(request, session, system_id)
+        and await _ksi_is_current(session, ksi_id)
     ):
-        session.add(
-            KSIException(
-                system_id=system_id,
-                ksi_id=ksi_id,
-                rationale=rationale.strip(),
-                status=status,
-            )
+        await records.record_exception(
+            session,
+            principal=principal,
+            system_id=system_id,
+            ksi_id=ksi_id,
+            rationale=rationale.strip(),
+            status=status,
         )
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
+
+
+async def _ksi_is_current(session: AsyncSession, ksi_id: int) -> bool:
+    """A form write may only target a KSI FedRAMP's current rules define."""
+    from ...fedramp20x.catalog import current_ksi_ids  # noqa: PLC0415
+    from ...models import KSI  # noqa: PLC0415
+
+    stmt = current_ksi_ids().where(KSI.id == ksi_id)
+    return (await session.execute(stmt)).first() is not None
 
 
 async def _fedramp20x_system_visible(

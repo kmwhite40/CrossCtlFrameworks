@@ -1,0 +1,178 @@
+{
+  "$comment": [
+    "Concord-authored additions to FedRAMP 2026 KSIs. Keyed by 2026 indicator ID.",
+    "FedRAMP authors the statement, name and control mappings",
+    "(fedramp-consolidated-rules.json); Concord authors only what is here.",
+    "",
+    "rules: still empty. No phase-one rule is carried onto a 2026 indicator, and",
+    "a verdict rule is added only after reading that indicator's own statement.",
+    "",
+    "methods: Concord platform posture checks curated per KSI (ccf.fedramp20x.methods).",
+    "The bar: the check's FAILURE must contradict the indicator's statement.",
+    "Sharing a mapped 800-53 control is not enough. A failing method raises the",
+    "KSI to warn; a passing one is evidence; neither makes it pass, because most",
+    "2026 KSIs describe a practice persistently reviewed, which configuration",
+    "cannot prove. Each rationale quotes the words the failure contradicts.",
+    "",
+    "Entry shape: {\"rule\"?, \"validation_method\"?, \"validation_frequency\"?,",
+    "\"automation_level\"?, \"methods\"?: [{\"check\", \"rationale\"}]}.",
+    "",
+    "Revised after independent review against each evaluator's code: a check",
+    "that can FAIL while the statement is met (it reads too little, or fails on",
+    "unrelated data shapes) is not a method, however relevant its title sounds."
+  ],
+  "rules": {
+    "KSI-IAM-APM": {
+      "methods": [
+        {
+          "check": "m365.identity.phishable_methods_disabled",
+          "rationale": "Fails when SMS, voice or email is an enabled authentication method; an interceptable factor contradicts \"phishing-resistant MFA\"."
+        },
+        {
+          "check": "aws.iam.root_mfa_enabled",
+          "rationale": "Fails when the AWS root user has no MFA device; the most privileged account signing in by password alone contradicts \"strong passwords with phishing-resistant MFA\"."
+        }
+      ]
+    },
+    "KSI-IAM-ELP": {
+      "methods": [
+        {
+          "check": "m365.policy.default_user_permissions_restricted",
+          "rationale": "Fails when ordinary accounts can create tenants, register applications or create security groups; that is access beyond \"only access the resources they need\"."
+        },
+        {
+          "check": "m365.policy.guest_invites_restricted",
+          "rationale": "Fails when any member can invite external guests; granting outsiders access is not limited to \"the resources they need\"."
+        },
+        {
+          "check": "m365.identity.stale_accounts",
+          "rationale": "Fails when an enabled account has been inactive over 90 days; an unused account keeps access it does not \"need\". (A break-glass account kept deliberately idle will trip it; record that as an exception.)"
+        }
+      ]
+    },
+    "KSI-IAM-JIT": {
+      "methods": [
+        {
+          "check": "m365.policy.default_user_permissions_restricted",
+          "rationale": "Fails when every ordinary account holds standing rights to create tenants, register applications or create security groups; standing privilege contradicts \"least-privileged ... authorization model ... for all user ... accounts\"."
+        }
+      ]
+    },
+    "KSI-IAM-AAM": {
+      "methods": [
+        {
+          "check": "m365.identity.stale_accounts",
+          "rationale": "Fails when an enabled account has been inactive over 90 days; it was not disabled, contradicting \"the lifecycle ... of all accounts ... securely managed\"."
+        }
+      ]
+    },
+    "KSI-CMT-LMC": {
+      "methods": [
+        {
+          "check": "m365.audit.directory_changes_recorded",
+          "rationale": "Fails when no directory audit record exists in the last 7 days; directory changes are not being recorded, contradicting \"Modifications ... are logged\"."
+        },
+        {
+          "check": "aws.cloudtrail.multi_region_logging",
+          "rationale": "Fails when no multi-region CloudTrail trail is logging; AWS API changes are not recorded, contradicting \"Modifications ... are logged\"."
+        }
+      ]
+    },
+    "KSI-MLA-OSM": {
+      "methods": [
+        {
+          "check": "aws.cloudtrail.multi_region_logging",
+          "rationale": "Fails when no multi-region trail is logging; AWS activity reaches no central log, contradicting \"centralized ... logging of events, activities, and changes\"."
+        }
+      ]
+    },
+    "KSI-MLA-LET": {
+      "methods": [
+        {
+          "check": "m365.audit.signin_records_current",
+          "rationale": "Fails when no sign-in audit record exists in the last 7 days; sign-in events are not being logged, contradicting \"to ensure these activities occur\"."
+        },
+        {
+          "check": "m365.audit.directory_changes_recorded",
+          "rationale": "Fails when no directory audit record exists in the last 7 days; directory change events are not being logged, contradicting \"to ensure these activities occur\"."
+        },
+        {
+          "check": "aws.cloudtrail.multi_region_logging",
+          "rationale": "Fails when no multi-region trail is logging; AWS API events are not being logged, contradicting \"to ensure these activities occur\"."
+        }
+      ]
+    },
+    "KSI-SVC-SIN": {
+      "methods": [
+        {
+          "check": "aws.s3.default_encryption",
+          "rationale": "Fails when a bucket has no default server-side encryption rule; objects written without one are stored unencrypted, contradicting \"Information is encrypted or otherwise secured\"."
+        },
+        {
+          "check": "azure.storage.https_only",
+          "rationale": "Fails when a storage account accepts plain HTTP or TLS below 1.2; data in transit to it is not \"secured from unwanted access or modification\"."
+        },
+        {
+          "check": "aws.rds.not_publicly_accessible",
+          "rationale": "Fails when a database instance has PubliclyAccessible set; its data is exposed to the internet, contradicting \"secured from unwanted access\"."
+        }
+      ]
+    },
+    "KSI-SVC-ASM": {
+      "methods": [
+        {
+          "check": "aws.iam.access_key_rotation",
+          "rationale": "Fails when an active IAM access key is older than 90 days; a key that old was not rotated, contradicting \"regular rotation of digital keys ... is automated\"."
+        }
+      ]
+    },
+    "KSI-SVC-ACM": {
+      "methods": [
+        {
+          "check": "puppetdb.node.last_run_succeeded",
+          "rationale": "Fails when a node's latest Puppet run failed; automation is present but not converging, so that node's configuration is not \"managed using automation\"."
+        },
+        {
+          "check": "puppetdb.node.reporting",
+          "rationale": "Fails when a node has not reported in 24 hours; its configuration is neither managed nor \"persistently reviewed for drift\"."
+        }
+      ]
+    },
+    "KSI-CNA-EIS": {
+      "methods": [
+        {
+          "check": "puppetdb.node.last_run_succeeded",
+          "rationale": "Fails when a node's latest Puppet run failed; its intended state is not being applied, contradicting \"automatically enforce their intended operational state\"."
+        },
+        {
+          "check": "puppetdb.node.reporting",
+          "rationale": "Fails when a node has not reported in 24 hours; it is not being assessed, contradicting \"persistently assess the security of all machine-based information resources\"."
+        }
+      ]
+    },
+    "KSI-CNA-RNT": {
+      "methods": [
+        {
+          "check": "aws.ec2.security_groups_no_public_admin_ingress",
+          "rationale": "Fails when a security group allows SSH or RDP from 0.0.0.0/0 or ::/0; inbound administrative traffic is unrestricted, contradicting \"configured to limit inbound ... network traffic\"."
+        },
+        {
+          "check": "aws.rds.not_publicly_accessible",
+          "rationale": "Fails when a database instance has PubliclyAccessible set; inbound internet traffic to it is not limited, contradicting \"limit inbound ... network traffic\"."
+        }
+      ]
+    },
+    "KSI-CNA-MAT": {
+      "methods": [
+        {
+          "check": "aws.ec2.security_groups_no_public_admin_ingress",
+          "rationale": "Fails when SSH or RDP is open to the internet; an exposed administrative port contradicts \"a minimal attack surface\"."
+        },
+        {
+          "check": "aws.rds.not_publicly_accessible",
+          "rationale": "Fails when a database instance has PubliclyAccessible set; an internet-facing database contradicts \"a minimal attack surface\"."
+        }
+      ]
+    }
+  }
+}

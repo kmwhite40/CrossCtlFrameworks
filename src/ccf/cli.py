@@ -489,7 +489,7 @@ def notify_digest() -> None:
 
     async def _run() -> None:
         async with session_scope() as session:
-            counts = await digest.run(session, today=datetime.now(UTC).date())
+            counts = await digest.run_all(session, today=datetime.now(UTC).date())
         console.print(f"[green]Alert digest complete[/green] — {json.dumps(counts)}")
 
     asyncio.run(_run())
@@ -1095,15 +1095,36 @@ app.add_typer(fedramp20x_app, name="fedramp20x")
 
 @fedramp20x_app.command(name="seed-ksi")
 def fr20x_seed_ksi(
-    path: Path = typer.Option(None, "--path", help="Catalog JSON (defaults to bundled seed)"),
+    rules_dir: Path = typer.Option(
+        None, "--rules-dir", help="Vendored FedRAMP rules directory (defaults to bundled)"
+    ),
+    overlay: Path = typer.Option(
+        None, "--rules-overlay", help="Concord validation-rule overlay (defaults to bundled)"
+    ),
 ) -> None:
-    """Seed / refresh the FedRAMP 20x KSI catalog (idempotent)."""
+    """Seed / refresh the KSI catalog from FedRAMP's Consolidated Rules (idempotent).
+
+    Indicators the dataset no longer defines are retired, never deleted.
+    """
     from .fedramp20x.catalog import seed_ksis  # noqa: PLC0415
 
     async def _run() -> None:
         async with session_scope() as session:
-            result = await seed_ksis(session, path)
+            result = await seed_ksis(session, rules_dir, overlay)
         console.print(f"[green]KSI catalog seeded[/green] — {result}")
+
+    asyncio.run(_run())
+
+
+@fedramp20x_app.command(name="marketplace-refresh")
+def fr20x_marketplace_refresh() -> None:
+    """Refresh FedRAMP Marketplace reference data now (the scheduler does it daily)."""
+    from .fedramp20x.marketplace import refresh  # noqa: PLC0415
+
+    async def _run() -> None:
+        async with session_scope() as session:
+            result = await refresh(session)
+        console.print(f"Marketplace: {result}")
 
     asyncio.run(_run())
 
@@ -1135,7 +1156,8 @@ def fr20x_validate(system_id: int = typer.Option(..., "--system-id")) -> None:
     results, score = asyncio.run(_run())
     console.print(
         f"[green]Validated {len(results)} KSIs[/green] — "
-        f"readiness {score['readiness_pct']}% ({score['status']})"
+        f"readiness {score['readiness_pct'] if score['readiness_pct'] is not None else '—'}"
+        f"{'%' if score['readiness_pct'] is not None else ''} ({score['status']})"
     )
     console.print_json(json.dumps(results, default=str))
 
@@ -1181,22 +1203,11 @@ def fr20x_export(
 @fedramp20x_app.command(name="list-gaps")
 def fr20x_gaps(system_id: int = typer.Option(..., "--system-id")) -> None:
     """List KSIs that are failing, warning, or need manual/assessor review."""
-    from .models import KSI, KSIState  # noqa: PLC0415
+    from .fedramp20x.readiness import open_gaps  # noqa: PLC0415
 
-    async def _run() -> list[dict[str, object]]:
+    async def _run() -> list[dict[str, str]]:
         async with session_scope() as session:
-            rows = (
-                await session.execute(
-                    select(KSI.identifier, KSI.name, KSIState.status)
-                    .join(KSIState, KSIState.ksi_id == KSI.id)
-                    .where(
-                        KSIState.system_id == system_id,
-                        KSIState.status.in_(("fail", "warn", "manual_review_required")),
-                    )
-                    .order_by(KSI.sort_order)
-                )
-            ).all()
-            return [{"ksi": r[0], "name": r[1], "status": r[2]} for r in rows]
+            return await open_gaps(session, system_id=system_id)
 
     gaps = asyncio.run(_run())
     if not gaps:
@@ -1501,7 +1512,8 @@ def package_list() -> None:
             return [(p.id, p.label, p.readiness_pct, p.fact_count) for p in rows]
 
     for pid, label, pct, facts in asyncio.run(_run()):
-        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {pct}%, {facts} facts")
+        shown = "—" if pct is None else f"{pct}%"
+        console.print(f"[cyan]#{pid}[/cyan] {label} — readiness {shown}, {facts} facts")
 
 
 @package_app.command(name="diff")

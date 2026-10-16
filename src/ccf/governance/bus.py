@@ -15,11 +15,12 @@ import json
 from typing import Any
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
-from ..models import Event, Notification, Webhook
+from ..models import Event, Notification, NotificationRead, Webhook
 from . import delivery
 
 log = get_logger(__name__)
@@ -87,6 +88,10 @@ async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
             log.warning("webhook.dispatch_failed", url=hook.url, error=str(e)[:200])
 
 
+#: Higher is more severe; an update that raises severity re-surfaces an alert.
+_SEVERITY_RANK = {"info": 0, "warning": 1, "critical": 2}
+
+
 async def notify(
     session: AsyncSession,
     *,
@@ -111,6 +116,15 @@ async def notify(
             await session.execute(select(Notification).where(Notification.dedupe_key == dedupe_key))
         ).scalar_one_or_none()
         if existing is not None:
+            if _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity, 0):
+                # Escalated (a warning became critical): it is news again, so
+                # it comes back for everyone who had read the milder version.
+                await session.execute(
+                    delete(NotificationRead).where(
+                        NotificationRead.notification_id == existing.id
+                    )
+                )
+                existing.read_at = None
             existing.title = title[:512]
             existing.severity = severity
             existing.body = body
@@ -126,8 +140,19 @@ async def notify(
         entity_id=eid,
         dedupe_key=dedupe_key,
     )
-    session.add(n)
-    await session.flush()
+    try:
+        # Its own savepoint: under a tenant's RLS a row with this (globally
+        # unique) dedupe_key can exist yet be invisible -- another tenant's, or
+        # an org-less one migration 0097 has not removed yet. The insert then
+        # violates the unique index; contained here, that costs this one alert
+        # instead of rolling back the caller's whole step (an org's entire
+        # digest, every cycle).
+        async with session.begin_nested():
+            session.add(n)
+            await session.flush()
+    except IntegrityError:
+        log.warning("notify.dedupe_key_hidden_collision", dedupe_key=dedupe_key, org_id=org_id)
+        return None
     # Best-effort outbound delivery (Slack/Teams webhook) for severe alerts.
     await delivery.deliver(n)
     return n

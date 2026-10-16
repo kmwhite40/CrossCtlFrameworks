@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -264,34 +265,117 @@ async def _check_auth_posture(_s: AsyncSession) -> Check:
 
 async def _check_ksi_catalog_file(_s: AsyncSession) -> Check:
     try:
-        from ..fedramp20x.catalog import catalog_path, load_records  # noqa: PLC0415
+        from ..fedramp20x.catalog import load_records  # noqa: PLC0415
+        from ..fedramp20x.rules import load_rules  # noqa: PLC0415
 
-        path = catalog_path()
+        version = load_rules().version
         n = len(load_records())
-        return Check("fedramp20x_ksi_catalog_file", PASS, f"Catalog readable ({n} KSIs) at {path}.")
+        return Check(
+            "fedramp20x_ksi_catalog_file",
+            PASS,
+            f"FedRAMP Consolidated Rules {version} verified ({n} KSIs).",
+        )
     except Exception as exc:
         return Check(
             "fedramp20x_ksi_catalog_file",
             FAIL,
             f"Catalog not loadable: {exc}",
-            "Ensure data/fedramp_20x_ksi_catalog.json exists.",
+            "Re-vendor ccf/fedramp20x/rules_data/ and its MANIFEST.json.",
         )
+
+
+async def _overlay_drift(session: AsyncSession) -> list[str]:
+    """Current KSIs whose seeded rule/methods differ from ``ksi_rules.json``.
+
+    An unreadable overlay is reported as drift (named), not swallowed.
+    """
+    fields = (
+        "rule",
+        "methods",
+        "validation_method",
+        "validation_frequency",
+        "automation_level",
+    )
+    try:
+        from ..fedramp20x.catalog import load_records  # noqa: PLC0415
+
+        want = {r["identifier"]: tuple(r.get(f) for f in fields) for r in load_records()}
+    except Exception as exc:
+        return [f"(overlay unreadable: {exc})"]
+    seeded = (
+        await session.execute(
+            text(
+                "SELECT identifier, rule, methods, validation_method, "
+                "validation_frequency, automation_level FROM ccf.ksis "
+                "WHERE retired_at IS NULL"
+            )
+        )
+    ).all()
+    # By name, so a column dropped from the SELECT raises instead of comparing short.
+    return sorted(
+        str(r.identifier)
+        for r in seeded
+        if r.identifier in want and tuple(r._mapping[f] for f in fields) != want[r.identifier]
+    )
 
 
 async def _check_ksi_loaded(session: AsyncSession) -> Check:
-    n = await _count(session, "ccf.ksis")
-    if n is None:
+    if not await _regclass(session, "ccf.ksis"):
         return Check(
             "fedramp20x_ksi_catalog_loaded", FAIL, "ksis table missing.", "Run migrations."
         )
-    if n == 0:
+    rows = (
+        await session.execute(
+            text("SELECT identifier, source FROM ccf.ksis WHERE retired_at IS NULL")
+        )
+    ).all()
+    current = {r[0] for r in rows}
+    if not current:
         return Check(
             "fedramp20x_ksi_catalog_loaded",
             WARN,
             "KSI catalog not seeded.",
             "Run `ccf fedramp20x seed-ksi`.",
         )
-    return Check("fedramp20x_ksi_catalog_loaded", PASS, f"{n} KSIs seeded.")
+    try:
+        from ..fedramp20x.rules import ksi_ids, load_rules  # noqa: PLC0415
+
+        rules = load_rules()
+        pinned = set(ksi_ids(rules))
+    except Exception as exc:
+        return Check("fedramp20x_ksi_catalog_loaded", WARN, f"Pinned dataset unreadable: {exc}")
+    if current != pinned:
+        stale = len(current - pinned)
+        missing = len(pinned - current)
+        return Check(
+            "fedramp20x_ksi_catalog_loaded",
+            WARN,
+            f"Seeded KSIs do not match FedRAMP Consolidated Rules {rules.version}: "
+            f"{stale} not in the dataset, {missing} of its indicators not seeded.",
+            "Run `ccf fedramp20x seed-ksi`.",
+        )
+    # Same identifiers is not the same content: a re-vendored dataset can
+    # change statements and mappings under unchanged IDs. ``source`` records
+    # the revision each row was seeded from.
+    behind = sorted(r[0] for r in rows if r[1] != rules.source_label)
+    # Nor does it cover Concord's own overlay (ksi_rules.json): a database
+    # seeded before a method was removed keeps evaluating it, raising warns
+    # the curation no longer stands behind, under a PASS.
+    if not behind:
+        behind = await _overlay_drift(session)
+    if behind:
+        return Check(
+            "fedramp20x_ksi_catalog_loaded",
+            WARN,
+            f"{len(behind)} seeded KSIs predate FedRAMP Consolidated Rules {rules.version} "
+            f"or Concord's current rule overlay: {', '.join(behind[:5])}.",
+            "Run `ccf fedramp20x seed-ksi`.",
+        )
+    return Check(
+        "fedramp20x_ksi_catalog_loaded",
+        PASS,
+        f"{len(current)} KSIs seeded from FedRAMP Consolidated Rules {rules.version}.",
+    )
 
 
 async def _check_ksi_mappings(session: AsyncSession) -> Check:
@@ -299,10 +383,15 @@ async def _check_ksi_mappings(session: AsyncSession) -> Check:
         return Check("fedramp20x_ksi_control_mappings", WARN, "ksis table missing.")
     mapped = (
         await session.execute(
-            text("SELECT count(*) FROM ccf.ksis WHERE jsonb_array_length(nist_refs) > 0")
+            text(
+                "SELECT count(*) FROM ccf.ksis"
+                " WHERE retired_at IS NULL AND jsonb_array_length(nist_refs) > 0"
+            )
         )
     ).scalar()
-    total = await _count(session, "ccf.ksis") or 0
+    total = (
+        await session.execute(text("SELECT count(*) FROM ccf.ksis WHERE retired_at IS NULL"))
+    ).scalar() or 0
     if total == 0:
         return Check("fedramp20x_ksi_control_mappings", WARN, "No KSIs seeded.")
     if mapped:
@@ -515,8 +604,10 @@ async def _check_ai_agent_governance(session: AsyncSession) -> Check:
     return Check("ai_agent_governance", PASS, "AI agent governance healthy.")
 
 
-async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
-    """The assurance graph exists **and is current**.
+async def _check_assurance_graph_freshness(
+    session: AsyncSession, organization_ids: Sequence[int] | None = None
+) -> Check:
+    """The assurance graph exists **and is current**, for every organization.
 
     This check selected ``finished_at`` and then ignored it, returning PASS for
     any graph that had ever been built successfully. A graph built once and
@@ -524,47 +615,103 @@ async def _check_assurance_graph_freshness(session: AsyncSession) -> Check:
     ``assurance_graph_freshness`` — a check asserting a property it did not
     verify, on the page an operator consults to decide whether to trust the
     platform's own view of itself.
+
+    Each organization has its own graph, so each is judged on its own latest
+    build. Reading only the single newest run platform-wide meant that in a
+    cycle over N organizations only the last one built was seen: a partial or
+    stale graph anywhere else read PASS. ``organization_ids`` narrows the check
+    to those organizations (used by tests sharing a database); the default is
+    every organization that has been built.
     """
     if not await _regclass(session, "ccf.assurance_build_runs"):
         return Check(
             "assurance_graph_freshness", FAIL, "assurance_build_runs table missing.",
             "Run migrations.",
         )
-    row = (
-        await session.execute(
-            text(
-                "SELECT node_count, edge_count, finished_at FROM ccf.assurance_build_runs "
-                "WHERE status = 'ok' ORDER BY id DESC LIMIT 1"
-            )
+    # Each organization's latest *finished* build, ``ok`` or ``partial``.
+    # Counting only ``ok`` runs made a graph that rebuilt every cycle with a
+    # part missing look either stale ("Nd old", aged from the last clean run) or
+    # healthy (PASS on an older clean run). A partial build is a build: it is
+    # aged, and its missing parts are named.
+    # ``ANY(NULL)`` is not "all", so the two scopes are two literal statements.
+    if organization_ids is None:
+        # Only live organizations: the scheduler rebuilds those alone, so a
+        # deleted organization's last run would age into a warning no rebuild
+        # can clear.
+        stmt = text(
+            "SELECT DISTINCT ON (organization_id) organization_id, node_count, "
+            "edge_count, finished_at, status, detail FROM ccf.assurance_build_runs "
+            "WHERE status IN ('ok', 'partial') AND organization_id IN "
+            "(SELECT id FROM ccf.organizations WHERE deleted_at IS NULL) "
+            "ORDER BY organization_id, id DESC"
         )
-    ).first()
-    if row is None:
+        params: dict[str, Any] = {}
+    else:
+        stmt = text(
+            "SELECT DISTINCT ON (organization_id) organization_id, node_count, "
+            "edge_count, finished_at, status, detail FROM ccf.assurance_build_runs "
+            "WHERE status IN ('ok', 'partial') AND organization_id = ANY(:orgs) "
+            "ORDER BY organization_id, id DESC"
+        )
+        params = {"orgs": list(organization_ids)}
+    rows = (await session.execute(stmt, params)).all()
+    if not rows:
         return Check(
             "assurance_graph_freshness", WARN, "Assurance graph has not been built yet.",
             "Run `ccf assurance graph-rebuild` or POST /api/assurance/graph/rebuild.",
         )
-    nodes, edges, finished_at = row[0], row[1], row[2]
-    if finished_at is None:
-        # `status = 'ok'` with no finish time is a row that cannot be aged.
+
+    def who(org: int | None) -> str:
+        return "platform" if org is None else f"org {org}"
+
+    nodes = sum(r[1] or 0 for r in rows)
+    edges = sum(r[2] or 0 for r in rows)
+    scope_text = f"{nodes} nodes, {edges} edges" + (
+        f", {len(rows)} organizations" if len(rows) > 1 else ""
+    )
+    partial = [
+        (r[0], sorted(((r[5] or {}).get("failed") or {}).keys()))
+        for r in rows if r[4] == "partial"
+    ]
+    missing = ""
+    if partial:
+        named = "; ".join(
+            f"{who(org)} ({', '.join(failed) if failed else 'a part'})"
+            for org, failed in partial
+        )
+        missing = f"; incomplete: {named} failed to build"
+    unmeasured = [r[0] for r in rows if r[3] is None]
+    if unmeasured:
+        # A finished build with no finish time is a row that cannot be aged.
         # Reported rather than treated as current: an unmeasurable age is not a
         # fresh one.
         return Check(
             "assurance_graph_freshness", WARN,
-            f"Assurance graph build recorded no finish time ({nodes} nodes, {edges} edges).",
+            f"Assurance graph build recorded no finish time for "
+            f"{', '.join(who(o) for o in unmeasured)} ({scope_text}){missing}.",
             "Rebuild the graph so its age can be established.",
         )
-    age = datetime.now(UTC) - _as_utc(finished_at)
+    now = datetime.now(UTC)
+    ages = {r[0]: now - _as_utc(r[3]) for r in rows}
+    age = max(ages.values())  # the stalest organization decides
     limit = _assurance_staleness_limit()
     if age > limit:
+        stale = ", ".join(who(o) for o, a in ages.items() if a > limit)
         return Check(
             "assurance_graph_freshness", WARN,
-            f"Assurance graph is {age.days}d old ({nodes} nodes, {edges} edges); "
-            f"expected a rebuild within {limit.days}d.",
+            f"Assurance graph is {age.days}d old for {stale} ({scope_text}); "
+            f"expected a rebuild within {limit.days}d{missing}.",
             "Enable CCF_SCHEDULER_ENABLED, or run `ccf assurance graph-rebuild`.",
+        )
+    if missing:
+        return Check(
+            "assurance_graph_freshness", WARN,
+            f"Assurance graph built {age.days}d ago ({scope_text}){missing}.",
+            "Open /assurance or /graph to read each failure, fix its source, then rebuild.",
         )
     return Check(
         "assurance_graph_freshness", PASS,
-        f"Assurance graph built {age.days}d ago ({nodes} nodes, {edges} edges).",
+        f"Assurance graph built {age.days}d ago ({scope_text}).",
     )
 
 

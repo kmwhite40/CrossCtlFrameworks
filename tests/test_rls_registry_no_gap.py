@@ -77,6 +77,10 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         "scoring_controls",
         "statement_templates",
         "ksis",
+        # FedRAMP's published Marketplace (who is authorized, at what level):
+        # one public register, identical for every tenant. Written only by the
+        # source poller; a dependency links to a row by FedRAMP ID.
+        "marketplace_products",
         "ai_action_definitions",
         "alembic_version",
     }

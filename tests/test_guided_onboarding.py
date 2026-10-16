@@ -678,6 +678,71 @@ async def test_step4_counts_the_ksis_that_are_not_passing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_step4_counts_only_what_the_certification_class_owes() -> None:
+    """Class A owes FRC-CLA-MFR's seven KSIs; a failure outside them is not a gap."""
+    from ccf.fedramp20x import catalog  # noqa: PLC0415
+
+    tag = _tag()
+    org_id, sys_id = await _mk(tag)
+    try:
+        async with session_scope() as s:
+            await catalog.seed_ksis(s)
+            system = await s.get(System, sys_id)
+            assert system is not None
+            system.certification_class = "A"
+            s.add(
+                SystemProfile(
+                    system_id=sys_id,
+                    cloud_platform="m365_gcc_high",
+                    derived_at=datetime.now(UTC),
+                    derivation=_derivation(covered=2, uncovered=0),
+                )
+            )
+            ids = dict(
+                (await s.execute(select(KSI.identifier, KSI.id))).all()
+            )
+            s.add(KSIState(system_id=sys_id, ksi_id=ids["KSI-CED-RAT"], status="pass"))
+            s.add(KSIState(system_id=sys_id, ksi_id=ids["KSI-CNA-OFA"], status="fail"))
+        step = (await _steps(sys_id))["close_gaps"]
+        assert step.state == DONE, step.detail
+    finally:
+        await _drop(org_id, sys_id)
+
+
+@pytest.mark.asyncio
+async def test_step4_does_not_count_a_retired_ksi() -> None:
+    """A KSI FedRAMP no longer defines is not outstanding work for anyone."""
+    tag = _tag()
+    org_id, sys_id = await _mk(tag)
+    try:
+        async with session_scope() as s:
+            s.add(
+                SystemProfile(
+                    system_id=sys_id,
+                    cloud_platform="m365_gcc_high",
+                    derived_at=datetime.now(UTC),
+                    derivation=_derivation(covered=2, uncovered=0),
+                )
+            )
+            ksi_pass = KSI(identifier="ZZO-R1", category="IAM", name="Current, passing")
+            ksi_gone = KSI(
+                identifier="ZZO-R2",
+                category="IAM",
+                name="Retired, failing",
+                retired_at=datetime.now(UTC),
+            )
+            s.add_all([ksi_pass, ksi_gone])
+            await s.flush()
+            s.add(KSIState(system_id=sys_id, ksi_id=ksi_pass.id, status="pass"))
+            s.add(KSIState(system_id=sys_id, ksi_id=ksi_gone.id, status="fail"))
+        step = (await _steps(sys_id))["close_gaps"]
+        assert step.state == DONE, step.detail
+        assert "key security indicators" not in step.detail
+    finally:
+        await _drop(org_id, sys_id)
+
+
+@pytest.mark.asyncio
 async def test_step4_poam_counts_equal_systems_scorecard() -> None:
     """Spec §8.5. Asserted by equality against ``systems_scorecard``'s own
     numbers, including its definition of overdue -- a second overdue count in

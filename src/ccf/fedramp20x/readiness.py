@@ -26,6 +26,10 @@ from ..models import (
     KSIState,
 )
 from ..models_waivers import Waiver
+from . import marketplace
+from . import methods as ksi_methods
+from .applicability import counted_ksi_ids, system_scope
+from .catalog import current_ksi_ids, current_ksis
 
 # Sub-score weights for the overall readiness percentage. Pass-rate dominates;
 # the rest are supporting signals. Weights sum to 1.0.
@@ -67,6 +71,12 @@ class Readiness:
     high_risk_findings: int
     expired_validations: int
     manual_review_burden: int
+    #: KSIs whose verdict is a person's (manual rule) but which a curated
+    #: automated method contradicts -- shown as ``warn``. Reported, never
+    #: blended, and still counted in ``manual_review_burden``: ``warn`` ranks
+    #: above ``manual_review_required``, so without this a failing check would
+    #: make the burden look smaller.
+    contradicted_by_methods: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -110,15 +120,27 @@ def compute_readiness(
 
     passed = sum(1 for s in states if s.status == "pass")
     failed = sum(1 for s in states if s.status == "fail")
-    manual = sum(1 for s in states if s.status == "manual_review_required")
+    manual_rule = {
+        k.id for k in ksis if ((getattr(k, "rule", None) or {}).get("kind") or "manual") == "manual"
+    }
+    contradicted = sum(1 for s in states if s.status == "warn" and s.ksi_id in manual_rule)
+    manual = (
+        sum(1 for s in states if s.status == "manual_review_required") + contradicted
+    )
     expired = sum(
         1 for s in states if s.next_validation_due is not None and s.next_validation_due < today
     )
+    # A state with no due date cannot be shown to be inside a monitoring
+    # cycle, so it is not "fresh". Every phase-one KSI carried a frequency, so
+    # this changes nothing for them; a 2026 KSI with no authored rule has no
+    # frequency, and counting it fresh forever reported 100% ConMon coverage
+    # for indicators nothing monitors.
     fresh = sum(
         1
         for s in states
         if s.status not in ("not_tested",)
-        and (s.next_validation_due is None or s.next_validation_due >= today)
+        and s.next_validation_due is not None
+        and s.next_validation_due >= today
     )
 
     automated = sum(1 for k in ksis if (k.automation_level or "") == "automated")
@@ -158,6 +180,7 @@ def compute_readiness(
         high_risk_findings=failed + dep_high_risk,
         expired_validations=expired,
         manual_review_burden=manual,
+        contradicted_by_methods=contradicted,
     )
 
     # Weighted overall (skip sub-scores that are None and renormalize).
@@ -172,13 +195,30 @@ def compute_readiness(
 async def score_system(
     session: AsyncSession, *, system_id: int, persist: bool = True
 ) -> dict[str, Any]:
-    """Load state, compute readiness, and (optionally) persist a snapshot."""
-    ksis = list((await session.execute(select(KSI))).scalars().all())
+    """Load state, compute readiness, and (optionally) persist a snapshot.
+
+    Scored on the KSIs this system's Certification Class owes
+    (:mod:`ccf.fedramp20x.applicability`): a Class A system on FedRAMP's seven,
+    not all 46. Optional and not-required KSIs are reported in ``ksi_scope``
+    beside the score and never counted in it -- their states, reviews and
+    exceptions included.
+    """
+    current = list((await session.execute(current_ksis())).scalars().all())
+    scope = await system_scope(session, system_id)
+    ksis = scope.counted(current)
+    counted_ids = {k.id for k in ksis}
     states = list(
-        (await session.execute(select(KSIState).where(KSIState.system_id == system_id)))
+        (
+            await session.execute(
+                select(KSIState).where(
+                    KSIState.system_id == system_id, KSIState.ksi_id.in_(current_ksi_ids())
+                )
+            )
+        )
         .scalars()
         .all()
     )
+    states = [s for s in states if s.ksi_id in counted_ids]
     deps = list(
         (
             await session.execute(
@@ -191,24 +231,31 @@ async def score_system(
     reviews = list(
         (
             await session.execute(
-                select(KSIAssessorReview).where(KSIAssessorReview.system_id == system_id)
+                select(KSIAssessorReview).where(
+                    KSIAssessorReview.system_id == system_id,
+                    KSIAssessorReview.ksi_id.in_(current_ksi_ids()),
+                )
             )
         )
         .scalars()
         .all()
     )
+    reviews = [rv for rv in reviews if rv.ksi_id in counted_ids]
     open_exc = len(
         [
             e
             for e in (
                 await session.execute(
                     select(KSIException).where(
-                        KSIException.system_id == system_id, KSIException.status == "open"
+                        KSIException.system_id == system_id,
+                        KSIException.status == "open",
+                        KSIException.ksi_id.in_(current_ksi_ids()),
                     )
                 )
             )
             .scalars()
             .all()
+            if e.ksi_id in counted_ids
         ]
     )
     profile = (
@@ -240,7 +287,39 @@ async def score_system(
         active_waivers=active_waiver_count,
     )
     payload = r.as_dict()
-    if persist:
+    payload.update(
+        scope.summary(current, await ksi_methods.tier0_check_status(session, system_id))
+    )
+    # Reported beside the score, never in it: dependency_readiness keeps
+    # reading the recorded status, so linking a product cannot move a score.
+    payload["marketplace_disagreements"] = await marketplace.disagreements(session, system_id)
+    # Owing no KSI is not 100% (or 0%) KSI readiness: with nothing counted the
+    # weighted blend fell back to dependency readiness alone and printed
+    # "Overall 100%" beside "Scored on 0 KSIs" for every Agency-path system.
+    # No number, a status that says why, and no snapshot or gauge to chart it.
+    # Likewise an unseeded catalog: nothing scored is not 0% or 100%.
+    no_ksis_owed = not ksis
+    if no_ksis_owed:
+        payload["readiness_pct"] = None
+        payload["status"] = "no_ksis_owed" if current else "not_started"
+        if persist:
+            # Not charted -- but nothing stale left behind either: the profile
+            # returns to not_started (unless a person parked it at a submission
+            # state) and this system's gauge series is dropped.
+            if profile is not None and profile.readiness_status not in (
+                "submitted",
+                "authorized",
+                "continuous_monitoring",
+            ):
+                profile.readiness_status = "not_started"
+                await session.flush()
+            try:
+                from ..api.metrics import FEDRAMP20X_READINESS  # noqa: PLC0415
+
+                FEDRAMP20X_READINESS.remove(str(system_id))
+            except Exception:
+                pass
+    if persist and not no_ksis_owed:
         session.add(
             FedRAMP20xReadinessSnapshot(
                 system_id=system_id,
@@ -276,3 +355,30 @@ async def score_system(
         except Exception:
             pass
     return payload
+
+
+#: KSI states that are still someone's work.
+GAP_STATUSES = ("fail", "warn", "manual_review_required")
+
+
+async def open_gaps(session: AsyncSession, *, system_id: int) -> list[dict[str, str]]:
+    """KSIs this system owes and is failing, warning on, or owes a manual review for.
+
+    Scoped exactly as :func:`score_system` counts, so the gap list never names
+    an indicator the readiness score does not.
+    """
+    counted = await counted_ksi_ids(session, system_id)
+    rows = (
+        await session.execute(
+            select(KSI.identifier, KSI.name, KSIState.status)
+            .join(KSIState, KSIState.ksi_id == KSI.id)
+            .where(
+                KSIState.system_id == system_id,
+                KSIState.status.in_(GAP_STATUSES),
+                KSI.id.in_(counted),
+            )
+            .order_by(KSI.sort_order, KSI.identifier)
+        )
+    ).all()
+    return [{"ksi": r[0], "name": r[1], "status": r[2]} for r in rows]
+

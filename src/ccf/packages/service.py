@@ -54,10 +54,16 @@ def _fact(ftype: str, key: str, value: str | None, digest: str | None = None, **
 
 
 async def _ksi_facts(session: AsyncSession, system_id: int) -> list[Fact]:
+    from ..fedramp20x.applicability import counted_ksi_ids  # noqa: PLC0415
     from ..models import KSIState  # noqa: PLC0415
 
+    # The same KSIs readiness counts, so the sealed fact set and the sealed
+    # readiness figure describe one scope.
+    counted = await counted_ksi_ids(session, system_id)
     rows = (
-        await session.execute(select(KSIState).where(KSIState.system_id == system_id))
+        await session.execute(
+            select(KSIState).where(KSIState.system_id == system_id, KSIState.ksi_id.in_(counted))
+        )
     ).scalars().all()
     return [_fact("ksi", str(r.ksi_id), r.status) for r in rows]
 

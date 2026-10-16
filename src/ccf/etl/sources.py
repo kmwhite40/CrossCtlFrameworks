@@ -210,6 +210,70 @@ DEFAULT_SOURCES += [
     for _kind, (_filename, _rule) in _CR26_KINDS_FOR_SOURCES.items()
 ]
 
+# --- FedRAMP Consolidated Rules ----------------------------------------------
+# The machine-readable ruleset the KSI catalog is built from (definitions, FRR
+# process rules, KSIs). Watched, not ingested, like the CR26 schemas beside it:
+# the vendored, hash-pinned copy under ``ccf/fedramp20x/rules_data/`` is what
+# the platform reads, and a changed upstream is a person's decision to
+# re-vendor and re-seed -- KSIs can be added, renamed or retired by it.
+_FEDRAMP_RULES_KEY = "fedramp_consolidated_rules"
+_FEDRAMP_RULES_FILE = "fedramp-consolidated-rules.json"
+
+DEFAULT_SOURCES += [
+    {
+        "key": _FEDRAMP_RULES_KEY,
+        "name": "FedRAMP Consolidated Rules for 2026 (FRD, FRR, KSI)",
+        "authority": "FedRAMP",
+        "kind": "generic",
+        "url": f"https://raw.githubusercontent.com/FedRAMP/rules/main/{_FEDRAMP_RULES_FILE}",
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": False,
+    },
+]
+
+
+# The Marketplace schema Concord validates against is vendored and sha-pinned
+# (ccf/fedramp20x/marketplace_data). It forbids unknown properties, so the first
+# field FedRAMP adds would fail every refresh; watching it means that change is
+# reported the day it happens, not discovered as stale data.
+_MARKETPLACE_SCHEMA_KEY = "fedramp_marketplace_schema"
+_MARKETPLACE_SCHEMA_FILE = "data.schema.json"
+DEFAULT_SOURCES += [
+    {
+        "key": _MARKETPLACE_SCHEMA_KEY,
+        "name": "FedRAMP Marketplace data schema",
+        "authority": "FedRAMP",
+        "kind": "generic",
+        "url": (
+            "https://raw.githubusercontent.com/FedRAMP/marketplace-fedramp-gov-data/main/"
+            f"{_MARKETPLACE_SCHEMA_FILE}"
+        ),
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": False,
+    },
+]
+
+# --- FedRAMP Marketplace ------------------------------------------------------
+# Ingested, not merely watched: see the ``marketplace`` branch of
+# ``check_source``. The scheduler's ``poll_sources`` step therefore refreshes it
+# daily with no job of its own; disabling this row is the operator's off switch.
+DEFAULT_SOURCES += [
+    {
+        "key": "fedramp_marketplace_data",
+        "name": "FedRAMP Marketplace (products, status, impact level)",
+        "authority": "FedRAMP",
+        "kind": "marketplace",
+        "url": (
+            "https://raw.githubusercontent.com/FedRAMP/marketplace-fedramp-gov-data/main/data.json"
+        ),
+        "framework_code": "FEDRAMP",
+        "enabled": True,
+        "auto_ingest": True,
+    },
+]
+
 
 def sha256_bytes(body: bytes) -> str:
     """Content digest. Shared with :mod:`ccf.packs.sync`."""
@@ -543,6 +607,31 @@ async def check_source(
             check.detail = detail
             return _finish(session, source, check, started)
 
+        elif source.kind == "marketplace" and source.auto_ingest:
+            # FedRAMP's Marketplace: reference data (who is authorized at what
+            # level), applied as it changes. Unlike a catalog, adopting it
+            # changes no compliance meaning -- dependencies only *display* it
+            # beside their recorded values (ccf.fedramp20x.marketplace).
+            from ..fedramp20x import marketplace  # noqa: PLC0415 -- import cycle
+
+            try:
+                rows = marketplace.parse(body)
+                applied = await marketplace.apply(
+                    session, rows, commit_sha=await resolve_commit_sha(source.url)
+                )
+            except Exception:
+                # The etag was advanced above; leave it so the next poll gets a
+                # real 200 and retries, instead of a 304 that would report
+                # "unchanged" over data that was never applied.
+                source.etag = previous_etag
+                raise
+            detail.update(ingested=True, **applied)
+            check.status = "ingested"
+            source.last_status = "ingested"
+            source.last_sha256 = sha
+            check.detail = detail
+            return _finish(session, source, check, started)
+
         capture_rejected = False
         if revision_data_root is not None and source.kind == "oscal_catalog":
             if source.key == _800_53_CATALOG_KEY:
@@ -672,6 +761,17 @@ def _oscal_spec_seed_digests() -> dict[str, str]:
     return {_OSCAL_SPEC_SSP_KEY: str(sha)}
 
 
+_FEDRAMP_RULES_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "fedramp20x" / "rules_data" / "MANIFEST.json"
+)
+
+
+def _fedramp_rules_seed_digests() -> dict[str, str]:
+    """``fedramp_consolidated_rules`` -> the sha256 the vendored manifest pins."""
+    manifest = json.loads(_FEDRAMP_RULES_MANIFEST.read_text(encoding="utf-8"))
+    return {_FEDRAMP_RULES_KEY: str(manifest["files"][_FEDRAMP_RULES_FILE]["sha256"])}
+
+
 #: ``CatalogSource.key`` -> the reader that can produce its seed-time
 #: ``last_sha256``. One mechanism for every row that must not start life with
 #: a NULL drift baseline (see :func:`seed_sources`'s docstring for why that is
@@ -680,9 +780,22 @@ def _oscal_spec_seed_digests() -> dict[str, str]:
 #: covers every key drawn from one manifest, so :func:`seed_sources` reads
 #: that manifest at most once per call no matter how many of its keys are
 #: being newly created.
+_MARKETPLACE_MANIFEST = (
+    Path(__file__).resolve().parents[1] / "fedramp20x" / "marketplace_data" / "MANIFEST.json"
+)
+
+
+def _marketplace_schema_seed_digests() -> dict[str, str]:
+    manifest = json.loads(_MARKETPLACE_MANIFEST.read_text(encoding="utf-8"))
+    sha = manifest["files"][_MARKETPLACE_SCHEMA_FILE]["sha256"]
+    return {_MARKETPLACE_SCHEMA_KEY: str(sha)}
+
+
 _SEED_DIGEST_READERS: dict[str, Callable[[], dict[str, str]]] = {
     **{f"{_CR26_KEY_PREFIX}{kind}": _cr26_seed_digests for kind in _CR26_KINDS_FOR_SOURCES},
     _OSCAL_SPEC_SSP_KEY: _oscal_spec_seed_digests,
+    _FEDRAMP_RULES_KEY: _fedramp_rules_seed_digests,
+    _MARKETPLACE_SCHEMA_KEY: _marketplace_schema_seed_digests,
 }
 
 

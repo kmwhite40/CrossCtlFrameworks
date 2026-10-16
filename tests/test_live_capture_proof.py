@@ -7,7 +7,8 @@ ships one. It then read that fact from four self-reported status columns of
 four columns with no credentials at all: ``POST /connector-configs`` creates a
 row, ``POST /connector-configs/{id}/sync`` is a mock that sets ``status``,
 ``last_sync``, ``objects_discovered`` and ``error_message``. Both are gated on
-``get_principal`` only, so **two API calls from a viewer** manufactured an
+``get_principal`` only, so **two API calls from a viewer** (today a
+control_owner -- the auth gate now refuses a viewer any write) manufactured an
 "evidenced by automated capture" claim in a document filed with a federal
 regulator.
 
@@ -151,7 +152,7 @@ class _Tenant:
 
 @asynccontextmanager
 async def _tenant(
-    name: str, prefix: str, cloud_platform: str, *, role: str = "viewer"
+    name: str, prefix: str, cloud_platform: str, *, role: str = "control_owner"
 ) -> AsyncIterator[_Tenant]:
     """One org + a role-bearing user + a system with a declared cloud platform.
 
@@ -252,7 +253,8 @@ def _texts(entries: list[SSPControlEntry]) -> dict[str, str]:
 async def test_two_api_calls_and_no_credentials_do_not_evidence_anything() -> None:
     """The whole change in one test.
 
-    A ``viewer`` -- the least-privileged authenticated role -- creates a
+    A ``control_owner`` -- the least-privileged role that may still write --
+    creates a
     connector with no credential and calls the mock sync. Those two calls write
     exactly the four columns the backing ladder reads, and nothing else: no
     ``CaptureSnapshot`` exists, so nothing has actually been captured. The SSP

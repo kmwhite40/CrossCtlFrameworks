@@ -143,7 +143,9 @@ async def test_digest_db_failure_does_not_take_out_monitoring_scan(
         await session.execute(text("SELECT 1/0"))  # type: ignore[attr-defined]
         return {}
 
-    monkeypatch.setattr(digest_mod, "run", flaky_digest_run)
+    # The global digest step is now platform-only (catalog drift); each
+    # organization's digest runs in its own per-tenant slice.
+    monkeypatch.setattr(digest_mod, "run_platform", flaky_digest_run)
 
     # A stub that still does a real DB round trip (proving the transaction is
     # actually usable, not just that Python control flow reached the call)

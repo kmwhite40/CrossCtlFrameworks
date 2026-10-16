@@ -28,7 +28,6 @@ from sqlalchemy.orm import selectinload
 
 from ..constants import POAM_ACTIVE_STATUSES
 from ..models import (
-    KSI,
     POAM,
     FedRAMP20xProfile,
     FedRAMPDependency,
@@ -38,6 +37,9 @@ from ..models import (
     KSIValidationResult,
     System,
 )
+from . import marketplace
+from .applicability import SystemScope, system_scope
+from .catalog import current_ksi_ids, current_ksis
 from .readiness import score_system
 
 
@@ -61,6 +63,15 @@ async def _latest_validation(
     return latest
 
 
+def _applicability(scope: SystemScope, identifier: str) -> dict[str, Any]:
+    found = scope.by_identifier.get(identifier)
+    return {
+        "status": scope.status(identifier),
+        "rule": found.rule if found else None,
+        "note": found.note if found else None,
+    }
+
+
 async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, Any]:
     """Build the structured 20x authorization package for a system."""
     system = (
@@ -74,7 +85,14 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
             select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
         )
     ).scalar_one_or_none()
-    ksis = list((await session.execute(select(KSI).order_by(KSI.sort_order))).scalars().all())
+    # Per-KSI state, validation and review are looked up through ``ksis``, so
+    # restricting ``ksis`` to current indicators is what keeps retired ones out;
+    # the exception list below is emitted as-is and is filtered itself.
+    # Only what this system's Certification Class owes (required or optional):
+    # a Class A package carries FedRAMP's seven KSIs, not 39 more it was never
+    # asked to address shown as "not_tested".
+    scope = await system_scope(session, system_id)
+    ksis = scope.owed(list((await session.execute(current_ksis())).scalars().all()))
     states = {
         s.ksi_id: s
         for s in (await session.execute(select(KSIState).where(KSIState.system_id == system_id)))
@@ -106,7 +124,14 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
         .all()
     )
     exceptions = list(
-        (await session.execute(select(KSIException).where(KSIException.system_id == system_id)))
+        (
+            await session.execute(
+                select(KSIException).where(
+                    KSIException.system_id == system_id,
+                    KSIException.ksi_id.in_(current_ksi_ids()),
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -124,6 +149,10 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
     # Readiness without persisting a snapshot (this is a read/export path).
     readiness = await score_system(session, system_id=system_id, persist=False)
 
+    owed_ids = {k.id for k in ksis}
+    mkt = await marketplace.products_by_id(
+        session, {d.marketplace_id for d in deps if d.marketplace_id}
+    )
     ksi_entries: list[dict[str, Any]] = []
     conmon_counts: dict[str, int] = {}
     for k in ksis:
@@ -144,6 +173,7 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
                 "automation_level": k.automation_level,
                 "nist_refs": list(k.nist_refs or []),
                 "cmmc_refs": list(k.cmmc_refs or []),
+                "applicability": _applicability(scope, k.identifier),
                 "status": status,
                 "last_validated_at": st.last_validated_at.isoformat()
                 if st and st.last_validated_at
@@ -177,7 +207,8 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
         "disclaimer": (
             "Foundation output. Not an official FedRAMP submission. OSCAL-shaped "
             "sections are validated against a Concord OSCAL-subset schema, not the "
-            "official OSCAL schema. KSI catalog is representative and evolving."
+            "official OSCAL schema. KSI statements and control mappings are FedRAMP's "
+            "Consolidated Rules; validation rules are Concord's."
         ),
         "system": {
             "id": system.id,
@@ -226,6 +257,13 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
                 "boundary_role": d.boundary_role,
                 "dependency_risk": d.dependency_risk,
                 "inherited_controls": list(d.inherited_controls or []),
+                "marketplace_id": d.marketplace_id,
+                "marketplace_status": (
+                    mkt[d.marketplace_id].status if d.marketplace_id in mkt else None
+                ),
+                "marketplace_findings": [
+                    f.as_dict() for f in marketplace.compare(d, mkt.get(d.marketplace_id or ""))
+                ],
             }
             for d in deps
         ],
@@ -237,6 +275,9 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
                 "expires_on": e.expires_on.isoformat() if e.expires_on else None,
             }
             for e in exceptions
+            # Only exceptions on KSIs this package carries; one on a KSI the
+            # Class/Path does not owe would sit beside "Open exceptions: 0".
+            if e.ksi_id in owed_ids
         ],
         "poams": [
             {
@@ -250,7 +291,7 @@ async def build_package(session: AsyncSession, *, system_id: int) -> dict[str, A
         ],
         "continuous_monitoring": {
             "ksi_state_counts": conmon_counts,
-            "validation_history_count": len(latest_val),
+            "validation_history_count": sum(1 for i in latest_val if i in owed_ids),
         },
     }
 
@@ -277,7 +318,13 @@ def render_markdown(pkg: dict[str, Any]) -> str:
         f"- **ATO status:** {sys.get('ato_status') or 'n/a'}",
         "",
         "## 20x Readiness",
-        f"- **Overall:** {r['readiness_pct']}%  ·  **Status:** {r['status']}",
+        f"- **KSI scope:** {r.get('ksi_scope_basis') or 'n/a'}",
+        *(
+            [f"- **Scope problem:** {r['ksi_scope_problem']}"]
+            if r.get("ksi_scope_problem")
+            else []
+        ),
+        f"- **Overall:** {pct('readiness_pct')}  ·  **Status:** {r['status']}",
         f"- **KSI pass rate:** {pct('ksi_pass_rate')}  ·  "
         f"**Automation coverage:** {pct('automation_coverage')}",
         f"- **Evidence completeness:** {pct('evidence_completeness')}  ·  "
@@ -301,12 +348,15 @@ def render_markdown(pkg: dict[str, Any]) -> str:
     lines += [
         "## Key Security Indicators",
         "",
-        "| KSI | Category | Status | Assessor |",
-        "|---|---|---|---|",
+        "| KSI | Category | Applicability | Status | Assessor |",
+        "|---|---|---|---|---|",
     ]
     for k in pkg["ksis"]:
         rv = (k.get("assessor_review") or {}).get("status", "not_reviewed")
-        lines.append(f"| {k['identifier']} | {k['category']} | {k['status']} | {rv} |")
+        ap = (k.get("applicability") or {}).get("status", "unscoped")
+        lines.append(
+            f"| {k['identifier']} | {k['category']} | {ap} | {k['status']} | {rv} |"
+        )
     lines += ["", "## Dependencies", ""]
     if pkg["dependencies"]:
         lines += ["| Name | Provider | FedRAMP status | Risk |", "|---|---|---|---|"]
@@ -369,7 +419,14 @@ def to_oscal_shaped(pkg: dict[str, Any]) -> dict[str, Any]:
                     "uuid": "ksi-result-1",
                     "title": "KSI Validation Results",
                     "props": [
-                        {"name": "readiness-pct", "value": str(pkg["readiness"]["readiness_pct"])},
+                        {
+                            "name": "readiness-pct",
+                            "value": (
+                                "not-applicable"
+                                if pkg["readiness"]["readiness_pct"] is None
+                                else str(pkg["readiness"]["readiness_pct"])
+                            ),
+                        },
                         {"name": "readiness-status", "value": pkg["readiness"]["status"]},
                         {
                             "name": "active-waivers",
@@ -480,6 +537,10 @@ def to_docx(pkg: dict[str, Any]) -> bytes:
 
     r = pkg["readiness"]
     doc.add_heading("20x Readiness", level=1)
+    if r.get("ksi_scope_basis"):
+        doc.add_paragraph(f"KSI scope: {r['ksi_scope_basis']}")
+    if r.get("ksi_scope_problem"):
+        doc.add_paragraph(f"Scope problem: {r['ksi_scope_problem']}")
     for label, key in (
         ("Overall readiness", "readiness_pct"),
         ("Lifecycle status", "status"),
@@ -496,19 +557,24 @@ def to_docx(pkg: dict[str, Any]) -> bytes:
         p = doc.add_paragraph()
         run = p.add_run(f"{label}: ")
         run.bold = True
-        p.add_run(str(r.get(key)))
+        value = r.get(key)
+        p.add_run("—" if value is None else str(value))
 
     doc.add_heading("Key Security Indicators", level=1)
-    table = doc.add_table(rows=1, cols=4)
+    table = doc.add_table(rows=1, cols=5)
     table.style = "Light Grid Accent 1"
     hdr = table.rows[0].cells
-    hdr[0].text, hdr[1].text, hdr[2].text, hdr[3].text = "KSI", "Category", "Status", "Assessor"
+    for cell, text in zip(
+        hdr, ("KSI", "Category", "Applicability", "Status", "Assessor"), strict=True
+    ):
+        cell.text = text
     for k in pkg["ksis"]:
         row = table.add_row().cells
         row[0].text = k["identifier"]
         row[1].text = k["category"]
-        row[2].text = k["status"]
-        row[3].text = (k.get("assessor_review") or {}).get("status", "not_reviewed")
+        row[2].text = (k.get("applicability") or {}).get("status", "unscoped")
+        row[3].text = k["status"]
+        row[4].text = (k.get("assessor_review") or {}).get("status", "not_reviewed")
 
     if pkg["dependencies"]:
         doc.add_heading("Authorized dependencies", level=1)

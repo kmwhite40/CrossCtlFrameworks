@@ -63,6 +63,7 @@ SYSTEM_READS = [
     "/api/assurance/graph/systems/{sid}",
     "/api/fedramp/20x/systems/{sid}/authorization-delta",
     "/api/fedramp/20x/systems/{sid}/dependencies",
+    "/api/fedramp/20x/systems/{sid}/requirements",
     "/api/fedramp/20x/systems/{sid}/package",
     "/api/fedramp/20x/systems/{sid}/readiness",
     "/api/fedramp/20x/systems/{sid}/validations",

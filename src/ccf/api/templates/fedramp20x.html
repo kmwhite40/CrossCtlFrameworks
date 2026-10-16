@@ -13,12 +13,16 @@
     <div class="row between">
       <div>
         <div class="card__title">No KSI catalog loaded</div>
-        <div class="dim" style="margin-top:4px">Seed the FedRAMP 20x KSI catalog to begin.</div>
+        <div class="dim" style="margin-top:4px">
+          {% if can_seed %}Seed the FedRAMP 20x KSI catalog to begin.{% else %}The catalog is shared by every organization, so a platform operator seeds it: <code>ccf fedramp20x seed-ksi</code>.{% endif %}
+        </div>
       </div>
+      {% if can_seed %}
       <button class="btn btn--primary" hx-post="/api/fedramp/20x/ksis/seed" hx-swap="none"
               hx-on::after-request="window.location.reload()">
         <i data-lucide="download"></i> Seed KSI catalog
       </button>
+      {% endif %}
     </div>
   </div></div>
 {% else %}
@@ -60,17 +64,31 @@
   <h2 class="card__title" style="margin:0">20x readiness</h2>
   <span class="card__subtitle">Status: <strong title="Stored value: {{ readiness.status }}">{{ readiness.status | cr26_label }}</strong></span>
 </div>
-
-<div class="cols-4" style="margin-bottom:16px">
-  <div class="kpi"><div class="kpi__label">Overall</div><div class="kpi__value">{{ readiness.readiness_pct }}%</div></div>
-  <div class="kpi"><div class="kpi__label">KSI pass rate</div><div class="kpi__value">{{ readiness.ksi_pass_rate if readiness.ksi_pass_rate is not none else '—' }}%</div></div>
-  <div class="kpi"><div class="kpi__label">Automation</div><div class="kpi__value">{{ readiness.automation_coverage if readiness.automation_coverage is not none else '—' }}%</div></div>
-  <div class="kpi"><div class="kpi__label">Evidence</div><div class="kpi__value">{{ readiness.evidence_completeness if readiness.evidence_completeness is not none else '—' }}%</div></div>
+{% set scope = readiness.ksi_scope %}
+<div class="card__subtitle" style="margin:-4px 0 12px" data-testid="ksi-scope">
+  <p style="margin:0 0 4px">{{ readiness.ksi_scope_basis }}</p>
+  {% if readiness.ksi_scope_problem %}<p style="margin:0 0 4px"><strong>Scope problem:</strong> {{ readiness.ksi_scope_problem }}</p>{% endif %}
+  <p style="margin:0 0 4px">
+    Scored on {{ readiness.ksi_total }} KSI{{ '' if readiness.ksi_total == 1 else 's' }}:
+    {%- if scope.required %} {{ scope.required }} required{% endif %}
+    {%- if scope.unscoped %}{{ ',' if scope.required }} {{ scope.unscoped }} unscoped{% if readiness.certification_class and not readiness.ksi_scope_problem %} (current KSIs FedRAMP's pinned rules do not define — re-seed the catalog){% endif %}{% endif %}.
+    {%- if scope.optional %} {{ scope.optional }} optional, reported but not scored.{% endif %}
+    {%- if scope.not_required %} {{ scope.not_required }} not required.{% endif %}
+  </p>
+  {% set auto = readiness.automation_requirement %}
+  {% if auto %}<p style="margin:0">Automated validation ({{ auto.rule }}): {% if auto.min_automated_methods_per_ksi %}each KSI {{ auto.force }} have at least {{ auto.min_automated_methods_per_ksi }} automated method{{ '' if auto.min_automated_methods_per_ksi == 1 else 's' }}; {{ auto.ksis_meeting }} of {{ auto.ksis_owed }} do.{% else %}{{ auto.force }} — optional for this class.{% endif %}</p>{% endif %}
 </div>
 
 <div class="cols-4" style="margin-bottom:16px">
-  <div class="kpi"><div class="kpi__label">Assessor</div><div class="kpi__value">{{ readiness.assessor_completion if readiness.assessor_completion is not none else '—' }}%</div></div>
-  <div class="kpi"><div class="kpi__label">Dependencies</div><div class="kpi__value">{{ readiness.dependency_readiness if readiness.dependency_readiness is not none else '—' }}%</div></div>
+  <div class="kpi"><div class="kpi__label">Overall</div><div class="kpi__value">{{ readiness.readiness_pct ~ '%' if readiness.readiness_pct is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">KSI pass rate</div><div class="kpi__value">{{ readiness.ksi_pass_rate ~ '%' if readiness.ksi_pass_rate is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Automation</div><div class="kpi__value">{{ readiness.automation_coverage ~ '%' if readiness.automation_coverage is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Evidence</div><div class="kpi__value">{{ readiness.evidence_completeness ~ '%' if readiness.evidence_completeness is not none else '—' }}</div></div>
+</div>
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Assessor</div><div class="kpi__value">{{ readiness.assessor_completion ~ '%' if readiness.assessor_completion is not none else '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Dependencies</div><div class="kpi__value">{{ readiness.dependency_readiness ~ '%' if readiness.dependency_readiness is not none else '—' }}</div></div>
   <div class="kpi"><div class="kpi__label">High-risk findings</div><div class="kpi__value {% if readiness.high_risk_findings %}kpi__value--danger{% endif %}">{{ readiness.high_risk_findings }}</div></div>
   <div class="kpi"><div class="kpi__label">Manual review</div><div class="kpi__value">{{ readiness.manual_review_burden }}</div></div>
 </div>
@@ -109,16 +127,34 @@
     <div class="card__subtitle">Underlying IaaS/PaaS/SaaS the offering relies on.</div></div>
   <div class="card__body">
     <table class="data">
-      <thead><tr><th>Name</th><th>Provider</th><th>Type</th><th>FedRAMP status</th><th>Risk</th></tr></thead>
+      <thead><tr><th>Name</th><th>Provider</th><th>Type</th><th>FedRAMP status</th><th>Marketplace</th><th>Risk</th></tr></thead>
       <tbody>
       {% for d in dependencies %}
         <tr>
           <td>{{ d.name }}</td><td class="dim">{{ d.provider or '' }}</td><td class="dim">{{ d.service_type or '' }}</td>
           <td><span class="chip {{ 'chip--ok' if d.fedramp_status == 'authorized' else ('chip--warn' if d.fedramp_status in ('in_process','unknown') else 'chip--err') }}" title="Stored value: {{ d.fedramp_status }}">{{ d.fedramp_status | cr26_label }}</span></td>
+          <td data-testid="dep-marketplace">
+            {% set m = dep_marketplace.get(d.id) %}
+            {% if m and m.product %}
+              <a href="{{ m.product.url }}" rel="noopener" target="_blank">{{ m.product.status }}{% if m.product.impact_level %} · {{ m.product.impact_level }}{% endif %}{% if m.product.auth_type %} · {{ m.product.auth_type }}{% endif %}</a>
+              <div class="dim" style="font-size:12px">FedRAMP data as of {{ (m.product.refreshed_at or '')[:10] }}</div>
+              <form method="post" action="/fedramp20x/{{ system_id }}/dependencies/{{ d.id }}/marketplace" style="display:inline">
+                <input type="hidden" name="marketplace_id" value="">
+                <button class="btn btn--ghost" type="submit" title="Unlink from the Marketplace record">Unlink</button>
+              </form>
+            {% elif d.marketplace_id %}<span class="dim">{{ d.marketplace_id }} (not held)</span>
+            {% else %}
+              <form method="post" action="/fedramp20x/{{ system_id }}/dependencies/{{ d.id }}/marketplace" class="row" style="gap:4px">
+                <input aria-label="FedRAMP Marketplace ID" name="marketplace_id" placeholder="FedRAMP ID (e.g. F1607067912)" size="18">
+                <button class="btn btn--ghost" type="submit">Link</button>
+              </form>
+            {% endif %}
+            {% for f in (m.findings if m else []) %}<div><span class="chip chip--warn" title="Recorded: {{ f.recorded }} · Marketplace: {{ f.marketplace }}">{{ f.message }}</span></div>{% endfor %}
+          </td>
           <td class="dim">{{ d.dependency_risk or '' }}</td>
         </tr>
       {% else %}
-        <tr><td colspan="5" class="dim">No dependencies recorded.</td></tr>
+        <tr><td colspan="6" class="dim">No dependencies recorded.</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -132,6 +168,34 @@
     </form>
   </div>
 </section>
+
+{% if requirements %}
+<section class="card" style="margin-bottom:12px" data-testid="frr-scope">
+  <div class="card__header"><div class="card__title">FedRAMP requirements owed</div>
+    <div class="card__subtitle">{{ requirements.basis }}</div></div>
+  <div class="card__body">
+    {% if requirements.owed or requirements.conditional %}
+    <p style="margin:0 0 8px">
+      {{ requirements.owed | length }} owed in every scenario still possible, {{ requirements.owed | selectattr('in_force') | list | length }} of them in force today{% if requirements.by_force %} ({% for f, n in requirements.by_force %}{{ n }} {{ f }}{{ ', ' if not loop.last }}{% endfor %}){% endif %}{% if requirements.conditional %}; {{ requirements.conditional | length }} more depending on certification type{% endif %}.
+    </p>
+    <details>
+      <summary>Show requirements</summary>
+      <table class="data">
+        <thead><tr><th>ID</th><th>Requirement</th><th>Force</th><th>Applies</th></tr></thead>
+        <tbody>
+        {% for r in requirements.owed %}
+          <tr><td><code>{{ r.id }}</code></td><td>{{ r.name }}</td><td>{{ r.force or 'not stated for this class' }}</td><td class="dim">always{% if not r.in_force %}; in force from {{ r.effective.values() | map(attribute='obtain') | select | max }}{% endif %}</td></tr>
+        {% endfor %}
+        {% for r in requirements.conditional %}
+          <tr><td><code>{{ r.id }}</code></td><td>{{ r.name }}</td><td>{{ r.force or 'not stated for this class' }}</td><td class="dim">only {{ r.scenarios | join(', ') }}{% if not r.in_force %}; in force from {{ r.effective.values() | map(attribute='obtain') | select | max }}{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
 
 <section class="card" style="margin-bottom:12px">
   <div class="card__header"><div class="card__title">Assessor review</div>
@@ -154,7 +218,7 @@
 
 <section class="card" style="margin-bottom:12px">
   <div class="card__header"><div class="card__title">KSI exceptions</div>
-    <div class="card__subtitle">Documented deviations (risk acceptances) that count against readiness.</div></div>
+    <div class="card__subtitle">Documented deviations (risk acceptances). Those on KSIs this system owes count against readiness.</div></div>
   <div class="card__body">
     <table class="data">
       <thead><tr><th>KSI</th><th>Status</th><th>Rationale</th></tr></thead>
@@ -194,7 +258,11 @@
       {% for k in items %}
         <tr>
           <td><code>{{ k.identifier }}</code></td>
-          <td>{{ k.name }}</td>
+          <td>{{ k.name }}
+            {% set ap = applicability.get(k.id) %}
+            {% if ap == 'not_required' %}<span class="chip chip--ghost" title="{{ readiness.ksi_scope_basis }}">not required</span>
+            {% elif ap == 'optional' %}<span class="chip chip--ghost" title="FedRAMP marks this KSI Optional for Class {{ readiness.certification_class }}">optional</span>{% endif %}
+          </td>
           <td class="dim">{{ k.automation_level }}</td>
           <td class="dim">{{ k.nist_refs | join(', ') }}</td>
           {% if system_id %}

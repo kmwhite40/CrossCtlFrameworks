@@ -143,6 +143,7 @@ async def _run_per_tenant_cycle(
     pack_sync_results: list[dict[str, Any]] = []
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
+    digest_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
     posture_results: list[dict[str, Any]] = []
@@ -190,6 +191,24 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "conmon"})
+        try:
+            # This organization's alerts, stored with its organization_id under
+            # its own RLS tenant, so its members' inboxes can show them.
+            async with session.begin_nested():
+                digest_results.append(
+                    {
+                        "organization_id": org_id,
+                        **await digest.run(session, today=today, org_id=org_id),
+                    }
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="digest",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "digest"})
         try:
             async with session.begin_nested():
                 result = await control_tests.run_due(session, today=today, org_id=org_id)
@@ -272,6 +291,7 @@ async def _run_per_tenant_cycle(
                         "nodes": run.node_count,
                         "edges": run.edge_count,
                         "status": run.status,
+                        "failed": sorted(((run.detail or {}).get("failed") or {}).keys()),
                     }
                 )
         except Exception as e:
@@ -309,6 +329,14 @@ async def _run_per_tenant_cycle(
             "organizations_processed": [r["organization_id"] for r in assurance_results],
             "nodes": sum(r["nodes"] for r in assurance_results),
             "edges": sum(r["edges"] for r in assurance_results),
+            # A build that ran with a part missing is not a clean one; the
+            # summary names it ("risks@3") rather than reporting counts alone.
+            "partial": [
+                f"{part}@{r['organization_id']}"
+                for r in assurance_results
+                if r["status"] == "partial"
+                for part in (r["failed"] or ["unknown"])
+            ],
         },
         "pack_sync": {
             "organizations_processed": [r["organization_id"] for r in pack_sync_results],
@@ -319,6 +347,7 @@ async def _run_per_tenant_cycle(
         "conmon": conmon_results,
         "posture_scan": posture_results,
         "control_tests": control_test_results,
+        "digest_per_org": digest_results,
         "capability_derive": {
             "organizations_processed": [r["organization_id"] for r in derive_results],
             "systems": sum(r["systems"] for r in derive_results),
@@ -428,6 +457,10 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         "derive_systems": int(derive.get("systems") or 0),
         "assurance_nodes": int(assurance.get("nodes") or 0),
         "assurance_edges": int(assurance.get("edges") or 0),
+        # How many organizations' graphs were built with a part missing.
+        # Always present, like ``failures``: zero is the reading that makes a
+        # non-zero one legible.
+        "assurance_partial": len({p.rsplit("@", 1)[-1] for p in _parts(assurance)}),
         "fedramp_scanned": int(fedramp.get("systems_scanned") or 0),
         # An int, not a list. `len()` here passed every hand-written test and
         # crashed the first real cycle that had drift, because `0 or []` is
@@ -443,7 +476,15 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         )
     if global_failures:
         summary["failed_global_steps"] = sorted(set(global_failures))
+    if _parts(assurance):
+        summary["assurance_partial_parts"] = sorted(set(_parts(assurance)))
     return summary
+
+
+def _parts(assurance: dict[str, Any]) -> list[str]:
+    """The assurance step's ``part@org`` list, or ``[]`` for any other shape."""
+    parts = assurance.get("partial")
+    return [str(p) for p in parts] if isinstance(parts, list) else []
 
 
 async def run_cycle() -> dict[str, Any]:
@@ -492,13 +533,14 @@ async def run_cycle() -> dict[str, Any]:
             org_ids = await _active_org_ids(session)
             out.update(await _run_per_tenant_cycle(session, org_ids, today=today))
 
-            # GLOBAL: cross-module alert digest (ATO/POA&M/policy/vendor/etc.
-            # rollups spanning the whole platform) — intentionally unscoped.
-            # Same savepoint containment as above, so a digest failure can't
-            # abort the transaction out from under the fedramp20x scan below.
+            # GLOBAL: platform alerts only (upstream catalog drift). Each
+            # organization's alerts are raised in its own per-tenant slice
+            # above: run unscoped, they were stored with no organization and
+            # no member could ever see them. Same savepoint containment as
+            # above, so a failure can't abort the fedramp20x scan below.
             try:
                 async with session.begin_nested():
-                    out["digest"] = await digest.run(session, today=today)
+                    out["digest"] = await digest.run_platform(session, today=today)
             except Exception as e:
                 log.warning("scheduler.global_step_failed", step="digest", error=str(e)[:200])
                 global_failures.append("digest")

@@ -109,7 +109,7 @@ def _client() -> AsyncClient:
 
 
 async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
-    """Create an org + a real (viewer-role, non-admin) user in it; return
+    """Create an org + a real (control_owner, non-admin) user in it; return
     (bearer token, org id) -- identical shape to
     ``test_prep_tenant_isolation.py::_mk_user``.
     """
@@ -120,7 +120,7 @@ async def _mk_user(email: str, org_name: str) -> tuple[str, int]:
         user = User(
             email=email,
             organization_id=org.id,
-            role="viewer",
+            role="control_owner",
             active=True,
             password_hash=hash_password("pw"),
             api_token=new_api_token(),

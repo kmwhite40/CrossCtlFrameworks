@@ -16,7 +16,6 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     DateTime,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -70,7 +69,10 @@ class AssuranceEdge(Base):
         ForeignKey("ccf.assurance_nodes.id", ondelete="CASCADE"), index=True
     )
     relationship_type: Mapped[str] = mapped_column(String(48))
-    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    #: Where this edge comes from: a table (``poams``), a dataset at a version
+    #: (``fedramp-rules:2026.10.13.01``, the form ``KSI.source`` records) or a check source
+    #: (``crosswalk:securescore``). An edge with no source is not stored.
+    source: Mapped[str] = mapped_column(String(96))
     edge_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
 
     __table_args__ = (
@@ -93,7 +95,7 @@ class AssuranceGraphBuildRun(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     node_count: Mapped[int] = mapped_column(Integer, default=0)
     edge_count: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|error
+    status: Mapped[str] = mapped_column(String(16), default="running")  # running|ok|partial
     detail: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
 

@@ -47,6 +47,15 @@ _MIGRATION_ROUND_TRIP_MODULES = frozenset(
 )
 
 
+def _receiver_name(node: ast.expr) -> str | None:
+    """``command`` for ``command.x`` and for ``alembic.command.x``."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
 def _modules_calling_downgrade() -> dict[str, list[int]]:
     """``{module: [line numbers]}`` for every ``command.downgrade(...)`` call."""
     found: dict[str, list[int]] = {}
@@ -56,10 +65,16 @@ def _modules_calling_downgrade() -> dict[str, list[int]]:
         except SyntaxError:  # pragma: no cover - a broken test file fails elsewhere
             continue
         for node in ast.walk(tree):
+            # Alembic's ``command.downgrade`` (or ``alembic.command.downgrade``)
+            # is the hazard: it rewrites the shared schema. A migration module's
+            # own ``downgrade()`` called with ``op`` faked -- as
+            # test_migration_0093_downgrade_guard.py does -- touches no database
+            # and is not matched.
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "downgrade"
+                and _receiver_name(node.func.value) == "command"
             ):
                 found.setdefault(path.name, []).append(node.lineno)
     return found
