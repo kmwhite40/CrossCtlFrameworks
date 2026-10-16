@@ -32,6 +32,7 @@ from .attested import CHECK_SOURCE as ATTESTED_CHECK_SOURCE
 from .checks import CheckOutcome, platform_check_keys
 from .drift import latest_drift
 from .resolve import ResolvedCheck, resolve_checks
+from .securescore import CHECK_SOURCE as CROSSWALK_CHECK_SOURCE
 from .telemetry import observe
 
 log = get_logger(__name__)
@@ -449,7 +450,8 @@ async def record_manual_review_check(
 #: trusted. See :func:`trust_tier` for why the ordering is this one.
 _TIER_PLATFORM = 0
 _TIER_ATTESTED = 1
-_TIER_PACK = 2
+_TIER_CROSSWALK = 2
+_TIER_PACK = 3
 
 #: How each tier is described to a reader when its verdict is the one believed.
 #: The wording matters: before the attested tier existed, an AWS-supplied
@@ -460,7 +462,12 @@ _TIER_REASONS: dict[int, str] = {
         "no fresh platform-sourced result; provider-attested result used "
         "(the provider evaluated its own account)"
     ),
-    _TIER_PACK: "no fresh platform- or provider-attested result; "
+    _TIER_CROSSWALK: (
+        "no fresh platform-sourced or provider-attested result; Concord's "
+        "Secure Score crosswalk used (Microsoft measured the score, Concord "
+        "authored the control mapping)"
+    ),
+    _TIER_PACK: "no fresh platform-, provider-attested or crosswalk result; "
     "most recent pack-sourced result used",
 }
 
@@ -468,7 +475,7 @@ _TIER_REASONS: dict[int, str] = {
 def trust_tier(test: ControlTest) -> int:
     """How much a generated test's verdict is worth relative to the others.
 
-    Three tiers, lowest number winning:
+    Four tiers, lowest number winning:
 
     ``0`` **platform** -- one of Concord's own registered checks. Concord
     authored the evaluator *and* the control attribution and is accountable for
@@ -480,7 +487,13 @@ def trust_tier(test: ControlTest) -> int:
     either the evaluator or the attribution; stronger than a tenant's pack rule,
     because AWS assessing an account is not the account's owner self-attesting.
 
-    ``2`` **pack, and anything unrecognised** -- a tenant-installed rule. The
+    ``2`` **crosswalk** -- :data:`ccf.posture.securescore.CHECK_SOURCE`. The
+    provider measured (a Secure Score), but the control attribution is one
+    Concord authored because the provider publishes none. Below attested, where
+    the provider owns both halves; above a pack, because the measurement is still
+    the provider's rather than the tenant's own rule.
+
+    ``3`` **pack, and anything unrecognised** -- a tenant-installed rule. The
     default lands here deliberately: a ``check_source`` nobody taught this
     function about must not reach a higher tier by accident, and the worst case
     at the bottom is that it is believed only when nothing fresher exists.
@@ -506,6 +519,8 @@ def trust_tier(test: ControlTest) -> int:
         return _TIER_PLATFORM
     if source == ATTESTED_CHECK_SOURCE:
         return _TIER_ATTESTED
+    if source == CROSSWALK_CHECK_SOURCE:
+        return _TIER_CROSSWALK
     return _TIER_PACK
 
 

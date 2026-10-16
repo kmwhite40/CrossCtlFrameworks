@@ -30,7 +30,7 @@ import pytest
 from sqlalchemy import select
 
 from ccf.db import session_scope
-from ccf.models import Organization, System
+from ccf.models import Organization, System, SystemProfile
 from ccf.models_grc import ControlTest
 from ccf.posture import attested_scan as ingest_mod
 from ccf.posture import scan_all as scan_all_mod
@@ -51,6 +51,11 @@ async def _system(session: Any) -> System:
     await session.flush()
     sys_ = System(organization_id=org.id, name=f"WiredSys{n}")
     session.add(sys_)
+    await session.flush()
+    # An AWS environment. The attestation read follows the system's scope like
+    # the provider loop does, so a system with no environment would -- correctly
+    # -- not read Security Hub at all, and these tests are about the wiring.
+    session.add(SystemProfile(system_id=sys_.id, answers={}, cloud_platform="aws_govcloud"))
     await session.flush()
     return sys_
 

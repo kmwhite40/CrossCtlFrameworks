@@ -630,3 +630,17 @@ async def test_retirement_reports_every_row_it_removes_across_providers() -> Non
         c: sum(1 for r in out["retired_checks"] if r["connector"] == c) for c in seeded
     }
     assert by_connector == seeded, by_connector
+
+
+async def test_no_cloud_is_a_declared_environment_not_a_missing_one() -> None:
+    """Every cloud connector bound org-wide, and the system says "No cloud".
+
+    "none" and "nothing declared" both resolve to no platform, and the fallback
+    for nothing declared honours configured connectors -- so choosing No cloud
+    on the system page assessed the system against every connector the
+    organization had bound. The existing no-cloud test configured none, so it
+    could not see this.
+    """
+    cloud = ("msgraph", "azure_arm", "aws_govcloud", "gcp")
+    scope = await _scope(cloud_platform="none", configured=cloud)
+    assert [k for k in cloud if scope[k]] == []

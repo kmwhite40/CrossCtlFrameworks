@@ -59,6 +59,7 @@ from ..governance.automation import PLATFORM_TO_SSP
 from ..models import System, SystemProfile
 from ..models_grc import ConnectorConfig, ControlTest, ControlTestResult
 from ..models_waivers import Waiver
+from ..ssp.constants import NO_PLATFORM
 from .checks import known_providers
 from .latest import OUT_OF_SCOPE_EVIDENCE_REF
 
@@ -130,6 +131,14 @@ async def provider_scope(
     ).scalars().first()
     declared = profile.cloud_platform if profile is not None else None
     platform = _platform_for_system(declared)
+    # "No cloud" is a declared environment, not an absent one. `_platform_for_system`
+    # returns None for both, and the fallback below honours configured connectors
+    # when nothing is declared -- so a system set to "No cloud" in an organization
+    # with any connector bound was assessed against all of them, and choosing No
+    # cloud on the system page changed nothing.
+    declared_no_cloud = (
+        bool(declared) and PLATFORM_TO_SSP.get(str(declared).strip()) == NO_PLATFORM
+    )
 
     out: dict[str, ProviderScope] = {}
     for connector in sorted(known_providers()):
@@ -150,6 +159,16 @@ async def provider_scope(
                     else f"{connector} maps to no cloud platform, so it is "
                     "assessed only when this organization configures it"
                 ),
+            )
+            continue
+
+        if declared_no_cloud:
+            out[connector] = ProviderScope(
+                connector,
+                False,
+                f"this system's environment is {declared!r} (no cloud), so no cloud "
+                f"connector is assessed; change the system's environment to measure "
+                f"{connector_platform}",
             )
             continue
 

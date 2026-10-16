@@ -47,9 +47,9 @@ log = get_logger(__name__)
 
 #: The connector these attestations come from. Only AWS publishes a control
 #: catalog with its own 800-53 mapping today -- Microsoft Secure Score carries
-#: 224 control states and an empty ``complianceInformation`` on every profile,
-#: so there is nothing to read there without hand-authoring the crosswalk this
-#: module exists to avoid.
+#: an empty ``complianceInformation`` on every profile. Secure Score is read
+#: instead through a crosswalk Concord authored, which is a different and weaker
+#: kind of evidence and is recorded as such: see ``ccf.posture.securescore``.
 CONNECTOR_KEY = "aws_govcloud"
 
 

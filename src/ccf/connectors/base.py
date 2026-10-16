@@ -154,3 +154,24 @@ class ConfigConnector(abc.ABC):
             "standard_id": None,
             **({"redacted_findings": []} if sample else {}),
         }
+
+    async def securescore_snapshot(self) -> dict[str, Any]:
+        """Microsoft Secure Score: every control profile and the latest scores.
+
+        Read by ``ccf.posture.securescore_scan``, which turns it into verdicts
+        through a crosswalk *Concord* authored -- Microsoft publishes no 800-53
+        mapping for Secure Score (measured; see the runbook). Declared here for
+        the reason :meth:`securityhub_attestations` is: the ingest resolves a
+        connector typed to this base class.
+
+        The default is the honest negative, never an empty snapshot: "this
+        connector has no Secure Score" and "Secure Score scored nothing" must not
+        look alike. Implementations MUST NOT raise.
+        """
+        return {
+            "available": False,
+            "reason": f"the {self.key} connector does not read Microsoft Secure Score",
+            "profiles": [],
+            "control_scores": [],
+            "scored_on": None,
+        }
