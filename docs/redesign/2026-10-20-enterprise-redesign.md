@@ -302,7 +302,7 @@ organization.
 
 | Check | Result |
 |---|---|
-| Full test suite (own database `ccf_test_redesign`) | **5,386 passed, 2 skipped, 0 failed** in 18m31s, at `f89a352`. The two skips predate this work (no Python Playwright installed; a GCP test skipped by design). |
+| Full test suite (own database `ccf_test_redesign`) | **5,396 passed, 2 skipped, 0 failed** in 14m02s at the final commit `6990b99` (after the review fixes); earlier 5,386 / 0 at `f89a352`. The two skips predate this work (no Python Playwright installed; a GCP test skipped by design). |
 | Affected tests after the final fixes | 204 + 47 passed (shell, chips, new pages, deleted-system sweeps, POA&M pages) |
 | New tests | `tests/test_command_center_and_modules.py`: empty-ratio rule, org-scoped service on an unscoped session, every new page both ways for isolation, heat-map drill-down, scoped search, unread badge, navigation resolves, every gap labelled, planned pages, rail-vs-gate per role, error-page negotiation, the `/poams` fix |
 | Mutation checks | Each org predicate in the new code deleted once: every deletion failed a test (after the RLS-bypass session was introduced; before it, four survived) |
