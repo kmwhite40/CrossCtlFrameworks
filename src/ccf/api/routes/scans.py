@@ -32,15 +32,21 @@ async def _require_system(session: AsyncSession, system_id: int, principal: Prin
     return await require_system_in_scope(session, system_id, principal)
 
 
-@router.post("/ingest", status_code=201)
-async def ingest_scan(
-    system_id: int = Form(...),
-    scanner: str = Form("auto"),
-    file: UploadFile | None = None,
-    session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
-) -> dict[str, Any]:
-    """Ingest a scan export and reconcile it into the system's POA&Ms."""
+async def ingest_upload(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    scanner: str,
+    file: UploadFile | None,
+    principal: Principal,
+) -> tuple[ScanIngestion, str, dict[str, Any]]:
+    """The one scan ingest: scope, size cap, parse, reconcile, record, alert.
+
+    Both ``POST /api/scans/ingest`` and the HTML form (``ui_grc.scans_upload``)
+    call this, so the two cannot drift. The form used to be a copy that had lost
+    the scope check, the size cap, the 422 on a bad file and the notification.
+    Does not commit.
+    """
     await _require_system(session, system_id, principal)
     if file is None:
         raise HTTPException(400, "a scan file upload is required")
@@ -99,8 +105,23 @@ async def ingest_scan(
             entity_type="scan_ingestion",
             entity_id=ingestion.id,
         )
+    return ingestion, resolved, result.as_dict()
+
+
+@router.post("/ingest", status_code=201)
+async def ingest_scan(
+    system_id: int = Form(...),
+    scanner: str = Form("auto"),
+    file: UploadFile | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Ingest a scan export and reconcile it into the system's POA&Ms."""
+    ingestion, resolved, summary = await ingest_upload(
+        session, system_id=system_id, scanner=scanner, file=file, principal=principal
+    )
     await session.commit()
-    return {"id": ingestion.id, "scanner": resolved, **result.as_dict()}
+    return {"id": ingestion.id, "scanner": resolved, **summary}
 
 
 @router.get("/ingestions")
