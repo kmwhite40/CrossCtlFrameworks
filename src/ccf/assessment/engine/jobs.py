@@ -45,7 +45,13 @@ from ...logging import get_logger
 from ...models import Assessment, AssessmentControlResult, System
 from ...models_assessment_engine import AssessmentControlProposal, AssessmentJob
 from ...queue import claim_jobs, reap_stale_jobs
-from .service import evaluate_control_proposal, open_control_proposal, open_reevaluation_proposal
+from .service import (
+    DECIDED_STATES,
+    ProposalDecidedError,
+    evaluate_control_proposal,
+    open_control_proposal,
+    open_reevaluation_proposal,
+)
 
 log = get_logger(__name__)
 
@@ -88,6 +94,12 @@ async def enqueue_control(
     proposal = await open_control_proposal(
         session, assessment_id=assessment_id, control_identifier=control_identifier
     )
+    if proposal.state in DECIDED_STATES:
+        # Refused here as well as in the evaluator, so the caller hears it now
+        # rather than a worker failing the job later.
+        raise ProposalDecidedError(
+            f"{proposal.control_identifier} was already {proposal.state} in this assessment"
+        )
     existing = (
         await session.execute(
             select(AssessmentJob)
@@ -237,6 +249,14 @@ async def _drive_one(session: AsyncSession, job: AssessmentJob) -> str:
     if proposal is None:
         job.status = "failed"
         job.last_error = f"control proposal {control_proposal_id} no longer exists"
+        return "failed"
+    if proposal.state in DECIDED_STATES:
+        # A job queued before a person decided. Fail the *job* here, without
+        # raising: run_once's failure handler would also stamp the proposal
+        # state="failed", turning a terminal rejection into a failed run that
+        # can be evaluated -- and accepted -- all over again.
+        job.status = "failed"
+        job.last_error = f"control proposal {control_proposal_id} was {proposal.state} meanwhile"
         return "failed"
 
     await evaluate_control_proposal(session, proposal)

@@ -48,6 +48,7 @@ from ...assessment.engine import jobs as engine_jobs
 from ...assessment.engine.calibration import compute_metrics
 from ...assessment.engine.service import (
     AcceptanceRefused,
+    ProposalDecidedError,
     ProposalError,
     RejectionRefused,
     accept_control_proposal,
@@ -264,6 +265,8 @@ async def create_proposal(
             assessment_id=body.assessment_id,
             control_identifier=body.control_identifier,
         )
+    except ProposalDecidedError as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ProposalError as exc:
         raise HTTPException(404, "assessment not found") from exc
     await session.commit()
@@ -338,6 +341,7 @@ def _result_out(result: AssessmentControlResult) -> dict[str, Any]:
 @router.post("/proposals/{proposal_id}/accept")
 async def accept_proposal(
     proposal_id: int = Path(ge=1, le=_MAX_INT64),
+    override_not_applicable: bool = False,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
@@ -352,7 +356,8 @@ async def accept_proposal(
     proposal = await _require_proposal(session, proposal_id, principal)
     try:
         result = await accept_control_proposal(
-            session, proposal.id, accepted_by=principal.email
+            session, proposal.id, accepted_by=principal.email,
+            override_not_applicable=override_not_applicable,
         )
     except AcceptanceRefused as exc:
         raise HTTPException(409, str(exc)) from exc

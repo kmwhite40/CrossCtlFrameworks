@@ -64,8 +64,12 @@ BASELINE_COLUMNS = {
 #: ODP markers do not.
 _FOLD = re.compile(r"^([A-Z]{2,3})-0*(\d+)(?:\(0*(\d+)\))?")
 
-#: Implementation statuses that count as the control being addressed.
-ADDRESSED_STATUSES = frozenset({"implemented", "inherited", "partially_implemented"})
+#: Implementation statuses that count as the control being addressed. The
+#: values are ``ControlImplementation.status``'s enum: it was spelled
+#: ``partially_implemented`` here, which the enum has never had, so every
+#: partial implementation was reported as unaddressed on this (800-53) path
+#: while ``_CLAIMED_STATES`` on the 800-171 path counted the same row.
+ADDRESSED_STATUSES = frozenset({"implemented", "inherited", "partial"})
 
 
 def fold_to_control(identifier: str) -> str | None:

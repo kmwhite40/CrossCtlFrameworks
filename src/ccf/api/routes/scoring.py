@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...auth import Principal
 from ...governance import reactions
 from ...models import ScoringControl, ScoringStatus, System
+from ...scoring import engine as scoring_engine
 from ...scoring.engine import STATES
 from ...scoring.seed import seed_scoring_controls
 from ...scoring.service import record_assessed_state, system_score_summary
@@ -142,7 +143,12 @@ async def system_matrix(
             }
         )
     summary = await compute_summary(session, system_id)
-    return {"system_id": system_id, "controls": rows, "summary": summary}
+    return {
+        "system_id": system_id,
+        "controls": rows,
+        "summary": summary,
+        "gaps": scoring_engine.gaps(rows, recorded=states.keys()),
+    }
 
 
 @router.put("/systems/{system_id}/controls/{control_id}")

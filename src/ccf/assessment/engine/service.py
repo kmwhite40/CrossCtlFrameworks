@@ -47,6 +47,22 @@ class ProposalError(RuntimeError):
     """A control proposal could not be opened or evaluated."""
 
 
+#: A human decided these; nothing automated may move them again. Re-assessing
+#: a decided control is ``open_reevaluation_proposal``'s job, on a new row.
+DECIDED_STATES = ("accepted", "rejected")
+
+
+class ProposalDecidedError(ProposalError):
+    """The first-pass proposal was already accepted or rejected by a person.
+
+    ``open_control_proposal`` returns the existing first-pass row whatever its
+    state, and evaluation used to reset it to draft and run it again -- so
+    asking for a control a second time reopened a rejected proposal (terminal,
+    per ``reject_control_proposal``) to complete, where it could be accepted,
+    and put an accepted one back to complete with stale ``accepted_by/at``.
+    """
+
+
 class AcceptanceRefused(ProposalError):  # noqa: N818 -- interface name fixed by the task brief
     """A proposal exists but is not fit to be accepted as a control finding.
 
@@ -197,6 +213,11 @@ async def evaluate_control_proposal(
     Reruns cleanly: prior objective proposals for this control are cleared
     before evaluating again, so a rerun does not double the row count.
     """
+    if proposal.state in DECIDED_STATES:
+        raise ProposalDecidedError(
+            f"control proposal {proposal.id} for {proposal.control_identifier} was already "
+            f"{proposal.state}; re-assess it through a re-evaluation, not by reopening it"
+        )
     settings = get_settings()
     proposal.state = "draft"
     proposal.dissent_count = 0
@@ -569,7 +590,11 @@ def _objective_finding_record(objective: AssessmentObjectiveProposal) -> dict[st
 
 
 async def accept_control_proposal(
-    session: AsyncSession, proposal_id: int, *, accepted_by: str
+    session: AsyncSession,
+    proposal_id: int,
+    *,
+    accepted_by: str,
+    override_not_applicable: bool = False,
 ) -> AssessmentControlResult:
     """The human gate: project an accepted proposal into ``AssessmentControlResult``.
 
@@ -652,11 +677,36 @@ async def accept_control_proposal(
             control_id=proposal.control_identifier,
         )
         session.add(result)
+    elif (
+        result.reviewed
+        and result.finding == "not_applicable"
+        and proposed_finding != "not_applicable"
+        and not override_not_applicable
+    ):
+        # A reviewed N/A is an assessor's scoping decision, not a gap the
+        # engine filled. Overwriting it silently turned "out of scope" into a
+        # finding -- and an other_than_satisfied one into a POA&M -- on the
+        # row the SAR is built from. Accepting over it must say so.
+        raise AcceptanceRefused(
+            f"{proposal.control_identifier} was reviewed as not applicable"
+            f"{f' by {result.reviewer}' if result.reviewer else ''}; accepting this "
+            f"{proposed_finding} proposal would replace that determination -- confirm the "
+            "override to proceed"
+        )
 
     result.objective_findings = [_objective_finding_record(o) for o in objectives]
     result.finding = proposed_finding
     result.nist_id = proposal.control_identifier
-    result.assessor_note = proposal.rollup_rationale
+    # The assessor's own note is theirs: the engine's rationale is added below
+    # it, attributed, instead of replacing it.
+    rationale = proposal.rollup_rationale
+    prior_note = (result.assessor_note or "").strip()
+    if prior_note and rationale and rationale.strip() not in prior_note:
+        result.assessor_note = (
+            f"{prior_note}\n\nEngine rationale (accepted by {accepted_by}): {rationale}"
+        )
+    elif not prior_note:
+        result.assessor_note = rationale
     result.reviewed = True
     result.reviewer = accepted_by
 
