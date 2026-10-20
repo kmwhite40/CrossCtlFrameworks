@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import re
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -31,12 +32,15 @@ from ccf.analytics.command_center import command_center, ratio
 from ccf.api import navigation
 from ccf.api.deps import get_session
 from ccf.api.main import create_app
+from ccf.api.routes.ui import templates
 from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import get_session_factory, session_scope, set_session_tenant
 from ccf.models import (
     POAM,
     Approval,
+    Control,
+    ControlImplementation,
     Event,
     Notification,
     Organization,
@@ -48,7 +52,8 @@ from ccf.models import (
     Vendor,
 )
 from ccf.models_evidence import EvidenceObject, EvidenceVersion
-from ccf.models_grc import AuditEngagement, AuditRequest
+from ccf.models_grc import AuditEngagement, AuditRequest, ControlTest, ControlTestResult
+from ccf.models_waivers import Waiver
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -289,7 +294,7 @@ async def test_the_command_center_counts_one_organization_and_only_live_systems(
     assert not any("Bravo" in x for x in summaries)
     cards = [c["title"] for col in cc["kanban"] for c in col["cards"]]
     assert cards == [f"Alpha-poam-{a['tag']}"]
-    titles = " ".join(str(mm["title"]) for mm in cc["milestones"])
+    titles = " ".join(str(mm["title"]) for mm in cc["milestones"]["items"])
     assert "Bravo" not in titles and "DELETED" not in titles
 
 
@@ -552,3 +557,137 @@ async def test_the_poam_register_agrees_with_the_command_center(two_orgs) -> Non
         body = (await c.get("/poams", headers=_auth(str(a["token"])))).text
     assert f"Alpha-poam-{a['tag']}" in body
     assert "DELETED" not in body
+
+
+# ── findings of the independent review, each pinned ────────────────────────
+
+
+async def _live_system(org_id: int) -> int:
+    async with session_scope() as s:
+        return (
+            await s.execute(
+                select(System.id).where(
+                    System.organization_id == org_id, System.deleted_at.is_(None)
+                )
+            )
+        ).scalar_one()
+
+
+async def test_controls_passing_is_over_controls_with_a_result(two_orgs) -> None:
+    """A not-applicable or not-yet-run test says nothing about the control, so
+    it is outside the denominator; pass + fail + needs-a-human must sum to it.
+    It used to be ``assessed``, which counted them."""
+    a, _ = two_orgs
+    org, sys_id = int(a["org_id"]), await _live_system(int(a["org_id"]))
+    async with session_scope() as s:
+        for i, status in enumerate(("pass", "fail", "not_applicable")):
+            t = ControlTest(
+                organization_id=org,
+                system_id=sys_id,
+                control_id=f"AC-{i + 1}",
+                name=f"t{i}",
+                method="automated",
+                source="generated",
+                check_key=f"x.{a['tag']}.{i}",
+                last_status=status,
+            )
+            s.add(t)
+            await s.flush()
+            s.add(
+                ControlTestResult(
+                    control_test_id=t.id,
+                    status=status,
+                    run_at=datetime.now(UTC),
+                    evaluated=1,
+                    failing=int(status == "fail"),
+                )
+            )
+        await s.flush()
+        cc = await command_center(s, org)
+    ch = cc["kpis"]["control_health"]
+    assert (ch["passing"], ch["failing"], ch["manual_review"], ch["not_in_scope"]) == (1, 1, 0, 1)
+    assert ch["judged"] == 2
+    assert ch["pct"] == 50
+
+
+async def test_monitoring_health_counts_live_systems_only(two_orgs) -> None:
+    a, _ = two_orgs
+    org = int(a["org_id"])
+    async with session_scope() as s:
+        systems = (
+            (await s.execute(select(System.id).where(System.organization_id == org)))
+            .scalars()
+            .all()
+        )
+        control = Control(identifier=f"ZZ-{a['tag']}")
+        s.add(control)
+        await s.flush()
+        for sid in systems:  # one live, one soft-deleted
+            s.add(ControlImplementation(system_id=sid, control_id=control.id, status="implemented"))
+        await s.flush()
+        cc = await command_center(s, org)
+    assert len(systems) == 2
+    assert cc["kpis"]["monitoring"]["total"] == 1
+
+
+async def test_exceptions_counts_only_what_is_in_force(two_orgs) -> None:
+    a, _ = two_orgs
+    org, sys_id = int(a["org_id"]), await _live_system(int(a["org_id"]))
+    async with session_scope() as s:
+        for status in ("approved", "requested", "revoked"):
+            s.add(
+                Waiver(
+                    organization_id=org,
+                    system_id=sys_id,
+                    control_id=f"W-{status}",
+                    rationale=f"waiver {status}",
+                    status=status,
+                    expires_on=date.today() - timedelta(days=1),
+                )
+            )
+        await s.flush()
+    async with _client() as c:
+        body = (await c.get("/exceptions", headers=_auth(str(a["token"])))).text
+    in_force, _, pending = body.partition("Awaiting a decision")
+    assert "W-approved" in in_force and "lapsed" in in_force
+    assert "W-requested" in pending and "W-requested" not in in_force
+    assert "W-revoked" not in body
+
+
+async def test_old_missed_dates_are_counted_not_listed(two_orgs) -> None:
+    a, _ = two_orgs
+    org, sys_id = int(a["org_id"]), await _live_system(int(a["org_id"]))
+    async with session_scope() as s:
+        s.add(
+            POAM(
+                system_id=sys_id,
+                title=f"old-{a['tag']}",
+                severity="low",
+                status="open",
+                due_on=date.today() - timedelta(days=60),
+            )
+        )
+        await s.flush()
+        cc = await command_center(s, org)
+    m = cc["milestones"]
+    assert m["older_overdue"] == 1
+    assert all(i["on"] >= date.today() - timedelta(days=30) for i in m["items"])
+    assert any(i["kind"] == "POA&M due" and not i["overdue"] for i in m["items"])
+
+
+@pytest.mark.parametrize("top", [1, 10, 100, 7, 25])
+def test_the_tallest_column_reaches_the_top_of_the_plot(top: int) -> None:
+    """A maximum of exactly 1, 10 or 100 got a ceiling of 2, 20 or 200, so the
+    bars filled half the plot."""
+    macro = templates.env.get_template("_viz.html").module.columns
+    html = str(macro(["a", "b"], [{"name": "s", "values": [top, 0], "tone": "--x"}], False, 200))
+    heights = [
+        float(h)
+        for h in re.findall(r'<rect[^>]*class="viz__mark"[^>]*', html)
+        for h in re.findall(r'height="([0-9.]+)"', h)
+    ]
+    plot_h = 200 - 26 - 10
+    ceiling_ratio = plot_h / max(heights)
+    assert ceiling_ratio <= 2.5, f"max {top} drew a bar at 1/{ceiling_ratio:.2f} of the plot"
+    if top in (1, 10, 100):
+        assert max(heights) == pytest.approx(plot_h)

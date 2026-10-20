@@ -415,14 +415,15 @@ async def _resolve_on_recovery(
 async def health_summary(
     session: AsyncSession, *, today: date, org_id: int | None = None
 ) -> dict[str, Any]:
-    """Compute current control health without persisting (read-only rollup)."""
-    stmt = select(ControlImplementation)
+    """Compute current control health without persisting (read-only rollup).
+
+    Live systems only: a soft-deleted system's implementations counted toward
+    ``total`` and moved ``health_pct`` on /governance and the command center,
+    while every other rollup excluded them."""
+    live = select(System.id).where(System.deleted_at.is_(None))
     if org_id is not None:
-        stmt = stmt.where(
-            ControlImplementation.system_id.in_(
-                select(System.id).where(System.organization_id == org_id)
-            )
-        )
+        live = live.where(System.organization_id == org_id)
+    stmt = select(ControlImplementation).where(ControlImplementation.system_id.in_(live))
     impls = (await session.execute(stmt)).scalars().all()
     ev_by_impl: dict[int, list[Evidence]] = {}
     for e in (await session.execute(select(Evidence))).scalars().all():
@@ -431,7 +432,15 @@ async def health_summary(
         if e.implementation_id is None:
             continue
         ev_by_impl.setdefault(e.implementation_id, []).append(e)
-    poams = (await session.execute(select(POAM).where(POAM.status.in_(_OPEN_POAM)))).scalars().all()
+    poams = (
+        (
+            await session.execute(
+                select(POAM).where(POAM.status.in_(_OPEN_POAM), POAM.system_id.in_(live))
+            )
+        )
+        .scalars()
+        .all()
+    )
     by_status = {"healthy": 0, "due_soon": 0, "at_risk": 0, "overdue": 0}
     attention: list[dict[str, Any]] = []
     for impl in impls:

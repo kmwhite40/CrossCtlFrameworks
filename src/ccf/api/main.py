@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -22,7 +23,7 @@ from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .csrf import CsrfOriginMiddleware
-from .errors import html_aware_http_exception
+from .errors import html_aware_http_exception, html_aware_validation_error
 from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
@@ -127,6 +128,9 @@ def create_app() -> FastAPI:
     # People get a page; API clients get the JSON they always did (errors.py).
     app.add_exception_handler(
         StarletteHTTPException, cast(ExceptionHandler, html_aware_http_exception)
+    )
+    app.add_exception_handler(
+        RequestValidationError, cast(ExceptionHandler, html_aware_validation_error)
     )
     app.add_exception_handler(
         RateLimitExceeded,

@@ -215,10 +215,12 @@
   }
   function searchRecords(query) {
     clearTimeout(palette.timer);
+    // Claimed per keystroke, not per request: a slow answer to an older query
+    // must never replace the results of a newer one.
+    const seq = ++palette.seq;
     const q = query.trim();
     if (q.length < 2) { palette.records = []; return; }
     palette.timer = setTimeout(async () => {
-      const seq = ++palette.seq;
       try {
         const res = await fetch(`/ui/search?q=${encodeURIComponent(q)}`, { credentials: 'same-origin', headers: { Accept: 'application/json' } });
         if (!res.ok || seq !== palette.seq) return;

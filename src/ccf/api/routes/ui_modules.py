@@ -440,11 +440,17 @@ async def risk_heatmap(
 async def exceptions_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    """Every standing departure from a requirement, in one list.
+    """Every standing departure from a requirement, in one list, and the
+    requests still waiting for a decision, in another.
 
     Concord records four kinds in four tables, each decided where it lives
     (the control-test resolution, the KSI page, the POA&M and risk gates). This
-    page reads them together and adds no new way to approve one."""
+    page reads them together and adds no new way to approve one.
+
+    Only an exception in force is counted as one: an ``approved`` waiver (the
+    one status that suppresses anything) and an ``accepted`` KSI exception.
+    ``requested`` / ``open`` are pending and listed separately; ``revoked`` /
+    ``closed`` are history and left out."""
     org = _principal_org(request)
     live = posture.org_system_subq(org)
     today = date.today()
@@ -462,6 +468,8 @@ async def exceptions_page(
                 "subject": w.control_id or w.check_key or "—",
                 "detail": w.rationale,
                 "status": w.status,
+                "standing": w.status == "approved",
+                "pending": w.status == "requested",
                 "system": sys_names.get(w.system_id),
                 "decided_by": w.approved_by,
                 "expires": w.expires_on,
@@ -482,6 +490,8 @@ async def exceptions_page(
                 "subject": ksi_code,
                 "detail": e.rationale,
                 "status": e.status,
+                "standing": e.status == "accepted",
+                "pending": e.status == "open",
                 "system": sys_names.get(e.system_id),
                 "decided_by": None,
                 "expires": e.expires_on,
@@ -504,6 +514,8 @@ async def exceptions_page(
                 "subject": p.title,
                 "detail": p.weakness,
                 "status": "risk_accepted",
+                "standing": True,
+                "pending": False,
                 "system": sys_names.get(p.system_id),
                 "decided_by": None,
                 "expires": None,
@@ -526,18 +538,30 @@ async def exceptions_page(
                 "subject": r.title,
                 "detail": r.description,
                 "status": "accepted",
+                "standing": True,
+                "pending": False,
                 "system": sys_names.get(r.system_id),
                 "decided_by": None,
                 "expires": r.next_review_on,
                 "href": f"/risks/heatmap#risk-{r.id}",
             }
         )
-    for i in items:
+    standing = [i for i in items if i["standing"]]
+    pending = [i for i in items if i["pending"]]
+    for i in standing:
+        # Lapsed is a property of an exception in force; a revoked waiver whose
+        # date has passed is not "lapsed", it is not an exception at all.
         i["expired"] = i["expires"] is not None and i["expires"] < today
-    items.sort(key=lambda i: (not i["expired"], i["expires"] or date.max))
-    counts = Counter(i["kind"] for i in items)
+    standing.sort(key=lambda i: (not i["expired"], i["expires"] or date.max))
+    counts = Counter(i["kind"] for i in standing)
     return _render(
-        request, "exceptions.html", "exceptions", items=items, counts=counts, today=today
+        request,
+        "exceptions.html",
+        "exceptions",
+        items=standing,
+        pending=pending,
+        counts=counts,
+        today=today,
     )
 
 
@@ -575,8 +599,19 @@ async def policies_page(
         if vids:
             for vid, n in (
                 await session.execute(
-                    select(PolicyAttestation.policy_version_id, func.count())
-                    .where(PolicyAttestation.policy_version_id.in_(vids))
+                    # Distinct active members of this organization, so the
+                    # figure is comparable with ``members``: a repeat
+                    # attestation, a departed user or an outsider read "5 of 3".
+                    select(
+                        PolicyAttestation.policy_version_id,
+                        func.count(func.distinct(PolicyAttestation.user_id)),
+                    )
+                    .join(User, User.id == PolicyAttestation.user_id)
+                    .where(
+                        PolicyAttestation.policy_version_id.in_(vids),
+                        User.active.is_(True),
+                        *([User.organization_id == org] if org is not None else []),
+                    )
                     .group_by(PolicyAttestation.policy_version_id)
                 )
             ).all():

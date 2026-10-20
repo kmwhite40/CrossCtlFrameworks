@@ -52,6 +52,8 @@ class Item:
     #: ``PLATFORM``: ``require_platform_admin``; otherwise ``require_role``'s
     #: roles. Display only -- the route's dependency is the control.
     audience: frozenset[str] | None = None
+    #: The route answers 400 without an organization (a global principal).
+    needs_org: bool = False
 
     @property
     def planned_slug(self) -> str | None:
@@ -76,7 +78,11 @@ def visible_to(item: Item, principal: Any) -> bool:
     Mirrors the two route gates exactly: ``require_role`` admits a global
     principal or a listed role; ``require_platform_admin`` admits a global
     principal only. No principal (auth off) sees everything, as the routes do."""
-    if item.audience is None or principal is None:
+    if principal is None:
+        return True
+    if item.needs_org and getattr(principal, "org_id", None) is None:
+        return False
+    if item.audience is None:
         return True
     if getattr(principal, "is_global", False):
         return True
@@ -451,7 +457,11 @@ NAV: tuple[Group, ...] = (
                 "Connectors have pages; webhooks, IdP and issue-tracker push are API-only.",
             ),
             Item(
-                "ai_settings", "AI Providers", "/admin/ai-settings", audience=frozenset({"admin"})
+                "ai_settings",
+                "AI Providers",
+                "/admin/ai-settings",
+                audience=frozenset({"admin"}),
+                needs_org=True,
             ),
             _partial(
                 "apidocs",

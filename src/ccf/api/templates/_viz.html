@@ -55,9 +55,11 @@
 {%- set top = ns.max if ns.max > 0 else 1 -%}
 {#- a clean ceiling: 1, 2, 2.5 or 5 times a power of ten -#}
 {%- set mag = 10 ** ((top | string | length) - 1) if top >= 1 else 1 -%}
-{%- set ceil = namespace(v=mag) -%}
-{%- for m in [1, 2, 2.5, 5, 10] %}{% if ceil.v == mag and m * mag >= top %}{% set ceil.v = m * mag %}{% endif %}{% endfor -%}
-{%- if ceil.v < top %}{% set ceil.v = 10 * mag %}{% endif -%}
+{#- the first of 1, 2, 2.5, 5, 10 x mag that reaches the top value. A flag,
+    not "still equal to mag": a maximum of exactly 1, 10 or 100 matched m=1
+    and was then overwritten by m=2, so its bars filled half the plot. -#}
+{%- set ceil = namespace(v=10 * mag, found=false) -%}
+{%- for m in [1, 2, 2.5, 5, 10] %}{% if not ceil.found and m * mag >= top %}{% set ceil.v = m * mag %}{% set ceil.found = true %}{% endif %}{% endfor -%}
 {%- set plot_w = W - padl - 6 -%}{%- set plot_h = H - padb - padt -%}
 {%- set band = plot_w / (labels|length) -%}
 {%- set bw = [band * (0.56 if stacked else 0.36), 24] | min -%}

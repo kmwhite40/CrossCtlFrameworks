@@ -37,11 +37,11 @@ This page summarises one organization. Sign in as a member of an organization to
     <div class="kpi__ringrow">
       {{ ring(k.control_health.pct, 64, '--accent', 'Assessed controls passing') }}
       <div class="kpi__aside">
-        <span class="kpi__big">{{ k.control_health.passing }}<small>/{{ k.control_health.assessed }}</small></span>
-        <span class="kpi__meta">{{ k.control_health.failing }} failing</span>
+        <span class="kpi__big">{{ k.control_health.passing }}<small>/{{ k.control_health.judged }}</small></span>
+        <span class="kpi__meta">{{ k.control_health.failing }} failing{% if k.control_health.accepted %} · {{ k.control_health.accepted }} accepted{% endif %}</span>
       </div>
     </div>
-    <span class="kpi__foot">Of assessed controls{% if k.control_health.manual_review %} · {{ k.control_health.manual_review }} need a human{% endif %}</span>
+    <span class="kpi__foot">Of controls with a test result{% if k.control_health.manual_review %} · {{ k.control_health.manual_review }} need a human{% endif %}{% if k.control_health.not_in_scope %} · {{ k.control_health.not_in_scope }} not applicable or not run{% endif %}</span>
   </a>
 
   <a class="kpi" href="/poams?status=open" title="{{ k.findings.basis }}">
@@ -77,7 +77,7 @@ This page summarises one organization. Sign in as a member of an organization to
     <span class="kpi__foot">POA&amp;Ms completed or closed{% if k.remediation.accepted %} · {{ k.remediation.accepted }} accepted{% endif %}</span>
   </a>
 
-  <a class="kpi" href="/my-tasks" title="{{ k.overdue.basis }}">
+  <a class="kpi" href="/poams?status=open" title="{{ k.overdue.basis }}">
     <span class="kpi__label"><i data-lucide="alarm-clock"></i><span>Overdue items</span></span>
     <span class="kpi__value {% if k.overdue.total %}kpi__value--danger{% endif %}">{{ k.overdue.total }}</span>
     <span class="kpi__meta">{{ k.overdue.poams }} POA&amp;M{{ 's' if k.overdue.poams != 1 }} · {{ k.overdue.tasks }} task{{ 's' if k.overdue.tasks != 1 }}</span>
@@ -104,11 +104,11 @@ This page summarises one organization. Sign in as a member of an organization to
 {# ── Secondary health strip ──────────────────────────────────────────── #}
 <section class="health-strip" aria-label="Operational health">
   {%- set tr = cc.trends.test_runs -%}
-  {%- set last_rate = (tr.pass_rate | reject('none') | list | last) if (tr.pass_rate | reject('none') | list) else none -%}
-  <div class="health" title="Control-test runs that passed in the most recent week with runs. Run history, not posture.">
+  {%- set lw = tr.latest -%}
+  <div class="health" title="Control-test runs that passed in the most recent week that had runs. Run history, not posture: a test run twice counts twice.">
     <span class="health__label">Control effectiveness</span>
-    <span class="health__value">{{ '%d%%'|format(last_rate) if last_rate is not none else '—' }}</span>
-    <span class="health__meta">{% if last_rate is not none %}of test runs passed, latest week{% else %}No test runs in 12 weeks{% endif %}</span>
+    <span class="health__value">{{ '%d%%'|format(lw.pct) if lw else '—' }}</span>
+    <span class="health__meta">{% if lw %}of {{ lw.runs }} test run{{ 's' if lw.runs != 1 }}, week of {{ lw.week_of.strftime('%b %-d') }}{% if lw.weeks_ago %} ({{ lw.weeks_ago }} wk ago){% endif %}{% else %}No test runs in 12 weeks{% endif %}</span>
   </div>
   <div class="health" title="{{ k.evidence.basis }}">
     <span class="health__label">Evidence freshness</span>
@@ -120,8 +120,8 @@ This page summarises one organization. Sign in as a member of an organization to
   </div>
   <div class="health" title="{{ k.monitoring.basis }}">
     <span class="health__label">Continuous monitoring</span>
-    <span class="health__value">{{ '%d%%'|format(k.monitoring.pct) if k.monitoring.pct is not none else '—' }}</span>
-    <span class="health__meta">{% if k.monitoring.total %}{{ k.monitoring.by_status.overdue }} overdue · {{ k.monitoring.by_status.at_risk }} at risk of {{ k.monitoring.total }}{% else %}No implementations on a monitoring schedule{% endif %}</span>
+    <span class="health__value">{{ '%.0f%%'|format(k.monitoring.pct) if k.monitoring.pct is not none else '—' }}</span>
+    <span class="health__meta">{% if k.monitoring.total %}{{ k.monitoring.by_status.overdue }} overdue · {{ k.monitoring.by_status.at_risk }} at risk of {{ k.monitoring.total }}{% else %}No control implementations on live systems{% endif %}</span>
   </div>
   <div class="health">
     <span class="health__label">Systems in scope</span>
@@ -188,7 +188,7 @@ This page summarises one organization. Sign in as a member of an organization to
             {'n': f.passing, 'tone': '--success', 'label': 'Passing'},
             {'n': f.documented, 'tone': '--info', 'label': 'Documented'},
             {'n': f.failing, 'tone': '--danger', 'label': 'Failing'}], f.total, f.label) }}
-        <span class="fwlist__meta" title="{{ f.basis }}{% if f.via %} — {{ f.via }}{% endif %}">{{ f.passing + f.documented }} of {{ f.total }} {{ f.unit }}s addressed · {{ f.failing }} failing · {{ f.unaddressed }} not assessed</span>
+        <span class="fwlist__meta" title="{{ f.basis }}">{{ f.passing + f.documented }} of {{ f.total }} {{ f.unit }}s addressed · {{ f.failing }} failing · {{ f.unaddressed }} not assessed · {{ f.systems }} system{{ 's' if f.systems != 1 }}{% if f.via %} · {{ f.via }}{% endif %}</span>
       </li>
       {% endfor %}
       {%- set mapped = cc.frameworks | selectattr('state', 'equalto', 'mapped') | list -%}
@@ -202,7 +202,7 @@ This page summarises one organization. Sign in as a member of an organization to
       {% if unconf %}
       <li class="fwlist__row fwlist__row--not_configured">
         <div class="fwlist__name"><span>{{ unconf | map(attribute='label') | join(' · ') }}</span><span class="chip chip--ghost">Not configured</span></div>
-        <span class="fwlist__meta">No system declares {{ 'it' if unconf|length == 1 else 'them' }}, or the catalog lacks {{ 'it' if unconf|length == 1 else 'them' }}.</span>
+        <span class="fwlist__meta">{% if unconf|length == 1 %}{{ unconf[0].detail }}{% else %}No system declares them, or the catalog lacks them.{% endif %}</span>
       </li>
       {% endif %}
     </ul>
@@ -250,9 +250,9 @@ This page summarises one organization. Sign in as a member of an organization to
       <h2 class="panel__title">Upcoming milestones</h2>
       <span class="panel__hint">next 90 days</span>
     </header>
-    {% if cc.milestones %}
+    {% if cc.milestones['items'] %}
     <ul class="feed">
-      {% for m in cc.milestones %}
+      {% for m in cc.milestones['items'] %}
       <li class="feed__item">
         <span class="feed__date {% if m.overdue %}feed__date--late{% endif %}"><b>{{ m.on.strftime('%-d') }}</b>{{ m.on.strftime('%b') }}</span>
         <a class="feed__main" href="{{ m.href }}"><span class="feed__title">{{ m.title }}</span>
@@ -260,7 +260,8 @@ This page summarises one organization. Sign in as a member of an organization to
       </li>
       {% endfor %}
     </ul>
-    {% else %}<p class="panel__empty">No audit targets, evidence requests, ATO expiries or POA&amp;M due dates in the next 90 days.</p>{% endif %}
+    {% if cc.milestones.more or cc.milestones.older_overdue %}<p class="panel__note" style="padding:0 var(--space-5) var(--space-4)">{% if cc.milestones.more %}{{ cc.milestones.more }} more ahead. {% endif %}{% if cc.milestones.older_overdue %}{{ cc.milestones.older_overdue }} missed date{{ 's' if cc.milestones.older_overdue != 1 }} older than 30 days not listed.{% endif %}</p>{% endif %}
+    {% else %}<p class="panel__empty">No audit targets, evidence requests, ATO expiries or POA&amp;M due dates in the next 90 days{% if cc.milestones.older_overdue %}; {{ cc.milestones.older_overdue }} missed date{{ 's' if cc.milestones.older_overdue != 1 }} older than 30 days{% endif %}.</p>{% endif %}
   </article>
 
   <article class="card panel">

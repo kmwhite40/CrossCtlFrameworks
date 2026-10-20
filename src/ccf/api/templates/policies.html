@@ -19,7 +19,7 @@
     </tr>{% endfor %}</tbody>
   </table>
 </div>
-<p class="dim" id="acknowledgments" style="font-size:13px">Acknowledged counts attestations of the current version over active members of the organization. Attestation is recorded through <code>POST /api/policies/versions/{id}/attest</code>.</p>
+<p class="dim" id="acknowledgments" style="font-size:13px">Acknowledged counts distinct active members of the organization who attested the most recently created version, over all active members. Versions carry no draft or published state, so the most recent one is treated as current. Attestation is recorded through <code>POST /api/policies/versions/{id}/attest</code>.</p>
 {% else %}
 <div class="card empty-state" id="acknowledgments"><i data-lucide="scroll-text"></i><h2>No policies yet</h2><p>No policy is recorded for this organization. Policies, versions and attestations are created through the API (<code>/api/policies</code>); they appear here once they exist.</p></div>
 {% endif %}

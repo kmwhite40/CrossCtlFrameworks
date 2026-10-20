@@ -14,7 +14,11 @@ The status code and any headers on the exception (``WWW-Authenticate``,
 from __future__ import annotations
 
 from fastapi import Request
-from fastapi.exception_handlers import http_exception_handler
+from fastapi.exception_handlers import (
+    http_exception_handler,
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -37,23 +41,39 @@ def wants_html(request: Request) -> bool:
     return "text/html" in accept and request.headers.get("hx-request") != "true"
 
 
-async def html_aware_http_exception(request: Request, exc: StarletteHTTPException) -> Response:
-    if not wants_html(request):
-        return await http_exception_handler(request, exc)
+def _render(request: Request, status: int, detail: str | None, headers: dict | None) -> Response:
     from .routes.ui import templates  # noqa: PLC0415 - avoid an import cycle at app build
 
-    detail = exc.detail if isinstance(exc.detail, str) else None
     principal = getattr(request.state, "principal", None)
     return templates.TemplateResponse(
         request,
         "error.html",
         {
             "active": None,
-            "status": exc.status_code,
-            "title": _TITLES.get(exc.status_code, "Something went wrong"),
+            "status": status,
+            "title": _TITLES.get(status, "Something went wrong"),
             "detail": detail,
             "role": getattr(principal, "role", None),
         },
-        status_code=exc.status_code,
-        headers=getattr(exc, "headers", None),
+        status_code=status,
+        headers=headers,
     )
+
+
+async def html_aware_http_exception(request: Request, exc: StarletteHTTPException) -> Response:
+    if not wants_html(request):
+        return await http_exception_handler(request, exc)
+    detail = exc.detail if isinstance(exc.detail, str) else None
+    return _render(request, exc.status_code, detail, getattr(exc, "headers", None))
+
+
+async def html_aware_validation_error(request: Request, exc: RequestValidationError) -> Response:
+    """A malformed link a person followed (a bad query value) gets the page;
+    the field-level JSON stays for clients. The detail names the fields only:
+    the submitted values are not echoed back."""
+    if not wants_html(request):
+        return await request_validation_exception_handler(request, exc)
+    fields = sorted(
+        {".".join(str(p) for p in err.get("loc", ())[1:]) or "request" for err in exc.errors()}
+    )
+    return _render(request, 422, f"Check: {', '.join(fields)}", None)

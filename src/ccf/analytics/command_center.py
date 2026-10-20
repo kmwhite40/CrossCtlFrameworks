@@ -59,30 +59,23 @@ KANBAN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("completed", "Completed — awaiting closure"),
 )
 
-#: Frameworks the brief asks the dashboard to show, and how Concord can
-#: answer for each. ``posture`` keys are ``org_framework_posture`` keys;
-#: ``mapping`` is the catalog framework code whose crosswalk exists but whose
-#: posture Concord does not measure.
-FRAMEWORK_ROWS: tuple[dict[str, Any], ...] = (
-    {
-        "label": "NIST SP 800-53 Rev. 5",
-        "posture": ("fedramp_high", "fedramp_moderate", "fedramp_low"),
-    },
-    {"label": "NIST SP 800-171 Rev. 2", "posture": ("nist_800_171",)},
-    {
-        "label": "CMMC Level 2",
-        "posture": ("nist_800_171",),
-        "via": "Measured on the 800-171 requirements CMMC L2 adopts.",
-    },
-    {
-        "label": "FedRAMP",
-        "posture": ("fedramp_high", "fedramp_moderate", "fedramp_low"),
-        "via": "Measured on the declared FedRAMP/FISMA baseline.",
-    },
-    {"label": "NIST CSF 2.0", "mapping": "NIST_CSF_2_0"},
-    {"label": "ISO/IEC 27001", "mapping": "ISO_27001"},
-    {"label": "SOC 2", "mapping": "SOC2"},
-    {"label": "CIS Controls v8", "mapping": "CIS_V8"},
+#: Measured posture, one row per declared baseline. 800-53 and FedRAMP are one
+#: measurement (the FedRAMP/FISMA baseline is a selection of 800-53 controls),
+#: and CMMC L2 is measured on the 800-171 requirements it adopts, so each pair
+#: is one row that names both -- two rows with identical numbers would read as
+#: two independent results.
+POSTURE_ROWS: tuple[tuple[str, str, str | None], ...] = (
+    ("fedramp_high", "NIST SP 800-53 Rev. 5 · FedRAMP High", None),
+    ("fedramp_moderate", "NIST SP 800-53 Rev. 5 · FedRAMP Moderate", None),
+    ("fedramp_low", "NIST SP 800-53 Rev. 5 · FedRAMP Low", None),
+    ("nist_800_171", "NIST SP 800-171 Rev. 2 · CMMC Level 2", "CMMC L2 adopts these requirements"),
+)
+#: Frameworks with a crosswalk in the catalog but no posture measurement.
+MAPPING_ROWS: tuple[tuple[str, str], ...] = (
+    ("NIST_CSF_2_0", "NIST CSF 2.0"),
+    ("ISO_27001", "ISO/IEC 27001"),
+    ("SOC2", "SOC 2"),
+    ("CIS_V8", "CIS Controls v8"),
 )
 
 
@@ -332,6 +325,19 @@ async def _test_runs_by_week(
             passed[wk] += 1
         elif status == "fail":
             failed[wk] += 1
+    # The most recent week that had runs, named with its date and run count:
+    # "latest week" alone hid both how old the week was and how small.
+    latest = None
+    for w in reversed(weeks_list):
+        n = passed.get(w, 0) + failed.get(w, 0)
+        if n:
+            latest = {
+                "week_of": w,
+                "runs": n,
+                "pct": ratio(passed.get(w, 0), n),
+                "weeks_ago": (_week_start(today) - w).days // 7,
+            }
+            break
     return {
         "labels": [w.strftime("%b %-d") for w in weeks_list],
         "passed": [passed.get(w, 0) for w in weeks_list],
@@ -339,7 +345,9 @@ async def _test_runs_by_week(
         "pass_rate": [
             ratio(passed.get(w, 0), passed.get(w, 0) + failed.get(w, 0)) for w in weeks_list
         ],
-        "runs": len(rows),
+        # What the chart plots: pass and fail runs. Other outcomes are not drawn.
+        "runs": sum(passed.values()) + sum(failed.values()),
+        "latest": latest,
     }
 
 
@@ -426,11 +434,13 @@ async def _activity(session: AsyncSession, org_id: int, limit: int = 7) -> list[
 
 async def _milestones(
     session: AsyncSession, org_id: int, today: date, limit: int = 6
-) -> list[dict[str, Any]]:
-    """Dated commitments ahead: audit targets, PBC due dates, ATO expiries and
-    POA&M due dates within 90 days. Overdue PBC and POA&M dates are included --
-    a missed date is the most important milestone on the list."""
+) -> dict[str, Any]:
+    """Dated commitments: audit targets, PBC due dates, ATO expiries and POA&M
+    due dates within 90 days, plus anything missed in the last 30. A missed
+    date matters, but without a lookback, old overdue dates filled the panel
+    and no future milestone was ever shown; older misses are counted instead."""
     horizon = today + timedelta(days=90)
+    lookback = today - timedelta(days=30)
     items: list[dict[str, Any]] = []
     for e in (
         await session.execute(
@@ -514,66 +524,78 @@ async def _milestones(
                 "href": "/poams?status=open",
             }
         )
-    items.sort(key=lambda i: i["on"])
+    older = sum(1 for i in items if i["on"] < lookback)
+    items = sorted((i for i in items if i["on"] >= lookback), key=lambda i: i["on"])
     for i in items:
         i["overdue"] = i["on"] < today
         i["days"] = (i["on"] - today).days
-    return items[:limit]
+    return {"items": items[:limit], "more": max(len(items) - limit, 0), "older_overdue": older}
 
 
 def _framework_coverage(fw: dict[str, Any], mapped_codes: set[str]) -> list[dict[str, Any]]:
-    """One row per framework the brief names, saying how Concord answers.
+    """Rows saying how Concord answers for each framework the brief names.
 
     ``measured``: posture is computed (passing + documented over the declared
-    denominator). ``mapped``: the catalog crosswalk exists but Concord does not
-    measure posture against it -- shown, never given a bar. ``not_configured``:
-    no system declares it, or the catalog lacks it."""
+    denominator), one row per baseline some system declares. ``mapped``: the
+    catalog crosswalk exists but Concord does not measure posture against it --
+    shown, never given a bar. ``not_configured``: no system declares it, or
+    the catalog lacks it."""
     by_fw = fw.get("by_framework", {})
-    rows = []
-    for spec in FRAMEWORK_ROWS:
-        if "posture" in spec:
-            key = next((k for k in spec["posture"] if by_fw.get(k, {}).get("total")), None)
-            if key is None:
-                rows.append(
-                    {
-                        "label": spec["label"],
-                        "state": "not_configured",
-                        "detail": "No system declares this framework.",
-                    }
-                )
-                continue
-            f = by_fw[key]
-            addressed = f["passing"] + f["documented"]
-            rows.append(
-                {
-                    "label": spec["label"],
-                    "state": "measured",
-                    "pct": ratio(addressed, f["total"]),
-                    "passing": f["passing"],
-                    "documented": f["documented"],
-                    "failing": f["failing"],
-                    "unaddressed": f["unaddressed"],
-                    "total": f["total"],
-                    "unit": f["unit"],
-                    "systems": f["systems"],
-                    "basis": f["label"],
-                    "via": spec.get("via"),
-                }
-            )
-        else:
-            state = "mapped" if spec["mapping"] in mapped_codes else "not_configured"
-            rows.append(
-                {
-                    "label": spec["label"],
-                    "state": state,
-                    "detail": (
-                        "Crosswalk mappings exist; Concord does not measure "
-                        "posture against this framework."
-                        if state == "mapped"
-                        else "Not in the loaded catalog."
-                    ),
-                }
-            )
+    rows: list[dict[str, Any]] = []
+    for key, label, via in POSTURE_ROWS:
+        f = by_fw.get(key)
+        if not f or not f.get("total"):
+            continue
+        rows.append(
+            {
+                "label": label,
+                "state": "measured",
+                "pct": ratio(f["passing"] + f["documented"], f["total"]),
+                "passing": f["passing"],
+                "documented": f["documented"],
+                "failing": f["failing"],
+                "unaddressed": f["unaddressed"],
+                "total": f["total"],
+                "unit": f["unit"],
+                "systems": f["systems"],
+                "basis": f["label"],
+                "via": via,
+            }
+        )
+    if not any(
+        by_fw.get(k, {}).get("total") for k in ("fedramp_high", "fedramp_moderate", "fedramp_low")
+    ):
+        rows.append(
+            {
+                "label": "NIST SP 800-53 Rev. 5 · FedRAMP",
+                "state": "not_configured",
+                "detail": "No system declares an 800-53 baseline.",
+            }
+        )
+    if not by_fw.get("nist_800_171", {}).get("total"):
+        rows.append(
+            {
+                "label": "NIST SP 800-171 Rev. 2 · CMMC Level 2",
+                "state": "not_configured",
+                "detail": (
+                    "No system declares 800-171 or CMMC, or the requirement matrix is not loaded."
+                ),
+            }
+        )
+    for code, label in MAPPING_ROWS:
+        state = "mapped" if code in mapped_codes else "not_configured"
+        rows.append(
+            {
+                "label": label,
+                "state": state,
+                "detail": (
+                    "Crosswalk mappings exist; Concord does not measure "
+                    "posture against this framework."
+                    if state == "mapped"
+                    else "Not in the loaded catalog."
+                ),
+            }
+        )
     return rows
 
 
@@ -610,6 +632,8 @@ async def command_center(
         return {"scoped": False, "today": today}
 
     gaps = await compliance_gaps(session, org_id, today=today)
+    # failing includes failures under an approved acceptance; open excludes them.
+    judged = gaps["passing"] + gaps["failing"] + gaps["manual_review"]
     fw = await org_framework_posture(session, org_id)
     aging = await posture.poam_aging(session, today=today, org_id=org_id)
     statuses = await _poam_status_counts(session, org_id)
@@ -639,15 +663,23 @@ async def command_center(
 
     kpis = {
         "control_health": {
-            "pct": ratio(gaps["passing"], gaps["assessed"]),
+            # Over controls whose latest test produced a result -- pass, fail,
+            # or a human must judge -- so the three parts sum to the
+            # denominator. ``assessed`` also counts not-applicable and
+            # not-yet-run tests, which say nothing about the control.
+            "pct": ratio(gaps["passing"], judged),
             "passing": gaps["passing"],
-            "assessed": gaps["assessed"],
+            "judged": judged,
             "failing": gaps["open"],
+            "accepted": gaps["accepted"],
             "manual_review": gaps["manual_review"],
+            "not_in_scope": gaps["not_in_scope"],
             "systems": gaps["systems_assessed"],
             "last": gaps["last_assessed"],
-            "basis": "Controls whose latest automated test passed, over every assessed control "
-            "on live systems. Not a framework score: unassessed controls are outside it.",
+            "basis": "Controls whose latest automated test passed, over controls whose latest "
+            "test produced a result (pass, fail, or needs a human) on live systems. "
+            "Not-applicable and not-yet-run tests, and unassessed controls, are outside it. "
+            "Not a framework score.",
         },
         "findings": {
             "open": aging["open_total"],
@@ -676,8 +708,9 @@ async def command_center(
             "poams": aging["overdue"],
             "tasks": overdue_tasks,
             "poams_undated": aging["no_due_date"],
-            "basis": "Open POA&Ms and tasks past their due date. Items with no due date cannot be "
-            "overdue and are counted beside it.",
+            "basis": "Open POA&Ms past their due date (or, where none is set, their scheduled "
+            "completion or original due date), and open tasks past their due date. Items "
+            "with no date at all cannot be overdue and are counted beside it.",
         },
         "audit": {**audit, "findings_open": sum(findings.values())},
         "monitoring": {
@@ -724,8 +757,9 @@ async def command_center(
 
 
 __all__ = [
-    "FRAMEWORK_ROWS",
     "KANBAN_COLUMNS",
+    "MAPPING_ROWS",
+    "POSTURE_ROWS",
     "RISK_LEVELS",
     "TASK_OPEN_STATUSES",
     "command_center",

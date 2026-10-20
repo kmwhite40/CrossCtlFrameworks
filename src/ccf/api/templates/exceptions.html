@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Exception Management · Concord{% endblock %}
 {% block heading %}Exceptions{% endblock %}
-{% block subtitle %}Every standing departure from a requirement: control-test waivers, KSI exceptions, accepted POA&amp;Ms and accepted risks. Each is decided where it lives, under that record's own approval gate.{% endblock %}
+{% block subtitle %}Every departure from a requirement that is in force: approved control-test waivers, accepted KSI exceptions, accepted POA&amp;Ms and accepted risks. Each is decided where it lives, under that record's own approval gate; requests still awaiting a decision are listed separately.{% endblock %}
 {% block content %}
 <section class="kpi-grid kpi-grid--4">
   {% for k in ['Control-test waiver', 'KSI exception', 'Accepted POA&M', 'Accepted risk'] %}
@@ -22,6 +22,18 @@
       <td><a href="{{ i.href }}">Open</a></td>
     </tr>{% endfor %}</tbody>
   </table>
-  {% else %}<p class="panel__empty">No waivers, KSI exceptions, accepted POA&amp;Ms or accepted risks are recorded for this organization.</p>{% endif %}
+  {% else %}<p class="panel__empty">No approved waivers, accepted KSI exceptions, accepted POA&amp;Ms or accepted risks are in force for this organization.</p>{% endif %}
 </div>
+{% if pending %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Awaiting a decision</h2><span class="panel__hint">{{ pending | length }} request{{ 's' if pending|length != 1 }}, not counted above</span></header>
+  <ul class="feed">
+    {% for i in pending %}
+    <li class="feed__item"><span class="chip chip--ghost">{{ i.kind }}</span>
+      <a class="feed__main" href="{{ i.href }}"><span class="feed__title">{{ i.subject }}</span><span class="feed__meta">{{ i.system or '—' }} · {{ i.status }}</span></a>
+      <span class="feed__meta">{{ i.expires or '' }}</span></li>
+    {% endfor %}
+  </ul>
+</article>
+{% endif %}
 {% endblock %}
