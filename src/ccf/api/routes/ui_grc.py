@@ -7,6 +7,7 @@ environment (same base.html + light theme, asset-version cache-busting).
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
@@ -21,8 +22,11 @@ from sqlalchemy.orm import selectinload
 
 from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
+from ...config import get_settings
+from ...connectors import aws_identity, get_connector
 from ...connectors import credentials as connector_credentials
-from ...connectors import get_connector
+from ...connectors.aws import AwsGovCloudConnector
+from ...connectors.aws_inventory import sync_organization_inventory
 from ...connectors.credential_spec import (
     SPECS,
     IncompleteCredential,
@@ -52,6 +56,7 @@ from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ...posture.checks import checks_for
 from ...posture.types import ResourceFinding
+from ..audit import record_event
 from ..auth_deps import get_principal, require_platform_admin, require_role, resolve_caller_org
 from ..deps import get_session
 from . import scans as scans_api
@@ -554,8 +559,184 @@ async def connector_detail(
                 )
             ).scalars().all(),
             "scan_checks": len(checks_for(c.connector_type)),
+            "aws_role": _aws_role_panel(c) if c.connector_type == "aws_govcloud" else None,
         },
     )
+
+
+def _aws_role_panel(c: ConnectorConfig) -> dict[str, Any]:
+    """What a customer needs to create the role Concord assumes."""
+    settings = get_settings()
+    external_id = (c.config or {}).get("external_id")
+    brokers = {
+        "aws-us-gov": settings.aws_broker_arn_govcloud,
+        "aws": settings.aws_broker_arn_commercial,
+    }
+    actions = aws_identity.required_actions(
+        p for ck in checks_for("aws_govcloud") for p in ck.required_permissions
+    )
+    return {
+        "external_id": external_id,
+        "brokers": brokers,
+        "trust_policies": {
+            partition: aws_identity.pretty(aws_identity.trust_policy(arn, external_id))
+            for partition, arn in brokers.items()
+            if arn and external_id
+        },
+        "permissions_policy": aws_identity.pretty(aws_identity.permissions_policy(actions)),
+        "role_prefix": aws_identity.ROLE_NAME_PREFIX,
+    }
+
+
+@router.post("/connectors/{cfg_id}/aws-inventory")
+async def connectors_aws_inventory(
+    cfg_id: int,
+    request: Request,
+    system_id: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Bind the AWS organization to a system and sync its accounts into that
+    system's inventory. ``objects_discovered`` becomes the number of accounts
+    actually read -- it used to be a fixed mock figure."""
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    if c.connector_type != "aws_govcloud" or c.organization_id is None:
+        raise HTTPException(404, "not an AWS connector")
+    target = await session.get(System, system_id)
+    if target is None or target.deleted_at is not None or (
+        target.organization_id != c.organization_id
+    ):
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('choose a system in this organization')}",
+            status_code=303,
+        )
+    credential = await connector_credentials.resolve_credential(
+        session, c.organization_id, c.connector_type
+    )
+    connector = get_connector(c.connector_type, credential)
+    if not isinstance(connector, AwsGovCloudConnector) or not connector.is_configured():
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('store a working AWS credential first')}",
+            status_code=303,
+        )
+    config = dict(c.config or {})
+    config["system_id"] = target.id
+    c.config = config
+    result = await sync_organization_inventory(
+        session, connector, system_id=target.id, org_id=c.organization_id
+    )
+    if result["seen"] or not result["indeterminate"]:
+        c.objects_discovered = result["seen"]
+        c.last_sync = datetime.now(UTC)
+    await record_event(
+        session,
+        actor=principal.email or "system",
+        action="aws_inventory_synced",
+        entity_type="connector",
+        entity_id=str(c.id),
+        diff={k: result[k] for k in ("seen", "created", "updated", "truncated",
+                                     "indeterminate")} | {"system_id": target.id},
+        organization_id=c.organization_id,
+    )
+    await session.commit()
+    if result["indeterminate"] and not result["seen"]:
+        reason = (
+            "the AWS organization could not be read with this credential "
+            f"({', '.join(result['indeterminate'][:3])}); a member account cannot list "
+            "its organization"
+        )
+        return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
+    return RedirectResponse(f"/connectors/{cfg_id}#aws-inventory", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/aws-permissions")
+async def connectors_aws_permissions(
+    cfg_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Probe which of the AWS checks' actions this credential is allowed.
+
+    Read-only and stored on the connector (non-secret) so the page can show
+    it. ``missing`` only on a clear denial; anything else is ``unknown``.
+    """
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    if c.connector_type != "aws_govcloud" or c.organization_id is None:
+        raise HTTPException(404, "not an AWS connector")
+    credential = await connector_credentials.resolve_credential(
+        session, c.organization_id, c.connector_type
+    )
+    connector = get_connector(c.connector_type, credential)
+    if not isinstance(connector, AwsGovCloudConnector) or not connector.is_configured():
+        return RedirectResponse(
+            f"/connectors/{cfg_id}?error={quote('store a working AWS credential first')}",
+            status_code=303,
+        )
+    results = await asyncio.to_thread(connector.permission_check)
+    config = dict(c.config or {})
+    config["permission_check"] = {"at": datetime.now(UTC).isoformat(), "results": results}
+    c.config = config
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}#aws-permissions", status_code=303)
+
+
+@router.post("/connectors/{cfg_id}/aws-external-id")
+async def connectors_aws_external_id(
+    cfg_id: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Generate this organization's External ID, or rotate it.
+
+    Rotation is deliberate and audited: every trust policy naming the old ID
+    stops working, so the connector is marked not ready until the customer
+    updates theirs. Never a form edit, and never a value the caller supplies.
+    """
+    org = _principal_org(request)
+    c = await session.get(ConnectorConfig, cfg_id)
+    if c is None or (org is not None and c.organization_id != org):
+        raise HTTPException(404, "connector not found")
+    if c.connector_type != "aws_govcloud":
+        raise HTTPException(404, "not an AWS connector")
+    config = dict(c.config or {})
+    previous = config.get("external_id")
+    form = await request.form()
+    if previous and form.get("confirm") != "rotate":
+        reason = quote("confirm the rotation to replace the External ID")
+        return RedirectResponse(f"/connectors/{cfg_id}?error={reason}", status_code=303)
+    config["external_id"] = aws_identity.new_external_id()
+    c.config = config
+    if previous:
+        if c.encrypted_credential is not None and c.organization_id is not None:
+            stored = await connector_credentials.resolve_credential(
+                session, c.organization_id, c.connector_type
+            )
+            if stored and stored.get("role_arn"):
+                await connector_credentials.set_credential(
+                    session, c.organization_id, c.connector_type, dict(stored),
+                    name=c.name, config=c,
+                )
+        c.status = "error"
+        c.error_message = "External ID rotated: update the role's trust policy, then test"
+    await record_event(
+        session,
+        actor=principal.email or "system",
+        action="aws_external_id_rotated" if previous else "aws_external_id_generated",
+        entity_type="connector",
+        entity_id=str(c.id),
+        diff={"previous_suffix": str(previous)[-6:] if previous else None},
+        organization_id=c.organization_id,
+    )
+    await session.commit()
+    return RedirectResponse(f"/connectors/{cfg_id}", status_code=303)
 
 
 # ── Control Tests ────────────────────────────────────────────────────────────
@@ -714,7 +895,6 @@ async def control_test_detail(
             "viewer_email": getattr(principal, "email", None),
             "viewer_is_global": bool(getattr(principal, "is_global", False)),
             "can_approve": waiver_service.can_approve,
-            "error": request.query_params.get("error"),
         },
     )
 
@@ -1854,7 +2034,7 @@ async def connectors_set_credential(
     secret = {
         field.name: str(form.get(field.name) or "").strip()
         for field in spec.fields
-        if str(form.get(field.name) or "").strip()
+        if not field.generated and str(form.get(field.name) or "").strip()
     }
     # Merge over what is already stored, so a partial edit is an edit and not
     # a silent wipe of the fields the form did not carry.
@@ -1863,6 +2043,8 @@ async def connectors_set_credential(
             session, org, cfg.connector_type
         )
         if existing:
+            if cfg.connector_type == "aws_govcloud":
+                existing = connector_credentials.without_other_aws_methods(existing, secret)
             secret = {**existing, **secret}
 
     config = dict(cfg.config or {})
@@ -1874,7 +2056,7 @@ async def connectors_set_credential(
 
     try:
         await connector_credentials.set_credential(
-            session, org, cfg.connector_type, secret, name=cfg.name, config=cfg
+            session, org, cfg.connector_type, secret, name=cfg.name, config=cfg, prove=True
         )
     except IncompleteCredential as exc:
         return RedirectResponse(

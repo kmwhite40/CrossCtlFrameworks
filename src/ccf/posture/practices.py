@@ -132,6 +132,33 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     # Patch state is the record of whether flaws are corrected. Missing and
     # failed patches are both uncorrected flaws.
     "aws.ssm.patch_compliance": ("SI.L2-3.14.1",),
+    # SI.L2-3.14.6  "Monitor organizational systems, including inbound and
+    #                outbound communications traffic, to detect attacks and
+    #                indicators of potential attacks."
+    # GuardDuty is that monitor for the account; 3.14.7 (unauthorized use) was
+    # considered and not claimed -- detection of attacks is what it asserts.
+    "aws.guardduty.enabled": ("SI.L2-3.14.6",),
+    # ── Configuration management (AWS) ───────────────────────────────────────
+    # CM.L2-3.4.1  "Establish and maintain baseline configurations and
+    #               inventories of organizational systems."
+    # A recorder covering every resource type is the maintained inventory.
+    "aws.config.recorder_recording": ("CM.L2-3.4.1",),
+    # SC.L2-3.13.10 "Establish and manage cryptographic keys for cryptography
+    #                employed in organizational systems."
+    "aws.kms.cmk_rotation_enabled": ("SC.L2-3.13.10",),
+    # SC.L2-3.13.8  "Implement cryptographic mechanisms to prevent unauthorized
+    #                disclosure of CUI during transmission..."
+    "aws.elbv2.listeners_tls": ("SC.L2-3.13.8",),
+    # SC.L2-3.13.1  "Monitor, control, and protect communications ... at the
+    #                external boundaries..." -- a WAF on the internet-facing
+    #                load balancer is a control at that boundary.
+    "aws.wafv2.public_alb_protected": ("SC.L2-3.13.1",),
+    # AU.L2-3.3.8  "Protect audit information and audit logging tools from
+    #               unauthorized access, modification, and deletion." --
+    #               write-once storage for the trail's own bucket.
+    "aws.s3.trail_bucket_object_lock": ("AU.L2-3.3.8",),
+    # SC.L2-3.13.16 "Protect the confidentiality of CUI at rest."
+    "aws.rds.storage_encrypted": ("SC.L2-3.13.16",),
     # ── Audit and accountability ─────────────────────────────────────────────
     # AU.L2-3.3.1  "Create and retain system audit logs and records to the
     #               extent needed to enable the monitoring, analysis,
@@ -227,6 +254,12 @@ UNMAPPED: dict[str, str] = {
         "notices, while this check reads a tenant-wide terms-of-use agreement "
         "that may say nothing about CUI. The check keeps its 800-53 AC-8 "
         "attribution, which is the framework that does ask for it."
+    ),
+    "aws.accessanalyzer.external_access_enabled": (
+        "An analyzer reporting resources shared outside the account is a monitor, "
+        "and its presence does not demonstrate 3.1.5 (least privilege) or 3.1.22 "
+        "(public posting control); 3.14.6 is about attacks, which external sharing "
+        "is not. The check keeps its 800-53 SI-4 and AC-6 attribution instead."
     ),
     "aws.iam.access_key_rotation": (
         "800-171 has no authenticator-lifetime requirement. 3.5.5 and 3.5.6 "

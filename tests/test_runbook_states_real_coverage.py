@@ -199,9 +199,9 @@ def test_the_stated_practice_coverage_is_the_real_one() -> None:
     # And that the unmapped count is stated in words, matching the table. Spelt
     # out rather than derived, so changing one without the other fails here --
     # which is the point: the runbook's prose is the thing a reader trusts.
-    assert "Five checks are deliberately unmapped" in text
-    assert len(UNMAPPED) == 5, (
-        f"{len(UNMAPPED)} checks are unmapped; the runbook still says five"
+    assert "Six checks are deliberately unmapped" in text
+    assert len(UNMAPPED) == 6, (
+        f"{len(UNMAPPED)} checks are unmapped; the runbook still says six"
     )
 
 

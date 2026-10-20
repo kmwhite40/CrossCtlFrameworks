@@ -327,7 +327,11 @@ async def _capture_identity_is_tenants_own(
     if credential is None:
         return True
     # The same distinction ``AwsGovCloudConnector.is_configured`` draws: an
-    # access key pair is the tenant's, a bare profile is the host's.
+    # access key pair is the tenant's, a bare profile is the host's. A role in
+    # the tenant's account, assumed with the tenant's External ID, is the
+    # tenant's too, and falls through to the last line: the broker profile
+    # that assumes it is never stored in the tenant's bundle, and a bundle
+    # holds one method only (``credentials._prepare_aws_bundle``).
     if credential.get("access_key_id") and credential.get("secret_access_key"):
         return True
     return not credential.get("profile")

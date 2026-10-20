@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     aws_region: str = Field(default="us-gov-west-1")  # GovCloud West by default
     aws_profile: str | None = Field(default=None)  # named AWS profile (optional)
     aws_capture_enabled: bool = Field(default=False)
+    # The broker identity Concord assumes customer roles *from*, per partition
+    # (``ccf.connectors.aws_identity``). A named profile on this host -- which
+    # may itself be an instance/task role or web identity -- plus that
+    # identity's ARN, shown to customers in the trust policy they attach. No
+    # cross-partition fallback: an unset partition cannot assume roles at all.
+    aws_broker_profile_govcloud: str | None = Field(default=None)
+    aws_broker_arn_govcloud: str | None = Field(default=None)
+    aws_broker_profile_commercial: str | None = Field(default=None)
+    aws_broker_arn_commercial: str | None = Field(default=None)
     # Azure Resource Manager (infrastructure config capture). Defaults target
     # Azure Government (management.usgovcloudapi.net / login.microsoftonline.us).
     # Deliberately NO ``azure_capture_enabled`` opt-in, matching Graph rather
