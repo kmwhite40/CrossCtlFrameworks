@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...config import get_settings
-from ...governance import bus
+from ...governance import approvals, bus
 from ...governance.approvals import entity_state, entity_states
 from ...governance.risk import band, compute_scores
 from ...models import Risk, System, Task
@@ -136,7 +136,12 @@ def _rescore(obj: Risk) -> None:
 
 
 async def _require_acceptance_gate(
-    session: AsyncSession, *, owner_user_id: int | None, next_review_on: object, risk_id: int | str
+    session: AsyncSession,
+    *,
+    owner_user_id: int | None,
+    next_review_on: object,
+    risk_id: int | str,
+    actor: str | None = None,
 ) -> None:
     if owner_user_id is None or next_review_on is None:
         raise HTTPException(
@@ -144,12 +149,16 @@ async def _require_acceptance_gate(
             "risk acceptance requires an owner (owner_user_id) and an expiration/"
             "next_review_on date",
         )
-    if get_settings().auth_enabled and await entity_state(session, "risk", risk_id) != "approved":
-        raise HTTPException(
-            409,
-            "risk acceptance requires an approved authorizing-official review (submit for "
-            "approval, then have an AO/admin approve it)",
-        )
+    if get_settings().auth_enabled:
+        if await entity_state(session, "risk", risk_id) != "approved":
+            raise HTTPException(
+                409,
+                "risk acceptance requires an approved authorizing-official review (submit for "
+                "approval, then have an AO/admin approve it)",
+            )
+        # One review authorizes one acceptance: reopening and re-accepting
+        # needs another.
+        await approvals.consume(session, entity_type="risk", entity_id=risk_id, actor=actor)
 
 
 async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *, verb: str) -> None:
@@ -301,12 +310,15 @@ async def update_risk(
 ) -> dict[str, Any]:
     obj = await _require_risk(session, rid, principal)
     data = body.model_dump(exclude_none=True)
-    if data.get("status") == "accepted":
+    if data.get("status") == "accepted" and obj.status != "accepted":
+        # The transition, not every write naming it (a whole-form re-save of
+        # an accepted risk must not need a second, spent approval).
         await _require_acceptance_gate(
             session,
             owner_user_id=data.get("owner_user_id", obj.owner_user_id),
             next_review_on=data.get("next_review_on", obj.next_review_on),
             risk_id=rid,
+            actor=principal.email,
         )
     for k, v in data.items():
         setattr(obj, k, v)

@@ -6,6 +6,11 @@ be a different person than the submitter, and must hold an approver role. Both
 rules are enforced only when authentication is enabled (single-operator mode has
 one principal, so SoD cannot apply). Approving an SSP project also stamps its own
 status so downstream views reflect the authorization.
+
+An approval authorizes one decision. A gate that relies on it calls
+``consume``, which returns the entity to draft so the next gated transition
+needs a fresh review. Without that, one reviewer decision kept authorizing
+every later close, re-accept or expiry extension on the same record.
 """
 
 from __future__ import annotations
@@ -139,6 +144,43 @@ async def submit(
         dedupe_key=f"review-req:{entity_type}:{entity_id}",
     )
     return a
+
+
+async def consume(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: str | int,
+    actor: str | None,
+    org_id: int | None = None,
+) -> None:
+    """Spend an approval on the gated transition it authorized.
+
+    Call after the gate's approval check passes, in the same transaction as the
+    transition, so a rolled-back transition leaves the approval unspent. The
+    row returns to draft; ``reviewed_by``/``decision_note`` stay until the next
+    submission and the event records who approved what was spent.
+    """
+    a = (
+        await session.execute(
+            select(Approval).where(
+                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
+            )
+        )
+    ).scalar_one_or_none()
+    if a is None or a.state != "approved":
+        return
+    a.state = "draft"
+    await bus.emit(
+        session,
+        verb="approval_consumed",
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        summary=f"{entity_type} {entity_id}: approval by {a.reviewed_by} used by {actor}",
+        org_id=org_id if org_id is not None else a.organization_id,
+        actor=actor,
+        dispatch=False,
+    )
 
 
 async def decide(
