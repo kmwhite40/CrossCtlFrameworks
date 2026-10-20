@@ -30,6 +30,10 @@ class EvidenceError(ValueError):
     """Raised on an invalid evidence-repository operation (e.g. locked object)."""
 
 
+class EvidenceSeparationError(EvidenceError):
+    """The reviewer is the person who uploaded the version under review."""
+
+
 class EvidenceIntegrityError(EvidenceError):
     """Raised when stored evidence bytes fail SHA-256 verification against the
     digest recorded at upload time (IA-07: tampered or corrupted blob detected
@@ -153,8 +157,10 @@ async def add_version(
     session.add(version)
     await session.flush()
     obj.current_version_id = version.id
-    # A new version reopens review unless the object was already terminal.
-    if obj.status in ("approved", "rejected", "expired"):
+    # A new version reopens review. That includes "submitted": otherwise the
+    # uploader could swap the content after submitting, and the reviewer would
+    # approve -- and WORM-lock -- a version they were never shown.
+    if obj.status in ("submitted", "approved", "rejected", "expired"):
         obj.status = "draft"
     return version
 
@@ -177,6 +183,15 @@ async def review_object(
 ) -> EvidenceReview:
     if decision not in ("approved", "rejected"):
         raise EvidenceError("decision must be 'approved' or 'rejected'")
+    # Only what was put forward is reviewed. Approving a draft froze it (WORM)
+    # before anyone had said it was ready.
+    if obj.status != "submitted":
+        raise EvidenceError(f"only submitted evidence can be reviewed (status is {obj.status})")
+    # Separation of duties, when there is more than one principal to separate.
+    if get_settings().auth_enabled and reviewer is not None:
+        version = await session.get(EvidenceVersion, obj.current_version_id)
+        if version is not None and version.uploaded_by == reviewer:
+            raise EvidenceSeparationError("the uploader of this version cannot review it")
     review = EvidenceReview(
         evidence_object_id=obj.id,
         version_id=obj.current_version_id,
@@ -244,12 +259,23 @@ async def expired_objects(
 
 
 async def mark_expired(
-    session: AsyncSession, *, org_id: int | None = None, today: date | None = None
+    session: AsyncSession,
+    *,
+    org_id: int | None = None,
+    today: date | None = None,
+    unowned: bool = False,
 ) -> int:
-    """Flip past-freshness objects to ``expired`` (unless already terminal). Count."""
+    """Flip past-freshness objects to ``expired`` (unless already terminal). Count.
+
+    ``unowned=True`` targets only rows with no organization (single-operator
+    mode stores evidence that way), which a per-org pass never reaches.
+    """
     today = today or datetime.now(UTC).date()
     n = 0
-    for obj in await expired_objects(session, org_id=org_id, today=today):
+    objs = await expired_objects(session, org_id=org_id, today=today)
+    if unowned:
+        objs = [o for o in objs if o.organization_id is None]
+    for obj in objs:
         if obj.status != "expired":
             obj.status = "expired"
             n += 1

@@ -1,8 +1,9 @@
 """Event-driven reactions — keep state self-consistent across modules.
 
 When something changes, the dependent records update themselves: satisfying a
-control auto-closes its gap POA&M and propagates the status to crosswalked
-controls in other frameworks (map once, comply many). Reactions are explicit
+control proposes closure of its gap POA&M (a human closes it through the
+ISSM-08/09 gate), and a control's status change suggests (never writes) the
+crosswalked controls it may also apply to. Reactions are explicit
 (routes call them) and emit their own follow-up events with ``dispatch=False``
 to avoid webhook storms / recursion.
 """
@@ -16,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
-from ..models import POAM, Control, ControlImplementation, FrameworkMapping
+from ..models import POAM, Control, FrameworkMapping
 from . import bus
 
 _MET = ("implemented", "inherited", "not_applicable")
@@ -29,12 +30,26 @@ async def on_scoring_status_changed(
     system_id: int,
     control_id: str,
     state: str,
+    previous_state: str | None = None,
     org_id: int | None = None,
     actor: str | None = None,
 ) -> dict[str, Any]:
-    """A CMMC practice changed state → auto-close its gap POA&M when satisfied."""
-    closed = 0
-    if state in _MET:
+    """A CMMC practice changed state → propose closure of its POA&Ms when satisfied.
+
+    Never closes them. The title match also catches the POA&M an assessment
+    opened for an other-than-satisfied result, so closing here let whoever set
+    the practice state retire an assessor's finding with no milestone, evidence
+    or approval. Closing a POA&M asserts the weakness is remediated; a practice
+    state is one person's claim, so this does what
+    ``control_tests._resolve_on_recovery`` does on a passing test -- a dated
+    note and a notification -- and a human closes it through
+    ``api/routes/poams.py``'s gate.
+    """
+    flagged = 0
+    # On the transition into a satisfied state only: re-saving an already
+    # satisfied practice (to edit its notes, say) appended another dated note
+    # to every matching POA&M's remediation plan, which is exported.
+    if state in _MET and previous_state not in _MET:
         rows = (
             (
                 await session.execute(
@@ -49,18 +64,22 @@ async def on_scoring_status_changed(
             .all()
         )
         for p in rows:
-            p.status = "completed"
-            p.closed_on = date.today()
-            closed += 1
-            await bus.emit(
+            note = (
+                f"{control_id} marked {state} on {date.today().isoformat()}"
+                f" by {actor or 'automation'} -- review for closure."
+            )
+            p.remediation_plan = f"{p.remediation_plan}\n{note}" if p.remediation_plan else note
+            flagged += 1
+            await bus.notify(
                 session,
-                verb="closed",
+                category="conmon",
+                title=f"POA&M ready for closure review: {p.title}"[:512],
+                body=note,
+                org_id=org_id,
+                severity="info",
                 entity_type="poam",
                 entity_id=p.id,
-                summary=f"POA&M auto-closed: {control_id} satisfied ({state})",
-                org_id=org_id,
-                actor=actor or "automation",
-                dispatch=False,
+                dedupe_key=f"poam-practice-met:{p.id}",
             )
     await bus.emit(
         session,
@@ -72,7 +91,7 @@ async def on_scoring_status_changed(
         actor=actor,
         dispatch=False,
     )
-    return {"gap_poams_closed": closed}
+    return {"gap_poams_flagged_for_review": flagged}
 
 
 # A mapping value shared by more controls than this is too generic to be a
@@ -128,55 +147,30 @@ async def propagate_implementation(
     org_id: int | None = None,
     actor: str | None = None,
 ) -> dict[str, Any]:
-    """Copy a control's implementation status to crosswalked peer controls.
+    """Suggest the crosswalked peers a control's new status may also apply to.
 
-    Realises "map once, comply many": implement a control and its equivalents
-    across other frameworks inherit the same status for this system.
+    Writes nothing. It used to copy the status onto every peer: creating rows
+    with ``responsibility="inherited"`` and overwriting what a person had set.
+    A shared mapping value says two controls are related, not that one
+    satisfies the other, so the copy fabricated implementation (and
+    inheritance) claims for controls nobody assessed, and coverage rose with
+    them. The capability layer is where one implementation reaches other
+    frameworks; it traverses the crosswalk at read time instead of copying.
     """
     peers = await crosswalk_peers(session, control_id)
     if not peers:
-        return {"peers": 0, "updated": 0}
-    existing = {
-        i.control_id: i
-        for i in (
-            await session.execute(
-                select(ControlImplementation).where(
-                    ControlImplementation.system_id == system_id,
-                    ControlImplementation.control_id.in_(peers),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    }
-    updated = 0
-    for cid in peers:
-        impl = existing.get(cid)
-        if impl is None:
-            session.add(
-                ControlImplementation(
-                    system_id=system_id,
-                    control_id=cid,
-                    status=status,
-                    responsibility="inherited",
-                    narrative="Propagated from a crosswalked control (map once, comply many).",
-                )
-            )
-            updated += 1
-        elif impl.status != status:
-            impl.status = status
-            updated += 1
+        return {"peers": 0, "updated": 0, "suggested": []}
     await bus.emit(
         session,
-        verb="propagated",
+        verb="suggested",
         entity_type="control_implementation",
         entity_id=control_id,
-        summary=f"Status '{status}' propagated to {updated} crosswalked control(s)",
+        summary=f"Status '{status}' may also apply to {len(peers)} crosswalked control(s)",
         org_id=org_id,
         actor=actor or "automation",
         dispatch=False,
     )
-    return {"peers": len(peers), "updated": updated}
+    return {"peers": len(peers), "updated": 0, "suggested": peers}
 
 
 async def resolve_control_id(session: AsyncSession, identifier: str) -> int | None:

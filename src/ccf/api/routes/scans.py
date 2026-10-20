@@ -32,15 +32,21 @@ async def _require_system(session: AsyncSession, system_id: int, principal: Prin
     return await require_system_in_scope(session, system_id, principal)
 
 
-@router.post("/ingest", status_code=201)
-async def ingest_scan(
-    system_id: int = Form(...),
-    scanner: str = Form("auto"),
-    file: UploadFile | None = None,
-    session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
-) -> dict[str, Any]:
-    """Ingest a scan export and reconcile it into the system's POA&Ms."""
+async def ingest_upload(
+    session: AsyncSession,
+    *,
+    system_id: int,
+    scanner: str,
+    file: UploadFile | None,
+    principal: Principal,
+) -> tuple[ScanIngestion, str, dict[str, Any]]:
+    """The one scan ingest: scope, size cap, parse, reconcile, record, alert.
+
+    Both ``POST /api/scans/ingest`` and the HTML form (``ui_grc.scans_upload``)
+    call this, so the two cannot drift. The form used to be a copy that had lost
+    the scope check, the size cap, the 422 on a bad file and the notification.
+    Does not commit.
+    """
     await _require_system(session, system_id, principal)
     if file is None:
         raise HTTPException(400, "a scan file upload is required")
@@ -85,22 +91,42 @@ async def ingest_scan(
         org_id=principal.org_id,
         actor=principal.email,
     )
-    if result.created or result.reopened:
+    if result.created or result.reopened or result.closed:
+        # Closures are announced too: they bypass the closure gate (scan
+        # absence is the evidence), so nobody should learn of them by accident.
         await bus.notify(
             session,
             category="scan",
-            title=f"{resolved} scan opened {result.created + result.reopened} POA&M(s)",
+            title=(
+                f"{resolved} scan opened {result.created + result.reopened} and "
+                f"closed {result.closed} POA&M(s)"
+            ),
             body=(
-                f"System {system_id}: {result.created} new and {result.reopened} reopened "
-                f"weaknesses from {file.filename or 'upload'}."
+                f"System {system_id}: {result.created} new, {result.reopened} reopened and "
+                f"{result.closed} auto-closed weaknesses from {file.filename or 'upload'}."
             ),
             org_id=principal.org_id,
             severity="warning",
             entity_type="scan_ingestion",
             entity_id=ingestion.id,
         )
+    return ingestion, resolved, result.as_dict()
+
+
+@router.post("/ingest", status_code=201)
+async def ingest_scan(
+    system_id: int = Form(...),
+    scanner: str = Form("auto"),
+    file: UploadFile | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Ingest a scan export and reconcile it into the system's POA&Ms."""
+    ingestion, resolved, summary = await ingest_upload(
+        session, system_id=system_id, scanner=scanner, file=file, principal=principal
+    )
     await session.commit()
-    return {"id": ingestion.id, "scanner": resolved, **result.as_dict()}
+    return {"id": ingestion.id, "scanner": resolved, **summary}
 
 
 @router.get("/ingestions")

@@ -170,6 +170,7 @@ async def set_control_state(
             .where(ScoringStatus.scoring_control_id == ctrl.id)
         )
     ).scalar_one_or_none()
+    previous_state = status.state if status is not None else None
     if status is None:
         status = ScoringStatus(system_id=system_id, scoring_control_id=ctrl.id)
         session.add(status)
@@ -177,12 +178,13 @@ async def set_control_state(
         status, body.state, notes=body.notes, evidence_ref=body.evidence_ref
     )
     await session.flush()
-    # Reaction: satisfying a practice auto-closes its gap POA&M + records an event.
+    # Reaction: satisfying a practice flags its POA&Ms for closure review + records an event.
     reaction = await reactions.on_scoring_status_changed(
         session,
         system_id=system_id,
         control_id=control_id,
         state=status.state,
+        previous_state=previous_state,
         org_id=principal.org_id,
         actor=principal.email,
     )

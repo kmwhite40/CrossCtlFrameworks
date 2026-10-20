@@ -311,12 +311,25 @@ class ReconcileResult:
         }
 
 
-# Scanner semantics: a re-detected finding REOPENS a risk-accepted POA&M, so
-# 'resolved' here deliberately includes risk_accepted while the dashboards'
+# Scanner semantics: a re-detected finding reopens a resolved POA&M, and
+# 'resolved' here includes risk_accepted while the dashboards'
 # POAM_ACTIVE_STATUSES does not. Derived from the shared vocabulary so a new
-# status cannot land in neither bucket.
+# status cannot land in neither bucket. An acceptance is the exception while it
+# stands -- see _acceptance_stands.
 _OPEN_STATES = POAM_ACTIVE_STATUSES
 _RESOLVED_STATES = (*POAM_CLOSED_STATUSES, "risk_accepted")
+
+
+def _acceptance_stands(poam: POAM, today: date) -> bool:
+    """A risk acceptance holds against re-detection until it expires.
+
+    An accepted vulnerability is, by definition, still present, so finding it
+    again is not news. Reopening it on every scan made an acceptance last only
+    until the next ingest. The acceptance gate requires an expiry (``due_on``);
+    a row without one predates that rule, and an unknown expiry must not keep
+    a weakness out of remediation, so it reopens.
+    """
+    return poam.status == "risk_accepted" and poam.due_on is not None and poam.due_on >= today
 
 
 def _weakness(f: ScanFinding) -> str:
@@ -389,7 +402,7 @@ async def reconcile_findings(
                 )
             )
             res.created += 1
-        elif poam.status in _RESOLVED_STATES:
+        elif poam.status in _RESOLVED_STATES and not _acceptance_stands(poam, today):
             if poam_leaves_risk_accepted(poam.status, "open"):
                 # A superseded acceptance's rationale must not silently
                 # survive to be read as the justification for whatever
@@ -427,7 +440,15 @@ async def reconcile_findings(
     # closure is auditable — every auto-closed POA&M is stamped with the scanner +
     # date note below (and, via the API layer, the audit_log). It deliberately does
     # not require a milestone/evidence artifact or a separate approver.
+    #
+    # Absence is evidence only when the scan said something. A file that parsed
+    # to no findings at all -- a header-only CSV, an empty report, columns the
+    # mapper could not read -- would otherwise close every open POA&M for this
+    # scanner and system. A genuinely clean scan therefore leaves them open for
+    # a person to close, which is the safe direction.
     for uid, poam in by_uid.items():
+        if not seen:
+            break
         if uid in seen or poam.status not in _OPEN_STATES:
             continue
         poam.status = "closed"

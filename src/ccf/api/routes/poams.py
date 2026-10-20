@@ -19,7 +19,7 @@ from ...auth import Principal
 from ...config import get_settings
 from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
 from ...cr26.ver import is_blank
-from ...governance import bus
+from ...governance import approvals, bus
 from ...governance.approvals import entity_state, entity_states
 from ...integrations import service as integrations_service
 from ...integrations.types import (
@@ -216,14 +216,18 @@ async def _has_closure_evidence(session: AsyncSession, obj: POAM) -> bool:
     return (await session.execute(stmt)).scalar_one_or_none() is not None
 
 
-async def _require_closure_gate(session: AsyncSession, obj: POAM) -> None:
+async def _require_closure_gate(
+    session: AsyncSession, obj: POAM, *, actor: str | None = None
+) -> None:
     if not _milestones_satisfy_closure(obj) and not await _has_closure_evidence(session, obj):
         raise HTTPException(
             409,
             "cannot close: requires either all milestones completed or a linked closure "
             "evidence artifact for the remediated control",
         )
-    if get_settings().auth_enabled and await entity_state(session, "poam", obj.id) != "approved":
+    if get_settings().auth_enabled and not await approvals.consume(
+        session, entity_type="poam", entity_id=obj.id, actor=actor
+    ):
         raise HTTPException(
             409,
             "cannot close: requires an approved review (submit for approval, then have a "
@@ -245,6 +249,7 @@ async def _require_risk_accepted_gate(
     due_on: object,
     poam_id: int | str | None,
     acceptance_rationale: object,
+    actor: str | None = None,
 ) -> None:
     if owner_user_id is None or due_on is None:
         raise HTTPException(
@@ -261,13 +266,35 @@ async def _require_risk_accepted_gate(
             409,
             "risk_accepted requires a written acceptance rationale (acceptance_rationale)",
         )
-    if get_settings().auth_enabled and (
-        poam_id is None or await entity_state(session, "poam", poam_id) != "approved"
+    if get_settings().auth_enabled and not await approvals.consume(
+        session, entity_type="poam", entity_id=poam_id, actor=actor
     ):
         raise HTTPException(
             409,
             "risk_accepted requires an approved authorizing-official review (submit for "
             "approval, then have an AO/admin approve it)",
+        )
+
+
+async def _require_expiry_extension_gate(
+    session: AsyncSession, obj: POAM, new_due_on: object, *, actor: str | None
+) -> None:
+    """Moving an accepted weakness's expiry later is a new acceptance decision.
+
+    ``due_on`` is the acceptance's expiry, and the scanner keeps a risk_accepted
+    POA&M accepted until it passes (``ingest.scanners._acceptance_stands``). An
+    expiry the author could push out freely was an acceptance with no end and
+    no reviewer. Shortening one asks nobody's permission.
+    """
+    if not get_settings().auth_enabled:
+        return
+    if isinstance(new_due_on, date) and obj.due_on is not None and new_due_on <= obj.due_on:
+        return
+    if not await approvals.consume(session, entity_type="poam", entity_id=obj.id, actor=actor):
+        raise HTTPException(
+            409,
+            "extending a risk acceptance's expiry (due_on) requires a fresh approved review "
+            "(submit for approval, then have an AO/admin approve it)",
         )
 
 
@@ -417,8 +444,10 @@ async def create_poam(
             raise HTTPException(404, "system not found")
     data = body.model_dump(exclude_none=True)
     obj = POAM(**data)
-    if data.get("status") == "closed":
-        await _require_closure_gate(session, obj)
+    if data.get("status") in POAM_CLOSED_STATUSES:
+        # Every closed status, not just "closed": consumers treat "completed"
+        # as closed too, so gating one spelling left the other as a bypass.
+        await _require_closure_gate(session, obj, actor=principal.email)
     elif data.get("status") == "risk_accepted":
         # A brand-new POA&M cannot already carry an approved review — it must
         # be created open, then moved to risk_accepted via PATCH once approved
@@ -429,6 +458,7 @@ async def create_poam(
             due_on=obj.due_on,
             poam_id=None,
             acceptance_rationale=obj.acceptance_rationale,
+            actor=principal.email,
         )
     if obj.due_on is not None and obj.original_due_on is None:
         obj.original_due_on = obj.due_on  # capture the baseline for deviation tracking
@@ -469,7 +499,7 @@ async def update_poam(
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
     data = body.model_dump(exclude_none=True)
-    was_closed = obj.status == "closed"
+    was_closed = obj.status in POAM_CLOSED_STATUSES
     old_status = obj.status  # captured before the update loop mutates it
     was_risk_accepted = old_status == "risk_accepted"
     if (
@@ -488,8 +518,11 @@ async def update_poam(
             "cannot blank acceptance_rationale while risk_accepted -- move the "
             "POA&M out of risk_accepted first, or supply a replacement",
         )
-    if data.get("status") == "closed":
-        await _require_closure_gate(session, obj)
+    if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
+        # The transition, not every write naming it: an approval is spent on
+        # the close, so a whole-form re-save of a closed row must not need
+        # another one.
+        await _require_closure_gate(session, obj, actor=principal.email)
     elif data.get("status") == "risk_accepted" and not was_risk_accepted:
         # `and not was_risk_accepted`: the gate guards the TRANSITION into
         # risk_accepted, not every write that merely names it. A save-the-
@@ -503,7 +536,15 @@ async def update_poam(
             due_on=data.get("due_on", obj.due_on),
             poam_id=pid,
             acceptance_rationale=data.get("acceptance_rationale", obj.acceptance_rationale),
+            actor=principal.email,
         )
+    elif (
+        was_risk_accepted
+        and data.get("status", "risk_accepted") == "risk_accepted"
+        and "due_on" in data
+        and data["due_on"] != obj.due_on
+    ):
+        await _require_expiry_extension_gate(session, obj, data["due_on"], actor=principal.email)
     for k, v in data.items():
         setattr(obj, k, v)
     if "remediation_plan" in data:
@@ -558,7 +599,7 @@ async def update_poam(
         actor=principal.email,
     )
     await session.commit()
-    if data.get("status") == "closed" and not was_closed:
+    if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
         await _maybe_enqueue_reevaluation(session, obj)
     obj = await _require_poam(session, pid, principal)
     state = await entity_state(session, "poam", obj.id)
@@ -572,8 +613,13 @@ async def close_poam(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
-    was_closed = obj.status == "closed"
-    await _require_closure_gate(session, obj)
+    was_closed = obj.status in POAM_CLOSED_STATUSES
+    if was_closed:
+        # Already closed: re-stamping closed_on would lose the real closure
+        # date the SLA on-time figures are computed from.
+        state = await entity_state(session, "poam", obj.id)
+        return _out(obj, datetime.now(UTC).date(), state)
+    await _require_closure_gate(session, obj, actor=principal.email)
     obj.status = "closed"
     obj.closed_on = date.today()
     await bus.emit(

@@ -25,7 +25,7 @@ from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session
 from ...capability import divergence
 from ...config import get_settings, is_dev_env
-from ...constants import POAM_ACTIVE_STATUSES
+from ...constants import POAM_ACTIVE_STATUSES, SSP_APPROVED_STATUSES, SSP_AUTHOR_STATUSES
 from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
 from ...governance import conmon as conmon_engine
@@ -106,6 +106,7 @@ from ..login_service import (
     record_failed_factor,
     revoke_sessions_for_request,
 )
+from .assessments import require_independent_recorder
 from .diff import diff_workbook
 from .scoring import compute_summary
 from .ssp import FRAMEWORKS, require_platform
@@ -1812,6 +1813,8 @@ async def ssp_detail(
         {
             "active": "ssp",
             "project": proj,
+            "author_statuses": SSP_AUTHOR_STATUSES,
+            "approved_statuses": SSP_APPROVED_STATUSES,
             "by_domain": by_domain,
             "ordered_domains": ordered,
             "domain_name": ssp_constants.domain_name,
@@ -1857,7 +1860,11 @@ async def ssp_save_meta(
         proj.system_name = system_name or None
         proj.prepared_by = prepared_by or None
         proj.version = version or "0.1"
-        proj.status = status or "draft"
+        # An approved plan keeps its approval: the form has no status control
+        # for one, and the decision is a reviewer's, not the author's. Anything
+        # outside the author vocabulary is ignored rather than stored.
+        if proj.status not in SSP_APPROVED_STATUSES and status in SSP_AUTHOR_STATUSES:
+            proj.status = status
         if document_date:
             with contextlib.suppress(ValueError):
                 proj.document_date = date.fromisoformat(document_date)
@@ -2694,9 +2701,12 @@ async def assessment_save_result(
     assessor_note: str = Form(""),
     evidence_ref: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> HTMLResponse:
-    if await _scoped_assessment(session, assessment_id, _principal_org(request)) is None:
+    assessment = await _scoped_assessment(session, assessment_id, _principal_org(request))
+    if assessment is None:
         raise HTTPException(404, "assessment not found")
+    require_independent_recorder(assessment, principal)
     result = (
         await session.execute(
             select(AssessmentControlResult)

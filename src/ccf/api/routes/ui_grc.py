@@ -33,7 +33,6 @@ from ...connectors.credential_spec import (
 from ...evidence import service as evidence_service
 from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
 from ...governance import waivers as waiver_service
-from ...ingest import parse_scan, reconcile_findings
 from ...logging import get_logger
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
 from ...models_evidence import EvidenceObject
@@ -53,8 +52,9 @@ from ...models_people import AccessReview, Person
 from ...models_tprm import QuestionnaireResponse, VendorQuestionnaire
 from ...posture.checks import checks_for
 from ...posture.types import ResourceFinding
-from ..auth_deps import require_platform_admin, require_role, resolve_caller_org
+from ..auth_deps import get_principal, require_platform_admin, require_role, resolve_caller_org
 from ..deps import get_session
+from . import scans as scans_api
 from .grc import (
     _emit_access_decision,
     _load_access_request,
@@ -1068,34 +1068,16 @@ async def scans_page(
 
 @router.post("/scans")
 async def scans_upload(
-    request: Request,
     system_id: int = Form(...),
     scanner: str = Form("auto"),
     file: UploadFile | None = None,
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> RedirectResponse:
-    if file is None:
-        raise HTTPException(400, "a scan file is required")
-    data = await file.read()
-    if not data:
-        raise HTTPException(400, "uploaded scan file is empty")
-    resolved, findings = parse_scan(scanner, data, file.filename)
-    result = await reconcile_findings(
-        session, system_id=system_id, scanner=resolved, findings=findings
-    )
-    session.add(
-        ScanIngestion(
-            organization_id=_principal_org(request),
-            system_id=system_id,
-            scanner=resolved,
-            filename=file.filename,
-            findings_total=result.findings_total,
-            poams_created=result.created,
-            poams_updated=result.updated,
-            poams_reopened=result.reopened,
-            poams_closed=result.closed,
-            summary=result.as_dict(),
-        )
+    # The same ingest as POST /api/scans/ingest -- scope, size cap, 422 on a bad
+    # file, event and notification -- not a copy of it.
+    await scans_api.ingest_upload(
+        session, system_id=system_id, scanner=scanner, file=file, principal=principal
     )
     await session.commit()
     return RedirectResponse("/scans", status_code=303)

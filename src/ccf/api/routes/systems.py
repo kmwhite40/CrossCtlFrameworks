@@ -334,7 +334,7 @@ async def upsert_implementation(
         org_id=principal.org_id,
         actor=principal.email,
     )
-    # Reaction: propagate this status to crosswalked controls (map once, comply many).
+    # Reaction: suggest the crosswalked controls this status may also apply to.
     propagation = await reactions.propagate_implementation(
         session,
         system_id=system_id,

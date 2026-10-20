@@ -6,6 +6,11 @@ be a different person than the submitter, and must hold an approver role. Both
 rules are enforced only when authentication is enabled (single-operator mode has
 one principal, so SoD cannot apply). Approving an SSP project also stamps its own
 status so downstream views reflect the authorization.
+
+An approval authorizes one decision. A gate that relies on it calls
+``consume``, which returns the entity to draft so the next gated transition
+needs a fresh review. Without that, one reviewer decision kept authorizing
+every later close, re-accept or expiry extension on the same record.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
@@ -139,6 +144,55 @@ async def submit(
         dedupe_key=f"review-req:{entity_type}:{entity_id}",
     )
     return a
+
+
+async def consume(
+    session: AsyncSession,
+    *,
+    entity_type: str,
+    entity_id: str | int | None,
+    actor: str | None,
+    org_id: int | None = None,
+) -> bool:
+    """Spend an approval on the gated transition it authorizes. True if spent.
+
+    This IS the gate's approval check: a caller refuses the transition when it
+    returns False. One conditional UPDATE, never a read followed by a write --
+    two concurrent requests that both read "approved" would both pass on one
+    review. Here the second waits on the row lock, re-evaluates the WHERE, and
+    updates nothing. Run it in the transition's own transaction, so a rolled
+    back transition leaves the approval unspent. The row returns to draft;
+    ``reviewed_by``/``decision_note`` stay until the next submission, and the
+    event records who approved what was spent.
+    """
+    if entity_id is None:
+        return False
+    row = (
+        await session.execute(
+            update(Approval)
+            .where(
+                Approval.entity_type == entity_type,
+                Approval.entity_id == str(entity_id),
+                Approval.state == "approved",
+            )
+            .values(state="draft")
+            .returning(Approval.organization_id, Approval.reviewed_by)
+            .execution_options(synchronize_session=False)
+        )
+    ).one_or_none()
+    if row is None:
+        return False
+    await bus.emit(
+        session,
+        verb="approval_consumed",
+        entity_type=entity_type,
+        entity_id=str(entity_id),
+        summary=f"{entity_type} {entity_id}: approval by {row.reviewed_by} used by {actor}",
+        org_id=org_id if org_id is not None else row.organization_id,
+        actor=actor,
+        dispatch=False,
+    )
+    return True
 
 
 async def decide(

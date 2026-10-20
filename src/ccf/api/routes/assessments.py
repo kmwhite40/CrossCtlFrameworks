@@ -27,6 +27,7 @@ from ...assessment import (
     summarize_results,
 )
 from ...auth import Principal
+from ...config import get_settings
 from ...governance.approvals import entity_state, entity_states
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, Assessment, AssessmentControlResult, Control, PoamMilestone, System
@@ -38,6 +39,30 @@ router = APIRouter(prefix="/api/assessments", tags=["assessments"])
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _KINDS = ("self", "internal", "3pao", "ig", "audit")
+#: Kinds presented as independent of the people who own the controls. Their
+#: results are recorded by an assessor (or an admin transcribing one), never by
+#: a control owner scoring their own controls. Self and internal assessments
+#: are the organization assessing itself, so any author may record them.
+INDEPENDENT_KINDS = ("3pao", "ig", "audit")
+INDEPENDENT_RECORDER_ROLES = ("assessor", "admin")
+
+
+def require_independent_recorder(assessment: Assessment, principal: Principal) -> None:
+    """Refuse a result on an independent assessment from anyone but an assessor.
+
+    Shared by the API route and the HTML form, so the rule cannot hold on one
+    and not the other (it did, for one commit).
+    """
+    if (
+        get_settings().auth_enabled
+        and assessment.kind in INDEPENDENT_KINDS
+        and principal.role not in INDEPENDENT_RECORDER_ROLES
+    ):
+        raise HTTPException(
+            403,
+            f"results on a {assessment.kind} assessment are recorded by an assessor, "
+            "not by a control owner",
+        )
 
 
 class AssessmentCreate(BaseModel):
@@ -182,7 +207,8 @@ async def update_result(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    await _require_assessment(session, assessment_id, principal)
+    assessment = await _require_assessment(session, assessment_id, principal)
+    require_independent_recorder(assessment, principal)
     if body.finding is not None and body.finding not in FINDINGS:
         raise HTTPException(422, f"finding must be one of {', '.join(FINDINGS)}")
     result = (
