@@ -1,8 +1,9 @@
 """Event-driven reactions — keep state self-consistent across modules.
 
 When something changes, the dependent records update themselves: satisfying a
-control auto-closes its gap POA&M and propagates the status to crosswalked
-controls in other frameworks (map once, comply many). Reactions are explicit
+control proposes closure of its gap POA&M (a human closes it through the
+ISSM-08/09 gate) and propagates the status to crosswalked controls in other
+frameworks (map once, comply many). Reactions are explicit
 (routes call them) and emit their own follow-up events with ``dispatch=False``
 to avoid webhook storms / recursion.
 """
@@ -32,8 +33,18 @@ async def on_scoring_status_changed(
     org_id: int | None = None,
     actor: str | None = None,
 ) -> dict[str, Any]:
-    """A CMMC practice changed state → auto-close its gap POA&M when satisfied."""
-    closed = 0
+    """A CMMC practice changed state → propose closure of its POA&Ms when satisfied.
+
+    Never closes them. The title match also catches the POA&M an assessment
+    opened for an other-than-satisfied result, so closing here let whoever set
+    the practice state retire an assessor's finding with no milestone, evidence
+    or approval. Closing a POA&M asserts the weakness is remediated; a practice
+    state is one person's claim, so this does what
+    ``control_tests._resolve_on_recovery`` does on a passing test -- a dated
+    note and a notification -- and a human closes it through
+    ``api/routes/poams.py``'s gate.
+    """
+    flagged = 0
     if state in _MET:
         rows = (
             (
@@ -49,18 +60,22 @@ async def on_scoring_status_changed(
             .all()
         )
         for p in rows:
-            p.status = "completed"
-            p.closed_on = date.today()
-            closed += 1
-            await bus.emit(
+            note = (
+                f"{control_id} marked {state} on {date.today().isoformat()}"
+                f" by {actor or 'automation'} -- review for closure."
+            )
+            p.remediation_plan = f"{p.remediation_plan}\n{note}" if p.remediation_plan else note
+            flagged += 1
+            await bus.notify(
                 session,
-                verb="closed",
+                category="conmon",
+                title=f"POA&M ready for closure review: {p.title}"[:512],
+                body=note,
+                org_id=org_id,
+                severity="info",
                 entity_type="poam",
                 entity_id=p.id,
-                summary=f"POA&M auto-closed: {control_id} satisfied ({state})",
-                org_id=org_id,
-                actor=actor or "automation",
-                dispatch=False,
+                dedupe_key=f"poam-practice-met:{p.id}",
             )
     await bus.emit(
         session,
@@ -72,7 +87,7 @@ async def on_scoring_status_changed(
         actor=actor,
         dispatch=False,
     )
-    return {"gap_poams_closed": closed}
+    return {"gap_poams_flagged_for_review": flagged}
 
 
 # A mapping value shared by more controls than this is too generic to be a

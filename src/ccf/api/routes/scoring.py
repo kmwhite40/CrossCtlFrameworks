@@ -177,7 +177,7 @@ async def set_control_state(
         status, body.state, notes=body.notes, evidence_ref=body.evidence_ref
     )
     await session.flush()
-    # Reaction: satisfying a practice auto-closes its gap POA&M + records an event.
+    # Reaction: satisfying a practice flags its POA&Ms for closure review + records an event.
     reaction = await reactions.on_scoring_status_changed(
         session,
         system_id=system_id,

@@ -417,7 +417,9 @@ async def create_poam(
             raise HTTPException(404, "system not found")
     data = body.model_dump(exclude_none=True)
     obj = POAM(**data)
-    if data.get("status") == "closed":
+    if data.get("status") in POAM_CLOSED_STATUSES:
+        # Every closed status, not just "closed": consumers treat "completed"
+        # as closed too, so gating one spelling left the other as a bypass.
         await _require_closure_gate(session, obj)
     elif data.get("status") == "risk_accepted":
         # A brand-new POA&M cannot already carry an approved review — it must
@@ -469,7 +471,7 @@ async def update_poam(
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
     data = body.model_dump(exclude_none=True)
-    was_closed = obj.status == "closed"
+    was_closed = obj.status in POAM_CLOSED_STATUSES
     old_status = obj.status  # captured before the update loop mutates it
     was_risk_accepted = old_status == "risk_accepted"
     if (
@@ -488,7 +490,7 @@ async def update_poam(
             "cannot blank acceptance_rationale while risk_accepted -- move the "
             "POA&M out of risk_accepted first, or supply a replacement",
         )
-    if data.get("status") == "closed":
+    if data.get("status") in POAM_CLOSED_STATUSES:
         await _require_closure_gate(session, obj)
     elif data.get("status") == "risk_accepted" and not was_risk_accepted:
         # `and not was_risk_accepted`: the gate guards the TRANSITION into
@@ -558,7 +560,7 @@ async def update_poam(
         actor=principal.email,
     )
     await session.commit()
-    if data.get("status") == "closed" and not was_closed:
+    if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
         await _maybe_enqueue_reevaluation(session, obj)
     obj = await _require_poam(session, pid, principal)
     state = await entity_state(session, "poam", obj.id)
