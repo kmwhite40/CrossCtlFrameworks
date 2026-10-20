@@ -233,6 +233,15 @@ Generated from `ccf/api/navigation.py`, the same data the rail renders, so it ca
   live-systems definition (`posture.org_system_subq`); the test fails without
   the fix.
 
+- **A policy decision, recorded rather than changed:** with no organization in
+  scope (auth disabled, or a platform-wide principal), the new list pages show
+  every tenant's rows, as the existing `/risks`, `/users` and `/poams` pages
+  always have; the command center instead refuses to aggregate, because it
+  computes one organization's posture. The notification inbox (`inbox.py`,
+  unchanged) likewise shows a global principal every organization's
+  broadcasts. Making list pages refuse too is a product decision for the
+  platform-admin experience.
+
 ## 7. Remaining gaps, in dependency order
 
 1. **Posture history** (a snapshot table written by the scheduler) — unlocks
@@ -257,7 +266,7 @@ W=/Users/kevinwhite/CrossCtlFrameworks-redesign
 DC="env -i PATH=$PATH HOME=$HOME docker compose -p ccf --project-directory $W -f $W/docker-compose.yml --profile prep --profile assessment"
 
 # 0. rollback points
-for s in api migrator prep-worker assessment-worker; do docker tag ccf-$s:latest ccf-$s:pre-redesign; done
+for s in api migrator prep-worker assessment-worker; do docker tag "ccf-${s}:latest" "ccf-${s}:pre-redesign"; done
 docker exec ccf-db pg_dump -U ccf -d ccf -Fc -Z 9 > ~/CrossCtlFrameworks-backups/ccf-dev-pre-deploy-$(date +%Y%m%dT%H%M).dump
 
 # 1. build, migrate, recreate
@@ -273,7 +282,7 @@ curl -fsS http://localhost:8088/healthz && curl -s -o /dev/null -w '%{http_code}
 **Rollback** (application and data):
 
 ```bash
-for s in api migrator prep-worker assessment-worker; do docker tag ccf-$s:pre-redesign ccf-$s:latest; done
+for s in api migrator prep-worker assessment-worker; do docker tag "ccf-${s}:pre-redesign" "ccf-${s}:latest"; done
 docker stop ccf-api ccf-prep-worker ccf-assessment-worker
 docker exec ccf-db psql -U ccf -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='ccf' AND pid <> pg_backend_pid();"
 docker exec ccf-db psql -U ccf -d postgres -c "DROP DATABASE ccf;" -c "CREATE DATABASE ccf OWNER ccf;"
@@ -300,3 +309,26 @@ organization.
 | Browser sweep | 74 pages × dark/light × 1440/390 px: status, console errors, horizontal overflow, text contrast against its effective background. Findings fixed: five phone-width overflows, one 4.35:1 link, a nested `<main>`, a 403 that showed raw JSON |
 | Interactions driven in a real browser | ⌘K palette and record search, arrow keys and Esc, notification drawer and mark-read (badge 21→20), rail collapse persisted, `g r` jump, focus tooltips |
 | Theme | Node harness runs the shipped `app.js`: OS dark/light with no choice, stored choice beats OS, toggle persists, "system" forgets, unreadable storage follows OS |
+
+
+## 10. Independent review
+
+A whole-branch review (separate agent, code read only) after the per-step
+work found no tenant-to-tenant leak and no XSS path, and found two High and
+six Medium defects, all now fixed with a test that fails without each fix
+(`9801729`):
+
+| Severity | Finding | Fix |
+|---|---|---|
+| High | "Controls passing" divided by every assessed control, including not-applicable and not-yet-run tests | Denominator is controls with a result; its parts now sum to it |
+| High | ConMon health counted soft-deleted systems (command center and `/governance`) | `health_summary` scoped to live systems |
+| Medium | Workspace failing-control chips still linked to `/dashboard` | Link to `/gaps` |
+| Medium | Exceptions counted requested and revoked waivers, open and closed KSI exceptions | Count only exceptions in force; pending listed apart |
+| Medium | Overdue KPI linked to a per-user page | Links to the org-wide register; basis states the due-date fallback |
+| Medium | "Latest week" effectiveness could be stale or one run | Shows the week and run count |
+| Medium | Old overdue dates crowded out every future milestone | 30-day lookback; older misses counted |
+| Medium | 800-53 and FedRAMP drawn as two identical rows; a High baseline hid a Moderate one | One row per declared baseline, pairs merged, qualifier visible |
+| Low | Charts with a maximum of 1, 10, 100 drew at half height; "5 of 3" acknowledgments; a palette response race; raw 422 JSON in the browser; AI Providers offered to principals it refuses | All fixed |
+
+Redeployed after the fixes; signed-in screenshots in the published report are
+from that build.
