@@ -1,10 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Exception Management · Concord{% endblock %}
 {% block heading %}Exceptions{% endblock %}
-{% block subtitle %}Every departure from a requirement that is in force: approved control-test waivers, accepted KSI exceptions, accepted POA&amp;Ms and accepted risks. Each is decided where it lives, under that record's own approval gate; requests still awaiting a decision are listed separately.{% endblock %}
+{% block subtitle %}Every departure from a requirement that is in force: approved control-test waivers, accepted KSI exceptions, accepted POA&amp;Ms, accepted risks and approved compensating controls. Each is decided where it lives, under that record's own approval gate; requests still awaiting a decision are listed separately.{% endblock %}
 {% block content %}
 <section class="kpi-grid kpi-grid--4">
-  {% for k in ['Control-test waiver', 'KSI exception', 'Accepted POA&M', 'Accepted risk'] %}
+  {% for k in ['Control-test waiver', 'KSI exception', 'Accepted POA&M', 'Accepted risk', 'Compensating control'] %}
   <div class="kpi"><span class="kpi__label">{{ k }}s</span><span class="kpi__value">{{ counts.get(k, 0) }}</span></div>
   {% endfor %}
 </section>
@@ -22,7 +22,7 @@
       <td><a href="{{ i.href }}">Open</a></td>
     </tr>{% endfor %}</tbody>
   </table>
-  {% else %}<p class="panel__empty">No approved waivers, accepted KSI exceptions, accepted POA&amp;Ms or accepted risks are in force for this organization.</p>{% endif %}
+  {% else %}<p class="panel__empty">No approved waivers, accepted KSI exceptions, accepted POA&amp;Ms, accepted risks or approved compensating controls are in force for this organization.</p>{% endif %}
 </div>
 {% if pending %}
 <article class="card panel">
