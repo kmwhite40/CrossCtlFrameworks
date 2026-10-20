@@ -561,24 +561,32 @@ def evaluate_root_mfa(
     if rows and rows[0].get("Partition") == "aws-us-gov":
         # An AWS GovCloud (US) account's root user cannot sign in to the
         # console, so ``AccountMFAEnabled=0`` there is not an unprotected root
-        # login -- reporting it as a failure filed a Critical finding against
-        # every GovCloud account (m365-docs-hub's report made exactly this
-        # mistake). Root access keys are still reported: those can be used.
+        # login -- failing it filed a Critical finding against every GovCloud
+        # account (m365-docs-hub's report made exactly this mistake). But root
+        # *access keys* still work and bypass MFA entirely, so the check is
+        # not_applicable only when they are confirmed absent: present is a
+        # failure, and unreported is for review -- never a silent pass.
+        keys = summary.get("AccountAccessKeysPresent")
+        detail = {"partition": "aws-us-gov", "AccountMFAEnabled": summary.get("AccountMFAEnabled"),
+                  "AccountAccessKeysPresent": keys}
+        if keys == 0 or keys is False:
+            verdict, observed = "not_applicable", (
+                "the root user of an AWS GovCloud (US) account cannot sign in, and it has "
+                "no access keys"
+            )
+        elif keys == 1 or keys is True:
+            verdict, observed = "fail", (
+                "root access keys are present: the GovCloud root user cannot sign in, but "
+                "its keys can act on the account without MFA"
+            )
+        else:
+            verdict, observed = "manual_review_required", (
+                "the account did not report whether root access keys exist"
+            )
         return [
             ResourceFinding(
-                resource_id=account_id,
-                resource_type="aws_account",
-                verdict="not_applicable",
-                observed="the root user of an AWS GovCloud (US) account cannot sign in"
-                + (
-                    "; root access keys are present and should be removed"
-                    if summary.get("AccountAccessKeysPresent") == 1 else ""
-                ),
-                detail={
-                    "partition": "aws-us-gov",
-                    "AccountMFAEnabled": summary.get("AccountMFAEnabled"),
-                    "AccountAccessKeysPresent": summary.get("AccountAccessKeysPresent"),
-                },
+                resource_id=account_id, resource_type="aws_account", verdict=verdict,
+                observed=observed, detail=detail,
             )
         ]
     raw = summary.get("AccountMFAEnabled")

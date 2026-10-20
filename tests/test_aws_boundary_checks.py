@@ -321,9 +321,15 @@ def test_root_mfa_is_not_applicable_in_govcloud() -> None:
     commercial = [{"SummaryMap": {"AccountMFAEnabled": 0}, "Partition": "aws"}]
     assert _verdicts(a.evaluate_root_mfa(gov, account_id=ACCT)) == ["not_applicable"]
     assert _verdicts(a.evaluate_root_mfa(commercial, account_id=ACCT)) == ["fail"]
+    # Root access keys still work in GovCloud and bypass MFA: present fails,
+    # unreported is for review. Only confirmed-absent keys make it n/a.
     keys = [{"SummaryMap": {"AccountMFAEnabled": 0, "AccountAccessKeysPresent": 1},
              "Partition": "aws-us-gov"}]
-    assert "root access keys are present" in a.evaluate_root_mfa(keys, account_id=ACCT)[0].observed
+    found = a.evaluate_root_mfa(keys, account_id=ACCT)
+    assert found[0].verdict == "fail" and "root access keys are present" in found[0].observed
+    unreported = [{"SummaryMap": {"AccountMFAEnabled": 0}, "Partition": "aws-us-gov"}]
+    assert _verdicts(a.evaluate_root_mfa(unreported, account_id=ACCT)) == [
+        "manual_review_required"]
 
 
 def test_the_summary_reader_records_the_partition(monkeypatch: pytest.MonkeyPatch) -> None:
