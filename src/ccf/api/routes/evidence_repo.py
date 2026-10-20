@@ -196,9 +196,14 @@ async def review(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     obj = await _require_object(session, oid, principal)
-    await service.review_object(
-        session, obj, decision=body.decision, reviewer=principal.email, note=body.note
-    )
+    try:
+        await service.review_object(
+            session, obj, decision=body.decision, reviewer=principal.email, note=body.note
+        )
+    except service.EvidenceSeparationError as e:
+        raise HTTPException(403, str(e)) from e
+    except service.EvidenceError as e:
+        raise HTTPException(409, str(e)) from e
     await session.commit()
     obj = await _require_object(session, oid, principal)
     return _detail(obj)

@@ -38,6 +38,7 @@ from ..capability import derive as capability_derive
 from ..config import get_settings
 from ..db import get_engine, session_scope, set_session_tenant
 from ..etl.sources import poll as poll_sources
+from ..evidence import service as evidence_service
 from ..logging import get_logger
 from ..models import Organization, System
 from ..packs import sync as pack_sync
@@ -152,6 +153,7 @@ async def _run_per_tenant_cycle(
     #: rather than only logged, so the cycle summary can distinguish "did
     #: nothing" from "tried and failed".
     step_failures: list[dict[str, str]] = []
+    evidence_expired = 0
     for org_id in org_ids:
         await set_session_tenant(session, org_id)
         try:
@@ -179,6 +181,22 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "pack_sync"})
+        try:
+            # Before conmon, so anything reading freshness this cycle sees it.
+            # mark_expired had no caller: expired evidence stayed "approved"
+            # and was sealed into packages as current.
+            async with session.begin_nested():
+                evidence_expired += await evidence_service.mark_expired(
+                    session, org_id=org_id, today=today
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="evidence_expiry",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "evidence_expiry"})
         try:
             async with session.begin_nested():
                 result = await conmon.scan(session, today=today, org_id=org_id)
@@ -315,6 +333,7 @@ async def _run_per_tenant_cycle(
         # collection had nothing to do. The count travels with the results so
         # the summary can say so.
         "step_failures": step_failures,
+        "evidence_expired": evidence_expired,
         "collection": {
             "organizations_processed": [r["organization_id"] for r in collection_results],
             "connectors_run": [

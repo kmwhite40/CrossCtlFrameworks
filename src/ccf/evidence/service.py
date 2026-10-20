@@ -30,6 +30,10 @@ class EvidenceError(ValueError):
     """Raised on an invalid evidence-repository operation (e.g. locked object)."""
 
 
+class EvidenceSeparationError(EvidenceError):
+    """The reviewer is the person who uploaded the version under review."""
+
+
 class EvidenceIntegrityError(EvidenceError):
     """Raised when stored evidence bytes fail SHA-256 verification against the
     digest recorded at upload time (IA-07: tampered or corrupted blob detected
@@ -177,6 +181,15 @@ async def review_object(
 ) -> EvidenceReview:
     if decision not in ("approved", "rejected"):
         raise EvidenceError("decision must be 'approved' or 'rejected'")
+    # Only what was put forward is reviewed. Approving a draft froze it (WORM)
+    # before anyone had said it was ready.
+    if obj.status != "submitted":
+        raise EvidenceError(f"only submitted evidence can be reviewed (status is {obj.status})")
+    # Separation of duties, when there is more than one principal to separate.
+    if get_settings().auth_enabled and reviewer is not None:
+        version = await session.get(EvidenceVersion, obj.current_version_id)
+        if version is not None and version.uploaded_by == reviewer:
+            raise EvidenceSeparationError("the uploader of this version cannot review it")
     review = EvidenceReview(
         evidence_object_id=obj.id,
         version_id=obj.current_version_id,
