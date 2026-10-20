@@ -311,12 +311,25 @@ class ReconcileResult:
         }
 
 
-# Scanner semantics: a re-detected finding REOPENS a risk-accepted POA&M, so
-# 'resolved' here deliberately includes risk_accepted while the dashboards'
+# Scanner semantics: a re-detected finding reopens a resolved POA&M, and
+# 'resolved' here includes risk_accepted while the dashboards'
 # POAM_ACTIVE_STATUSES does not. Derived from the shared vocabulary so a new
-# status cannot land in neither bucket.
+# status cannot land in neither bucket. An acceptance is the exception while it
+# stands -- see _acceptance_stands.
 _OPEN_STATES = POAM_ACTIVE_STATUSES
 _RESOLVED_STATES = (*POAM_CLOSED_STATUSES, "risk_accepted")
+
+
+def _acceptance_stands(poam: POAM, today: date) -> bool:
+    """A risk acceptance holds against re-detection until it expires.
+
+    An accepted vulnerability is, by definition, still present, so finding it
+    again is not news. Reopening it on every scan made an acceptance last only
+    until the next ingest. The acceptance gate requires an expiry (``due_on``);
+    a row without one predates that rule, and an unknown expiry must not keep
+    a weakness out of remediation, so it reopens.
+    """
+    return poam.status == "risk_accepted" and poam.due_on is not None and poam.due_on >= today
 
 
 def _weakness(f: ScanFinding) -> str:
@@ -389,7 +402,7 @@ async def reconcile_findings(
                 )
             )
             res.created += 1
-        elif poam.status in _RESOLVED_STATES:
+        elif poam.status in _RESOLVED_STATES and not _acceptance_stands(poam, today):
             if poam_leaves_risk_accepted(poam.status, "open"):
                 # A superseded acceptance's rationale must not silently
                 # survive to be read as the justification for whatever

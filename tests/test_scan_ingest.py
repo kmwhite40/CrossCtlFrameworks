@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import date, timedelta
 
 import pytest
 from alembic import command
@@ -261,6 +262,74 @@ async def test_a_scan_reopening_a_risk_accepted_poam_clears_its_rationale() -> N
         assert row is not None
         assert row.status == "open"
         assert row.acceptance_rationale is None
+
+
+async def _accepted_poam(name: str, *, expires: date | None) -> tuple[ScanFinding, int, int]:
+    finding = ScanFinding(
+        scanner="nessus",
+        native_id=f"77{len(name)}",
+        title=f"{name} accepted vulnerability",
+        severity="high",
+        asset=f"{name.lower()}.example.gov",
+    )
+    sid = await _fresh_system(name)
+    async with session_scope() as s:
+        poam = POAM(
+            system_id=sid,
+            title=finding.title,
+            severity=finding.severity,
+            status="risk_accepted",
+            source="scan",
+            scanner=finding.scanner,
+            finding_uid=finding.fingerprint(),
+            due_on=expires,
+            acceptance_rationale="Compensating control in place.",
+        )
+        s.add(poam)
+        await s.flush()
+        return finding, sid, poam.id
+
+
+@pytest.mark.asyncio
+async def test_a_scan_leaves_an_unexpired_acceptance_accepted() -> None:
+    """An accepted vulnerability is, by definition, still present. Reopening it
+    on every scan meant an acceptance lasted only until the next ingest, and
+    clearing the rationale meant re-accepting it asked for the decision again.
+    """
+    today = date(2026, 10, 20)
+    finding, sid, poam_id = await _accepted_poam(
+        "ScanSysAcceptStands", expires=today + timedelta(days=30)
+    )
+    async with session_scope() as s:
+        result = await reconcile_findings(
+            s, system_id=sid, scanner="nessus", findings=[finding], today=today
+        )
+        assert result.reopened == 0
+
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.status == "risk_accepted"
+        assert row.acceptance_rationale == "Compensating control in place."
+        assert row.due_on == today + timedelta(days=30)
+
+
+@pytest.mark.asyncio
+async def test_a_scan_reopens_an_expired_acceptance() -> None:
+    today = date(2026, 10, 20)
+    finding, sid, poam_id = await _accepted_poam(
+        "ScanSysAcceptExpired", expires=today - timedelta(days=1)
+    )
+    async with session_scope() as s:
+        result = await reconcile_findings(
+            s, system_id=sid, scanner="nessus", findings=[finding], today=today
+        )
+        assert result.reopened == 1
+
+    async with session_scope() as s:
+        row = await s.get(POAM, poam_id)
+        assert row is not None
+        assert row.status == "open"
 
 
 @pytest.mark.asyncio
