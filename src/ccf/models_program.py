@@ -499,6 +499,71 @@ class KevEntry(Base):
     synced_at: Mapped[datetime] = _created()
 
 
+# ── Risk assessments and treatment (0100) ────────────────────────────────────
+
+
+class RiskAssessment(Base):
+    """One dated assessment of a risk: who scored it, how, and to what.
+
+    Qualitative: likelihood and impact on 1-5. Quantitative: single-loss
+    expectancy (SLE, currency) and annual rate of occurrence (ARO), whose
+    product is the annualized loss expectancy (ALE). Either or both may be
+    recorded; the risk's current scores are the latest assessment's."""
+
+    __tablename__ = "risk_assessments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = _org()
+    risk_id: Mapped[int] = mapped_column(ForeignKey("ccf.risks.id", ondelete="CASCADE"), index=True)
+    assessed_on: Mapped[date] = mapped_column(Date)
+    method: Mapped[str] = mapped_column(String(16), default="qualitative")  # |quantitative|both
+    likelihood_score: Mapped[int | None] = mapped_column(Integer)
+    impact_score: Mapped[int | None] = mapped_column(Integer)
+    inherent_score: Mapped[int | None] = mapped_column(Integer)
+    residual_score: Mapped[int | None] = mapped_column(Integer)
+    sle: Mapped[float | None] = mapped_column(Float)
+    aro: Mapped[float | None] = mapped_column(Float)
+    ale: Mapped[float | None] = mapped_column(Float)
+    assessor: Mapped[str | None] = mapped_column(String(255))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _created()
+
+
+class RiskTreatmentPlan(Base):
+    __tablename__ = "risk_treatment_plans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = _org()
+    risk_id: Mapped[int] = mapped_column(ForeignKey("ccf.risks.id", ondelete="CASCADE"), index=True)
+    strategy: Mapped[str] = mapped_column(String(16))  # mitigate|transfer|accept|avoid
+    description: Mapped[str | None] = mapped_column(Text)
+    owner_user_id: Mapped[int | None] = _user()
+    due_on: Mapped[date | None] = mapped_column(Date)
+    # planned|in_progress|done|cancelled
+    status: Mapped[str] = mapped_column(String(16), default="planned")
+    target_residual_score: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = _created()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RiskTreatmentAction(Base):
+    __tablename__ = "risk_treatment_actions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = _org()
+    plan_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.risk_treatment_plans.id", ondelete="CASCADE"), index=True
+    )
+    description: Mapped[str] = mapped_column(Text)
+    owner_user_id: Mapped[int | None] = _user()
+    due_on: Mapped[date | None] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(16), default="open")  # open|done
+    poam_id: Mapped[int | None] = mapped_column(ForeignKey("ccf.poams.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = _created()
+
+
 #: Tenant tables created by 0099, in dependency order (the migration and the
 #: RLS tests read this list rather than restating it).
 TENANT_TABLES: tuple[str, ...] = (
@@ -523,4 +588,11 @@ TENANT_TABLES: tuple[str, ...] = (
     "vendor_findings",
     "projects",
     "project_links",
+)
+
+#: Tenant tables created by 0100.
+RISK_PROGRAM_TABLES: tuple[str, ...] = (
+    "risk_assessments",
+    "risk_treatment_plans",
+    "risk_treatment_actions",
 )
