@@ -83,6 +83,11 @@ GLOBAL_TABLES: frozenset[str] = frozenset(
         "marketplace_products",
         "ai_action_definitions",
         "alembic_version",
+        # CISA's Known Exploited Vulnerabilities catalog (0099): one public
+        # register, identical for every tenant. Written only by the KEV sync;
+        # matching against a tenant's own findings happens in that tenant's
+        # scoped query, never by copying the catalog per tenant.
+        "kev_entries",
     }
 )
 
