@@ -84,9 +84,35 @@ Corrections to the source:
 - **The table is a snapshot.** Every review verdict cites its "Last updated" date. Refreshing it is a deliberate CLI step, never a background fetch.
 - **Not verified against a live AWS account.** No credential exists in this environment, the same constraint as part 4.
 
-## Deferred
+## Follow-up: the collector report (branch `feat/aws-collector-truth`)
 
-From the collector report (the user said "tackle it later"):
+The user deferred two items from the collector report ("tackle it later"). Both are done, stacked on this branch.
 
-- a per-IAM-user MFA check from the IAM credential report;
-- a guard test that no collector returns a constant.
+**Missing data never reads as good.** `tests/test_aws_missing_data_never_reads_as_good.py` runs every check in `CHECKS` three ways:
+
+- A reader whose session answers nothing must still have called AWS, and must not lead to a pass. A reader that makes no call can only return a constant.
+- An empty answer must never pass.
+- A row with every field missing must produce `fail` or `manual_review_required`. It must not produce `pass`, `not_applicable` or no finding at all.
+
+The third case found four evaluators that read missing data as a good answer. All four are fixed, and each fix was confirmed by mutation (4 of 4):
+
+| Evaluator | Before | Now |
+|---|---|---|
+| Security group admin ingress | A group with no `IpPermissions` passed | Review. AWS always returns the key, even as `[]`. |
+| Access-key rotation | A key with no `Status` was `not_applicable` ("cannot authenticate") | Review. Only `Inactive` and `Expired`, the statuses AWS documents, are excused. |
+| KMS key rotation | A key with no `KeyState` was `not_applicable` | Review |
+| DoD SRG scope | Rows with no resource type were dropped silently | One account-level review naming how many rows were unread |
+
+**IAM user MFA** (`aws.iam.user_mfa_enabled`, IA-2(1)/IA-2(2), CMMC IA.L2-3.5.3). The check reads the IAM credential report:
+
+- Verdicts per user:
+  - a console password with active MFA is a `pass`;
+  - a console password without MFA is a `fail`;
+  - no console password is `not_applicable`, because access keys are the rotation check's concern;
+  - any other cell value is `manual_review_required`.
+- The root row is left to `aws.iam.root_mfa_enabled`.
+- The reader waits a bounded time for a report still being generated. After that it raises, and the check is reported as unrunnable, never as an empty report. A denial is not retried.
+- Each finding records the report's `GeneratedTime`, because a report can be up to four hours old.
+- Mutation run: 9 of 9 killed.
+
+The check count rises to 54 (`aws_govcloud` 25). Moderate coverage, re-measured, stays at 51 of 288, because IA-2(2) folds into IA-2, which was already covered.

@@ -61,6 +61,7 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     m365.STORAGE_ENCRYPTION_REQUIRED.key: (),
     m365.SESSION_REAUTHENTICATION_REQUIRED.key: (),
     aws.ROOT_MFA_ENABLED.key: (),
+    aws.USER_MFA_ENABLED.key: (),
     aws.PASSWORD_POLICY.key: (),
     aws.ACCESS_KEY_ROTATION.key: ("threshold_days",),
     aws.CLOUDTRAIL_MULTI_REGION.key: (),

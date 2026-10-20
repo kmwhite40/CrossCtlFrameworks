@@ -65,6 +65,9 @@ the provider module's docstring states plainly rather than leaving implied.
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, ClassVar
@@ -381,6 +384,7 @@ class AwsGovCloudConnector(ConfigConnector):
         """
         return {
             aws_checks.ENDPOINTS[aws_checks.ROOT_MFA_ENABLED.key]: self._read_account_summary,
+            aws_checks.ENDPOINTS[aws_checks.USER_MFA_ENABLED.key]: self._read_credential_report,
             aws_checks.ENDPOINTS[aws_checks.PASSWORD_POLICY.key]: self._read_password_policy,
             aws_checks.ENDPOINTS[aws_checks.ACCESS_KEY_ROTATION.key]: self._read_access_keys,
             aws_checks.ENDPOINTS[
@@ -816,6 +820,52 @@ class AwsGovCloudConnector(ConfigConnector):
         summary = dict(self._iam().get_account_summary())
         summary["Partition"] = aws_identity.region_partition(self._region())
         return [summary]
+
+    #: The report is generated asynchronously. These bound the wait for one
+    #: that is not ready; after them the read raises and the check is
+    #: unrunnable, which is reported -- never an empty, clean report.
+    CREDENTIAL_REPORT_POLLS: ClassVar[int] = 6
+    CREDENTIAL_REPORT_WAIT_S: ClassVar[float] = 2.0
+    _NOT_READY: ClassVar[tuple[str, ...]] = (
+        "ReportInProgress", "ReportNotPresent", "ReportExpired",
+    )
+
+    def _sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def _read_credential_report(self) -> list[dict[str, Any]]:
+        """The IAM credential report, one dict per CSV row (root included).
+
+        ``GenerateCredentialReport`` returns at once when a report under four
+        hours old exists, and otherwise starts one, which ``GetCredentialReport``
+        refuses with ``ReportInProgress`` until it is done. Each row carries the
+        report's ``GeneratedTime``, because a finding should say how old its
+        evidence is.
+        """
+        iam = self._iam()
+        iam.generate_credential_report()
+        response: dict[str, Any] = {}
+        for attempt in range(self.CREDENTIAL_REPORT_POLLS):
+            try:
+                response = dict(iam.get_credential_report())
+                break
+            except Exception as e:
+                if self._error_code(e) not in self._NOT_READY:
+                    raise
+                if attempt == self.CREDENTIAL_REPORT_POLLS - 1:
+                    raise
+                self._sleep(self.CREDENTIAL_REPORT_WAIT_S)
+                iam.generate_credential_report()
+        content = response.get("Content")
+        if not content:
+            return []
+        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+        generated = response.get("GeneratedTime")
+        stamp = generated.isoformat() if isinstance(generated, datetime) else generated
+        rows = [dict(r) for r in csv.DictReader(io.StringIO(text))]
+        for r in rows:
+            r["GeneratedTime"] = stamp
+        return rows
 
     @staticmethod
     def _is_no_such_entity(error: Exception) -> bool:
