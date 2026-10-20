@@ -1046,6 +1046,14 @@ class Risk(Base):
     # already used for low/moderate/high, so no score changed.
     likelihood_score: Mapped[int | None] = mapped_column(Integer)
     impact_score: Mapped[int | None] = mapped_column(Integer)
+    # Owning organization (0100). A risk on a system inherits the system's
+    # organization (a trigger fills it); an enterprise risk has no system and
+    # is owned directly -- before 0100 such a risk belonged to no tenant.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    #: enterprise|cyber (0100). Backfilled: no system -> enterprise, else cyber.
+    register: Mapped[str] = mapped_column(String(16), default="cyber")
     # Quantitative scoring (likelihood x impact on a 1-5 scale, 1-25 exposure).
     inherent_score: Mapped[int | None] = mapped_column(Integer)
     residual_score: Mapped[int | None] = mapped_column(Integer)
