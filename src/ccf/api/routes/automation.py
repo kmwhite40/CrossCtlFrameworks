@@ -258,7 +258,7 @@ async def propagate(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    """Propagate a control's status to crosswalked peers (map once, comply many)."""
+    """Suggest the crosswalked peers a control's status may also apply to; writes nothing."""
     cid = await reactions.resolve_control_id(session, control_identifier)
     if cid is None:
         raise HTTPException(404, "control not found")
