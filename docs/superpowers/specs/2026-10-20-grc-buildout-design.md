@@ -246,3 +246,62 @@ templates `intel.html`, `analytics_studio.html`, `implementations.html`,
   (`models_enforcement`) for the org, with status; read-only here.
 - `/issues` (key `issues`): one list of open issues across POA&Ms, audit
   findings, vendor findings and failing control tests, by severity and age.
+
+## Additions (same day): no entry may stay `partial`
+
+A navigation entry is done only when its label is true without a qualifier.
+Migration `0100_risk_program` adds what the risk items need.
+
+### B — risk, extended (merge `feature/concord-enterprise-redesign` first)
+Schema now available: `Risk.organization_id` (a DB trigger keeps it equal to
+the system's org when `system_id` is set; set it to the caller's org for a
+system-less risk), `Risk.register` (`enterprise`|`cyber`),
+`RiskAssessment`, `RiskTreatmentPlan`, `RiskTreatmentAction`
+(`models_program.py`). Scope every risk query as
+`Risk.organization_id == org` **or** `Risk.system_id IN org_system_subq(org)`,
+and never return a risk on a soft-deleted system.
+- `/risks?register=enterprise|cyber` (keys `risks` and `risks_cyber`): two
+  registers over one table; create a system-less enterprise risk.
+- `/risks/{id}` (key `risk_assess` for the assessments tab): risk detail with
+  assessment history; record an assessment (admin/control_owner/assessor):
+  qualitative 1-5 and/or quantitative SLE and ARO (ALE = SLE x ARO, computed,
+  never entered); the latest assessment updates the risk's scores. A
+  quantitative register view lists ALE per risk with its total (`—` when no
+  risk has one).
+- Treatment plans (key `risk_treat`): per risk, strategy, owner, due date,
+  target residual, actions with owners and due dates, optional POA&M link
+  (POA&M must be on a live system of the caller's org); plan progress = done
+  actions ÷ actions (`—` over none).
+
+### D — auditprog, extended
+`/evidence/packages`: if `ccf/packages` exposes create/add/seal operations,
+make them role-gated actions on the page (same gates as the API), so the
+page is a workflow, not a listing.
+
+### G — intel, extended
+`/remediation`: if `models_enforcement` has service functions for plan state
+transitions, expose them as role-gated actions (same gates as the API) so
+Remediation Workflows is a working workflow.
+
+### H — assure: control assurance and evidence operations (new)
+Files: `analytics/assurance_views.py`, `api/routes/ui_assure.py`, templates
+`control_effectiveness.html`, `evidence_map.html`, `evidence_expiration.html`,
+`integrations.html`.
+- `/controls/effectiveness` (key `ctrl_eff`): per control, the latest
+  automated test outcome across live systems, the latest final audit
+  workpaper conclusion if any, approved compensating controls, and a rating
+  stated with its rule: `effective` (latest tests pass and no ineffective
+  conclusion), `ineffective` (a failing test without an approved acceptance,
+  or an ineffective final conclusion), `not determined` (otherwise). Counts
+  per rating; filters by system and family.
+- `/evidence/mapping` (key `evidence_map`): controls × evidence: for each
+  control with evidence, the evidence objects (repository) and legacy evidence
+  tied to it, status and expiry; controls in a system's baseline with no
+  evidence listed as gaps; filter by system.
+- `/evidence/expiration` (key `evidence_exp`): expired and expiring (30/60/90
+  days) evidence objects with owner; "request renewal" creates a Task assigned
+  to the evidence owner (admin/control_owner), deduplicated per object.
+- `/integrations` (key `integrations`): one hub over connectors (status, last
+  sync), webhooks (list, create, disable through the existing events/webhook
+  service, admin only), IdP/SSO configuration status, and issue-tracker links
+  (counts per provider); each section links to its detail page.
