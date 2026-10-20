@@ -84,6 +84,7 @@ from .routes import (
     tasks,
     ui,
     ui_assure,
+    ui_ato,
     ui_auditprog,
     ui_boundary,
     ui_govern,
@@ -287,6 +288,7 @@ def create_app() -> FastAPI:
     app.include_router(insights.router)
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
+    app.include_router(ui_ato.router)
     app.include_router(ui_boundary.router)
     app.include_router(ui_modules.router)
     app.include_router(ui_assure.router)

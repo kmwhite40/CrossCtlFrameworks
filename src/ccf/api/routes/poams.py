@@ -15,9 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ...assessment.engine import jobs as engine_jobs
+from ...ato import extensions as poam_extensions
 from ...auth import Principal
 from ...config import get_settings
-from ...constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
+from ...constants import (
+    POAM_ACTIVE_STATUSES,
+    POAM_CLOSED_STATUSES,
+    POAM_STATUSES,
+    poam_leaves_risk_accepted,
+)
 from ...cr26.ver import is_blank
 from ...governance import approvals, bus
 from ...governance.approvals import entity_state, entity_states
@@ -266,14 +272,42 @@ async def _require_risk_accepted_gate(
             409,
             "risk_accepted requires a written acceptance rationale (acceptance_rationale)",
         )
-    if get_settings().auth_enabled and not await approvals.consume(
-        session, entity_type="poam", entity_id=poam_id, actor=actor
+    if not get_settings().auth_enabled:
+        return
+    refusal = (
+        "risk_accepted requires an approved authorizing-official review (submit for "
+        "approval, then have an AO/admin approve it)"
+    )
+    reviewer = await _ao_reviewer(session, poam_id, refusal=refusal)
+    if not await approvals.consume(
+        session, entity_type="poam", entity_id=poam_id, actor=actor, reviewed_by=reviewer
     ):
+        raise HTTPException(409, refusal)
+
+
+async def _ao_reviewer(session: AsyncSession, poam_id: int | str | None, *, refusal: str) -> str:
+    """Accepting risk is the AO's decision, not any approver's.
+
+    A POA&M approval may be granted by the system's ISSO or ISSM so a remediated
+    weakness can close; spending that same approval on a risk acceptance would
+    let them accept risk. The approval must have been granted by the system's
+    Authorizing Official (or an admin). Returns that reviewer, for the caller to
+    pin in ``approvals.consume``: the spend then refuses an approval anyone else
+    re-granted after this look. Never returns None -- an unpinned spend after
+    "not approved yet" would accept whatever approval arrived in between.
+    """
+    reviewer = None if poam_id is None else await approvals.authorized_reviewer(
+        session, "poam", poam_id, approvals.RISK_ACCEPTANCE_AUTHORITY
+    )
+    if reviewer is not None:
+        return reviewer
+    if poam_id is not None and await entity_state(session, "poam", poam_id) == "approved":
         raise HTTPException(
             409,
-            "risk_accepted requires an approved authorizing-official review (submit for "
-            "approval, then have an AO/admin approve it)",
+            "accepting risk requires an approval granted by the system's Authorizing "
+            "Official (or an admin); this POA&M's approval was granted by someone else",
         )
+    raise HTTPException(409, refusal)
 
 
 async def _require_expiry_extension_gate(
@@ -290,12 +324,15 @@ async def _require_expiry_extension_gate(
         return
     if isinstance(new_due_on, date) and obj.due_on is not None and new_due_on <= obj.due_on:
         return
-    if not await approvals.consume(session, entity_type="poam", entity_id=obj.id, actor=actor):
-        raise HTTPException(
-            409,
-            "extending a risk acceptance's expiry (due_on) requires a fresh approved review "
-            "(submit for approval, then have an AO/admin approve it)",
-        )
+    refusal = (
+        "extending a risk acceptance's expiry (due_on) requires a fresh approved review "
+        "(submit for approval, then have an AO/admin approve it)"
+    )
+    reviewer = await _ao_reviewer(session, obj.id, refusal=refusal)
+    if not await approvals.consume(
+        session, entity_type="poam", entity_id=obj.id, actor=actor, reviewed_by=reviewer
+    ):
+        raise HTTPException(409, refusal)
 
 
 async def _maybe_enqueue_reevaluation(session: AsyncSession, obj: POAM) -> None:
@@ -518,6 +555,22 @@ async def update_poam(
             "cannot blank acceptance_rationale while risk_accepted -- move the "
             "POA&M out of risk_accepted first, or supply a replacement",
         )
+    if (
+        get_settings().auth_enabled
+        and old_status in POAM_ACTIVE_STATUSES
+        and data.get("status", old_status) in POAM_ACTIVE_STATUSES
+        and "due_on" in data
+        and obj.due_on is not None
+        and data["due_on"] > obj.due_on
+    ):
+        # A later date on an open weakness is a deviation, and a deviation is
+        # a decision: an overdue POA&M must not stop being overdue because its
+        # author typed a new date. Shortening, or setting a first date, is free.
+        raise HTTPException(
+            409,
+            "moving an open POA&M's due date later needs an approved extension: "
+            f"POST /api/poams/{obj.id}/extensions with the new date and a reason",
+        )
     if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
         # The transition, not every write naming it: an approval is spent on
         # the close, so a whole-form re-save of a closed row must not need
@@ -721,3 +774,84 @@ async def push_poam_to_tracker(
         "url": result.url,
         "created": result.created,
     }
+
+
+# --- extensions: a reviewed deviation from the due date (ccf.ato.extensions) --
+
+
+class ExtensionIn(BaseModel):
+    requested_due_on: date
+    reason: str
+
+
+class ExtensionDecisionIn(BaseModel):
+    note: str | None = None
+
+
+def _ext_out(e: Any) -> dict[str, Any]:
+    return {
+        "id": e.id, "poam_id": e.poam_id, "status": e.status,
+        "previous_due_on": e.previous_due_on, "requested_due_on": e.requested_due_on,
+        "reason": e.reason, "requested_by": e.requested_by, "requested_at": e.requested_at,
+        "decided_by": e.decided_by, "decided_at": e.decided_at,
+        "decision_note": e.decision_note,
+    }
+
+
+@router.get("/{pid}/extensions")
+async def list_extensions(
+    pid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> list[dict[str, Any]]:
+    obj = await _require_poam(session, pid, principal)
+    return [_ext_out(e) for e in await poam_extensions.history(session, obj.id)]
+
+
+@router.post("/{pid}/extensions", status_code=201)
+async def request_extension(
+    pid: int,
+    body: ExtensionIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    obj = await _require_poam(session, pid, principal)
+    try:
+        ext = await poam_extensions.request(
+            session, poam=obj, requested_due_on=body.requested_due_on,
+            reason=body.reason, principal=principal,
+        )
+    except poam_extensions.ExtensionError as e:
+        raise HTTPException(e.status, str(e)) from e
+    await session.commit()
+    return _ext_out(ext)
+
+
+@router.post("/{pid}/extensions/{eid}/{decision}")
+async def decide_extension(
+    pid: int,
+    eid: int,
+    decision: str,
+    *,
+    body: ExtensionDecisionIn | None = None,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    if decision not in ("approve", "reject", "withdraw"):
+        raise HTTPException(404, "unknown decision")
+    obj = await _require_poam(session, pid, principal)
+    ext = next((e for e in await poam_extensions.history(session, obj.id) if e.id == eid), None)
+    if ext is None:
+        raise HTTPException(404, "extension request not found")
+    try:
+        if decision == "withdraw":
+            await poam_extensions.withdraw(session, extension=ext, principal=principal)
+        else:
+            await poam_extensions.decide(
+                session, poam=obj, extension=ext, approve=decision == "approve",
+                note=body.note if body else None, principal=principal,
+            )
+    except poam_extensions.ExtensionError as e:
+        raise HTTPException(e.status, str(e)) from e
+    await session.commit()
+    return _ext_out(ext)

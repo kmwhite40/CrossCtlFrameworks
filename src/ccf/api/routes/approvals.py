@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...governance import approvals
-from ...governance.approvals import WorkflowError
+from ...governance.approvals import EntityNotFoundError, WorkflowError
 from ...models import Approval
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -77,6 +77,8 @@ async def submit(
             actor=principal.email,
             org_id=principal.org_id,
         )
+    except EntityNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
     except WorkflowError as e:
         raise HTTPException(409, str(e)) from e
     await session.commit()
@@ -138,7 +140,10 @@ async def _decide(
             role=principal.role,
             note=body.note if body else None,
             org_id=principal.org_id,
+            user_id=principal.user_id,
         )
+    except EntityNotFoundError as e:
+        raise HTTPException(404, str(e)) from e
     except WorkflowError as e:
         # SoD / role violations are 403; state errors are 409.
         code = 403 if "duties" in str(e) or "role" in str(e) else 409

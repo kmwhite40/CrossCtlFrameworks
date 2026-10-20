@@ -11,12 +11,14 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...ato import lifecycle
 from ...auth import Principal
 from ...catalog.baseline_delta import (
     BaselineNotSetError,
     UnknownBaselineError,
     baseline_delta,
 )
+from ...config import get_settings
 from ...constants import POAM_ACTIVE_STATUSES
 from ...governance import bus, reactions
 from ...models import (
@@ -39,13 +41,6 @@ from ...schemas import (
 )
 from ..auth_deps import get_principal, require_role, resolve_caller_org
 from ..deps import get_session
-
-# Severities that block authorization while an open weakness exists.
-_ATO_BLOCKING_SEVERITIES = ("critical", "high")
-# POA&M statuses that represent an unresolved weakness (mirrors compliance_summary).
-_ATO_BLOCKING_STATUSES = POAM_ACTIVE_STATUSES
-# Default authorization period when the caller doesn't specify an expiration.
-_DEFAULT_ATO_PERIOD_DAYS = 365
 
 router = APIRouter(prefix="/api/systems", tags=["systems"])
 
@@ -186,32 +181,33 @@ async def authorize_system(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> SystemOut:
-    """Transition a system's ``ato_status`` toward "authorized".
+    """Transition a system's ``ato_status`` to "authorized" in one step.
 
-    Refuses (409) when the system has an open POA&M of critical/high severity —
-    an unresolved high-risk weakness must not be authorized away. Does not add
-    an approval workflow; that's a later slice (ISSM-08).
+    The single-operator path only. With authentication enabled an authorization
+    is the AO's decision on a reviewed package (``ccf.ato.lifecycle``: ISSO →
+    ISSM → AO), and this endpoint would let an admin skip every stage of it, so
+    it refuses (409) and points there.
+
+    Refuses (409) on the same blockers the package path enforces: an open
+    critical/high POA&M (an unresolved high-risk weakness must not be
+    authorized away) or a risk acceptance past its expiry.
     """
     sys = await require_system_in_scope(session, system_id, principal)
-
-    blocking = (
-        await session.execute(
-            select(func.count(POAM.id))
-            .where(POAM.system_id == system_id)
-            .where(POAM.severity.in_(_ATO_BLOCKING_SEVERITIES))
-            .where(POAM.status.in_(_ATO_BLOCKING_STATUSES))
-        )
-    ).scalar_one()
-    if blocking:
+    if get_settings().auth_enabled:
         raise HTTPException(
             409,
-            "cannot authorize: system has an open critical/high severity POA&M",
+            "authorize this system through an authorization package: capture one, then "
+            "submit it for ISSO, ISSM and Authorizing Official review",
         )
+
+    found = await lifecycle.blockers(session, system_id)
+    if found:
+        raise HTTPException(409, "cannot authorize: " + "; ".join(b.title for b in found))
 
     previous_status = sys.ato_status
     sys.ato_status = "authorized"
     sys.ato_expires_on = body.expires_on or (
-        date.today() + timedelta(days=_DEFAULT_ATO_PERIOD_DAYS)
+        date.today() + timedelta(days=lifecycle.DEFAULT_ATO_PERIOD_DAYS)
     )
     await session.flush()
     await bus.emit(

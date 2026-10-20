@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% set s = ws.system %}
+{% block title %}{{ s.name }} · ATO workspace · Concord{% endblock %}
+{% block heading %}{{ s.name }}{% endblock %}
+{% block subtitle %}
+  <p class="page__subtitle"><a href="/ato">ATO workspace</a> · authorization status, signing roles, package review and what stands in the way.</p>
+{% endblock %}
+{% block content %}
+
+{% if error %}<div class="note note--err" style="margin-bottom:16px">{{ error }}</div>{% endif %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">ATO status</div><div class="kpi__value">{{ s.ato_status|replace('_',' ') }}</div></div>
+  <div class="kpi"><div class="kpi__label">Authorization ends</div><div class="kpi__value"{% if s.days_to_expiry is not none and s.days_to_expiry < 0 %} style="color:var(--danger-ink)"{% endif %}>{{ s.ato_expires_on or '—' }}</div></div>
+  <div class="kpi"><div class="kpi__label">Blockers</div><div class="kpi__value"{% if ws.blockers %} style="color:var(--danger-ink)"{% endif %}>{{ ws.blockers|length }}</div></div>
+  <div class="kpi"><div class="kpi__label">Open POA&amp;Ms</div><div class="kpi__value">{{ ws.poams.active }}</div></div>
+</div>
+
+{# ── Action queue ─────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="actions">
+  <div class="card__header"><div class="card__title">Action queue</div>
+    <span class="dim" style="font-size:13px">derived from this system's records</span></div>
+  {% if ws.actions %}
+  <div class="table-wrap"><table class="data"><tbody>
+    {% for a in ws.actions %}<tr>
+      <td style="width:90px"><span class="chip {% if a.severity=='urgent' %}chip--err{% elif a.severity=='high' %}chip--warn{% else %}chip--ghost{% endif %}">{{ a.severity }}</span></td>
+      <td><strong>{{ a.title }}</strong>{% if a.detail %}<div class="dim" style="font-size:12px">{{ a.detail }}</div>{% endif %}</td>
+      <td style="width:90px"><a class="btn btn--sm btn--ghost" href="{{ a.href }}">Open</a></td>
+    </tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">Nothing is waiting on anyone.</p></div>
+  {% endif %}
+</section>
+
+{# ── Signing roles ────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="roles">
+  <div class="card__header"><div class="card__title">Signing roles</div>
+    <span class="dim" style="font-size:13px">each review stage belongs to its holder{% if not is_admin %} · only an admin can change these{% endif %}</span></div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Role</th><th>Holder</th>{% if is_admin %}<th>Assign</th>{% endif %}</tr></thead>
+    <tbody>
+    {% for r in system_roles %}{% set h = ws.roles[r] %}<tr>
+      <td><strong>{{ role_labels[r] }}</strong></td>
+      <td>{% if h %}{{ h.name or h.email }} <span class="dim" style="font-size:12px">{{ h.email }}</span>{% else %}<span class="chip chip--warn">unassigned</span>{% endif %}</td>
+      {% if is_admin %}<td>
+        <form method="post" action="/ato/{{ s.id }}/roles" class="filters">
+          <input type="hidden" name="role" value="{{ r }}">
+          <select class="select" name="user_id" aria-label="{{ role_labels[r] }}">
+            <option value="">— unassigned —</option>
+            {% for u in users %}<option value="{{ u.id }}" {% if h and h.user_id==u.id %}selected{% endif %}>{{ u.email }}</option>{% endfor %}
+          </select>
+          <button class="btn btn--sm btn--primary" type="submit">Save</button>
+        </form>
+      </td>{% endif %}
+    </tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+{# ── Blockers ─────────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="blockers">
+  <div class="card__header"><div class="card__title">Blockers</div>
+    <span class="dim" style="font-size:13px">enforced when the AO authorizes</span></div>
+  <div class="card__body">
+  {% if ws.blockers %}
+    {% for b in ws.blockers %}<div class="note note--err" style="margin-bottom:8px"><strong>{{ b.title }}</strong><div style="font-size:12px">{{ b.detail }}</div></div>{% endfor %}
+  {% else %}<p class="dim">None. Nothing on record stops an authorization decision.</p>{% endif %}
+  </div>
+</section>
+
+{# ── Package ──────────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="package">
+  <div class="card__header"><div class="card__title">Authorization package</div>
+    <span class="dim" style="font-size:13px">a frozen snapshot of the system's facts; reviewers sign its manifest hash</span></div>
+  <div class="card__body">
+  {% set p = ws.package %}
+  {% if p %}
+    <p><strong>{{ p.label }}</strong> · <span class="chip">{{ p.status|replace('_',' ') }}</span>
+      <span class="dim" style="font-size:12px">· {{ p.fact_count }} facts · captured {{ p.created_at.date() if p.created_at else '—' }} by {{ p.created_by or '—' }}</span></p>
+    <p class="dim mono" style="font-size:12px">manifest {{ p.manifest_sha256 or 'computed on first review' }}</p>
+    {% if p.authorization_expires_on %}<p>Authorization ends <strong>{{ p.authorization_expires_on }}</strong>.</p>{% endif %}
+    {% if p.actions %}
+      {% for act in p.actions %}{% set rule = transitions[act] %}
+      <form method="post" action="/ato/{{ s.id }}/packages/{{ p.id }}/{{ act }}" class="filters" style="margin-top:8px">
+        {% if rule.requires_reason %}<input class="input" name="reason" placeholder="Reason (required)" required style="min-width:280px">{% endif %}
+        {% if act in ('authorize','authorize_conditional') %}<input class="input" type="date" name="expires_on" aria-label="Authorization ends" {% if act=='authorize_conditional' %}required{% endif %}>{% endif %}
+        <button class="btn btn--sm {% if act in ('return','deny') %}btn--ghost{% else %}btn--primary{% endif %}" type="submit">{{ action_labels[act] }}</button>
+      </form>
+      {% endfor %}
+    {% else %}<p class="dim">No further action on this package. Capture a new one to start the next review.</p>{% endif %}
+  {% else %}
+    <p class="dim">No package captured for this system yet.</p>
+  {% endif %}
+    <form method="post" action="/ato/{{ s.id }}/packages" class="filters" style="margin-top:12px">
+      <input class="input" name="label" placeholder="Label (optional)" style="min-width:280px">
+      <button class="btn btn--sm btn--ghost" type="submit">Capture a new package</button>
+    </form>
+  </div>
+  {% if ws.history %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>When</th><th>Action</th><th>From → to</th><th>By</th><th>As</th><th>Reason</th></tr></thead>
+    <tbody>{% for e in ws.history %}<tr>
+      <td class="dim" style="font-size:12px">{{ e.at.strftime('%Y-%m-%d %H:%M') if e.at else '—' }}</td>
+      <td>{{ e.action|replace('_',' ') }}</td>
+      <td class="dim">{{ e.from|replace('_',' ') }} → {{ e.to|replace('_',' ') }}</td>
+      <td>{{ e.actor or 'scheduler' }}</td>
+      <td class="dim">{{ role_labels.get(e.acted_as, e.acted_as) if e.acted_as else '—' }}</td>
+      <td class="dim" style="font-size:12px">{{ e.reason or '' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+</section>
+
+{# ── POA&Ms ───────────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="poams">
+  <div class="card__header"><div class="card__title">POA&amp;Ms</div>
+    <span class="dim" style="font-size:13px">{{ ws.poams.active }} open · {{ ws.poams.overdue }} overdue · {{ ws.poams.deviated }} past their original date · <a href="/poams?system_id={{ s.id }}">full register</a></span></div>
+  {% if ws.poams.top %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Weakness</th><th>Severity</th><th>Status</th><th>Due</th><th>Original</th><th>Request more time</th></tr></thead>
+    <tbody>{% for p in ws.poams.top %}<tr>
+      <td><strong>{{ p.title }}</strong>{% if p.control_id %}<div class="dim" style="font-size:12px">control {{ p.control_id }}</div>{% endif %}</td>
+      <td><span class="chip {% if p.severity in ('critical','high') %}chip--err{% elif p.severity=='moderate' %}chip--warn{% else %}chip--ok{% endif %}">{{ p.severity }}</span></td>
+      <td>{{ p.status|replace('_',' ') }}</td>
+      <td>{% if p.overdue %}<span class="chip chip--err">{{ p.due_on }}</span>{% else %}<span class="dim">{{ p.due_on or '—' }}</span>{% endif %}</td>
+      <td class="dim">{{ p.original_due_on or '—' }}</td>
+      <td>
+        <form method="post" action="/ato/{{ s.id }}/extensions" class="filters">
+          <input type="hidden" name="poam_id" value="{{ p.id }}">
+          <input class="input" type="date" name="requested_due_on" aria-label="New due date" required>
+          <input class="input" name="reason" placeholder="Reason" required>
+          <button class="btn btn--sm btn--ghost" type="submit">Request</button>
+        </form>
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">No open POA&amp;Ms.</p></div>
+  {% endif %}
+</section>
+
+{# ── Extension requests ──────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="extensions">
+  <div class="card__header"><div class="card__title">Extension requests</div>
+    <span class="dim" style="font-size:13px">decided by the ISSM or AO; never by the requester</span></div>
+  {% if ws.extensions %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>POA&amp;M</th><th>From → to</th><th>Reason</th><th>Requested by</th><th>Decision</th></tr></thead>
+    <tbody>{% for e in ws.extensions %}<tr>
+      <td>{{ e.poam_title }}</td>
+      <td class="dim">{{ e.previous_due_on or '—' }} → <strong>{{ e.requested_due_on }}</strong></td>
+      <td style="font-size:12px">{{ e.reason }}</td>
+      <td class="dim">{{ e.requested_by }}</td>
+      <td>
+        {% if e.requested_by == me %}
+        <form method="post" action="/ato/{{ s.id }}/extensions/{{ e.id }}/withdraw"><button class="btn btn--sm btn--ghost" type="submit">Withdraw</button></form>
+        {% else %}
+        <form method="post" action="/ato/{{ s.id }}/extensions/{{ e.id }}/approve" class="filters" style="margin-bottom:4px">
+          <input class="input" name="note" placeholder="Note (optional)"><button class="btn btn--sm btn--primary" type="submit">Approve</button></form>
+        <form method="post" action="/ato/{{ s.id }}/extensions/{{ e.id }}/reject" class="filters">
+          <input class="input" name="note" placeholder="Why (required)" required><button class="btn btn--sm btn--ghost" type="submit">Reject</button></form>
+        {% endif %}
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">No requests awaiting a decision.</p></div>
+  {% endif %}
+</section>
+
+{# ── Approvals ───────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="approvals">
+  <div class="card__header"><div class="card__title">Approvals awaiting review</div>
+    <span class="dim" style="font-size:13px">POA&amp;M closures and risk acceptances; accepting risk takes the AO</span></div>
+  {% if ws.approvals %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Item</th><th>Submitted by</th><th>Decision</th></tr></thead>
+    <tbody>{% for a in ws.approvals %}<tr>
+      <td><span class="chip chip--ghost">{{ 'POA&M' if a.entity_type=='poam' else 'Risk' }}</span> {{ a.title }}</td>
+      <td class="dim">{{ a.submitted_by or '—' }}</td>
+      <td>
+        <form method="post" action="/ato/{{ s.id }}/approvals/{{ a.entity_type }}/{{ a.entity_id }}/approve" class="filters" style="margin-bottom:4px">
+          <input class="input" name="note" placeholder="Note (optional)"><button class="btn btn--sm btn--primary" type="submit">Approve</button></form>
+        <form method="post" action="/ato/{{ s.id }}/approvals/{{ a.entity_type }}/{{ a.entity_id }}/reject" class="filters">
+          <input class="input" name="note" placeholder="Why"><button class="btn btn--sm btn--ghost" type="submit">Reject</button></form>
+      </td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">Nothing submitted for review.</p></div>
+  {% endif %}
+</section>
+
+{# ── Acceptances ─────────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="acceptances">
+  <div class="card__header"><div class="card__title">Standing risk acceptances</div>
+    <span class="dim" style="font-size:13px">POA&amp;M acceptances, accepted risks, waivers and KSI exceptions in one list</span></div>
+  {% if ws.acceptances %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Kind</th><th>What</th><th>Expires</th><th>Approved by</th></tr></thead>
+    <tbody>{% for a in ws.acceptances %}<tr>
+      <td class="dim">{{ a.label }}</td>
+      <td>{{ a.title }}</td>
+      <td>{% if a.expired %}<span class="chip chip--err">expired {{ a.expires_on }}</span>{% elif a.indefinite %}<span class="chip chip--warn">no end date</span>{% else %}{{ a.expires_on }}{% endif %}</td>
+      <td class="dim">{{ a.approved_by or '—' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="card__body"><p class="dim">No accepted risk on record.</p></div>
+  {% endif %}
+</section>
+
+{# ── Evidence, ConMon, readiness ─────────────────────────────────────── #}
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Evidence objects</div><div class="kpi__value">{{ ws.evidence.total }}</div></div>
+  <div class="kpi"><div class="kpi__label">Evidence expired</div><div class="kpi__value"{% if ws.evidence.expired %} style="color:var(--danger-ink)"{% endif %}>{{ ws.evidence.expired }}</div></div>
+  <div class="kpi"><div class="kpi__label">Controls healthy (ConMon)</div><div class="kpi__value">{% if ws.conmon.health_pct is none %}<span class="dim">no data</span>{% else %}{{ ws.conmon.by_status.healthy }} / {{ ws.conmon.total }}{% endif %}</div></div>
+  <div class="kpi"><div class="kpi__label">FedRAMP 20x readiness</div><div class="kpi__value">{% if ws.readiness and ws.readiness.readiness_pct is not none %}{{ ws.readiness.readiness_pct }}%{% else %}<span class="dim">{{ (ws.readiness.status|replace('_',' ')) if ws.readiness and ws.readiness.status else 'no data' }}</span>{% endif %}</div></div>
+</div>
+{% if ws.conmon.attention %}
+<section class="card" style="margin-bottom:16px">
+  <div class="card__header"><div class="card__title">Controls needing attention</div><span class="dim" style="font-size:13px">ConMon health</span></div>
+  <div class="table-wrap"><table class="data"><tbody>
+    {% for c in ws.conmon.attention %}<tr><td><strong>{{ c.control_id }}</strong></td><td><span class="chip {% if c.status in ('overdue','at_risk') %}chip--err{% else %}chip--warn{% endif %}">{{ c.status|replace('_',' ') }}</span></td><td class="dim" style="font-size:12px">{{ c.reasons|join('; ') }}</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endif %}
+
+{# ── Briefs ──────────────────────────────────────────────────────────── #}
+<section class="card" id="briefs">
+  <div class="card__header"><div class="card__title">Briefs</div>
+    <span class="dim" style="font-size:13px">the same figures as this page, arranged for each reader</span></div>
+  <div class="card__body filters">
+    {% for key, label in audiences.items() %}<a class="btn btn--sm btn--ghost" href="/ato/{{ s.id }}/brief?audience={{ key }}">{{ label }} brief</a>{% endfor %}
+  </div>
+</section>
+{% endblock %}
