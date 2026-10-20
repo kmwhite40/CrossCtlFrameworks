@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Remediation Plans · Concord{% endblock %}
+{% block heading %}Remediation plans{% endblock %}
+{% block subtitle %}Every change to an environment Concord has planned for your live systems, and what became of it. Read-only here: plans are proposed, approved, applied and reversed through the enforcement API, under its approval gate.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/poams?status=open"><i data-lucide="list-todo"></i>Open POA&amp;Ms</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Plans</span><span class="kpi__value">{{ total }}</span></div>
+  <div class="kpi"><span class="kpi__label">Awaiting approval</span><span class="kpi__value">{{ counts.get('pending_approval', 0) }}</span><span class="kpi__meta">{{ counts.get('approved', 0) }} approved, not yet applied</span></div>
+  <div class="kpi"><span class="kpi__label">Applied</span><span class="kpi__value">{{ counts.get('applied', 0) }}</span><span class="kpi__meta">{{ counts.get('reversed', 0) }} reversed since</span></div>
+  <div class="kpi"><span class="kpi__label">Failed or refused</span><span class="kpi__value {% if counts.get('failed', 0) + counts.get('refused', 0) %}kpi__value--danger{% endif %}">{{ counts.get('failed', 0) + counts.get('refused', 0) }}</span><span class="kpi__meta">{{ counts.get('rejected', 0) }} rejected by an approver</span></div>
+</section>
+
+{% if total %}
+<form method="get" action="/remediation" class="filters">
+  <select class="select" name="status" aria-label="Status">
+    <option value="">All statuses</option>
+    {% for s in statuses %}<option value="{{ s }}" {% if status == s %}selected{% endif %}>{{ s | replace('_',' ') }} ({{ counts.get(s, 0) }})</option>{% endfor %}
+  </select>
+  <button class="btn btn--primary" type="submit"><i data-lucide="filter"></i>Filter</button>
+</form>
+{% endif %}
+
+{% if rows %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Plan</th><th>System</th><th>Check</th><th>Status</th><th>Resources</th><th>Requested by</th><th>Approved by</th><th>Applied / reversed</th></tr></thead>
+  <tbody>{% for r in rows %}{% set p = r.RemediationPlan %}<tr>
+    <td class="mono">#{{ p.id }}<div class="dim">{{ p.created_at.strftime('%Y-%m-%d') if p.created_at else '' }}</div></td>
+    <td><a href="/systems/{{ p.system_id }}">{{ r.system }}</a></td>
+    <td class="mono">{{ p.check_key }}<div class="dim">{{ p.provider_key }}</div></td>
+    <td><span class="chip {% if p.status == 'applied' %}chip--ok{% elif p.status in ('failed','refused','rejected') %}chip--err{% elif p.status in ('pending_approval','approved') %}chip--warn{% else %}chip--ghost{% endif %}">{{ p.status | replace('_',' ') }}</span>{% if p.refusal_reason %}<div class="dim clamp-3">{{ p.refusal_reason }}</div>{% endif %}</td>
+    <td>{{ p.resource_count }}</td>
+    <td>{{ p.requested_by or '—' }}</td>
+    <td>{{ p.approved_by or '—' }}</td>
+    <td>{% if p.reversed_at %}reversed {{ p.reversed_at.strftime('%Y-%m-%d') }}{% elif p.applied_at %}{{ p.applied_at.strftime('%Y-%m-%d') }}{% else %}<span class="dim">—</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% elif total %}
+<div class="card empty-state"><i data-lucide="filter-x"></i><h2>No plan has this status</h2><p><a href="/remediation">Show all {{ total }} plans.</a></p></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="wrench"></i><h2>No remediation plans</h2><p>No enforcement change has been planned for this organization's live systems. A plan is created from a failing posture check through the enforcement API; it then waits for an approver before anything is written.</p></div>
+{% endif %}
+{% endblock %}

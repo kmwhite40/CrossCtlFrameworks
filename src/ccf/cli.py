@@ -2278,5 +2278,43 @@ def oscal_validate(
     raise typer.Exit(1)
 
 
+@app.command(name="kev-sync")
+def kev_sync(
+    file: str | None = typer.Option(
+        None,
+        "--file",
+        help="Sync from a local copy of the KEV JSON feed instead of downloading it "
+        "(air-gapped deployments).",
+    ),
+) -> None:
+    """Refresh CISA's Known Exploited Vulnerabilities catalog (global reference data).
+
+    Exits non-zero, saying why, when the download or the feed is bad; the
+    catalog is then left as it was, never emptied.
+    """
+    from .intel import kev  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        payload = (
+            kev.parse_kev(Path(file).read_bytes()) if file is not None else await kev.fetch_kev()
+        )
+        async with session_scope() as session:
+            result = await kev.sync_kev(session, payload)
+            await session.commit()
+            return result
+
+    try:
+        result = asyncio.run(_run())
+    except (kev.KevError, OSError) as exc:
+        console.print(f"[red]KEV sync failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"KEV catalog [green]{result['catalog_version']}[/green]: {result['total']} entries "
+        f"({result['added']} new, {result['removed']} withdrawn, {result['skipped']} skipped)."
+    )
+    for line in result["skipped_detail"]:
+        console.print(f"  [yellow]skipped[/yellow] {line}")
+
+
 if __name__ == "__main__":
     app()
