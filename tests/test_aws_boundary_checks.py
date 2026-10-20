@@ -308,3 +308,25 @@ def test_elb_reader_reads_rules_for_http_listeners(monkeypatch: pytest.MonkeyPat
     rows = conn._read_elb_listeners()
     assert "Rules" in rows[0] and "Rules" not in rows[1]
     assert _verdicts(a.evaluate_elb_listeners_tls(rows, account_id=ACCT)) == ["fail", "pass"]
+
+
+# ── root MFA in GovCloud ─────────────────────────────────────────────────────
+
+
+def test_root_mfa_is_not_applicable_in_govcloud() -> None:
+    """A GovCloud root user cannot sign in, so AccountMFAEnabled=0 there is not
+    a failure -- it would be a Critical finding against every GovCloud account."""
+    gov = [{"SummaryMap": {"AccountMFAEnabled": 0, "AccountAccessKeysPresent": 0},
+            "Partition": "aws-us-gov"}]
+    commercial = [{"SummaryMap": {"AccountMFAEnabled": 0}, "Partition": "aws"}]
+    assert _verdicts(a.evaluate_root_mfa(gov, account_id=ACCT)) == ["not_applicable"]
+    assert _verdicts(a.evaluate_root_mfa(commercial, account_id=ACCT)) == ["fail"]
+    keys = [{"SummaryMap": {"AccountMFAEnabled": 0, "AccountAccessKeysPresent": 1},
+             "Partition": "aws-us-gov"}]
+    assert "root access keys are present" in a.evaluate_root_mfa(keys, account_id=ACCT)[0].observed
+
+
+def test_the_summary_reader_records_the_partition(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _conn(monkeypatch, {("iam", "get_account_summary"): lambda **_: {
+        "SummaryMap": {"AccountMFAEnabled": 0}}})
+    assert conn._read_account_summary()[0]["Partition"] == "aws-us-gov"

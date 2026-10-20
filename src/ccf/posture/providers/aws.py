@@ -558,6 +558,29 @@ def evaluate_root_mfa(
                 detail={"rows": len(rows)},
             )
         ]
+    if rows and rows[0].get("Partition") == "aws-us-gov":
+        # An AWS GovCloud (US) account's root user cannot sign in to the
+        # console, so ``AccountMFAEnabled=0`` there is not an unprotected root
+        # login -- reporting it as a failure filed a Critical finding against
+        # every GovCloud account (m365-docs-hub's report made exactly this
+        # mistake). Root access keys are still reported: those can be used.
+        return [
+            ResourceFinding(
+                resource_id=account_id,
+                resource_type="aws_account",
+                verdict="not_applicable",
+                observed="the root user of an AWS GovCloud (US) account cannot sign in"
+                + (
+                    "; root access keys are present and should be removed"
+                    if summary.get("AccountAccessKeysPresent") == 1 else ""
+                ),
+                detail={
+                    "partition": "aws-us-gov",
+                    "AccountMFAEnabled": summary.get("AccountMFAEnabled"),
+                    "AccountAccessKeysPresent": summary.get("AccountAccessKeysPresent"),
+                },
+            )
+        ]
     raw = summary.get("AccountMFAEnabled")
     enabled = raw == 1 or raw is True
     return [

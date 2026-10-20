@@ -725,8 +725,12 @@ class AwsGovCloudConnector(ConfigConnector):
         return self._session().client("iam", region_name=self._region())
 
     def _read_account_summary(self) -> list[dict[str, Any]]:
-        """``iam.get_account_summary`` — the account's identity counters."""
-        return [self._iam().get_account_summary()]
+        """``iam.get_account_summary`` — the account's identity counters, with
+        the partition attached: whether a root user can sign in at all depends
+        on it (see ``evaluate_root_mfa``)."""
+        summary = dict(self._iam().get_account_summary())
+        summary["Partition"] = aws_identity.region_partition(self._region())
+        return [summary]
 
     @staticmethod
     def _is_no_such_entity(error: Exception) -> bool:
