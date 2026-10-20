@@ -541,3 +541,14 @@ async def test_people_get_an_error_page_and_clients_keep_their_json(two_orgs) ->
     assert client.status_code == 403 and "detail" in client.json()
     # An /api path never gets HTML, whatever it asks for.
     assert api.status_code == 403 and "detail" in api.json()
+
+
+async def test_the_poam_register_agrees_with_the_command_center(two_orgs) -> None:
+    """``/poams`` counted a soft-deleted system's POA&Ms while the command
+    center and posture did not: 41 open against 37 for one real organization.
+    The register now uses the same live-systems definition."""
+    a, _ = two_orgs
+    async with _client() as c:
+        body = (await c.get("/poams", headers=_auth(str(a["token"])))).text
+    assert f"Alpha-poam-{a['tag']}" in body
+    assert "DELETED" not in body

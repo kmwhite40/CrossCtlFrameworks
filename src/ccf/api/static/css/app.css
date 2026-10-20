@@ -1001,7 +1001,7 @@ html[data-theme="dark"] {
 
   /* A raised slate, not an inverted near-white: white-ish would collide
      with the text and the filled accent. Same "strongest neutral" role. */
-  --tag-bg: #334a6b;
+  --tag-bg: #3d5a82;
   --tag-ink: #f8fafc;
 
   --success: #14b8a6; --success-soft: rgba(20,184,166,.16);

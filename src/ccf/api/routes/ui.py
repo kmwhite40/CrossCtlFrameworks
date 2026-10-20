@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from ... import mfa, onboarding
 from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
+from ...analytics.posture import org_system_subq
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session
 from ...capability import divergence
@@ -680,10 +681,10 @@ async def poams_page(
         .options(selectinload(POAM.milestones))
         .order_by(POAM.due_on.nulls_last(), POAM.id.desc())
     )
-    if org is not None:
-        stmt = stmt.where(
-            POAM.system_id.in_(select(System.id).where(System.organization_id == org))
-        )
+    # Live systems only, scoped or not: a deleted system's POA&Ms were counted
+    # here (41 open) while the command center and posture said 37 -- the same
+    # organization, two numbers. org_system_subq is the one definition.
+    stmt = stmt.where(POAM.system_id.in_(org_system_subq(org)))
     if status:
         stmt = stmt.where(POAM.status == status)
     if severity:
