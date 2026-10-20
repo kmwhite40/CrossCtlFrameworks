@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ item.label }} · Concord{% endblock %}
+{% block heading %}{{ item.label }}{% endblock %}
+{% block subtitle %}{{ group.label }} · not built in Concord yet{% endblock %}
+{% block content %}
+<article class="card empty-state planned">
+  <i data-lucide="construction"></i>
+  <span class="chip chip--ghost">Planned — no data, no screen</span>
+  <h2>Concord does not do this yet</h2>
+  <p>{{ item.note }}</p>
+  <p class="dim">This page exists so the navigation can name the capability honestly. It shows no sample data, because a screen that looks finished over records that do not exist is a claim the platform cannot back.</p>
+  {% if nearby %}
+  <div>
+    <p class="label">What exists nearby</p>
+    <div class="row" style="flex-wrap:wrap">
+      {% for n in nearby %}<a class="btn btn--secondary btn--sm" href="{{ n.href }}">{{ n.label }}</a>{% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</article>
+{% endblock %}

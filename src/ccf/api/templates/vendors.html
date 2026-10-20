@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Vendor Inventory · Concord{% endblock %}
+{% block heading %}Vendors{% endblock %}
+{% block subtitle %}Third parties, their criticality and rating, review cadence, latest questionnaire and open risks linked to them.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/vendor-questionnaires"><i data-lucide="clipboard-list"></i>Questionnaires</a>{% endblock %}
+{% block content %}
+{% if vendors %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Vendor</th><th>Criticality</th><th>Risk rating</th><th>Status</th><th>Latest questionnaire</th><th>Open risks</th><th>Next review</th></tr></thead>
+  <tbody>{% for v in vendors %}{% set q = latest.get(v.id) %}
+  <tr id="vendor-{{ v.id }}">
+    <td><strong>{{ v.name }}</strong>{% if v.service_type %}<div class="dim" style="font-size:12px">{{ v.service_type }}{% if v.authorization %} · {{ v.authorization }}{% endif %}</div>{% endif %}</td>
+    <td><span class="sevchip sevchip--{{ {'critical':'critical','high':'high','medium':'moderate','moderate':'moderate','low':'low'}.get(v.criticality, 'none') }}">{{ v.criticality | capitalize }}</span></td>
+    <td>{% if v.risk_rating %}<span class="sevchip sevchip--{{ {'high':'high','moderate':'moderate','low':'low'}.get(v.risk_rating, 'none') }}">{{ v.risk_rating | capitalize }}</span>{% else %}<span class="dim">not rated</span>{% endif %}</td>
+    <td>{{ v.status | replace('_',' ') }}</td>
+    <td>{% if q %}<a href="/vendor-questionnaires/{{ q.id }}">{{ q.name }}</a><div class="dim" style="font-size:12px">{{ q.status }}{% if q.score is not none %} · score {{ '%.0f'|format(q.score) }}{% endif %}{% if counts[v.id] > 1 %} · {{ counts[v.id] }} total{% endif %}</div>{% else %}<span class="dim">none sent</span>{% endif %}</td>
+    <td>{{ risks.get(v.id, 0) }}</td>
+    <td>{% if v.next_review_on %}<span class="{% if v.next_review_on < today %}kanban__due--late{% endif %}">{{ v.next_review_on }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody></table></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No vendors recorded</h2><p>Vendors are added through the API (<code>POST /api/vendors</code>) and assessed with questionnaires. None exist for this organization yet.</p></div>
+{% endif %}
+{% endblock %}

@@ -86,6 +86,7 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
+from .. import navigation
 from ..audit import record_event
 from ..auth_deps import (
     MFA_PENDING_COOKIE,
@@ -138,6 +139,24 @@ def _asset_version() -> str:
 # Inject settings.readonly + an asset-version token into every template's globals.
 templates.env.globals["settings"] = get_settings()
 templates.env.globals["asset_v"] = _asset_version()
+
+
+def _shell_principal(request: Request | None) -> Any:
+    """The signed-in user the chrome names, or None (auth off / anonymous).
+
+    Read for display only: no authorization decision consults a template."""
+    if request is None:
+        return None
+    principal = getattr(request.state, "principal", None)
+    return principal if getattr(principal, "user_id", None) is not None else None
+
+
+# The information architecture (ccf/api/navigation.py) for the shell.
+templates.env.globals["nav"] = navigation.NAV
+templates.env.globals["nav_pinned"] = navigation.PINNED
+templates.env.globals["nav_locate"] = navigation.locate
+templates.env.globals["nav_palette"] = navigation.palette_entries()
+templates.env.globals["shell_principal"] = _shell_principal
 
 router = APIRouter(include_in_schema=False)
 
@@ -208,17 +227,46 @@ async def landing(request: Request) -> HTMLResponse:
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """What this organization has to fix, first thing on sign-in.
+    """The executive command center: posture, risk, remediation and activity.
+
+    Composes recorded data only (``analytics.command_center``); nothing on the
+    page is computed for display alone. "What is broken" -- the view this
+    route used to serve -- is at ``/gaps``, one click away from the headline
+    figure, and the operational overview is at ``/operations``.
+    """
+    from ...analytics.command_center import command_center  # noqa: PLC0415
+
+    org = _principal_org(request)
+    principal = getattr(request.state, "principal", None)
+    email = getattr(principal, "email", None) or ""
+    org_name = None
+    if org is not None:
+        org_name = (
+            await session.execute(select(Organization.name).where(Organization.id == org))
+        ).scalar_one_or_none()
+    return templates.TemplateResponse(
+        request,
+        "command_center.html",
+        {
+            "active": "dashboard",
+            "cc": await command_center(session, org),
+            "org_name": org_name,
+            # A display name from the address only; nothing is inferred from it.
+            "first_name": email.split("@")[0].split(".")[0].capitalize() if email else "",
+            "asset_v": _asset_version(),
+        },
+    )
+
+
+@router.get("/gaps", response_class=HTMLResponse)
+async def gaps_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """What this organization has to fix: every assessed control, failures first.
 
     Everything shown here was already recorded -- a scan writes a control test
     per check, a result per test, and a finding per resource -- but the answer
     was spread across `/control-tests`, `/posture`, `/governance` and `/poams`
-    with no page rolling it up. The most important view should not be
-    something you navigate to.
-
-    The operational overview this page used to show is still at
-    `/operations`; it answers a different question (how the programme is
-    running) from the one someone signing in asks first (what is broken).
+    with no page rolling it up. This was `/dashboard` until the command center
+    took that address; the command center's headline figure links here.
     """
     from ...analytics.gaps import compliance_gaps  # noqa: PLC0415
 
@@ -226,7 +274,7 @@ async def home(request: Request, session: AsyncSession = Depends(get_session)) -
         request,
         "dashboard_gaps.html",
         {
-            "active": "dashboard",
+            "active": "gaps",
             "g": await compliance_gaps(session, _principal_org(request)),
             "asset_v": _asset_version(),
         },
@@ -266,7 +314,7 @@ async def operations(
         request,
         "dashboard.html",
         {
-            "active": "dashboard",
+            "active": "operations",
             "overview": overview,
             "asset_v": _asset_version(),
         },

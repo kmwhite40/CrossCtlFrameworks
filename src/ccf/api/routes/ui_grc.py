@@ -506,7 +506,7 @@ async def connectors_sync(
         scanned = await _scan_every_system(session, org, c.connector_type)
         if scanned:
             await session.commit()
-            return RedirectResponse("/dashboard?connected=1", status_code=303)
+            return RedirectResponse("/gaps?connected=1", status_code=303)
         return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
 
     reason = str(result.get("reason") or "the provider did not say why")

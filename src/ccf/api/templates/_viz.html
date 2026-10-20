@@ -1,0 +1,149 @@
+{#- Visualization macros for the command center and the risk pages.
+
+    Server-rendered SVG: no chart library, nothing to load, and the numbers in
+    the markup are the numbers the service computed. Every chart ships three
+    channels for the same data, so none is colour-alone:
+      * the marks, with a hover/focus tooltip (`data-tip`, wired in app.js);
+      * a legend or direct label naming each series;
+      * a "View as table" disclosure with every value.
+    Colours are tokens (--series-*, --sev-*, status), never literals. -#}
+
+{#- A ring gauge. `pct` None renders an empty track and an em dash: an empty
+    denominator is not 0%. `tone` is a CSS custom property name. -#}
+{% macro ring(pct, size=88, tone='--accent', label='', stroke=9) -%}
+{%- set r = (size - stroke) / 2 -%}
+{%- set c = 2 * 3.14159265 * r -%}
+<div class="ring" style="width:{{ size }}px;height:{{ size }}px">
+  <svg viewBox="0 0 {{ size }} {{ size }}" width="{{ size }}" height="{{ size }}" aria-hidden="true">
+    <circle cx="{{ size/2 }}" cy="{{ size/2 }}" r="{{ r }}" fill="none" class="ring__track" stroke-width="{{ stroke }}" />
+    {% if pct is not none and pct > 0 %}
+    <circle cx="{{ size/2 }}" cy="{{ size/2 }}" r="{{ r }}" fill="none" stroke="var({{ tone }})" stroke-width="{{ stroke }}"
+            stroke-linecap="round" stroke-dasharray="{{ c * pct / 100 }} {{ c }}" transform="rotate(-90 {{ size/2 }} {{ size/2 }})" class="ring__arc" />
+    {% endif %}
+  </svg>
+  <span class="ring__value">{% if pct is none %}—{% else %}{{ pct }}<small>%</small>{% endif %}</span>
+  {% if label %}<span class="sr-only">{{ label }}: {{ '%s%%'|format(pct) if pct is not none else 'not measurable' }}</span>{% endif %}
+</div>
+{%- endmacro %}
+
+{#- A horizontal 100% stacked bar of status segments.
+    segs: [{n, tone, label}] ; total: the denominator. -#}
+{% macro stackbar(segs, total, name='') -%}
+<div class="stackbar" role="img" aria-label="{{ name }}: {% for s in segs %}{{ s.label }} {{ s.n }}{{ ', ' if not loop.last }}{% endfor %} of {{ total }}">
+  {% for s in segs %}{% if s.n and total %}
+  <span class="stackbar__seg" style="width:{{ (100 * s.n / total) | round(2) }}%;background:var({{ s.tone }})"
+        data-tip="{{ s.label }}: {{ s.n }} of {{ total }}" tabindex="0"></span>
+  {% endif %}{% endfor %}
+</div>
+{%- endmacro %}
+
+{#- Column chart. series: [{name, values, tone}], one value per label.
+    stacked=True stacks the series in each column; otherwise they group.
+    Gridlines are recessive hairlines; the y-axis has 3 clean ticks. -#}
+{% macro columns(labels, series, stacked=false, height=200, title='', unit='') -%}
+{%- set W = 640 -%}{%- set H = height -%}
+{%- set padl = 34 -%}{%- set padb = 26 -%}{%- set padt = 10 -%}
+{%- set ns = namespace(max=0) -%}
+{%- for i in range(labels|length) -%}
+  {%- if stacked -%}
+    {%- set ns2 = namespace(t=0) -%}{%- for s in series %}{% set ns2.t = ns2.t + (s['values'][i] or 0) %}{% endfor -%}
+    {%- if ns2.t > ns.max %}{% set ns.max = ns2.t %}{% endif -%}
+  {%- else -%}
+    {%- for s in series %}{% if (s['values'][i] or 0) > ns.max %}{% set ns.max = s['values'][i] %}{% endif %}{% endfor -%}
+  {%- endif -%}
+{%- endfor -%}
+{%- set top = ns.max if ns.max > 0 else 1 -%}
+{#- a clean ceiling: 1, 2, 2.5 or 5 times a power of ten -#}
+{%- set mag = 10 ** ((top | string | length) - 1) if top >= 1 else 1 -%}
+{%- set ceil = namespace(v=mag) -%}
+{%- for m in [1, 2, 2.5, 5, 10] %}{% if ceil.v == mag and m * mag >= top %}{% set ceil.v = m * mag %}{% endif %}{% endfor -%}
+{%- if ceil.v < top %}{% set ceil.v = 10 * mag %}{% endif -%}
+{%- set plot_w = W - padl - 6 -%}{%- set plot_h = H - padb - padt -%}
+{%- set band = plot_w / (labels|length) -%}
+{%- set bw = [band * (0.56 if stacked else 0.36), 24] | min -%}
+<figure class="viz">
+  <svg class="viz__svg" viewBox="0 0 {{ W }} {{ H }}" preserveAspectRatio="none" role="img" aria-label="{{ title }}">
+    {% for k in [0, 0.5, 1] %}
+    {%- set y = padt + plot_h * (1 - k) -%}
+    <line x1="{{ padl }}" x2="{{ W - 6 }}" y1="{{ y }}" y2="{{ y }}" class="viz__grid" />
+    <text x="{{ padl - 8 }}" y="{{ y + 4 }}" class="viz__tick" text-anchor="end">{{ (ceil.v * k) | round(1) | replace('.0','') }}</text>
+    {% endfor %}
+    {% for i in range(labels|length) %}
+    {%- set x0 = padl + band * i + band / 2 -%}
+    {%- set acc = namespace(y=padt + plot_h) -%}
+    {%- set tip = namespace(t=labels[i]) -%}
+    {% for s in series %}
+      {%- set v = s['values'][i] or 0 -%}{%- set tip.t = tip.t ~ ' · ' ~ s.name ~ ' ' ~ v ~ unit -%}
+      {%- set h = plot_h * v / ceil.v -%}
+      {% if stacked %}
+        {% if v %}<rect x="{{ x0 - bw/2 }}" y="{{ acc.y - h }}" width="{{ bw }}" height="{{ [h - (2 if not loop.first else 0), 1] | max }}" rx="{{ 3 if loop.last else 0 }}" fill="var({{ s.tone }})" class="viz__mark" />{% endif %}
+        {%- set acc.y = acc.y - h -%}
+      {% else %}
+        {%- set gx = x0 - (series|length) * (bw + 2) / 2 + loop.index0 * (bw + 2) -%}
+        {% if v %}<rect x="{{ gx }}" y="{{ padt + plot_h - h }}" width="{{ bw }}" height="{{ h }}" rx="3" fill="var({{ s.tone }})" class="viz__mark" />{% endif %}
+      {% endif %}
+    {% endfor %}
+    <text x="{{ x0 }}" y="{{ H - 8 }}" class="viz__tick" text-anchor="middle">{{ labels[i] }}</text>
+    <rect x="{{ padl + band * i }}" y="{{ padt }}" width="{{ band }}" height="{{ plot_h }}" class="viz__hit" data-tip="{{ tip.t }}" tabindex="0" />
+    {% endfor %}
+  </svg>
+  {% if series|length > 1 %}
+  <figcaption class="viz__legend">
+    {% for s in series %}<span><i style="background:var({{ s.tone }})"></i>{{ s.name }}</span>{% endfor %}
+  </figcaption>
+  {% endif %}
+  <details class="viz__table">
+    <summary>View as table</summary>
+    <table class="data">
+      <thead><tr><th scope="col">Period</th>{% for s in series %}<th scope="col">{{ s.name }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for i in range(labels|length) %}<tr><th scope="row">{{ labels[i] }}</th>{% for s in series %}<td>{{ s['values'][i] if s['values'][i] is not none else '—' }}{{ unit if s['values'][i] is not none }}</td>{% endfor %}</tr>{% endfor %}</tbody>
+    </table>
+  </details>
+</figure>
+{%- endmacro %}
+
+{#- Likelihood × impact matrix. cells[likelihood][impact] = count.
+    The zone colour is the residual band of that cell's inherent score
+    (low/moderate/high = 1/3/5, as ccf.governance.risk scores them), so a cell
+    keeps its colour when it is empty: the zone is a property of the grid, the
+    count is the data. -#}
+{% macro riskgrid(cells, levels, href_base='/risks/heatmap', selected=none) -%}
+{%- set score = {'low': 1, 'moderate': 3, 'high': 5} -%}
+<div class="riskgrid">
+  <div class="riskgrid__ylab">Likelihood</div>
+  <div class="riskgrid__grid" role="grid" aria-label="Risks by likelihood and impact">
+    {% for lk in levels | reverse %}
+    <div class="riskgrid__row" role="row">
+      <span class="riskgrid__axis" role="rowheader">{{ lk | capitalize }}</span>
+      {% for im in levels %}
+      {%- set s = score[lk] * score[im] -%}
+      {%- set zone = 'critical' if s > 15 else ('high' if s > 9 else ('moderate' if s > 4 else 'low')) -%}
+      {%- set n = cells[lk][im] -%}
+      {%- set is_sel = selected and selected[0] == lk and selected[1] == im -%}
+      <a role="gridcell" class="riskgrid__cell riskgrid__cell--{{ zone }}{% if n %} riskgrid__cell--filled{% endif %}{% if is_sel %} riskgrid__cell--selected{% endif %}"
+         href="{{ href_base }}?likelihood={{ lk }}&amp;impact={{ im }}"
+         data-tip="Likelihood {{ lk }} × impact {{ im }} · {{ zone }} zone · {{ n }} risk{{ 's' if n != 1 }}"
+         aria-label="Likelihood {{ lk }}, impact {{ im }}, {{ zone }} zone: {{ n }} risk{{ 's' if n != 1 }}"
+         {% if is_sel %}aria-current="true"{% endif %}>
+        {% if n %}<b>{{ n }}</b>{% endif %}
+      </a>
+      {% endfor %}
+    </div>
+    {% endfor %}
+    <div class="riskgrid__row riskgrid__row--x">
+      <span class="riskgrid__axis"></span>
+      {% for im in levels %}<span class="riskgrid__axis riskgrid__axis--x">{{ im | capitalize }}</span>{% endfor %}
+    </div>
+  </div>
+  <div class="riskgrid__xlab">Impact</div>
+</div>
+{%- endmacro %}
+
+{#- Severity legend list with counts; tones from the severity ramp. -#}
+{% macro sevlist(counts, order=('critical','high','moderate','low')) -%}
+<ul class="sevlist">
+  {% for s in order %}
+  <li><i class="sevdot sevdot--{{ s }}"></i><span>{{ s | capitalize }}</span><b>{{ counts.get(s, 0) }}</b></li>
+  {% endfor %}
+</ul>
+{%- endmacro %}

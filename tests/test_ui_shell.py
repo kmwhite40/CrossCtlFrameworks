@@ -31,6 +31,7 @@ import pytest
 from fastapi.routing import _IncludedRouter
 from httpx import ASGITransport, AsyncClient
 
+from ccf.api import navigation
 from ccf.api.main import create_app
 from tests.theme_tokens import (
     AA_BODY,
@@ -77,7 +78,11 @@ MIN_CHIP_DELTA_E = 10.0
 #: ``active`` keys that deliberately have no entry in the rail. Listed by name
 #: so that a page added without a home in the navigation fails this file rather
 #: than quietly rendering an unhighlighted sidebar.
-ACTIVE_KEYS_WITHOUT_A_RAIL_ENTRY = frozenset({"ai_settings"})
+ACTIVE_KEYS_WITHOUT_A_RAIL_ENTRY: frozenset[str] = frozenset()
+
+#: HTMX fragments: GET routes that return a piece of a page, swapped into the
+#: shell that is already on screen. They must not carry a second shell.
+SHELL_FRAGMENTS = frozenset({"/ui/notifications/badge", "/ui/notifications/panel"})
 
 
 def _client() -> AsyncClient:
@@ -152,6 +157,9 @@ async def test_every_reachable_page_renders_the_shell() -> None:
             ):
                 continue  # auth redirect or a JSON endpoint; not a shell page
             body = resp.text
+            if path in SHELL_FRAGMENTS:
+                assert '<aside class="sidebar"' not in body, f"{path} is a fragment with a shell"
+                continue
             if "{% extends" in body or '<aside class="sidebar"' not in body:
                 # The standalone pages (landing, portal, login) deliberately do
                 # not use the shell; everything else must.
@@ -325,43 +333,61 @@ def test_no_active_key_is_left_without_a_home_in_the_rail() -> None:
     used = set()
     for path in (SRC / "routes").glob("*.py"):
         used |= set(re.findall(r'"active":\s*"([a-z_0-9]+)"', path.read_text(encoding="utf-8")))
-    base = BASE_HTML.read_text(encoding="utf-8")
-    rail_keys = set(re.findall(r"'key':'([a-z_0-9]+)'", base))
+    rail_keys = {item.key for _, item in navigation.all_items()}
     homeless = sorted(used - rail_keys - ACTIVE_KEYS_WITHOUT_A_RAIL_ENTRY)
     assert not homeless, f"active keys with no sidebar entry: {', '.join(homeless)}"
     stale = sorted(ACTIVE_KEYS_WITHOUT_A_RAIL_ENTRY & rail_keys)
     assert not stale, f"listed as homeless but present in the rail: {', '.join(stale)}"
 
 
-def test_the_rail_renders_every_group_and_never_reorders_them() -> None:
-    """§4.1: this is a presentation change. Membership and order are unchanged."""
+def test_the_rail_renders_every_group_in_the_specified_order() -> None:
+    """The product owner's navigation (redesign brief §3), in its order, with
+    Authorization kept as a group of its own: Concord's authorization pages
+    (systems, SSP, scoring, the graphs) have no home in the brief's groups and
+    must not lose one."""
+    assert [g.key for g in navigation.NAV] == [
+        "command", "governance", "risk", "compliance", "authorization", "controls",
+        "audit", "evidence", "tprm", "operations", "intelligence", "admin",
+    ]  # fmt: skip
     base = BASE_HTML.read_text(encoding="utf-8")
-    groups = re.findall(r"\{'key':'(dashboard|compliance|authorization|operations|insights)'", base)
-    assert groups == ["dashboard", "compliance", "authorization", "operations", "insights"]
+    assert "{% for g in nav %}" in base, "the rail must render from ccf.api.navigation"
     # Every link key is unique, or "exactly one entry" could not be true.
-    keys = re.findall(r"\{'key':'([a-z_0-9]+)','label'", base)
+    keys = [item.key for _, item in navigation.all_items()]
     assert len(keys) == len(set(keys)), "duplicate nav keys"
 
 
-# ── §6.6 dark is the default, and the preference survives ────────────────────
+def test_the_palette_offers_the_rail_and_nothing_else() -> None:
+    """The command palette used to carry its own hand-written list in app.js,
+    and it had drifted from the rail. It now reads the rail's data."""
+    js = APP_JS.read_text(encoding="utf-8")
+    assert "href: '/dashboard'" not in js, "a hand-written palette list survives in app.js"
+    assert "nav-data" in js and 'id="nav-data"' in BASE_HTML.read_text(encoding="utf-8")
+    entries = navigation.palette_entries()
+    assert [e["href"] for e in entries] == [i.href for _, i in navigation.all_items()]
+
+
+# ── §6.6 an explicit choice wins; otherwise the operating system decides ────
 
 
 @pytest.mark.asyncio
-async def test_an_unset_preference_gets_dark() -> None:
+async def test_the_server_never_varies_the_markup_by_theme() -> None:
+    """The theme is decided in the browser, before paint. The markup default
+    is dark (the primary theme) for the no-JavaScript case only."""
     async with _client() as c:
         body = (await c.get("/dashboard")).text
     assert '<html lang="en" data-theme="dark">' in body
     assert 'data-theme="light"' not in body
-    # The pre-paint bootstrap maps anything that is not the literal 'light' --
-    # including a missing key and a throwing localStorage -- to dark.
-    assert "t === 'light' ? 'light' : 'dark'" in body
+    # The pre-paint bootstrap: a stored explicit choice, else the OS.
+    assert "t !== 'light' && t !== 'dark'" in body
+    assert "prefers-color-scheme: light" in body
 
 
-def test_the_theme_module_has_no_light_first_default_left() -> None:
+def test_the_theme_module_follows_the_os_until_the_user_chooses() -> None:
     js = APP_JS.read_text(encoding="utf-8")
-    assert "|| 'light'" not in js, "a light-first fallback survives in app.js"
-    assert "storedTheme() === 'light' ? 'light' : 'dark'" in js
+    assert "storedTheme() === 'light' ? 'light' : 'dark'" not in js, "dark-only default survives"
+    assert "t === 'light' || t === 'dark' ? t : systemTheme()" in js
     assert "localStorage.setItem(THEME_KEY, next)" in js
+    assert "localStorage.removeItem(THEME_KEY)" in js, "no way back to following the OS"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
@@ -369,19 +395,24 @@ def test_theme_defaulting_and_persistence_run_correctly() -> None:
     """Execute the shipped app.js, rather than read it.
 
     The source assertions above cannot tell a correct expression from one that
-    is never reached. This drives the real file against a stub DOM: an unset
-    preference gets dark, a stored 'light' is honoured, a toggle persists, and
-    a localStorage that throws still lands on dark.
+    is never reached. This drives the real file against a stub DOM:
+
+    * no stored choice follows the OS, both ways;
+    * a stored choice beats the OS;
+    * a toggle persists, and "system" forgets the choice;
+    * a localStorage that throws still follows the OS.
     """
     harness = r"""
       const fs = require('fs');
-      function run(initial, throwing) {
+      function run(initial, throwing, osLight) {
         const store = { ...initial };
         const html = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; },
+                       removeAttribute(k) { delete this.attrs[k]; },
                        getAttribute(k) { return this.attrs[k] ?? null; } };
         global.localStorage = {
           getItem(k) { if (throwing) throw new Error('denied'); return store[k] ?? null; },
           setItem(k, v) { if (throwing) throw new Error('denied'); store[k] = v; },
+          removeItem(k) { if (throwing) throw new Error('denied'); delete store[k]; },
         };
         const listeners = [];
         global.document = {
@@ -389,27 +420,35 @@ def test_theme_defaulting_and_persistence_run_correctly() -> None:
           body: { attrs: {},
                   setAttribute(k, v) { this.attrs[k] = v; },
                   removeAttribute(k) { delete this.attrs[k]; },
-                  getAttribute(k) { return this.attrs[k] ?? null; }, style: {} },
+                  getAttribute(k) { return this.attrs[k] ?? null; }, style: {},
+                  dispatchEvent() {} },
           addEventListener(t, f) { listeners.push([t, f]); },
           getElementById() { return null; }, querySelector() { return null; },
           querySelectorAll() { return []; }, createElement() { return { style: {} }; },
         };
         global.window = global;
+        global.matchMedia = (q) => ({ matches: q.includes('light') ? osLight : !osLight,
+                                      addEventListener() {} });
+        global.addEventListener = () => {};
         eval(fs.readFileSync(process.argv[1], 'utf8'));
         return { theme: () => html.getAttribute('data-theme'), store,
-                 toggle: () => global.toggleTheme() };
+                 toggle: () => global.toggleTheme(), set: (c) => global.setTheme(c) };
       }
-      const a = run({}, false);
-      if (a.theme() !== 'dark') throw new Error('unset preference gave ' + a.theme());
-      a.toggle();
-      if (a.theme() !== 'light') throw new Error('toggle from dark gave ' + a.theme());
-      if (a.store['concord:theme'] !== 'light') throw new Error('toggle did not persist');
-      const b = run({ 'concord:theme': 'light' }, false);
-      if (b.theme() !== 'light') throw new Error('stored light was ignored');
-      b.toggle();
-      if (b.store['concord:theme'] !== 'dark') throw new Error('light->dark did not persist');
-      const c = run({}, true);
-      if (c.theme() !== 'dark') throw new Error('unreadable storage gave ' + c.theme());
+      const fail = (m) => { throw new Error(m); };
+      const a = run({}, false, false);
+      if (a.theme() !== 'dark') fail('unset, OS dark gave ' + a.theme());
+      const b = run({}, false, true);
+      if (b.theme() !== 'light') fail('unset, OS light gave ' + b.theme());
+      const c = run({ 'concord:theme': 'dark' }, false, true);
+      if (c.theme() !== 'dark') fail('stored dark lost to the OS: ' + c.theme());
+      c.toggle();
+      if (c.theme() !== 'light') fail('toggle from dark gave ' + c.theme());
+      if (c.store['concord:theme'] !== 'light') fail('toggle did not persist');
+      c.set('system');
+      if ('concord:theme' in c.store) fail('"system" did not forget the choice');
+      if (c.theme() !== 'light') fail('"system" did not follow the OS: ' + c.theme());
+      const d = run({}, true, true);
+      if (d.theme() !== 'light') fail('unreadable storage ignored the OS: ' + d.theme());
       console.log('ok');
     """
     out = subprocess.run(
