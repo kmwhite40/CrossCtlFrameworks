@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from slugify import slugify
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,7 @@ from ...auth import Principal
 from ...connectors import get_connector, list_connectors
 from ...connectors.credentials import resolve_credential
 from ...connectors.readiness import provider_readiness
+from ...constants import SSP_AUTHOR_STATUSES
 from ...governance import automation
 from ...models import (
     SSPControlEntry,
@@ -142,7 +143,9 @@ class ProjectUpdate(BaseModel):
     version: str | None = None
     prepared_by: str | None = None
     document_date: date | None = None
-    status: str | None = None
+    #: Author-settable statuses only. Approval is a reviewer's decision and is
+    #: made through /api/approvals, which enforces separation of duties.
+    status: str | None = Field(None, pattern=r"^(" + "|".join(SSP_AUTHOR_STATUSES) + r")$")
 
 
 def _validate_vocabulary(
