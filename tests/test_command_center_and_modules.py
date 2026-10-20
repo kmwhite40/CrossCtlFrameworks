@@ -382,7 +382,7 @@ async def test_record_search_is_scoped_to_the_callers_organization(two_orgs) -> 
     labels = [r["label"] for r in resp.json()["results"]]
     assert labels, "search found nothing at all, so it cannot show scoping"
     assert all(lbl.startswith("Alpha-") for lbl in labels), labels
-    kinds = {r["kind"] for r in resp.json()["results"]}
+    kinds = {r["kind"].split(" · ")[0] for r in resp.json()["results"]}
     assert {"System", "Risk", "POA&M", "Evidence", "Policy", "Vendor", "Audit", "Task"} <= kinds
     assert all(
         r["href"].startswith("/") and not r["href"].startswith("//") for r in resp.json()["results"]

@@ -334,6 +334,12 @@
     toast(status === 403 ? 'You do not have permission for that.' : `Request failed${status ? ` (${status})` : ''}. Nothing was changed.`);
   });
   document.addEventListener('htmx:sendError', () => toast('Could not reach Concord. Check your connection.'));
+  // Swapped-in markup carries <i data-lucide> placeholders and <time> stamps
+  // that only the initial load had converted; convert them in the new content.
+  document.addEventListener('htmx:afterSettle', (e) => {
+    if (window.lucide) window.lucide.createIcons();
+    e.target?.querySelectorAll?.('time[data-relative]').forEach(relative);
+  });
 
   // ── Small render-time niceties ─────────────────────────
   function relative(el) {

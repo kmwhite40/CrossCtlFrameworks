@@ -151,20 +151,22 @@ async def record_search(
         add("System", r.name, f"/systems/{r.id}")
     for r in (
         await session.execute(
-            select(Risk.id, Risk.title)
+            select(Risk.id, Risk.title, System.name.label("system"))
+            .join(System, System.id == Risk.system_id)
             .where(Risk.system_id.in_(live), _like(Risk.title, q))
             .limit(5)
         )
     ).all():
-        add("Risk", r.title, f"/risks/heatmap#risk-{r.id}")
+        add(f"Risk · {r.system}", r.title, f"/risks/heatmap#risk-{r.id}")
     for r in (
         await session.execute(
-            select(POAM.id, POAM.title, POAM.system_id)
+            select(POAM.id, POAM.title, POAM.system_id, System.name.label("system"))
+            .join(System, System.id == POAM.system_id)
             .where(POAM.system_id.in_(live), _like(POAM.title, q))
             .limit(5)
         )
     ).all():
-        add("POA&M", r.title, f"/poams?system_id={r.system_id}")
+        add(f"POA&M · {r.system}", r.title, f"/poams?system_id={r.system_id}")
 
     def org_filter(col: Any) -> list[Any]:
         return [col == org] if org is not None else []
