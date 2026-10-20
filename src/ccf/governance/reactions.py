@@ -30,6 +30,7 @@ async def on_scoring_status_changed(
     system_id: int,
     control_id: str,
     state: str,
+    previous_state: str | None = None,
     org_id: int | None = None,
     actor: str | None = None,
 ) -> dict[str, Any]:
@@ -45,7 +46,10 @@ async def on_scoring_status_changed(
     ``api/routes/poams.py``'s gate.
     """
     flagged = 0
-    if state in _MET:
+    # On the transition into a satisfied state only: re-saving an already
+    # satisfied practice (to edit its notes, say) appended another dated note
+    # to every matching POA&M's remediation plan, which is exported.
+    if state in _MET and previous_state not in _MET:
         rows = (
             (
                 await session.execute(

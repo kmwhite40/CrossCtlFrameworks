@@ -47,6 +47,24 @@ INDEPENDENT_KINDS = ("3pao", "ig", "audit")
 INDEPENDENT_RECORDER_ROLES = ("assessor", "admin")
 
 
+def require_independent_recorder(assessment: Assessment, principal: Principal) -> None:
+    """Refuse a result on an independent assessment from anyone but an assessor.
+
+    Shared by the API route and the HTML form, so the rule cannot hold on one
+    and not the other (it did, for one commit).
+    """
+    if (
+        get_settings().auth_enabled
+        and assessment.kind in INDEPENDENT_KINDS
+        and principal.role not in INDEPENDENT_RECORDER_ROLES
+    ):
+        raise HTTPException(
+            403,
+            f"results on a {assessment.kind} assessment are recorded by an assessor, "
+            "not by a control owner",
+        )
+
+
 class AssessmentCreate(BaseModel):
     system_id: int
     name: str = "CMMC L2 Assessment"
@@ -190,16 +208,7 @@ async def update_result(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     assessment = await _require_assessment(session, assessment_id, principal)
-    if (
-        get_settings().auth_enabled
-        and assessment.kind in INDEPENDENT_KINDS
-        and principal.role not in INDEPENDENT_RECORDER_ROLES
-    ):
-        raise HTTPException(
-            403,
-            f"results on a {assessment.kind} assessment are recorded by an assessor, "
-            "not by a control owner",
-        )
+    require_independent_recorder(assessment, principal)
     if body.finding is not None and body.finding not in FINDINGS:
         raise HTTPException(422, f"finding must be one of {', '.join(FINDINGS)}")
     result = (

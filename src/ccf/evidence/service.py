@@ -157,8 +157,10 @@ async def add_version(
     session.add(version)
     await session.flush()
     obj.current_version_id = version.id
-    # A new version reopens review unless the object was already terminal.
-    if obj.status in ("approved", "rejected", "expired"):
+    # A new version reopens review. That includes "submitted": otherwise the
+    # uploader could swap the content after submitting, and the reviewer would
+    # approve -- and WORM-lock -- a version they were never shown.
+    if obj.status in ("submitted", "approved", "rejected", "expired"):
         obj.status = "draft"
     return version
 
@@ -257,12 +259,23 @@ async def expired_objects(
 
 
 async def mark_expired(
-    session: AsyncSession, *, org_id: int | None = None, today: date | None = None
+    session: AsyncSession,
+    *,
+    org_id: int | None = None,
+    today: date | None = None,
+    unowned: bool = False,
 ) -> int:
-    """Flip past-freshness objects to ``expired`` (unless already terminal). Count."""
+    """Flip past-freshness objects to ``expired`` (unless already terminal). Count.
+
+    ``unowned=True`` targets only rows with no organization (single-operator
+    mode stores evidence that way), which a per-org pass never reaches.
+    """
     today = today or datetime.now(UTC).date()
     n = 0
-    for obj in await expired_objects(session, org_id=org_id, today=today):
+    objs = await expired_objects(session, org_id=org_id, today=today)
+    if unowned:
+        objs = [o for o in objs if o.organization_id is None]
+    for obj in objs:
         if obj.status != "expired":
             obj.status = "expired"
             n += 1

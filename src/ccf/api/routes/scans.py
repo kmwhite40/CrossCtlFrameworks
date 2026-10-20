@@ -91,14 +91,19 @@ async def ingest_upload(
         org_id=principal.org_id,
         actor=principal.email,
     )
-    if result.created or result.reopened:
+    if result.created or result.reopened or result.closed:
+        # Closures are announced too: they bypass the closure gate (scan
+        # absence is the evidence), so nobody should learn of them by accident.
         await bus.notify(
             session,
             category="scan",
-            title=f"{resolved} scan opened {result.created + result.reopened} POA&M(s)",
+            title=(
+                f"{resolved} scan opened {result.created + result.reopened} and "
+                f"closed {result.closed} POA&M(s)"
+            ),
             body=(
-                f"System {system_id}: {result.created} new and {result.reopened} reopened "
-                f"weaknesses from {file.filename or 'upload'}."
+                f"System {system_id}: {result.created} new, {result.reopened} reopened and "
+                f"{result.closed} auto-closed weaknesses from {file.filename or 'upload'}."
             ),
             org_id=principal.org_id,
             severity="warning",

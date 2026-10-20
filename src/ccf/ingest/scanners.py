@@ -440,7 +440,15 @@ async def reconcile_findings(
     # closure is auditable — every auto-closed POA&M is stamped with the scanner +
     # date note below (and, via the API layer, the audit_log). It deliberately does
     # not require a milestone/evidence artifact or a separate approver.
+    #
+    # Absence is evidence only when the scan said something. A file that parsed
+    # to no findings at all -- a header-only CSV, an empty report, columns the
+    # mapper could not read -- would otherwise close every open POA&M for this
+    # scanner and system. A genuinely clean scan therefore leaves them open for
+    # a person to close, which is the safe direction.
     for uid, poam in by_uid.items():
+        if not seen:
+            break
         if uid in seen or poam.status not in _OPEN_STATES:
             continue
         poam.status = "closed"

@@ -325,6 +325,16 @@ async def _run_per_tenant_cycle(
     # from being reset — mirrors the advisory-unlock suppress in run_cycle.
     with contextlib.suppress(Exception):
         await set_session_tenant(session, None)
+    try:
+        # Evidence with no organization (single-operator mode stores it that
+        # way) is invisible to every per-org pass above, so it never expired.
+        async with session.begin_nested():
+            evidence_expired += await evidence_service.mark_expired(
+                session, today=today, unowned=True
+            )
+    except Exception as e:
+        log.warning("scheduler.global_step_failed", step="evidence_expiry", error=str(e)[:200])
+        step_failures.append({"organization_id": "", "step": "evidence_expiry"})
     return {
         # Every per-tenant step above is savepointed, so a failure is contained
         # and logged as its own warning -- and then contributes nothing to the

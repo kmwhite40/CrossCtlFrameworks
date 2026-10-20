@@ -106,6 +106,7 @@ from ..login_service import (
     record_failed_factor,
     revoke_sessions_for_request,
 )
+from .assessments import require_independent_recorder
 from .diff import diff_workbook
 from .scoring import compute_summary
 from .ssp import FRAMEWORKS, require_platform
@@ -2700,9 +2701,12 @@ async def assessment_save_result(
     assessor_note: str = Form(""),
     evidence_ref: str = Form(""),
     session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
 ) -> HTMLResponse:
-    if await _scoped_assessment(session, assessment_id, _principal_org(request)) is None:
+    assessment = await _scoped_assessment(session, assessment_id, _principal_org(request))
+    if assessment is None:
         raise HTTPException(404, "assessment not found")
+    require_independent_recorder(assessment, principal)
     result = (
         await session.execute(
             select(AssessmentControlResult)

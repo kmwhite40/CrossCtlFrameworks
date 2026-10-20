@@ -614,8 +614,12 @@ async def close_poam(
 ) -> dict[str, Any]:
     obj = await _require_poam(session, pid, principal)
     was_closed = obj.status in POAM_CLOSED_STATUSES
-    if not was_closed:
-        await _require_closure_gate(session, obj, actor=principal.email)
+    if was_closed:
+        # Already closed: re-stamping closed_on would lose the real closure
+        # date the SLA on-time figures are computed from.
+        state = await entity_state(session, "poam", obj.id)
+        return _out(obj, datetime.now(UTC).date(), state)
+    await _require_closure_gate(session, obj, actor=principal.email)
     obj.status = "closed"
     obj.closed_on = date.today()
     await bus.emit(
