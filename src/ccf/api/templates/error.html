@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Concord{% endblock %}
+{% block heading %}{{ title }}{% endblock %}
+{% block subtitle %}Error {{ status }}{% endblock %}
+{% block content %}
+<article class="card empty-state">
+  <i data-lucide="{{ {401: 'log-in', 403: 'lock', 404: 'search-x'}.get(status, 'circle-alert') }}"></i>
+  {% if detail %}<p><strong>{{ detail }}</strong></p>{% endif %}
+  {% if status == 403 %}
+  <p>This page needs a permission your account does not have{% if role %} (you are signed in as {{ role | replace('_', ' ') }}){% endif %}. Nothing was changed.</p>
+  {% elif status == 404 %}
+  <p>The page or record does not exist, or it belongs to another organization. Records outside your organization are reported as not found on purpose, so their existence is not disclosed.</p>
+  {% elif status == 401 %}
+  <p>Your session has ended. <a href="/login">Sign in again</a>.</p>
+  {% else %}
+  <p>The request could not be completed. Nothing was changed.</p>
+  {% endif %}
+  <div class="row" style="flex-wrap:wrap">
+    <a class="btn btn--primary" href="/dashboard">Go to the command center</a>
+    <button type="button" class="btn btn--secondary" onclick="history.back()">Go back</button>
+    <button type="button" class="btn btn--ghost" onclick="openPalette()">Search Concord</button>
+  </div>
+</article>
+{% endblock %}

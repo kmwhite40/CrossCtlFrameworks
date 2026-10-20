@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
@@ -21,6 +22,7 @@ from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .csrf import CsrfOriginMiddleware
+from .errors import html_aware_http_exception
 from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
@@ -122,6 +124,10 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.limiter = limiter
+    # People get a page; API clients get the JSON they always did (errors.py).
+    app.add_exception_handler(
+        StarletteHTTPException, cast(ExceptionHandler, html_aware_http_exception)
+    )
     app.add_exception_handler(
         RateLimitExceeded,
         cast(ExceptionHandler, _rate_limit_exceeded_handler),

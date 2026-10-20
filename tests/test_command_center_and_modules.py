@@ -31,7 +31,7 @@ from ccf.analytics.command_center import command_center, ratio
 from ccf.api import navigation
 from ccf.api.deps import get_session
 from ccf.api.main import create_app
-from ccf.auth import hash_password, new_api_token
+from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import get_session_factory, session_scope, set_session_tenant
 from ccf.models import (
@@ -483,3 +483,61 @@ async def test_an_assignment_across_organizations_shows_no_title(two_orgs) -> No
         body = (await c.get("/my-tasks", headers=_auth(str(a["token"])))).text
     assert f"Alpha-task-{a['tag']}" in body
     assert "crossassign" not in body
+
+
+async def test_the_rail_offers_exactly_the_pages_the_role_may_open(two_orgs) -> None:
+    """The rail hides what the route would refuse, and hides nothing else.
+
+    Driven per role through the real gate: for every rail page without a
+    query string, a 403 must coincide with the item being hidden. A rail that
+    showed a 403 page, or hid a page the role may open, fails here."""
+    a, _ = two_orgs
+    tokens: dict[str, str] = {}
+    async with session_scope() as s:
+        for role in ("viewer", "assessor", "control_owner"):
+            u = User(
+                email=f"{role}-{a['tag']}@cc.test",
+                organization_id=int(a["org_id"]),
+                role=role,
+                active=True,
+                password_hash=hash_password("pw"),
+                api_token=new_api_token(),
+            )
+            s.add(u)
+            tokens[role] = u.api_token
+        await s.flush()
+    mismatches = []
+    async with _client() as c:
+        for role, token in tokens.items():
+            who = Principal(user_id=1, email="x", org_id=int(a["org_id"]), role=role)
+            for _, item in navigation.all_items():
+                if "?" in item.href or item.href.startswith("/docs"):
+                    continue
+                path = item.href.split("#")[0]
+                status = (await c.get(path, headers=_auth(token))).status_code
+                if (status == 403) == navigation.visible_to(item, who):
+                    mismatches.append(f"{role}: {item.label} {path} -> {status}")
+    assert not mismatches, "\n".join(mismatches)
+
+
+async def test_people_get_an_error_page_and_clients_keep_their_json(two_orgs) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        browser = await c.get(
+            "/admin/self-assurance", headers={**_auth(str(a["token"])), "Accept": "text/html"}
+        )
+        client = await c.get("/admin/self-assurance", headers=_auth(str(a["token"])))
+        api = await c.get(
+            "/api/admin/self-assurance/package",
+            headers={**_auth(str(a["token"])), "Accept": "text/html"},
+        )
+    assert browser.status_code == 403
+    assert "text/html" in browser.headers["content-type"]
+    assert (
+        "You don&#39;t have access to this page" in browser.text
+        or "You don't have access" in browser.text
+    )
+    assert '<aside class="sidebar"' in browser.text
+    assert client.status_code == 403 and "detail" in client.json()
+    # An /api path never gets HTML, whatever it asks for.
+    assert api.status_code == 403 and "detail" in api.json()

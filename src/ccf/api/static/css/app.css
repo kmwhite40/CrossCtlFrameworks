@@ -638,12 +638,12 @@ a.kpi:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .table-wrap table tbody tr, table.data tbody tr { transition: background .12s; }
 .table-wrap table tbody tr:hover td, table.data tbody tr:hover td { background: rgba(0,0,0,.025); }
 .table-wrap table tbody tr:last-child td, table.data tbody tr:last-child td { border-bottom: none; }
-.table-wrap table a[href], table.data a[href] {
+.table-wrap table a[href]:not(.chip), table.data a[href]:not(.chip) {
   color: var(--accent); font-weight: 500;
   text-decoration: underline; text-decoration-thickness: 1px;
   text-underline-offset: 3px; text-decoration-color: var(--border-strong);
 }
-.table-wrap table a[href]:hover, table.data a[href]:hover { text-decoration-color: currentColor; }
+.table-wrap table a[href]:not(.chip):hover, table.data a[href]:not(.chip):hover { text-decoration-color: currentColor; }
 .table-wrap table .mono, table.data .mono { font-size: 13px; }
 
 /* ════════════════════════════════════════════════════════════
@@ -889,6 +889,7 @@ a.feed__main:hover .feed__title { color: var(--accent-ink); }
 /* Drawer (notification center) */
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; z-index: 85; width: min(420px, 100vw); display: flex; flex-direction: column; background: var(--bg-elevated); border-left: 1px solid var(--border); box-shadow: var(--shadow-lg); transform: translateX(0); transition: transform .22s cubic-bezier(.2,.7,.2,1); }
 .drawer[hidden] { display: flex; transform: translateX(105%); visibility: hidden; }
+.drawer[hidden] *, .drawer[hidden] *::after { animation: none !important; }
 .drawer__head { display: flex; align-items: center; gap: var(--space-2); height: var(--topnav-h); padding: 0 var(--space-3) 0 var(--space-5); border-bottom: 1px solid var(--border); }
 .drawer__title { margin: 0 auto 0 0; font-size: 16px; font-weight: 650; }
 .drawer__body { flex: 1 1 auto; overflow-y: auto; padding: var(--space-2) var(--space-2) var(--space-6); }
@@ -953,6 +954,9 @@ a.feed__main:hover .feed__title { color: var(--accent-ink); }
   .sectionnav__inner { padding: 0 var(--space-4); }
   .breadcrumbs { padding: 0 var(--space-4); }
   .table-wrap table tbody td, table.data tbody td { padding: var(--space-3); }
+  /* A bare table.data (outside .table-wrap) scrolls inside its own box, not the page. */
+  table.data { display: block; max-width: 100%; overflow-x: auto; }
+  .row { flex-wrap: wrap; }
 }
 
 /* ════════════════════════════════════════════════════════════

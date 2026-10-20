@@ -155,8 +155,9 @@ def _shell_principal(request: Request | None) -> Any:
 templates.env.globals["nav"] = navigation.NAV
 templates.env.globals["nav_pinned"] = navigation.PINNED
 templates.env.globals["nav_locate"] = navigation.locate
-templates.env.globals["nav_palette"] = navigation.palette_entries()
+templates.env.globals["nav_palette"] = navigation.palette_entries
 templates.env.globals["shell_principal"] = _shell_principal
+templates.env.globals["nav_visible"] = navigation.visible_to
 
 router = APIRouter(include_in_schema=False)
 

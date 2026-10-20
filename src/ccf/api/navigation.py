@@ -47,6 +47,11 @@ class Item:
     note: str = ""
     #: Real pages a reader can use today instead (planned items only).
     nearby: tuple[str, ...] = ()
+    #: Who the route admits, mirrored from its dependency so the rail never
+    #: offers a page that answers 403. ``None``: every signed-in user.
+    #: ``PLATFORM``: ``require_platform_admin``; otherwise ``require_role``'s
+    #: roles. Display only -- the route's dependency is the control.
+    audience: frozenset[str] | None = None
 
     @property
     def planned_slug(self) -> str | None:
@@ -59,6 +64,25 @@ class Group:
     label: str
     icon: str
     items: tuple[Item, ...] = field(default_factory=tuple)
+
+
+#: ``require_platform_admin``: an unscoped (global) principal only.
+PLATFORM = frozenset({"__platform__"})
+
+
+def visible_to(item: Item, principal: Any) -> bool:
+    """Whether the rail should offer ``item`` to ``principal``.
+
+    Mirrors the two route gates exactly: ``require_role`` admits a global
+    principal or a listed role; ``require_platform_admin`` admits a global
+    principal only. No principal (auth off) sees everything, as the routes do."""
+    if item.audience is None or principal is None:
+        return True
+    if getattr(principal, "is_global", False):
+        return True
+    if item.audience is PLATFORM:
+        return False
+    return getattr(principal, "role", None) in item.audience
 
 
 def _planned(key: str, label: str, note: str, *nearby: str) -> Item:
@@ -411,7 +435,12 @@ NAV: tuple[Group, ...] = (
             ),
             Item("settings", "Organization Settings", "/settings"),
             Item("packs", "Framework Administration", "/packs"),
-            Item("catalogintegrity", "Catalog Integrity", "/catalog/integrity"),
+            Item(
+                "catalogintegrity",
+                "Catalog Integrity",
+                "/catalog/integrity",
+                audience=frozenset({"admin"}),
+            ),
             Item("worksheets", "Source Workbooks", "/worksheets"),
             Item("diff", "Workbook Diff", "/diff"),
             Item("search", "Catalog Search", "/search"),
@@ -421,16 +450,18 @@ NAV: tuple[Group, ...] = (
                 "/connectors",
                 "Connectors have pages; webhooks, IdP and issue-tracker push are API-only.",
             ),
-            Item("ai_settings", "AI Providers", "/admin/ai-settings"),
+            Item(
+                "ai_settings", "AI Providers", "/admin/ai-settings", audience=frozenset({"admin"})
+            ),
             _partial(
                 "apidocs",
                 "API Management",
                 "/docs",
                 "Interactive API reference only; tokens are issued by CLI, not managed here.",
             ),
-            Item("audit", "Audit Logs", "/audit"),
+            Item("audit", "Audit Logs", "/audit", audience=frozenset({"admin", "assessor"})),
             Item("reliability", "System Health", "/admin/reliability"),
-            Item("selfassurance", "Self-Assurance", "/admin/self-assurance"),
+            Item("selfassurance", "Self-Assurance", "/admin/self-assurance", audience=PLATFORM),
         ),
     ),
 )
@@ -462,11 +493,13 @@ def planned(slug: str) -> tuple[Group, Item] | None:
     return None
 
 
-def palette_entries() -> list[dict[str, Any]]:
-    """What the command palette offers: every destination, in rail order."""
+def palette_entries(principal: Any = None) -> list[dict[str, Any]]:
+    """What the command palette offers: the rail's destinations, in rail
+    order, filtered exactly as the rail is for ``principal``."""
     return [
         {"label": i.label, "href": i.href, "group": g.label, "status": i.status.value}
         for g, i in all_items()
+        if visible_to(i, principal)
     ]
 
 

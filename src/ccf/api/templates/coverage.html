@@ -17,7 +17,7 @@
             {% for fam in families %}
               {% set v = grid.get((fw, fam), 0) %}
               {% set pct = (v / max_v) if max_v else 0 %}
-              <td style="text-align:center;background:rgba(51,102,255,{{ (0.05 + pct * 0.55) | round(3) }});font-variant-numeric:tabular-nums">
+              <td style="text-align:center;background:color-mix(in srgb, var(--series-1) {{ (5 + pct * 50) | round(1) }}%, transparent);font-variant-numeric:tabular-nums">
                 {{ v if v else '' }}
               </td>
             {% endfor %}

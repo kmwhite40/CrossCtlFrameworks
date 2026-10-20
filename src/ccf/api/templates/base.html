@@ -74,7 +74,7 @@
             <i data-lucide="chevron-right" class="sidebar__caret"></i>
           </summary>
           <div class="sidebar__items">
-            {% for l in g['items'] %}
+            {% for l in g['items'] if nav_visible(l, who) %}
             <a class="sidebar__link{% if l.status != 'live' %} sidebar__link--{{ l.status }}{% endif %}" href="{{ l.href }}"
                {% if l.note %}title="{{ l.note }}"{% endif %}
                {% if l.key == active %}aria-current="page"{% endif %}>
@@ -200,7 +200,7 @@
     <div class="cmd__foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>g</kbd> <kbd>d</kbd> dashboard</span><span><kbd>[</kbd> rail</span><span><kbd>?</kbd> shortcuts</span></div>
   </div>
 </div>
-<script type="application/json" id="nav-data">{{ nav_palette | tojson }}</script>
+<script type="application/json" id="nav-data">{{ nav_palette(who) | tojson }}</script>
 
 </body>
 </html>
