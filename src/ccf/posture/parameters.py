@@ -117,7 +117,45 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # yet, because the check does not judge the period, only that one is set.
     aws.TRAIL_BUCKET_OBJECT_LOCK.key: (),
     aws.RDS_STORAGE_ENCRYPTED.key: (),
+    # No pack parameter: the impact level is the system's, filled by the scan
+    # from SYSTEM_PARAMETERS below. A pack naming it would let a tenant choose
+    # the level a system is judged against.
+    aws.IL_GOVCLOUD_PARTITION.key: (),
+    aws.IL_SERVICE_SCOPE.key: (),
+    aws.IL_CUSTOMER_KEYS.key: (),
 }
+
+#: Check key -> {evaluator keyword: ``System`` attribute}. The scan fills these
+#: from the system being scanned (``with_system_parameters``), after any pack
+#: parameters, so a declared value can never be overridden by a pack.
+SYSTEM_PARAMETERS: dict[str, dict[str, str]] = {
+    aws.IL_GOVCLOUD_PARTITION.key: {"dod_impact_level": "dod_impact_level"},
+    aws.IL_SERVICE_SCOPE.key: {"dod_impact_level": "dod_impact_level"},
+    aws.IL_CUSTOMER_KEYS.key: {"dod_impact_level": "dod_impact_level"},
+}
+
+
+def with_system_parameters(resolved: Any, system: Any) -> tuple[Any, ...]:
+    """``resolved`` checks with their system-sourced parameters filled in.
+
+    The evaluator key is consulted first: a pack's Form A rule runs a platform
+    evaluator under its own rule key, and still needs the system's value. It is
+    read with ``getattr`` because the scan's contract with a resolved check is
+    only ``check``/``endpoint``/``source``.
+    """
+    from dataclasses import replace  # noqa: PLC0415
+
+    out = []
+    for rc in resolved:
+        wanted = SYSTEM_PARAMETERS.get(getattr(rc, "evaluator_key", None) or rc.check.key)
+        if not wanted:
+            out.append(rc)
+            continue
+        params = dict(rc.parameters or {})
+        for kwarg, attr in wanted.items():
+            params[kwarg] = getattr(system, attr, None)
+        out.append(replace(rc, parameters=params))
+    return tuple(out)
 
 #: Check key -> the ``expected`` template to re-render when parameterized.
 #: Sourced from the provider module so the wording lives in exactly one place.

@@ -153,7 +153,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 
 ## 7. Known limits to state before anyone relies on this
 
-- **Posture check coverage is 50 checks touching 50 of the 288 controls in a
+- **Posture check coverage is 53 checks touching 51 of the 288 controls in a
   FedRAMP Moderate baseline** — roughly 17%. Re-measure with the command below
   rather than trusting this sentence; the intersection is not asserted by a test
   (see the note following the table) and the last two figures stated from
@@ -164,7 +164,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   | Provider | Checks | Controls evidenced |
   |---|---|---|
   | `msgraph` (Entra / Intune) | 19 | AC-2, AC-2(3), AC-2(12), AC-3, AC-6, AC-6(1), AC-7, AC-7(1), AC-8, AC-11, AC-11(1), AC-12, AC-17, AC-19(5), AC-20(2), AU-2, AU-3, AU-6, AU-12, CM-2, CM-6, IA-2, IA-2(1), IA-2(2), IA-2(11), IA-3, IR-4, MP-7, SC-28, SC-28(1), SI-2, SI-4, SI-5 |
-  | `aws_govcloud` | 21 | AC-3, AC-4, AC-6, AU-2, AU-9, AU-9(3), AU-11, AU-12, CM-3, CM-6, CM-7, CM-8, CM-8(2), IA-2, IA-2(1), IA-5, IA-5(1), RA-5, RA-5(2), SC-7, SC-7(3), SC-8, SC-8(1), SC-12, SC-12(1), SC-28, SC-28(1), SI-2, SI-2(2), SI-4, SI-4(2) |
+  | `aws_govcloud` | 24 | AC-3, AC-4, AC-6, AU-2, AU-9, AU-9(3), AU-11, AU-12, CM-3, CM-6, CM-7, CM-8, CM-8(2), IA-2, IA-2(1), IA-5, IA-5(1), RA-5, RA-5(2), SA-9, SA-9(5), SC-7, SC-7(3), SC-8, SC-8(1), SC-12, SC-12(1), SC-28, SC-28(1), SI-2, SI-2(2), SI-4, SI-4(2) |
   | `azure_arm` | 5 | AU-4, AU-11, CM-2, CM-6, RA-5, SC-8, SC-8(1), SC-23, SC-28, SC-28(1), SI-3, SI-4 |
   | `gcp` | 3 | AU-4, AU-11, CM-2, CM-6, SC-12, SC-28, SC-28(1) |
   | `puppetdb` | 2 | CM-2, CM-6, CM-8 |
@@ -250,7 +250,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   crosswalk shipped in the catalog reaches only 80 of the 110 at all, so 30
   requirements cannot be evidenced by any scan regardless of check coverage.
   `framework-posture` reports those as `unreachable`.
-- **A CMMC SSP shows evidence for 29 of the 110 practices**, from the 44 of 50
+- **A CMMC SSP shows evidence for 29 of the 110 practices**, from the 45 of 53
   checks that declare one. This is a *different* number from the two above and
   from the per-provider table: those count controls a check evidences, while
   this counts practices a **CMMC document can actually display**.
@@ -268,9 +268,10 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
   supply it: `framework_mappings` stores the 800-171 side as prose and reaches
   14 of the 32 checks, none of them the four that were failing.
 
-  Six checks are deliberately unmapped, in `practices.UNMAPPED` with the
-  argument recorded — 800-171 has no authenticator-lifetime requirement for key
-  rotation; "a Defender plan is on the Standard tier" does not say which
+  Eight checks are deliberately unmapped, in `practices.UNMAPPED` with the
+  argument recorded — the two DoD impact-level checks (GovCloud partition and
+  AWS's DoD SRG service scope) answer SRG questions 800-171 does not ask;
+  800-171 has no authenticator-lifetime requirement for key rotation; "a Defender plan is on the Standard tier" does not say which
   protection runs; Identity Protection risk detections are not a named practice;
   Conditional Access sign-in frequency is not session termination; an IAM Access
   Analyzer reporting external sharing is a monitor that demonstrates neither

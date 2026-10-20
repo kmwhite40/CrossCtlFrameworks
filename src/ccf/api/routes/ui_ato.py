@@ -116,6 +116,7 @@ async def ato_system(
             "transitions": lifecycle.TRANSITIONS,
             "audiences": AUDIENCES,
             "is_admin": principal.role == "admin",
+            "impact_levels": system_roles.DOD_IMPACT_LEVELS,
             "me": principal.email,
             "error": request.query_params.get("error"),
         },
@@ -145,6 +146,27 @@ async def ato_assign_role(  # noqa: PLR0917 -- FastAPI binds these by keyword
         return _back(system_id, error=str(e), anchor="roles")
     await session.commit()
     return _back(system_id, anchor="roles")
+
+
+@router.post("/ato/{system_id}/impact-level")
+async def ato_impact_level(
+    system_id: int,
+    request: Request,
+    dod_impact_level: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> RedirectResponse:
+    sysm = await _system(session, system_id, request)
+    if principal.role != "admin":
+        return _back(system_id, error="Only an admin can set the DoD impact level.")
+    try:
+        await system_roles.set_dod_impact_level(
+            session, system=sysm, level=dod_impact_level, principal=principal
+        )
+    except system_roles.RoleError as e:
+        return _back(system_id, error=str(e))
+    await session.commit()
+    return _back(system_id)
 
 
 @router.post("/ato/{system_id}/packages")

@@ -159,6 +159,9 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     "aws.s3.trail_bucket_object_lock": ("AU.L2-3.3.8",),
     # SC.L2-3.13.16 "Protect the confidentiality of CUI at rest."
     "aws.rds.storage_encrypted": ("SC.L2-3.13.16",),
+    # SC.L2-3.13.10 "Establish and manage cryptographic keys..." -- a key the
+    #                organization manages, not one AWS manages for it.
+    "aws.kms.customer_managed_keys_at_rest": ("SC.L2-3.13.10",),
     # ── Audit and accountability ─────────────────────────────────────────────
     # AU.L2-3.3.1  "Create and retain system audit logs and records to the
     #               extent needed to enable the monitoring, analysis,
@@ -254,6 +257,17 @@ UNMAPPED: dict[str, str] = {
         "notices, while this check reads a tenant-wide terms-of-use agreement "
         "that may say nothing about CUI. The check keeps its 800-53 AC-8 "
         "attribution, which is the framework that does ask for it."
+    ),
+    "aws.partition.govcloud_for_impact_level": (
+        "A DoD impact level's location requirement comes from the DoD CC SRG, not "
+        "800-171: no 3.x requirement names where a system is hosted, and CUI under "
+        "800-171 may be held in any FedRAMP Moderate cloud, so mapping this would "
+        "file an SRG finding against a CMMC practice."
+    ),
+    "aws.services.dod_srg_scope": (
+        "Whether a service sits inside AWS's DoD SRG provisional authorization is a "
+        "DoD CC SRG question; 800-171 has no requirement that services hold a DoD "
+        "impact-level authorization, and 3.1.x/3.4.x do not ask it."
     ),
     "aws.accessanalyzer.external_access_enabled": (
         "An analyzer reporting resources shared outside the account is a monitor, "

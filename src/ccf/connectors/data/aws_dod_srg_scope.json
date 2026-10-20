@@ -1,0 +1,1996 @@
+{
+ "source": "https://aws.amazon.com/compliance/services-in-scope/DoD_CC_SRG/",
+ "source_title": "AWS Services in Scope by Compliance Program: DoD CC SRG",
+ "source_last_updated": "2026-10-14",
+ "retrieved_on": "2026-10-20",
+ "source_sha256": "68e8d834bd0a428a3503398bfa3137e6bc1cd46a561e3617b6b6d1bbe34125c3",
+ "columns": {
+  "il2_east_west": "DoD CSP SRG IL2 (East/West)",
+  "il2_govcloud": "DoD CSP SRG IL2 (GovCloud)",
+  "il4_govcloud": "DoD CSP SRG IL4 (GovCloud)",
+  "il5_govcloud": "DoD CSP SRG IL5 (GovCloud)",
+  "il6_secret": "DoD CSP SRG IL6 (AWS Secret Region)"
+ },
+ "note": "'authorized' is AWS's checkmark. Any other non-null value is AWS's own text (e.g. 'Independent Assessment') and is not an authorization.",
+ "services": [
+  {
+   "service": "Amazon AppFlow",
+   "sdk_names": [
+    "appflow"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon API Gateway",
+   "sdk_names": [
+    "apigateway"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Application Recovery Controller",
+   "sdk_names": [
+    "arc-zonal-shift",
+    "arc-region-switch"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Athena**",
+   "sdk_names": [
+    "athena"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Aurora DSQL",
+   "sdk_names": [
+    "dsql"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Aurora MySQL",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Aurora PostgreSQL",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Bedrock",
+   "sdk_names": [
+    "bedrock"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Bedrock Agentcore",
+   "sdk_names": [
+    "bedrock-agentcore"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "Independent Assessment",
+   "il4_govcloud": "Independent Assessment",
+   "il5_govcloud": "Independent Assessment",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Braket [excludes third-party quantum hardware provider job execution]",
+   "sdk_names": [
+    "braket"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Chime SDK",
+   "sdk_names": [
+    "chime-sdk-meetings"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Cloud Directory",
+   "sdk_names": [
+    "clouddirectory"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon CloudFront [excludes content delivery through Amazon CloudFront Embedded Point of Presences]",
+   "sdk_names": [
+    "cloudfront"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon CloudWatch",
+   "sdk_names": [
+    "cloudwatch"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon CloudWatch Logs",
+   "sdk_names": [
+    "logs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Cognito",
+   "sdk_names": [
+    "cognito-idp",
+    "cognito-identity",
+    "cognito-sync"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Comprehend",
+   "sdk_names": [
+    "comprehend"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Comprehend Medical",
+   "sdk_names": [
+    "comprehendmedical"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Connect Customer",
+   "sdk_names": [
+    "connect"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Data Firehose",
+   "sdk_names": [
+    "firehose"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon DataZone",
+   "sdk_names": [
+    "datazone"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Detective",
+   "sdk_names": [
+    "detective"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon DevOps Guru",
+   "sdk_names": [
+    "devops-guru"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon DocumentDB (with MongoDB compatibility)",
+   "sdk_names": [
+    "docdb"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon DynamoDB",
+   "sdk_names": [
+    "dynamodb"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon EC2 Image Builder",
+   "sdk_names": [
+    "imagebuilder"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic Block Store (EBS)",
+   "sdk_names": [
+    "ebs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic Compute Cloud (EC2)",
+   "sdk_names": [
+    "ec2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic Container Registry (ECR)",
+   "sdk_names": [
+    "ecr"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic Container Service (ECS)",
+   "sdk_names": [
+    "ecs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic File System (EFS)",
+   "sdk_names": [
+    "efs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic Kubernetes Service (EKS)",
+   "sdk_names": [
+    "eks"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon ElastiCache",
+   "sdk_names": [
+    "elasticache"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Elastic MapReduce (EMR)",
+   "sdk_names": [
+    "emr"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon EventBridge",
+   "sdk_names": [
+    "events",
+    "pipes"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Forecast",
+   "sdk_names": [
+    "forecast"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon FSx",
+   "sdk_names": [
+    "fsx"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon GuardDuty",
+   "sdk_names": [
+    "guardduty"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Inspector",
+   "sdk_names": [
+    "inspector2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Kendra",
+   "sdk_names": [
+    "kendra"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Keyspaces (for Apache Cassandra)",
+   "sdk_names": [
+    "keyspaces"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Kinesis Data Streams",
+   "sdk_names": [
+    "kinesis"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Kinesis Video Streams",
+   "sdk_names": [
+    "kinesisvideo"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "DISA Review"
+  },
+  {
+   "service": "Amazon Lex",
+   "sdk_names": [
+    "lex-models",
+    "lex-runtime"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Location Service",
+   "sdk_names": [
+    "location"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Macie",
+   "sdk_names": [
+    "macie2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Managed Grafana",
+   "sdk_names": [
+    "grafana"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "3PAO Assessment",
+   "il4_govcloud": "3PAO Assessment",
+   "il5_govcloud": "3PAO Assessment",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Managed Service for Apache Flink",
+   "sdk_names": [
+    "kinesisanalytics",
+    "kinesisanalyticsv2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Managed Streaming for Apache Kafka (Amazon MSK)",
+   "sdk_names": [
+    "kafka"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Managed Service for Prometheus",
+   "sdk_names": [
+    "amp"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon MemoryDB",
+   "sdk_names": [
+    "memorydb"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon MQ",
+   "sdk_names": [
+    "mq"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Neptune",
+   "sdk_names": [
+    "neptune"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon OpenSearch Service",
+   "sdk_names": [
+    "opensearch"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Pinpoint and End User Messaging",
+   "sdk_names": [
+    "pinpoint",
+    "pinpoint-email",
+    "pinpoint-sms-voice",
+    "pinpoint-sms-voice-v2",
+    "sms-voice",
+    "sms-messaging"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Polly",
+   "sdk_names": [
+    "polly"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Q Business",
+   "sdk_names": [
+    "qbusiness"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Q Developer in chat applications [formerly AWS Chatbot]",
+   "sdk_names": [
+    "chatbot"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Quick [formerly Amazon Quick Suite]",
+   "sdk_names": [
+    "quicksight"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon RDS for Db2",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "Independent Assessment",
+   "il5_govcloud": "Independent Assessment",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon RDS for MariaDB",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon RDS for MySQL",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon RDS for Oracle",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon RDS for Postgres",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon RDS for SQL Server",
+   "sdk_names": [
+    "rds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Redshift",
+   "sdk_names": [
+    "redshift"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Rekognition",
+   "sdk_names": [
+    "rekognition"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Route 53",
+   "sdk_names": [
+    "route53"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon S3 Glacier",
+   "sdk_names": [
+    "glacier"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon SageMaker AI",
+   "sdk_names": [
+    "sagemaker"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Security Lake",
+   "sdk_names": [
+    "securitylake"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Simple Email Service (SES)",
+   "sdk_names": [
+    "ses"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Simple Notification Service (SNS)",
+   "sdk_names": [
+    "sns"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Simple Queue Service (SQS)",
+   "sdk_names": [
+    "sqs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Simple Storage Service (S3)",
+   "sdk_names": [
+    "s3"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Simple Workflow Service (SWF)",
+   "sdk_names": [
+    "swf"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon Textract",
+   "sdk_names": [
+    "textract"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Timestream",
+   "sdk_names": [
+    "timestream-query",
+    "timestream-write"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Transcribe",
+   "sdk_names": [
+    "transcribe"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Translate",
+   "sdk_names": [
+    "translate"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Verified Permissions",
+   "sdk_names": [
+    "verifiedpermissions"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "Amazon Virtual Private Cloud (VPC)",
+   "sdk_names": [
+    "ec2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon WorkSpaces",
+   "sdk_names": [
+    "workspaces"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon WorkSpaces Applications [formerly Amazon AppStream 2.0]",
+   "sdk_names": [
+    "appstream"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Amazon WorkSpaces Secure Browser",
+   "sdk_names": [
+    "workspaces-web"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Application Auto Scaling",
+   "sdk_names": [
+    "application-autoscaling"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Application Migration Service (MGN)",
+   "sdk_names": [
+    "mgn"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Artifact*",
+   "sdk_names": [
+    "artifact"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Audit Manager",
+   "sdk_names": [
+    "auditmanager"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Backup",
+   "sdk_names": [
+    "backup"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Batch",
+   "sdk_names": [
+    "batch"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Billing Conductor*",
+   "sdk_names": [
+    "billingconductor"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Budgets*",
+   "sdk_names": [
+    "budgets"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Certificate Manager (ACM)",
+   "sdk_names": [
+    "acm"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Clean Rooms",
+   "sdk_names": [
+    "cleanrooms"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Cloud9",
+   "sdk_names": [
+    "cloud9"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Cloud Map",
+   "sdk_names": [
+    "servicediscovery"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS CloudFormation",
+   "sdk_names": [
+    "cloudformation"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS CloudHSM",
+   "sdk_names": [
+    "cloudhsm"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS CloudShell",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS CloudTrail",
+   "sdk_names": [
+    "cloudtrail"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS CodeBuild",
+   "sdk_names": [
+    "codebuild"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS CodeCommit",
+   "sdk_names": [
+    "codecommit"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS CodeDeploy",
+   "sdk_names": [
+    "deploy"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS CodePipeline",
+   "sdk_names": [
+    "codepipeline"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Compute Optimizer",
+   "sdk_names": [
+    "compute-optimizer"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Config",
+   "sdk_names": [
+    "configservice"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Continuum",
+   "sdk_names": [
+    "securityagent"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Control Tower",
+   "sdk_names": [
+    "controltower"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Cost and Usage Reports*",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Cost Explorer*",
+   "sdk_names": [
+    "ce"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Database Migration Service (DMS)",
+   "sdk_names": [
+    "dms"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Data Exchange*",
+   "sdk_names": [
+    "dataexchange"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS DataSync",
+   "sdk_names": [
+    "datasync"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Diode",
+   "sdk_names": [],
+   "il2_east_west": null,
+   "il2_govcloud": null,
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Direct Connect***",
+   "sdk_names": [
+    "directconnect"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Directory Service",
+   "sdk_names": [
+    "ds"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Edge Hub*",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Elastic Beanstalk",
+   "sdk_names": [
+    "elasticbeanstalk"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Elastic Disaster Recovery (AWS DRS)",
+   "sdk_names": [
+    "drs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Elemental MediaConvert",
+   "sdk_names": [
+    "mediaconvert"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Elemental MediaLive",
+   "sdk_names": [],
+   "il2_east_west": null,
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Elemental MediaPackage",
+   "sdk_names": [],
+   "il2_east_west": null,
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Entity Resolution",
+   "sdk_names": [
+    "entityresolution"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Fault Injection Service",
+   "sdk_names": [
+    "fis"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "DISA Review"
+  },
+  {
+   "service": "AWS Firewall Manager",
+   "sdk_names": [
+    "fms"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Global Accelerator",
+   "sdk_names": [
+    "globalaccelerator"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Glue",
+   "sdk_names": [
+    "glue"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Glue DataBrew",
+   "sdk_names": [
+    "databrew"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Ground Station",
+   "sdk_names": [
+    "groundstation"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Health Dashboard",
+   "sdk_names": [
+    "health"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS HealthImaging",
+   "sdk_names": [
+    "medical-imaging"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS HealthLake",
+   "sdk_names": [
+    "healthlake"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS HealthOmics",
+   "sdk_names": [
+    "omics"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Identity and Access Management (IAM)",
+   "sdk_names": [
+    "iam",
+    "sts",
+    "rolesanywhere"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS IAM Identity Center",
+   "sdk_names": [
+    "sso"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS IoT Core",
+   "sdk_names": [
+    "iot"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS IoT Device Defender",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS IoT Device Management",
+   "sdk_names": [
+    "iot"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS IoT Greengrass",
+   "sdk_names": [
+    "greengrass"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS IoT SiteWise",
+   "sdk_names": [
+    "iotsitewise"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS IoT TwinMaker",
+   "sdk_names": [
+    "iottwinmaker"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Key Management Service (KMS)",
+   "sdk_names": [
+    "kms"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Lake Formation",
+   "sdk_names": [
+    "lakeformation"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Lambda",
+   "sdk_names": [
+    "lambda"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS License Manager",
+   "sdk_names": [
+    "license-manager"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Mainframe Modernization",
+   "sdk_names": [
+    "m2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Managed Services (AMS)",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Management Console*",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Marketplace*",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Network Firewall",
+   "sdk_names": [
+    "network-firewall"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Network Manager",
+   "sdk_names": [
+    "networkmanager"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Outposts (Software)**",
+   "sdk_names": [
+    "outposts"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Parallel Computing Service",
+   "sdk_names": [
+    "pcs"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "3PAO Assessment",
+   "il4_govcloud": "3PAO Assessment",
+   "il5_govcloud": "3PAO Assessment",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Organizations",
+   "sdk_names": [
+    "organizations"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Private Certificate Authority",
+   "sdk_names": [
+    "acm-pca"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Resource Access Manager (AWS RAM)",
+   "sdk_names": [
+    "ram"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Resilience Hub",
+   "sdk_names": [
+    "resiliencehub"
+   ],
+   "il2_east_west": null,
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Resource Explorer",
+   "sdk_names": [
+    "resource-explorer-2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "Independent Assessment",
+   "il5_govcloud": "Independent Assessment",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Resource Groups",
+   "sdk_names": [
+    "resource-groups"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Security Incident Response",
+   "sdk_names": [
+    "security-ir"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Secrets Manager",
+   "sdk_names": [
+    "secretsmanager"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Security Hub CSPM",
+   "sdk_names": [
+    "securityhub"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Serverless Application Repository",
+   "sdk_names": [
+    "serverlessrepo"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Service Catalog",
+   "sdk_names": [
+    "servicecatalog"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Service Quotas*",
+   "sdk_names": [
+    "service-quotas"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Shield (Standard and Advanced)",
+   "sdk_names": [
+    "shield"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": null,
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Signer",
+   "sdk_names": [
+    "signer"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Snowball Edge",
+   "sdk_names": [
+    "snowball"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Step Functions",
+   "sdk_names": [
+    "stepfunctions"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Storage Gateway",
+   "sdk_names": [
+    "storagegateway"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Systems Manager",
+   "sdk_names": [
+    "ssm"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Transfer Family",
+   "sdk_names": [
+    "transfer"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Transform",
+   "sdk_names": [
+    "transform"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": null,
+   "il5_govcloud": null,
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Trusted Advisor",
+   "sdk_names": [
+    "trustedadvisor"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Verified Access (AVA)",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Web Application Firewall (WAF)",
+   "sdk_names": [
+    "wafv2"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS Well-Architected Tool",
+   "sdk_names": [
+    "wellarchitected"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": null
+  },
+  {
+   "service": "AWS Wickr",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "AWS X-Ray",
+   "sdk_names": [
+    "xray"
+   ],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "authorized"
+  },
+  {
+   "service": "Kiro",
+   "sdk_names": [],
+   "il2_east_west": "authorized",
+   "il2_govcloud": "authorized",
+   "il4_govcloud": "authorized",
+   "il5_govcloud": "authorized",
+   "il6_secret": "3PAO Assessment"
+  }
+ ]
+}

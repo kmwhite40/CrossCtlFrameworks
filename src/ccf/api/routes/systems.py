@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analytics.framework_posture import baseline_controls, fold_to_control
 from ...ato import lifecycle
+from ...ato import roles as system_roles
 from ...auth import Principal
 from ...catalog.baseline_delta import (
     BaselineNotSetError,
@@ -229,6 +230,30 @@ async def authorize_system(
         org_id=principal.org_id,
         actor=principal.email,
     )
+    await session.commit()
+    await session.refresh(sys)
+    return SystemOut.model_validate(sys)
+
+
+class ImpactLevelIn(BaseModel):
+    dod_impact_level: str | None = None
+
+
+@router.put("/{system_id}/dod-impact-level", response_model=SystemOut)
+async def set_dod_impact_level(
+    system_id: int,
+    body: ImpactLevelIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> SystemOut:
+    """Declare the DoD CC SRG impact level the system is authorized at."""
+    sys = await require_system_in_scope(session, system_id, principal)
+    try:
+        await system_roles.set_dod_impact_level(
+            session, system=sys, level=body.dod_impact_level, principal=principal
+        )
+    except system_roles.RoleError as e:
+        raise HTTPException(422, str(e)) from e
     await session.commit()
     await session.refresh(sys)
     return SystemOut.model_validate(sys)

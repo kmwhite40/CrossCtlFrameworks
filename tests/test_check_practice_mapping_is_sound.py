@@ -177,4 +177,4 @@ def test_the_mapped_share_is_stated_not_implied() -> None:
     # IA.L2-3.5.1, whose "and devices" clause it observes directly. An AT-2 check
     # briefly took this to 42/37 by a different route and was removed -- its
     # endpoint is not served on graph.microsoft.us at all.
-    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (50, 44, 6)
+    assert (len(registered), len(CHECK_PRACTICES), len(UNMAPPED)) == (53, 45, 8)

@@ -103,6 +103,7 @@ class SystemOut(ORMModel):
     baseline: str | None = None
     ato_status: str | None = None
     ato_expires_on: date | None = None
+    dod_impact_level: str | None = None
 
 
 class SystemCreate(BaseModel):
