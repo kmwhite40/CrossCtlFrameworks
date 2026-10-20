@@ -423,3 +423,20 @@ async def test_the_register_counts_acknowledgments_of_the_version_in_force(
     assert f"v{in_force_no}" in row and f"v{newer['version']}" not in row, row
     assert "1 of " in row, row
     assert "you" in row, row
+
+
+async def test_the_author_cannot_approve_a_version_someone_else_submitted(
+    _auth_enabled: None,
+) -> None:
+    _org_id, hdr, _ids = await _org("PolDocL")
+    async with _client() as c:
+        d = await _draft(c, hdr["admin"])  # an admin renders it -- the author
+        r = await c.put(f"/api/policies/{d['id']}/parameters",
+                        json={"parameters": _all_values(_template())}, headers=hdr["admin"])
+        v = r.json()["version"]
+        await c.post(f"/api/approvals/policy_version/{v['id']}/submit", headers=hdr["staff"])
+        r = await c.post(f"/api/approvals/policy_version/{v['id']}/approve", headers=hdr["admin"])
+        assert r.status_code == 403 and "author" in r.json()["detail"]
+        r = await c.post(f"/api/approvals/policy_version/{v['id']}/approve",
+                         headers=hdr["admin2"])
+        assert r.status_code == 200, r.text

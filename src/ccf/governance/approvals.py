@@ -409,6 +409,20 @@ async def decide(
             )
         if actor and a.submitted_by and actor == a.submitted_by:
             raise WorkflowError("separation of duties: approver must differ from submitter")
+        if entity_type == "policy_version" and actor:
+            # The submitter is not the only party with a stake: anyone may
+            # submit a version, so a check on the submitter alone let the
+            # person who rendered the text approve it once a colleague
+            # pressed "submit".
+            author = (
+                await session.execute(
+                    select(PolicyVersion.created_by).where(PolicyVersion.id == int(entity_id))
+                )
+            ).scalar_one_or_none()
+            if author and actor == author:
+                raise WorkflowError(
+                    "separation of duties: approver must differ from the version's author"
+                )
 
     a.state = "approved" if approve else "rejected"
     a.reviewed_by = actor
