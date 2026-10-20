@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
 from ..governance import conmon
-from ..governance.risk import band
+from ..governance.risk import SCALE, band, effective_scores
 from ..models import POAM, Event, Risk, System, Task
 from ..models_evidence import EvidenceObject, EvidenceVersion
 from ..models_grc import AuditEngagement, AuditFinding, AuditRequest, ControlTest, ControlTestResult
@@ -49,6 +49,8 @@ from .gaps import compliance_gaps
 #: Task statuses that still need someone (``api/routes/tasks.py``).
 TASK_OPEN_STATUSES: tuple[str, ...] = ("open", "in_progress", "blocked")
 #: The three likelihood/impact levels the Risk model records, low → high.
+#: The three-level likelihood/impact enum. Still accepted by the heat map's
+#: ``likelihood=``/``impact=`` drill-down; the grid itself is five-point.
 RISK_LEVELS: tuple[str, ...] = ("low", "moderate", "high")
 SEVERITIES: tuple[str, ...] = ("critical", "high", "moderate", "low")
 #: The kanban's columns, in workflow order. ``completed`` is a closed status
@@ -224,11 +226,13 @@ async def _evidence_repository(session: AsyncSession, org_id: int, today: date) 
 
 
 async def risk_matrix(session: AsyncSession, org_id: int | None) -> dict[str, Any]:
-    """Open and mitigated risks on live systems, by likelihood x impact.
+    """Open and mitigated risks on live systems, by likelihood x impact, 5x5.
 
-    The Risk model records three levels on each axis, so the matrix is 3x3. It
-    is not drawn as 5x5: two of five rows would be empty by construction, and
-    an empty row reads as "no risks at that likelihood"."""
+    ``cells[likelihood][impact]`` is keyed by the 1-5 scores. A risk is placed
+    by its recorded score, else by its three-level enum read as 1, 3 or 5 --
+    the value it has always been scored at -- so a risk that predates the
+    five-point scale lands where its inherent score says. A risk with neither
+    on an axis is counted in ``unplaced``, not dropped silently."""
     rows = (
         await session.execute(
             select(
@@ -236,6 +240,8 @@ async def risk_matrix(session: AsyncSession, org_id: int | None) -> dict[str, An
                 Risk.title,
                 Risk.likelihood,
                 Risk.impact,
+                Risk.likelihood_score,
+                Risk.impact_score,
                 Risk.residual_score,
                 Risk.inherent_score,
                 Risk.status,
@@ -245,12 +251,13 @@ async def risk_matrix(session: AsyncSession, org_id: int | None) -> dict[str, An
             )
         )
     ).all()
-    cells: dict[str, dict[str, int]] = {lk: {im: 0 for im in RISK_LEVELS} for lk in RISK_LEVELS}
+    cells: dict[int, dict[int, int]] = {lk: {im: 0 for im in SCALE} for lk in SCALE}
     unplaced = 0
     bands: Counter[str] = Counter()
     for r in rows:
-        if r.likelihood in RISK_LEVELS and r.impact in RISK_LEVELS:
-            cells[r.likelihood][r.impact] += 1
+        lk, im = effective_scores(r.likelihood_score, r.likelihood, r.impact_score, r.impact)
+        if lk is not None and im is not None:
+            cells[lk][im] += 1
         else:
             unplaced += 1
         bands[band(r.residual_score)] += 1

@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}Risk Appetite · Concord{% endblock %}
+{% block heading %}Risk appetite{% endblock %}
+{% block subtitle %}The most residual risk the organization will carry, per risk category, and the open risks above it.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/kri"><i data-lucide="activity"></i>Key risk indicators</a><a class="btn btn--secondary" href="/risks/heatmap"><i data-lucide="grid-3x3"></i>Heat map</a>{% endblock %}
+{% block content %}
+{% if error %}<div class="note note--err" role="alert">{{ error }}</div>{% endif %}
+
+{% if not scoped %}
+<section class="card"><div class="empty-state">
+  <i data-lucide="building-2"></i>
+  <h2>No organization</h2>
+  <p>Risk appetite is set per organization. Sign in as a member of one to see and set its statements.</p>
+</div></section>
+{% else %}
+
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi" title="Open and mitigated risks on live systems whose residual score is above the appetite for their category, or the default">
+    <span class="kpi__label"><i data-lucide="triangle-alert"></i><span>Above appetite</span></span>
+    <span class="kpi__value">{{ counts.breach }}</span>
+    <span class="kpi__meta">of {{ active_total }} open and mitigated risk{{ 's' if active_total != 1 }}</span>
+  </div>
+  <div class="kpi" title="Residual score at or below the appetite that applies">
+    <span class="kpi__label"><i data-lucide="check"></i><span>Within appetite</span></span>
+    <span class="kpi__value">{{ counts.within }}</span>
+    <span class="kpi__meta">of {{ active_total }}</span>
+  </div>
+  <div class="kpi" title="No residual score, so it cannot be compared with appetite">
+    <span class="kpi__label"><i data-lucide="circle-help"></i><span>Unscored</span></span>
+    <span class="kpi__value">{{ counts.unscored }}</span>
+    <span class="kpi__meta">without likelihood and impact</span>
+  </div>
+  <div class="kpi" title="No statement for the risk's category and no default">
+    <span class="kpi__label"><i data-lucide="circle-dashed"></i><span>No appetite set</span></span>
+    <span class="kpi__value">{{ counts.no_appetite }}</span>
+    <span class="kpi__meta">{% if has_default %}every category is covered by the default{% else %}set a default to cover them{% endif %}</span>
+  </div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Statements</h2><span class="panel__hint">{{ statements | length }} statement{{ 's' if statements|length != 1 }}</span></header>
+  {% if statements %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Category</th><th>Statement</th><th title="On the 1-25 residual scale">Max residual</th><th>Owner</th><th>Review</th><th></th></tr></thead>
+    <tbody>{% for s in statements %}
+      <tr id="appetite-{{ s.id }}">
+        <td>{% if s.category %}<span class="chip chip--brand">{{ s.category }}</span>{% else %}<span class="chip chip--info" title="Applies to every category without its own statement">Default</span>{% endif %}</td>
+        <td>{{ s.statement }}</td>
+        <td><strong>{{ s.max_residual_score }}</strong> <span class="dim">/ 25</span></td>
+        <td>{{ user_names.get(s.owner_user_id, '—') }}</td>
+        <td>{{ s.review_on or '—' }}</td>
+        <td>
+          <details><summary class="btn btn--ghost btn--sm">Edit</summary>
+            <form method="post" action="/risk-appetite/{{ s.id }}" class="stack" style="gap:10px;margin-top:10px;min-width:280px">
+              <div class="field-group"><label class="label" for="cat-{{ s.id }}">Category (empty for the default)</label><input class="input" id="cat-{{ s.id }}" name="category" value="{{ s.category or '' }}" maxlength="64"></div>
+              <div class="field-group"><label class="label" for="st-{{ s.id }}">Statement</label><textarea id="st-{{ s.id }}" name="statement" rows="3" required>{{ s.statement }}</textarea></div>
+              <div class="field-group"><label class="label" for="max-{{ s.id }}">Maximum residual score (1-25)</label><input class="input" id="max-{{ s.id }}" name="max_residual_score" type="number" min="1" max="25" value="{{ s.max_residual_score }}" required></div>
+              <div class="field-group"><label class="label" for="own-{{ s.id }}">Owner</label><select class="select" id="own-{{ s.id }}" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}" {% if u.id == s.owner_user_id %}selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+              <div class="field-group"><label class="label" for="rev-{{ s.id }}">Review on</label><input class="input" id="rev-{{ s.id }}" name="review_on" type="date" value="{{ s.review_on or '' }}"></div>
+              <div><button class="btn btn--primary btn--sm" type="submit"><i data-lucide="save"></i> Save</button></div>
+            </form>
+            <form method="post" action="/risk-appetite/{{ s.id }}/delete" style="margin-top:8px"><button class="btn btn--ghost btn--sm" type="submit"><i data-lucide="x"></i> Delete</button></form>
+          </details>
+        </td>
+      </tr>{% endfor %}</tbody></table></div>
+  {% else %}
+  <div class="empty-state">
+    <i data-lucide="gauge"></i>
+    <h2>No appetite statements</h2>
+    <p>Nothing is compared with appetite until one is set. Start with a default (leave the category empty), which applies to every risk whose category has no statement of its own. An administrator sets these.</p>
+  </div>
+  {% endif %}
+  <footer class="panel__foot">A risk is matched to the statement for its category (ignoring case and spacing), else to the default. Residual = inherent (likelihood × impact, 1-25) × treatment factor.</footer>
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Add a statement</h2></header>
+  <div class="panel__body">
+    <form method="post" action="/risk-appetite" class="stack" style="gap:10px;max-width:70ch">
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="new-cat">Category</label><input class="input" id="new-cat" name="category" maxlength="64" placeholder="{{ 'e.g. technical' if has_default else 'empty = the default' }}"></div>
+        <div class="field-group"><label class="label" for="new-max">Maximum residual score (1-25)</label><input class="input" id="new-max" name="max_residual_score" type="number" min="1" max="25" required></div>
+      </div>
+      <div class="field-group"><label class="label" for="new-st">Statement</label><textarea id="new-st" name="statement" rows="3" required placeholder="What the organization will and will not accept, in words a board would sign."></textarea></div>
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="new-own">Owner</label><select class="select" id="new-own" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+        <div class="field-group"><label class="label" for="new-rev">Review on</label><input class="input" id="new-rev" name="review_on" type="date"></div>
+      </div>
+      <div><button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add statement</button> <span class="dim" style="font-size:12px;margin-left:8px">Administrators only.</span></div>
+    </form>
+  </div>
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Risks above appetite</h2><span class="panel__hint">{{ breaches | length }} of {{ active_total }}</span></header>
+  {% if breaches %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Risk</th><th>System</th><th>Category</th><th>Residual</th><th>Appetite applied</th><th>Above by</th><th>Status</th></tr></thead>
+    <tbody>{% for b in breaches %}{% set r = b.risk %}{% set p = b.placement %}
+      <tr id="breach-{{ r.id }}">
+        <td><strong>{{ r.title }}</strong></td>
+        <td>{{ b.system }}</td>
+        <td>{{ r.category or '—' }}</td>
+        <td>{{ r.residual_score }}</td>
+        <td>{{ p.appetite.max_residual_score }} · {% if p.appetite.category %}{{ p.appetite.category }}{% else %}default{% endif %}</td>
+        <td><span class="chip chip--err">{{ p.over_by }}</span></td>
+        <td><span class="chip">{{ r.status }}</span></td>
+      </tr>{% endfor %}</tbody></table></div>
+  {% elif not statements %}
+  <p class="panel__empty">No appetite is set, so no risk can be above it.</p>
+  {% elif not active_total %}
+  <p class="panel__empty">No open or mitigated risks are recorded on this organization's live systems.</p>
+  {% else %}
+  <p class="panel__empty">No open or mitigated risk is above its appetite.{% if counts.unscored or counts.no_appetite %} {{ counts.unscored + counts.no_appetite }} could not be compared (unscored, or no appetite applies).{% endif %}</p>
+  {% endif %}
+</article>
+{% endif %}
+{% endblock %}

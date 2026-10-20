@@ -1264,15 +1264,30 @@ async def risks_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    """The register. Risks have no organization of their own; they are scoped
+    through a live system, so a soft-deleted system's risks are not listed."""
+    from ...governance.risk import (  # noqa: PLC0415
+        IMPACT_LABELS,
+        LIKELIHOOD_LABELS,
+        SCALE,
+        appetite_placements,
+        band,
+        effective_scores,
+    )
+
     org = _principal_org(request)
     risk_stmt = select(Risk).order_by(Risk.created_at.desc())
     sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
-        org_systems = select(System.id).where(System.organization_id == org)
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_systems))
+        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_system_subq(org)))
         sys_stmt = sys_stmt.where(System.organization_id == org)
     rows = (await session.execute(risk_stmt)).scalars().all()
     systems = (await session.execute(sys_stmt)).scalars().all()
+    placements = (
+        await appetite_placements(session, org, risk_ids=[r.id for r in rows])
+        if org is not None
+        else {}
+    )
     return templates.TemplateResponse(
         request,
         "risks.html",
@@ -1280,6 +1295,13 @@ async def risks_page(
             "active": "risks",
             "rows": rows,
             "systems": systems,
+            "scale": SCALE,
+            "lk_labels": LIKELIHOOD_LABELS,
+            "im_labels": IMPACT_LABELS,
+            "effective": effective_scores,
+            "band": band,
+            "placements": placements,
+            "scoped": org is not None,
         },
     )
 

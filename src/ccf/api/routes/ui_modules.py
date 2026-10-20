@@ -401,11 +401,39 @@ async def my_tasks(request: Request, session: AsyncSession = Depends(get_session
 async def risk_heatmap(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    *,
+    l: str | None = Query(None),  # noqa: E741 -- the spec's drill-down parameter
+    i: str | None = Query(None),
     likelihood: str | None = Query(None),
     impact: str | None = Query(None),
 ) -> HTMLResponse:
+    """The 5x5 heat map and its drill-down.
+
+    ``?l=&i=`` (1-5 each) selects one cell by effective score. The older
+    ``?likelihood=&impact=`` level parameters still work and select every risk
+    recorded at those levels (a level spans up to two scores)."""
+    from ...governance.risk import (  # noqa: PLC0415
+        IMPACT_LABELS,
+        LIKELIHOOD_LABELS,
+        SCALE,
+        appetite_placements,
+        effective_scores,
+        impact_expr,
+        likelihood_expr,
+    )
+
     org = _principal_org(request)
     matrix = await risk_matrix(session, org)
+    cell: tuple[int, int] | None = None
+    if (
+        l is not None
+        and i is not None
+        and l.isdigit()
+        and i.isdigit()
+        and int(l) in SCALE
+        and int(i) in SCALE
+    ):
+        cell = (int(l), int(i))
     if likelihood not in RISK_LEVELS or impact not in RISK_LEVELS:
         likelihood = impact = None
     stmt = (
@@ -416,10 +444,18 @@ async def risk_heatmap(
         )
         .order_by(Risk.residual_score.desc().nulls_last(), Risk.id)
     )
-    if likelihood:
+    if cell is not None:
+        stmt = stmt.where(likelihood_expr() == cell[0], impact_expr() == cell[1])
+        likelihood = impact = None
+    elif likelihood:
         stmt = stmt.where(Risk.likelihood == likelihood, Risk.impact == impact)
     rows = (await session.execute(stmt)).all()
     owners = await _user_names(session, {r.Risk.owner_user_id for r in rows})
+    placements = (
+        await appetite_placements(session, org, risk_ids=[r.Risk.id for r in rows])
+        if org is not None
+        else {}
+    )
     return _render(
         request,
         "risk_heatmap.html",
@@ -429,7 +465,12 @@ async def risk_heatmap(
         rows=rows,
         owners=owners,
         band=band,
-        selected=(likelihood, impact) if likelihood else None,
+        placements=placements,
+        effective=effective_scores,
+        lk_labels=LIKELIHOOD_LABELS,
+        im_labels=IMPACT_LABELS,
+        selected=cell,
+        selected_levels=(likelihood, impact) if likelihood else None,
     )
 
 

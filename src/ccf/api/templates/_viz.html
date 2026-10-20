@@ -104,37 +104,41 @@
 </figure>
 {%- endmacro %}
 
-{#- Likelihood × impact matrix. cells[likelihood][impact] = count.
-    The zone colour is the residual band of that cell's inherent score
-    (low/moderate/high = 1/3/5, as ccf.governance.risk scores them), so a cell
-    keeps its colour when it is empty: the zone is a property of the grid, the
-    count is the data. -#}
-{% macro riskgrid(cells, levels, href_base='/risks/heatmap', selected=none) -%}
-{%- set score = {'low': 1, 'moderate': 3, 'high': 5} -%}
+{#- Likelihood × impact matrix on the five-point scale (ccf.governance.risk).
+    cells[likelihood][impact] = count, keyed by the 1-5 scores. The zone colour
+    is band(likelihood × impact) -- the band of the cell's inherent score -- so
+    a cell keeps its colour when it is empty: the zone is a property of the
+    grid, the count is the data. Each cell drills down with ?l=&i=.
+    ``levels`` is accepted for callers written against the old 3×3 grid and is
+    not used: the axis is always 1-5. -#}
+{% macro riskgrid(cells, levels=none, href_base='/risks/heatmap', selected=none) -%}
+{%- set lk_names = {1: 'Rare', 2: 'Unlikely', 3: 'Possible', 4: 'Likely', 5: 'Almost certain'} -%}
+{%- set im_names = {1: 'Negligible', 2: 'Minor', 3: 'Moderate', 4: 'Major', 5: 'Severe'} -%}
+{%- set cols = 'grid-template-columns: 92px repeat(5, minmax(0, 1fr))' -%}
 <div class="riskgrid">
   <div class="riskgrid__ylab">Likelihood</div>
-  <div class="riskgrid__grid" role="grid" aria-label="Risks by likelihood and impact">
-    {% for lk in levels | reverse %}
-    <div class="riskgrid__row" role="row">
-      <span class="riskgrid__axis" role="rowheader">{{ lk | capitalize }}</span>
-      {% for im in levels %}
-      {%- set s = score[lk] * score[im] -%}
+  <div class="riskgrid__grid" role="grid" aria-label="Risks by likelihood and impact, five-point scale">
+    {% for lk in [5, 4, 3, 2, 1] %}
+    <div class="riskgrid__row" role="row" style="{{ cols }}">
+      <span class="riskgrid__axis" role="rowheader" style="gap:6px"><b>{{ lk }}</b> {{ lk_names[lk] }}</span>
+      {% for im in [1, 2, 3, 4, 5] %}
+      {%- set s = lk * im -%}
       {%- set zone = 'critical' if s > 15 else ('high' if s > 9 else ('moderate' if s > 4 else 'low')) -%}
       {%- set n = cells[lk][im] -%}
       {%- set is_sel = selected and selected[0] == lk and selected[1] == im -%}
       <a role="gridcell" class="riskgrid__cell riskgrid__cell--{{ zone }}{% if n %} riskgrid__cell--filled{% endif %}{% if is_sel %} riskgrid__cell--selected{% endif %}"
-         href="{{ href_base }}?likelihood={{ lk }}&amp;impact={{ im }}"
-         data-tip="Likelihood {{ lk }} × impact {{ im }} · {{ zone }} zone · {{ n }} risk{{ 's' if n != 1 }}"
-         aria-label="Likelihood {{ lk }}, impact {{ im }}, {{ zone }} zone: {{ n }} risk{{ 's' if n != 1 }}"
+         href="{{ href_base }}?l={{ lk }}&amp;i={{ im }}"
+         data-tip="Likelihood {{ lk }} {{ lk_names[lk] }} × impact {{ im }} {{ im_names[im] }} = {{ s }} · {{ zone }} zone · {{ n }} risk{{ 's' if n != 1 }}"
+         aria-label="Likelihood {{ lk }} {{ lk_names[lk] }}, impact {{ im }} {{ im_names[im] }}, score {{ s }}, {{ zone }} zone: {{ n }} risk{{ 's' if n != 1 }}"
          {% if is_sel %}aria-current="true"{% endif %}>
         {% if n %}<b>{{ n }}</b>{% endif %}
       </a>
       {% endfor %}
     </div>
     {% endfor %}
-    <div class="riskgrid__row riskgrid__row--x">
+    <div class="riskgrid__row riskgrid__row--x" style="{{ cols }}">
       <span class="riskgrid__axis"></span>
-      {% for im in levels %}<span class="riskgrid__axis riskgrid__axis--x">{{ im | capitalize }}</span>{% endfor %}
+      {% for im in [1, 2, 3, 4, 5] %}<span class="riskgrid__axis riskgrid__axis--x" style="flex-direction:column;text-align:center;line-height:1.2;overflow-wrap:anywhere"><b>{{ im }}</b>{{ im_names[im] }}</span>{% endfor %}
     </div>
   </div>
   <div class="riskgrid__xlab">Impact</div>

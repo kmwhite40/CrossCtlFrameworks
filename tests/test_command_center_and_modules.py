@@ -283,8 +283,10 @@ async def test_the_command_center_counts_one_organization_and_only_live_systems(
     assert k["findings"]["by_severity"]["critical"] == 0
     # One open risk; the accepted one is not active, the deleted one is gone.
     assert k["risks"]["open"] == 1
-    assert cc["risk"]["cells"]["high"]["moderate"] == 1
-    assert cc["risk"]["cells"]["high"]["high"] == 0
+    # Five-point grid: likelihood "high" / impact "moderate" with no score
+    # recorded is placed at 5 x 3, the values compute_scores reads them as.
+    assert cc["risk"]["cells"][5][3] == 1
+    assert cc["risk"]["cells"][5][5] == 0
     assert k["overdue"]["tasks"] == 1
     assert k["audit"]["requests"] == 2 and k["audit"]["accepted"] == 1 and k["audit"]["pct"] == 50
     uploads = [u["filename"] for u in cc["uploads"]]

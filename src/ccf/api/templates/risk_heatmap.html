@@ -2,14 +2,14 @@
 {% from "_viz.html" import riskgrid, sevlist %}
 {% block title %}Risk Heat Map · Concord{% endblock %}
 {% block heading %}Risk heat map{% endblock %}
-{% block subtitle %}Open and mitigated risks on live systems, placed by inherent likelihood and impact. Select a cell to list its risks.{% endblock %}
-{% block actions %}<a class="btn btn--secondary" href="/risks"><i data-lucide="list"></i>Risk register</a>{% endblock %}
+{% block subtitle %}Open and mitigated risks on live systems, placed by inherent likelihood and impact on a five-point scale. Select a cell to list its risks.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risks"><i data-lucide="list"></i>Risk register</a><a class="btn btn--secondary" href="/risk-appetite"><i data-lucide="gauge"></i>Risk appetite</a>{% endblock %}
 {% block content %}
 <section class="grid-2-1">
   <article class="card panel">
-    <header class="panel__head"><h2 class="panel__title">Likelihood × impact</h2>{% if selected %}<a class="panel__link" href="/risks/heatmap">Clear selection</a>{% endif %}</header>
-    <div class="panel__body" style="max-width:640px">{{ riskgrid(matrix.cells, levels, '/risks/heatmap', selected) }}</div>
-    <footer class="panel__foot">Concord records likelihood and impact on three levels (low, moderate, high), scored 1, 3 and 5. The grid is drawn 3×3 because that is what is recorded; zone colour is the band of the cell's inherent score.</footer>
+    <header class="panel__head"><h2 class="panel__title">Likelihood × impact</h2>{% if selected or selected_levels %}<a class="panel__link" href="/risks/heatmap">Clear selection</a>{% endif %}</header>
+    <div class="panel__body" style="max-width:720px">{{ riskgrid(matrix.cells, levels, '/risks/heatmap', selected) }}</div>
+    <footer class="panel__foot">Likelihood 1 Rare to 5 Almost certain; impact 1 Negligible to 5 Severe. Zone colour is the band of likelihood × impact (1-4 low, 5-9 moderate, 10-15 high, 16-25 critical). A risk recorded before the five-point scale, with only a level, is placed at 1, 3 or 5 for low, moderate or high.{% if matrix.unplaced %} {{ matrix.unplaced }} risk{{ 's' if matrix.unplaced != 1 }} without likelihood or impact {{ 'are' if matrix.unplaced != 1 else 'is' }} not on the grid.{% endif %}</footer>
   </article>
   <article class="card panel">
     <header class="panel__head"><h2 class="panel__title">By residual band</h2></header>
@@ -19,23 +19,25 @@
 </section>
 
 <article class="card panel">
-  <header class="panel__head"><h2 class="panel__title">{% if selected %}Likelihood {{ selected[0] }} × impact {{ selected[1] }}{% else %}All open risks{% endif %}</h2><span class="panel__hint">{{ rows | length }} risk{{ 's' if rows|length != 1 }}</span></header>
+  <header class="panel__head"><h2 class="panel__title">{% if selected %}Likelihood {{ selected[0] }} {{ lk_labels[selected[0]] }} × impact {{ selected[1] }} {{ im_labels[selected[1]] }}{% elif selected_levels %}Likelihood {{ selected_levels[0] }} × impact {{ selected_levels[1] }}{% else %}All open risks{% endif %}</h2><span class="panel__hint">{{ rows | length }} risk{{ 's' if rows|length != 1 }}</span></header>
   {% if rows %}
   <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
-    <thead><tr><th>Risk</th><th>System</th><th>Likelihood</th><th>Impact</th><th>Inherent</th><th>Residual</th><th>Treatment</th><th>Owner</th><th>Review</th></tr></thead>
-    <tbody>{% for row in rows %}{% set r = row.Risk %}
+    <thead><tr><th>Risk</th><th>System</th><th>Likelihood</th><th>Impact</th><th>Inherent</th><th>Residual</th><th>Appetite</th><th>Treatment</th><th>Owner</th><th>Review</th></tr></thead>
+    <tbody>{% for row in rows %}{% set r = row.Risk %}{% set e = effective(r.likelihood_score, r.likelihood, r.impact_score, r.impact) %}{% set p = placements.get(r.id) %}
     <tr id="risk-{{ r.id }}">
       <td><strong>{{ r.title }}</strong>{% if r.category %}<div class="dim" style="font-size:12px">{{ r.category }}</div>{% endif %}</td>
       <td>{{ row.system }}</td>
-      <td>{{ r.likelihood or '—' }}</td><td>{{ r.impact or '—' }}</td>
+      <td>{% if e[0] %}{{ e[0] }} · {{ lk_labels[e[0]] }}{% else %}—{% endif %}</td>
+      <td>{% if e[1] %}{{ e[1] }} · {{ im_labels[e[1]] }}{% else %}—{% endif %}</td>
       <td>{{ r.inherent_score if r.inherent_score is not none else '—' }}</td>
       <td>{% set b = band(r.residual_score) %}<span class="sevchip sevchip--{{ b if b != 'unknown' else 'none' }}">{{ r.residual_score if r.residual_score is not none else '—' }} · {{ b }}</span></td>
+      <td>{% if p and p.state == 'breach' %}<span class="chip chip--err" title="Residual {{ p.residual_score }} is above the appetite of {{ p.appetite.max_residual_score }}">Above by {{ p.over_by }}</span>{% elif p and p.state == 'within' %}<span class="chip chip--ok">Within</span>{% elif p and p.state == 'unscored' %}<span class="chip chip--ghost" title="No residual score to compare">Unscored</span>{% else %}<span class="chip chip--ghost" title="No appetite statement covers this category, and no default is set">None set</span>{% endif %}</td>
       <td>{{ r.treatment or '—' }}</td>
       <td>{{ owners.get(r.owner_user_id, '—') }}</td>
       <td>{{ r.next_review_on or '—' }}</td>
     </tr>{% endfor %}</tbody></table></div>
   {% else %}
-  <p class="panel__empty">{% if selected %}No open risks sit in this cell.{% else %}No open or mitigated risks are recorded on this organization's live systems. Add one from the <a href="/risks">risk register</a>.{% endif %}</p>
+  <p class="panel__empty">{% if selected or selected_levels %}No open risks sit in this cell.{% else %}No open or mitigated risks are recorded on this organization's live systems. Add one from the <a href="/risks">risk register</a>.{% endif %}</p>
   {% endif %}
 </article>
 {% endblock %}

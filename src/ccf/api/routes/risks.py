@@ -4,12 +4,18 @@ Beyond CRUD: create/update recomputes an inherent (likelihood x impact, 1-25)
 and treatment-discounted residual score, emits an event, raises a critical alert
 for high residual exposure, and opens a mitigation task when the treatment is
 "mitigate". A heatmap endpoint powers the 5x5 register view.
+
+Likelihood and impact are accepted either as a 1-5 score
+(``likelihood_score``/``impact_score``, the source of truth) or as a level
+(``low``/``moderate``/``high``); both forms are stored, kept in step by
+``governance.risk.resolve_axis``. A score and a level that disagree are
+refused rather than reconciled.
 """
 
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -20,10 +26,19 @@ from ...auth import Principal
 from ...config import get_settings
 from ...governance import approvals, bus
 from ...governance.approvals import entity_state, entity_states
-from ...governance.risk import band, compute_scores
-from ...models import Risk, System, Task
+from ...governance.risk import (
+    LEVEL_TO_SCORE,
+    SCALE,
+    AxisConflict,
+    band,
+    compute_scores,
+    effective_scores,
+    resolve_axis,
+    score_to_level,
+)
+from ...models import Risk, System, Task, User, Vendor
 from ...models_grc import AuditFinding
-from ..auth_deps import get_principal, org_systems_subq
+from ..auth_deps import get_principal, org_systems_subq, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/risks", tags=["risks"])
@@ -32,6 +47,11 @@ LEVEL = r"^(low|moderate|high)$"
 TREATMENT = r"^(mitigate|transfer|accept|avoid)$"
 STATUS = r"^(open|mitigated|accepted|closed)$"
 HIGH_RESIDUAL = 15  # >= this residual score raises a critical alert
+#: Risks are records people maintain; viewers are refused by middleware as
+#: well, and this names the gate on the route itself.
+RISK_WRITE_ROLES = ("admin", "control_owner", "assessor")
+#: A 1-5 score. Strict, so ``true`` or ``"4"`` is not read as a likelihood.
+Score = Annotated[int, Field(strict=True, ge=1, le=5)]
 
 
 class RiskCreate(BaseModel):
@@ -42,6 +62,8 @@ class RiskCreate(BaseModel):
     source: str | None = None
     likelihood: str | None = Field(None, pattern=LEVEL)
     impact: str | None = Field(None, pattern=LEVEL)
+    likelihood_score: Score | None = None
+    impact_score: Score | None = None
     treatment: str | None = Field(None, pattern=TREATMENT)
     status: str = Field("open", pattern=STATUS)
     owner_user_id: int | None = None
@@ -58,6 +80,8 @@ class RiskFromFindingIn(BaseModel):
     category: str | None = None
     likelihood: str | None = Field(None, pattern=LEVEL)
     impact: str | None = Field(None, pattern=LEVEL)
+    likelihood_score: Score | None = None
+    impact_score: Score | None = None
     treatment: str | None = Field(None, pattern=TREATMENT)
     owner_user_id: int | None = None
     next_review_on: date | None = None
@@ -70,6 +94,8 @@ class RiskUpdate(BaseModel):
     source: str | None = None
     likelihood: str | None = Field(None, pattern=LEVEL)
     impact: str | None = Field(None, pattern=LEVEL)
+    likelihood_score: Score | None = None
+    impact_score: Score | None = None
     treatment: str | None = Field(None, pattern=TREATMENT)
     status: str | None = Field(None, pattern=STATUS)
     owner_user_id: int | None = None
@@ -89,6 +115,8 @@ def _out(r: Risk, approval_state: str | None = None) -> dict[str, Any]:
         "source_ref": r.source_ref,
         "likelihood": r.likelihood,
         "impact": r.impact,
+        "likelihood_score": r.likelihood_score,
+        "impact_score": r.impact_score,
         "treatment": r.treatment,
         "status": r.status,
         "inherent_score": r.inherent_score,
@@ -111,7 +139,12 @@ async def _require_risk(session: AsyncSession, rid: int, principal: Principal) -
     obj = (await session.execute(select(Risk).where(Risk.id == rid))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(404, "risk not found")
-    if principal.org_id is not None and obj.system_id is not None:
+    if principal.org_id is not None and obj.system_id is None:
+        # Risk has no organization_id of its own; its system is its tenancy.
+        # A system-less risk belongs to no organization, so no scoped caller
+        # may read or change it.
+        raise HTTPException(404, "risk not found")
+    if principal.org_id is not None:
         ok = (
             await session.execute(
                 select(System.id).where(
@@ -125,9 +158,62 @@ async def _require_risk(session: AsyncSession, rid: int, principal: Principal) -
 
 
 def _rescore(obj: Risk) -> None:
-    obj.inherent_score, obj.residual_score = compute_scores(
-        obj.likelihood, obj.impact, obj.treatment
-    )
+    lk, im = effective_scores(obj.likelihood_score, obj.likelihood, obj.impact_score, obj.impact)
+    obj.inherent_score, obj.residual_score = compute_scores(lk, im, obj.treatment)
+
+
+def _apply_axes(obj: Risk, data: dict[str, Any]) -> None:
+    """Take likelihood/impact out of ``data`` and store both forms, in step.
+
+    Fields the caller did not send keep their stored value. A score and a
+    level that disagree are a 422, not a silent choice."""
+    for axis in ("likelihood", "impact"):
+        level = data.pop(axis, None)
+        score = data.pop(f"{axis}_score", None)
+        if level is None and score is None:
+            continue
+        current = getattr(obj, f"{axis}_score", None)
+        if current is None:
+            current = LEVEL_TO_SCORE.get(getattr(obj, axis, None) or "")
+        try:
+            new_score, new_level = resolve_axis(
+                axis=axis, score=score, level=level, current_score=current
+            )
+        except AxisConflict as exc:
+            raise HTTPException(422, str(exc)) from exc
+        setattr(obj, f"{axis}_score", new_score)
+        setattr(obj, axis, new_level)
+
+
+async def _require_refs_in_org(
+    session: AsyncSession, principal: Principal, data: dict[str, Any]
+) -> None:
+    """An owner or vendor named in the body must be the caller's own.
+
+    Otherwise a scoped caller could attach another organization's user to its
+    risk and read that user's name back off the register."""
+    if principal.org_id is None:
+        return
+    owner = data.get("owner_user_id")
+    if owner is not None:
+        ok = (
+            await session.execute(
+                select(User.id).where(User.id == owner, User.organization_id == principal.org_id)
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "owner not found")
+    vendor = data.get("vendor_id")
+    if vendor is not None:
+        ok = (
+            await session.execute(
+                select(Vendor.id).where(
+                    Vendor.id == vendor, Vendor.organization_id == principal.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if ok is None:
+            raise HTTPException(404, "vendor not found")
 
 
 # --- Acceptance gate (ISSM-08/09): a risk can only move to 'accepted' with a
@@ -267,16 +353,22 @@ async def heatmap(
     rows = (await session.execute(stmt)).scalars().all()
     levels = ["low", "moderate", "high"]
     matrix = {lk: {im: 0 for im in levels} for lk in levels}
+    # The five-point grid, keyed "1".."5" (JSON object keys are strings).
+    grid = {str(lk): {str(im): 0 for im in SCALE} for lk in SCALE}
     by_band = {"low": 0, "moderate": 0, "high": 0, "critical": 0, "unknown": 0}
     for r in rows:
-        if r.likelihood in matrix and r.impact in levels:
-            matrix[r.likelihood][r.impact] += 1
+        lk_s, im_s = effective_scores(r.likelihood_score, r.likelihood, r.impact_score, r.impact)
+        lk_l, im_l = score_to_level(lk_s), score_to_level(im_s)
+        if lk_l is not None and im_l is not None:
+            matrix[lk_l][im_l] += 1
+            grid[str(lk_s)][str(im_s)] += 1
         by_band[band(r.residual_score)] += 1
     top_rows = sorted(rows, key=lambda x: x.residual_score or 0, reverse=True)[:10]
     top_states = await entity_states(session, "risk", [r.id for r in top_rows])
     return {
         "open_total": len(rows),
         "matrix": matrix,
+        "matrix_5x5": grid,
         "by_residual_band": by_band,
         "top": [_out(r, top_states.get(str(r.id))) for r in top_rows],
     }
@@ -286,8 +378,14 @@ async def heatmap(
 async def create_risk(
     body: RiskCreate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*RISK_WRITE_ROLES)),
 ) -> dict[str, Any]:
+    if principal.org_id is not None and body.system_id is None:
+        raise HTTPException(
+            400,
+            "a risk belongs to a system: choose one of your organization's systems "
+            "(a risk without one belongs to no organization and would be on no register)",
+        )
     if principal.org_id is not None and body.system_id is not None:
         ok = (
             await session.execute(
@@ -314,7 +412,11 @@ async def create_risk(
                 "risk acceptance requires an approved authorizing-official review; create "
                 "the risk first, then accept it once approved",
             )
-    obj = Risk(**data)
+    await _require_refs_in_org(session, principal, data)
+    obj = Risk()
+    _apply_axes(obj, data)
+    for k, v in data.items():
+        setattr(obj, k, v)
     _rescore(obj)
     session.add(obj)
     await session.flush()
@@ -330,7 +432,7 @@ async def update_risk(
     rid: int,
     body: RiskUpdate,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*RISK_WRITE_ROLES)),
 ) -> dict[str, Any]:
     obj = await _require_risk(session, rid, principal)
     data = body.model_dump(exclude_none=True)
@@ -353,6 +455,10 @@ async def update_risk(
         await _require_review_extension_gate(
             session, obj, data["next_review_on"], actor=principal.email
         )
+    # After the gates, so a refused acceptance answers why it was refused; a
+    # 404 here rolls back anything the gate spent.
+    await _require_refs_in_org(session, principal, data)
+    _apply_axes(obj, data)
     for k, v in data.items():
         setattr(obj, k, v)
     _rescore(obj)
@@ -380,7 +486,7 @@ async def create_risk_from_finding(
     finding_id: int,
     body: RiskFromFindingIn | None = None,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role(*RISK_WRITE_ROLES)),
 ) -> dict[str, Any]:
     """ISSM-05: accept-finding -> Risk. Opens a Risk carrying the finding's
     origin (``source_ref``) so it is traceable back to what generated it. The
@@ -416,14 +522,17 @@ async def create_risk_from_finding(
         if ok is None:
             raise HTTPException(404, "system not found")
     data = (body or RiskFromFindingIn()).model_dump(exclude_none=True)
+    await _require_refs_in_org(session, principal, data)
     obj = Risk(
         system_id=finding.system_id,
         title=f"Audit finding: {finding.title}",
         description=finding.description,
         source="audit_finding",
         source_ref=f"audit_finding:{finding.id}",
-        **data,
     )
+    _apply_axes(obj, data)
+    for k, v in data.items():
+        setattr(obj, k, v)
     _rescore(obj)
     session.add(obj)
     await session.flush()

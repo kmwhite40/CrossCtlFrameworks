@@ -1,39 +1,46 @@
 {% extends "base.html" %}
 {% block title %}Risks · Concord{% endblock %}
 {% block heading %}Risk register{% endblock %}
-{% block subtitle %}<p class="page__subtitle">Track risk treatments across systems.</p>{% endblock %}
+{% block subtitle %}<p class="page__subtitle">Track risk treatments across systems. Likelihood and impact are scored 1-5; inherent exposure is their product (1-25).</p>{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risks/heatmap"><i data-lucide="grid-3x3"></i>Heat map</a><a class="btn btn--secondary" href="/risk-appetite"><i data-lucide="gauge"></i>Risk appetite</a>{% endblock %}
 {% block content %}
 
 <section class="card" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">Record a risk</div></div>
   <form class="card__body filters" id="risk-form">
     <input aria-label="Risk title" class="input" name="title" placeholder="Risk title" required />
-    <select class="select" name="system_id" aria-label="System"><option value="">(no system)</option>
+    <select class="select" name="system_id" aria-label="System" required><option value="">System…</option>
       {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
     </select>
-    <select class="select" name="likelihood" aria-label="Likelihood"><option value="">Likelihood</option>
-      <option>low</option><option>moderate</option><option>high</option>
+    <input aria-label="Category" class="input" name="category" placeholder="Category (e.g. technical)" />
+    <select class="select" name="likelihood_score" aria-label="Likelihood"><option value="">Likelihood</option>
+      {% for n in scale %}<option value="{{ n }}">{{ n }} · {{ lk_labels[n] }}</option>{% endfor %}
     </select>
-    <select class="select" name="impact" aria-label="Impact"><option value="">Impact</option>
-      <option>low</option><option>moderate</option><option>high</option>
+    <select class="select" name="impact_score" aria-label="Impact"><option value="">Impact</option>
+      {% for n in scale %}<option value="{{ n }}">{{ n }} · {{ im_labels[n] }}</option>{% endfor %}
     </select>
     <select class="select" name="treatment" aria-label="Treatment"><option value="">Treatment</option>
       <option>mitigate</option><option>transfer</option><option>accept</option><option>avoid</option>
     </select>
     <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add</button>
   </form>
+  {% if not systems %}<div class="card__body dim">A risk belongs to a system. <a href="/systems">Add a system</a> first.</div>{% endif %}
+  <div class="note note--err" id="risk-form-error" role="alert" style="margin:0 16px 16px" hidden></div>
 </section>
 
 <section class="card">
   <div class="card__header"><div class="card__title">Risks ({{ rows | length }})</div></div>
   {% if rows %}
     <div class="table-wrap"><table class="data">
-      <thead><tr><th>Title</th><th>Likelihood</th><th>Impact</th><th>Treatment</th><th>Status</th><th>Created</th></tr></thead>
+      <thead><tr><th>Title</th><th>Likelihood</th><th>Impact</th><th title="Likelihood × impact, 1-25">Inherent</th><th title="Inherent × treatment factor">Residual</th>{% if scoped %}<th title="Residual against the appetite for the risk's category, or the default">Appetite</th>{% endif %}<th>Treatment</th><th>Status</th><th>Created</th></tr></thead>
       <tbody>
-        {% for r in rows %}<tr>
-          <td><strong>{{ r.title }}</strong></td>
-          <td>{% if r.likelihood %}<span class="chip">{{ r.likelihood }}</span>{% endif %}</td>
-          <td>{% if r.impact %}<span class="chip">{{ r.impact }}</span>{% endif %}</td>
+        {% for r in rows %}{% set e = effective(r.likelihood_score, r.likelihood, r.impact_score, r.impact) %}{% set p = placements.get(r.id) %}<tr>
+          <td><strong>{{ r.title }}</strong>{% if r.category %}<div class="dim" style="font-size:12px">{{ r.category }}</div>{% endif %}</td>
+          <td>{% if e[0] %}<span class="chip">{{ e[0] }} · {{ lk_labels[e[0]] }}</span>{% else %}—{% endif %}</td>
+          <td>{% if e[1] %}<span class="chip">{{ e[1] }} · {{ im_labels[e[1]] }}</span>{% else %}—{% endif %}</td>
+          <td>{{ r.inherent_score if r.inherent_score is not none else '—' }}</td>
+          <td>{% set b = band(r.residual_score) %}<span class="sevchip sevchip--{{ b if b != 'unknown' else 'none' }}">{{ r.residual_score if r.residual_score is not none else '—' }} · {{ b }}</span></td>
+          {% if scoped %}<td>{% if p and p.state == 'breach' %}<span class="chip chip--err" title="Residual {{ p.residual_score }} is above the appetite of {{ p.appetite.max_residual_score }}">Above by {{ p.over_by }}</span>{% elif p and p.state == 'within' %}<span class="chip chip--ok">Within</span>{% elif p and p.state == 'unscored' %}<span class="chip chip--ghost" title="No residual score to compare">Unscored</span>{% elif p %}<span class="chip chip--ghost" title="No appetite statement covers this category, and no default is set">None set</span>{% else %}<span class="dim" title="Only open and mitigated risks are compared with appetite">—</span>{% endif %}</td>{% endif %}
           <td>{% if r.treatment %}<span class="chip chip--brand">{{ r.treatment }}</span>{% endif %}</td>
           <td><span class="chip">{{ r.status }}</span></td>
           <td class="dim">{{ r.created_at.strftime('%Y-%m-%d') }}</td>
@@ -41,7 +48,7 @@
       </tbody>
     </table></div>
   {% else %}
-    <div class="card__body dim" style="text-align:center;padding:40px">No risks recorded.</div>
+    <div class="card__body dim" style="text-align:center;padding:40px">No risks recorded. Record the first one above.</div>
   {% endif %}
 </section>
 
@@ -50,9 +57,21 @@ document.getElementById('risk-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
   const body = Object.fromEntries([...fd.entries()].filter(([,v]) => v !== ''));
-  if (body.system_id) body.system_id = parseInt(body.system_id, 10);
+  for (const k of ['system_id', 'likelihood_score', 'impact_score']) {
+    if (body[k]) body[k] = parseInt(body[k], 10);
+  }
   const r = await fetch('/api/risks', {method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body)});
-  if (r.ok) location.reload(); else if (window.toast) window.toast('Failed to create risk');
+  if (r.ok) { location.reload(); return; }
+  // Say why it was refused: a silent failure is undiagnosable.
+  let msg = 'The risk was not saved (HTTP ' + r.status + ').';
+  try {
+    const j = await r.json();
+    if (typeof j.detail === 'string') msg = j.detail;
+    else if (Array.isArray(j.detail)) msg = j.detail.map(d => d.msg).join('; ');
+  } catch (_) {}
+  const box = document.getElementById('risk-form-error');
+  box.textContent = msg; box.hidden = false;
+  if (window.toast) window.toast(msg);
 });
 </script>
 {% endblock %}

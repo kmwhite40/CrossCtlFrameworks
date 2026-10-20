@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}Key Risk Indicators · Concord{% endblock %}
+{% block heading %}Key risk indicators{% endblock %}
+{% block subtitle %}Measured signals with warning and critical thresholds. A computed KRI is read from Concord's own records; a manual one from the readings people enter.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risk-appetite"><i data-lucide="gauge"></i>Risk appetite</a>{% if scoped %}<form method="post" action="/kri/compute" style="display:inline"><button class="btn btn--secondary" type="submit" title="Record a reading now for every active computed KRI"><i data-lucide="refresh-cw"></i>Compute all now</button></form>{% endif %}{% endblock %}
+{% macro status_chip(st) -%}
+{%- if st == 'critical' %}<span class="chip chip--err">Critical</span>
+{%- elif st == 'warn' %}<span class="chip chip--warn">Warning</span>
+{%- elif st == 'ok' %}<span class="chip chip--ok">Within thresholds</span>
+{%- elif st == 'no_threshold' %}<span class="chip chip--ghost" title="No warning or critical threshold is set, so the value is not judged">No threshold</span>
+{%- else %}<span class="chip chip--ghost">No reading</span>{% endif %}
+{%- endmacro %}
+{% macro num(v) -%}{{ ('%g' | format(v)) if v is not none else '—' }}{%- endmacro %}
+{% block content %}
+{% if error %}<div class="note note--err" role="alert">{{ error }}</div>{% endif %}
+{% if notice %}<div class="note note--info" role="status">{{ notice }}</div>{% endif %}
+
+{% if not scoped %}
+<section class="card"><div class="empty-state">
+  <i data-lucide="building-2"></i>
+  <h2>No organization</h2>
+  <p>Key risk indicators are kept per organization. Sign in as a member of one to see and define them.</p>
+</div></section>
+{% else %}
+
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi" title="Active KRIs whose latest reading is at or beyond the critical threshold">
+    <span class="kpi__label"><i data-lucide="triangle-alert"></i><span>Critical</span></span>
+    <span class="kpi__value">{{ tally.critical }}</span>
+    <span class="kpi__meta">of {{ active_count }} active KRI{{ 's' if active_count != 1 }}</span>
+  </div>
+  <div class="kpi" title="Active KRIs whose latest reading is at or beyond the warning threshold, but not critical">
+    <span class="kpi__label"><i data-lucide="alert-triangle"></i><span>Warning</span></span>
+    <span class="kpi__value">{{ tally.warn }}</span>
+    <span class="kpi__meta">of {{ active_count }}</span>
+  </div>
+  <div class="kpi" title="Active KRIs whose latest reading is inside both thresholds">
+    <span class="kpi__label"><i data-lucide="check"></i><span>Within thresholds</span></span>
+    <span class="kpi__value">{{ tally.ok }}</span>
+    <span class="kpi__meta">of {{ active_count }}</span>
+  </div>
+  <div class="kpi" title="Active KRIs with no reading yet, or no threshold to judge one by">
+    <span class="kpi__label"><i data-lucide="circle-dashed"></i><span>Not judged</span></span>
+    <span class="kpi__value">{{ tally.no_reading + tally.no_threshold }}</span>
+    <span class="kpi__meta">{{ tally.no_reading }} without a reading · {{ tally.no_threshold }} without a threshold</span>
+  </div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Indicators</h2><span class="panel__hint">{{ items | length }} KRI{{ 's' if items|length != 1 }}</span></header>
+  {% if items %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>KRI</th><th>Source</th><th>Latest</th><th>Status</th><th title="Warning / critical, read in the KRI's direction">Thresholds</th><th>Trend</th><th>Owner</th></tr></thead>
+    <tbody>{% for it in items %}{% set k = it.kri %}
+      <tr id="kri-{{ k.id }}">
+        <td><strong>{{ k.name }}</strong>{% if not k.active %} <span class="chip chip--ghost">Inactive</span>{% endif %}
+          {% if k.description %}<div class="dim" style="font-size:12px">{{ k.description }}</div>{% endif %}
+          {% if it.risk_title %}<div class="dim" style="font-size:12px">Risk: {{ it.risk_title }}</div>{% endif %}</td>
+        <td>{% if it.metric %}<span class="chip chip--info" title="{{ it.metric.basis }}">Computed · {{ it.metric.label }}</span>{% elif k.metric_key %}<span class="chip chip--warn">Unknown metric {{ k.metric_key }}</span>{% else %}<span class="chip">Manual</span>{% endif %}</td>
+        <td>{% if it.latest %}<strong>{{ num(it.latest.value) }}</strong> {{ k.unit or '' }}<div class="dim" style="font-size:12px">{{ it.latest.recorded_at.strftime('%Y-%m-%d %H:%M') }} · {{ it.latest.source }}</div>{% else %}—{% endif %}</td>
+        <td>{{ status_chip(it.status) }}</td>
+        <td>{{ num(k.warn_threshold) }} / {{ num(k.critical_threshold) }}<div class="dim" style="font-size:12px">{{ 'higher is worse' if k.direction == 'higher_is_worse' else 'lower is worse' }}</div></td>
+        <td>{% if it.spark %}<svg width="120" height="28" viewBox="0 0 120 28" role="img" aria-label="{{ it.readings | length }} readings, oldest {{ num(it.readings[-1].value) }}, latest {{ num(it.readings[0].value) }}"><polyline points="{{ it.spark }}" fill="none" style="stroke:var(--accent)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>{% else %}<span class="dim" style="font-size:12px">{{ 'One reading' if it.readings else 'No readings' }}</span>{% endif %}</td>
+        <td>{{ user_names.get(k.owner_user_id, '—') }}</td>
+      </tr>
+      <tr><td colspan="7" style="padding-top:0">
+        <details><summary class="dim" style="cursor:pointer;font-size:13px">History, readings and settings</summary>
+          <div class="grid-2-1" style="margin-top:10px">
+            <div>
+              {% if it.readings %}
+              <table>
+                <thead><tr><th>Recorded</th><th>Value</th><th>Source</th><th>By</th><th>Note</th></tr></thead>
+                <tbody>{% for r in it.readings %}<tr><td>{{ r.recorded_at.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ num(r.value) }} {{ k.unit or '' }}</td><td>{{ r.source }}</td><td>{{ r.recorded_by or '—' }}</td><td class="dim">{{ (r.note or '—') if r.source == 'manual' else '' }}</td></tr>{% endfor %}</tbody>
+              </table>
+              <p class="dim" style="font-size:12px">The latest {{ it.readings | length }} reading{{ 's' if it.readings|length != 1 }}.</p>
+              {% else %}
+              <p class="dim">No readings yet. {% if it.metric %}Compute one now.{% else %}Record the first one.{% endif %}</p>
+              {% endif %}
+              {% if it.metric %}
+                {% if k.active %}<form method="post" action="/kri/{{ k.id }}/compute"><button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="refresh-cw"></i> Compute now</button> <span class="dim" style="font-size:12px">{{ it.metric.basis }}</span></form>{% endif %}
+              {% elif not k.metric_key %}
+              <form method="post" action="/kri/{{ k.id }}/readings" class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px">
+                <input class="input" name="value" type="number" step="any" required aria-label="Value" placeholder="Value{{ ' (' ~ k.unit ~ ')' if k.unit }}">
+                <input class="input" name="note" aria-label="Note" placeholder="Source or note (optional)">
+                <button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="plus"></i> Record reading</button>
+              </form>
+              {% endif %}
+            </div>
+            <form method="post" action="/kri/{{ k.id }}" class="stack" style="gap:8px">
+              <div class="field-group"><label class="label" for="n-{{ k.id }}">Name</label><input class="input" id="n-{{ k.id }}" name="name" value="{{ k.name }}" required maxlength="255"></div>
+              <div class="field-group"><label class="label" for="d-{{ k.id }}">Description</label><textarea id="d-{{ k.id }}" name="description" rows="2">{{ k.description or '' }}</textarea></div>
+              <div class="field-group"><label class="label" for="m-{{ k.id }}">Metric</label><select class="select" id="m-{{ k.id }}" name="metric_key"><option value="">Manual readings</option>{% for key, m in metrics.items() %}<option value="{{ key }}" {% if key == k.metric_key %}selected{% endif %}>{{ m.label }}</option>{% endfor %}</select></div>
+              <div class="row" style="gap:8px;flex-wrap:wrap">
+                <div class="field-group"><label class="label" for="u-{{ k.id }}">Unit</label><input class="input" id="u-{{ k.id }}" name="unit" value="{{ k.unit or '' }}" maxlength="32"></div>
+                <div class="field-group"><label class="label" for="dir-{{ k.id }}">Direction</label><select class="select" id="dir-{{ k.id }}" name="direction"><option value="higher_is_worse" {% if k.direction == 'higher_is_worse' %}selected{% endif %}>Higher is worse</option><option value="lower_is_worse" {% if k.direction == 'lower_is_worse' %}selected{% endif %}>Lower is worse</option></select></div>
+              </div>
+              <div class="row" style="gap:8px;flex-wrap:wrap">
+                <div class="field-group"><label class="label" for="w-{{ k.id }}">Warning at</label><input class="input" id="w-{{ k.id }}" name="warn_threshold" type="number" step="any" value="{{ num(k.warn_threshold) if k.warn_threshold is not none }}"></div>
+                <div class="field-group"><label class="label" for="c-{{ k.id }}">Critical at</label><input class="input" id="c-{{ k.id }}" name="critical_threshold" type="number" step="any" value="{{ num(k.critical_threshold) if k.critical_threshold is not none }}"></div>
+              </div>
+              <div class="field-group"><label class="label" for="o-{{ k.id }}">Owner</label><select class="select" id="o-{{ k.id }}" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}" {% if u.id == k.owner_user_id %}selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+              <div class="field-group"><label class="label" for="r-{{ k.id }}">Linked risk</label><select class="select" id="r-{{ k.id }}" name="risk_id"><option value="">(none)</option>{% for r in risks %}<option value="{{ r.id }}" {% if r.id == k.risk_id %}selected{% endif %}>{{ r.title }}</option>{% endfor %}</select></div>
+              <label class="label"><input type="checkbox" name="active" value="1" {% if k.active %}checked{% endif %}> Active</label>
+              <div><button class="btn btn--primary btn--sm" type="submit"><i data-lucide="save"></i> Save</button> <span class="dim" style="font-size:12px">Administrators and control owners.</span></div>
+            </form>
+          </div>
+        </details>
+      </td></tr>
+    {% endfor %}</tbody></table></div>
+  {% else %}
+  <div class="empty-state">
+    <i data-lucide="activity"></i>
+    <h2>No key risk indicators</h2>
+    <p>Define the first one below. Choose a metric to have Concord compute its readings from the organization's records, or leave it manual and record readings by hand.</p>
+  </div>
+  {% endif %}
+  <footer class="panel__foot">Status is the latest reading against the thresholds: for "higher is worse", at or above critical is critical and at or above warning is a warning; for "lower is worse" the comparisons turn round. A KRI with no thresholds shows its value without a judgement.</footer>
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Define a KRI</h2></header>
+  <div class="panel__body">
+    <form method="post" action="/kri" class="stack" style="gap:10px;max-width:70ch">
+      <div class="field-group"><label class="label" for="new-name">Name</label><input class="input" id="new-name" name="name" required maxlength="255"></div>
+      <div class="field-group"><label class="label" for="new-desc">Description</label><textarea id="new-desc" name="description" rows="2"></textarea></div>
+      <div class="field-group"><label class="label" for="new-metric">Metric</label>
+        <select class="select" id="new-metric" name="metric_key"><option value="">Manual readings</option>{% for key, m in metrics.items() %}<option value="{{ key }}">{{ m.label }} ({{ m.unit }})</option>{% endfor %}</select>
+        <div class="dim" style="font-size:12px">Computed metrics: {% for key, m in metrics.items() %}<strong>{{ m.label }}</strong> — {{ m.basis }}{{ ' ' if not loop.last }}{% endfor %}</div>
+      </div>
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="new-unit">Unit</label><input class="input" id="new-unit" name="unit" maxlength="32" placeholder="default: the metric's"></div>
+        <div class="field-group"><label class="label" for="new-dir">Direction</label><select class="select" id="new-dir" name="direction"><option value="">Default for the metric</option><option value="higher_is_worse">Higher is worse</option><option value="lower_is_worse">Lower is worse</option></select></div>
+      </div>
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="new-warn">Warning at</label><input class="input" id="new-warn" name="warn_threshold" type="number" step="any"></div>
+        <div class="field-group"><label class="label" for="new-crit">Critical at</label><input class="input" id="new-crit" name="critical_threshold" type="number" step="any"></div>
+      </div>
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="new-owner">Owner</label><select class="select" id="new-owner" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+        <div class="field-group"><label class="label" for="new-risk">Linked risk</label><select class="select" id="new-risk" name="risk_id"><option value="">(none)</option>{% for r in risks %}<option value="{{ r.id }}">{{ r.title }}</option>{% endfor %}</select></div>
+      </div>
+      <div><button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add KRI</button> <span class="dim" style="font-size:12px;margin-left:8px">Administrators and control owners.</span></div>
+    </form>
+  </div>
+</article>
+{% endif %}
+{% endblock %}
