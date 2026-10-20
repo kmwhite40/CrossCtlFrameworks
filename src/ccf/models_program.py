@@ -66,7 +66,9 @@ class PostureSnapshot(Base):
     """
 
     __tablename__ = "posture_snapshots"
-    __table_args__ = (UniqueConstraint("organization_id", "taken_on", name="uq_posture_snapshot_day"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "taken_on", name="uq_posture_snapshot_day"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     organization_id: Mapped[int] = _org()
@@ -87,7 +89,9 @@ class RiskAppetite(Base):
     ``Risk.residual_score``."""
 
     __tablename__ = "risk_appetites"
-    __table_args__ = (UniqueConstraint("organization_id", "category", name="uq_risk_appetite_category"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "category", name="uq_risk_appetite_category"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     organization_id: Mapped[int] = _org()
@@ -282,7 +286,9 @@ class ComplianceObligation(Base):
     owner_user_id: Mapped[int | None] = _user()
     frequency: Mapped[str | None] = mapped_column(String(32))
     due_on: Mapped[date | None] = mapped_column(Date)
-    status: Mapped[str] = mapped_column(String(16), default="open")  # open|met|not_met|not_applicable
+    status: Mapped[str] = mapped_column(
+        String(16), default="open"
+    )  # open|met|not_met|not_applicable
     control_ids: Mapped[list[Any]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = _created()
 
@@ -363,7 +369,9 @@ class VendorContract(Base):
     renewal_on: Mapped[date | None] = mapped_column(Date)
     annual_value: Mapped[float | None] = mapped_column(Float)
     owner_user_id: Mapped[int | None] = _user()
-    status: Mapped[str] = mapped_column(String(16), default="active")  # draft|active|expired|terminated
+    status: Mapped[str] = mapped_column(
+        String(16), default="active"
+    )  # draft|active|expired|terminated
     created_at: Mapped[datetime] = _created()
 
 
@@ -419,8 +427,12 @@ class VendorFinding(Base):
     )
     title: Mapped[str] = mapped_column(String(512))
     description: Mapped[str | None] = mapped_column(Text)
-    severity: Mapped[str] = mapped_column(String(16), default="moderate")  # low|moderate|high|critical
-    status: Mapped[str] = mapped_column(String(16), default="open")  # open|remediating|closed|accepted
+    severity: Mapped[str] = mapped_column(
+        String(16), default="moderate"
+    )  # low|moderate|high|critical
+    status: Mapped[str] = mapped_column(
+        String(16), default="open"
+    )  # open|remediating|closed|accepted
     due_on: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = _created()
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -437,7 +449,9 @@ class Project(Base):
     name: Mapped[str] = mapped_column(String(255))
     description: Mapped[str | None] = mapped_column(Text)
     owner_user_id: Mapped[int | None] = _user()
-    status: Mapped[str] = mapped_column(String(16), default="planned")  # planned|active|on_hold|done
+    status: Mapped[str] = mapped_column(
+        String(16), default="planned"
+    )  # planned|active|on_hold|done
     start_on: Mapped[date | None] = mapped_column(Date)
     target_on: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = _created()
