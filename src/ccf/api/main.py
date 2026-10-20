@@ -93,6 +93,7 @@ from .routes import (
     ui_intel,
     ui_modules,
     ui_platform,
+    ui_policies,
     ui_riskprog,
     ui_tprmprog,
     users,
@@ -289,6 +290,7 @@ def create_app() -> FastAPI:
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
     app.include_router(ui_ato.router)
+    app.include_router(ui_policies.router)
     app.include_router(ui_boundary.router)
     app.include_router(ui_modules.router)
     app.include_router(ui_assure.router)

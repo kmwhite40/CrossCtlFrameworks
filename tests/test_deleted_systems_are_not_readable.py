@@ -83,6 +83,8 @@ SYSTEM_READS = [
     "/api/systems/{sid}/boundary/components",
     "/api/systems/{sid}/boundary/information-types",
     "/api/systems/{sid}/boundary/interconnections",
+    "/api/systems/{sid}/boundary/ports",
+    "/api/systems/{sid}/boundary/crypto-modules",
     "/api/systems/{sid}/boundary/inventory",
     "/api/systems/{sid}/control-evaluations",
     "/api/systems/{sid}/coverage",
