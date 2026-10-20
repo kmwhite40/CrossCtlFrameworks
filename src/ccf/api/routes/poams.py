@@ -225,14 +225,14 @@ async def _require_closure_gate(
             "cannot close: requires either all milestones completed or a linked closure "
             "evidence artifact for the remediated control",
         )
-    if get_settings().auth_enabled:
-        if await entity_state(session, "poam", obj.id) != "approved":
-            raise HTTPException(
-                409,
-                "cannot close: requires an approved review (submit for approval, then have a "
-                "different principal approve it — separation of duties)",
-            )
-        await approvals.consume(session, entity_type="poam", entity_id=obj.id, actor=actor)
+    if get_settings().auth_enabled and not await approvals.consume(
+        session, entity_type="poam", entity_id=obj.id, actor=actor
+    ):
+        raise HTTPException(
+            409,
+            "cannot close: requires an approved review (submit for approval, then have a "
+            "different principal approve it — separation of duties)",
+        )
 
 
 # --- risk_accepted gate: a POA&M can be routed to 'risk_accepted' instead of
@@ -266,14 +266,14 @@ async def _require_risk_accepted_gate(
             409,
             "risk_accepted requires a written acceptance rationale (acceptance_rationale)",
         )
-    if get_settings().auth_enabled:
-        if poam_id is None or await entity_state(session, "poam", poam_id) != "approved":
-            raise HTTPException(
-                409,
-                "risk_accepted requires an approved authorizing-official review (submit for "
-                "approval, then have an AO/admin approve it)",
-            )
-        await approvals.consume(session, entity_type="poam", entity_id=poam_id, actor=actor)
+    if get_settings().auth_enabled and not await approvals.consume(
+        session, entity_type="poam", entity_id=poam_id, actor=actor
+    ):
+        raise HTTPException(
+            409,
+            "risk_accepted requires an approved authorizing-official review (submit for "
+            "approval, then have an AO/admin approve it)",
+        )
 
 
 async def _require_expiry_extension_gate(
@@ -290,13 +290,12 @@ async def _require_expiry_extension_gate(
         return
     if isinstance(new_due_on, date) and obj.due_on is not None and new_due_on <= obj.due_on:
         return
-    if await entity_state(session, "poam", obj.id) != "approved":
+    if not await approvals.consume(session, entity_type="poam", entity_id=obj.id, actor=actor):
         raise HTTPException(
             409,
             "extending a risk acceptance's expiry (due_on) requires a fresh approved review "
             "(submit for approval, then have an AO/admin approve it)",
         )
-    await approvals.consume(session, entity_type="poam", entity_id=obj.id, actor=actor)
 
 
 async def _maybe_enqueue_reevaluation(session: AsyncSession, obj: POAM) -> None:

@@ -15,6 +15,7 @@ so an expiry an author could push out freely was an acceptance with no end.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterator
 from datetime import date, timedelta
@@ -28,7 +29,8 @@ from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, System, User
+from ccf.governance import approvals
+from ccf.models import Approval, Organization, System, User
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -225,3 +227,70 @@ async def test_resaving_a_closed_poam_needs_no_second_approval(_auth_enabled: No
         assert resave.status_code == 200, resave.text
         again = await c.post(f"/api/poams/{pid}/close", headers=prep)
         assert again.status_code == 200, again.text
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_spends_of_one_approval_succeed_once() -> None:
+    """A read-then-write spend let two concurrent requests both see "approved"
+    and both pass their gate on one review. The spend is one conditional
+    UPDATE, so the second waits on the row lock, re-reads, and finds nothing.
+
+    Measured limit: this catches a read-then-write spend only when the event
+    loop switches between its read and its write; with no await in that gap the
+    two sessions happened to serialize and the mutant passed. The guarantee is
+    the conditional UPDATE itself, not this test."""
+    _sys, _owner, org_id, _prep, _appr = await _org_with_people("SingleUseOrgRace")
+    async with session_scope() as s:
+        s.add(
+            Approval(
+                organization_id=org_id,
+                entity_type="poam",
+                entity_id="race-1",
+                state="approved",
+                reviewed_by="appr@race.example",
+            )
+        )
+
+    async def spend() -> bool:
+        async with session_scope() as s:
+            return await approvals.consume(
+                s, entity_type="poam", entity_id="race-1", actor="prep@race.example"
+            )
+
+    results = await asyncio.gather(spend(), spend())
+    assert sorted(results) == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_extending_an_accepted_risks_review_date_needs_a_fresh_approval(
+    _auth_enabled: None,
+) -> None:
+    """The risk-register sibling of the POA&M expiry rule: next_review_on is when
+    an accepted risk must be looked at again, so pushing it out is a new
+    acceptance decision."""
+    sys_id, owner_id, _org, prep, appr = await _org_with_people("SingleUseOrgG")
+    review = date.today() + timedelta(days=90)
+    async with _client() as c:
+        rid = (
+            await c.post("/api/risks", json={"system_id": sys_id, "title": "R"}, headers=prep)
+        ).json()["id"]
+        await _approve(c, "risk", rid, prep, appr)
+        accepted = await c.patch(
+            f"/api/risks/{rid}",
+            json={"status": "accepted", "owner_user_id": owner_id, "next_review_on": str(review)},
+            headers=prep,
+        )
+        assert accepted.status_code == 200, accepted.text
+
+        later = str(review + timedelta(days=365))
+        refused = await c.patch(f"/api/risks/{rid}", json={"next_review_on": later}, headers=prep)
+        assert refused.status_code == 409, refused.text
+
+        sooner = str(review - timedelta(days=10))
+        assert (
+            await c.patch(f"/api/risks/{rid}", json={"next_review_on": sooner}, headers=prep)
+        ).status_code == 200
+        await _approve(c, "risk", rid, prep, appr)
+        assert (
+            await c.patch(f"/api/risks/{rid}", json={"next_review_on": later}, headers=prep)
+        ).status_code == 200

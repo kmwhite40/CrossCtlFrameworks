@@ -149,16 +149,40 @@ async def _require_acceptance_gate(
             "risk acceptance requires an owner (owner_user_id) and an expiration/"
             "next_review_on date",
         )
-    if get_settings().auth_enabled:
-        if await entity_state(session, "risk", risk_id) != "approved":
-            raise HTTPException(
-                409,
-                "risk acceptance requires an approved authorizing-official review (submit for "
-                "approval, then have an AO/admin approve it)",
-            )
-        # One review authorizes one acceptance: reopening and re-accepting
-        # needs another.
-        await approvals.consume(session, entity_type="risk", entity_id=risk_id, actor=actor)
+    # One review authorizes one acceptance: reopening and re-accepting needs
+    # another. consume() is the check and the spend in one statement.
+    if get_settings().auth_enabled and not await approvals.consume(
+        session, entity_type="risk", entity_id=risk_id, actor=actor
+    ):
+        raise HTTPException(
+            409,
+            "risk acceptance requires an approved authorizing-official review (submit for "
+            "approval, then have an AO/admin approve it)",
+        )
+
+
+async def _require_review_extension_gate(
+    session: AsyncSession, obj: Risk, new_review_on: object, *, actor: str | None
+) -> None:
+    """Pushing an accepted risk's next review out is a new acceptance decision.
+
+    The risk-register sibling of ``poams._require_expiry_extension_gate``.
+    Bringing a review forward asks nobody's permission.
+    """
+    if not get_settings().auth_enabled:
+        return
+    if (
+        isinstance(new_review_on, date)
+        and obj.next_review_on is not None
+        and new_review_on <= obj.next_review_on
+    ):
+        return
+    if not await approvals.consume(session, entity_type="risk", entity_id=obj.id, actor=actor):
+        raise HTTPException(
+            409,
+            "moving an accepted risk's next_review_on later requires a fresh approved review "
+            "(submit for approval, then have an AO/admin approve it)",
+        )
 
 
 async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *, verb: str) -> None:
@@ -319,6 +343,15 @@ async def update_risk(
             next_review_on=data.get("next_review_on", obj.next_review_on),
             risk_id=rid,
             actor=principal.email,
+        )
+    elif (
+        obj.status == "accepted"
+        and data.get("status", "accepted") == "accepted"
+        and "next_review_on" in data
+        and data["next_review_on"] != obj.next_review_on
+    ):
+        await _require_review_extension_gate(
+            session, obj, data["next_review_on"], actor=principal.email
         )
     for k, v in data.items():
         setattr(obj, k, v)
