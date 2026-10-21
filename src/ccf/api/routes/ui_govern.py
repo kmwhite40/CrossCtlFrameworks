@@ -834,7 +834,7 @@ async def committee_detail(
                     {
                         **d,
                         "index": i,
-                        "owner": names.get(d.get("owner_user_id")),
+                        "owner": names.get(d.get("owner_user_id") or 0),
                         "overdue": bool(
                             d.get("due_on")
                             and not d.get("closed_on")
