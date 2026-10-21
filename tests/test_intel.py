@@ -236,6 +236,53 @@ async def _org(label: str, tag: str) -> dict[str, object]:
                     status="in_progress",
                     identified_on=today - timedelta(days=50),
                 ),
+                # Resolved records: never an open issue, never a KEV match.
+                POAM(
+                    system_id=live.id,
+                    title=m("closed-poam"),
+                    weakness="Refs: CVE-2099-0002",
+                    severity="high",
+                    status="closed",
+                    source="scan",
+                ),
+                AuditFinding(
+                    engagement_id=eng.id,
+                    organization_id=org.id,
+                    title=m("closed-audit-finding"),
+                    severity="high",
+                    status="closed",
+                ),
+                VendorFinding(
+                    organization_id=org.id,
+                    vendor_id=vendor.id,
+                    title=m("closed-vendor-finding"),
+                    severity="high",
+                    status="closed",
+                ),
+                ControlTest(
+                    organization_id=org.id,
+                    control_id="AC-3",
+                    name=m("inactive-test"),
+                    active=False,
+                    last_status="fail",
+                ),
+                ControlTest(
+                    organization_id=org.id,
+                    control_id="AC-3",
+                    name=m("passing-test"),
+                    active=True,
+                    last_status="pass",
+                ),
+                ControlTest(
+                    organization_id=org.id,
+                    system_id=gone.id,
+                    control_id="AC-2",
+                    name=d("stale-accounts-test"),
+                    source="generated",
+                    check_key=STALE_KEY,
+                    active=True,
+                    last_status="fail",
+                ),
                 POAM(
                     system_id=gone.id,
                     title=d("poam"),
@@ -380,8 +427,25 @@ async def two_orgs() -> tuple[dict[str, object], dict[str, object]]:
     tag = f"{next(_SEQ)}x{os.getpid()}"
     a, b = await _org("Alpha", tag), await _org("Bravo", tag)
     # Defence in depth on remediation plans: a plan that says it is Bravo's is
-    # not Alpha's to see, even if it points at Alpha's system.
+    # not Alpha's to see, even if it points at Alpha's system. Likewise a
+    # control test Bravo owns on a system of Alpha's (0101 does not cover
+    # control_tests): it is not Alpha's to remediate or list as an issue.
     async with session_scope() as s:
+        spare = System(organization_id=a["org_id"], name=f"Alpha-spare-system-{tag}")
+        s.add(spare)
+        await s.flush()
+        s.add(
+            ControlTest(
+                organization_id=b["org_id"],
+                system_id=spare.id,
+                control_id="AC-2",
+                name=f"Bravo-crossed-test-{tag}",
+                source="generated",
+                check_key=STALE_KEY,
+                active=True,
+                last_status="fail",
+            )
+        )
         s.add(
             RemediationPlan(
                 organization_id=b["org_id"],
@@ -496,6 +560,22 @@ async def test_a_failed_fetch_raises_with_its_reason(handler, kwargs, message: s
         await kev.fetch_kev(transport=_transport(handler), **kwargs)
 
 
+async def test_a_body_without_a_declared_length_is_still_capped() -> None:
+    """A chunked response declares no length; the streamed count must stop it."""
+
+    async def chunks():
+        for _ in range(8):
+            yield b"x" * 512
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        resp = httpx.Response(200, content=chunks())
+        assert "content-length" not in resp.headers
+        return resp
+
+    with pytest.raises(kev.KevFetchError, match="exceeded the 1024-byte cap"):
+        await kev.fetch_kev(transport=_transport(handler), max_bytes=1024)
+
+
 async def test_a_redirect_off_cisa_is_refused() -> None:
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.host == "www.cisa.gov":
@@ -568,6 +648,7 @@ async def test_the_match_counts_name_their_denominators(two_orgs, kev_catalog) -
     assert found["scan_examined"] == 1
     assert found["with_cve"] == 1
     assert found["poams_matched"] == 1 and found["ransomware"] == 1
+    # The closed POA&M naming CVE-2099-0002 is neither examined nor matched.
     assert [m.entry.cve_id for m in found["matches"]] == ["CVE-2099-0001"]
     # Due 30 days out; CISA's date (2099) is later, so not past it.
     assert found["past_due"] == 0
@@ -693,7 +774,7 @@ async def test_a_failed_sync_is_surfaced_and_leaves_the_catalog(monkeypatch) -> 
 
 #: Alpha's records in scope per register: live-system or org-wide ones only.
 EXPECTED = {
-    "poams": 2,
+    "poams": 3,  # every status: two open, one closed
     "risks": 2,
     "test_results": 4,
     "evidence": 1,
@@ -1107,3 +1188,21 @@ async def test_a_check_no_provider_handles_is_refused_with_its_reason(two_orgs) 
         )
     assert resp.status_code == 409
     assert "no remediation provider handles check" in resp.text
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "closed-poam",
+        "closed-audit-finding",
+        "closed-vendor-finding",
+        "inactive-test",
+        "passing-test",
+    ],
+)
+async def test_resolved_records_are_not_open_issues(two_orgs, kind) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        body = (await c.get("/issues", headers=_auth(a["token"]))).text
+    assert f"Alpha-{kind}-{a['tag']}" not in body
+    assert f"Alpha-poam-kev-{a['tag']}" in body
