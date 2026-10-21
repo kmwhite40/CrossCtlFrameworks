@@ -405,13 +405,7 @@ NAV: tuple[Group, ...] = (
             Item("executive", "Executive Reporting", "/executive"),
             Item("trends", "Compliance Trends", "/trends"),
             Item("forecast", "Risk Forecasting", "/forecast"),
-            _planned(
-                "ai_analysis",
-                "AI-Assisted Analysis",
-                "Governed AI actions exist in the API (/api/ai-actions) with review and audit; "
-                "there is no analysis page yet.",
-                "/ai-agents",
-            ),
+            Item("ai_analysis", "AI-Assisted Analysis", "/ai/analysis"),
             Item("reports", "Report Builder", "/reports"),
         ),
     ),
@@ -421,13 +415,7 @@ NAV: tuple[Group, ...] = (
         "settings",
         (
             Item("users", "Users, Teams & Roles", "/users"),
-            _planned(
-                "rbac",
-                "RBAC & Permissions",
-                "Four fixed roles (admin, control owner, assessor, viewer). IdP group-to-role "
-                "mappings are API-only; there is no permission model.",
-                "/users",
-            ),
+            Item("rbac", "RBAC & Permissions", "/admin/rbac", audience=frozenset({"admin"})),
             Item("settings", "Organization Settings", "/settings"),
             Item("packs", "Framework Administration", "/packs"),
             Item(
@@ -452,12 +440,7 @@ NAV: tuple[Group, ...] = (
                 audience=frozenset({"admin"}),
                 needs_org=True,
             ),
-            _partial(
-                "apidocs",
-                "API Management",
-                "/docs",
-                "Interactive API reference only; tokens are issued by CLI, not managed here.",
-            ),
+            Item("apitokens", "API Management", "/settings/api-tokens"),
             Item("audit", "Audit Logs", "/audit", audience=frozenset({"admin", "assessor"})),
             Item("reliability", "System Health", "/admin/reliability"),
             Item("selfassurance", "Self-Assurance", "/admin/self-assurance", audience=PLATFORM),
