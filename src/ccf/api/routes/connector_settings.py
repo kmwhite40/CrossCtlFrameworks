@@ -23,6 +23,7 @@ from ...ai.cipher import CredentialStorageError
 from ...auth import Principal
 from ...connectors import connector_keys
 from ...connectors import credentials as connector_credentials
+from ...connectors.credential_spec import IncompleteCredential
 from ...enforcement.registry import write_credential_keys
 from ...integrations import integration_credential_keys
 from ...models_grc import ConnectorConfig
@@ -102,7 +103,12 @@ async def bind_credential(
             name=body.name,
             environment=body.environment,
             actor=principal.email,
+            prove=True,
         )
+    except IncompleteCredential as exc:
+        # A bundle that cannot authenticate -- or that AWS rejected -- is the
+        # caller's to fix, not a server fault; it used to surface as a 500.
+        raise HTTPException(422, str(exc)) from exc
     except CredentialStorageError as exc:
         raise HTTPException(400, str(exc)) from exc
     await session.commit()

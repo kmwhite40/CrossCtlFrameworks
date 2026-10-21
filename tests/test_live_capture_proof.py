@@ -22,6 +22,7 @@ predicate, which would only prove the mock works.
 from __future__ import annotations
 
 import itertools
+import json
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -33,6 +34,7 @@ from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
+from ccf.ai.cipher import build_cipher
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
@@ -610,17 +612,24 @@ async def test_an_access_key_pair_for_the_same_org_is_live_tenant_capture() -> N
 @pytest.mark.usefixtures("_credential_storage")
 async def test_an_access_key_pair_wins_when_a_profile_is_also_present() -> None:
     """``AwsGovCloudConnector._session`` prefers the key pair when both are on
-    the bundle, so the identity that actually captured is the tenant's."""
+    the bundle, so the identity that actually captured is the tenant's.
+
+    ``set_credential`` now refuses a bundle naming two methods, so no new one
+    can be stored -- but one stored before that rule can still be on a row,
+    so the bundle is written here directly, the way such a row exists.
+    """
     async with _org_with(
-        "Both Identities AWS",
-        last_sync=_now(),
-        captured_at=_now(),
-        credential={
-            "access_key_id": "AKIAEXAMPLEEXAMPLE",
-            "secret_access_key": "s3cr3t-example-key-material",
-            "profile": "concord-host",
-        },
+        "Both Identities AWS", last_sync=_now(), captured_at=_now(),
     ) as org_id:
+        async with session_scope() as session:
+            cfg = (await session.execute(select(ConnectorConfig).where(
+                ConnectorConfig.organization_id == org_id))).scalar_one()
+            cipher = build_cipher(get_settings())
+            cfg.encrypted_credential = cipher.encrypt(json.dumps({
+                "access_key_id": "AKIAEXAMPLEEXAMPLE",
+                "secret_access_key": "s3cr3t-example-key-material",
+                "profile": "concord-host",
+            }, sort_keys=True))
         assert await _is_live(org_id) is True
 
 

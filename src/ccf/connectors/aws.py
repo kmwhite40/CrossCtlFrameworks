@@ -75,6 +75,7 @@ from ..posture import attested
 from ..posture.providers import aws as aws_checks
 from ..posture.resolve import ResolvedCheck, resolve_checks_from_registry
 from ..posture.types import CheckOutcome, PostureCheck, ResourceFinding
+from . import aws_identity
 from .base import CapturedParameter, ConfigConnector
 
 log = get_logger(__name__)
@@ -105,6 +106,9 @@ class AwsGovCloudConnector(ConfigConnector):
     # ODP key → the AWS signal it IS derived from. Every key here is one
     # ``capture()`` below actually emits; see the module docstring on why this
     # map may not carry an aspiration.
+    #: The assumed-role session and its expiry (see ``_assumed_session``).
+    _assumed: tuple[Any, datetime] | None = None
+
     PARAMETER_MAP: ClassVar[dict[str, str]] = {
         "audit_retention_period": "CloudWatch Logs retention (log group retentionInDays)",
         "encryption_at_rest": "EC2 default EBS encryption (get_ebs_encryption_by_default)",
@@ -135,13 +139,18 @@ class AwsGovCloudConnector(ConfigConnector):
         c = self.credential
         if not c:
             return False
-        return bool((c.get("access_key_id") and c.get("secret_access_key")) or c.get("profile"))
+        return bool(
+            (c.get("access_key_id") and c.get("secret_access_key"))
+            or (c.get("role_arn") and c.get("external_id"))
+            or c.get("profile")
+        )
 
     def _session(self) -> Any:
         import boto3  # noqa: PLC0415
 
         c = self.credential or {}
-        # This org's own access key pair, or its own named profile — never the
+        # This org's own access key pair, a role in this org's account assumed
+        # with this org's External ID, or its own named profile — never the
         # ambient credential chain / a global profile (IA-05: no cross-tenant
         # attribution). ``is_configured`` guarantees one of these is present.
         if c.get("access_key_id") and c.get("secret_access_key"):
@@ -150,7 +159,62 @@ class AwsGovCloudConnector(ConfigConnector):
                 aws_secret_access_key=c["secret_access_key"],
                 aws_session_token=c.get("session_token"),
             )
+        if c.get("role_arn") and c.get("external_id"):
+            return self._assumed_session()
         return boto3.Session(profile_name=c["profile"])
+
+    def _assumed_session(self) -> Any:
+        """A session in the customer's role, assumed from this partition's broker.
+
+        The broker is the *host's* identity; it is used only to call
+        ``sts:AssumeRole`` and is never returned, so no check ever reads AWS
+        as Concord itself. The assumed session is reused until shortly before
+        it expires: every reader calls ``_session()``, and without the cache
+        one scan would be one STS call per reader.
+        """
+        import boto3  # noqa: PLC0415
+
+        now = datetime.now(UTC)
+        cached = self._assumed
+        if cached is not None and (cached[1] - now).total_seconds() > (
+            aws_identity.REFRESH_SKEW_SECONDS
+        ):
+            return cached[0]
+        c = self.credential or {}
+        region = self._region()
+        partition = aws_identity.validate_role(
+            str(c["role_arn"]), region, account_id=c.get("account_id")
+        )
+        settings = get_settings()
+        profile = (
+            settings.aws_broker_profile_govcloud
+            if partition == "aws-us-gov"
+            else settings.aws_broker_profile_commercial
+        )
+        if not profile:
+            # No cross-partition fallback, and never the ambient chain.
+            raise aws_identity.RoleConfigError(
+                f"this Concord host has no broker identity for the {partition} partition"
+            )
+        broker = boto3.Session(profile_name=profile)
+        external_id = str(c["external_id"])
+        answer = broker.client("sts", region_name=region).assume_role(
+            RoleArn=str(c["role_arn"]),
+            RoleSessionName=f"concord-{external_id[-12:]}",
+            ExternalId=external_id,
+            DurationSeconds=aws_identity.SESSION_SECONDS,
+        )
+        creds = answer["Credentials"]
+        session = boto3.Session(
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+        )
+        expires = creds.get("Expiration")
+        if not isinstance(expires, datetime):
+            expires = now
+        self._assumed = (session, expires if expires.tzinfo else expires.replace(tzinfo=UTC))
+        return session
 
     async def verify(self) -> dict[str, Any]:
         """Confirm we can connect into the GovCloud account (STS caller identity)."""
@@ -168,6 +232,18 @@ class AwsGovCloudConnector(ConfigConnector):
             ident = sts.get_caller_identity()
             arn = ident.get("Arn", "")
             partition = arn.split(":")[1] if arn.count(":") >= 2 else "aws"
+            role_arn = (self.credential or {}).get("role_arn")
+            if role_arn:
+                # Reaching *an* account is not reaching the customer's: the
+                # identity must be the role named, in the account named.
+                _p, account, name = aws_identity.parse_role_arn(str(role_arn))
+                role_name = name.split("/")[-1]
+                if ident.get("Account") != account or f":assumed-role/{role_name}/" not in arn:
+                    return {
+                        "connected": False,
+                        "reason": "the assumed identity is not the configured role",
+                        "region": region,
+                    }
             return {
                 "connected": True,
                 "account": ident.get("Account"),
@@ -180,7 +256,9 @@ class AwsGovCloudConnector(ConfigConnector):
         try:
             return await asyncio.to_thread(_call)
         except Exception as e:
-            return {"connected": False, "reason": str(e)[:200], "region": region}
+            # Classified, never the raw text: an AssumeRole refusal names the
+            # broker's ARN, which is the platform's identity, not the tenant's.
+            return {"connected": False, "reason": aws_identity.classify(e), "region": region}
 
     def _captured(
         self,
@@ -328,14 +406,331 @@ class AwsGovCloudConnector(ConfigConnector):
             ]: self._read_db_instances,
             aws_checks.ENDPOINTS[aws_checks.INSPECTOR_ENABLED.key]: self._read_inspector_status,
             aws_checks.ENDPOINTS[aws_checks.PATCH_COMPLIANCE.key]: self._read_patch_states,
+            aws_checks.ENDPOINTS[aws_checks.CONFIG_RECORDER.key]: self._read_config_recorders,
+            aws_checks.ENDPOINTS[aws_checks.GUARDDUTY_ENABLED.key]: self._read_guardduty,
+            aws_checks.ENDPOINTS[
+                aws_checks.ACCESS_ANALYZER_ENABLED.key
+            ]: self._read_access_analyzers,
+            aws_checks.ENDPOINTS[aws_checks.KMS_KEY_ROTATION.key]: self._read_kms_keys,
+            aws_checks.ENDPOINTS[aws_checks.ELB_LISTENERS_TLS.key]: self._read_elb_listeners,
+            aws_checks.ENDPOINTS[aws_checks.WAF_PUBLIC_ALB.key]: self._read_public_alb_waf,
+            aws_checks.ENDPOINTS[
+                aws_checks.TRAIL_BUCKET_OBJECT_LOCK.key
+            ]: self._read_trail_bucket_locks,
+            # RDS_STORAGE_ENCRYPTED shares rds.describe_db_instances with
+            # RDS_NOT_PUBLICLY_ACCESSIBLE: one fleet, two fields.
         }
+
+    def _client(self, service: str) -> Any:
+        return self._session().client(service, region_name=self._region())
+
+    @staticmethod
+    def _error_code(error: Exception) -> str:
+        response = getattr(error, "response", None)
+        if isinstance(response, dict):
+            return str((response.get("Error") or {}).get("Code") or "")
+        return ""
+
+    def _read_config_recorders(self) -> list[dict[str, Any]]:
+        """Recorders joined to their status by name: whether one exists, what it
+        records, and whether it is actually recording."""
+        config = self._client("config")
+        recorders = config.describe_configuration_recorders().get("ConfigurationRecorders") or []
+        statuses = {
+            str(st.get("name")): st
+            for st in config.describe_configuration_recorder_status().get(
+                "ConfigurationRecordersStatus"
+            ) or []
+        }
+        rows = []
+        for r in recorders:
+            st = statuses.get(str(r.get("name")), {})
+            row = {"name": r.get("name"), "recordingGroup": r.get("recordingGroup") or {}}
+            if "recording" in st:
+                row["recording"] = st["recording"]
+            row["lastStatus"] = st.get("lastStatus")
+            rows.append(row)
+        return rows
+
+    def _read_guardduty(self) -> list[dict[str, Any]]:
+        """Every detector's status -- not merely the first detector's id."""
+        gd = self._client("guardduty")
+        rows: list[dict[str, Any]] = []
+        for page in gd.get_paginator("list_detectors").paginate():
+            for detector_id in page.get("DetectorIds") or []:
+                detail = gd.get_detector(DetectorId=detector_id)
+                rows.append({"DetectorId": detector_id, "Status": detail.get("Status")})
+        return rows
+
+    def _read_access_analyzers(self) -> list[dict[str, Any]]:
+        aa = self._client("accessanalyzer")
+        rows: list[dict[str, Any]] = []
+        for page in aa.get_paginator("list_analyzers").paginate():
+            rows.extend(page.get("analyzers") or [])
+        return rows
+
+    def _read_kms_keys(self) -> list[dict[str, Any]]:
+        """Customer-managed keys with their rotation status, paginated.
+
+        A key whose policy denies this reader becomes a row marked unreadable
+        -- that key goes to review, the rest are still judged. AWS-managed keys
+        are skipped: AWS rotates them, and the customer cannot change it.
+        """
+        kms = self._client("kms")
+        rows: list[dict[str, Any]] = []
+        for page in kms.get_paginator("list_keys").paginate():
+            for key in page.get("Keys") or []:
+                key_id = key.get("KeyId")
+                try:
+                    meta = kms.describe_key(KeyId=key_id).get("KeyMetadata") or {}
+                except Exception as e:
+                    rows.append({"KeyArn": key.get("KeyArn") or key_id,
+                                 "Unreadable": self._error_code(e) or type(e).__name__})
+                    continue
+                if meta.get("KeyManager") == "AWS":
+                    continue
+                row = {f: meta.get(f) for f in ("KeyArn", "KeyId", "KeyState", "KeySpec",
+                                                "Origin")}
+                if (meta.get("KeyState") == "Enabled"
+                        and meta.get("KeySpec", "SYMMETRIC_DEFAULT") == "SYMMETRIC_DEFAULT"
+                        and meta.get("Origin", "AWS_KMS") == "AWS_KMS"):
+                    try:
+                        status = kms.get_key_rotation_status(KeyId=key_id)
+                        row["KeyRotationEnabled"] = status.get("KeyRotationEnabled")
+                    except Exception as e:
+                        row["Unreadable"] = self._error_code(e) or type(e).__name__
+                rows.append(row)
+        return rows
+
+    def _load_balancers(self) -> list[dict[str, Any]]:
+        elb = self._client("elbv2")
+        lbs: list[dict[str, Any]] = []
+        for page in elb.get_paginator("describe_load_balancers").paginate():
+            lbs.extend(page.get("LoadBalancers") or [])
+        return lbs
+
+    def _read_elb_listeners(self) -> list[dict[str, Any]]:
+        """Every listener of every load balancer; an HTTP listener carries its
+        rules, so "only redirects to HTTPS" is checked rather than assumed."""
+        elb = self._client("elbv2")
+        rows: list[dict[str, Any]] = []
+        for lb in self._load_balancers():
+            arn = lb.get("LoadBalancerArn")
+            for page in elb.get_paginator("describe_listeners").paginate(LoadBalancerArn=arn):
+                for li in page.get("Listeners") or []:
+                    row = dict(li)
+                    if str(li.get("Protocol") or "").upper() == "HTTP":
+                        rules: list[dict[str, Any]] = []
+                        for rpage in elb.get_paginator("describe_rules").paginate(
+                            ListenerArn=li.get("ListenerArn")
+                        ):
+                            rules.extend(
+                                r for r in rpage.get("Rules") or [] if not r.get("IsDefault")
+                            )
+                        row["Rules"] = rules
+                    rows.append(row)
+        return rows
+
+    def _read_public_alb_waf(self) -> list[dict[str, Any]]:
+        """Each internet-facing application load balancer and its web ACL.
+
+        Asked per load balancer (``GetWebACLForResource``) rather than by listing
+        web ACLs and their resources, which the source capped at 100 ACLs.
+        """
+        waf = self._client("wafv2")
+        rows: list[dict[str, Any]] = []
+        for lb in self._load_balancers():
+            if lb.get("Type") != "application" or lb.get("Scheme") != "internet-facing":
+                continue
+            row = {"LoadBalancerArn": lb.get("LoadBalancerArn"),
+                   "LoadBalancerName": lb.get("LoadBalancerName")}
+            try:
+                acl = waf.get_web_acl_for_resource(ResourceArn=lb.get("LoadBalancerArn"))
+                row["WebACL"] = (acl.get("WebACL") or {}).get("Name")
+            except Exception as e:
+                row["Unreadable"] = self._error_code(e) or type(e).__name__
+            rows.append(row)
+        return rows
+
+    def _read_trail_bucket_locks(self) -> list[dict[str, Any]]:
+        """Object Lock on the buckets CloudTrail actually delivers to."""
+        trails = self._client("cloudtrail").describe_trails(includeShadowTrails=False)
+        buckets = sorted(
+            {str(t["S3BucketName"]) for t in trails.get("trailList") or []
+             if t.get("S3BucketName")}
+        )
+        s3 = self._client("s3")
+        rows: list[dict[str, Any]] = []
+        for bucket in buckets:
+            try:
+                answer = s3.get_object_lock_configuration(Bucket=bucket)
+                rows.append({"Bucket": bucket,
+                             "ObjectLockConfiguration": answer.get("ObjectLockConfiguration")})
+            except Exception as e:
+                code = self._error_code(e)
+                if code == "ObjectLockConfigurationNotFoundError":
+                    rows.append({"Bucket": bucket, "ObjectLockConfiguration": None})
+                else:
+                    rows.append({"Bucket": bucket, "Unreadable": code or type(e).__name__})
+        return rows
+
+    # ── Permission check ────────────────────────────────────────────────────
+
+    #: Error codes that mean the identity is not allowed -- the only codes that
+    #: make an action "missing". A rejected or expired key is "unknown": the
+    #: policy may be fine, and sending an operator to fix it would be wrong.
+    DENIAL_CODES: ClassVar[frozenset[str]] = frozenset(
+        {"AccessDenied", "AccessDeniedException", "UnauthorizedOperation",
+         "AuthorizationError"}
+    )
+
+    def permission_check(self) -> list[dict[str, Any]]:
+        """For each check: ``granted``, ``missing`` (a clear denial, with the
+        actions it names) or ``unknown``. Read-only: runs each reader once and
+        evaluates nothing.
+
+        A denial on individual resources -- a KMS key policy, a bucket in a
+        log-archive account -- is reported even when the read as a whole
+        succeeded, because those rows otherwise surface only as review items.
+        """
+        readers = self._readers()
+        by_token: dict[str, tuple[str, list[str], str]] = {}
+        out: list[dict[str, Any]] = []
+        for check in aws_checks.CHECKS:
+            token = aws_checks.ENDPOINTS[check.key]
+            if token not in by_token:
+                by_token[token] = self._probe(readers[token], check)
+            status, actions, note = by_token[token]
+            out.append({"check": check.key, "title": check.title, "status": status,
+                        "actions": actions, "note": note})
+        return out
+
+    def _probe(
+        self, reader: Callable[[], list[dict[str, Any]]], check: PostureCheck
+    ) -> tuple[str, list[str], str]:
+        try:
+            rows = reader()
+        except aws_identity.RoleConfigError as e:
+            return "unknown", [], str(e)
+        except Exception as e:
+            code = self._error_code(e)
+            if code not in self.DENIAL_CODES:
+                return "unknown", [], aws_identity.classify(e)
+            operation = str(getattr(e, "operation_name", "") or "")
+            named = [p for p in check.required_permissions
+                     if operation and p.split(":", 1)[1] == operation]
+            return "missing", named or list(check.required_permissions), (
+                f"AWS refused {operation}" if operation else "AWS refused the read"
+            )
+        denied = [r for r in rows if str(r.get("Unreadable") or "") in self.DENIAL_CODES]
+        if denied:
+            return "missing", list(check.required_permissions), (
+                f"refused on {len(denied)} resource(s) -- often a resource policy"
+            )
+        return "granted", [], ""
+
+    # ── AWS Organizations inventory ─────────────────────────────────────────
+
+    #: Walk caps, so a pathological organization cannot run unbounded; hitting
+    #: one is reported as ``truncated``, never as a complete answer.
+    ORG_MAX_OUS: ClassVar[int] = 2000
+    ORG_MAX_ACCOUNTS: ClassVar[int] = 20000
+
+    def organization_inventory(self) -> dict[str, Any]:
+        """The organization, its OUs and accounts, as this credential can see them.
+
+        Ported from m365-docs-hub's organization collector, keeping its rules:
+        AccessDenied from a member account means "cannot be read from here"
+        (``indeterminate``), never an empty organization; an account's email is
+        reduced to its domain; the walk is capped and says when it stopped.
+        Blocking -- call it off the event loop.
+        """
+        out: dict[str, Any] = {
+            "organization": None, "accounts": [], "indeterminate": [], "truncated": False,
+        }
+        # Organizations answers from one region per partition -- us-east-1 for
+        # commercial, us-gov-west-1 for GovCloud -- whatever region the
+        # credential names (m365-docs-hub found this the hard way, 2026-10-20).
+        home = (
+            "us-gov-west-1"
+            if aws_identity.region_partition(self._region()) == "aws-us-gov"
+            else "us-east-1"
+        )
+        org = self._session().client("organizations", region_name=home)
+        try:
+            desc = org.describe_organization().get("Organization") or {}
+        except Exception as e:
+            out["indeterminate"].append(f"organization:{self._error_code(e) or 'error'}")
+            return out
+        arn = str(desc.get("Arn") or "")
+        out["organization"] = {
+            "id": desc.get("Id"),
+            "arn": arn,
+            "management_account_id": desc.get("MasterAccountId"),
+            "feature_set": desc.get("FeatureSet"),
+            "partition": arn.split(":")[1] if arn.count(":") >= 2 else None,
+        }
+        try:
+            roots = [r for page in org.get_paginator("list_roots").paginate()
+                     for r in page.get("Roots") or []]
+        except Exception as e:
+            out["indeterminate"].append(f"roots:{self._error_code(e) or 'error'}")
+            return out
+        queue: list[tuple[str, str]] = [(str(r.get("Id")), "/") for r in roots]
+        ous = 0
+        while queue:
+            parent, path = queue.pop(0)
+            try:
+                for page in org.get_paginator("list_accounts_for_parent").paginate(
+                    ParentId=parent
+                ):
+                    for acct in page.get("Accounts") or []:
+                        if len(out["accounts"]) >= self.ORG_MAX_ACCOUNTS:
+                            out["truncated"] = True
+                            break
+                        email = str(acct.get("Email") or "")
+                        a_arn = str(acct.get("Arn") or "")
+                        joined = acct.get("JoinedTimestamp")
+                        out["accounts"].append({
+                            "id": acct.get("Id"),
+                            "name": acct.get("Name"),
+                            "status": acct.get("Status"),
+                            "arn": a_arn,
+                            "partition": a_arn.split(":")[1] if a_arn.count(":") >= 2 else None,
+                            "email_domain": email.split("@", 1)[1].lower() if "@" in email
+                            else None,
+                            "ou_path": path,
+                            "parent_id": parent,
+                            "joined_at": joined.isoformat() if hasattr(joined, "isoformat")
+                            else (str(joined) if joined else None),
+                        })
+            except Exception as e:
+                out["indeterminate"].append(f"accounts:{parent}:{self._error_code(e) or 'error'}")
+            try:
+                for page in org.get_paginator("list_organizational_units_for_parent").paginate(
+                    ParentId=parent
+                ):
+                    for ou in page.get("OrganizationalUnits") or []:
+                        ous += 1
+                        if ous > self.ORG_MAX_OUS:
+                            out["truncated"] = True
+                            queue.clear()
+                            break
+                        queue.append((str(ou.get("Id")), f"{path}{ou.get('Name')}/"))
+            except Exception as e:
+                out["indeterminate"].append(f"ous:{parent}:{self._error_code(e) or 'error'}")
+        return out
 
     def _iam(self) -> Any:
         return self._session().client("iam", region_name=self._region())
 
     def _read_account_summary(self) -> list[dict[str, Any]]:
-        """``iam.get_account_summary`` — the account's identity counters."""
-        return [self._iam().get_account_summary()]
+        """``iam.get_account_summary`` — the account's identity counters, with
+        the partition attached: whether a root user can sign in at all depends
+        on it (see ``evaluate_root_mfa``)."""
+        summary = dict(self._iam().get_account_summary())
+        summary["Partition"] = aws_identity.region_partition(self._region())
+        return [summary]
 
     @staticmethod
     def _is_no_such_entity(error: Exception) -> bool:
@@ -778,7 +1173,7 @@ class AwsGovCloudConnector(ConfigConnector):
                     resource_type=check.resource_type,
                     verdict="manual_review_required",
                     observed=observed,
-                    detail={"error": str(error)[:300]},
+                    detail={"error": aws_identity.classify(error)},
                 ),
             ),
         )
@@ -793,6 +1188,8 @@ class AwsGovCloudConnector(ConfigConnector):
         problem — the judgement ``msgraph._describe_failure`` makes for a 429
         or a timeout.
         """
+        if isinstance(error, aws_identity.RoleConfigError):
+            return f"the role credential cannot be used: {error}"
         if isinstance(error, UnknownAwsSourceError):
             return (
                 f"this check reads {str(error)!r}, which the AWS connector has no "

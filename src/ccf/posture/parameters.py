@@ -105,6 +105,18 @@ PARAMETERIZABLE: dict[str, tuple[str, ...]] = {
     # how many missing patches are tolerable, and the answer for 3.14.1 is none.
     # A threshold here would let a package define its way out of the requirement.
     aws.PATCH_COMPLIANCE.key: (),
+    # Recording or not, every resource type or not: nothing to tune.
+    aws.CONFIG_RECORDER.key: (),
+    aws.GUARDDUTY_ENABLED.key: (),
+    aws.ACCESS_ANALYZER_ENABLED.key: (),
+    # Rotation is on or off; AWS sets the period, so there is no threshold.
+    aws.KMS_KEY_ROTATION.key: (),
+    aws.ELB_LISTENERS_TLS.key: (),
+    aws.WAF_PUBLIC_ALB.key: (),
+    # A minimum retention period would be a natural parameter; it is not taken
+    # yet, because the check does not judge the period, only that one is set.
+    aws.TRAIL_BUCKET_OBJECT_LOCK.key: (),
+    aws.RDS_STORAGE_ENCRYPTED.key: (),
 }
 
 #: Check key -> the ``expected`` template to re-render when parameterized.
