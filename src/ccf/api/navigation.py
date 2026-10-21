@@ -119,25 +119,10 @@ NAV: tuple[Group, ...] = (
         "Governance",
         "landmark",
         (
-            _planned(
-                "org_units",
-                "Organization & Business Units",
-                "Organizations can be created (on Assets & Systems) but not edited, and "
-                "there is no business-unit model.",
-                "/systems",
-                "/settings",
-            ),
+            Item("org_units", "Organization & Business Units", "/org-units"),
             Item("policies", "Policies & Procedures", "/policies"),
-            _planned(
-                "committees",
-                "Governance Committees",
-                "No committee, charter or meeting-record model exists.",
-            ),
-            _planned(
-                "objectives",
-                "Strategic Objectives",
-                "No objective model exists, and nothing links risks or controls to one.",
-            ),
+            Item("committees", "Governance Committees", "/committees"),
+            Item("objectives", "Strategic Objectives", "/objectives"),
             Item("exceptions", "Exception Management", "/exceptions"),
             Item("policy_acks", "Policy Acknowledgments", "/policies#acknowledgments"),
             Item("personnel", "People & Access Reviews", "/personnel"),
@@ -276,8 +261,10 @@ NAV: tuple[Group, ...] = (
         "settings",
         (
             Item("users", "Users, Teams & Roles", "/users"),
+            Item("teams", "Teams", "/teams"),
             Item("rbac", "RBAC & Permissions", "/admin/rbac", audience=frozenset({"admin"})),
             Item("settings", "Organization Settings", "/settings"),
+            Item("org_settings", "Organization Profile", "/settings/organization"),
             Item("packs", "Framework Administration", "/packs"),
             Item(
                 "catalogintegrity",
