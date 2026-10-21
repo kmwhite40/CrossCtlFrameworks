@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics import posture
@@ -100,6 +100,14 @@ def _nonneg(raw: int | None, name: str) -> int | None:
 
 
 # ── Workpapers ───────────────────────────────────────────────────────────────
+
+
+def _finding_on_live_system(org: int | None) -> Any:
+    """A finding with no system, or one on a live system of ``org``."""
+    return or_(
+        AuditFinding.system_id.is_(None),
+        AuditFinding.system_id.in_(posture.org_system_subq(org)),
+    )
 
 
 async def engagement_in_scope(
@@ -267,6 +275,9 @@ async def findings(
     )
     if org is not None:
         stmt = stmt.where(AuditEngagement.organization_id == org)
+    # A finding raised against a system that was later deleted goes with the
+    # system, as POA&Ms and risks do; one raised against no system stays.
+    stmt = stmt.where(_finding_on_live_system(org))
     all_rows = (await session.execute(stmt)).all()
     by_severity = Counter(f.severity for f, _ in all_rows if f.status != FINDING_CLOSED)
     statuses = Counter(f.status for f, _ in all_rows)
@@ -314,6 +325,9 @@ async def pbc_requests(
     )
     if org is not None:
         stmt = stmt.where(AuditEngagement.organization_id == org)
+    # A finding raised against a system that was later deleted goes with the
+    # system, as POA&Ms and risks do; one raised against no system stays.
+    stmt = stmt.where(_finding_on_live_system(org))
     all_rows = (await session.execute(stmt)).all()
     owners = await user_names(session, {r.owner_user_id for r, _ in all_rows})
     items = []
@@ -751,7 +765,11 @@ async def readiness(session: AsyncSession, org: int | None, today: date) -> list
     for eid, severity, n in (
         await session.execute(
             select(AuditFinding.engagement_id, AuditFinding.severity, func.count())
-            .where(AuditFinding.engagement_id.in_(ids), AuditFinding.status != FINDING_CLOSED)
+            .where(
+                AuditFinding.engagement_id.in_(ids),
+                AuditFinding.status != FINDING_CLOSED,
+                _finding_on_live_system(org),
+            )
             .group_by(AuditFinding.engagement_id, AuditFinding.severity)
         )
     ).all():

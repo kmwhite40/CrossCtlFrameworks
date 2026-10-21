@@ -1107,3 +1107,30 @@ async def test_compensating_control_dates_and_states(two_orgs) -> None:
         )
         assert r.status_code == 409
     assert (await _get(CompensatingControl, int(a["cc_proposed"]))).status == "proposed"
+
+
+async def test_a_finding_on_a_deleted_system_goes_with_the_system(two_orgs) -> None:
+    """Findings are scoped by engagement, so one raised against a system that
+    was later soft-deleted kept showing on the findings page and in the
+    readiness counts. It now leaves with its system, as POA&Ms and risks do."""
+    a, _ = two_orgs
+    org = int(a["org_id"])
+    title = f"Alpha-DELETED-finding-{a['tag']}"
+    async with session_scope() as s:
+        before = await audit_program.readiness(s, org, date.today())
+        s.add(
+            AuditFinding(
+                engagement_id=a["eng_id"],
+                organization_id=org,
+                system_id=a["gone_id"],
+                title=title,
+                severity="critical",
+                status="open",
+            )
+        )
+        await s.flush()
+        after = await audit_program.readiness(s, org, date.today())
+    assert after == before
+    async with _client() as c:
+        findings = (await c.get("/audit/findings", headers=_tok(a, "admin"))).text
+    assert title not in findings
