@@ -30,6 +30,7 @@ from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
+from sqlalchemy.exc import DBAPIError
 
 from ccf.api.deps import get_session
 from ccf.api.main import create_app
@@ -880,39 +881,51 @@ async def test_the_vendor_score_shows_its_formula_and_a_dash_over_nothing(two_or
 
 
 async def test_a_child_row_from_another_org_never_scores_a_vendor(two_orgs) -> None:
-    """A questionnaire, finding or request carrying Bravo's organization but
-    Alpha's vendor id (a bad import) is not Alpha's evidence."""
+    """A questionnaire carrying Bravo's organization but Alpha's vendor id (a
+    bad import; ``vendor_questionnaires`` predates 0101's triggers) is not
+    Alpha's evidence. Findings and due-diligence items cannot be written that
+    way at all since 0101, which is asserted here so the score's own check is
+    known to sit behind a database guard."""
     a, b = two_orgs
     async with session_scope() as s:
-        s.add_all(
-            [
-                VendorQuestionnaire(
-                    organization_id=b["org"],
-                    vendor_id=a["bare"],
-                    name="x",
-                    status="submitted",
-                    score=10.0,
-                ),
-                VendorFinding(
-                    organization_id=b["org"],
-                    vendor_id=a["bare"],
-                    title="x",
-                    severity="critical",
-                    status="open",
-                ),
-                DueDiligenceItem(
-                    organization_id=b["org"],
-                    vendor_id=a["bare"],
-                    item="x",
-                    status="requested",
-                    due_on=date.today() - timedelta(days=9),
-                ),
-            ]
+        s.add(
+            VendorQuestionnaire(
+                organization_id=b["org"],
+                vendor_id=a["bare"],
+                name="x",
+                status="submitted",
+                score=10.0,
+            )
         )
         await s.flush()
         bare = await s.get(Vendor, a["bare"])
         scores = await tp.vendor_scores(s, [bare], date.today())
     assert scores == {a["bare"]: None}
+    for row in (
+        VendorFinding(
+            organization_id=b["org"], vendor_id=a["bare"], title="x", severity="critical"
+        ),
+        DueDiligenceItem(
+            organization_id=b["org"], vendor_id=a["bare"], item="x", status="requested"
+        ),
+        # The other child rows whose org predicates in the routes sit behind
+        # the same trigger (reported as unreachable by the mutation check).
+        ContractObligation(organization_id=a["org"], contract_id=b["contract"], description="x"),
+        ProjectLink(
+            organization_id=a["org"], project_id=b["project"], entity_type="task", entity_id="1"
+        ),
+        VendorFinding(
+            organization_id=a["org"],
+            vendor_id=a["vendor"],
+            questionnaire_id=b["q"],
+            title="x",
+            severity="low",
+        ),
+    ):
+        with pytest.raises(DBAPIError, match="same organization"):
+            async with session_scope() as s:
+                s.add(row)
+                await s.flush()
 
 
 # ── mapped controls are validated against the catalog ───────────────────────
@@ -1113,3 +1126,154 @@ async def test_enterprise_risks_are_scoped_by_their_owning_org(two_orgs) -> None
     row = vendors[vendors.index(f"<strong>Alpha-vendor-{a['tag']}</strong>") :].split("</tr>", 1)[0]
     assert 'data-open-risks="1"' in row
     assert "Bravo" not in vendors
+
+
+# ── pinned by the mutation check ─────────────────────────────────────────────
+
+
+async def _second(a: dict[str, Any]) -> dict[str, int]:
+    """A second contract and project in Alpha, each with a child of its own."""
+    async with session_scope() as s:
+        c2 = VendorContract(
+            organization_id=a["org"], vendor_id=a["vendor"], title="second", status="active"
+        )
+        p2 = Project(organization_id=a["org"], name=f"Alpha-second-project-{a['tag']}")
+        s.add_all([c2, p2])
+        await s.flush()
+        ob2 = ContractObligation(
+            organization_id=a["org"], contract_id=c2.id, description=f"Alpha-ob2-{a['tag']}"
+        )
+        ln2 = ProjectLink(
+            organization_id=a["org"],
+            project_id=p2.id,
+            entity_type="poam",
+            entity_id=str(a["poam2"]),
+        )
+        s.add_all([ob2, ln2])
+        await s.flush()
+        return {"contract": c2.id, "ob": ob2.id, "project": p2.id, "link": ln2.id}
+
+
+async def test_a_child_shows_and_moves_only_under_its_own_parent(two_orgs) -> None:
+    """Same organization, other parent: a contract page lists only its own
+    obligations, a project only its own links; a link is removed only through
+    its own project; linking a record another project already has still links it."""
+    a, _ = two_orgs
+    two = await _second(a)
+    h = _auth(a["tokens"]["admin"])
+    async with _client() as c:
+        contract = (await c.get(f"/contracts/{a['contract']}", headers=h)).text
+        project = (await c.get(f"/projects/{a['project']}", headers=h)).text
+        cross_unlink = await c.post(
+            f"/projects/{a['project']}/links/{two['link']}/delete", headers=h
+        )
+        relink = await c.post(
+            f"/projects/{a['project']}/links",
+            data={"entity_type": "poam", "entity_id": str(a["poam2"])},
+            headers=h,
+        )
+    assert f"Alpha-ob2-{a['tag']}" not in contract
+    assert f"Alpha-contract-obligation-{a['tag']}" in contract
+    poams = project[project.index('id="links-poam"') :].split("</section>", 1)[0]
+    assert f"Alpha-poam-two-{a['tag']}" not in poams.split("<tfoot>")[0].split("card__footer")[0]
+    assert cross_unlink.status_code == 404
+    assert relink.status_code == 303
+    async with session_scope() as s:
+        assert await s.get(ProjectLink, two["link"]) is not None
+        mine = (
+            (
+                await s.execute(
+                    select(ProjectLink.entity_id).where(ProjectLink.project_id == a["project"])
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert sorted(mine) == sorted([str(a["poam"]), str(a["poam2"])])
+
+
+async def test_a_stored_link_to_another_orgs_record_never_renders_it(two_orgs) -> None:
+    """``project_links.entity_id`` is a string the database cannot check; a
+    row written around the API (an import) to Bravo's task or system shows as
+    unavailable, never as Bravo's title."""
+    a, b = two_orgs
+    async with session_scope() as s:
+        for etype, key in (("task", "task"), ("system", "system")):
+            s.add(
+                ProjectLink(
+                    organization_id=a["org"],
+                    project_id=a["project"],
+                    entity_type=etype,
+                    entity_id=str(b[key]),
+                )
+            )
+    async with _client() as c:
+        body = (await c.get(f"/projects/{a['project']}", headers=_auth(a["tokens"]["admin"]))).text
+    assert "Bravo" not in body
+    assert body.count("no longer available") >= 2
+
+
+async def test_a_mis_owned_questionnaire_offers_no_gap(two_orgs) -> None:
+    """``vendor_questionnaires`` has no parent trigger. A questionnaire owned
+    by one organization about the other's vendor is offered to neither."""
+    a, b = two_orgs
+    async with session_scope() as s:
+        for org, vendor, who in ((a["org"], b["vendor"], "x1"), (b["org"], a["vendor"], "x2")):
+            q = VendorQuestionnaire(
+                organization_id=org, vendor_id=vendor, name=f"Bravo-q-{who}", status="submitted"
+            )
+            s.add(q)
+            await s.flush()
+            s.add(
+                QuestionnaireResponse(
+                    questionnaire_id=q.id,
+                    question_id="IR-01",
+                    question_text=f"Bravo-misowned-{who}-{a['tag']}",
+                    weight=1,
+                    answer="no",
+                )
+            )
+    async with _client() as c:
+        body = (await c.get("/vendor-findings", headers=_auth(a["tokens"]["admin"]))).text
+    assert f"Alpha-gap-question-{a['tag']}" in body
+    assert "misowned" not in body
+
+
+async def test_a_platform_session_cannot_raise_a_gap_across_organizations(two_orgs) -> None:
+    """A global principal (auth off) skips the org filter on load; the gap
+    route still refuses a questionnaire whose organization is not its
+    vendor's, rather than handing the database a cross-org finding."""
+    a, b = two_orgs
+    async with session_scope() as s:
+        q = VendorQuestionnaire(
+            organization_id=b["org"], vendor_id=a["vendor"], name="misowned", status="submitted"
+        )
+        s.add(q)
+        await s.flush()
+        s.add(
+            QuestionnaireResponse(
+                questionnaire_id=q.id,
+                question_id="IR-01",
+                question_text="misowned",
+                weight=1,
+                answer="no",
+            )
+        )
+        qid = q.id
+    os.environ["CCF_AUTH_ENABLED"] = "false"
+    get_settings.cache_clear()
+    async with _client() as c:
+        resp = await c.post(
+            "/vendor-findings/from-gap", data={"questionnaire_id": str(qid), "question_id": "IR-01"}
+        )
+    assert resp.status_code == 404
+
+
+async def test_a_risk_on_a_deleted_system_is_not_a_vendors_open_risk(two_orgs) -> None:
+    a, _ = two_orgs
+    async with session_scope() as s:
+        (await s.get(Risk, a["gone_risk"])).vendor_id = a["vendor"]
+    async with _client() as c:
+        body = (await c.get("/vendors", headers=_auth(a["tokens"]["viewer"]))).text
+    row = body[body.index(f"<strong>Alpha-vendor-{a['tag']}</strong>") :].split("</tr>", 1)[0]
+    assert 'data-open-risks="1"' in row  # the enterprise risk only
