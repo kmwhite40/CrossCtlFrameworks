@@ -182,7 +182,7 @@ async def _org(label: str, tag: str) -> dict[str, object]:
 
 @pytest.fixture
 async def two_orgs() -> tuple[dict, dict]:
-    tag = f"{next(_SEQ)}x{os.getpid()}"
+    tag = f"pf{next(_SEQ)}p{os.getpid()}"
     return await _org("Alpha", tag), await _org("Bravo", tag)
 
 
