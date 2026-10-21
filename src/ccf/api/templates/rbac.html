@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}RBAC &amp; permissions · Concord{% endblock %}
+{% block heading %}RBAC &amp; permissions{% endblock %}
+{% block subtitle %}Who the running application admits to each route, read from the route's own dependencies at request time, not from a written table. Four tenant roles; a platform administrator is an unscoped principal outside every tenant.{% endblock %}
+{% block content %}
+
+<section class="kpi-grid kpi-grid--4" aria-label="Routes by gate">
+  {% for g in gates %}
+  <a class="kpi" href="/admin/rbac?gate={{ g }}"><span class="kpi__label">{{ gate_labels[g] }}</span><span class="kpi__value">{{ summary[g] }}</span></a>
+  {% endfor %}
+</section>
+<p class="dim">{{ summary.total }} route-and-method pairs in total; every one falls under exactly one of the four gates above, so the four counts sum to {{ summary.total }}.</p>
+
+<section class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Permission matrix</h2><span class="panel__hint">{{ rows | length }} shown</span></header>
+  <div class="panel__body">
+    <form method="get" action="/admin/rbac" class="filters">
+      <div class="field-group"><label class="label" for="f-q">Path contains</label><input class="input" id="f-q" name="q" value="{{ filters.q }}" placeholder="/api/risks"></div>
+      <div class="field-group"><label class="label" for="f-method">Method</label>
+        <select class="select" id="f-method" name="method"><option value="">Any</option>{% for m in methods %}<option value="{{ m }}" {% if filters.method == m %}selected{% endif %}>{{ m }}</option>{% endfor %}</select></div>
+      <div class="field-group"><label class="label" for="f-gate">Gate</label>
+        <select class="select" id="f-gate" name="gate"><option value="">Any</option>{% for g in gates %}<option value="{{ g }}" {% if filters.gate == g %}selected{% endif %}>{{ gate_labels[g] }}</option>{% endfor %}</select></div>
+      <div class="field-group"><label class="label" for="f-role">Admits role</label>
+        <select class="select" id="f-role" name="role"><option value="">Any</option>{% for r in roles %}<option value="{{ r }}" {% if filters.role == r %}selected{% endif %}>{{ r }}</option>{% endfor %}</select></div>
+      <button class="btn btn--secondary" type="submit">Filter</button>
+    </form>
+    <p class="panel__note">What this cannot see: a role check written inside a handler's body rather than as a dependency. Such a route is listed as "any signed-in user" here, which is the most it can be. A viewer's write is refused by the sign-in gate on every non-public path except a fixed allowlist, whatever the route's own dependency says; those rows are marked.</p>
+  </div>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Method</th><th>Path</th><th>Gate</th>{% for r in roles %}<th>{{ r }}</th>{% endfor %}</tr></thead>
+    <tbody>{% for row in rows %}<tr>
+      <td><span class="chip chip--ghost">{{ row.method }}</span></td>
+      <td class="mono">{{ row.path }}</td>
+      <td class="mono dim">{{ row.gate_label }}</td>
+      {% for r in roles %}<td>{% if row.admits[r] %}<span class="chip chip--ok">yes</span>{% elif r == 'viewer' and row.viewer_refused_by_middleware %}<span class="chip chip--warn" title="Admitted by the route, refused by the sign-in gate: the viewer role is read-only">no, read-only</span>{% else %}<span class="chip chip--ghost">no</span>{% endif %}</td>{% endfor %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="filter-x"></i><h2>No route matches</h2><p>Nothing matches these filters. <a href="/admin/rbac">Clear them</a>.</p></div>
+  {% endif %}
+</section>
+
+<section class="card panel" id="mappings">
+  <header class="panel__head"><h2 class="panel__title">IdP group to role mappings</h2><span class="panel__hint">applied at single sign-on; lowest priority number wins</span></header>
+  <div class="panel__body">
+    {% if error %}<p class="chip chip--err" role="alert">{{ error }}</p>{% endif %}
+    {% if has_org %}
+    <form method="post" action="/admin/rbac/mappings" class="filters">
+      <div class="field-group"><label class="label" for="m-group">IdP group</label><input class="input" id="m-group" name="group" required placeholder="grc-assessors"></div>
+      <div class="field-group"><label class="label" for="m-role">Role</label>
+        <select class="select" id="m-role" name="role">{% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select></div>
+      <div class="field-group"><label class="label" for="m-priority">Priority</label><input class="input" id="m-priority" name="priority" type="number" value="100"></div>
+      <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add mapping</button>
+    </form>
+    {% else %}
+    <p class="dim">Mappings belong to an organization. This session has none, so it can list them but not add or remove one.</p>
+    {% endif %}
+  </div>
+  {% if mappings %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>IdP group</th><th>Role</th><th>Priority</th><th></th></tr></thead>
+    <tbody>{% for m in mappings %}<tr>
+      <td class="mono">{{ m.group }}</td>
+      <td><span class="chip chip--brand">{{ m.role }}</span></td>
+      <td>{{ m.priority }}</td>
+      <td>{% if has_org %}<form method="post" action="/admin/rbac/mappings/{{ m.id }}/delete"><button class="btn btn--ghost btn--sm" type="submit" aria-label="Remove the mapping for {{ m.group }}"><i data-lucide="trash-2"></i> Remove</button></form>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="users"></i><h2>No group mappings</h2><p>A single sign-on user whose groups match no mapping gets the sign-on default role. Add a mapping to give members of an IdP group a specific role when they sign in.</p></div>
+  {% endif %}
+</section>
+{% endblock %}
