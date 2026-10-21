@@ -375,8 +375,10 @@ a way to take another organization's name.
 
 A separate agent read the whole branch and reported no Critical finding, two
 High, nine Medium and five Low. Every High and Medium was verified in the code
-before it was fixed; each fix has a test, and each was mutation-checked (the
-fix removed, a test then failing: 27 of 27).
+first. Ten were fixed, each with a test, and each fix was mutation-checked (the
+fix removed, a test then failing: 27 of 27). The eleventh — parent rows with no
+organization, which `0101` would leave unattachable — is a data question, not a
+code one; see "Data the deployment cannot fix" below.
 
 | Severity | Finding | Fix |
 |---|---|---|
