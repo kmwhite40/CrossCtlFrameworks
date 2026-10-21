@@ -26,12 +26,15 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi import HTTPException
+from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from ccf.api.deps import get_session
 from ccf.api.main import create_app
-from ccf.auth import hash_password, new_api_token
+from ccf.api.routes import ui_auditprog
+from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import get_session_factory, session_scope, set_session_tenant
 from ccf.governance import audit_program
@@ -291,7 +294,7 @@ async def _org(label: str, tag: str) -> dict[str, object]:
 
 @pytest.fixture
 async def two_orgs() -> tuple[dict[str, object], dict[str, object]]:
-    tag = f"{next(_SEQ)}x{os.getpid()}{os.urandom(2).hex()}"
+    tag = f"ap{next(_SEQ)}q{os.getpid()}{os.urandom(2).hex()}"
     return await _org("Alpha", tag), await _org("Bravo", tag)
 
 
@@ -1014,3 +1017,93 @@ async def test_an_exported_package_is_fixed_replay_and_compare_change_nothing(tw
     assert len(diffs) == 1 and diffs[0].organization_id == int(a["org_id"])
     assert "Recent comparisons" in body
     assert f"Alpha-second-{a['tag']}" in body
+
+
+# ── guards a page-level test cannot reach ────────────────────────────────────
+
+
+async def test_every_write_refuses_a_viewer_at_its_own_gate() -> None:
+    """The middleware refuses a viewer's write before the route runs, so an
+    HTTP test cannot tell a route's own ``require_role`` from the middleware.
+    Call each write route's role dependency directly with a viewer."""
+    viewer = Principal(user_id=1, email="v@ap.test", org_id=1, role="viewer")
+    writes = [
+        r for r in ui_auditprog.router.routes if isinstance(r, APIRoute) and "POST" in r.methods
+    ]
+    assert len(writes) == 12, [r.path for r in writes]
+    for route in writes:
+        gates = [
+            d.call
+            for d in route.dependant.dependencies
+            if "require_role" in getattr(d.call, "__qualname__", "")
+        ]
+        assert len(gates) == 1, route.path
+        with pytest.raises(HTTPException) as err:
+            await gates[0](principal=viewer)
+        assert err.value.status_code == 403, route.path
+
+
+async def test_a_workpaper_needs_an_engagement_with_an_organization() -> None:
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        eng = AuditEngagement(organization_id=None, name="orgless", status="planning")
+        s.add(eng)
+        await s.flush()
+        with pytest.raises(audit_program.RefusalError) as err:
+            await audit_program.create_workpaper(
+                s,
+                eng,
+                actor="a@ap.test",
+                title="t",
+                control_id=None,
+                procedure=None,
+                sample_size=None,
+                exceptions_found=None,
+                conclusion=None,
+                evidence_refs=None,
+            )
+        assert err.value.status_code == 409
+        await s.rollback()
+
+
+async def test_recent_comparisons_are_the_callers_own(two_orgs) -> None:
+    """The page also drops comparisons of packages it does not list; the
+    service's own predicate is pinned here, where that filter cannot mask it."""
+    a, b = two_orgs
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        s.add(
+            AuthorizationPackageDiff(
+                organization_id=int(b["org_id"]),
+                from_package_id=int(b["pkg_id"]),
+                to_package_id=int(b["pkg_id"]),
+                summary={},
+                changes={},
+            )
+        )
+        await s.flush()
+        mine = await audit_program.recent_comparisons(s, int(a["org_id"]))
+    assert all(d.organization_id == int(a["org_id"]) for d in mine)
+
+
+async def test_compensating_control_dates_and_states(two_orgs) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        r = await c.post(
+            "/compensating-controls",
+            data={
+                "system_id": a["system_id"],
+                "control_identifier": str(a["control"]),
+                "measure": "m",
+                "rationale": "r",
+                "expires_on": (date.today() - timedelta(days=1)).isoformat(),
+            },
+            headers=_tok(a, "admin"),
+        )
+        assert r.status_code == 422
+        # Only an approved measure can be retired; a proposal is rejected instead.
+        r = await c.post(
+            f"/compensating-controls/{a['cc_proposed']}/retire", headers=_tok(a, "admin2")
+        )
+        assert r.status_code == 409
+    assert (await _get(CompensatingControl, int(a["cc_proposed"]))).status == "proposed"
