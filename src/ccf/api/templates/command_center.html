@@ -60,7 +60,7 @@ This page summarises one organization. Sign in as a member of an organization to
     {% if k.risks.open %}
     <span class="kpi__meta"><span class="sevdot sevdot--critical"></span>{{ k.risks.by_band.critical }} critical · <span class="sevdot sevdot--high"></span>{{ k.risks.by_band.high }} high</span>
     {% else %}
-    <span class="kpi__meta">No open risks recorded on live systems</span>
+    <span class="kpi__meta">No open or mitigated risks recorded, on live systems or enterprise-wide</span>
     {% endif %}
     <span class="kpi__foot">By residual band</span>
   </a>
