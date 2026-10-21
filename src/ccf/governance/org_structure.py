@@ -21,7 +21,7 @@ from datetime import date
 from itertools import zip_longest
 from typing import Any
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics import posture
@@ -310,14 +310,11 @@ def risk_in_org(org: int | None) -> Any:
 
     Since 0100 a trigger keeps ``Risk.organization_id`` equal to its system's,
     so the system branch alone decides system risks; checking the org column
-    there too would admit a risk whose system was soft-deleted."""
-    live = posture.org_system_subq(org)
-    if org is None:
-        return or_(Risk.system_id.is_(None), Risk.system_id.in_(live))
-    return or_(
-        and_(Risk.system_id.is_(None), Risk.organization_id == org),
-        Risk.system_id.in_(live),
-    )
+    there too would admit a risk whose system was soft-deleted.
+
+    The one definition is ``posture.risk_in_scope``; this name is kept for
+    the callers here."""
+    return posture.risk_in_scope(org)
 
 
 async def resolve_link(
@@ -377,7 +374,7 @@ async def link_labels(
             out[key] = None
             continue
         href = {
-            "risk": f"/risks/heatmap#risk-{link.entity_id}",
+            "risk": f"/risks/{link.entity_id}",
             "control": f"/controls/{link.entity_id}",
             "system": f"/systems/{link.entity_id}",
             "policy": f"/policies#policy-{link.entity_id}",

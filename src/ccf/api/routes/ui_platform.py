@@ -27,7 +27,7 @@ from sqlalchemy.orm import selectinload
 
 from ...ai_actions import ACTIONS, run_action
 from ...ai_actions.service import AiActionError
-from ...analytics.posture import org_system_subq
+from ...analytics.posture import org_system_subq, risk_in_scope
 from ...auth import Principal, new_api_token
 from ...config import get_settings
 from ...governance import rbac_matrix
@@ -329,9 +329,9 @@ async def rbac_mapping_delete(
 # ── Governed AI analysis ─────────────────────────────────────────────────────
 
 #: Entity types this page will start a run on, each with an ownership
-#: predicate below. ``run_action``'s own cross-tenant guard reads the owner
-#: through the record's system, so a risk with no system has no owner to
-#: compare and is refused by nothing; the page checks ownership itself first.
+#: predicate below. ``run_action`` also refuses a record whose owner is not
+#: the caller's (or cannot be determined); the page checks ownership itself
+#: first so a refused target is never offered.
 _TARGET_TYPES = ("system", "poam", "risk", "control", "vendor", "policy", "evidence_object")
 _TARGET_LABELS = {
     "system": "Systems",
@@ -365,7 +365,7 @@ def _target_stmt(entity_type: str, org: int) -> Any:  # noqa: PLR0911 — one pe
     if entity_type == "poam":
         return select(POAM.id, POAM.title).where(POAM.system_id.in_(live))
     if entity_type == "risk":
-        return select(Risk.id, Risk.title).where(Risk.system_id.in_(live))
+        return select(Risk.id, Risk.title).where(risk_in_scope(org))
     if entity_type == "control":
         return (
             select(ControlImplementation.id, Control.identifier + " on " + System.name)

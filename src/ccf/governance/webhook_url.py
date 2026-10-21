@@ -100,6 +100,12 @@ def _shape_refusal(url: str) -> tuple[str | None, str]:
     except ValueError:
         return "not a valid URL", ""
     host = (parts.hostname or "").rstrip(".").lower()
+    try:
+        # ``.port`` raises for ``:abc`` or ``:99999``; checked here, a URL
+        # accepted on create can always be delivered (or refused) later.
+        parts.port  # noqa: B018
+    except ValueError:
+        return "the URL's port is not a number from 0 to 65535", host
     if parts.scheme not in ("http", "https"):
         reason: str | None = "only http and https URLs are allowed"
     elif parts.username or parts.password:
@@ -160,6 +166,8 @@ def pinned_target(url: str) -> tuple[str | None, dict[str, object]]:
     if parts.port:
         netloc_ip = f"{netloc_ip}:{parts.port}"
     pinned = parts._replace(netloc=netloc_ip).geturl()
-    host_header = host if not parts.port else f"{host}:{parts.port}"
+    host_header = f"[{host}]" if ":" in host else host  # an IPv6 literal (RFC 3986)
+    if parts.port:
+        host_header = f"{host_header}:{parts.port}"
     extensions = {"sni_hostname": host} if parts.scheme == "https" else {}
     return None, {"url": pinned, "headers": {"Host": host_header}, "extensions": extensions}

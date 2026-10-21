@@ -84,7 +84,10 @@ async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
             headers["X-CCF-Signature"] = f"sha256={sig}"
         # Re-resolved at every send: a name that now points inward is not
         # followed even if it was public when the webhook was created.
-        reason, target = await asyncio.to_thread(webhook_url.pinned_target, hook.url)
+        try:
+            reason, target = await asyncio.to_thread(webhook_url.pinned_target, hook.url)
+        except Exception as e:  # a malformed stored URL is skipped, never raised
+            reason = f"unusable URL: {type(e).__name__}"
         if reason is not None:
             log.warning("webhook.target_refused", webhook_id=hook.id, reason=reason)
             continue

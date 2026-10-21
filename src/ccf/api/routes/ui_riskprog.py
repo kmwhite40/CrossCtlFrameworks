@@ -81,7 +81,7 @@ from ..audit import record_event
 from ..auth_deps import require_role
 from ..deps import get_session
 from .risks import _post_write, _rescore
-from .ui import _principal_org, templates
+from .ui import _principal_org, no_org_page, templates
 
 router = APIRouter(include_in_schema=False)
 
@@ -1290,6 +1290,8 @@ async def risk_assessments_page(
     Over risks that are not closed. A risk with no quantitative assessment is
     listed as such and left out of the total; the total over none is ``None``."""
     org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "risk_assess")
     risks = (
         await session.execute(
             select(Risk, System.name.label("system"))
@@ -1346,6 +1348,8 @@ async def risk_treatment_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
     org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "risk_treat")
     plans = await _plans_with_actions(session, org, None)
     actions = sum(len(p["actions"]) for p in plans)
     done = sum(p["done"] for p in plans)

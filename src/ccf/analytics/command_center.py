@@ -34,7 +34,7 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
@@ -140,10 +140,21 @@ async def _overdue_tasks(session: AsyncSession, org_id: int, today: date) -> int
 
 
 async def _open_audit_findings(session: AsyncSession, org_id: int) -> dict[str, int]:
+    """Open findings, scoped as ``/audit/findings`` and ``/issues`` scope them:
+    through the engagement (a finding raised in the UI may carry a NULL
+    ``organization_id`` of its own), and never on a deleted system."""
     rows = (
         await session.execute(
             select(AuditFinding.severity, func.count())
-            .where(AuditFinding.organization_id == org_id, AuditFinding.status != "closed")
+            .join(AuditEngagement, AuditEngagement.id == AuditFinding.engagement_id)
+            .where(
+                AuditEngagement.organization_id == org_id,
+                AuditFinding.status != "closed",
+                or_(
+                    AuditFinding.system_id.is_(None),
+                    AuditFinding.system_id.in_(posture.org_system_subq(org_id)),
+                ),
+            )
             .group_by(AuditFinding.severity)
         )
     ).all()

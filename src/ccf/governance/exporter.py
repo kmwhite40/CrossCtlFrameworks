@@ -16,6 +16,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
 from ..models import POAM, Policy, Risk, System, Vendor
 from .risk import band, compute_scores, resolve_axis, risk_in_scope
 
@@ -226,9 +227,49 @@ async def _first_system_id(session: AsyncSession, org_id: int | None) -> int | N
     return (await session.execute(stmt)).scalars().first()
 
 
+#: The statuses each register accepts, as its API validates them.
+_IMPORT_STATUSES: dict[type, tuple[str, ...]] = {
+    Risk: ("open", "mitigated", "accepted", "closed"),
+    POAM: POAM_STATUSES,
+}
+
+
+def _gated_status_change(model: type, old: str | None, new: str) -> str | None:
+    """Why an import may not make this status change, or None.
+
+    Accepting a risk, and closing a POA&M, accepting its risk or reopening an
+    accepted one, are each a decision the API makes only against a spent
+    approval (``risks._require_acceptance_gate``, ``poams`` + ``approvals.consume``).
+    A bulk file is not that decision: the row is refused and the record keeps
+    its status. Re-importing an unchanged status is not a change."""
+    if new == old:
+        return None
+    if model is Risk and new == "accepted":
+        return "accepting a risk needs an approved review; accept it on the risk itself"
+    if model is POAM and (
+        new in POAM_CLOSED_STATUSES
+        or new == "risk_accepted"
+        or poam_leaves_risk_accepted(old or "", new)
+    ):
+        return f"moving a POA&M to {new!r} needs an approved review; change it on the POA&M itself"
+    return None
+
+
 def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
+    model = spec["model"]
+    if model in _IMPORT_STATUSES and "status" in row:
+        new = _clean(row["status"])
+        if new is not None:
+            if new not in _IMPORT_STATUSES[model]:
+                allowed = ", ".join(_IMPORT_STATUSES[model])
+                raise ValueError(f"status must be one of {allowed}, not {new!r}")
+            refused = _gated_status_change(model, getattr(obj, "status", None), new)
+            if refused:
+                raise ValueError(refused)
     for f in spec["str_fields"]:
         if f in row:
+            if f == "status" and model in _IMPORT_STATUSES and _clean(row[f]) is None:
+                continue  # a blank cell leaves the status as it is
             setattr(obj, f, _clean(row[f]))
     for f in spec["date_fields"]:
         if f in row:

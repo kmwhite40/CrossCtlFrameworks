@@ -502,6 +502,10 @@ async def compare_packages(
 ) -> AuthorizationPackageDiff:
     if a.id == b.id:
         raise RefusalError(422, "choose two different packages to compare")
+    if a.organization_id != b.organization_id:
+        # Possible only for a global caller; the diff is stored under one
+        # organization and would carry the other's facts into it.
+        raise RefusalError(422, "packages from different organizations cannot be compared")
     return await package_service.diff_packages(
         session, org_id=a.organization_id, from_id=a.id, to_id=b.id
     )

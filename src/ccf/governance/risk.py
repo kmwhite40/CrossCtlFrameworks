@@ -23,10 +23,10 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..analytics.posture import org_system_subq
+from ..analytics.posture import risk_in_scope as risk_in_scope  # noqa: PLC0414 - re-export
 from ..models import Risk
 from ..models_program import RiskAppetite
 
@@ -181,24 +181,8 @@ def impact_expr() -> Any:
 # ── Tenant scope ─────────────────────────────────────────────────────────────
 
 
-def risk_in_scope(org_id: int | None) -> Any:
-    """The predicate every risk query uses (migration 0100).
-
-    A risk is the organization's when it sits on one of the organization's
-    **live** systems, or when it has no system and the organization owns it
-    directly (an enterprise risk). ``Risk.organization_id == org`` alone is not
-    enough: the 0100 trigger copies the system's organization onto a
-    system-linked risk, so a risk on a soft-deleted system still carries it.
-
-    ``org_id`` None (a global principal) admits every system-less risk and
-    every risk on any live system -- still never a deleted system's."""
-    live = org_system_subq(org_id)
-    if org_id is None:
-        return or_(Risk.system_id.is_(None), Risk.system_id.in_(live))
-    return or_(
-        and_(Risk.system_id.is_(None), Risk.organization_id == org_id),
-        Risk.system_id.in_(live),
-    )
+# ``risk_in_scope`` lives beside ``org_system_subq`` (analytics.posture) so
+# posture itself can use it without an import cycle; imported above.
 
 
 # ── Risk appetite ────────────────────────────────────────────────────────────

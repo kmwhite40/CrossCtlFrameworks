@@ -139,7 +139,11 @@ REGISTERS: dict[str, Register] = {
                 Dimension("status", "Result", ControlTestResult.status),
                 Dimension("method", "Test method", ControlTest.method),
                 Dimension("test_source", "Test provenance", ControlTest.source),
-                Dimension("control", "Control", ControlTest.control_id),
+                # The test's own primary control, named so: a failure also
+                # reaches every control the test declares (posture.evidence),
+                # so grouping by this is a count of results, not evidence per
+                # control.
+                Dimension("control", "Test's primary control", ControlTest.control_id),
                 _SYSTEM,
                 Dimension("run_month", "Run month", _month(ControlTestResult.run_at)),
             ),

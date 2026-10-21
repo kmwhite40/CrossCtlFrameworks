@@ -235,6 +235,14 @@ async def sync_kev(session: AsyncSession, payload: dict[str, Any] | bytes | str)
     }
     async with session.begin_nested():
         before = set((await session.execute(select(KevEntry.cve_id))).scalars())
+        if len(before - keep) > len(before) // 2:
+            # CISA withdraws a handful of entries, never most of the catalog.
+            # A valid but truncated feed (a proxy page, a partial download)
+            # would otherwise delete the catalog it was meant to refresh.
+            raise KevFormatError(
+                f"the feed lists {len(keep)} entries and would remove {len(before - keep)} of "
+                f"the {len(before)} held; refusing to drop more than half the catalog"
+            )
         for start in range(0, len(parsed.rows), 500):
             batch = [{**r, "synced_at": now} for r in parsed.rows[start : start + 500]]
             stmt = insert(KevEntry).values(batch)

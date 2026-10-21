@@ -276,14 +276,19 @@ async def _require_review_extension_gate(
 
 
 async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *, verb: str) -> None:
-    """Emit an event, alert on high residual, and open a mitigation task."""
+    """Emit an event, alert on high residual, and open a mitigation task.
+
+    Each lands in the **risk's** organization: a global principal writing to a
+    tenant's risk has no organization of its own, and an org-less event goes to
+    every tenant's webhooks."""
+    org_id = obj.organization_id if obj.organization_id is not None else principal.org_id
     await bus.emit(
         session,
         verb=verb,
         entity_type="risk",
         entity_id=obj.id,
         summary=f"Risk {verb}: {obj.title} (residual {obj.residual_score or '?'})",
-        org_id=principal.org_id,
+        org_id=org_id,
         actor=principal.email,
     )
     if (
@@ -296,7 +301,7 @@ async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *,
             category="risk",
             title=f"High residual risk: {obj.title}",
             body=f"Residual exposure {obj.residual_score}/25 ({band(obj.residual_score)}).",
-            org_id=principal.org_id,
+            org_id=org_id,
             severity="critical",
             entity_type="risk",
             entity_id=obj.id,
@@ -310,7 +315,7 @@ async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *,
         if exists is None:
             session.add(
                 Task(
-                    organization_id=principal.org_id,
+                    organization_id=org_id,
                     system_id=obj.system_id,
                     title=f"Mitigate risk: {obj.title}",
                     description=obj.description,

@@ -94,7 +94,9 @@ async def _resolve_context(
     owner_org, label, facts, sources = await _load_entity(session, entity_type, entity_id)
     if owner_org is None and label is None:
         return None
-    if org_id is not None and owner_org is not None and owner_org != org_id:
+    # An owner that cannot be determined is refused too: "belongs to no
+    # organization" must not read as "belongs to yours".
+    if org_id is not None and owner_org != org_id:
         raise PermissionError("cross-tenant retrieval refused")
     return {
         "target_type": entity_type, "target_id": entity_id,
@@ -156,9 +158,9 @@ async def _load_entity(  # noqa: PLR0911 — one branch per entity type
         r = await session.get(Risk, eid)
         if r is None:
             return None, None, {}, []
-        sysm = await session.get(System, r.system_id) if r.system_id else None
-        org = sysm.organization_id if sysm else None
-        return org, r.title, {"status": r.status}, []
+        # Migration 0100 keeps organization_id equal to the system's when one
+        # is set, and an enterprise risk (no system) is owned through it alone.
+        return r.organization_id, r.title, {"status": r.status}, []
     if entity_type == "vendor":
         v = await session.get(Vendor, eid)
         if v is None:

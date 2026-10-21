@@ -165,7 +165,9 @@ async def _risk_by_band(session: AsyncSession, org_id: int | None = None) -> dic
     # Applied unconditionally: `org_system_subq(None)` is every *live*
     # system, so the global view excludes deleted systems too. Gated on
     # `org_id is not None`, an unscoped dashboard counted them.
-    stmt = stmt.where(Risk.system_id.in_(posture.org_system_subq(org_id)))
+    # ``posture.risk_in_scope``: live systems only, enterprise risks included
+    # -- the same population as the heatmap and ``org_summary``.
+    stmt = stmt.where(posture.risk_in_scope(org_id))
     for score, status in (await session.execute(stmt)).all():
         if status == "closed":
             continue

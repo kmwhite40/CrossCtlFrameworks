@@ -19,7 +19,7 @@
   <div class="table-wrap"><table>
     <thead><tr><th>Record</th><th>Status</th><th>Detail</th>{% if can_write %}<th></th>{% endif %}</tr></thead>
     <tbody>{% for row in grouped[t] %}{% set rec = row.rec %}<tr>
-      <td>{% if rec %}{% if t == 'system' %}<a href="/systems/{{ row.link.entity_id }}">{{ rec.label }}</a>{% elif t == 'risk' %}<a href="/risks/heatmap#risk-{{ row.link.entity_id }}">{{ rec.label }}</a>{% else %}{{ rec.label }}{% endif %}{% else %}<span class="dim">#{{ row.link.entity_id }} is no longer available (deleted, or on a deleted system)</span>{% endif %}</td>
+      <td>{% if rec %}{% if t == 'system' %}<a href="/systems/{{ row.link.entity_id }}">{{ rec.label }}</a>{% elif t == 'risk' %}<a href="/risks/{{ row.link.entity_id }}">{{ rec.label }}</a>{% else %}{{ rec.label }}{% endif %}{% else %}<span class="dim">#{{ row.link.entity_id }} is no longer available (deleted, or on a deleted system)</span>{% endif %}</td>
       <td>{% if rec and rec.status %}<span class="chip {% if rec.closed %}chip--ok{% else %}chip--ghost{% endif %}">{{ rec.status | replace('_', ' ') }}</span>{% else %}—{% endif %}</td>
       <td class="dim">{% if rec and rec.detail is defined and rec.detail is not none %}{{ rec.detail }}{% endif %}{% if rec and rec.due_on %} due {{ rec.due_on }}{% endif %}</td>
       {% if can_write %}<td>

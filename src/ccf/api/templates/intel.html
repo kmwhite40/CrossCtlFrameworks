@@ -60,7 +60,7 @@
   <header class="panel__head"><h2 class="panel__title">How the match is made</h2></header>
   <div class="panel__body">
     <p>Concord keeps no separate scan-finding table: an uploaded scan is reconciled into POA&amp;Ms, and each finding's CVE references are written into its POA&amp;M's weakness text. This page reads CVE ids (<code>CVE-YYYY-NNNN…</code>) out of the title and weakness of every open or in-progress POA&amp;M on your live systems, scan-sourced or not, and looks each one up in the catalog. It is a text match: a POA&amp;M that describes a KEV vulnerability without naming its CVE id is not found.</p>
-    <p class="dim">Catalog source: <span class="mono">{{ source_url }}</span>. CISA's due dates bind federal civilian agencies under BOD 22-01; for anyone else they are CISA's recommendation.</p>
+    <p class="dim">Catalog source: <span class="mono" style="overflow-wrap:anywhere">{{ source_url }}</span>. CISA's due dates bind federal civilian agencies under BOD 22-01; for anyone else they are CISA's recommendation.</p>
   </div>
 </article>
 {% endblock %}

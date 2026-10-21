@@ -613,6 +613,22 @@ async def test_sync_upserts_and_drops_what_cisa_withdrew() -> None:
     assert status["entries"] == 2 and status["catalog_version"] == "2099.01.03"
 
 
+async def test_a_feed_that_would_remove_most_of_the_catalog_is_refused() -> None:
+    """A valid but truncated feed is not CISA withdrawing most of KEV."""
+    async with session_scope() as s:
+        await s.execute(KevEntry.__table__.delete())
+        await kev.sync_kev(s, copy.deepcopy(KEV_FIXTURE))
+    doc = copy.deepcopy(KEV_FIXTURE)
+    doc["vulnerabilities"] = doc["vulnerabilities"][:1]
+    doc["count"] = 1
+    with pytest.raises(kev.KevFormatError, match="more than half"):
+        async with session_scope() as s:
+            await kev.sync_kev(s, doc)
+    async with session_scope() as s:
+        held = set((await s.execute(select(KevEntry.cve_id))).scalars())
+    assert {"CVE-2099-0001", "CVE-2099-0002", "CVE-2099-0003"} <= held
+
+
 async def test_a_skipped_record_is_not_taken_as_withdrawn() -> None:
     async with session_scope() as s:
         await kev.sync_kev(s, copy.deepcopy(KEV_FIXTURE))

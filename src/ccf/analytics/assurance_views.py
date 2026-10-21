@@ -83,10 +83,11 @@ RATING_RULE: dict[str, str] = {
         "any) is not ineffective."
     ),
     INEFFECTIVE: (
-        "A latest automated test result is fail and no approved acceptance covers it "
-        "(a waiver in force covering every failing resource, or an approved, unexpired "
-        "compensating control for that control on that system) -- or the latest final "
-        "audit workpaper conclusion is ineffective."
+        "A latest automated test result is fail and no waiver in force covers every "
+        "failing resource -- or the latest final audit workpaper conclusion is "
+        "ineffective. An approved compensating control is shown beside the failure but "
+        "does not change the rating: the control as specified still failed, and whether "
+        "the substitute works is its own assessment."
     ),
     NOT_DETERMINED: (
         "Anything else: no automated test result, a warn or manual-review result, or a "
@@ -146,6 +147,9 @@ def _reason(rating: str, outcomes: list[dict[str, Any]], conclusion: str | None)
         unaccepted = sum(1 for o in outcomes if o["status"] == "fail" and not o["accepted"])
         if unaccepted:
             parts.append(f"{unaccepted} failing test{'s' if unaccepted != 1 else ''} not accepted")
+        compensated = sum(1 for o in outcomes if o.get("compensated") and not o["accepted"])
+        if compensated:
+            parts.append(f"{compensated} of them under an approved compensating control")
         if conclusion == "ineffective":
             parts.append("final audit conclusion is ineffective")
         return "; ".join(parts)
@@ -286,9 +290,13 @@ async def control_effectiveness(
             key = control_key(raw)
             if key is None:
                 continue
-            accepted = result.status == "fail" and (
-                test.id in waived or (test.system_id, key) in comp_pairs
-            )
+            # Accepted means what it means on Compliance Gaps and to the scan
+            # (``waivers.cover(...).suppress``). A compensating control is
+            # recorded beside it, never as an acceptance: otherwise one failure
+            # would be failing on the dashboard and accepted here.
+            failed = result.status == "fail"
+            accepted = failed and test.id in waived
+            compensated = failed and (test.system_id, key) in comp_pairs
             outcomes[key].append(
                 {
                     "test_id": test.id,
@@ -297,6 +305,7 @@ async def control_effectiveness(
                     "status": result.status,
                     "run_at": result.run_at,
                     "accepted": accepted,
+                    "compensated": compensated,
                 }
             )
 

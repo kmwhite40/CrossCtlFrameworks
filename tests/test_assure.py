@@ -25,7 +25,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from ccf.analytics import assurance_views as av
 from ccf.api.deps import get_session
@@ -459,7 +459,13 @@ async def test_the_service_rates_each_outcome_from_real_rows(two_orgs) -> None:
     got = {r["control"]: r["rating"] for r in view["rows"]}
     assert got[c["a"]] == av.EFFECTIVE
     assert got[c["b"]] == av.INEFFECTIVE
-    assert got[c["c"]] == av.NOT_DETERMINED  # accepted by compensating control
+    # A compensating control is recorded beside the failure, not as an
+    # acceptance: Compliance Gaps, the dashboard and the KRIs all count this
+    # failure as failing, so this page may not call it accepted.
+    assert got[c["c"]] == av.INEFFECTIVE
+    row_c = next(r for r in view["rows"] if r["control"] == c["c"])
+    assert [(o["accepted"], o["compensated"]) for o in row_c["outcomes"]] == [(False, True)]
+    assert "under an approved compensating control" in row_c["reason"]
     assert got[c["d"]] == av.INEFFECTIVE  # passing test, ineffective final conclusion
     assert got[c["e"]] == av.NOT_DETERMINED  # a conclusion alone is not a test
     assert got[c["f"]] == av.NOT_DETERMINED
@@ -467,6 +473,9 @@ async def test_the_service_rates_each_outcome_from_real_rows(two_orgs) -> None:
     assert c["h"] not in got
     assert got[c["i"]] == av.INEFFECTIVE  # proposed compensating control
     assert got[c["j"]] == av.INEFFECTIVE  # expired compensating control
+    for key in ("i", "j"):
+        row = next(r for r in view["rows"] if r["control"] == c[key])
+        assert not any(o["compensated"] for o in row["outcomes"]), key
     assert c["k"] not in got and c["l"] not in got
     assert sum(view["counts"].values()) == view["total"] == len(view["rows"])
     assert set(view["counts"]) == set(av.RATINGS)
@@ -527,9 +536,17 @@ async def test_baseline_controls_without_evidence_on_that_system_are_gaps(two_or
             ]
         )
         await s.flush()
-    async with session_scope() as s:
-        await set_session_tenant(s, None)
-        view = await av.evidence_mapping(s, int(a["org_id"]))
+    try:
+        async with session_scope() as s:
+            await set_session_tenant(s, None)
+            view = await av.evidence_mapping(s, int(a["org_id"]))
+    finally:
+        # The catalog is global: two controls left in the Moderate baseline
+        # change every later baseline read (test_baseline_delta's ``removed``).
+        async with session_scope() as s:
+            ids = select(Control.id).where(Control.identifier.in_((with_ev, without)))
+            await s.execute(delete(FrameworkMapping).where(FrameworkMapping.control_id.in_(ids)))
+            await s.execute(delete(Control).where(Control.identifier.in_((with_ev, without))))
     (gap,) = [g for g in view["gaps"] if g["system_id"] == a["system_id"]]
     assert gap["baseline"] == "moderate"
     assert without in gap["missing"]

@@ -575,6 +575,11 @@ def test_record_event_has_no_default_organization() -> None:
 _GLOBAL_CALL_SITES = {
     "src/ccf/catalog/revisions.py": 1,
     "src/ccf/posture/retention.py": 1,
+    # The KEV sync and its failure (a platform-admin action, refused to tenant
+    # admins): the catalog is one global table, like a catalog revision, and
+    # the event carries only its version, counts and the fetch error -- no
+    # tenant's data. Every tenant may see that the catalog beneath it moved.
+    "src/ccf/api/routes/ui_intel.py": 2,
 }
 
 

@@ -19,7 +19,7 @@
     <td>{% if q %}<a href="/vendor-questionnaires/{{ q.id }}">{{ q.name }}</a><div class="dim" style="font-size:12px">{{ q.status }}{% if q.score is not none %} · score {{ '%.0f'|format(q.score) }}{% endif %}{% if counts[v.id] > 1 %} · {{ counts[v.id] }} total{% endif %}</div>{% else %}<span class="dim">none sent</span>{% endif %}</td>
     <td data-open-risks="{{ risks.get(v.id, 0) }}">{{ risks.get(v.id, 0) }}</td>
     {% set sc = scores.get(v.id) %}
-    <td data-score="{{ sc.score if sc else 'none' }}">{% if sc %}<strong title="Q {{ sc.q }} + F {{ sc.f }} + D {{ sc.d }} = {{ sc.subtotal }}, × {{ sc.weight }} ({{ sc.criticality or 'unset' }} criticality){% if sc.missing %}; {{ sc.missing | join(', ') }}{% endif %}">{{ sc.score }}</strong>
+    <td data-score="{{ sc.score if sc else 'none' }}">{% if sc %}<strong title="Q {{ sc.q }} + F {{ sc.f }} + D {{ sc.d }} = {{ sc.subtotal }}, × {{ sc.weight }} ({{ sc.criticality or 'unset' }} criticality){% if sc.missing %}; {{ sc.missing | join(', ') }}{% endif %}">{{ sc.score }}</strong>{% if sc.partial %} <span class="chip chip--warn" title="No scored questionnaire: its part (up to 50) counts 0 because nothing was measured, not because the vendor is low risk">partial</span>{% endif %}
       <div class="dim" style="font-size:12px">Q {{ sc.q }} + F {{ sc.f }} + D {{ sc.d }} = {{ sc.subtotal }} × {{ sc.weight }}{% if not sc.weight_known %} (criticality not on the scale; 1.0 used){% endif %}</div>
       {% if sc.missing %}<div class="dim" style="font-size:12px">{{ sc.missing | join(', ') }}</div>{% endif %}
     {% else %}<span class="dim" title="No scored questionnaire, no findings and no due-diligence items: nothing about this vendor has been measured.">—</span>{% endif %}</td>

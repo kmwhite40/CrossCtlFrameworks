@@ -31,7 +31,7 @@ from ..models import (
     SystemProfile,
     Vendor,
 )
-from .risk import band
+from .risk import band, risk_in_scope
 
 
 def _org_systems(org_id: int | None) -> Any:
@@ -146,9 +146,9 @@ async def data_quality(session: AsyncSession, *, org_id: int | None = None) -> d
         }
     )
     # Open risks without a treatment plan.
-    r_stmt = select(func.count(Risk.id)).where(Risk.status == "open", Risk.treatment.is_(None))
-    if org_id is not None:
-        r_stmt = r_stmt.where(Risk.system_id.in_(sys_ids))
+    r_stmt = select(func.count(Risk.id)).where(
+        Risk.status == "open", Risk.treatment.is_(None), risk_in_scope(org_id)
+    )
     findings.append(
         {"check": "risks_without_treatment", "severity": "warning", "count": await _n(r_stmt)}
     )
@@ -231,9 +231,8 @@ async def executive(session: AsyncSession, *, org_id: int | None = None) -> dict
     summary = await org_summary(session, today=today, org_id=org_id)
 
     # Risk posture by residual band.
-    r_stmt = select(Risk.residual_score, Risk.status)
-    if org_id is not None:
-        r_stmt = r_stmt.where(Risk.system_id.in_(_org_systems(org_id)))
+    # Enterprise risks (no system) are the organization's too (migration 0100).
+    r_stmt = select(Risk.residual_score, Risk.status).where(risk_in_scope(org_id))
     by_band = {"low": 0, "moderate": 0, "high": 0, "critical": 0, "unknown": 0}
     for score, status in (await session.execute(r_stmt)).all():
         if status in ("closed",):

@@ -209,6 +209,22 @@ def _principal_org(request: Request) -> int | None:
     return getattr(principal, "org_id", None) if principal is not None else None
 
 
+def no_org_page(request: Request, active: str) -> HTMLResponse:
+    """The page an unscoped session gets instead of totals added up across
+    every tenant (``command_center`` and ``ui_history`` take the same stance).
+
+    ``active`` is the navigation key: the heading is that entry's label, so
+    the page and the rail cannot name it differently."""
+    from .. import navigation  # noqa: PLC0415
+
+    _, item = navigation.locate(active)
+    return templates.TemplateResponse(
+        request,
+        "no_org.html",
+        {"active": active, "page_title": item.label if item else "This page"},
+    )
+
+
 async def _scoped_project(
     session: AsyncSession, project_id: int, org: int | None
 ) -> SSPProject | None:

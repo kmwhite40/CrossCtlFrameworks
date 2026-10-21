@@ -20,6 +20,7 @@ from ..models_grc import AuditEngagement, AuditRequest, RegulatoryUpdate
 from ..models_people import AccessReview, Person, TrainingRecord
 from ..models_tprm import VendorQuestionnaire
 from . import bus
+from .risk import risk_in_scope
 
 ATO_WINDOW_DAYS = 90
 REVIEW_WINDOW_DAYS = 30
@@ -263,9 +264,7 @@ async def run(session: AsyncSession, *, today: date, org_id: int | None = None) 
         Risk.status.in_(("open", "mitigated")),
     )
     if org_id is not None:
-        risk_stmt = risk_stmt.where(
-            Risk.system_id.in_(select(System.id).where(System.organization_id == org_id))
-        )
+        risk_stmt = risk_stmt.where(risk_in_scope(org_id))
     for r in (await session.execute(risk_stmt)).scalars().all():
         await bus.notify(
             session,

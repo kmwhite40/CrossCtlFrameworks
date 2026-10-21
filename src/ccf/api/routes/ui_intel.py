@@ -61,7 +61,7 @@ from ..auth_deps import require_platform_admin, require_role
 from ..deps import get_session
 from .enforcement import ENFORCER_ROLES, _require_plan
 from .systems import require_system_in_scope
-from .ui import _principal_org, templates
+from .ui import _principal_org, no_org_page, templates
 
 router = APIRouter(include_in_schema=False)
 log = get_logger(__name__)
@@ -196,6 +196,8 @@ async def analytics_studio(
 ) -> Response:
     """No register chosen: the picker. Any key not in the allowlist: 400."""
     org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "analytics")
     result = chart = reg = None
     if register:
         try:

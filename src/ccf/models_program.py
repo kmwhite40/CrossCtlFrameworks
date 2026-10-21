@@ -409,6 +409,8 @@ class DueDiligenceItem(Base):
     status: Mapped[str] = mapped_column(String(16), default="requested")
     evidence_ref: Mapped[str | None] = mapped_column(String(512))
     due_on: Mapped[date | None] = mapped_column(Date)
+    #: Who recorded receipt (0102); the reviewer must be someone else.
+    received_by: Mapped[str | None] = mapped_column(String(255))
     reviewed_by: Mapped[str | None] = mapped_column(String(255))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _created()

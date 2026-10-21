@@ -35,7 +35,7 @@ from ...models_packages import PACKAGE_KINDS
 from ..audit import record_event
 from ..auth_deps import require_role
 from ..deps import get_session
-from .ui import _principal_org, templates
+from .ui import _principal_org, no_org_page, templates
 
 router = APIRouter(include_in_schema=False)
 
@@ -99,6 +99,8 @@ async def workpapers_page(
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "workpapers")
     selected = None
     if engagement is not None:
         try:
@@ -305,8 +307,11 @@ async def audit_findings_page(
     status: str | None = Query(None),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "audit_findings")
     data = await program.findings(
-        session, _principal_org(request), severity=severity or None, status=status or None
+        session, org, severity=severity or None, status=status or None
     )
     return templates.TemplateResponse(
         request,
@@ -486,6 +491,8 @@ async def compensating_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
     org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "compensating")
     today = date.today()
     rows = await program.compensating_controls(session, org)
     systems = (
@@ -620,8 +627,11 @@ async def compensating_retire(
 async def audit_readiness_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
+    org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "audit_ready")
     today = date.today()
-    rows = await program.readiness(session, _principal_org(request), today)
+    rows = await program.readiness(session, org, today)
     return templates.TemplateResponse(
         request,
         "audit_readiness.html",

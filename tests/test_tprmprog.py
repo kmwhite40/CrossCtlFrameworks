@@ -305,7 +305,7 @@ def test_the_score_is_its_parts_and_the_parts_sum() -> None:
     assert sc["q"] + sc["f"] + sc["d"] == sc["subtotal"] == 35.0
     assert sc["weight"] == 1.25
     assert sc["score"] == 44  # 35 x 1.25 = 43.75
-    assert sc["missing"] == []
+    assert sc["missing"] == [] and sc["partial"] is False
 
 
 def test_each_part_is_capped_and_the_score_never_exceeds_100() -> None:
@@ -328,7 +328,7 @@ def test_a_recorded_input_of_zero_is_a_measurement_not_an_absence() -> None:
     """Closed findings and non-overdue requests were measured: score 0, not —."""
     sc = tp.vendor_score(tp.VendorInputs(criticality="medium", findings_recorded=1, dd_items=1))
     assert sc is not None and sc["score"] == 0
-    assert sc["missing"] == ["no scored questionnaire"]
+    assert sc["missing"] == ["no scored questionnaire"] and sc["partial"] is True
 
 
 def test_progress_over_no_poams_is_none() -> None:
@@ -512,7 +512,10 @@ def _own_writes(a: dict[str, Any], ctrl: str) -> list[tuple[str, str, dict[str, 
         ("dd standard", f"/due-diligence/{a['vendor']}/standard", {}),
         ("dd add", f"/due-diligence/{a['vendor']}/items", {"item": "own"}),
         ("dd receive", f"/due-diligence/items/{a['dd']}/receive", {"evidence_ref": "s3://x"}),
-        ("dd review", f"/due-diligence/items/{a['dd']}/review", {"decision": "accepted"}),
+        # One admin token receives and reviews here, so the decision is one
+        # separation of duties does not govern (accepting is refused to the
+        # receiver: test_the_receiver_of_an_item_cannot_review_it).
+        ("dd review", f"/due-diligence/items/{a['dd']}/review", {"decision": "not_applicable"}),
         ("finding create", "/vendor-findings", {"vendor_id": str(a["vendor"]), "title": "own"}),
         (
             "finding from gap",
@@ -771,6 +774,59 @@ async def test_the_standard_checklist_creates_requests_once(two_orgs) -> None:
         assert i.due_on == date(2030, 1, 31) and i.organization_id == a["org"]
     assert "SOC 2 report" in page and "Sub-processor list" in page
     assert "0 of 7 required items accepted" in page
+
+
+async def test_the_receiver_of_an_item_cannot_review_it(two_orgs) -> None:
+    """Receiving the vendor's document and judging it are separate duties."""
+    a, _ = two_orgs
+    item = f"/due-diligence/items/{a['dd']}"
+    async with _client() as c:
+        got = await c.post(
+            f"{item}/receive",
+            data={"evidence_ref": "vault://x"},
+            headers=_auth(a["tokens"]["admin"]),
+        )
+        assert got.status_code == 303
+        for decision in ("accepted", "rejected"):
+            own = await c.post(
+                f"{item}/review", data={"decision": decision}, headers=_auth(a["tokens"]["admin"])
+            )
+            assert own.status_code == 403, decision
+        async with session_scope() as s:
+            row = await s.get(DueDiligenceItem, a["dd"])
+            assert row.status == "received" and row.reviewed_by is None
+            assert row.received_by == f"alpha-admin-{a['tag']}@tp.test"
+        other = await c.post(
+            f"{item}/review", data={"decision": "accepted"}, headers=_auth(a["tokens"]["assessor"])
+        )
+        assert other.status_code == 303
+        # Accepted evidence cannot then be declared not applicable.
+        na = await c.post(
+            f"{item}/review",
+            data={"decision": "not_applicable"},
+            headers=_auth(a["tokens"]["assessor"]),
+        )
+        assert na.status_code == 409
+    async with session_scope() as s:
+        assert (await s.get(DueDiligenceItem, a["dd"])).status == "accepted"
+
+
+async def test_an_item_received_before_receivers_were_recorded_must_be_received_again(
+    two_orgs,
+) -> None:
+    a, _ = two_orgs
+    async with session_scope() as s:
+        row = await s.get(DueDiligenceItem, a["dd"])
+        row.status, row.evidence_ref, row.received_by = "received", "vault://legacy", None
+    async with _client() as c:
+        resp = await c.post(
+            f"/due-diligence/items/{a['dd']}/review",
+            data={"decision": "accepted"},
+            headers=_auth(a["tokens"]["assessor"]),
+        )
+    assert resp.status_code == 409
+    async with session_scope() as s:
+        assert (await s.get(DueDiligenceItem, a["dd"])).status == "received"
 
 
 async def test_an_item_nothing_answered_cannot_be_accepted(two_orgs) -> None:

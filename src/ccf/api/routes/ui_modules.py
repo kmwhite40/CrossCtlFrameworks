@@ -28,7 +28,7 @@ from ...analytics import posture
 from ...analytics.command_center import RISK_LEVELS, TASK_OPEN_STATUSES, risk_matrix
 from ...constants import POAM_ACTIVE_STATUSES
 from ...governance import audit_program, inbox, third_party
-from ...governance.risk import band
+from ...governance.risk import band, risk_in_scope
 from ...models import (
     KSI,
     POAM,
@@ -53,7 +53,7 @@ from ...models_tprm import VendorQuestionnaire
 from ...models_waivers import Waiver
 from .. import navigation
 from ..deps import get_session
-from .ui import _principal_org, templates
+from .ui import _principal_org, no_org_page, templates
 
 router = APIRouter(include_in_schema=False)
 
@@ -152,12 +152,12 @@ async def record_search(
     for r in (
         await session.execute(
             select(Risk.id, Risk.title, System.name.label("system"))
-            .join(System, System.id == Risk.system_id)
-            .where(Risk.system_id.in_(live), _like(Risk.title, q))
+            .outerjoin(System, System.id == Risk.system_id)
+            .where(risk_in_scope(org), _like(Risk.title, q))
             .limit(5)
         )
     ).all():
-        add(f"Risk · {r.system}", r.title, f"/risks/heatmap#risk-{r.id}")
+        add(f"Risk · {r.system or 'Enterprise'}", r.title, f"/risks/{r.id}")
     for r in (
         await session.execute(
             select(POAM.id, POAM.title, POAM.system_id, System.name.label("system"))
@@ -424,6 +424,8 @@ async def risk_heatmap(
     )
 
     org = _principal_org(request)
+    if org is None:
+        return no_org_page(request, "riskheat")
     matrix = await risk_matrix(session, org)
     cell: tuple[int, int] | None = None
     if (
@@ -567,7 +569,7 @@ async def exceptions_page(
     for r in (
         (
             await session.execute(
-                select(Risk).where(Risk.system_id.in_(live), Risk.status == "accepted")
+                select(Risk).where(risk_in_scope(org), Risk.status == "accepted")
             )
         )
         .scalars()
@@ -585,7 +587,7 @@ async def exceptions_page(
                 "system": sys_names.get(r.system_id),
                 "decided_by": None,
                 "expires": r.next_review_on,
-                "href": f"/risks/heatmap#risk-{r.id}",
+                "href": f"/risks/{r.id}",
             }
         )
     # Compensating controls: an approved one is a standing departure (a
@@ -837,7 +839,7 @@ async def vendors_page(
 _APPROVAL_LINKS = {
     "ssp_project": "/ssp/{id}",
     "poam": "/poams",
-    "risk": "/risks/heatmap#risk-{id}",
+    "risk": "/risks/{id}",
     "assessment": "/assessments/{id}",
     "policy": "/policies#policy-{id}",
 }

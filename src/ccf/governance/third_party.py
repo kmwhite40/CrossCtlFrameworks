@@ -150,6 +150,10 @@ def vendor_score(inputs: VendorInputs) -> dict[str, Any] | None:
         "open_findings": dict(inputs.open_findings),
         "dd_overdue": inputs.dd_overdue,
         "missing": missing,
+        # Without a scored questionnaire the largest part (Q, up to 50) is 0
+        # because nothing was measured, not because the vendor is low risk:
+        # the page must say the score is partial rather than let it read low.
+        "partial": not has_q,
     }
 
 

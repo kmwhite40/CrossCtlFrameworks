@@ -32,7 +32,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analytics import posture
@@ -40,6 +40,7 @@ from ...auth import Principal
 from ...constants import POAM_CLOSED_STATUSES
 from ...governance import obligations as obl
 from ...governance import third_party as tp
+from ...governance.audit_program import may_sign_off
 from ...models import POAM, Risk, System, Task, User, Vendor
 from ...models_program import (
     ComplianceObligation,
@@ -667,6 +668,7 @@ async def due_diligence_receive(
     before = it.status
     it.evidence_ref = _text(evidence_ref, "evidence reference", limit=512)
     it.status = "received"
+    it.received_by = principal.email
     it.reviewed_by = None
     it.reviewed_at = None
     await _record(
@@ -698,6 +700,21 @@ async def due_diligence_review(
             409,
             "only an item the vendor has supplied (received, with a reference) can be reviewed",
         )
+    if decision in ("accepted", "rejected"):
+        if not it.received_by:
+            raise HTTPException(
+                409,
+                "this item was received before receivers were recorded; record its receipt "
+                "again so a different person can review it",
+            )
+        if not may_sign_off(it.received_by, principal.email):
+            # Separation of duties: whoever recorded the vendor's document
+            # does not also judge it.
+            raise HTTPException(403, "the person who received an item cannot also review it")
+    if decision == "not_applicable" and it.status == "accepted":
+        # An accepted item is a record of evidence held; declaring it not
+        # applicable afterwards would erase that without a document.
+        raise HTTPException(409, "an accepted item cannot be marked not applicable")
     before = it.status
     it.status = decision
     it.reviewed_by = principal.email
@@ -1105,10 +1122,7 @@ def _risk_in(org: int) -> Any:
     """A risk of ``org``: an enterprise risk (no system) owned by the org, or a
     risk on one of the org's live systems. A risk on a soft-deleted system is
     out even though its ``organization_id`` still names the org."""
-    return or_(
-        and_(Risk.system_id.is_(None), Risk.organization_id == org),
-        Risk.system_id.in_(posture.org_system_subq(org)),
-    )
+    return posture.risk_in_scope(org)
 
 
 async def _resolve_links(
