@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Control Implementations · Concord{% endblock %}
+{% block heading %}Control implementations{% endblock %}
+{% block subtitle %}Every control implementation across your live systems: status, responsibility, owner and next assessment.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/inheritance"><i data-lucide="git-branch"></i>Inheritance</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Implementations</span><span class="kpi__value">{{ total }}</span><span class="kpi__meta">across {{ systems | length }} live system{{ 's' if systems|length != 1 }}</span></div>
+  <div class="kpi"><span class="kpi__label">Implemented or inherited</span><span class="kpi__value">{{ counts.get('implemented', 0) + counts.get('inherited', 0) }}</span><span class="kpi__meta">{{ '%d%%'|format(((100 * (counts.get('implemented', 0) + counts.get('inherited', 0)) / total) | round)) if total else '—' }} of all implementations</span></div>
+  <div class="kpi"><span class="kpi__label">Partial or planned</span><span class="kpi__value">{{ counts.get('partial', 0) + counts.get('planned', 0) }}</span></div>
+  <div class="kpi"><span class="kpi__label">Not implemented</span><span class="kpi__value {% if counts.get('not_implemented') %}kpi__value--danger{% endif %}">{{ counts.get('not_implemented', 0) }}</span></div>
+</section>
+
+<form method="get" action="/implementations" class="filters">
+  <input class="input" type="text" name="q" value="{{ f.q }}" placeholder="Control identifier…" aria-label="Control identifier">
+  <select class="select" name="system" aria-label="System">
+    <option value="">All systems</option>
+    {% for s in systems %}<option value="{{ s.id }}" {% if f.system == s.id %}selected{% endif %}>{{ s.name }}</option>{% endfor %}
+  </select>
+  <select class="select" name="status" aria-label="Status">
+    <option value="">All statuses</option>
+    {% for s in statuses %}<option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s | replace('_',' ') }} ({{ counts.get(s, 0) }})</option>{% endfor %}
+  </select>
+  <select class="select" name="responsibility" aria-label="Responsibility">
+    <option value="">All responsibilities</option>
+    {% for r in responsibilities %}<option value="{{ r }}" {% if f.responsibility == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+    <option value="unassigned" {% if f.responsibility == 'unassigned' %}selected{% endif %}>not recorded</option>
+  </select>
+  <button class="btn btn--primary" type="submit"><i data-lucide="filter"></i>Filter</button>
+  {% if f.q or f.system or f.status or f.responsibility %}<a class="btn btn--ghost" href="/implementations">Clear</a>{% endif %}
+</form>
+
+{% if rows %}
+<p class="dim">{% if matched > limit %}Showing the first {{ limit }} of {{ matched }} matching implementations; narrow the filters to see the rest.{% else %}{{ matched }} matching implementation{{ 's' if matched != 1 }}.{% endif %}</p>
+<div class="table-wrap"><table>
+  <thead><tr><th>Control</th><th>System</th><th>Status</th><th>Responsibility</th><th>Owner</th><th>Last assessed</th><th>Next due</th></tr></thead>
+  <tbody>{% for r in rows %}{% set i = r.ControlImplementation %}<tr>
+    <td class="mono"><strong>{{ r.identifier }}</strong></td>
+    <td><a href="/systems/{{ i.system_id }}">{{ r.system }}</a></td>
+    <td><span class="chip {% if i.status in ('implemented','inherited') %}chip--ok{% elif i.status in ('partial','planned') %}chip--warn{% elif i.status == 'not_implemented' %}chip--err{% else %}chip--ghost{% endif %}">{{ i.status | replace('_',' ') }}</span>{% if i.derived_status and i.derived_status != i.status %}<div class="dim" title="Capability-derived status differs from the recorded one">derived: {{ i.derived_status | replace('_',' ') }}</div>{% endif %}</td>
+    <td>{{ i.responsibility or '—' }}</td>
+    <td>{% if i.owner_user_id %}{{ owners.get(i.owner_user_id, 'User ' ~ i.owner_user_id) }}{% else %}<span class="chip chip--warn">Unowned</span>{% endif %}</td>
+    <td>{{ i.last_assessed_on or '—' }}</td>
+    <td>{% if i.next_assessment_due %}<span class="{% if i.next_assessment_due < today %}kanban__due--late{% endif %}">{{ i.next_assessment_due }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% elif total %}
+<div class="card empty-state"><i data-lucide="filter-x"></i><h2>No implementation matches these filters</h2><p>{{ total }} implementation{{ 's' if total != 1 }} exist on your live systems; <a href="/implementations">clear the filters</a> to see them.</p></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="sliders-horizontal"></i><h2>No control implementations</h2><p>No implementation is recorded on this organization's live systems yet. Implementations are created from a system's SSP or by the derivation that runs after a scan.</p></div>
+{% endif %}
+{% endblock %}
