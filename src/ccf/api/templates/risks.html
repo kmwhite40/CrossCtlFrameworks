@@ -1,15 +1,25 @@
 {% extends "base.html" %}
-{% block title %}Risks · Concord{% endblock %}
-{% block heading %}Risk register{% endblock %}
-{% block subtitle %}<p class="page__subtitle">Track risk treatments across systems. Likelihood and impact are scored 1-5; inherent exposure is their product (1-25).</p>{% endblock %}
-{% block actions %}<a class="btn btn--secondary" href="/risks/heatmap"><i data-lucide="grid-3x3"></i>Heat map</a><a class="btn btn--secondary" href="/risk-appetite"><i data-lucide="gauge"></i>Risk appetite</a>{% endblock %}
+{% block title %}{% if register == 'cyber' %}Cybersecurity Risks{% elif register == 'enterprise' %}Enterprise Risks{% else %}Risks{% endif %} · Concord{% endblock %}
+{% block heading %}{% if register == 'cyber' %}Cybersecurity risk register{% elif register == 'enterprise' %}Enterprise risk register{% else %}Risk register{% endif %}{% endblock %}
+{% block subtitle %}<p class="page__subtitle">{% if register == 'cyber' %}Risks to systems and information, usually tied to a system.{% elif register == 'enterprise' %}Organization-level risks, with or without a system.{% else %}Enterprise and cybersecurity risks in one list.{% endif %} Likelihood and impact are scored 1-5; inherent exposure is their product (1-25).</p>{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risks/heatmap"><i data-lucide="grid-3x3"></i>Heat map</a><a class="btn btn--secondary" href="/risks/assessments"><i data-lucide="calculator"></i>Assessments</a><a class="btn btn--secondary" href="/risks/treatment"><i data-lucide="list-checks"></i>Treatment plans</a><a class="btn btn--secondary" href="/risk-appetite"><i data-lucide="gauge"></i>Risk appetite</a>{% endblock %}
 {% block content %}
+
+<nav class="row" style="gap:8px;flex-wrap:wrap" aria-label="Register">
+  <a class="btn btn--sm {{ 'btn--primary' if not register else 'btn--ghost' }}" href="/risks" {% if not register %}aria-current="page"{% endif %}>All</a>
+  <a class="btn btn--sm {{ 'btn--primary' if register == 'enterprise' else 'btn--ghost' }}" href="/risks?register=enterprise" {% if register == 'enterprise' %}aria-current="page"{% endif %}>Enterprise</a>
+  <a class="btn btn--sm {{ 'btn--primary' if register == 'cyber' else 'btn--ghost' }}" href="/risks?register=cyber" {% if register == 'cyber' %}aria-current="page"{% endif %}>Cybersecurity</a>
+</nav>
 
 <section class="card" style="margin-bottom:16px">
   <div class="card__header"><div class="card__title">Record a risk</div></div>
   <form class="card__body filters" id="risk-form">
     <input aria-label="Risk title" class="input" name="title" placeholder="Risk title" required />
-    <select class="select" name="system_id" aria-label="System" required><option value="">System…</option>
+    <select class="select" name="register" aria-label="Register">
+      <option value="enterprise" {% if register != 'cyber' %}selected{% endif %}>Enterprise register</option>
+      <option value="cyber" {% if register == 'cyber' %}selected{% endif %}>Cybersecurity register</option>
+    </select>
+    <select class="select" name="system_id" aria-label="System"><option value="">No system (owned by the organization)</option>
       {% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
     </select>
     <input aria-label="Category" class="input" name="category" placeholder="Category (e.g. technical)" />
@@ -24,7 +34,6 @@
     </select>
     <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Add</button>
   </form>
-  {% if not systems %}<div class="card__body dim">A risk belongs to a system. <a href="/systems">Add a system</a> first.</div>{% endif %}
   <div class="note note--err" id="risk-form-error" role="alert" style="margin:0 16px 16px" hidden></div>
 </section>
 
@@ -32,10 +41,12 @@
   <div class="card__header"><div class="card__title">Risks ({{ rows | length }})</div></div>
   {% if rows %}
     <div class="table-wrap"><table class="data">
-      <thead><tr><th>Title</th><th>Likelihood</th><th>Impact</th><th title="Likelihood × impact, 1-25">Inherent</th><th title="Inherent × treatment factor">Residual</th>{% if scoped %}<th title="Residual against the appetite for the risk's category, or the default">Appetite</th>{% endif %}<th>Treatment</th><th>Status</th><th>Created</th></tr></thead>
+      <thead><tr><th>Title</th><th>Register</th><th>System</th><th>Likelihood</th><th>Impact</th><th title="Likelihood × impact, 1-25">Inherent</th><th title="Inherent × treatment factor">Residual</th>{% if scoped %}<th title="Residual against the appetite for the risk's category, or the default">Appetite</th>{% endif %}<th>Treatment</th><th>Status</th><th>Created</th></tr></thead>
       <tbody>
-        {% for r in rows %}{% set e = effective(r.likelihood_score, r.likelihood, r.impact_score, r.impact) %}{% set p = placements.get(r.id) %}<tr>
-          <td><strong>{{ r.title }}</strong>{% if r.category %}<div class="dim" style="font-size:12px">{{ r.category }}</div>{% endif %}</td>
+        {% for row in rows %}{% set r = row.Risk %}{% set e = effective(r.likelihood_score, r.likelihood, r.impact_score, r.impact) %}{% set p = placements.get(r.id) %}<tr>
+          <td><a href="/risks/{{ r.id }}"><strong>{{ r.title }}</strong></a>{% if r.category %}<div class="dim" style="font-size:12px">{{ r.category }}</div>{% endif %}</td>
+          <td><span class="chip chip--brand">{{ 'Enterprise' if r.register == 'enterprise' else 'Cyber' }}</span></td>
+          <td>{{ row.system or '—' }}</td>
           <td>{% if e[0] %}<span class="chip">{{ e[0] }} · {{ lk_labels[e[0]] }}</span>{% else %}—{% endif %}</td>
           <td>{% if e[1] %}<span class="chip">{{ e[1] }} · {{ im_labels[e[1]] }}</span>{% else %}—{% endif %}</td>
           <td>{{ r.inherent_score if r.inherent_score is not none else '—' }}</td>
@@ -48,7 +59,7 @@
       </tbody>
     </table></div>
   {% else %}
-    <div class="card__body dim" style="text-align:center;padding:40px">No risks recorded. Record the first one above.</div>
+    <div class="card__body dim" style="text-align:center;padding:40px">No {{ 'enterprise ' if register == 'enterprise' else ('cybersecurity ' if register == 'cyber' else '') }}risks recorded. Record the first one above.</div>
   {% endif %}
 </section>
 

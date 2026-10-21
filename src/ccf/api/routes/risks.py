@@ -34,11 +34,12 @@ from ...governance.risk import (
     compute_scores,
     effective_scores,
     resolve_axis,
+    risk_in_scope,
     score_to_level,
 )
 from ...models import Risk, System, Task, User, Vendor
 from ...models_grc import AuditFinding
-from ..auth_deps import get_principal, org_systems_subq, require_role
+from ..auth_deps import get_principal, require_role, resolve_caller_org
 from ..deps import get_session
 
 router = APIRouter(prefix="/api/risks", tags=["risks"])
@@ -46,6 +47,7 @@ router = APIRouter(prefix="/api/risks", tags=["risks"])
 LEVEL = r"^(low|moderate|high)$"
 TREATMENT = r"^(mitigate|transfer|accept|avoid)$"
 STATUS = r"^(open|mitigated|accepted|closed)$"
+REGISTER = r"^(enterprise|cyber)$"
 HIGH_RESIDUAL = 15  # >= this residual score raises a critical alert
 #: Risks are records people maintain; viewers are refused by middleware as
 #: well, and this names the gate on the route itself.
@@ -57,6 +59,11 @@ Score = Annotated[int, Field(strict=True, ge=1, le=5)]
 class RiskCreate(BaseModel):
     title: str
     system_id: int | None = None
+    #: Only for a system-less (enterprise) risk created by a global principal;
+    #: a scoped caller's own organization is used, and naming another is 403.
+    organization_id: int | None = None
+    #: Defaults to ``cyber`` on a system and ``enterprise`` without one.
+    register: str | None = Field(None, pattern=REGISTER)
     description: str | None = None
     category: str | None = None
     source: str | None = None
@@ -89,6 +96,7 @@ class RiskFromFindingIn(BaseModel):
 
 class RiskUpdate(BaseModel):
     title: str | None = None
+    register: str | None = Field(None, pattern=REGISTER)
     description: str | None = None
     category: str | None = None
     source: str | None = None
@@ -108,6 +116,8 @@ def _out(r: Risk, approval_state: str | None = None) -> dict[str, Any]:
     return {
         "id": r.id,
         "system_id": r.system_id,
+        "organization_id": r.organization_id,
+        "register": r.register,
         "title": r.title,
         "description": r.description,
         "category": r.category,
@@ -139,17 +149,12 @@ async def _require_risk(session: AsyncSession, rid: int, principal: Principal) -
     obj = (await session.execute(select(Risk).where(Risk.id == rid))).scalar_one_or_none()
     if obj is None:
         raise HTTPException(404, "risk not found")
-    if principal.org_id is not None and obj.system_id is None:
-        # Risk has no organization_id of its own; its system is its tenancy.
-        # A system-less risk belongs to no organization, so no scoped caller
-        # may read or change it.
-        raise HTTPException(404, "risk not found")
     if principal.org_id is not None:
+        # A risk on one of the caller's live systems, or a system-less risk the
+        # caller's organization owns (0100). Not a risk on a deleted system.
         ok = (
             await session.execute(
-                select(System.id).where(
-                    System.id == obj.system_id, System.organization_id == principal.org_id
-                )
+                select(Risk.id).where(Risk.id == obj.id, risk_in_scope(principal.org_id))
             )
         ).scalar_one_or_none()
         if ok is None:
@@ -186,19 +191,20 @@ def _apply_axes(obj: Risk, data: dict[str, Any]) -> None:
 
 
 async def _require_refs_in_org(
-    session: AsyncSession, principal: Principal, data: dict[str, Any]
+    session: AsyncSession, org_id: int | None, data: dict[str, Any]
 ) -> None:
-    """An owner or vendor named in the body must be the caller's own.
+    """An owner or vendor named in the body must belong to ``org_id``.
 
     Otherwise a scoped caller could attach another organization's user to its
-    risk and read that user's name back off the register."""
-    if principal.org_id is None:
+    risk and read that user's name back off the register. ``None`` (a global
+    principal with no owning organization in view) checks nothing."""
+    if org_id is None:
         return
     owner = data.get("owner_user_id")
     if owner is not None:
         ok = (
             await session.execute(
-                select(User.id).where(User.id == owner, User.organization_id == principal.org_id)
+                select(User.id).where(User.id == owner, User.organization_id == org_id)
             )
         ).scalar_one_or_none()
         if ok is None:
@@ -207,9 +213,7 @@ async def _require_refs_in_org(
     if vendor is not None:
         ok = (
             await session.execute(
-                select(Vendor.id).where(
-                    Vendor.id == vendor, Vendor.organization_id == principal.org_id
-                )
+                select(Vendor.id).where(Vendor.id == vendor, Vendor.organization_id == org_id)
             )
         ).scalar_one_or_none()
         if ok is None:
@@ -331,7 +335,7 @@ async def list_risks(
 ) -> list[dict[str, Any]]:
     stmt = select(Risk).order_by(Risk.residual_score.desc().nulls_last(), Risk.created_at.desc())
     if principal.org_id is not None:
-        stmt = stmt.where(Risk.system_id.in_(org_systems_subq(principal)))
+        stmt = stmt.where(risk_in_scope(principal.org_id))
     if system_id is not None:
         stmt = stmt.where(Risk.system_id == system_id)
     if status:
@@ -349,7 +353,7 @@ async def heatmap(
     """5x5 likelihood x impact matrix + register rollup for open risks."""
     stmt = select(Risk).where(Risk.status.in_(("open", "mitigated")))
     if principal.org_id is not None:
-        stmt = stmt.where(Risk.system_id.in_(org_systems_subq(principal)))
+        stmt = stmt.where(risk_in_scope(principal.org_id))
     rows = (await session.execute(stmt)).scalars().all()
     levels = ["low", "moderate", "high"]
     matrix = {lk: {im: 0 for im in levels} for lk in levels}
@@ -380,23 +384,30 @@ async def create_risk(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*RISK_WRITE_ROLES)),
 ) -> dict[str, Any]:
-    if principal.org_id is not None and body.system_id is None:
-        raise HTTPException(
-            400,
-            "a risk belongs to a system: choose one of your organization's systems "
-            "(a risk without one belongs to no organization and would be on no register)",
-        )
-    if principal.org_id is not None and body.system_id is not None:
-        ok = (
-            await session.execute(
-                select(System.id).where(
-                    System.id == body.system_id, System.organization_id == principal.org_id
-                )
+    owner_org = resolve_caller_org(principal.org_id, body.organization_id)
+    if body.system_id is None:
+        # An enterprise risk: owned by the organization directly (0100).
+        if owner_org is None:
+            raise HTTPException(
+                400,
+                "a risk without a system needs an organization to own it "
+                "(organization_id), or choose a system",
             )
-        ).scalar_one_or_none()
-        if ok is None:
+    else:
+        sys_q = select(System.organization_id).where(
+            System.id == body.system_id, System.deleted_at.is_(None)
+        )
+        if principal.org_id is not None:
+            sys_q = sys_q.where(System.organization_id == principal.org_id)
+        sys_org = (await session.execute(sys_q)).scalar_one_or_none()
+        if sys_org is None:
             raise HTTPException(404, "system not found")
+        # The 0100 trigger sets it from the system anyway; set it here too so
+        # the reference checks below run against the right organization.
+        owner_org = sys_org
     data = body.model_dump(exclude_none=True)
+    data["organization_id"] = owner_org
+    data.setdefault("register", "cyber" if body.system_id is not None else "enterprise")
     if data.get("status") == "accepted":
         if data.get("owner_user_id") is None or data.get("next_review_on") is None:
             raise HTTPException(
@@ -412,7 +423,7 @@ async def create_risk(
                 "risk acceptance requires an approved authorizing-official review; create "
                 "the risk first, then accept it once approved",
             )
-    await _require_refs_in_org(session, principal, data)
+    await _require_refs_in_org(session, owner_org, data)
     obj = Risk()
     _apply_axes(obj, data)
     for k, v in data.items():
@@ -457,7 +468,7 @@ async def update_risk(
         )
     # After the gates, so a refused acceptance answers why it was refused; a
     # 404 here rolls back anything the gate spent.
-    await _require_refs_in_org(session, principal, data)
+    await _require_refs_in_org(session, principal.org_id, data)
     _apply_axes(obj, data)
     for k, v in data.items():
         setattr(obj, k, v)
@@ -522,7 +533,7 @@ async def create_risk_from_finding(
         if ok is None:
             raise HTTPException(404, "system not found")
     data = (body or RiskFromFindingIn()).model_dump(exclude_none=True)
-    await _require_refs_in_org(session, principal, data)
+    await _require_refs_in_org(session, principal.org_id, data)
     obj = Risk(
         system_id=finding.system_id,
         title=f"Audit finding: {finding.title}",

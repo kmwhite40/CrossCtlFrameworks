@@ -23,7 +23,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics.posture import org_system_subq
@@ -178,6 +178,29 @@ def impact_expr() -> Any:
     return _effective(Risk.impact_score, Risk.impact)
 
 
+# ── Tenant scope ─────────────────────────────────────────────────────────────
+
+
+def risk_in_scope(org_id: int | None) -> Any:
+    """The predicate every risk query uses (migration 0100).
+
+    A risk is the organization's when it sits on one of the organization's
+    **live** systems, or when it has no system and the organization owns it
+    directly (an enterprise risk). ``Risk.organization_id == org`` alone is not
+    enough: the 0100 trigger copies the system's organization onto a
+    system-linked risk, so a risk on a soft-deleted system still carries it.
+
+    ``org_id`` None (a global principal) admits every system-less risk and
+    every risk on any live system -- still never a deleted system's."""
+    live = org_system_subq(org_id)
+    if org_id is None:
+        return or_(Risk.system_id.is_(None), Risk.system_id.in_(live))
+    return or_(
+        and_(Risk.system_id.is_(None), Risk.organization_id == org_id),
+        Risk.system_id.in_(live),
+    )
+
+
 # ── Risk appetite ────────────────────────────────────────────────────────────
 
 
@@ -250,13 +273,13 @@ async def appetite_rules(session: AsyncSession, org_id: int) -> list[AppetiteRul
 async def appetite_placements(
     session: AsyncSession, org_id: int, *, risk_ids: Iterable[int] | None = None
 ) -> dict[int, Placement]:
-    """Every active risk on the org's live systems, placed against appetite.
+    """Every active risk of the org (``risk_in_scope``), placed against appetite.
 
     Keyed by risk id. ``risk_ids`` narrows the set (a register page that has
     already loaded its rows)."""
     rules = await appetite_rules(session, org_id)
     stmt = select(Risk.id, Risk.category, Risk.residual_score).where(
-        Risk.system_id.in_(org_system_subq(org_id)),
+        risk_in_scope(org_id),
         Risk.status.in_(ACTIVE_STATUSES),
     )
     if risk_ids is not None:
@@ -271,3 +294,36 @@ async def appetite_placements(
 async def breach_count(session: AsyncSession, org_id: int) -> int:
     placements = await appetite_placements(session, org_id)
     return sum(1 for p in placements.values() if p.state == "breach")
+
+
+# ── Assessments and treatment (0100) ─────────────────────────────────────────
+
+ASSESSMENT_METHODS: tuple[str, ...] = ("qualitative", "quantitative", "both")
+STRATEGIES: tuple[str, ...] = ("mitigate", "transfer", "accept", "avoid")
+PLAN_STATUSES: tuple[str, ...] = ("planned", "in_progress", "done", "cancelled")
+ACTION_STATUSES: tuple[str, ...] = ("open", "done")
+
+
+def ale(sle: float | None, aro: float | None) -> float | None:
+    """Annualized loss expectancy = single-loss expectancy x annual rate of
+    occurrence. Computed, never entered; ``None`` unless both are recorded."""
+    if sle is None or aro is None:
+        return None
+    return round(sle * aro, 2)
+
+
+def assessment_method(qualitative: bool, quantitative: bool) -> str | None:
+    if qualitative and quantitative:
+        return "both"
+    if qualitative:
+        return "qualitative"
+    if quantitative:
+        return "quantitative"
+    return None
+
+
+def plan_progress(done: int, total: int) -> int | None:
+    """Done actions over actions, as a whole percent; ``None`` over none."""
+    if total <= 0:
+        return None
+    return round(100 * done / total)

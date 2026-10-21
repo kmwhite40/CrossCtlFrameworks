@@ -1263,9 +1263,14 @@ async def system_live_audit_open_poam(
 async def risks_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    register: str | None = Query(None),
 ) -> HTMLResponse:
-    """The register. Risks have no organization of their own; they are scoped
-    through a live system, so a soft-deleted system's risks are not listed."""
+    """The register: enterprise and cyber risks are two registers over one
+    table (``Risk.register``, 0100); ``?register=`` picks one, none lists both.
+
+    Scoped by ``governance.risk.risk_in_scope``: risks on the organization's
+    live systems and system-less (enterprise) risks it owns; never a risk on a
+    soft-deleted system."""
     from ...governance.risk import (  # noqa: PLC0415
         IMPACT_LABELS,
         LIKELIHOOD_LABELS,
@@ -1273,18 +1278,27 @@ async def risks_page(
         appetite_placements,
         band,
         effective_scores,
+        risk_in_scope,
     )
 
     org = _principal_org(request)
-    risk_stmt = select(Risk).order_by(Risk.created_at.desc())
+    if register not in ("enterprise", "cyber"):
+        register = None
+    risk_stmt = (
+        select(Risk, System.name.label("system"))
+        .outerjoin(System, System.id == Risk.system_id)
+        .where(risk_in_scope(org))
+        .order_by(Risk.created_at.desc())
+    )
+    if register is not None:
+        risk_stmt = risk_stmt.where(Risk.register == register)
     sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_system_subq(org)))
         sys_stmt = sys_stmt.where(System.organization_id == org)
-    rows = (await session.execute(risk_stmt)).scalars().all()
+    rows = (await session.execute(risk_stmt)).all()
     systems = (await session.execute(sys_stmt)).scalars().all()
     placements = (
-        await appetite_placements(session, org, risk_ids=[r.id for r in rows])
+        await appetite_placements(session, org, risk_ids=[r.Risk.id for r in rows])
         if org is not None
         else {}
     )
@@ -1292,7 +1306,8 @@ async def risks_page(
         request,
         "risks.html",
         {
-            "active": "risks",
+            "active": "risks_cyber" if register == "cyber" else "risks",
+            "register": register,
             "rows": rows,
             "systems": systems,
             "scale": SCALE,

@@ -14,9 +14,22 @@ Spec: docs/superpowers/specs/2026-10-20-grc-buildout-design.md, "B — risk".
 Both pages carry the navigation key ``kri`` (the rail's "Risk Appetite &
 KRIs" entry owns both).
 
+Risk program (0100):
+
+* ``/risks/{id}``: one risk with its assessment history and treatment plans;
+  record an assessment (qualitative 1-5 and/or quantitative SLE and ARO; ALE
+  is computed); the latest qualitative assessment sets the risk's scores.
+* ``/risks/assessments`` (key ``risk_assess``): the quantitative register --
+  ALE per risk and the total -- and recent assessments.
+* ``/risks/treatment`` (key ``risk_treat``): treatment plans with actions and
+  progress (done actions over actions); an action may link a POA&M on a live
+  system of the caller's organization.
+
 Tenant scope is explicit in every query: every table here has its own
-``organization_id`` and is filtered on it; risks are reached through a live
-system (``posture.org_system_subq``). Every id a form names -- a statement, a
+``organization_id`` and is filtered on it; risks are scoped by
+``governance.risk.risk_in_scope`` (a live system of the organization, or a
+system-less risk it owns) and POA&Ms through a live system
+(``posture.org_system_subq``). Every id a form names -- a statement, a
 KRI, an owner, a linked risk -- is looked up in the caller's organization and
 is a 404 otherwise. Every write is role-gated on the route and audited with
 ``record_event``.
@@ -37,12 +50,37 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...analytics.posture import org_system_subq
 from ...auth import Principal
 from ...governance import kri as kri_engine
-from ...governance.risk import appetite_placements, category_key
-from ...models import Risk, System, User
-from ...models_program import KeyRiskIndicator, KriReading, RiskAppetite
+from ...governance.risk import (
+    ACTION_STATUSES,
+    IMPACT_LABELS,
+    LIKELIHOOD_LABELS,
+    PLAN_STATUSES,
+    SCALE,
+    STRATEGIES,
+    ale,
+    appetite_placements,
+    assessment_method,
+    band,
+    category_key,
+    compute_scores,
+    effective_scores,
+    plan_progress,
+    risk_in_scope,
+    score_to_level,
+)
+from ...models import POAM, Risk, System, User
+from ...models_program import (
+    KeyRiskIndicator,
+    KriReading,
+    RiskAppetite,
+    RiskAssessment,
+    RiskTreatmentAction,
+    RiskTreatmentPlan,
+)
 from ..audit import record_event
 from ..auth_deps import require_role
 from ..deps import get_session
+from .risks import _post_write, _rescore
 from .ui import _principal_org, templates
 
 router = APIRouter(include_in_schema=False)
@@ -53,6 +91,9 @@ APPETITE_ROLES = ("admin",)
 KRI_EDIT_ROLES = ("admin", "control_owner")
 #: Entering a measured value is record maintenance.
 KRI_READING_ROLES = ("admin", "control_owner", "assessor")
+#: Assessing a risk and maintaining its treatment are records people keep.
+ASSESS_ROLES = ("admin", "control_owner", "assessor")
+TREAT_ROLES = ("admin", "control_owner", "assessor")
 
 ACTIVE = "kri"
 
@@ -128,13 +169,11 @@ async def _org_user(session: AsyncSession, org_id: int, user_id: int | None) -> 
 
 
 async def _org_risk(session: AsyncSession, org_id: int, risk_id: int | None) -> int | None:
-    """``risk_id`` if the risk is on one of ``org_id``'s live systems; 404 otherwise."""
+    """``risk_id`` if the risk is ``org_id``'s (``risk_in_scope``); 404 otherwise."""
     if risk_id is None:
         return None
     found = (
-        await session.execute(
-            select(Risk.id).where(Risk.id == risk_id, Risk.system_id.in_(org_system_subq(org_id)))
-        )
+        await session.execute(select(Risk.id).where(Risk.id == risk_id, risk_in_scope(org_id)))
     ).scalar_one_or_none()
     if found is None:
         raise HTTPException(404, "risk not found")
@@ -244,8 +283,8 @@ async def risk_appetite_page(
             rows = (
                 await session.execute(
                     select(Risk, System.name.label("system"))
-                    .join(System, System.id == Risk.system_id)
-                    .where(Risk.id.in_(breach_ids), Risk.system_id.in_(org_system_subq(org)))
+                    .outerjoin(System, System.id == Risk.system_id)
+                    .where(Risk.id.in_(breach_ids), risk_in_scope(org))
                 )
             ).all()
             for row in rows:
@@ -462,9 +501,7 @@ async def kri_page(request: Request, session: AsyncSession = Depends(get_session
         risks = list(
             (
                 await session.execute(
-                    select(Risk.id, Risk.title)
-                    .where(Risk.system_id.in_(org_system_subq(org)))
-                    .order_by(Risk.title)
+                    select(Risk.id, Risk.title).where(risk_in_scope(org)).order_by(Risk.title)
                 )
             ).all()
         )
@@ -733,3 +770,596 @@ async def kri_compute_one(
     )
     await session.commit()
     return _compute_redirect(result)
+
+
+# ── Risk detail, assessments and treatment (0100) ────────────────────────────
+
+
+async def _load_risk(session: AsyncSession, org: int | None, risk_id: int) -> tuple[Risk, Any]:
+    """The risk and its system's name, if the risk is in ``org``'s scope; 404 otherwise."""
+    row = (
+        await session.execute(
+            select(Risk, System.name.label("system"))
+            .outerjoin(System, System.id == Risk.system_id)
+            .where(Risk.id == risk_id, risk_in_scope(org))
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(404, "risk not found")
+    return row.Risk, row.system
+
+
+def _risk_org(risk: Risk) -> int:
+    """The organization a record about ``risk`` belongs to: the risk's own."""
+    if risk.organization_id is None:
+        raise HTTPException(400, "this risk belongs to no organization; give it a system first")
+    return risk.organization_id
+
+
+def _scope_org(principal: Principal) -> int | None:
+    return principal.org_id
+
+
+async def _load_plan(
+    session: AsyncSession, org: int | None, plan_id: int
+) -> tuple[RiskTreatmentPlan, Risk]:
+    stmt = (
+        select(RiskTreatmentPlan, Risk)
+        .join(Risk, Risk.id == RiskTreatmentPlan.risk_id)
+        .where(RiskTreatmentPlan.id == plan_id, risk_in_scope(org))
+    )
+    if org is not None:
+        stmt = stmt.where(RiskTreatmentPlan.organization_id == org)
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        raise HTTPException(404, "treatment plan not found")
+    return row.RiskTreatmentPlan, row.Risk
+
+
+async def _load_action(
+    session: AsyncSession, org: int | None, action_id: int
+) -> tuple[RiskTreatmentAction, RiskTreatmentPlan]:
+    stmt = (
+        select(RiskTreatmentAction, RiskTreatmentPlan)
+        .join(RiskTreatmentPlan, RiskTreatmentPlan.id == RiskTreatmentAction.plan_id)
+        .join(Risk, Risk.id == RiskTreatmentPlan.risk_id)
+        .where(RiskTreatmentAction.id == action_id, risk_in_scope(org))
+    )
+    if org is not None:
+        stmt = stmt.where(RiskTreatmentAction.organization_id == org)
+    row = (await session.execute(stmt)).first()
+    if row is None:
+        raise HTTPException(404, "treatment action not found")
+    return row.RiskTreatmentAction, row.RiskTreatmentPlan
+
+
+async def _org_poam(session: AsyncSession, org_id: int, poam_id: int | None) -> int | None:
+    """``poam_id`` if the POA&M is on a live system of ``org_id``; 404 otherwise."""
+    if poam_id is None:
+        return None
+    found = (
+        await session.execute(
+            select(POAM.id).where(POAM.id == poam_id, POAM.system_id.in_(org_system_subq(org_id)))
+        )
+    ).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(404, "POA&M not found")
+    return found
+
+
+async def _plans_with_actions(
+    session: AsyncSession, org: int | None, risk_ids: list[int] | None
+) -> list[dict[str, Any]]:
+    """Plans (optionally for ``risk_ids``) in scope, each with its actions and progress."""
+    stmt = (
+        select(RiskTreatmentPlan, Risk.title.label("risk_title"), Risk.residual_score)
+        .join(Risk, Risk.id == RiskTreatmentPlan.risk_id)
+        .where(risk_in_scope(org))
+        .order_by(RiskTreatmentPlan.due_on.asc().nulls_last(), RiskTreatmentPlan.id)
+    )
+    if org is not None:
+        stmt = stmt.where(RiskTreatmentPlan.organization_id == org)
+    if risk_ids is not None:
+        stmt = stmt.where(RiskTreatmentPlan.risk_id.in_(risk_ids))
+    plans = (await session.execute(stmt)).all()
+    ids = [p.RiskTreatmentPlan.id for p in plans]
+    actions: dict[int, list[RiskTreatmentAction]] = {i: [] for i in ids}
+    if ids:
+        a_stmt = (
+            select(RiskTreatmentAction)
+            .where(RiskTreatmentAction.plan_id.in_(ids))
+            .order_by(RiskTreatmentAction.due_on.asc().nulls_last(), RiskTreatmentAction.id)
+        )
+        if org is not None:
+            a_stmt = a_stmt.where(RiskTreatmentAction.organization_id == org)
+        for a in (await session.execute(a_stmt)).scalars().all():
+            actions[a.plan_id].append(a)
+    today = date.today()
+    out = []
+    for p in plans:
+        plan = p.RiskTreatmentPlan
+        acts = actions[plan.id]
+        done = sum(1 for a in acts if a.status == "done")
+        out.append(
+            {
+                "plan": plan,
+                "risk_title": p.risk_title,
+                "risk_residual": p.residual_score,
+                "actions": acts,
+                "done": done,
+                "progress": plan_progress(done, len(acts)),
+                "overdue": plan.due_on is not None
+                and plan.due_on < today
+                and plan.status in ("planned", "in_progress"),
+            }
+        )
+    return out
+
+
+@router.get("/risks/{risk_id:int}", response_class=HTMLResponse)
+async def risk_detail_page(
+    risk_id: int, request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    risk, system_name = await _load_risk(session, org, risk_id)
+    a_stmt = (
+        select(RiskAssessment)
+        .where(RiskAssessment.risk_id == risk.id)
+        .order_by(RiskAssessment.assessed_on.desc(), RiskAssessment.id.desc())
+    )
+    if org is not None:
+        a_stmt = a_stmt.where(RiskAssessment.organization_id == org)
+    assessments = (await session.execute(a_stmt)).scalars().all()
+    plans = await _plans_with_actions(session, org, [risk.id])
+    owner_org = org if org is not None else risk.organization_id
+    users = await _org_users(session, owner_org)
+    poams = []
+    if owner_org is not None:
+        poams = (
+            await session.execute(
+                select(POAM.id, POAM.title)
+                .where(POAM.system_id.in_(org_system_subq(owner_org)))
+                .order_by(POAM.id.desc())
+                .limit(200)
+            )
+        ).all()
+    placement = (
+        (await appetite_placements(session, owner_org, risk_ids=[risk.id])).get(risk.id)
+        if owner_org is not None
+        else None
+    )
+    return templates.TemplateResponse(
+        request,
+        "risk_detail.html",
+        {
+            "active": "risks" if risk.register == "enterprise" else "risks_cyber",
+            "risk": risk,
+            "system_name": system_name,
+            "effective": effective_scores(
+                risk.likelihood_score, risk.likelihood, risk.impact_score, risk.impact
+            ),
+            "band": band,
+            "placement": placement,
+            "assessments": assessments,
+            "plans": plans,
+            "users": users,
+            "user_names": _names(users),
+            "poams": poams,
+            "scale": SCALE,
+            "lk_labels": LIKELIHOOD_LABELS,
+            "im_labels": IMPACT_LABELS,
+            "strategies": STRATEGIES,
+            "plan_statuses": PLAN_STATUSES,
+            "today": date.today(),
+            "error": request.query_params.get("error"),
+        },
+    )
+
+
+def _assessment_inputs(
+    assessed_on: str, likelihood_score: str, impact_score: str, sle: str, aro: str
+) -> tuple[date, int | None, int | None, float | None, float | None, str]:
+    """Validated form input for one assessment; ``ValueError`` says what is wrong."""
+    on = _opt_date(assessed_on, "the assessment date") or date.today()
+    lk = _opt_int(likelihood_score, "likelihood")
+    im = _opt_int(impact_score, "impact")
+    sle_v = _opt_float(sle, "single-loss expectancy (SLE)")
+    aro_v = _opt_float(aro, "annual rate of occurrence (ARO)")
+    if on > date.today():
+        raise ValueError("an assessment cannot be dated in the future")
+    if (lk is None) != (im is None):
+        raise ValueError("a qualitative assessment needs both likelihood and impact")
+    if lk is not None and (lk not in SCALE or im not in SCALE):
+        raise ValueError("likelihood and impact are scored 1-5")
+    if (sle_v is None) != (aro_v is None):
+        raise ValueError("a quantitative assessment needs both SLE and ARO (ALE is computed)")
+    if (sle_v is not None and sle_v < 0) or (aro_v is not None and aro_v < 0):
+        raise ValueError("SLE and ARO cannot be negative")
+    method = assessment_method(lk is not None, sle_v is not None)
+    if method is None:
+        raise ValueError("record likelihood and impact, or SLE and ARO, or both")
+    return on, lk, im, sle_v, aro_v, method
+
+
+@router.post("/risks/{risk_id:int}/assessments")
+async def risk_assessment_create(
+    risk_id: int,
+    *,
+    assessed_on: str = Form(""),
+    likelihood_score: str = Form(""),
+    impact_score: str = Form(""),
+    sle: str = Form(""),
+    aro: str = Form(""),
+    notes: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ASSESS_ROLES)),
+) -> RedirectResponse:
+    """Record a dated assessment. ALE is SLE x ARO, computed here and never
+    taken from the form. When this is the latest qualitative assessment, it
+    sets the risk's likelihood and impact (and so its scores)."""
+    risk, _ = await _load_risk(session, _scope_org(principal), risk_id)
+    org = _risk_org(risk)
+    back = f"/risks/{risk.id}#assessments"
+    try:
+        on, lk, im, sle_v, aro_v, method = _assessment_inputs(
+            assessed_on, likelihood_score, impact_score, sle, aro
+        )
+    except ValueError as exc:
+        return _back(back, str(exc))
+    inherent, residual = compute_scores(lk, im, risk.treatment)
+    row = RiskAssessment(
+        organization_id=org,
+        risk_id=risk.id,
+        assessed_on=on,
+        method=method,
+        likelihood_score=lk,
+        impact_score=im,
+        inherent_score=inherent,
+        residual_score=residual,
+        sle=sle_v,
+        aro=aro_v,
+        ale=ale(sle_v, aro_v),
+        assessor=principal.email,
+        notes=notes.strip() or None,
+    )
+    session.add(row)
+    await session.flush()
+    applied = False
+    if lk is not None:
+        newer = (
+            await session.execute(
+                select(RiskAssessment.id)
+                .where(
+                    RiskAssessment.risk_id == risk.id,
+                    RiskAssessment.organization_id == org,
+                    RiskAssessment.likelihood_score.is_not(None),
+                    RiskAssessment.assessed_on > on,
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if newer is None:
+            risk.likelihood_score, risk.likelihood = lk, score_to_level(lk)
+            risk.impact_score, risk.impact = im, score_to_level(im)
+            _rescore(risk)
+            await session.flush()
+            await _post_write(session, risk, principal, verb="assessed")
+            applied = True
+    await record_event(
+        session,
+        actor=principal.email,
+        action="risk_assessed",
+        entity_type="risk",
+        entity_id=str(risk.id),
+        diff={
+            "assessment_id": row.id,
+            "assessed_on": on.isoformat(),
+            "method": method,
+            "likelihood_score": lk,
+            "impact_score": im,
+            "sle": sle_v,
+            "aro": aro_v,
+            "ale": row.ale,
+            "applied_to_risk": applied,
+        },
+        organization_id=org,
+    )
+    await session.commit()
+    return _back(back)
+
+
+def _plan_fields(
+    *, strategy: str, description: str, owner_user_id: str, due_on: str, target: str, status: str
+) -> dict[str, Any]:
+    strategy = strategy.strip()
+    if strategy not in STRATEGIES:
+        raise ValueError(f"strategy must be one of {', '.join(STRATEGIES)}")
+    status = status.strip() or "planned"
+    if status not in PLAN_STATUSES:
+        raise ValueError(f"status must be one of {', '.join(PLAN_STATUSES)}")
+    tgt = _opt_int(target, "the target residual score")
+    if tgt is not None and not 1 <= tgt <= 25:
+        raise ValueError("the target residual score must be 1-25")
+    return {
+        "strategy": strategy,
+        "description": description.strip() or None,
+        "owner_user_id": _opt_int(owner_user_id, "owner"),
+        "due_on": _opt_date(due_on, "the due date"),
+        "target_residual_score": tgt,
+        "status": status,
+    }
+
+
+@router.post("/risks/{risk_id:int}/plans")
+async def risk_plan_create(
+    risk_id: int,
+    *,
+    strategy: str = Form(""),
+    description: str = Form(""),
+    owner_user_id: str = Form(""),
+    due_on: str = Form(""),
+    target_residual_score: str = Form(""),
+    status: str = Form("planned"),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*TREAT_ROLES)),
+) -> RedirectResponse:
+    """A treatment plan. Its strategy is a plan, not a decision: choosing
+    ``accept`` here does not accept the risk, which still needs the risk's own
+    acceptance gate (owner, review date, approved review)."""
+    risk, _ = await _load_risk(session, _scope_org(principal), risk_id)
+    org = _risk_org(risk)
+    back = f"/risks/{risk.id}#treatment"
+    try:
+        fields = _plan_fields(
+            strategy=strategy,
+            description=description,
+            owner_user_id=owner_user_id,
+            due_on=due_on,
+            target=target_residual_score,
+            status=status,
+        )
+    except ValueError as exc:
+        return _back(back, str(exc))
+    fields["owner_user_id"] = await _org_user(session, org, fields["owner_user_id"])
+    plan = RiskTreatmentPlan(organization_id=org, risk_id=risk.id, **fields)
+    session.add(plan)
+    await session.flush()
+    await record_event(
+        session,
+        actor=principal.email,
+        action="risk_treatment_plan_created",
+        entity_type="risk_treatment_plan",
+        entity_id=str(plan.id),
+        diff={"risk_id": risk.id, **{k: _plain(v) for k, v in fields.items()}},
+        organization_id=org,
+    )
+    await session.commit()
+    return _back(back)
+
+
+@router.post("/risks/plans/{plan_id:int}")
+async def risk_plan_update(
+    plan_id: int,
+    *,
+    strategy: str = Form(""),
+    description: str = Form(""),
+    owner_user_id: str = Form(""),
+    due_on: str = Form(""),
+    target_residual_score: str = Form(""),
+    status: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*TREAT_ROLES)),
+) -> RedirectResponse:
+    plan, risk = await _load_plan(session, _scope_org(principal), plan_id)
+    org = plan.organization_id
+    back = f"/risks/{risk.id}#plan-{plan.id}"
+    try:
+        fields = _plan_fields(
+            strategy=strategy,
+            description=description,
+            owner_user_id=owner_user_id,
+            due_on=due_on,
+            target=target_residual_score,
+            status=status,
+        )
+    except ValueError as exc:
+        return _back(back, str(exc))
+    fields["owner_user_id"] = await _org_user(session, org, fields["owner_user_id"])
+    before = {k: getattr(plan, k) for k in fields}
+    for k, v in fields.items():
+        setattr(plan, k, v)
+    await session.flush()
+    await record_event(
+        session,
+        actor=principal.email,
+        action="risk_treatment_plan_updated",
+        entity_type="risk_treatment_plan",
+        entity_id=str(plan.id),
+        diff={
+            k: {"from": _plain(before[k]), "to": _plain(v)}
+            for k, v in fields.items()
+            if before[k] != v
+        },
+        organization_id=org,
+    )
+    await session.commit()
+    return _back(back)
+
+
+@router.post("/risks/plans/{plan_id:int}/actions")
+async def risk_action_create(
+    plan_id: int,
+    *,
+    description: str = Form(""),
+    owner_user_id: str = Form(""),
+    due_on: str = Form(""),
+    poam_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*TREAT_ROLES)),
+) -> RedirectResponse:
+    plan, risk = await _load_plan(session, _scope_org(principal), plan_id)
+    org = plan.organization_id
+    back = f"/risks/{risk.id}#plan-{plan.id}"
+    text = description.strip()
+    if not text:
+        return _back(back, "an action needs a description")
+    try:
+        owner = _opt_int(owner_user_id, "owner")
+        due = _opt_date(due_on, "the due date")
+        poam = _opt_int(poam_id, "POA&M")
+    except ValueError as exc:
+        return _back(back, str(exc))
+    owner = await _org_user(session, org, owner)
+    poam = await _org_poam(session, org, poam)
+    action = RiskTreatmentAction(
+        organization_id=org,
+        plan_id=plan.id,
+        description=text,
+        owner_user_id=owner,
+        due_on=due,
+        status="open",
+        poam_id=poam,
+    )
+    session.add(action)
+    await session.flush()
+    await record_event(
+        session,
+        actor=principal.email,
+        action="risk_treatment_action_created",
+        entity_type="risk_treatment_action",
+        entity_id=str(action.id),
+        diff={
+            "plan_id": plan.id,
+            "description": text,
+            "owner_user_id": owner,
+            "due_on": _plain(due),
+            "poam_id": poam,
+        },
+        organization_id=org,
+    )
+    await session.commit()
+    return _back(back)
+
+
+@router.post("/risks/actions/{action_id:int}")
+async def risk_action_update(
+    action_id: int,
+    *,
+    status: str = Form(""),
+    poam_id: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*TREAT_ROLES)),
+) -> RedirectResponse:
+    """Mark an action done or open again, and (re)link its POA&M."""
+    action, plan = await _load_action(session, _scope_org(principal), action_id)
+    org = action.organization_id
+    back = f"/risks/{plan.risk_id}#plan-{plan.id}"
+    status = status.strip()
+    if status not in ACTION_STATUSES:
+        return _back(back, f"status must be one of {', '.join(ACTION_STATUSES)}")
+    try:
+        poam = _opt_int(poam_id, "POA&M")
+    except ValueError as exc:
+        return _back(back, str(exc))
+    poam = await _org_poam(session, org, poam)
+    before = {"status": action.status, "poam_id": action.poam_id}
+    action.status, action.poam_id = status, poam
+    await session.flush()
+    await record_event(
+        session,
+        actor=principal.email,
+        action="risk_treatment_action_updated",
+        entity_type="risk_treatment_action",
+        entity_id=str(action.id),
+        diff={
+            "status": {"from": before["status"], "to": status},
+            "poam_id": {"from": before["poam_id"], "to": poam},
+        },
+        organization_id=org,
+    )
+    await session.commit()
+    return _back(back)
+
+
+@router.get("/risks/assessments", response_class=HTMLResponse)
+async def risk_assessments_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    """The quantitative register: each risk's latest ALE, and the total.
+
+    Over risks that are not closed. A risk with no quantitative assessment is
+    listed as such and left out of the total; the total over none is ``None``."""
+    org = _principal_org(request)
+    risks = (
+        await session.execute(
+            select(Risk, System.name.label("system"))
+            .outerjoin(System, System.id == Risk.system_id)
+            .where(risk_in_scope(org), Risk.status != "closed")
+            .order_by(Risk.title)
+        )
+    ).all()
+    ids = [r.Risk.id for r in risks]
+    latest_q: dict[int, RiskAssessment] = {}
+    recent: list[Any] = []
+    if ids:
+        q_stmt = (
+            select(RiskAssessment)
+            .where(RiskAssessment.risk_id.in_(ids), RiskAssessment.ale.is_not(None))
+            .order_by(
+                RiskAssessment.risk_id,
+                RiskAssessment.assessed_on.desc(),
+                RiskAssessment.id.desc(),
+            )
+        )
+        r_stmt = (
+            select(RiskAssessment, Risk.title.label("risk_title"))
+            .join(Risk, Risk.id == RiskAssessment.risk_id)
+            .where(RiskAssessment.risk_id.in_(ids))
+            .order_by(RiskAssessment.assessed_on.desc(), RiskAssessment.id.desc())
+            .limit(50)
+        )
+        if org is not None:
+            q_stmt = q_stmt.where(RiskAssessment.organization_id == org)
+            r_stmt = r_stmt.where(RiskAssessment.organization_id == org)
+        for a in (await session.execute(q_stmt)).scalars().all():
+            latest_q.setdefault(a.risk_id, a)
+        recent = list((await session.execute(r_stmt)).all())
+    rows = [{"risk": r.Risk, "system": r.system, "q": latest_q.get(r.Risk.id)} for r in risks]
+    rows.sort(key=lambda x: (x["q"] is None, -(x["q"].ale if x["q"] else 0), x["risk"].title))
+    with_ale = [x for x in rows if x["q"] is not None]
+    total = round(sum(x["q"].ale for x in with_ale), 2) if with_ale else None
+    return templates.TemplateResponse(
+        request,
+        "risk_assessments.html",
+        {
+            "active": "risk_assess",
+            "rows": rows,
+            "with_ale": len(with_ale),
+            "total_ale": total,
+            "recent": recent,
+        },
+    )
+
+
+@router.get("/risks/treatment", response_class=HTMLResponse)
+async def risk_treatment_page(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> HTMLResponse:
+    org = _principal_org(request)
+    plans = await _plans_with_actions(session, org, None)
+    actions = sum(len(p["actions"]) for p in plans)
+    done = sum(p["done"] for p in plans)
+    return templates.TemplateResponse(
+        request,
+        "risk_treatment.html",
+        {
+            "active": "risk_treat",
+            "plans": plans,
+            "actions_total": actions,
+            "actions_done": done,
+            "overall": plan_progress(done, actions),
+            "open_plans": sum(1 for p in plans if p["plan"].status in ("planned", "in_progress")),
+            "overdue": sum(1 for p in plans if p["overdue"]),
+            "user_names": _names(await _org_users(session, org)),
+        },
+    )

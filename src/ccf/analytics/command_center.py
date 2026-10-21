@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
 from ..governance import conmon
-from ..governance.risk import SCALE, band, effective_scores
+from ..governance.risk import SCALE, band, effective_scores, risk_in_scope
 from ..models import POAM, Event, Risk, System, Task
 from ..models_evidence import EvidenceObject, EvidenceVersion
 from ..models_grc import AuditEngagement, AuditFinding, AuditRequest, ControlTest, ControlTestResult
@@ -226,7 +226,10 @@ async def _evidence_repository(session: AsyncSession, org_id: int, today: date) 
 
 
 async def risk_matrix(session: AsyncSession, org_id: int | None) -> dict[str, Any]:
-    """Open and mitigated risks on live systems, by likelihood x impact, 5x5.
+    """Open and mitigated risks of the organization, by likelihood x impact, 5x5.
+
+    Scoped by ``governance.risk.risk_in_scope``: risks on live systems and
+    system-less (enterprise) risks the organization owns.
 
     ``cells[likelihood][impact]`` is keyed by the 1-5 scores. A risk is placed
     by its recorded score, else by its three-level enum read as 1, 3 or 5 --
@@ -247,7 +250,7 @@ async def risk_matrix(session: AsyncSession, org_id: int | None) -> dict[str, An
                 Risk.status,
             ).where(
                 Risk.status.in_(("open", "mitigated")),
-                Risk.system_id.in_(posture.org_system_subq(org_id)),
+                risk_in_scope(org_id),
             )
         )
     ).all()

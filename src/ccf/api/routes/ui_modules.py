@@ -420,6 +420,7 @@ async def risk_heatmap(
         effective_scores,
         impact_expr,
         likelihood_expr,
+        risk_in_scope,
     )
 
     org = _principal_org(request)
@@ -438,10 +439,8 @@ async def risk_heatmap(
         likelihood = impact = None
     stmt = (
         select(Risk, System.name.label("system"))
-        .join(System, System.id == Risk.system_id)
-        .where(
-            Risk.system_id.in_(posture.org_system_subq(org)), Risk.status.in_(("open", "mitigated"))
-        )
+        .outerjoin(System, System.id == Risk.system_id)
+        .where(risk_in_scope(org), Risk.status.in_(("open", "mitigated")))
         .order_by(Risk.residual_score.desc().nulls_last(), Risk.id)
     )
     if cell is not None:

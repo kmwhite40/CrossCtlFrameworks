@@ -2,7 +2,7 @@
 {% from "_viz.html" import riskgrid, sevlist %}
 {% block title %}Risk Heat Map · Concord{% endblock %}
 {% block heading %}Risk heat map{% endblock %}
-{% block subtitle %}Open and mitigated risks on live systems, placed by inherent likelihood and impact on a five-point scale. Select a cell to list its risks.{% endblock %}
+{% block subtitle %}Open and mitigated risks (on live systems, and enterprise risks the organization owns), placed by inherent likelihood and impact on a five-point scale. Select a cell to list its risks.{% endblock %}
 {% block actions %}<a class="btn btn--secondary" href="/risks"><i data-lucide="list"></i>Risk register</a><a class="btn btn--secondary" href="/risk-appetite"><i data-lucide="gauge"></i>Risk appetite</a>{% endblock %}
 {% block content %}
 <section class="grid-2-1">
@@ -25,8 +25,8 @@
     <thead><tr><th>Risk</th><th>System</th><th>Likelihood</th><th>Impact</th><th>Inherent</th><th>Residual</th><th>Appetite</th><th>Treatment</th><th>Owner</th><th>Review</th></tr></thead>
     <tbody>{% for row in rows %}{% set r = row.Risk %}{% set e = effective(r.likelihood_score, r.likelihood, r.impact_score, r.impact) %}{% set p = placements.get(r.id) %}
     <tr id="risk-{{ r.id }}">
-      <td><strong>{{ r.title }}</strong>{% if r.category %}<div class="dim" style="font-size:12px">{{ r.category }}</div>{% endif %}</td>
-      <td>{{ row.system }}</td>
+      <td><a href="/risks/{{ r.id }}"><strong>{{ r.title }}</strong></a>{% if r.category %}<div class="dim" style="font-size:12px">{{ r.category }}</div>{% endif %}</td>
+      <td>{% if row.system %}{{ row.system }}{% else %}<span class="chip chip--ghost" title="An enterprise risk, owned by the organization rather than a system">Enterprise</span>{% endif %}</td>
       <td>{% if e[0] %}{{ e[0] }} · {{ lk_labels[e[0]] }}{% else %}—{% endif %}</td>
       <td>{% if e[1] %}{{ e[1] }} · {{ im_labels[e[1]] }}{% else %}—{% endif %}</td>
       <td>{{ r.inherent_score if r.inherent_score is not none else '—' }}</td>
@@ -37,7 +37,7 @@
       <td>{{ r.next_review_on or '—' }}</td>
     </tr>{% endfor %}</tbody></table></div>
   {% else %}
-  <p class="panel__empty">{% if selected or selected_levels %}No open risks sit in this cell.{% else %}No open or mitigated risks are recorded on this organization's live systems. Add one from the <a href="/risks">risk register</a>.{% endif %}</p>
+  <p class="panel__empty">{% if selected or selected_levels %}No open risks sit in this cell.{% else %}No open or mitigated risks are recorded for this organization. Add one from the <a href="/risks">risk register</a>.{% endif %}</p>
   {% endif %}
 </article>
 {% endblock %}

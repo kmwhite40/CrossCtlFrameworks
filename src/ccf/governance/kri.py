@@ -14,7 +14,8 @@ here the same way, over the organization's live systems:
 * failing controls and the controls-passing ratio (``analytics.gaps``, as the
   command center's control-health tile reads it);
 * expired evidence (the evidence repository, as the command center reads it);
-* active risks above appetite (``governance.risk.appetite_placements``).
+* active risks above appetite (``governance.risk.appetite_placements``,
+  scoped by ``risk_in_scope``).
 
 A metric with nothing to compute over (a ratio with an empty denominator) has
 no value. No reading is recorded for it and the reason is returned; a 0 or a
@@ -180,8 +181,9 @@ METRICS: dict[str, Metric] = {
             "Risks above appetite",
             "risks",
             "higher_is_worse",
-            "Open and mitigated risks on live systems whose residual score is above the "
-            "appetite for their category, or the default appetite.",
+            "Open and mitigated risks of the organization (on its live systems, or owned "
+            "directly with no system) whose residual score is above the appetite for their "
+            "category, or the default appetite.",
             _risks_above_appetite,
         ),
     )

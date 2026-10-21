@@ -99,7 +99,7 @@
     <tbody>{% for b in breaches %}{% set r = b.risk %}{% set p = b.placement %}
       <tr id="breach-{{ r.id }}">
         <td><strong>{{ r.title }}</strong></td>
-        <td>{{ b.system }}</td>
+        <td>{{ b.system or "Enterprise (no system)" }}</td>
         <td>{{ r.category or '—' }}</td>
         <td>{{ r.residual_score }}</td>
         <td>{{ p.appetite.max_residual_score }} · {% if p.appetite.category %}{{ p.appetite.category }}{% else %}default{% endif %}</td>
