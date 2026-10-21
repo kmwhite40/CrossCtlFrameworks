@@ -21,13 +21,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analytics import posture
 from ...analytics.command_center import RISK_LEVELS, TASK_OPEN_STATUSES, risk_matrix
 from ...constants import POAM_ACTIVE_STATUSES
-from ...governance import inbox
+from ...governance import inbox, third_party
 from ...governance.risk import band
 from ...models import (
     KSI,
@@ -737,12 +737,25 @@ async def vendors_page(
                 .where(
                     Risk.vendor_id.in_([v.id for v in vendors]),
                     Risk.status.in_(("open", "mitigated")),
-                    Risk.system_id.in_(posture.org_system_subq(org)),
+                    # An enterprise risk (0100) has no system and is owned by
+                    # the organization directly; a risk on a system counts
+                    # only while that system is live.
+                    or_(
+                        and_(
+                            Risk.system_id.is_(None),
+                            *([Risk.organization_id == org] if org is not None else []),
+                        ),
+                        Risk.system_id.in_(posture.org_system_subq(org)),
+                    ),
                 )
                 .group_by(Risk.vendor_id)
             )
         ).all():
             risks[vid] = int(n)
+    # The composite score (``governance.third_party``): its formula is shown
+    # on the page, and a vendor with none of its inputs has no score.
+    today = date.today()
+    scores = await third_party.vendor_scores(session, list(vendors), today)
     return _render(
         request,
         "vendors.html",
@@ -751,7 +764,9 @@ async def vendors_page(
         latest=latest,
         counts=counts,
         risks=risks,
-        today=date.today(),
+        scores=scores,
+        formula=third_party.FORMULA,
+        today=today,
     )
 
 

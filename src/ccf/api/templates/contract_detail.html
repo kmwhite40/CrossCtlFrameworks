@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{{ c.title }} · Contracts · Concord{% endblock %}
+{% block heading %}{{ c.title }}{% endblock %}
+{% block subtitle %}{% if vendor %}Contract with {{ vendor.name }}{% else %}Contract{% endif %}{% if c.contract_ref %} · {{ c.contract_ref }}{% endif %} · {{ c.status }}{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/contracts"><i data-lucide="arrow-left"></i>All contracts</a>{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Start</span><span class="kpi__value">{{ c.start_on or '—' }}</span></div>
+  <div class="kpi"><span class="kpi__label">End</span><span class="kpi__value">{{ c.end_on or '—' }}</span></div>
+  <div class="kpi"><span class="kpi__label">Renewal decision by</span><span class="kpi__value{% if renewal_due %} kpi__value--danger{% endif %}">{{ renewal or '—' }}</span><span class="kpi__foot">{% if renewal_due %}within 90 days or past{% elif renewal %}renewal date, else end date{% else %}no renewal or end date recorded{% endif %}</span></div>
+  <div class="kpi"><span class="kpi__label">Annual value</span><span class="kpi__value">{% if c.annual_value is not none %}{{ '{:,.0f}'.format(c.annual_value) }}{% else %}—{% endif %}</span><span class="kpi__foot">Owner: {{ owners.get(c.owner_user_id, 'none') }}</span></div>
+</section>
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Obligations</div><span class="dim">{{ rows|length }}</span></div>
+  {% if rows %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Obligation</th><th>Category</th><th>Frequency</th><th>Due</th><th>Control</th><th>Evidence</th><th>Status</th>{% if can_write %}<th>Record</th>{% endif %}</tr></thead>
+    <tbody>{% for row in rows %}{% set ob = row.ob %}<tr id="obligation-{{ ob.id }}">
+      <td>{{ ob.description }}</td>
+      <td>{{ ob.category | replace('_', ' ') }}</td>
+      <td>{{ ob.frequency or '—' }}</td>
+      <td>{{ ob.due_on or '—' }}</td>
+      <td>{% if ob.control_id %}<a href="/controls/{{ ob.control_id }}">{{ ob.control_id }}</a>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td>{{ ob.evidence_ref or '—' }}</td>
+      <td><span class="chip {% if row.state in ('missed', 'overdue') %}chip--err{% elif row.state == 'met' %}chip--ok{% elif row.state == 'waived' %}chip--warn{% else %}chip--ghost{% endif %}">{{ row.state }}</span></td>
+      {% if can_write %}<td>
+        <form method="post" action="/contracts/{{ c.id }}/obligations/{{ ob.id }}/status" class="row" style="gap:6px">
+          <select class="select select--sm" name="status" aria-label="Status">{% for s in ob_statuses %}{% if s != 'waived' or can_waive %}<option value="{{ s }}"{% if ob.status == s %} selected{% endif %}>{{ s }}</option>{% endif %}{% endfor %}</select>
+          <input class="input" name="evidence_ref" placeholder="Evidence reference" aria-label="Evidence reference">
+          <button class="btn btn--ghost btn--sm" type="submit" aria-label="Save status"><i data-lucide="save"></i></button>
+        </form>
+      </td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="list-checks"></i><h2>No obligations recorded</h2><p>Record what this contract requires of the vendor (breach notice, audit rights, SLAs, security terms) so a missed term is surfaced rather than remembered.</p></div>
+  {% endif %}
+</section>
+
+{% if can_write %}
+<section class="card card--elevated" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Add an obligation</div></div>
+  <form method="post" action="/contracts/{{ c.id }}/obligations" class="card__body filters">
+    <input class="input" name="description" required placeholder="What the vendor must do" aria-label="Description">
+    <select class="select" name="category" aria-label="Category">{% for k in categories %}<option value="{{ k }}">{{ k | replace('_', ' ') }}</option>{% endfor %}</select>
+    <input class="input" name="frequency" placeholder="Frequency (e.g. annual)" aria-label="Frequency">
+    <label class="field-group"><span class="label">Due</span><input class="input" type="date" name="due_on"></label>
+    <input class="input" name="control_id" placeholder="Catalog control (e.g. SR-6)" aria-label="Linked control">
+    <input class="input" name="evidence_ref" placeholder="Evidence reference" aria-label="Evidence reference">
+    <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i>Add obligation</button>
+  </form>
+</section>
+
+<section class="card" style="margin-top:16px">
+  <div class="card__header"><div class="card__title">Edit contract</div></div>
+  <form method="post" action="/contracts/{{ c.id }}" class="card__body filters">
+    <input class="input" name="title" required value="{{ c.title }}" aria-label="Title">
+    <input class="input" name="contract_ref" value="{{ c.contract_ref or '' }}" placeholder="Reference" aria-label="Contract reference">
+    <label class="field-group"><span class="label">Start</span><input class="input" type="date" name="start_on" value="{{ c.start_on or '' }}"></label>
+    <label class="field-group"><span class="label">End</span><input class="input" type="date" name="end_on" value="{{ c.end_on or '' }}"></label>
+    <label class="field-group"><span class="label">Renewal</span><input class="input" type="date" name="renewal_on" value="{{ c.renewal_on or '' }}"></label>
+    <input class="input" name="annual_value" value="{{ c.annual_value if c.annual_value is not none else '' }}" placeholder="Annual value" aria-label="Annual value">
+    <select class="select" name="owner_user_id" aria-label="Owner"><option value="">No owner</option>{% for u in users %}<option value="{{ u.id }}"{% if c.owner_user_id == u.id %} selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select>
+    <select class="select" name="status" aria-label="Status">{% for s in statuses %}<option value="{{ s }}"{% if c.status == s %} selected{% endif %}>{{ s }}</option>{% endfor %}</select>
+    <button class="btn btn--secondary" type="submit"><i data-lucide="save"></i>Save</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
