@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..analytics import posture_history
 from ..assurance import builder as assurance_builder
+from ..ato import lifecycle as ato_lifecycle
 from ..capability import derive as capability_derive
 from ..config import get_settings
 from ..db import get_engine, session_scope, set_session_tenant
@@ -146,6 +147,7 @@ async def _run_per_tenant_cycle(
     conmon_results: list[dict[str, Any]] = []
     control_test_results: list[dict[str, Any]] = []
     digest_results: list[dict[str, Any]] = []
+    ato_expiry_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
     snapshot_results: list[dict[str, Any]] = []
@@ -211,6 +213,24 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "conmon"})
+        try:
+            # Before the digest, so this cycle's alerts already see an ATO that
+            # just lapsed as expired. Nothing else ever writes ``expired``.
+            async with session.begin_nested():
+                ato_expiry_results.append(
+                    {
+                        "organization_id": org_id,
+                        **await ato_lifecycle.expire_due(session, today=today, org_id=org_id),
+                    }
+                )
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="ato_expiry",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "ato_expiry"})
         try:
             # This organization's alerts, stored with its organization_id under
             # its own RLS tenant, so its members' inboxes can show them.
@@ -416,6 +436,7 @@ async def _run_per_tenant_cycle(
         "posture_scan": posture_results,
         "control_tests": control_test_results,
         "digest_per_org": digest_results,
+        "ato_expiry": ato_expiry_results,
         "capability_derive": {
             "organizations_processed": [r["organization_id"] for r in derive_results],
             "systems": sum(r["systems"] for r in derive_results),

@@ -50,6 +50,14 @@ class AuthorizationPackage(Base):
     created_by: Mapped[str | None] = mapped_column(String(255))
     summary: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    #: Workflow position -- see ``ccf.ato.lifecycle`` and ``models_ato.PACKAGE_STATUSES``.
+    status: Mapped[str] = mapped_column(String(24), default="draft", server_default="draft")
+    #: SHA-256 over the package's (fact_type, fact_key, digest) rows: what a
+    #: reviewer signs. Facts are frozen at capture, so it never changes.
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: The authorization period an AO decision set (authorized/conditional).
+    authorization_expires_on: Mapped[date | None] = mapped_column(Date)
+    status_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     facts: Mapped[list[AuthorizationPackageFact]] = relationship(
         back_populates="package", cascade="all, delete-orphan"

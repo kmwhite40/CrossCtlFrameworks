@@ -2098,6 +2098,7 @@ class CatalogIntegrityReport(Base):
 # suppression comment is exactly what ``ruff --fix`` strips, which silently
 # reintroduced this bug once already; a real reference cannot be stripped.
 from . import (  # noqa: E402
+    models_ato,
     models_capability,
     models_cci,
     models_cr26,
@@ -2111,6 +2112,7 @@ from . import (  # noqa: E402
 
 #: Sibling model modules whose tables must be in ``Base.metadata``.
 CROSS_MODULE_MODEL_MODULES = (
+    models_ato,
     models_capability,
     models_cci,
     models_cr26,

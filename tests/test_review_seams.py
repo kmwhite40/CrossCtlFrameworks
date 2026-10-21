@@ -466,3 +466,20 @@ async def test_an_audit_program_event_without_an_organization_is_refused() -> No
             )
     assert refused.value.status_code == 409
     assert "belongs to no organization" in str(refused.value.detail)
+
+
+async def test_import_cannot_move_an_open_poams_due_date_later() -> None:
+    """The API takes a later (or cleared) date on an open POA&M only as an
+    extension the ISSM or AO decides; a bulk file is not that decision."""
+    a = await _org("Imp")
+    held = date.today() + timedelta(days=30)
+    async with session_scope() as s:
+        (await s.get(POAM, a["poam"])).due_on = held
+    for due in ((held + timedelta(days=60)).isoformat(), ""):
+        got = await _import(a["org"], "poams", f"id,title,due_on\n{a['poam']},x,{due}\n")
+        assert got["skipped"] == 1 and "extension" in got["errors"][0], due
+    async with session_scope() as s:
+        assert (await s.get(POAM, a["poam"])).due_on == held
+    sooner = held - timedelta(days=5)
+    ok = await _import(a["org"], "poams", f"id,title,due_on\n{a['poam']},x,{sooner.isoformat()}\n")
+    assert ok["updated"] == 1

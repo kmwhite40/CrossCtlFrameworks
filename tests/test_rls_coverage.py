@@ -155,6 +155,9 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "vendor_contracts", "vendor_findings",
         # 0100 risk program: assessments and treatment, organization-owned.
         "risk_assessments", "risk_treatment_actions", "risk_treatment_plans",
+        # 0103 ATO workspace -- who signs for a system, a package's workflow
+        # history, and POA&M extension requests; each carries organization_id.
+        "system_role_assignments", "authorization_package_events", "poam_extensions",
     }
 )
 
@@ -198,7 +201,8 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 167  # 143 + 21 (0099) + 3 (0100)
+    # 143 + 21 (0099) + 3 (0100) + 3 (0103)
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 170
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

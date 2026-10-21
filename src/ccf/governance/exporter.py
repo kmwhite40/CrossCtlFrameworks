@@ -16,7 +16,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
+from ..constants import (
+    POAM_ACTIVE_STATUSES,
+    POAM_CLOSED_STATUSES,
+    POAM_STATUSES,
+    poam_leaves_risk_accepted,
+)
 from ..models import POAM, Policy, Risk, System, Vendor
 from .risk import band, compute_scores, resolve_axis, risk_in_scope
 
@@ -275,6 +280,21 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
             raise ValueError(
                 "extending a risk acceptance's expiry (due_on) needs an approved review; "
                 "change it on the POA&M itself"
+            )
+    if model is POAM and getattr(obj, "status", None) in POAM_ACTIVE_STATUSES and "due_on" in row:
+        # An open weakness's due date moving later -- or cleared, which is the
+        # same without a limit -- is a deviation the API takes only as an
+        # extension the ISSM or AO decides (``ccf.ato.extensions``).
+        new_status = _clean(row.get("status")) or obj.status
+        new_due, held = _coerce_date(row["due_on"]), obj.due_on
+        if (
+            new_status in POAM_ACTIVE_STATUSES
+            and held is not None
+            and (new_due is None or new_due > held)
+        ):
+            raise ValueError(
+                "moving an open POA&M's due date later needs an approved extension; "
+                "request one on the POA&M itself"
             )
     for f in spec["str_fields"]:
         if f in row:
