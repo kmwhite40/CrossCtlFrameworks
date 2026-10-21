@@ -988,7 +988,13 @@ def test_the_kev_sync_command_is_registered() -> None:
 
     result = CliRunner().invoke(app, ["kev-sync", "--help"])
     assert result.exit_code == 0
-    assert "--file" in result.stdout
+    # Asserted against the declared parameters, not the rendered help: rich
+    # wraps and colours it in CI, which split "--file" there (as it once split
+    # --once in test_assessment_worker_cli).
+    import typer  # noqa: PLC0415
+
+    sync = typer.main.get_command(app).commands["kev-sync"]  # type: ignore[attr-defined]
+    assert "--file" in {opt for param in sync.params for opt in param.opts}
 
 
 def test_the_kev_sync_command_fails_loudly_on_a_bad_feed(tmp_path) -> None:

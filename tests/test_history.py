@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import os
+import re
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -600,4 +601,6 @@ async def test_the_cli_records_one_organizations_snapshot(scene) -> None:
 async def test_the_cli_refuses_an_unknown_organization() -> None:
     result = await _invoke_cli(["posture-snapshot", "--org", "2147480000"])
     assert result.exit_code == 1
-    assert "No organization with id 2147480000" in result.output
+    # rich colours the number when a terminal (or FORCE_COLOR) allows it.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "No organization with id 2147480000" in plain
