@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Audit Readiness · Concord{% endblock %}
+{% block heading %}Audit readiness{% endblock %}
+{% block subtitle %}For each open engagement (any status but closed): the evidence requests the auditor has accepted, the workpapers finalised, and the findings still open. Each share names its denominator; an engagement with nothing in a denominator shows —, not 0% or 100%. This is a record of progress, not a prediction of the audit's outcome.{% endblock %}
+{% block content %}
+{% if rows %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Engagement</th><th>Target</th><th>Evidence requests accepted</th><th>Workpapers final</th><th>Open findings</th></tr></thead>
+  <tbody>{% for row in rows %}{% set e = row.e %}<tr>
+    <td><a href="/audit-workspace/{{ e.id }}"><strong>{{ e.name }}</strong></a><div class="dim">{{ e.auditor_org or 'Auditor not recorded' }} · {{ e.status | replace('_',' ') }}</div></td>
+    <td>{% if e.target_on %}<span class="{% if e.target_on < today %}kanban__due--late{% endif %}">{{ e.target_on }}</span>{% else %}<span class="dim">no target date</span>{% endif %}</td>
+    <td title="Accepted requests ÷ all requests on this engagement">
+      <strong data-metric="pbc">{{ '—' if row.pbc_pct is none else row.pbc_pct ~ '%' }}</strong>
+      <div class="dim">{{ row.pbc_accepted }} accepted of {{ row.pbc_total }} requested{% if row.pbc_overdue %} · <span class="kanban__due--late">{{ row.pbc_overdue }} overdue</span>{% endif %}</div>
+    </td>
+    <td title="Final workpapers ÷ all workpapers on this engagement">
+      <strong data-metric="wp">{{ '—' if row.wp_pct is none else row.wp_pct ~ '%' }}</strong>
+      <div class="dim">{{ row.wp_final }} final of {{ row.wp_total }} workpaper{{ 's' if row.wp_total != 1 }} · <a href="/audit/workpapers?engagement={{ e.id }}">open</a></div>
+    </td>
+    <td>
+      {% if row.findings_open %}
+      <div class="row">{% for s in severities %}{% if row.findings[s] %}<span class="chip {% if s in ('critical','high') %}chip--err{% elif s == 'moderate' %}chip--warn{% else %}chip--ghost{% endif %}">{{ row.findings[s] }} {{ s }}</span>{% endif %}{% endfor %}{% if row.findings_other %}<span class="chip chip--ghost">{{ row.findings_other }} other</span>{% endif %}</div>
+      <div class="dim">{{ row.findings_open }} open in total</div>
+      {% else %}<span class="dim">none open</span>{% endif %}
+    </td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="clipboard-check"></i><h2>No open engagements</h2><p>Readiness is measured per open audit engagement, and this organization has none. Open one on <a href="/audit-workspace">Audit Planning</a>.</p></div>
+{% endif %}
+{% endblock %}
