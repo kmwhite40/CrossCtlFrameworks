@@ -38,6 +38,9 @@ os.environ.setdefault(
     "postgresql+psycopg://ccf:ccf@localhost:5432/ccf_test",
 )
 os.environ.setdefault("CCF_ENV", "test")
+# The scheduler refreshes CISA KEV over the network each cycle; tests never
+# touch the network (tests/test_intel.py drives the step with a fixture).
+os.environ.setdefault("CCF_KEV_SYNC_ENABLED", "false")
 
 
 def _delete_keyed_cr26_documents_before_wipe(cfg: Config) -> None:

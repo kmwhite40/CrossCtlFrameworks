@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     #: Loopback, link-local and metadata hosts are refused regardless
     #: (``ccf.governance.webhook_url``).
     webhook_allow_private_targets: bool = Field(default=False)
+    #: Refresh CISA's Known Exploited Vulnerabilities catalog each scheduler
+    #: cycle (a GET to cisa.gov). Turn off for an air-gapped deployment and
+    #: load the catalog with ``ccf kev-sync --file``.
+    kev_sync_enabled: bool = Field(default=True)
     scheduler_interval_hours: float = Field(default=24.0)
 
     # How long per-resource posture detail is kept. The aggregate

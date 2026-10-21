@@ -608,6 +608,19 @@ async def run_cycle() -> dict[str, Any]:
                     "scheduler.global_step_failed", step="fedramp20x_monitoring", error=str(e)[:200]
                 )
                 global_failures.append("fedramp20x_monitoring")
+            if get_settings().kev_sync_enabled:
+                try:
+                    # CISA's KEV catalog is one table for every tenant, so this
+                    # runs once per cycle, unscoped. It skips when already
+                    # synced today and raises on any failure rather than
+                    # writing an empty catalog (ccf.intel.kev).
+                    async with session.begin_nested():
+                        from ..intel import kev  # noqa: PLC0415 — lazy, keeps startup light
+
+                        out["kev"] = await kev.refresh_kev(session, today=today)
+                except Exception as e:
+                    log.warning("scheduler.global_step_failed", step="kev_sync", error=str(e)[:200])
+                    global_failures.append("kev_sync")
         finally:
             # Release the advisory lock, and do not let anything above it stop
             # that from happening.
