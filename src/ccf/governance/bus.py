@@ -84,13 +84,19 @@ async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
             headers["X-CCF-Signature"] = f"sha256={sig}"
         # Re-resolved at every send: a name that now points inward is not
         # followed even if it was public when the webhook was created.
-        reason = await asyncio.to_thread(webhook_url.refusal, hook.url, require_resolution=True)
+        reason, target = await asyncio.to_thread(webhook_url.pinned_target, hook.url)
         if reason is not None:
             log.warning("webhook.target_refused", webhook_id=hook.id, reason=reason)
             continue
         try:
+            # Sent to the address that was checked, never re-resolved.
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-                await client.post(hook.url, content=body, headers=headers)
+                await client.post(
+                    target["url"],
+                    content=body,
+                    headers={**headers, **target["headers"]},
+                    extensions=target["extensions"],
+                )
         except Exception as e:  # best-effort — a bad webhook must not break the txn
             log.warning("webhook.dispatch_failed", url=hook.url, error=str(e)[:200])
 
@@ -127,9 +133,7 @@ async def notify(
                 # Escalated (a warning became critical): it is news again, so
                 # it comes back for everyone who had read the milder version.
                 await session.execute(
-                    delete(NotificationRead).where(
-                        NotificationRead.notification_id == existing.id
-                    )
+                    delete(NotificationRead).where(NotificationRead.notification_id == existing.id)
                 )
                 existing.read_at = None
             existing.title = title[:512]

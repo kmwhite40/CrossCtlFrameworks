@@ -53,6 +53,46 @@ def test_internal_and_malformed_targets_are_refused(url: str) -> None:
     assert webhook_url.refusal(url) is not None
 
 
+@pytest.mark.parametrize(
+    "address",
+    [
+        "64:ff9b::7f00:1",  # NAT64 of 127.0.0.1
+        "2002:7f00:1::1",  # 6to4 of 127.0.0.1
+        "::7f00:1",  # IPv4-compatible 127.0.0.1
+        "2001:0:4136:e378:8000:63bf:80ff:fffe",  # Teredo
+        "100.64.1.1",  # carrier-grade NAT
+        "100.100.100.200",  # Alibaba metadata
+        "fd00:ec2::254",  # AWS IPv6 metadata
+        "192.0.2.1",  # documentation range: not global
+    ],
+)
+def test_addresses_that_reach_inward_by_another_spelling_are_refused(address: str) -> None:
+    assert webhook_url.blocked_address(address)
+
+
+def test_metadata_and_cgnat_stay_refused_even_with_private_targets_allowed(monkeypatch) -> None:
+    monkeypatch.setenv("CCF_WEBHOOK_ALLOW_PRIVATE_TARGETS", "true")
+    get_settings.cache_clear()
+    try:
+        for address in ("169.254.169.254", "100.64.0.1", "fd00:ec2::254", "127.0.0.1"):
+            assert webhook_url.blocked_address(address), address
+        assert not webhook_url.blocked_address("10.0.0.5")
+    finally:
+        monkeypatch.delenv("CCF_WEBHOOK_ALLOW_PRIVATE_TARGETS")
+        get_settings.cache_clear()
+
+
+def test_delivery_is_pinned_to_the_checked_address(monkeypatch) -> None:
+    """Resolve once, check, connect to that address: the name is kept for the
+    Host header and TLS (SNI and certificate check), never re-resolved."""
+    monkeypatch.setattr(webhook_url, "_resolve", lambda host: ["93.184.216.34"])
+    reason, target = webhook_url.pinned_target("https://hooks.example:8443/p?q=1")
+    assert reason is None
+    assert target["url"] == "https://93.184.216.34:8443/p?q=1"
+    assert target["headers"] == {"Host": "hooks.example:8443"}
+    assert target["extensions"] == {"sni_hostname": "hooks.example"}
+
+
 def test_a_public_address_is_allowed() -> None:
     assert webhook_url.refusal("https://1.1.1.1/hook") is None
 
@@ -99,14 +139,19 @@ async def test_dispatch_never_posts_to_a_refused_target(monkeypatch) -> None:
             return None
 
         async def post(self, url, **k):
-            posted.append(url)
+            posted.append((url, k.get("headers", {}).get("Host")))
 
     monkeypatch.setattr(bus.httpx, "AsyncClient", _Client)
-    monkeypatch.setattr(webhook_url, "_resolve", lambda host: ["10.9.9.9"])
+    monkeypatch.setattr(
+        webhook_url,
+        "_resolve",
+        lambda host: ["10.9.9.9"] if host == "rebind.example" else ["93.184.216.34"],
+    )
     hooks = [
         SimpleNamespace(id=1, url="http://127.0.0.1/x", events=[], secret=None),
         SimpleNamespace(id=2, url="https://rebind.example/x", events=[], secret=None),
         SimpleNamespace(id=3, url="https://1.1.1.1/ok", events=[], secret=None),
+        SimpleNamespace(id=4, url="https://hooks.example/ok", events=[], secret=None),
     ]
 
     class _Session:
@@ -122,7 +167,10 @@ async def test_dispatch_never_posts_to_a_refused_target(monkeypatch) -> None:
         payload={},
     )
     await bus._dispatch_webhooks(_Session(), ev)  # type: ignore[arg-type]
-    assert posted == ["https://1.1.1.1/ok"]
+    assert posted == [
+        ("https://1.1.1.1/ok", "1.1.1.1"),
+        ("https://93.184.216.34/ok", "hooks.example"),
+    ]
 
 
 # ── the API: admin only, URL checked ─────────────────────────────────────────

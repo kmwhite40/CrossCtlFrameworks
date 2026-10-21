@@ -29,25 +29,61 @@ from ..config import get_settings
 #: Host names that address the server itself or a cloud metadata service.
 BLOCKED_HOSTS = frozenset({"localhost", "metadata.google.internal", "metadata", "instance-data"})
 
-
-def _always_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return (
-        ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_unspecified
-        or (ip.is_reserved and not ip.is_private)
+#: Never a webhook target, whatever ``webhook_allow_private_targets`` says:
+#: link-local (incl. 169.254.169.254), carrier-grade NAT, cloud metadata
+#: addresses, and the NAT64 local-use prefix.
+ALWAYS_BLOCKED = tuple(
+    ipaddress.ip_network(n)
+    for n in (
+        "169.254.0.0/16",
+        "100.64.0.0/10",
+        "100.100.100.200/32",
+        "fd00:ec2::254/128",
+        "64:ff9b:1::/48",
+        "fe80::/10",
     )
+)
+
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_V4_COMPAT = ipaddress.ip_network("::/96")
+
+IP = ipaddress.IPv4Address | ipaddress.IPv6Address
+
+
+def _embedded_v4(ip: IP) -> ipaddress.IPv4Address | None:
+    """The IPv4 address an IPv6 address carries, if it is one of the forms
+    that route to it: IPv4-mapped, NAT64, 6to4, Teredo or IPv4-compatible."""
+    if not isinstance(ip, ipaddress.IPv6Address):
+        return None
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in _NAT64 or (ip in _V4_COMPAT and int(ip) > 1):
+        return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+    if ip.sixtofour is not None:
+        return ip.sixtofour
+    if ip.teredo is not None:
+        return ip.teredo[1]
+    return None
 
 
 def blocked_address(ip_text: str) -> bool:
-    """True if Concord must not send to this address."""
-    ip = ipaddress.ip_address(ip_text)
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    if _always_blocked(ip):
-        return True
-    return ip.is_private and not get_settings().webhook_allow_private_targets
+    """True if Concord must not send to this address.
+
+    An allowlist, not a blocklist: the address must be globally routable,
+    except a private-range address when the operator has opted in. Any IPv6
+    form that carries an IPv4 address is judged by that IPv4 address."""
+    ip: IP = ipaddress.ip_address(ip_text)
+    inner = _embedded_v4(ip)
+    candidates: list[IP] = [ip] if inner is None else [ip, inner]
+    for c in candidates:
+        if any(c in net for net in ALWAYS_BLOCKED if c.version == net.version):
+            return True
+        if c.is_loopback or c.is_link_local or c.is_multicast or c.is_unspecified:
+            return True
+    target = inner or ip
+    if target.is_global:
+        return False
+    return not (target.is_private and get_settings().webhook_allow_private_targets)
 
 
 def _resolve(host: str) -> list[str]:
@@ -94,3 +130,33 @@ def refusal(url: str, *, require_resolution: bool = False) -> str | None:
         return f"{host} does not resolve" if require_resolution else None
     bad = [a for a in addresses if blocked_address(a)]
     return f"{host} resolves to an address Concord does not send to ({bad[0]})" if bad else None
+
+
+def pinned_target(url: str) -> tuple[str | None, dict[str, object]]:
+    """(refusal, request) for delivery: resolve once, check every address, and
+    return the request to send **to the address that was checked**.
+
+    Re-resolving at connect time would let a name answer differently the
+    second time (DNS rebinding). The URL's host is replaced by the pinned IP;
+    the original name travels in the ``Host`` header and as the TLS SNI name,
+    so certificate verification still checks the name the user configured."""
+    reason = refusal(url, require_resolution=True)
+    if reason is not None:
+        return reason, {}
+    parts = urlsplit(url.strip())
+    host = (parts.hostname or "").rstrip(".").lower()
+    try:
+        ipaddress.ip_address(host)
+        address = host
+    except ValueError:
+        resolved = _resolve(host)
+        if not resolved:
+            return f"{host} does not resolve", {}
+        address = resolved[0]
+    netloc_ip = f"[{address}]" if ":" in address else address
+    if parts.port:
+        netloc_ip = f"{netloc_ip}:{parts.port}"
+    pinned = parts._replace(netloc=netloc_ip).geturl()
+    host_header = host if not parts.port else f"{host}:{parts.port}"
+    extensions = {"sni_hostname": host} if parts.scheme == "https" else {}
+    return None, {"url": pinned, "headers": {"Host": host_header}, "extensions": extensions}
