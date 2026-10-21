@@ -17,10 +17,11 @@ Rules this module keeps, each learned the hard way on other pages:
   to sum across frameworks with different denominators, and so does this page.
   The headline is the share of *assessed* controls passing, labelled as such.
 * **Only dated records are trended.** SPRS, framework posture, implementation
-  status and risk scores are overwritten in place -- Concord keeps no history
-  of them -- so they are never drawn over time. What is trended (POA&M flow,
-  control-test runs, time to close) is reconstructed from rows that carry their
-  own dates. ``trends["not_recorded"]`` names what is missing, for the page.
+  status and risk scores are overwritten in place, so they are never
+  reconstructed. What is trended is either rebuilt from rows that carry their
+  own dates (POA&M flow, control-test runs) or read from the daily posture
+  snapshots (``analytics.posture_history``), which exist only from the day the
+  first was recorded. ``trends["not_recorded"]`` names what is still missing.
 * **Org scope is in every query**, not only in RLS, and soft-deleted systems
   are excluded throughout via ``posture.org_system_subq``.
 * **Nothing here writes.** ``conmon.scan``, ``digest`` escalation and
@@ -740,6 +741,11 @@ async def command_center(
         },
     }
 
+    # Imported here: posture_history captures snapshots *from* this function.
+    from .posture_history import posture_over_time  # noqa: PLC0415
+
+    posture_hist = await posture_over_time(session, org_id, today=today)
+
     return {
         "scoped": True,
         "today": today,
@@ -751,12 +757,14 @@ async def command_center(
         "trends": {
             "poam_flow": await _poam_flow(session, org_id, today),
             "test_runs": await _test_runs_by_week(session, org_id, today),
-            "not_recorded": [
-                "SPRS score",
-                "framework posture",
-                "risk scores",
-                "implementation status",
-            ],
+            "posture": posture_hist,
+            # Snapshots record SPRS, framework posture and risk bands from the
+            # first one on; before any exists, nothing records them at all.
+            "not_recorded": (
+                ["individual risk scores", "implementation status"]
+                if posture_hist["total_recorded"]
+                else ["SPRS score", "framework posture", "risk scores", "implementation status"]
+            ),
         },
         "kanban": await _kanban(session, org_id),
         "uploads": await _recent_uploads(session, org_id),

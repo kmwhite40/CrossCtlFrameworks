@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Risk Forecasting · Concord{% endblock %}
+{% block heading %}Risk Forecasting{% endblock %}
+{% block subtitle %}
+{% if scoped %}
+A straight line fitted by least squares to your organization's recorded posture snapshots, extended at most {{ horizon }} days past the last one. It is a projection from recorded history, not a prediction: it assumes the recent pace continues, and nothing on this page knows about work that is planned but not yet done.
+{% else %}
+This page projects one organization's recorded history. Sign in as a member of an organization to see it.
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<style>
+  .kpi-grid.fc-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); margin: var(--space-4) 0; }
+</style>
+{% if not scoped %}
+<div class="empty-state card">
+  <i data-lucide="building-2"></i>
+  <h2>No organization in scope</h2>
+  <p>Projections are fitted to one organization's snapshots and never across organizations. Global and unauthenticated sessions see this instead.</p>
+</div>
+{% else %}
+<section class="card panel">
+  <div class="panel__body">
+    {% if f.window %}
+    <strong>Fitted to {{ f.window }} snapshot{{ 's' if f.window != 1 }}</strong>
+    <span class="dim">from {{ f.first_on.strftime('%b %-d, %Y') }} to {{ f.last_on.strftime('%b %-d, %Y') }} (the last {{ window }} days of recorded history{% if f.recorded > f.window %}; {{ f.recorded - f.window }} older snapshot{{ 's' if f.recorded - f.window != 1 }} not fitted{% endif %}).</span>
+    {% if f.stale_days and f.stale_days > 1 %}<span class="chip chip--warn">Latest snapshot is {{ f.stale_days }} days old</span>{% endif %}
+    {% else %}
+    <strong>No posture snapshots are recorded.</strong>
+    <span class="dim">Snapshots are taken daily by the scheduler, or by an administrator on <a href="/trends">Compliance Trends</a>.</span>
+    {% endif %}
+    <p class="dim">A projection needs at least {{ min_points }} snapshots spanning {{ min_span }} or more days. Fit (R²) says how much of the recorded movement the line explains, from 0 to 1; a low value means the line is a poor summary of the history.</p>
+  </div>
+</section>
+
+<section class="kpi-grid fc-grid" aria-label="Projections">
+  {% for m in f.metrics %}
+  <article class="kpi" title="{{ m.basis }}">
+    <span class="kpi__label"><span>{{ m.label }}</span></span>
+    {% if m.ok %}
+    <span class="kpi__value">{{ m.latest }}</span>
+    <span class="kpi__meta">recorded {{ m.last_on.strftime('%b %-d') }} · {{ '%+.2f'|format(m.slope_per_week) }} a week · R² {{ '%.2f'|format(m.r2) if m.r2 is not none else '— (no variation)' }}</span>
+    <span class="kpi__foot">
+      {% if m.zero_on %}Fitted line reaches zero {{ m.zero_on.strftime('%b %-d, %Y') }}
+      {% elif m.direction == 'down' and m.zero_note == 'already' %}The fitted line is already at zero by the last snapshot; the recorded value is {{ m.latest }}
+      {% elif m.direction == 'down' %}Falling, but not to zero within {{ horizon }} days
+      {% elif m.direction == 'up' %}Rising: no zero date is projected
+      {% else %}Flat: no zero date is projected{% endif %}
+    </span>
+    {% else %}
+    <span class="kpi__value">—</span>
+    <span class="kpi__meta">Not projected</span>
+    <span class="kpi__foot">{{ m.reason }}</span>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+
+<article class="card panel">
+  <header class="panel__head">
+    <h2 class="panel__title">Projection from recorded history</h2>
+    <span class="panel__hint">never beyond {{ horizon }} days past the last snapshot</span>
+  </header>
+  <div class="table-wrap">
+    <table class="data">
+      <thead><tr>
+        <th scope="col">Backlog</th>
+        <th scope="col">Snapshots fitted</th>
+        <th scope="col">Recorded (latest)</th>
+        <th scope="col">Slope</th>
+        <th scope="col">Fit (R²)</th>
+        <th scope="col">+30 days</th>
+        <th scope="col">+60 days</th>
+        <th scope="col">+90 days</th>
+        <th scope="col">Reaches zero</th>
+      </tr></thead>
+      <tbody>
+        {% for m in f.metrics %}
+        <tr>
+          <th scope="row" title="{{ m.basis }}">{{ m.label }}</th>
+          {% if m.ok %}
+          <td>{{ m.points }} over {{ m.span_days }} days</td>
+          <td>{{ m.latest }} <span class="dim">on {{ m.last_on.strftime('%b %-d') }}</span></td>
+          <td>{{ '%+.2f'|format(m.slope_per_week) }} / week</td>
+          <td>{{ '%.2f'|format(m.r2) if m.r2 is not none else '—' }}</td>
+          {% for mk in m.marks %}<td title="{{ mk.on.strftime('%b %-d, %Y') }}">{{ mk.value }}{% if mk.floored %} <span class="dim">(line below zero)</span>{% endif %}</td>{% endfor %}
+          <td>{% if m.zero_on %}{{ m.zero_on.strftime('%b %-d, %Y') }}{% elif m.direction == 'down' and m.zero_note == 'already' %}<span class="dim">already, by the fitted line</span>{% elif m.direction == 'down' %}<span class="dim">not within {{ horizon }} days</span>{% else %}<span class="dim">— not falling</span>{% endif %}</td>
+          {% else %}
+          <td colspan="8"><span class="dim">{{ m.reason }}</span></td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <footer class="panel__foot">Projected values are where the fitted line sits on that day, floored at zero because a count cannot be negative. A zero date is shown only when the line is falling and reaches zero within {{ horizon }} days of the last snapshot. See the recorded history on <a href="/trends">Compliance Trends</a>.</footer>
+</article>
+{% endif %}
+{% endblock %}

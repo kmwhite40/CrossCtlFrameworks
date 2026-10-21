@@ -403,19 +403,8 @@ NAV: tuple[Group, ...] = (
                 "Six fixed assurance queries; no ad-hoc query builder.",
             ),
             Item("executive", "Executive Reporting", "/executive"),
-            _planned(
-                "trends",
-                "Compliance Trends",
-                "Concord does not keep posture history: SPRS, framework posture and implementation "
-                "status are overwritten in place, so no honest trend can be drawn for them. "
-                "The command center trends only what is recorded with a date.",
-                "/dashboard",
-            ),
-            _planned(
-                "forecast",
-                "Risk Forecasting",
-                "No forecasting model, and no risk history to forecast from.",
-            ),
+            Item("trends", "Compliance Trends", "/trends"),
+            Item("forecast", "Risk Forecasting", "/forecast"),
             _planned(
                 "ai_analysis",
                 "AI-Assisted Analysis",
