@@ -1,15 +1,41 @@
 {% extends "base.html" %}
-{% block title %}Remediation Plans · Concord{% endblock %}
+{% block title %}Remediation Workflows · Concord{% endblock %}
 {% block heading %}Remediation plans{% endblock %}
-{% block subtitle %}Every change to an environment Concord has planned for your live systems, and what became of it. Read-only here: plans are proposed, approved, applied and reversed through the enforcement API, under its approval gate.{% endblock %}
+{% block subtitle %}Every change to an environment Concord has planned for your live systems, and what became of it. A plan is built from a recorded failing check, approved by an administrator other than the one who requested it, then applied, and can be reversed.{% endblock %}
 {% block actions %}<a class="btn btn--secondary" href="/poams?status=open"><i data-lucide="list-todo"></i>Open POA&amp;Ms</a>{% endblock %}
 {% block content %}
+{% if error %}<div class="note note--err" role="alert"><strong>Refused.</strong> {{ error }} Nothing was changed.</div>{% endif %}
 <section class="kpi-grid kpi-grid--4">
   <div class="kpi"><span class="kpi__label">Plans</span><span class="kpi__value">{{ total }}</span></div>
   <div class="kpi"><span class="kpi__label">Awaiting approval</span><span class="kpi__value">{{ counts.get('pending_approval', 0) }}</span><span class="kpi__meta">{{ counts.get('approved', 0) }} approved, not yet applied</span></div>
   <div class="kpi"><span class="kpi__label">Applied</span><span class="kpi__value">{{ counts.get('applied', 0) }}</span><span class="kpi__meta">{{ counts.get('reversed', 0) }} reversed since</span></div>
   <div class="kpi"><span class="kpi__label">Failed or refused</span><span class="kpi__value {% if counts.get('failed', 0) + counts.get('refused', 0) %}kpi__value--danger{% endif %}">{{ counts.get('failed', 0) + counts.get('refused', 0) }}</span><span class="kpi__meta">{{ counts.get('rejected', 0) }} rejected by an approver</span></div>
 </section>
+
+{% if can_act %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Plan a remediation</h2>
+    <span class="panel__hint">failing checks on your live systems that a registered provider can remediate</span></header>
+  <div class="panel__body">
+  {% if remediable %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Failing test</th><th>Check</th><th>System</th><th></th></tr></thead>
+      <tbody>{% for r in remediable %}<tr>
+        <td>{{ r.test }}</td><td class="mono">{{ r.check_key }}</td><td>{{ r.system }}</td>
+        <td><form method="post" action="/remediation/plans">
+          <input type="hidden" name="system_id" value="{{ r.system_id }}">
+          <input type="hidden" name="check_key" value="{{ r.check_key }}">
+          <button class="btn btn--primary btn--sm" type="submit"><i data-lucide="clipboard-list"></i>Plan</button>
+        </form></td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    <p class="dim">Planning reads the affected resources to capture how to put each one back; it writes nothing. Without a write credential for the provider the plan is stored as refused, with the reason.</p>
+  {% else %}
+    <p class="panel__empty">No failing check on your live systems is one a registered remediation provider handles. Plans can be made only for those.</p>
+  {% endif %}
+  </div>
+</article>
+{% endif %}
 
 {% if total %}
 <form method="get" action="/remediation" class="filters">
@@ -23,21 +49,32 @@
 
 {% if rows %}
 <div class="table-wrap"><table>
-  <thead><tr><th>Plan</th><th>System</th><th>Check</th><th>Status</th><th>Resources</th><th>Requested by</th><th>Approved by</th><th>Applied / reversed</th></tr></thead>
-  <tbody>{% for r in rows %}{% set p = r.RemediationPlan %}<tr>
+  <thead><tr><th>Plan</th><th>System</th><th>Check</th><th>Status</th><th>Resources</th><th>Requested by</th><th>Approved by</th><th>Applied / reversed</th>{% if can_act %}<th>Action</th>{% endif %}</tr></thead>
+  <tbody>{% for r in rows %}{% set p = r.RemediationPlan %}<tr id="plan-{{ p.id }}">
     <td class="mono">#{{ p.id }}<div class="dim">{{ p.created_at.strftime('%Y-%m-%d') if p.created_at else '' }}</div></td>
     <td><a href="/systems/{{ p.system_id }}">{{ r.system }}</a></td>
-    <td class="mono">{{ p.check_key }}<div class="dim">{{ p.provider_key }}</div></td>
+    <td class="mono">{{ p.check_key }}<div class="dim">{{ p.provider_key }}</div>
+      {% if p.steps %}<details><summary class="dim">{{ p.steps | length }} step{{ 's' if p.steps|length != 1 }}</summary><ul>{% for st in p.steps %}<li class="mono">{{ st.resource_id }}{% for o in p.outcomes or [] %}{% if o.resource_id == st.resource_id %} · {{ o.status }}{% endif %}{% endfor %}</li>{% endfor %}</ul></details>{% endif %}</td>
     <td><span class="chip {% if p.status == 'applied' %}chip--ok{% elif p.status in ('failed','refused','rejected') %}chip--err{% elif p.status in ('pending_approval','approved') %}chip--warn{% else %}chip--ghost{% endif %}">{{ p.status | replace('_',' ') }}</span>{% if p.refusal_reason %}<div class="dim clamp-3">{{ p.refusal_reason }}</div>{% endif %}</td>
     <td>{{ p.resource_count }}</td>
     <td>{{ p.requested_by or '—' }}</td>
     <td>{{ p.approved_by or '—' }}</td>
     <td>{% if p.reversed_at %}reversed {{ p.reversed_at.strftime('%Y-%m-%d') }}{% elif p.applied_at %}{{ p.applied_at.strftime('%Y-%m-%d') }}{% else %}<span class="dim">—</span>{% endif %}</td>
+    {% if can_act %}<td>
+      {% if p.status == 'pending_approval' %}
+        {% if me and p.requested_by == me %}<span class="dim" title="Separation of duties">you requested this; another administrator must approve</span>
+        {% else %}<form method="post" action="/remediation/{{ p.id }}/approve"><button class="btn btn--secondary btn--sm" type="submit">Approve</button></form>{% endif %}
+      {% elif p.status == 'approved' %}
+        <form method="post" action="/remediation/{{ p.id }}/apply"><button class="btn btn--primary btn--sm" type="submit" title="Writes to the environment">Apply</button></form>
+      {% elif p.status == 'applied' %}
+        <form method="post" action="/remediation/{{ p.id }}/reverse"><button class="btn btn--ghost btn--sm" type="submit" title="Restores each resource's captured prior state">Reverse</button></form>
+      {% else %}<span class="dim">—</span>{% endif %}
+    </td>{% endif %}
   </tr>{% endfor %}</tbody>
 </table></div>
 {% elif total %}
 <div class="card empty-state"><i data-lucide="filter-x"></i><h2>No plan has this status</h2><p><a href="/remediation">Show all {{ total }} plans.</a></p></div>
 {% else %}
-<div class="card empty-state"><i data-lucide="wrench"></i><h2>No remediation plans</h2><p>No enforcement change has been planned for this organization's live systems. A plan is created from a failing posture check through the enforcement API; it then waits for an approver before anything is written.</p></div>
+<div class="card empty-state"><i data-lucide="wrench"></i><h2>No remediation plans</h2><p>No change has been planned for this organization's live systems. An administrator plans one from a failing check above; it then waits for a second administrator's approval before anything is written.</p></div>
 {% endif %}
 {% endblock %}

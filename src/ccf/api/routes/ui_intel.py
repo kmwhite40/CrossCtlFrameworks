@@ -8,13 +8,15 @@ Spec: docs/superpowers/specs/2026-10-20-grc-buildout-design.md, "G -- intel".
   (``ccf.analytics.studio``); nothing typed reaches SQL.
 * ``/implementations``, ``/inheritance`` -- control implementations across
   live systems; inherited and hybrid ones with their FedRAMP dependencies.
-* ``/remediation`` -- remediation plans (``models_enforcement``), read-only.
+* ``/remediation`` -- remediation plans (``models_enforcement``): plan,
+  approve, apply, reverse through the enforcement service, admin-gated.
 * ``/issues`` -- one list of open POA&Ms, audit findings, vendor findings and
   failing control tests, by severity and age.
 
 Tenant scope is explicit in every query, never left to RLS. Records without
 ``organization_id`` scope through a live system (``posture.org_system_subq``).
-The only write is the KEV sync, admin-only and audited.
+Writes: the KEV sync, and the remediation-plan transitions; all admin-only
+and audited.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from collections import Counter, defaultdict
 from datetime import UTC, date, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +33,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...analytics import posture, studio
 from ...auth import Principal
 from ...constants import POAM_ACTIVE_STATUSES
+from ...enforcement.service import (
+    EnforcementError,
+    apply_plan,
+    approve_plan,
+    create_plan,
+    reverse_plan,
+)
+from ...enforcement.types import provider_for
 from ...intel import kev
 from ...logging import get_logger
 from ...models import (
@@ -47,8 +57,10 @@ from ...models_grc import AuditEngagement, AuditFinding, ControlTest, ControlTes
 from ...models_program import VendorFinding
 from .. import navigation
 from ..audit import record_event
-from ..auth_deps import require_role
+from ..auth_deps import require_platform_admin, require_role
 from ..deps import get_session
+from .enforcement import ENFORCER_ROLES, _require_plan
+from .systems import require_system_in_scope
 from .ui import _principal_org, templates
 
 router = APIRouter(include_in_schema=False)
@@ -109,7 +121,8 @@ async def _intel_page(
         status_code=status_code,
         catalog=catalog,
         found=found,
-        can_sync=principal is None or principal.is_global or principal.role == "admin",
+        # The catalog is global: only a platform-wide principal may refresh it.
+        can_sync=principal is None or principal.is_global,
         sync_error=sync_error,
         synced=request.query_params.get("synced"),
         source_url=kev.KEV_URL,
@@ -126,11 +139,15 @@ async def intel_page(request: Request, session: AsyncSession = Depends(get_sessi
 async def intel_kev_sync(
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role("admin")),
+    principal: Principal = Depends(require_platform_admin()),
 ) -> Response:
     """Download CISA's catalog now and replace ``kev_entries`` with it.
 
-    Admin-only. The catalog is global, so the event is recorded platform-wide
+    Platform administrators only (an unscoped principal): ``kev_entries`` is
+    one table shared by every tenant, so a tenant's administrator -- whom
+    ``require_role("admin")`` would admit -- has no authority over it. Tenants
+    get the catalog from this, the ``ccf kev-sync`` command, or the scheduler
+    step (``kev.refresh_kev``). The event is recorded platform-wide
     (``organization_id=None``), as a catalog revision adoption is: every
     tenant can see that the catalog beneath it moved, and who moved it. A
     failure is shown on the page with its reason (502) and audited; the
@@ -384,17 +401,29 @@ async def inheritance_page(
     )
 
 
-# ── /remediation ─────────────────────────────────────────────────────────────
+# ── /remediation: the plan workflow ──────────────────────────────────────────
+#
+# The page drives the enforcement service (``ccf.enforcement.service``) through
+# exactly the calls the API makes: ``create_plan``, ``approve_plan``,
+# ``apply_plan``, ``reverse_plan``. Same role gate (``ENFORCER_ROLES``), same
+# plan lookup (``enforcement._require_plan``: another tenant's plan is a 404),
+# same system scope (``require_system_in_scope``). Separation of duties (the
+# requester may not approve), the write-credential, blast-radius and
+# stale-approval re-checks, and the audit events all live in the service, so
+# this page cannot weaken them. A refusal is shown with its reason (409).
 
 
-@router.get("/remediation", response_class=HTMLResponse)
-async def remediation_page(
+async def _remediation_page(
     request: Request,
-    session: AsyncSession = Depends(get_session),
-    status: str | None = Query(None, max_length=24),
+    session: AsyncSession,
+    *,
+    status: str | None = None,
+    error: str | None = None,
+    status_code: int = 200,
 ) -> HTMLResponse:
     org = _principal_org(request)
-    where: list[Any] = [RemediationPlan.system_id.in_(posture.org_system_subq(org))]
+    live = posture.org_system_subq(org)
+    where: list[Any] = [RemediationPlan.system_id.in_(live)]
     if org is not None:
         where.append(RemediationPlan.organization_id == org)
     counts = Counter(
@@ -421,15 +450,138 @@ async def remediation_page(
             .limit(500)
         )
     ).all()
+    # Failing checks a registered provider can remediate: what "plan a
+    # remediation" can be asked for. Anything else would only be refused.
+    ct_where: list[Any] = [
+        ControlTest.system_id.in_(live),
+        ControlTest.check_key.is_not(None),
+        ControlTest.last_status == "fail",
+    ]
+    if org is not None:
+        ct_where.append(ControlTest.organization_id == org)
+    remediable = [
+        r
+        for r in (
+            await session.execute(
+                select(
+                    ControlTest.system_id,
+                    System.name.label("system"),
+                    ControlTest.check_key,
+                    ControlTest.name.label("test"),
+                )
+                .join(System, System.id == ControlTest.system_id)
+                .where(*ct_where)
+                .order_by(System.name, ControlTest.check_key)
+            )
+        ).all()
+        if provider_for(r.check_key) is not None
+    ]
+    principal = getattr(request.state, "principal", None)
     return _render(
         request,
         "remediation_plans.html",
         "remediation",
+        status_code=status_code,
         rows=rows,
         counts=counts,
         total=sum(counts.values()),
         statuses=PLAN_STATUSES,
         status=status,
+        remediable=remediable,
+        can_act=principal is None or principal.is_global or principal.role in ENFORCER_ROLES,
+        me=getattr(principal, "email", None),
+        error=error,
+    )
+
+
+@router.get("/remediation", response_class=HTMLResponse)
+async def remediation_page(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    status: str | None = Query(None, max_length=24),
+) -> HTMLResponse:
+    return await _remediation_page(request, session, status=status)
+
+
+@router.post("/remediation/plans")
+async def remediation_create(
+    request: Request,
+    *,
+    system_id: int = Form(...),
+    check_key: str = Form(..., max_length=128),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ENFORCER_ROLES)),
+) -> Response:
+    """Plan a remediation for a failing check (``POST /api/systems/{id}/remediation-plans``).
+
+    A refused plan is a stored row and redirects like any other; only "no plan
+    at all" (no provider for the check) is an error."""
+    await require_system_in_scope(session, system_id, principal)
+    try:
+        plan = await create_plan(
+            session, system_id=system_id, check_key=check_key.strip(), actor=principal.email
+        )
+    except EnforcementError as exc:
+        return await _remediation_page(request, session, error=str(exc), status_code=409)
+    await session.commit()
+    return RedirectResponse(f"/remediation#plan-{plan.id}", status_code=303)
+
+
+async def _transition(
+    request: Request,
+    session: AsyncSession,
+    principal: Principal,
+    plan_id: int,
+    action: Any,
+    **kw: Any,
+) -> Response:
+    plan = await _require_plan(session, plan_id, principal)
+    try:
+        await action(session, plan, **kw)
+    except EnforcementError as exc:
+        return await _remediation_page(
+            request, session, error=f"Plan #{plan_id}: {exc}", status_code=409
+        )
+    await session.commit()
+    return RedirectResponse(f"/remediation#plan-{plan_id}", status_code=303)
+
+
+@router.post("/remediation/{plan_id}/approve")
+async def remediation_approve(
+    request: Request,
+    plan_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ENFORCER_ROLES)),
+) -> Response:
+    """Approve (``POST /api/remediation-plans/{id}/approve``); not the requester."""
+    return await _transition(
+        request, session, principal, plan_id, approve_plan, approver=principal.email
+    )
+
+
+@router.post("/remediation/{plan_id}/apply")
+async def remediation_apply(
+    request: Request,
+    plan_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ENFORCER_ROLES)),
+) -> Response:
+    """Apply (``POST /api/remediation-plans/{id}/apply``): writes to the environment."""
+    return await _transition(
+        request, session, principal, plan_id, apply_plan, actor=principal.email
+    )
+
+
+@router.post("/remediation/{plan_id}/reverse")
+async def remediation_reverse(
+    request: Request,
+    plan_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*ENFORCER_ROLES)),
+) -> Response:
+    """Reverse (``POST /api/remediation-plans/{id}/reverse``)."""
+    return await _transition(
+        request, session, principal, plan_id, reverse_plan, actor=principal.email
     )
 
 

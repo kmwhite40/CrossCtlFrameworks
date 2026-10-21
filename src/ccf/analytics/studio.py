@@ -75,6 +75,18 @@ def _org_eq(col: Any, org_id: int | None) -> list[Any]:
     return [] if org_id is None else [col == org_id]
 
 
+def _risk_scope(org_id: int | None) -> list[Any]:
+    """A risk is the org's if it says so or sits on one of the org's live
+    systems (0100: enterprise risks have no system); never one on a
+    soft-deleted system."""
+    owned = (
+        []
+        if org_id is None
+        else [or_(Risk.organization_id == org_id, Risk.system_id.in_(org_system_subq(org_id)))]
+    )
+    return [*owned, _system_optional(Risk.system_id, org_id)]
+
+
 _SYSTEM = Dimension("system", "System", System.name)
 
 REGISTERS: dict[str, Register] = {
@@ -100,9 +112,10 @@ REGISTERS: dict[str, Register] = {
             "risks",
             "Risks",
             "risk",
-            lambda: Risk.__table__.join(System, System.id == Risk.system_id),
-            lambda org: [Risk.system_id.in_(org_system_subq(org))],
+            lambda: Risk.__table__.outerjoin(System, System.id == Risk.system_id),
+            _risk_scope,
             (
+                Dimension("register", "Register", Risk.register),
                 Dimension("status", "Status", Risk.status),
                 Dimension("treatment", "Treatment", Risk.treatment),
                 Dimension("category", "Category", Risk.category),

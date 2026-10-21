@@ -60,6 +60,9 @@ from ccf.models_program import KevEntry, VendorFinding
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
+#: The one check a remediation provider (m365) handles today.
+STALE_KEY = "m365.identity.stale_accounts"
+
 _SEQ = itertools.count()
 
 #: CISA's feed shape (field names as published), with ids that cannot collide
@@ -175,6 +178,14 @@ async def _org(label: str, tag: str) -> dict[str, object]:
             )
             for role in ("admin", "control_owner", "viewer")
         }
+        users["admin2"] = User(
+            email=f"{label.lower()}-admin2-{tag}@intel.test",
+            organization_id=org.id,
+            role="admin",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
         live = System(organization_id=org.id, name=m("system"), baseline="moderate")
         gone = System(
             organization_id=org.id,
@@ -235,6 +246,14 @@ async def _org(label: str, tag: str) -> dict[str, object]:
                 ),
                 Risk(system_id=live.id, title=m("risk"), status="open", category="technical"),
                 Risk(system_id=gone.id, title=d("risk"), status="open"),
+                # 0100: a system-less enterprise risk belongs to its org directly.
+                Risk(
+                    organization_id=org.id,
+                    system_id=None,
+                    register="enterprise",
+                    title=m("enterprise-risk"),
+                    status="open",
+                ),
                 ControlImplementation(
                     system_id=live.id,
                     control_id=ctl_impl.id,
@@ -301,6 +320,17 @@ async def _org(label: str, tag: str) -> dict[str, object]:
                     check_key=m("plan"),
                     provider_key="aws",
                     status="pending_approval",
+                    requested_by=users["admin"].email,
+                ),
+                ControlTest(
+                    organization_id=org.id,
+                    system_id=live.id,
+                    control_id="AC-2",
+                    name=m("stale-accounts-test"),
+                    source="generated",
+                    check_key=STALE_KEY,
+                    active=True,
+                    last_status="fail",
                 ),
                 RemediationPlan(
                     organization_id=org.id,
@@ -339,6 +369,9 @@ async def _org(label: str, tag: str) -> dict[str, object]:
             "token": users["admin"].api_token,
             "owner_token": users["control_owner"].api_token,
             "viewer_token": users["viewer"].api_token,
+            "admin2_token": users["admin2"].api_token,
+            "admin_email": users["admin"].email,
+            "admin2_email": users["admin2"].email,
         }
 
 
@@ -549,33 +582,76 @@ async def test_without_a_catalog_the_page_does_not_claim_no_matches(two_orgs) ->
     assert "No KEV catalog to match against" in body
 
 
-@pytest.mark.parametrize("who", ["viewer_token", "owner_token"])
-async def test_only_an_admin_may_sync_kev(two_orgs, who: str, monkeypatch) -> None:
+PLATFORM_ADMIN = "platform-admin@concord.test"
+
+
+def _platform_client(monkeypatch, *, org_id: int | None = None) -> AsyncClient:
+    """A request as an unscoped (platform-wide) admin, or as ``org_id``'s admin.
+
+    A user row always has an organization, so a global principal exists only
+    with auth off or as the system; both principal dependencies are overridden
+    (``require_*`` reads ``get_principal``, ``get_session`` reads
+    ``get_principal_optional``), as ``test_self_assurance_is_a_platform_operation``
+    does."""
+    from ccf.api.auth_deps import get_principal, get_principal_optional  # noqa: PLC0415
+    from ccf.auth import Principal  # noqa: PLC0415
+
+    monkeypatch.setenv("CCF_AUTH_ENABLED", "false")
+    get_settings.cache_clear()
+    who = Principal(user_id=None, email=PLATFORM_ADMIN, org_id=org_id, role="admin")
+    app = create_app()
+    app.dependency_overrides[get_principal] = lambda: who
+    app.dependency_overrides[get_principal_optional] = lambda: who
+    app.dependency_overrides[get_session] = _unscoped_session
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://t")
+
+
+@pytest.mark.parametrize("who", ["viewer_token", "owner_token", "token"])
+async def test_no_tenant_user_may_sync_the_global_catalog(two_orgs, who: str, monkeypatch) -> None:
+    """``kev_entries`` is shared by every tenant: a tenant's admin included is refused."""
     a, _ = two_orgs
     called = []
 
     async def fake_fetch(**_kw):
         called.append(1)
-        return copy.deepcopy(KEV_FIXTURE)
+        doc = copy.deepcopy(KEV_FIXTURE)
+        doc["vulnerabilities"] = doc["vulnerabilities"][:1]
+        doc["count"] = 1
+        return doc
 
     monkeypatch.setattr(kev, "fetch_kev", fake_fetch)
+    async with session_scope() as s:
+        await kev.sync_kev(s, copy.deepcopy(KEV_FIXTURE))
     async with _client() as c:
         resp = await c.post("/intel/kev/sync", headers=_auth(a[who]))
+        page = (await c.get("/intel", headers=_auth(a[who]))).text
     assert resp.status_code == 403
     assert not called
+    async with session_scope() as s:
+        assert (await kev.catalog_status(s))["entries"] == 3  # unchanged
+    assert 'action="/intel/kev/sync"' not in page  # no control offered
 
 
-async def test_an_admin_sync_writes_the_catalog_and_an_event(two_orgs, monkeypatch) -> None:
+async def test_a_tenant_admin_principal_is_refused_too(two_orgs, monkeypatch) -> None:
+    """The same refusal for a scoped admin principal reached by the override path."""
     a, _ = two_orgs
+    monkeypatch.setattr(kev, "fetch_kev", lambda **_kw: pytest.fail("fetched"))
+    async with _platform_client(monkeypatch, org_id=int(a["org_id"])) as c:
+        resp = await c.post("/intel/kev/sync")
+    assert resp.status_code == 403
 
+
+async def test_a_platform_admin_sync_writes_the_catalog_and_an_event(monkeypatch) -> None:
     async def fake_fetch(**_kw):
         return copy.deepcopy(KEV_FIXTURE)
 
     monkeypatch.setattr(kev, "fetch_kev", fake_fetch)
     async with session_scope() as s:
         await s.execute(KevEntry.__table__.delete())
-    async with _client() as c:
-        resp = await c.post("/intel/kev/sync", headers=_auth(a["token"]))
+    async with _platform_client(monkeypatch) as c:
+        page = (await c.get("/intel")).text
+        resp = await c.post("/intel/kev/sync")
+    assert 'action="/intel/kev/sync"' in page
     assert resp.status_code == 303 and resp.headers["location"] == "/intel?synced=3"
     async with session_scope() as s:
         assert (await kev.catalog_status(s))["entries"] == 3
@@ -587,12 +663,12 @@ async def test_an_admin_sync_writes_the_catalog_and_an_event(two_orgs, monkeypat
                 .limit(1)
             )
         ).scalar_one()
-    assert ev.actor == f"alpha-admin-{a['tag']}@intel.test"
+    assert ev.actor == PLATFORM_ADMIN
     assert ev.entity_id == "2099.01.02"
+    assert ev.organization_id is None
 
 
-async def test_a_failed_sync_is_surfaced_and_leaves_the_catalog(two_orgs, monkeypatch) -> None:
-    a, _ = two_orgs
+async def test_a_failed_sync_is_surfaced_and_leaves_the_catalog(monkeypatch) -> None:
     async with session_scope() as s:
         await kev.sync_kev(s, copy.deepcopy(KEV_FIXTURE))
 
@@ -600,8 +676,8 @@ async def test_a_failed_sync_is_surfaced_and_leaves_the_catalog(two_orgs, monkey
         raise kev.KevFetchError("CISA answered HTTP 503 for the KEV feed")
 
     monkeypatch.setattr(kev, "fetch_kev", broken_fetch)
-    async with _client() as c:
-        resp = await c.post("/intel/kev/sync", headers=_auth(a["token"]))
+    async with _platform_client(monkeypatch) as c:
+        resp = await c.post("/intel/kev/sync")
     assert resp.status_code == 502
     assert "The KEV catalog was not refreshed." in resp.text
     assert "HTTP 503" in resp.text
@@ -618,7 +694,7 @@ async def test_a_failed_sync_is_surfaced_and_leaves_the_catalog(two_orgs, monkey
 #: Alpha's records in scope per register: live-system or org-wide ones only.
 EXPECTED = {
     "poams": 2,
-    "risks": 1,
+    "risks": 2,
     "test_results": 4,
     "evidence": 1,
     "vendors": 1,
@@ -795,11 +871,12 @@ async def test_issues_are_ordered_by_severity_then_age(two_orgs) -> None:
         "control_test",
     }
     sevs = [i["severity"] for i in issues]
-    assert sevs == ["critical", "high", "moderate", "low", "unrated"]
+    assert sevs == ["critical", "high", "moderate", "low", "unrated", "unrated"]
     test = next(i for i in issues if i["kind"] == "control_test")
     # The current failure began 7 days ago (the run after the last pass),
     # not 20 days ago and not at the latest run.
-    assert test["age"] == 7
+    # (the run timestamps are UTC; ``today`` is the local date the scene used)
+    assert test["age"] == (date.today() - (datetime.now(UTC) - timedelta(days=7)).date()).days
     poam = next(i for i in issues if i["title"].endswith(f"poam-plain-{a['tag']}"))
     assert poam["age"] == 50
 
@@ -845,3 +922,188 @@ async def test_the_scheduler_step_syncs_once_a_day(monkeypatch) -> None:
     assert first["status"] == "synced" and first["total"] == 3
     assert second["status"] == "skipped"
     assert len(calls) == 1
+
+
+# ── risks after 0100: owned directly or through a live system ────────────────
+
+
+async def test_the_risk_register_counts_enterprise_risks_by_owner(two_orgs) -> None:
+    a, _ = two_orgs
+    async with session_scope() as s:
+        result = await studio.run(s, int(a["org_id"]), "risks", ["register"])
+    assert dict(result["by_first"]) == {"cyber": 1, "enterprise": 1}
+
+
+# ── /remediation: the plan workflow through the enforcement service ──────────
+
+
+async def _plan(tag: object, label: str = "Alpha") -> RemediationPlan:
+    async with session_scope() as s:
+        return (
+            await s.execute(
+                select(RemediationPlan).where(RemediationPlan.check_key == f"{label}-plan-{tag}")
+            )
+        ).scalar_one()
+
+
+async def _set_status(plan_id: int, status: str) -> None:
+    async with session_scope() as s:
+        plan = await s.get(RemediationPlan, plan_id)
+        plan.status = status
+
+
+@pytest.mark.parametrize("who", ["viewer_token", "owner_token"])
+@pytest.mark.parametrize("action", ["approve", "apply", "reverse"])
+async def test_only_an_enforcer_may_move_a_plan(two_orgs, who, action) -> None:
+    a, _ = two_orgs
+    plan = await _plan(a["tag"])
+    async with _client() as c:
+        resp = await c.post(f"/remediation/{plan.id}/{action}", headers=_auth(a[who]))
+    assert resp.status_code == 403
+    assert (await _plan(a["tag"])).status == "pending_approval"
+
+
+@pytest.mark.parametrize("who", ["viewer_token", "owner_token"])
+async def test_only_an_enforcer_may_plan(two_orgs, who) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        resp = await c.post(
+            "/remediation/plans",
+            data={"system_id": a["live"], "check_key": STALE_KEY},
+            headers=_auth(a[who]),
+        )
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("action", ["approve", "apply", "reverse"])
+async def test_another_orgs_plan_is_not_found(two_orgs, action) -> None:
+    a, b = two_orgs
+    theirs = await _plan(b["tag"], "Bravo")
+    async with _client() as c:
+        resp = await c.post(f"/remediation/{theirs.id}/{action}", headers=_auth(a["token"]))
+    assert resp.status_code == 404
+    assert (await _plan(b["tag"], "Bravo")).status == "pending_approval"
+
+
+async def test_the_requester_cannot_approve_and_another_admin_can(two_orgs) -> None:
+    a, _ = two_orgs
+    plan = await _plan(a["tag"])
+    async with _client() as c:
+        own = await c.post(f"/remediation/{plan.id}/approve", headers=_auth(a["token"]))
+        assert own.status_code == 409
+        assert "the requester may not approve their own remediation plan" in own.text
+        assert (await _plan(a["tag"])).status == "pending_approval"
+        other = await c.post(f"/remediation/{plan.id}/approve", headers=_auth(a["admin2_token"]))
+    assert other.status_code == 303
+    after = await _plan(a["tag"])
+    assert after.status == "approved" and after.approved_by == a["admin2_email"]
+    async with session_scope() as s:
+        ev = (
+            await s.execute(
+                select(AuditLog)
+                .where(
+                    AuditLog.entity_type == "remediation_plan",
+                    AuditLog.entity_id == str(plan.id),
+                )
+                .order_by(AuditLog.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+    assert ev.actor == a["admin2_email"] and ev.organization_id == a["org_id"]
+
+
+async def test_the_page_withholds_approval_from_the_requester(two_orgs) -> None:
+    a, _ = two_orgs
+    plan = await _plan(a["tag"])
+    async with _client() as c:
+        mine = (await c.get("/remediation", headers=_auth(a["token"]))).text
+        theirs = (await c.get("/remediation", headers=_auth(a["admin2_token"]))).text
+        owner = (await c.get("/remediation", headers=_auth(a["owner_token"]))).text
+    assert f'action="/remediation/{plan.id}/approve"' not in mine
+    assert "another administrator must approve" in mine
+    assert f'action="/remediation/{plan.id}/approve"' in theirs
+    assert "/remediation/plans" not in owner and "/approve" not in owner
+
+
+async def test_a_refused_apply_is_shown_and_changes_nothing(two_orgs) -> None:
+    """No provider handles the scene's check, so the service refuses at apply."""
+    a, _ = two_orgs
+    plan = await _plan(a["tag"])
+    await _set_status(plan.id, "approved")
+    async with _client() as c:
+        resp = await c.post(f"/remediation/{plan.id}/apply", headers=_auth(a["admin2_token"]))
+    assert resp.status_code == 409
+    assert "no remediation provider handles check" in resp.text
+    assert (await _plan(a["tag"])).status == "approved"
+
+
+async def test_reversing_a_plan_that_was_not_applied_is_refused(two_orgs) -> None:
+    a, _ = two_orgs
+    plan = await _plan(a["tag"])
+    async with _client() as c:
+        resp = await c.post(f"/remediation/{plan.id}/reverse", headers=_auth(a["token"]))
+    assert resp.status_code == 409
+    assert "plan is not applied" in resp.text
+
+
+async def test_planning_a_failing_check_stores_the_plan_or_its_refusal(two_orgs) -> None:
+    """No write credential exists in the test database, so the service stores
+    the plan as refused, with its reason -- through the page as through the API."""
+    a, _ = two_orgs
+    async with _client() as c:
+        page = (await c.get("/remediation", headers=_auth(a["token"]))).text
+        resp = await c.post(
+            "/remediation/plans",
+            data={"system_id": a["live"], "check_key": STALE_KEY},
+            headers=_auth(a["token"]),
+        )
+    assert f"Alpha-stale-accounts-test-{a['tag']}" in page and "Bravo" not in page
+    assert resp.status_code == 303
+    async with session_scope() as s:
+        plan = (
+            await s.execute(
+                select(RemediationPlan)
+                .where(
+                    RemediationPlan.system_id == a["live"],
+                    RemediationPlan.check_key == STALE_KEY,
+                )
+                .order_by(RemediationPlan.id.desc())
+                .limit(1)
+            )
+        ).scalar_one()
+    assert plan.organization_id == a["org_id"]
+    assert plan.requested_by == a["admin_email"]
+    assert plan.status == "refused" and "write credential" in (plan.refusal_reason or "")
+
+
+async def test_planning_on_another_orgs_system_is_not_found(two_orgs) -> None:
+    a, b = two_orgs
+    async with _client() as c:
+        resp = await c.post(
+            "/remediation/plans",
+            data={"system_id": b["live"], "check_key": STALE_KEY},
+            headers=_auth(a["token"]),
+        )
+    assert resp.status_code == 404
+    async with session_scope() as s:
+        n = (
+            await s.execute(
+                select(RemediationPlan).where(
+                    RemediationPlan.system_id == b["live"],
+                    RemediationPlan.check_key == STALE_KEY,
+                )
+            )
+        ).first()
+    assert n is None
+
+
+async def test_a_check_no_provider_handles_is_refused_with_its_reason(two_orgs) -> None:
+    a, _ = two_orgs
+    async with _client() as c:
+        resp = await c.post(
+            "/remediation/plans",
+            data={"system_id": a["live"], "check_key": "nothing.handles.this"},
+            headers=_auth(a["token"]),
+        )
+    assert resp.status_code == 409
+    assert "no remediation provider handles check" in resp.text

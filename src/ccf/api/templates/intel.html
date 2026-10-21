@@ -36,7 +36,7 @@
     <span class="panel__hint">{{ found.matches | length }} CVE match{{ 'es' if found.matches|length != 1 }} · {{ found.past_due }} where the POA&amp;M is due after CISA's date or has no due date</span></header>
   {% if not catalog.entries %}
   <div class="empty-state"><i data-lucide="shield-question"></i><h2>No KEV catalog to match against</h2>
-    <p>The catalog has never been synced on this deployment, so no match can be claimed either way. {% if can_sync %}Use <strong>Sync KEV now</strong>, or run <code>ccf kev-sync</code>.{% else %}An administrator can sync it from this page or with <code>ccf kev-sync</code>.{% endif %}</p></div>
+    <p>The catalog has never been synced on this deployment, so no match can be claimed either way. {% if can_sync %}Use <strong>Sync KEV now</strong>, or run <code>ccf kev-sync</code>.{% else %}The catalog is shared by every organization on this deployment, so it is refreshed by the platform operator (<code>ccf kev-sync</code> or the daily scheduler), not per organization.{% endif %}</p></div>
   {% elif found.matches %}
   <div class="table-wrap"><table>
     <thead><tr><th>CVE</th><th>POA&amp;M</th><th>System</th><th>Source</th><th>Severity</th><th>POA&amp;M due</th><th title="The remediation date CISA set under BOD 22-01 for federal civilian agencies">CISA due</th><th>Ransomware</th></tr></thead>
