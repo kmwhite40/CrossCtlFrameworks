@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Control Effectiveness · Concord{% endblock %}
+{% block heading %}Control effectiveness{% endblock %}
+{% block subtitle %}Per control: the latest automated test results on this organization's live systems, the latest final audit workpaper conclusion, the approved compensating controls in force, and a rating from the rule stated below. No control is rated effective for want of contrary data.{% endblock %}
+{% block content %}
+{% set tone = {'effective': 'chip--ok', 'ineffective': 'chip--err', 'not_determined': 'chip--ghost'} %}
+{% if not view.scoped %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No organization in scope</h2><p>Effectiveness is rated for one organization at a time and never across all of them. Global and unauthenticated sessions see this instead.</p></div>
+{% else %}
+<article class="card panel" id="rule">
+  <header class="panel__head"><h2 class="panel__title">The rating rule</h2><span class="panel__hint">Automated means test method {{ methods | join(' or ') }}; latest means each test's most recent informative result. A pass credits only the test's primary control; a fail, warn or manual review reaches every control the test declares.</span></header>
+  <div class="table-wrap"><table>
+    <tbody>
+      {% for key in ['effective', 'ineffective', 'not_determined'] %}
+      <tr><th scope="row"><span class="chip {{ tone[key] }}">{{ labels[key] }}</span></th><td>{{ view.rule[key] }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div>
+</article>
+
+<section class="kpi-grid kpi-grid--4">
+  {% for key in ['effective', 'ineffective', 'not_determined'] %}
+  <div class="kpi"><span class="kpi__label">{{ labels[key] }}</span><span class="kpi__value">{{ view.counts[key] }}</span><span class="kpi__meta">of {{ view.total }} control{{ 's' if view.total != 1 }} with any signal</span></div>
+  {% endfor %}
+  <div class="kpi"><span class="kpi__label">Controls rated</span><span class="kpi__value">{{ view.total }}</span><span class="kpi__meta">with a test result, a final workpaper or a compensating control</span></div>
+</section>
+
+<form method="get" action="/controls/effectiveness" class="card__body filters">
+  <select name="system_id" class="select" aria-label="System">
+    <option value="">All live systems</option>
+    {% for sid, name in view.systems.items() %}<option value="{{ sid }}" {% if sid == system_id %}selected{% endif %}>{{ name }}</option>{% endfor %}
+  </select>
+  <select name="family" class="select" aria-label="Control family">
+    <option value="">All families</option>
+    {% for f in view.families %}<option value="{{ f }}" {% if f == family %}selected{% endif %}>{{ f }}</option>{% endfor %}
+  </select>
+  <button class="btn btn--secondary" type="submit">Filter</button>
+  {% if system_id or family %}<a class="btn btn--ghost" href="/controls/effectiveness">Clear</a>{% endif %}
+</form>
+{% if system_id %}<p class="dim">Audit workpaper conclusions are organization-wide: an engagement is not tied to one system, so they apply under every system filter.</p>{% endif %}
+
+{% if view.rows %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Control</th><th>Rating</th><th>Why</th><th>Latest automated results</th><th>Final audit conclusion</th><th>Compensating controls</th></tr></thead>
+    <tbody>{% for r in view.rows %}<tr id="ctrl-{{ r.control }}">
+      <td><a class="mono" href="/controls/{{ r.control }}">{{ r.control }}</a><div class="dim">{{ r.family }}</div></td>
+      <td><span class="chip {{ tone[r.rating] }}">{{ labels[r.rating] }}</span></td>
+      <td>{{ r.reason }}</td>
+      <td>{% if r.outcomes %}<ul class="feed">{% for o in r.outcomes %}
+        <li class="feed__item"><span class="chip {% if o.status == 'pass' %}chip--ok{% elif o.status == 'fail' and o.accepted %}chip--warn{% elif o.status == 'fail' %}chip--err{% else %}chip--ghost{% endif %}">{{ o.status | replace('_', ' ') }}{% if o.accepted %} · accepted{% endif %}</span>
+          <a class="feed__main" href="/control-tests/{{ o.test_id }}"><span class="feed__title">{{ o.test }}</span><span class="feed__meta">{{ o.system }}{% if o.run_at %} · {{ o.run_at.date() }}{% endif %}</span></a></li>
+      {% endfor %}</ul>{% else %}<span class="dim">no automated result</span>{% endif %}</td>
+      <td>{% if r.workpaper %}<span class="chip {% if r.workpaper.conclusion == 'ineffective' %}chip--err{% elif r.workpaper.conclusion == 'effective' %}chip--ok{% else %}chip--ghost{% endif %}">{{ (r.workpaper.conclusion or 'no conclusion') | replace('_', ' ') }}</span>
+        <div><a href="/audit-workspace/{{ r.workpaper.engagement_id }}">{{ r.workpaper.title }}</a></div>
+        <div class="dim">{% if r.workpaper.reviewed_by %}reviewed by {{ r.workpaper.reviewed_by }}{% endif %}{% if r.workpaper.reviewed_at %} · {{ r.workpaper.reviewed_at.date() }}{% endif %}</div>
+      {% else %}<span class="dim">none final</span>{% endif %}</td>
+      <td>{% if r.compensating %}{% for c in r.compensating %}<div><strong>{{ c.system }}</strong>: {{ c.measure }} <span class="dim">· {% if c.expires_on %}expires {{ c.expires_on }}{% else %}no expiry{% endif %}</span></div>{% endfor %}{% else %}<span class="dim">none approved</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty-state"><i data-lucide="gauge"></i><h2>Nothing to rate{% if system_id or family %} under this filter{% endif %}</h2><p>No control has an automated test result on a live system, a final audit workpaper or an approved compensating control. Results come from a posture scan or a connector-backed control test (<a href="/control-tests">Control Testing</a>); workpapers are finalised in an audit engagement (<a href="/audit-workspace">Audit Workspace</a>).</p></div>
+{% endif %}
+{% endif %}
+{% endblock %}
