@@ -40,6 +40,7 @@ from ccf.db import get_session_factory, session_scope, set_session_tenant
 from ccf.governance import kri as kri_engine
 from ccf.governance import risk as rk
 from ccf.models import POAM, AuditLog, Organization, Risk, System, User
+from ccf.models_evidence import EvidenceObject
 from ccf.models_program import (
     KeyRiskIndicator,
     KriReading,
@@ -213,7 +214,34 @@ async def _org(label: str, tag: str) -> dict[str, object]:
             description=m("plan"),
             status="planned",
         )
-        s.add_all([appetite, kri, assessment, plan])
+        expired = EvidenceObject(
+            organization_id=org.id,
+            title=m("evidence"),
+            source_type="upload",
+            status="approved",
+            expires_on=today - timedelta(days=3),
+        )
+        # A plan on the deleted system's risk: it must surface nowhere.
+        gone_plan = RiskTreatmentPlan(
+            organization_id=org.id,
+            risk_id=deleted_risk.id,
+            strategy="avoid",
+            description=f"{label}-DELETED-plan-{tag}",
+            status="planned",
+        )
+        s.add_all([appetite, kri, assessment, plan, expired, gone_plan])
+        if label == "Bravo":
+            # Only Bravo has a 'strategic' statement, and a lenient one: were it
+            # to leak into Alpha's rules, Alpha's strategic risk would read as
+            # within appetite, and Alpha could not create its own.
+            s.add(
+                RiskAppetite(
+                    organization_id=org.id,
+                    category="strategic",
+                    statement=m("strategic-appetite"),
+                    max_residual_score=25,
+                )
+            )
         await s.flush()
         action = RiskTreatmentAction(
             organization_id=org.id, plan_id=plan.id, description=m("action"), status="open"
@@ -236,6 +264,7 @@ async def _org(label: str, tag: str) -> dict[str, object]:
             "appetite_id": appetite.id,
             "kri_id": kri.id,
             "plan_id": plan.id,
+            "gone_plan_id": gone_plan.id,
             "action_id": action.id,
         }
 
@@ -350,7 +379,10 @@ async def test_computed_readings_count_only_the_orgs_live_records(two_orgs) -> N
         above = KeyRiskIndicator(
             organization_id=int(a["org_id"]), name="above", metric_key="risks_above_appetite"
         )
-        s.add_all([kri, ratio, above])
+        expired = KeyRiskIndicator(
+            organization_id=int(a["org_id"]), name="exp", metric_key="evidence_expired"
+        )
+        s.add_all([kri, ratio, above, expired])
         await s.flush()
         out = await kri_engine.record_computed_readings(s, int(a["org_id"]), date.today())
         values = {r["kri_id"]: r["value"] for r in out["recorded"]}
@@ -358,6 +390,7 @@ async def test_computed_readings_count_only_the_orgs_live_records(two_orgs) -> N
         # critical one and Bravo's are not counted.
         assert values[kri.id] == 1.0
         assert values[above.id] == 2.0
+        assert values[expired.id] == 1.0  # Alpha's one expired item; not Bravo's
         # No control has a test result: the ratio has no value and no reading.
         assert ratio.id not in values
         assert any(x["kri_id"] == ratio.id for x in out["skipped"])
@@ -438,8 +471,14 @@ async def test_the_risk_detail_is_the_orgs_own(two_orgs) -> None:
         other = await c.get(f"/risks/{b['enterprise_risk_id']}", headers=_tok(a, "viewer"))
         other_cyber = await c.get(f"/risks/{b['risk_id']}", headers=_tok(a, "viewer"))
         deleted = await c.get(f"/risks/{a['deleted_risk_id']}", headers=_tok(a, "viewer"))
+        # The cyber risk has a plan, so its page offers POA&Ms to link.
+        with_plan = await c.get(f"/risks/{a['risk_id']}", headers=_tok(a, "viewer"))
     assert own.status_code == 200 and f"Alpha-assessment-{a['tag']}" in own.text
+    # Its owner and POA&M choices are Alpha's live ones only.
+    assert "Bravo" not in own.text and "DELETED" not in own.text
     assert "500.00" in own.text  # the seeded ALE
+    assert with_plan.status_code == 200 and f"Alpha-poam-{a['tag']}" in with_plan.text
+    assert "Bravo" not in with_plan.text and "DELETED" not in with_plan.text
     assert other.status_code == 404 and other_cyber.status_code == 404
     assert deleted.status_code == 404
 
@@ -564,7 +603,21 @@ async def test_appetite_writes_are_admin_only_and_scoped(two_orgs) -> None:
         for role in ("viewer", "control_owner", "assessor"):
             r = await c.post("/risk-appetite", data=form, headers=_tok(a, role))
             assert r.status_code == 403, role
+        for role in ("control_owner", "assessor"):
+            edit = await c.post(
+                f"/risk-appetite/{a['appetite_id']}",
+                data={"statement": "x", "max_residual_score": "25"},
+                headers=_tok(a, role),
+            )
+            drop = await c.post(f"/risk-appetite/{a['appetite_id']}/delete", headers=_tok(a, role))
+            assert edit.status_code == 403 and drop.status_code == 403, role
         ok = await c.post("/risk-appetite", data=form, headers=_tok(a, "admin"))
+        # Only Bravo has a 'strategic' statement; Alpha may still make its own.
+        strategic = await c.post(
+            "/risk-appetite",
+            data={"category": "Strategic", "statement": "Board view", "max_residual_score": "14"},
+            headers=_tok(a, "admin"),
+        )
         dup = await c.post(
             "/risk-appetite", data={**form, "category": " technical "}, headers=_tok(a, "admin")
         )
@@ -593,6 +646,7 @@ async def test_appetite_writes_are_admin_only_and_scoped(two_orgs) -> None:
         )
         page = (await c.get("/risk-appetite", headers=_tok(a, "admin"))).text
     assert ok.status_code == 303 and "error" not in ok.headers["location"]
+    assert "error" not in strategic.headers["location"]
     assert "error=" in dup.headers["location"] and "error=" in dup_default.headers["location"]
     assert "error=" in bad.headers["location"]
     assert foreign_edit.status_code == 404 and foreign_delete.status_code == 404
@@ -621,14 +675,14 @@ async def test_appetite_writes_are_admin_only_and_scoped(two_orgs) -> None:
                 )
             )
         ).scalar_one()
-    assert sorted(mine, key=str) == sorted([None, "Technical"], key=str)
+    assert sorted(mine, key=str) == sorted([None, "Strategic", "Technical"], key=str)
     assert theirs.statement == f"Bravo-appetite-{b['tag']}"
-    assert events == 1
-    # The cyber risk (technical, residual 12) now breaches the 6, the
-    # enterprise risk (strategic, 15) the default 10; the parts sum.
+    assert events == 2  # one per statement created
+    # The cyber risk (technical, residual 12) breaches its 6, the enterprise
+    # risk (strategic, 15) Alpha's own strategic 14 -- not Bravo's 25.
     assert f'id="breach-{a["risk_id"]}"' in page
     assert f'id="breach-{a["enterprise_risk_id"]}"' in page
-    assert 'chip chip--err">6<' in page and 'chip chip--err">5<' in page
+    assert 'chip chip--err">6<' in page and 'chip chip--err">1<' in page
     assert f'id="breach-{a["deleted_risk_id"]}"' not in page
 
 
@@ -645,8 +699,13 @@ async def test_kri_writes_are_gated_and_scoped(two_orgs) -> None:
     }
     async with _client() as c:
         for role in ("viewer", "assessor"):
-            r = await c.post("/kri", data=form, headers=_tok(a, role))
-            assert r.status_code == 403, role
+            refused = [
+                await c.post("/kri", data=form, headers=_tok(a, role)),
+                await c.post(f"/kri/{a['kri_id']}", data={"name": "x"}, headers=_tok(a, role)),
+                await c.post(f"/kri/{a['kri_id']}/compute", headers=_tok(a, role)),
+                await c.post("/kri/compute", headers=_tok(a, role)),
+            ]
+            assert [r.status_code for r in refused] == [403] * 4, role
         made = await c.post("/kri", data=form, headers=_tok(a, "control_owner"))
         backwards = await c.post(
             "/kri",
@@ -827,6 +886,13 @@ async def test_assessments_plans_and_actions_on_another_orgs_risk_are_404(two_or
                 f"/risks/plans/{b['plan_id']}/actions", data={"description": "x"}, headers=h
             ),
             await c.post(f"/risks/actions/{b['action_id']}", data={"status": "done"}, headers=h),
+            # A plan on Alpha's own soft-deleted system's risk is gone too.
+            await c.post(
+                f"/risks/plans/{a['gone_plan_id']}/actions", data={"description": "x"}, headers=h
+            ),
+            await c.post(
+                f"/risks/plans/{a['gone_plan_id']}", data={"strategy": "accept"}, headers=h
+            ),
         ]
     assert [r.status_code for r in res] == [404] * len(res)
     async with session_scope() as s:
