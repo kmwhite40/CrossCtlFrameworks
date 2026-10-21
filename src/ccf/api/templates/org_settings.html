@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}Organization · Settings · Concord{% endblock %}
+{% block heading %}Organization{% endblock %}
+{% block subtitle %}The organization you are signed in to. Only its administrators can rename it, and only this one.{% endblock %}
+{% block actions %}<a class="btn btn--ghost" href="/settings">All settings</a>{% endblock %}
+{% block content %}
+{% if org %}
+<section class="grid-1-1">
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">{{ org.name }}</h2></header>
+    <div class="panel__body">
+      <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;margin:0">
+        <dt class="dim">Created</dt><dd style="margin:0">{{ org.created_at.strftime('%Y-%m-%d') if org.created_at else '—' }}</dd>
+        <dt class="dim">Second factor required for</dt><dd style="margin:0">{{ org.mfa_policy }}</dd>
+        {% for label, n in counts.items() %}<dt class="dim">{{ label }}</dt><dd class="mono" style="margin:0" data-count="{{ label }}">{{ n }}</dd>{% endfor %}
+      </dl>
+    </div>
+  </article>
+  {% if can_admin %}
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Rename</h2><span class="panel__hint">names are unique across the deployment</span></header>
+    <form method="post" action="/settings/organization" class="card__body filters">
+      <div class="field-group"><label class="label" for="org-name">Name</label><input id="org-name" class="input" name="name" value="{{ org.name }}" required maxlength="255"></div>
+      <button class="btn btn--primary" type="submit">Rename organization</button>
+    </form>
+  </article>
+  {% endif %}
+</section>
+<p class="dim" style="margin-top:16px">Structure is kept on <a href="/org-units">business units</a>, <a href="/teams">teams</a>, <a href="/committees">committees</a> and <a href="/objectives">strategic objectives</a>.</p>
+{% else %}
+<article class="card panel"><div class="empty-state">
+  <h2>No organization</h2>
+  <p>You are not signed in as a member of an organization (a platform-wide principal, or authentication is off), so there is no organization to show or rename here.</p>
+</div></article>
+{% endif %}
+{% endblock %}

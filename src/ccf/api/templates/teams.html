@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Teams · Concord{% endblock %}
+{% block heading %}Teams{% endblock %}
+{% block subtitle %}Who works together, under which business unit, and who leads. Members are users of this organization; a team has at most one lead.{% endblock %}
+{% block content %}
+{% if teams %}
+{% for t in teams %}
+<article class="card panel" id="team-{{ t.team.id }}" data-members="{{ t.members | length }}">
+  <header class="panel__head">
+    <h2 class="panel__title">{{ t.team.name }}</h2>
+    <span class="panel__hint">{% if t.unit %}{{ t.unit }} · {% endif %}{{ t.members | length }} member{{ 's' if t.members|length != 1 }} · lead: {{ t.leads | join(', ') if t.leads else 'none named' }}</span>
+  </header>
+  <div class="panel__body">
+    {% if t.team.description %}<p class="dim" style="margin-top:0">{{ t.team.description }}</p>{% endif %}
+    {% if t.members %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Member</th><th>Role</th>{% if can_admin %}<th></th>{% endif %}</tr></thead>
+      <tbody>{% for m in t.members %}<tr>
+        <td>{{ m.user }}</td>
+        <td><span class="chip {% if m.role == 'lead' %}chip--brand{% else %}chip--ghost{% endif %}">{{ m.role }}</span></td>
+        {% if can_admin %}<td><form method="post" action="/teams/{{ t.team.id }}/members/{{ m.id }}/remove"><button class="btn btn--ghost btn--sm" type="submit">Remove</button></form></td>{% endif %}
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}<p class="panel__empty">No members yet.</p>{% endif %}
+    {% if can_admin %}
+    <form method="post" action="/teams/{{ t.team.id }}/members" class="filters" style="margin-top:12px">
+      <div class="field-group"><label class="label" for="t{{ t.team.id }}-user">Add or change a member</label>
+        <select id="t{{ t.team.id }}-user" class="select" name="user_id" required>
+          {% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}
+        </select></div>
+      <div class="field-group"><label class="label" for="t{{ t.team.id }}-role">Role</label>
+        <select id="t{{ t.team.id }}-role" class="select" name="role">{% for r in roles %}<option value="{{ r }}"{% if r == 'member' %} selected{% endif %}>{{ r }}</option>{% endfor %}</select></div>
+      <button class="btn btn--secondary btn--sm" type="submit">Save member</button>
+    </form>
+    <details style="margin-top:12px"><summary class="btn btn--ghost btn--sm">Edit team</summary>
+      <form method="post" action="/teams/{{ t.team.id }}" class="filters" style="margin-top:8px">
+        <div class="field-group"><label class="label" for="t{{ t.team.id }}-name">Name</label><input id="t{{ t.team.id }}-name" class="input" name="name" value="{{ t.team.name }}" required maxlength="255"></div>
+        <div class="field-group"><label class="label" for="t{{ t.team.id }}-desc">Description</label><input id="t{{ t.team.id }}-desc" class="input" name="description" value="{{ t.team.description or '' }}"></div>
+        <div class="field-group"><label class="label" for="t{{ t.team.id }}-bu">Business unit</label>
+          <select id="t{{ t.team.id }}-bu" class="select" name="business_unit_id"><option value="">— none —</option>
+            {% for u in units %}<option value="{{ u.id }}"{% if u.id == t.team.business_unit_id %} selected{% endif %}>{{ u.name }}</option>{% endfor %}
+          </select></div>
+        <button class="btn btn--primary btn--sm" type="submit">Save</button>
+      </form>
+      <form method="post" action="/teams/{{ t.team.id }}/delete" style="margin-top:8px"><button class="btn btn--ghost btn--sm" type="submit">Delete team</button></form>
+    </details>
+    {% endif %}
+  </div>
+</article>
+{% endfor %}
+{% else %}
+<article class="card panel"><div class="empty-state">
+  <h2>No teams yet</h2>
+  <p>Concord has no record of this organization's teams. {% if can_admin %}Add the first one below, then add its members and name a lead.{% else %}An administrator can add teams here.{% endif %}</p>
+</div></article>
+{% endif %}
+
+{% if can_admin %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Add a team</h2></header>
+  <form method="post" action="/teams" class="card__body filters">
+    <div class="field-group"><label class="label" for="new-team-name">Name</label><input id="new-team-name" class="input" name="name" required maxlength="255"></div>
+    <div class="field-group"><label class="label" for="new-team-desc">Description</label><input id="new-team-desc" class="input" name="description"></div>
+    <div class="field-group"><label class="label" for="new-team-bu">Business unit</label>
+      <select id="new-team-bu" class="select" name="business_unit_id"><option value="">— none —</option>
+        {% for u in units %}<option value="{{ u.id }}">{{ u.name }}</option>{% endfor %}
+      </select></div>
+    <button class="btn btn--primary" type="submit">Add team</button>
+  </form>
+</article>
+{% endif %}
+{% endblock %}

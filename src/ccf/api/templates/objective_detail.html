@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ objective.title }} · Objectives · Concord{% endblock %}
+{% block heading %}{{ objective.title }}{% endblock %}
+{% block subtitle %}Owner: {{ owner or 'not named' }} · target: {{ objective.target_on or 'not set' }} · status: {{ objective.status | replace('_', ' ') }}{% endblock %}
+{% block actions %}<a class="btn btn--ghost" href="/objectives">All objectives</a>{% endblock %}
+{% block content %}
+{% set link_names = {'risk': 'Risks', 'control': 'Controls', 'system': 'Systems', 'policy': 'Policies', 'kri': 'Key risk indicators'} %}
+<section class="grid-2-1">
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Objective</h2>
+      <span class="chip {% if objective.status in ('on_track', 'achieved') %}chip--ok{% elif objective.status == 'at_risk' %}chip--warn{% elif objective.status == 'off_track' %}chip--err{% else %}chip--ghost{% endif %}">{{ objective.status | replace('_', ' ') }}</span></header>
+    <div class="panel__body">
+      <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;margin:0">
+        <dt class="dim">Measure</dt><dd style="margin:0">{{ objective.measure or 'Not recorded' }}</dd>
+        <dt class="dim">Description</dt><dd style="margin:0;white-space:pre-line">{{ objective.description or 'Not recorded' }}</dd>
+        <dt class="dim">Owner</dt><dd style="margin:0">{{ owner or 'Not named' }}</dd>
+        <dt class="dim">Target</dt><dd style="margin:0">{{ objective.target_on or 'Not set' }}</dd>
+      </dl>
+    </div>
+  </article>
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Status history</h2><span class="panel__hint">{{ history | length }} change{{ 's' if history|length != 1 }}</span></header>
+    {% if history %}
+    <ul class="feed">{% for e in history %}
+      <li class="feed__item"><span class="feed__main"><span class="feed__title">{{ e.summary }}</span><span class="feed__meta">{{ e.actor or 'unknown' }}</span></span><span class="feed__date">{{ e.created_at.strftime('%Y-%m-%d') if e.created_at else '' }}</span></li>
+    {% endfor %}</ul>
+    {% else %}<p class="panel__empty">The status has not changed since the objective was created.</p>{% endif %}
+    {% if can_write %}
+    <form method="post" action="/objectives/{{ objective.id }}/status" class="panel__body filters">
+      <div class="field-group"><label class="label" for="st">New status</label>
+        <select id="st" class="select" name="status">{% for s in statuses %}<option value="{{ s }}"{% if s == objective.status %} selected{% endif %}>{{ s | replace('_', ' ') }}</option>{% endfor %}</select></div>
+      <div class="field-group"><label class="label" for="st-note">Why</label><input id="st-note" class="input" name="note" placeholder="Optional reason"></div>
+      <button class="btn btn--secondary btn--sm" type="submit">Change status</button>
+    </form>
+    {% endif %}
+  </article>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Linked records</h2><span class="panel__hint" data-links="{{ link_count }}">{{ link_count }} link{{ 's' if link_count != 1 }}</span></header>
+  {% if link_count %}
+  <div class="panel__body">
+    {% for t, items in grouped.items() if items %}
+    <h3 style="margin:8px 0 4px;font-size:14px">{{ link_names.get(t, t) }}</h3>
+    <ul class="feed">{% for i in items %}
+      <li class="feed__item">
+        {% if i.label %}<a class="feed__main" href="{{ i.href }}"><span class="feed__title">{{ i.label }}</span><span class="feed__meta">{{ t }} {{ i.link.entity_id }}</span></a>
+        {% else %}<span class="feed__main"><span class="feed__title">{{ t }} {{ i.link.entity_id }}</span><span class="feed__meta">no longer exists in this organization</span></span>{% endif %}
+        {% if can_write %}<form method="post" action="/objectives/{{ objective.id }}/links/{{ i.link.id }}/remove"><button class="btn btn--ghost btn--sm" type="submit">Unlink</button></form>{% endif %}
+      </li>
+    {% endfor %}</ul>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state"><h2>Nothing linked yet</h2><p>{% if can_write %}Link the risks this objective reduces, the controls and policies it relies on, the systems it covers and the KRIs that track it.{% else %}An administrator or control owner can link records here.{% endif %}</p></div>
+  {% endif %}
+  {% if can_write %}
+  <div class="panel__body">
+    <div class="filters">
+      {% for t in ['risk', 'system', 'policy', 'kri'] %}
+      <form method="post" action="/objectives/{{ objective.id }}/links" class="field-group">
+        <input type="hidden" name="entity_type" value="{{ t }}">
+        <label class="label" for="link-{{ t }}">Link a {{ {'risk': 'risk', 'system': 'system', 'policy': 'policy', 'kri': 'KRI'}[t] }}</label>
+        {% if pickers[t] %}
+        <select id="link-{{ t }}" class="select" name="entity_id">{% for id, label in pickers[t] %}<option value="{{ id }}">{{ label }}</option>{% endfor %}</select>
+        <button class="btn btn--ghost btn--sm" type="submit">Link</button>
+        {% else %}<span class="dim" id="link-{{ t }}">none in this organization</span>{% endif %}
+      </form>
+      {% endfor %}
+      <form method="post" action="/objectives/{{ objective.id }}/links" class="field-group">
+        <input type="hidden" name="entity_type" value="control">
+        <label class="label" for="link-control">Link a control (catalog identifier)</label>
+        <input id="link-control" class="input" name="entity_id" placeholder="e.g. AC-02" required>
+        <button class="btn btn--ghost btn--sm" type="submit">Link</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+</article>
+
+{% if can_write %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Edit objective</h2></header>
+  <form method="post" action="/objectives/{{ objective.id }}" class="card__body filters">
+    <div class="field-group"><label class="label" for="e-title">Title</label><input id="e-title" class="input" name="title" value="{{ objective.title }}" required maxlength="255"></div>
+    <div class="field-group"><label class="label" for="e-owner">Owner</label>
+      <select id="e-owner" class="select" name="owner_user_id"><option value="">— none —</option>{% for u in users %}<option value="{{ u.id }}"{% if u.id == objective.owner_user_id %} selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+    <div class="field-group"><label class="label" for="e-target">Target date</label><input id="e-target" class="input" type="date" name="target_on" value="{{ objective.target_on or '' }}"></div>
+    <div class="field-group" style="grid-column:1/-1"><label class="label" for="e-measure">Measure</label><input id="e-measure" class="input" name="measure" value="{{ objective.measure or '' }}"></div>
+    <div class="field-group" style="grid-column:1/-1"><label class="label" for="e-desc">Description</label><textarea id="e-desc" class="input" name="description" rows="3">{{ objective.description or '' }}</textarea></div>
+    <button class="btn btn--primary" type="submit">Save</button>
+  </form>
+</article>
+{% endif %}
+{% endblock %}
