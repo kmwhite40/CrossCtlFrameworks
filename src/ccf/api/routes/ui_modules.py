@@ -21,13 +21,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...analytics import posture
 from ...analytics.command_center import RISK_LEVELS, TASK_OPEN_STATUSES, risk_matrix
 from ...constants import POAM_ACTIVE_STATUSES
-from ...governance import inbox
+from ...governance import audit_program, inbox, third_party
 from ...governance.risk import band
 from ...models import (
     KSI,
@@ -483,12 +483,14 @@ async def exceptions_page(
     """Every standing departure from a requirement, in one list, and the
     requests still waiting for a decision, in another.
 
-    Concord records four kinds in four tables, each decided where it lives
-    (the control-test resolution, the KSI page, the POA&M and risk gates). This
-    page reads them together and adds no new way to approve one.
+    Concord records five kinds in five tables, each decided where it lives
+    (the control-test resolution, the KSI page, the POA&M and risk gates, the
+    compensating-controls page). This page reads them together and adds no new
+    way to approve one.
 
     Only an exception in force is counted as one: an ``approved`` waiver (the
-    one status that suppresses anything) and an ``accepted`` KSI exception.
+    one status that suppresses anything), an ``accepted`` KSI exception and an
+    ``approved`` compensating control.
     ``requested`` / ``open`` are pending and listed separately; ``revoked`` /
     ``closed`` are history and left out."""
     org = _principal_org(request)
@@ -584,6 +586,26 @@ async def exceptions_page(
                 "decided_by": None,
                 "expires": r.next_review_on,
                 "href": f"/risks/heatmap#risk-{r.id}",
+            }
+        )
+    # Compensating controls: an approved one is a standing departure (a
+    # substitute accepted in place of the control) until it is retired; a
+    # proposed one awaits a decision. Scoped by its own organization and to
+    # live systems inside ``audit_program.compensating_controls``.
+    for cc, system_name in await audit_program.compensating_controls(session, org):
+        items.append(
+            {
+                "kind": "Compensating control",
+                "anchor": "compensating",
+                "subject": cc.control_identifier,
+                "detail": cc.measure,
+                "status": cc.status,
+                "standing": cc.status == "approved",
+                "pending": cc.status == "proposed",
+                "system": system_name,
+                "decided_by": cc.decided_by,
+                "expires": cc.expires_on,
+                "href": "/compensating-controls",
             }
         )
     standing = [i for i in items if i["standing"]]
@@ -777,12 +799,25 @@ async def vendors_page(
                 .where(
                     Risk.vendor_id.in_([v.id for v in vendors]),
                     Risk.status.in_(("open", "mitigated")),
-                    Risk.system_id.in_(posture.org_system_subq(org)),
+                    # An enterprise risk (0100) has no system and is owned by
+                    # the organization directly; a risk on a system counts
+                    # only while that system is live.
+                    or_(
+                        and_(
+                            Risk.system_id.is_(None),
+                            *([Risk.organization_id == org] if org is not None else []),
+                        ),
+                        Risk.system_id.in_(posture.org_system_subq(org)),
+                    ),
                 )
                 .group_by(Risk.vendor_id)
             )
         ).all():
             risks[vid] = int(n)
+    # The composite score (``governance.third_party``): its formula is shown
+    # on the page, and a vendor with none of its inputs has no score.
+    today = date.today()
+    scores = await third_party.vendor_scores(session, list(vendors), today)
     return _render(
         request,
         "vendors.html",
@@ -791,7 +826,9 @@ async def vendors_page(
         latest=latest,
         counts=counts,
         risks=risks,
-        today=date.today(),
+        scores=scores,
+        formula=third_party.FORMULA,
+        today=today,
     )
 
 

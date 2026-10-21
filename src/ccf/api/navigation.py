@@ -107,13 +107,8 @@ NAV: tuple[Group, ...] = (
         (
             Item("dashboard", "Executive Dashboard", "/dashboard"),
             Item("posture", "Compliance Posture", "/posture"),
-            _partial(
-                "operations",
-                "Security & Risk Intelligence",
-                "/operations",
-                "Vulnerability response, SLA, MTTR and risk bands. No "
-                "external threat-intelligence feed.",
-            ),
+            Item("intel", "Security & Risk Intelligence", "/intel"),
+            Item("operations", "Operations Overview", "/operations"),
             Item("mytasks", "My Tasks", "/my-tasks"),
             Item("notifications", "Notifications", "/notifications"),
             Item("workspace", "Guided Workspace", "/workspace"),
@@ -190,19 +185,9 @@ NAV: tuple[Group, ...] = (
         "shield-check",
         (
             Item("frameworks", "Framework Library", "/frameworks"),
-            _partial(
-                "regulatory",
-                "Regulatory Requirements",
-                "/regulatory",
-                "A register of regulatory change. Requirements "
-                "themselves come from the framework catalog.",
-            ),
-            _partial(
-                "fedramp20x",
-                "Compliance Obligations",
-                "/fedramp20x",
-                "Only FedRAMP obligations (KSIs and rules) are modelled.",
-            ),
+            Item("regreq", "Regulatory Requirements", "/obligations?source=regulatory"),
+            Item("obligations", "Compliance Obligations", "/obligations"),
+            Item("regulatory", "Regulatory Change", "/regulatory"),
             Item("mappings", "Cross-Framework Mapping", "/mappings"),
             Item("assessments", "Compliance Assessments", "/assessments"),
             Item("governance", "Continuous Monitoring", "/governance"),
@@ -218,6 +203,7 @@ NAV: tuple[Group, ...] = (
             Item("systems", "Systems & Boundaries", "/systems"),
             Item("intake", "System Intake", "/intake"),
             Item("ssp", "SSP Builder", "/ssp"),
+            Item("fedramp20x", "FedRAMP 20x & KSIs", "/fedramp20x"),
             Item("scoring", "CMMC / 800-171 Scoring", "/scoring"),
             Item("assurance", "Assurance Graph", "/assurance"),
             Item("graph", "Compliance Graph", "/graph"),
@@ -229,33 +215,12 @@ NAV: tuple[Group, ...] = (
         "sliders-horizontal",
         (
             Item("controls", "Unified Control Library", "/controls"),
-            _partial(
-                "ctrl_impl",
-                "Control Implementations",
-                "/systems",
-                "Implementations are shown per system (system detail, "
-                "SSP); there is no cross-system list.",
-            ),
+            Item("ctrl_impl", "Control Implementations", "/implementations"),
             Item("controltests", "Control Testing", "/control-tests"),
-            _partial(
-                "ctrl_eff",
-                "Control Effectiveness",
-                "/control-tests",
-                "Pass/fail metrics from control tests; there is no effectiveness rating.",
-            ),
+            Item("ctrl_eff", "Control Effectiveness", "/controls/effectiveness"),
             Item("ctrl_owners", "Control Owners", "/control-owners"),
-            _partial(
-                "ctrl_inherit",
-                "Control Inheritance",
-                "/systems",
-                "Inherited status shows per system; there is no inheritance management page.",
-            ),
-            _planned(
-                "compensating",
-                "Compensating Controls",
-                "No compensating-control record links a substitute to the control it covers.",
-                "/exceptions",
-            ),
+            Item("ctrl_inherit", "Control Inheritance", "/inheritance"),
+            Item("compensating", "Compensating Controls", "/compensating-controls"),
         ),
     ),
     Group(
@@ -264,26 +229,10 @@ NAV: tuple[Group, ...] = (
         "clipboard-check",
         (
             Item("auditws", "Audit Planning", "/audit-workspace"),
-            _planned(
-                "workpapers",
-                "Audit Workpapers",
-                "No workpaper model. Evidence requests (PBC) exist inside each engagement.",
-                "/audit-workspace",
-            ),
-            _partial(
-                "audit_findings",
-                "Audit Findings",
-                "/audit-workspace",
-                "Findings are recorded per engagement; there is no cross-engagement list.",
-            ),
+            Item("workpapers", "Audit Workpapers", "/audit/workpapers"),
+            Item("audit_findings", "Audit Findings", "/audit/findings"),
             Item("poams", "Corrective Action Plans", "/poams"),
-            _partial(
-                "audit_ready",
-                "Audit Readiness",
-                "/operations",
-                "FedRAMP 20x readiness is computed per system; "
-                "there is no general readiness score.",
-            ),
+            Item("audit_ready", "Audit Readiness", "/audit/readiness"),
             Item("portaladmin", "Auditor Portal", "/admin/portal"),
             Item("trust", "Trust Center", "/trust"),
         ),
@@ -294,32 +243,11 @@ NAV: tuple[Group, ...] = (
         "folder-lock",
         (
             Item("evidence_repo", "Evidence Repository", "/evidence"),
-            _partial(
-                "evidence_req",
-                "Evidence Requests",
-                "/audit-workspace",
-                "Requests (PBC) exist only inside an audit engagement.",
-            ),
+            Item("evidence_req", "Evidence Requests", "/evidence/requests"),
             Item("connectors", "Collection Automation", "/connectors"),
-            _partial(
-                "evidence_map",
-                "Evidence-to-Control Mapping",
-                "/evidence",
-                "Each evidence object names its control; there is no mapping view.",
-            ),
-            _partial(
-                "evidence_exp",
-                "Evidence Expiration",
-                "/queries?key=expired-evidence&run=1",
-                "Expired and stale evidence queries; no expiry workflow page.",
-            ),
-            _planned(
-                "evidence_pkg",
-                "Evidence Packages",
-                "Authorization packages exist in the API and are shared from the Auditor Portal, "
-                "but have no page of their own.",
-                "/admin/portal",
-            ),
+            Item("evidence_map", "Evidence-to-Control Mapping", "/evidence/mapping"),
+            Item("evidence_exp", "Evidence Expiration", "/evidence/expiration"),
+            Item("evidence_pkg", "Evidence Packages", "/evidence/packages"),
             Item("scans", "Scan Ingestion", "/scans"),
             Item("ingestions", "Workbook Ingestions", "/ingestions"),
         ),
@@ -331,30 +259,10 @@ NAV: tuple[Group, ...] = (
         (
             Item("vendors", "Vendor Inventory", "/vendors"),
             Item("questionnaires", "Vendor Assessments", "/vendor-questionnaires"),
-            _partial(
-                "vendor_scores",
-                "Vendor Risk Scores",
-                "/vendors",
-                "A rating per vendor and a score per questionnaire; no composite scoring model.",
-            ),
-            _planned(
-                "due_diligence",
-                "Due Diligence",
-                "Nothing beyond questionnaires: no document checklist or onboarding review.",
-                "/vendor-questionnaires",
-            ),
-            _partial(
-                "vendor_findings",
-                "Vendor Findings",
-                "/vendor-questionnaires",
-                "A questionnaire review can open a task per gap; there is no findings model.",
-            ),
-            _planned(
-                "contracts",
-                "Contract Obligations",
-                "No contract or obligation model exists.",
-                "/vendors",
-            ),
+            Item("vendor_scores", "Vendor Risk Scores", "/vendors#vendor-scores"),
+            Item("due_diligence", "Due Diligence", "/due-diligence"),
+            Item("vendor_findings", "Vendor Findings", "/vendor-findings"),
+            Item("contracts", "Contract Obligations", "/contracts"),
         ),
     ),
     Group(
@@ -362,32 +270,10 @@ NAV: tuple[Group, ...] = (
         "Operations",
         "workflow",
         (
-            _partial(
-                "remediation",
-                "Remediation Workflows",
-                "/poams?status=open",
-                "POA&Ms and milestones. Remediation plans and patch campaigns are API-only.",
-            ),
-            _partial(
-                "issues",
-                "Issues & Exceptions",
-                "/exceptions",
-                "Exceptions are unified; issues remain split across POA&Ms, gaps and findings.",
-            ),
-            _partial(
-                "projects",
-                "Projects & Action Plans",
-                "/poams",
-                "Action plans are POA&Ms with milestones; there is no project model.",
-            ),
-            _planned(
-                "scheduled",
-                "Scheduled Assessments",
-                "Implementations carry a ConMon frequency and next-due "
-                "date, but nothing renders a schedule.",
-                "/governance",
-                "/control-tests",
-            ),
+            Item("remediation", "Remediation Workflows", "/remediation"),
+            Item("issues", "Issues & Exceptions", "/issues"),
+            Item("projects", "Projects & Action Plans", "/projects"),
+            Item("scheduled", "Scheduled Assessments", "/assessments/schedule"),
             Item("approvals", "Approval Workflows", "/approvals"),
         ),
     ),
@@ -396,22 +282,12 @@ NAV: tuple[Group, ...] = (
         "Intelligence",
         "bar-chart-3",
         (
-            _partial(
-                "queries",
-                "Analytics Studio",
-                "/queries",
-                "Six fixed assurance queries; no ad-hoc query builder.",
-            ),
+            Item("analytics", "Analytics Studio", "/analytics"),
+            Item("queries", "Assurance Queries", "/queries"),
             Item("executive", "Executive Reporting", "/executive"),
             Item("trends", "Compliance Trends", "/trends"),
             Item("forecast", "Risk Forecasting", "/forecast"),
-            _planned(
-                "ai_analysis",
-                "AI-Assisted Analysis",
-                "Governed AI actions exist in the API (/api/ai-actions) with review and audit; "
-                "there is no analysis page yet.",
-                "/ai-agents",
-            ),
+            Item("ai_analysis", "AI-Assisted Analysis", "/ai/analysis"),
             Item("reports", "Report Builder", "/reports"),
         ),
     ),
@@ -421,13 +297,7 @@ NAV: tuple[Group, ...] = (
         "settings",
         (
             Item("users", "Users, Teams & Roles", "/users"),
-            _planned(
-                "rbac",
-                "RBAC & Permissions",
-                "Four fixed roles (admin, control owner, assessor, viewer). IdP group-to-role "
-                "mappings are API-only; there is no permission model.",
-                "/users",
-            ),
+            Item("rbac", "RBAC & Permissions", "/admin/rbac", audience=frozenset({"admin"})),
             Item("settings", "Organization Settings", "/settings"),
             Item("packs", "Framework Administration", "/packs"),
             Item(
@@ -439,12 +309,7 @@ NAV: tuple[Group, ...] = (
             Item("worksheets", "Source Workbooks", "/worksheets"),
             Item("diff", "Workbook Diff", "/diff"),
             Item("search", "Catalog Search", "/search"),
-            _partial(
-                "integrations",
-                "Integrations",
-                "/connectors",
-                "Connectors have pages; webhooks, IdP and issue-tracker push are API-only.",
-            ),
+            Item("integrations", "Integrations", "/integrations"),
             Item(
                 "ai_settings",
                 "AI Providers",
@@ -452,12 +317,7 @@ NAV: tuple[Group, ...] = (
                 audience=frozenset({"admin"}),
                 needs_org=True,
             ),
-            _partial(
-                "apidocs",
-                "API Management",
-                "/docs",
-                "Interactive API reference only; tokens are issued by CLI, not managed here.",
-            ),
+            Item("apitokens", "API Management", "/settings/api-tokens"),
             Item("audit", "Audit Logs", "/audit", audience=frozenset({"admin", "assessor"})),
             Item("reliability", "System Health", "/admin/reliability"),
             Item("selfassurance", "Self-Assurance", "/admin/self-assurance", audience=PLATFORM),

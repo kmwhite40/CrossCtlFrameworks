@@ -80,7 +80,7 @@ async def _org_with_records(tag: str) -> dict[str, int]:
 
 @pytest.fixture
 async def orgs() -> tuple[dict[str, int], dict[str, int]]:
-    tag = f"{next(_SEQ)}x{os.getpid()}"
+    tag = f"po{next(_SEQ)}x{os.getpid()}{os.urandom(2).hex()}"
     return await _org_with_records(f"a{tag}"), await _org_with_records(f"b{tag}")
 
 

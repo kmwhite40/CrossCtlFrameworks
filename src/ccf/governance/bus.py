@@ -9,6 +9,7 @@ raises a de-duplicated :class:`Notification` for a user or an org. This is the
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -21,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
 from ..models import Event, Notification, NotificationRead, Webhook
-from . import delivery
+from . import delivery, webhook_url
 
 log = get_logger(__name__)
 
@@ -81,9 +82,21 @@ async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
         if hook.secret:
             sig = hmac.new(hook.secret.encode(), body, hashlib.sha256).hexdigest()
             headers["X-CCF-Signature"] = f"sha256={sig}"
+        # Re-resolved at every send: a name that now points inward is not
+        # followed even if it was public when the webhook was created.
+        reason, target = await asyncio.to_thread(webhook_url.pinned_target, hook.url)
+        if reason is not None:
+            log.warning("webhook.target_refused", webhook_id=hook.id, reason=reason)
+            continue
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.post(hook.url, content=body, headers=headers)
+            # Sent to the address that was checked, never re-resolved.
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+                await client.post(
+                    target["url"],
+                    content=body,
+                    headers={**headers, **target["headers"]},
+                    extensions=target["extensions"],
+                )
         except Exception as e:  # best-effort — a bad webhook must not break the txn
             log.warning("webhook.dispatch_failed", url=hook.url, error=str(e)[:200])
 
@@ -120,9 +133,7 @@ async def notify(
                 # Escalated (a warning became critical): it is news again, so
                 # it comes back for everyone who had read the milder version.
                 await session.execute(
-                    delete(NotificationRead).where(
-                        NotificationRead.notification_id == existing.id
-                    )
+                    delete(NotificationRead).where(NotificationRead.notification_id == existing.id)
                 )
                 existing.read_at = None
             existing.title = title[:512]

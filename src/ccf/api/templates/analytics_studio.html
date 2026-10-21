@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% from "_viz.html" import columns %}
+{% block title %}Analytics Studio · Concord{% endblock %}
+{% block heading %}Analytics studio{% endblock %}
+{% block subtitle %}Count one of your registers by one or two of its fields. Choices come from a fixed list per register; there is no free-form query.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/queries"><i data-lucide="list-checks"></i>Assurance queries</a>{% endblock %}
+{% block content %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Choose a register</h2></header>
+  <div class="panel__body">
+    <ul class="menu-list">
+      {% for r in registers %}
+      <li class="menu-list__item"><a href="/analytics?register={{ r.key }}&amp;by={{ r.dimensions[0].key }}"{% if reg and reg.key == r.key %} aria-current="true"{% endif %}><strong>{{ r.label }}</strong></a>
+        <span class="menu-list__note">by {{ r.dimensions | map(attribute='label') | join(', ') | lower }}</span></li>
+      {% endfor %}
+    </ul>
+  </div>
+</article>
+
+{% if reg %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">{{ reg.label }}</h2>
+    <span class="panel__hint">{{ result.total }} {{ reg.noun }}{{ 's' if result.total != 1 }} in scope</span></header>
+  <div class="panel__body">
+    <form method="get" action="/analytics" class="filters">
+      <input type="hidden" name="register" value="{{ reg.key }}">
+      <label class="field-group"><span class="label">Group by</span>
+        <select class="select" name="by" aria-label="Group by">
+          {% for d in reg.dimensions %}<option value="{{ d.key }}" {% if d.key == by %}selected{% endif %}>{{ d.label }}</option>{% endfor %}
+        </select></label>
+      <label class="field-group"><span class="label">Then by</span>
+        <select class="select" name="then" aria-label="Then by">
+          <option value="">(nothing)</option>
+          {% for d in reg.dimensions %}<option value="{{ d.key }}" {% if d.key == then %}selected{% endif %}>{{ d.label }}</option>{% endfor %}
+        </select></label>
+      <button class="btn btn--primary" type="submit"><i data-lucide="bar-chart-3"></i>Count</button>
+    </form>
+
+    {% if result.rows %}
+    {{ columns(chart.labels, chart.series, chart.stacked, 220, reg.label ~ ' by ' ~ result.dimensions[0].label) }}
+    {% for n in chart.notes %}<p class="dim">{{ n }}</p>{% endfor %}
+    <div class="table-wrap"><table>
+      <thead><tr>{% for d in result.dimensions %}<th scope="col">{{ d.label }}</th>{% endfor %}<th scope="col">Count</th><th scope="col" title="Share of the {{ result.total }} {{ reg.noun }}s in scope">Share</th></tr></thead>
+      <tbody>{% for r in result.rows %}<tr>{% for v in r['values'] %}<td>{% if v == '(not set)' %}<span class="dim">{{ v }}</span>{% else %}{{ v | replace('_',' ') }}{% endif %}</td>{% endfor %}<td>{{ r.n }}</td><td>{{ '%d%%'|format((100 * r.n / result.total) | round) if result.total else '—' }}</td></tr>{% endfor %}</tbody>
+      <tfoot><tr><th scope="row" colspan="{{ result.dimensions | length }}">Total</th><td>{{ result.total }}</td><td></td></tr></tfoot>
+    </table></div>
+    {% else %}
+    <div class="empty-state"><i data-lucide="inbox"></i><h2>No {{ reg.label | lower }} recorded</h2><p>This organization has no {{ reg.noun }}s on its live systems to count yet. Counts appear here as soon as the first one is recorded.</p></div>
+    {% endif %}
+  </div>
+</article>
+{% else %}
+<div class="card empty-state"><i data-lucide="bar-chart-3"></i><h2>Pick a register to count</h2><p>Choose POA&amp;Ms, risks, control test results, evidence objects, vendors or tasks above, then the field to group by.</p></div>
+{% endif %}
+{% endblock %}

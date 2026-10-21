@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Evidence Requests · Concord{% endblock %}
+{% block heading %}Evidence requests{% endblock %}
+{% block subtitle %}What auditors have asked for (PBC), across every engagement, overdue first. A request is done once the auditor accepts it; it is overdue when its due date has passed and it is not accepted. Requests are added and updated inside their engagement.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Requests</span><span class="kpi__value">{{ counts.total }}</span></div>
+  <div class="kpi"><span class="kpi__label">Accepted</span><span class="kpi__value">{{ counts.accepted }}</span></div>
+  <div class="kpi"><span class="kpi__label">Outstanding</span><span class="kpi__value">{{ counts.outstanding }}</span><span class="kpi__meta">not yet accepted</span></div>
+  <div class="kpi"><span class="kpi__label">Overdue</span><span class="kpi__value{% if counts.overdue %} kpi__value--danger{% endif %}">{{ counts.overdue }}</span><span class="kpi__meta">of the outstanding, past due</span></div>
+</section>
+
+<form method="get" action="/evidence/requests" class="filters">
+  <label class="field-group"><span class="label">Show</span>
+    <select class="select" name="status">
+      {% for value, label in [('', 'All requests'), ('outstanding', 'Outstanding'), ('overdue', 'Overdue'), ('accepted', 'Accepted')] %}
+      <option value="{{ value }}" {% if status == value %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select></label>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="filter"></i> Show</button>
+</form>
+
+{% if items %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Request</th><th>Engagement</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
+  <tbody>{% for i in items %}{% set r = i.r %}<tr>
+    <td><strong>{{ r.title }}</strong>{% if r.description %}<div class="dim clamp-3">{{ r.description }}</div>{% endif %}</td>
+    <td><a href="/audit-workspace/{{ r.engagement_id }}">{{ i.engagement }}</a></td>
+    <td>{{ i.owner or '—' }}</td>
+    <td>{% if r.due_on %}<span class="{% if i.overdue %}kanban__due--late{% endif %}">{{ r.due_on }}{% if i.overdue %} · overdue{% endif %}</span>{% else %}<span class="dim">no due date</span>{% endif %}</td>
+    <td><span class="chip {% if r.status == 'accepted' %}chip--ok{% elif r.status == 'rejected' %}chip--err{% else %}chip--warn{% endif %}">{{ r.status | replace('_',' ') }}</span></td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% elif counts.total %}
+<div class="card empty-state"><i data-lucide="filter-x"></i><h2>Nothing to show</h2><p>None of the {{ counts.total }} request{{ 's' if counts.total != 1 }} matches this view. <a href="/evidence/requests">Show all requests</a>.</p></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="inbox"></i><h2>No evidence requests</h2><p>No auditor has requested evidence in this organization's engagements. Requests are added inside an engagement on <a href="/audit-workspace">Audit Planning</a>.</p></div>
+{% endif %}
+{% endblock %}

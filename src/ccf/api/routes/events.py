@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -10,8 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...governance import webhook_url
 from ...models import Event, Webhook
-from ..auth_deps import get_principal
+from ..auth_deps import get_principal, require_role
 from ..deps import get_session
 
 router = APIRouter(prefix="/api", tags=["events"])
@@ -70,8 +72,13 @@ async def list_webhooks(
 async def create_webhook(
     body: WebhookIn,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    """Admin only: a webhook makes the server POST to a URL the caller chose,
+    so the target is checked for internal addresses (``webhook_url``)."""
+    reason = await asyncio.to_thread(webhook_url.refusal, body.url)
+    if reason is not None:
+        raise HTTPException(422, f"webhook URL refused: {reason}")
     w = Webhook(organization_id=principal.org_id, **body.model_dump())
     session.add(w)
     await session.commit()
@@ -82,7 +89,7 @@ async def create_webhook(
 async def delete_webhook(
     webhook_id: int,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(get_principal),
+    principal: Principal = Depends(require_role("admin")),
 ) -> None:
     stmt = select(Webhook).where(Webhook.id == webhook_id)
     if principal.org_id is not None:

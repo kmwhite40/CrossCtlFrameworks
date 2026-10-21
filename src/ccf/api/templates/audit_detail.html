@@ -46,5 +46,20 @@
   </section>
 </div>
 
+<section class="card" id="workpapers">
+  <div class="card__header"><div class="card__title">Workpapers</div>
+    <div class="row">
+      <a class="btn btn--secondary btn--sm" href="/audit/workpapers?engagement={{ e.id }}#new"><i data-lucide="plus"></i> New workpaper</a>
+      <a class="btn btn--ghost btn--sm" href="/audit/workpapers?engagement={{ e.id }}">All workpapers</a>
+    </div>
+  </div>
+  {# The engagement page's handler lives in ui_grc and passes only the
+     engagement; the list is drawn from the workpapers page itself, which
+     scopes it, so there is one query for it rather than two. #}
+  <div class="card__body" hx-get="/audit/workpapers?engagement={{ e.id }}" hx-trigger="load" hx-select="#workpaper-table" hx-swap="innerHTML ignoreTitle:true">
+    <a href="/audit/workpapers?engagement={{ e.id }}">Open this engagement's workpapers</a>
+  </div>
+</section>
+
 <script>if(window.lucide)lucide.createIcons();</script>
 {% endblock %}
