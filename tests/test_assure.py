@@ -275,7 +275,7 @@ async def _org(label: str, tag: str, n: int) -> dict[str, object]:
 @pytest.fixture
 async def two_orgs() -> tuple[dict[str, object], dict[str, object]]:
     n = next(_SEQ)
-    tag = f"{n}x{os.getpid()}"
+    tag = f"as{n}x{os.getpid()}{os.urandom(2).hex()}"
     return await _org("Alpha", tag, n), await _org("Bravo", tag, n + 50)
 
 

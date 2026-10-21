@@ -325,9 +325,6 @@ async def pbc_requests(
     )
     if org is not None:
         stmt = stmt.where(AuditEngagement.organization_id == org)
-    # A finding raised against a system that was later deleted goes with the
-    # system, as POA&Ms and risks do; one raised against no system stays.
-    stmt = stmt.where(_finding_on_live_system(org))
     all_rows = (await session.execute(stmt)).all()
     owners = await user_names(session, {r.owner_user_id for r, _ in all_rows})
     items = []

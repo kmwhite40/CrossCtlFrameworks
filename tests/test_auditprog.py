@@ -1134,3 +1134,26 @@ async def test_a_finding_on_a_deleted_system_goes_with_the_system(two_orgs) -> N
     async with _client() as c:
         findings = (await c.get("/audit/findings", headers=_tok(a, "admin"))).text
     assert title not in findings
+
+
+async def test_evidence_requests_do_not_multiply_with_findings(two_orgs) -> None:
+    """A finding predicate once landed in the PBC query with no join, which
+    Postgres reads as a cross join over every tenant's findings: each request
+    then appeared once per finding. Adding findings must not change the list."""
+    a, b = two_orgs
+    org = int(a["org_id"])
+    async with session_scope() as s:
+        before = await audit_program.pbc_requests(s, org, date.today())
+        for o in (a, b):
+            s.add(
+                AuditFinding(
+                    engagement_id=o["eng_id"],
+                    organization_id=int(o["org_id"]),
+                    title=f"extra-{o['tag']}",
+                    severity="low",
+                    status="open",
+                )
+            )
+        await s.flush()
+        after = await audit_program.pbc_requests(s, org, date.today())
+    assert after == before

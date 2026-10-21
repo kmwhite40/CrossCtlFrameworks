@@ -221,7 +221,7 @@ BRAVO = [(30, 98765), (20, 98760), (10, 98755), (3, 98750), (2, 98745), (1, 9874
 
 @pytest.fixture
 async def scene() -> tuple[dict, dict]:
-    tag = f"{next(_SEQ)}h{os.getpid()}"
+    tag = f"hi{next(_SEQ)}h{os.getpid()}{os.urandom(2).hex()}"
     a = await _org("Alpha", tag, roles=("admin", "viewer", "control_owner", "assessor"))
     b = await _org("Bravo", tag)
     await _snapshots(a["org_id"], ALPHA)
@@ -464,7 +464,7 @@ async def test_forecast_projects_the_callers_own_history(scene) -> None:
 
 
 async def test_one_snapshot_is_not_a_trend(scene) -> None:
-    tag = f"{next(_SEQ)}h{os.getpid()}"
+    tag = f"hi{next(_SEQ)}h{os.getpid()}{os.urandom(2).hex()}"
     lone = await _org("Lone", tag)
     await _snapshots(lone["org_id"], [(2, 5)])
     async with _client() as c:
@@ -476,7 +476,7 @@ async def test_one_snapshot_is_not_a_trend(scene) -> None:
 
 
 async def test_a_short_history_is_not_projected(scene) -> None:
-    tag = f"{next(_SEQ)}h{os.getpid()}"
+    tag = f"hi{next(_SEQ)}h{os.getpid()}{os.urandom(2).hex()}"
     short = await _org("Short", tag)
     await _snapshots(short["org_id"], [(9, 8), (6, 7), (3, 6), (0, 5)])
     async with _client() as c:
@@ -550,7 +550,7 @@ async def test_a_caller_with_no_organization_cannot_record_one() -> None:
 
 
 async def test_capture_all_skips_a_deleted_organization(scene) -> None:
-    tag = f"{next(_SEQ)}h{os.getpid()}"
+    tag = f"hi{next(_SEQ)}h{os.getpid()}{os.urandom(2).hex()}"
     gone = await _org("Gone", tag)
     async with session_scope() as s:
         org = await s.get(Organization, gone["org_id"])

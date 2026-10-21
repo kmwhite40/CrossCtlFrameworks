@@ -237,12 +237,7 @@ NAV: tuple[Group, ...] = (
                 "SSP); there is no cross-system list.",
             ),
             Item("controltests", "Control Testing", "/control-tests"),
-            _partial(
-                "ctrl_eff",
-                "Control Effectiveness",
-                "/control-tests",
-                "Pass/fail metrics from control tests; there is no effectiveness rating.",
-            ),
+            Item("ctrl_eff", "Control Effectiveness", "/controls/effectiveness"),
             Item("ctrl_owners", "Control Owners", "/control-owners"),
             _partial(
                 "ctrl_inherit",
@@ -250,12 +245,7 @@ NAV: tuple[Group, ...] = (
                 "/systems",
                 "Inherited status shows per system; there is no inheritance management page.",
             ),
-            _planned(
-                "compensating",
-                "Compensating Controls",
-                "No compensating-control record links a substitute to the control it covers.",
-                "/exceptions",
-            ),
+            Item("compensating", "Compensating Controls", "/compensating-controls"),
         ),
     ),
     Group(
@@ -264,26 +254,10 @@ NAV: tuple[Group, ...] = (
         "clipboard-check",
         (
             Item("auditws", "Audit Planning", "/audit-workspace"),
-            _planned(
-                "workpapers",
-                "Audit Workpapers",
-                "No workpaper model. Evidence requests (PBC) exist inside each engagement.",
-                "/audit-workspace",
-            ),
-            _partial(
-                "audit_findings",
-                "Audit Findings",
-                "/audit-workspace",
-                "Findings are recorded per engagement; there is no cross-engagement list.",
-            ),
+            Item("workpapers", "Audit Workpapers", "/audit/workpapers"),
+            Item("audit_findings", "Audit Findings", "/audit/findings"),
             Item("poams", "Corrective Action Plans", "/poams"),
-            _partial(
-                "audit_ready",
-                "Audit Readiness",
-                "/operations",
-                "FedRAMP 20x readiness is computed per system; "
-                "there is no general readiness score.",
-            ),
+            Item("audit_ready", "Audit Readiness", "/audit/readiness"),
             Item("portaladmin", "Auditor Portal", "/admin/portal"),
             Item("trust", "Trust Center", "/trust"),
         ),
@@ -294,32 +268,11 @@ NAV: tuple[Group, ...] = (
         "folder-lock",
         (
             Item("evidence_repo", "Evidence Repository", "/evidence"),
-            _partial(
-                "evidence_req",
-                "Evidence Requests",
-                "/audit-workspace",
-                "Requests (PBC) exist only inside an audit engagement.",
-            ),
+            Item("evidence_req", "Evidence Requests", "/evidence/requests"),
             Item("connectors", "Collection Automation", "/connectors"),
-            _partial(
-                "evidence_map",
-                "Evidence-to-Control Mapping",
-                "/evidence",
-                "Each evidence object names its control; there is no mapping view.",
-            ),
-            _partial(
-                "evidence_exp",
-                "Evidence Expiration",
-                "/queries?key=expired-evidence&run=1",
-                "Expired and stale evidence queries; no expiry workflow page.",
-            ),
-            _planned(
-                "evidence_pkg",
-                "Evidence Packages",
-                "Authorization packages exist in the API and are shared from the Auditor Portal, "
-                "but have no page of their own.",
-                "/admin/portal",
-            ),
+            Item("evidence_map", "Evidence-to-Control Mapping", "/evidence/mapping"),
+            Item("evidence_exp", "Evidence Expiration", "/evidence/expiration"),
+            Item("evidence_pkg", "Evidence Packages", "/evidence/packages"),
             Item("scans", "Scan Ingestion", "/scans"),
             Item("ingestions", "Workbook Ingestions", "/ingestions"),
         ),
@@ -380,14 +333,7 @@ NAV: tuple[Group, ...] = (
                 "/poams",
                 "Action plans are POA&Ms with milestones; there is no project model.",
             ),
-            _planned(
-                "scheduled",
-                "Scheduled Assessments",
-                "Implementations carry a ConMon frequency and next-due "
-                "date, but nothing renders a schedule.",
-                "/governance",
-                "/control-tests",
-            ),
+            Item("scheduled", "Scheduled Assessments", "/assessments/schedule"),
             Item("approvals", "Approval Workflows", "/approvals"),
         ),
     ),
@@ -427,12 +373,7 @@ NAV: tuple[Group, ...] = (
             Item("worksheets", "Source Workbooks", "/worksheets"),
             Item("diff", "Workbook Diff", "/diff"),
             Item("search", "Catalog Search", "/search"),
-            _partial(
-                "integrations",
-                "Integrations",
-                "/connectors",
-                "Connectors have pages; webhooks, IdP and issue-tracker push are API-only.",
-            ),
+            Item("integrations", "Integrations", "/integrations"),
             Item(
                 "ai_settings",
                 "AI Providers",
