@@ -103,6 +103,9 @@ MIN_PASSWORD_REUSE_PREVENTION = 24
 #: An access key that is not ``Active`` cannot authenticate, so it is excluded
 #: from the rotation verdict rather than counted as a pass.
 _ACTIVE_KEY_STATUS = "Active"
+#: The other statuses IAM documents for an access key. Anything else, missing
+#: included, is unknown -- never read as "cannot authenticate".
+_UNUSABLE_KEY_STATUSES = ("Inactive", "Expired")
 
 
 ROOT_MFA_ENABLED = PostureCheck(
@@ -113,6 +116,19 @@ ROOT_MFA_ENABLED = PostureCheck(
     expected="the account root user has a multi-factor authentication device enabled",
     control_ids=("IA-2", "IA-2(1)"),
     required_permissions=("iam:GetAccountSummary",),
+)
+
+USER_MFA_ENABLED = PostureCheck(
+    key="aws.iam.user_mfa_enabled",
+    title="Every IAM user with a console password has MFA enabled",
+    provider="aws_govcloud",
+    resource_type="iam_user",
+    expected=(
+        "every IAM user who can sign in to the console has an MFA device active, "
+        "per the IAM credential report"
+    ),
+    control_ids=("IA-2(1)", "IA-2(2)"),
+    required_permissions=("iam:GenerateCredentialReport", "iam:GetCredentialReport"),
 )
 
 #: The one place the password-policy expectation is worded, rendered once from
@@ -443,6 +459,7 @@ IL_CUSTOMER_KEYS = PostureCheck(
 CHECKS: tuple[PostureCheck, ...] = (
     ROOT_MFA_ENABLED,
     PASSWORD_POLICY,
+    USER_MFA_ENABLED,
     ACCESS_KEY_ROTATION,
     CLOUDTRAIL_MULTI_REGION,
     CLOUDTRAIL_LOG_FILE_VALIDATION,
@@ -494,6 +511,7 @@ _PUBLIC_ACCESS_BLOCK_SETTINGS = (
 #: the fleet comes from, not every call made to complete a row.
 ENDPOINTS: dict[str, str] = {
     ROOT_MFA_ENABLED.key: "iam.get_account_summary",
+    USER_MFA_ENABLED.key: "iam.get_credential_report",
     PASSWORD_POLICY.key: "iam.get_account_password_policy",
     ACCESS_KEY_ROTATION.key: "iam.list_access_keys",
     CLOUDTRAIL_MULTI_REGION.key: "cloudtrail.describe_trails",
@@ -536,6 +554,7 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
     {
         ROOT_MFA_ENABLED.key,
         PASSWORD_POLICY.key,
+        USER_MFA_ENABLED.key,
         CLOUDTRAIL_MULTI_REGION.key,
         EBS_ENCRYPTION_BY_DEFAULT.key,
         SECURITY_GROUP_ADMIN_INGRESS.key,
@@ -783,6 +802,19 @@ def evaluate_access_key_rotation(
         ref = _key_ref(row)
         user = row.get("UserName")
         status = row.get("Status")
+        if status not in (_ACTIVE_KEY_STATUS, *_UNUSABLE_KEY_STATUSES):
+            # Not reported, or a value this code does not know: the key may be
+            # live, so it is not excused as unable to authenticate.
+            findings.append(
+                ResourceFinding(
+                    resource_id=ref,
+                    resource_type="iam_access_key",
+                    verdict="manual_review_required",
+                    observed=f"access key status {status!r} was not one AWS documents",
+                    detail={"UserName": user, "Status": status},
+                )
+            )
+            continue
         if status != _ACTIVE_KEY_STATUS:
             findings.append(
                 ResourceFinding(
@@ -1164,6 +1196,16 @@ def evaluate_security_group_admin_ingress(
     findings: list[ResourceFinding] = []
     for group in rows:
         group_id = str(group.get("GroupId") or group.get("GroupName") or "unknown")
+        if not isinstance(group.get("IpPermissions"), list):
+            # AWS always answers IpPermissions, if only with []. Without it the
+            # rules were not read, and "no rules" would pass a group unseen.
+            findings.append(ResourceFinding(
+                resource_id=group_id, resource_type="aws_security_group",
+                verdict="manual_review_required",
+                observed="the group's inbound rules were not reported",
+                detail={"group_name": group.get("GroupName")},
+            ))
+            continue
         exposures = [
             exposure
             for permission in group.get("IpPermissions") or []
@@ -1428,6 +1470,57 @@ def evaluate_patch_compliance(
 # ── evaluators for the checks ported from m365-docs-hub ──────────────────────
 
 
+#: The credential report's name for the root user's row. Root MFA is
+#: ``ROOT_MFA_ENABLED``'s question, read from the account summary.
+CREDENTIAL_REPORT_ROOT = "<root_account>"
+
+
+def evaluate_user_mfa(
+    rows: list[dict[str, Any]], *, account_id: str
+) -> list[ResourceFinding]:
+    """One finding per IAM user, from the credential report's CSV rows.
+
+    MFA guards console sign-in, so a user with no console password is
+    ``not_applicable`` here -- their access keys are the rotation check's
+    question. The report's cells are the strings ``"true"``/``"false"``;
+    anything else, missing included, is ``manual_review_required``, never
+    read as either. An empty report is not "no users": every report has the
+    root row, so empty means it was not read.
+    """
+    if not rows:
+        return _account_finding(
+            account_id, "manual_review_required", "the IAM credential report was not returned"
+        )
+    findings: list[ResourceFinding] = []
+    for r in rows:
+        user = r.get("user")
+        if user == CREDENTIAL_REPORT_ROOT:
+            continue
+        rid = str(r.get("arn") or user or "unknown")
+        password, mfa = r.get("password_enabled"), r.get("mfa_active")
+        detail = {"user": user, "password_enabled": password, "mfa_active": mfa,
+                  "report_generated": r.get("GeneratedTime")}
+        if password == "false":
+            verdict, observed = "not_applicable", "the user has no console password"
+        elif password == "true" and mfa == "true":
+            verdict, observed = "pass", "console password with an active MFA device"
+        elif password == "true" and mfa == "false":
+            verdict, observed = "fail", "console password with no active MFA device"
+        else:
+            verdict, observed = "manual_review_required", (
+                f"the report gave password_enabled={password!r}, mfa_active={mfa!r}"
+            )
+        findings.append(ResourceFinding(
+            resource_id=rid, resource_type="iam_user", verdict=verdict,
+            observed=observed, detail=detail,
+        ))
+    if not findings:
+        return _account_finding(
+            account_id, "not_applicable", "the account has no IAM users besides root"
+        )
+    return findings
+
+
 def _account_finding(
     account_id: str, verdict: str, observed: str, **detail: Any
 ) -> list[ResourceFinding]:
@@ -1553,6 +1646,14 @@ def evaluate_kms_key_rotation(
             findings.append(ResourceFinding(
                 resource_id=arn, resource_type="aws_kms_key", verdict="manual_review_required",
                 observed=f"the key could not be read ({k['Unreadable']})", detail=detail,
+            ))
+            continue
+        if not k.get("KeyState"):
+            # A key whose state was not reported may be enabled; excusing it as
+            # "rotation does not apply" would skip a key nobody looked at.
+            findings.append(ResourceFinding(
+                resource_id=arn, resource_type="aws_kms_key", verdict="manual_review_required",
+                observed="the key did not report its state", detail=detail,
             ))
             continue
         if (k.get("KeyState") != "Enabled" or k.get("KeySpec", "SYMMETRIC_DEFAULT")
@@ -1804,12 +1905,24 @@ def evaluate_il_service_scope(
             "AWS Config reported no resources; is the recorder on?",
         )
     namespaces: dict[str, int] = {}
+    unread = 0
     for r in rows:
         parts = str(r.get("resourceType") or "").split("::")
         if len(parts) >= 2 and parts[0] == "AWS":
             namespaces[parts[1]] = namespaces.get(parts[1], 0) + int(r.get("count") or 0)
+        else:
+            unread += 1
     source = scope.provenance()
     findings: list[ResourceFinding] = []
+    if unread:
+        # Rows whose service cannot be told are not dropped: the service they
+        # count could be the one AWS does not authorize at this level.
+        findings.append(ResourceFinding(
+            resource_id=account_id, resource_type="aws_account",
+            verdict="manual_review_required",
+            observed=f"{unread} resource count(s) from AWS Config named no AWS resource type",
+            detail={"unread_rows": unread, "level": dod_impact_level},
+        ))
     for ns in sorted(namespaces):
         row = scope.row_for_namespace(ns)
         detail = {"resources": namespaces[ns], "level": dod_impact_level, "source": source}
@@ -1878,6 +1991,7 @@ def evaluate_il_customer_keys(
 
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     ROOT_MFA_ENABLED.key: evaluate_root_mfa,
+    USER_MFA_ENABLED.key: evaluate_user_mfa,
     PASSWORD_POLICY.key: evaluate_password_policy,
     ACCESS_KEY_ROTATION.key: evaluate_access_key_rotation,
     CLOUDTRAIL_MULTI_REGION.key: evaluate_cloudtrail_multi_region,

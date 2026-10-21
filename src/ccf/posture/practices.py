@@ -45,6 +45,7 @@ CHECK_PRACTICES: dict[str, tuple[str, ...]] = {
     #               to privileged accounts and for network access to
     #               non-privileged accounts."
     "aws.iam.root_mfa_enabled": ("IA.L2-3.5.3",),
+    "aws.iam.user_mfa_enabled": ("IA.L2-3.5.3",),
     "m365.identity.mfa_registered": ("IA.L2-3.5.3",),
     # Legacy authentication protocols cannot present a second factor, so a
     # tenant that still allows them has not met 3.5.3 whatever its MFA policy
