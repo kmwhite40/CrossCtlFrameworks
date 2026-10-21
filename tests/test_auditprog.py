@@ -47,6 +47,7 @@ from ccf.models import (
 from ccf.models_grc import AuditEngagement, AuditFinding, AuditRequest, ControlTest
 from ccf.models_packages import (
     AuthorizationPackage,
+    AuthorizationPackageDiff,
     AuthorizationPackageFact,
     AuthorizationPackageReplayRun,
 )
@@ -280,6 +281,8 @@ async def _org(label: str, tag: str) -> dict[str, object]:
             control=m("ctl"),
             cc_proposed=cc_ids[m("cc-proposed")],
             cc_approved=cc_ids[m("cc-approved")],
+            pkg_id=pkg.id,
+            pkg_gone_id=pkg_gone.id,
             tokens={k: u.api_token for k, u in users.items()},
             emails={k: u.email for k, u in users.items()},
         )
@@ -833,3 +836,181 @@ async def test_the_engagement_page_carries_a_workpapers_section(two_orgs) -> Non
     assert 'hx-select="#workpaper-table"' in body
     assert 'id="workpaper-table"' in listing
     assert f"Alpha-workpaper-{a['tag']}" in listing
+
+
+# ── evidence packages: a workflow over ccf.packages.service ──────────────────
+
+
+async def _facts(pid: int) -> list[tuple[str, str, str | None]]:
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        return sorted(
+            (
+                await s.execute(
+                    select(
+                        AuthorizationPackageFact.fact_type,
+                        AuthorizationPackageFact.fact_key,
+                        AuthorizationPackageFact.value,
+                    ).where(AuthorizationPackageFact.package_id == pid)
+                )
+            ).all()
+        )
+
+
+async def test_a_package_is_exported_through_the_service(two_orgs) -> None:
+    a, _ = two_orgs
+    label = f"Alpha-exported-{a['tag']}"
+    async with _client() as c:
+        r = await c.post(
+            "/evidence/packages",
+            data={"system_id": a["system_id"], "kind": "fedramp20x", "label": label},
+            headers=_tok(a, "control_owner"),
+        )
+        assert r.status_code == 303, r.text[:200]
+        body = (await c.get("/evidence/packages", headers=_tok(a, "viewer"))).text
+    assert label in body
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        pkg = (
+            await s.execute(select(AuthorizationPackage).where(AuthorizationPackage.label == label))
+        ).scalar_one()
+        events = (
+            (
+                await s.execute(
+                    select(AuditLog).where(
+                        AuditLog.entity_type == "authorization_package",
+                        AuditLog.entity_id == str(pkg.id),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert pkg.organization_id == int(a["org_id"]) and pkg.system_id == int(a["system_id"])
+    assert pkg.created_by == a["emails"]["control_owner"]  # type: ignore[index]
+    assert len(await _facts(pkg.id)) == pkg.fact_count
+    assert [e.diff.get("event") for e in events if e.diff.get("event")] == ["exported"]
+
+
+async def test_package_actions_are_gated_and_scoped(two_orgs) -> None:
+    a, b = two_orgs
+    own, other, gone = int(a["pkg_id"]), int(b["pkg_id"]), int(a["pkg_gone_id"])
+    async with _client() as c:
+        viewer = _tok(a, "viewer")
+        assert (
+            await c.post("/evidence/packages", data={"system_id": a["system_id"]}, headers=viewer)
+        ).status_code == 403
+        assert (await c.post(f"/evidence/packages/{own}/replay", headers=viewer)).status_code == 403
+        assert (
+            await c.post(
+                f"/evidence/packages/{own}/compare", data={"other_id": own}, headers=viewer
+            )
+        ).status_code == 403
+        admin = _tok(a, "admin")
+        for sid in (b["system_id"], a["gone_id"]):
+            r = await c.post("/evidence/packages", data={"system_id": sid}, headers=admin)
+            assert r.status_code == 404, sid
+        r = await c.post(
+            "/evidence/packages",
+            data={"system_id": a["system_id"], "kind": "nonsense"},
+            headers=admin,
+        )
+        assert r.status_code == 422
+        for pid in (other, gone):
+            assert (
+                await c.post(f"/evidence/packages/{pid}/replay", headers=admin)
+            ).status_code == 404, pid
+            assert (
+                await c.post(
+                    f"/evidence/packages/{own}/compare", data={"other_id": pid}, headers=admin
+                )
+            ).status_code == 404, pid
+        assert (
+            await c.post(
+                f"/evidence/packages/{other}/compare", data={"other_id": own}, headers=admin
+            )
+        ).status_code == 404
+        assert (
+            await c.post(f"/evidence/packages/{own}/compare", data={"other_id": own}, headers=admin)
+        ).status_code == 422
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        runs = (
+            await s.execute(
+                select(AuthorizationPackageReplayRun.package_id).where(
+                    AuthorizationPackageReplayRun.package_id.in_([other, gone])
+                )
+            )
+        ).all()
+        made = (
+            (
+                await s.execute(
+                    select(AuthorizationPackage).where(
+                        AuthorizationPackage.organization_id == int(a["org_id"])
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert (other,) in runs and len(runs) == 1  # only Bravo's own seeded run
+    assert len(made) == 2  # the two seeded; no refused export landed
+
+
+async def test_an_exported_package_is_fixed_replay_and_compare_change_nothing(two_orgs) -> None:
+    """There is no operation that adds to, edits or removes a package: the
+    service writes its facts once, at export. Replay and compare record their
+    own rows and leave the package exactly as it was."""
+    a, _ = two_orgs
+    own = int(a["pkg_id"])
+    async with _client() as c:
+        r = await c.post(
+            "/evidence/packages",
+            data={"system_id": a["system_id"], "label": f"Alpha-second-{a['tag']}"},
+            headers=_tok(a, "assessor"),
+        )
+        assert r.status_code == 303
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        second = (
+            await s.execute(
+                select(AuthorizationPackage.id).where(
+                    AuthorizationPackage.label == f"Alpha-second-{a['tag']}"
+                )
+            )
+        ).scalar_one()
+    before = {pid: await _facts(pid) for pid in (own, second)}
+    count_before = (await _get(AuthorizationPackage, own)).fact_count
+    async with _client() as c:
+        for pid in (own, second):
+            r = await c.post(f"/evidence/packages/{pid}/replay", headers=_tok(a, "assessor"))
+            assert r.status_code == 303, r.text[:200]
+        r = await c.post(
+            f"/evidence/packages/{own}/compare",
+            data={"other_id": second},
+            headers=_tok(a, "assessor"),
+        )
+        assert r.status_code == 303, r.text[:200]
+        for path in ("edit", "facts", "seal"):
+            assert (
+                await c.post(f"/evidence/packages/{own}/{path}", headers=_tok(a, "admin"))
+            ).status_code in (404, 405), path
+        body = (await c.get("/evidence/packages", headers=_tok(a, "viewer"))).text
+    assert {pid: await _facts(pid) for pid in (own, second)} == before
+    assert (await _get(AuthorizationPackage, own)).fact_count == count_before
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        diffs = (
+            (
+                await s.execute(
+                    select(AuthorizationPackageDiff).where(
+                        AuthorizationPackageDiff.from_package_id == own
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(diffs) == 1 and diffs[0].organization_id == int(a["org_id"])
+    assert "Recent comparisons" in body
+    assert f"Alpha-second-{a['tag']}" in body

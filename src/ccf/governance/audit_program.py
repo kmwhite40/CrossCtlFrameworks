@@ -41,12 +41,15 @@ from ..catalog.canonical import canonicalize
 from ..models import POAM, Control, ControlImplementation, System, User
 from ..models_grc import AuditEngagement, AuditFinding, AuditRequest, ControlTest
 from ..models_packages import (
+    PACKAGE_KINDS,
     AuthorizationPackage,
     AuthorizationPackageArtifact,
+    AuthorizationPackageDiff,
     AuthorizationPackageFact,
     AuthorizationPackageReplayRun,
 )
 from ..models_program import AuditWorkpaper, CompensatingControl
+from ..packages import service as package_service
 
 # The runner's own frequency table, so "due" here and "due" to the runner can
 # never disagree (``control_tests._is_due`` reads the same dict).
@@ -414,6 +417,92 @@ async def packages(session: AsyncSession, org: int | None) -> list[dict[str, Any
         }
         for p, system_name in pkgs
     ]
+
+
+#: Who may export, replay or compare a package from the page. The JSON API
+#: (``api/routes/packages.py``) takes any authenticated principal and the
+#: middleware refuses a viewer's write, so its effective gate is every role but
+#: viewer; the page states the same gate explicitly.
+PACKAGE_ROLES = ("admin", "control_owner", "assessor")
+
+
+async def package_in_scope(
+    session: AsyncSession, pid: int, org: int | None
+) -> AuthorizationPackage:
+    """The package ``pid`` names, iff the caller's organization owns it and
+    its system (if any) is live."""
+    stmt = (
+        select(AuthorizationPackage)
+        .outerjoin(System, System.id == AuthorizationPackage.system_id)
+        .where(AuthorizationPackage.id == pid, System.deleted_at.is_(None))
+    )
+    if org is not None:
+        stmt = stmt.where(AuthorizationPackage.organization_id == org)
+    pkg = (await session.execute(stmt)).scalar_one_or_none()
+    if pkg is None:
+        raise RefusalError(404, "authorization package not found")
+    return pkg
+
+
+async def export_package(
+    session: AsyncSession,
+    org: int | None,
+    *,
+    actor: str,
+    system_id: int,
+    kind: str,
+    label: str | None,
+) -> AuthorizationPackage:
+    """Capture the system's facts now and persist them as a package, through
+    ``packages.service.create_package`` -- the API's own operation.
+
+    The package is filed under the **system's** organization, never the
+    caller's ``org_id`` (which is None for a global principal and would file
+    it under no tenant). A package is immutable once written: the service has
+    no operation that adds to, edits or removes a package's facts."""
+    if kind not in PACKAGE_KINDS:
+        raise RefusalError(422, f"kind must be one of {', '.join(PACKAGE_KINDS)}")
+    stmt = select(System).where(System.id == system_id, System.deleted_at.is_(None))
+    if org is not None:
+        stmt = stmt.where(System.organization_id == org)
+    system = (await session.execute(stmt)).scalar_one_or_none()
+    if system is None:
+        raise RefusalError(404, "system not found")
+    return await package_service.create_package(
+        session,
+        org_id=system.organization_id,
+        system_id=system.id,
+        kind=kind,
+        label=_clean(label),
+        created_by=actor,
+    )
+
+
+async def replay_package(
+    session: AsyncSession, pkg: AuthorizationPackage
+) -> AuthorizationPackageReplayRun:
+    """Re-derive the package's facts from current records and record the
+    drift. Adds a replay run; never touches the package or its facts."""
+    return await package_service.replay_package(session, org_id=pkg.organization_id, package=pkg)
+
+
+async def compare_packages(
+    session: AsyncSession, a: AuthorizationPackage, b: AuthorizationPackage
+) -> AuthorizationPackageDiff:
+    if a.id == b.id:
+        raise RefusalError(422, "choose two different packages to compare")
+    return await package_service.diff_packages(
+        session, org_id=a.organization_id, from_id=a.id, to_id=b.id
+    )
+
+
+async def recent_comparisons(
+    session: AsyncSession, org: int | None, *, limit: int = 10
+) -> list[AuthorizationPackageDiff]:
+    stmt = select(AuthorizationPackageDiff).order_by(AuthorizationPackageDiff.id.desc())
+    if org is not None:
+        stmt = stmt.where(AuthorizationPackageDiff.organization_id == org)
+    return list((await session.execute(stmt.limit(limit))).scalars().all())
 
 
 # ── Assessment schedule ──────────────────────────────────────────────────────

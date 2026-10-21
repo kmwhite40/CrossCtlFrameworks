@@ -25,6 +25,7 @@ from ...analytics import posture
 from ...auth import Principal
 from ...governance import audit_program as program
 from ...models import System
+from ...models_packages import PACKAGE_KINDS
 from ..audit import record_event
 from ..auth_deps import require_role
 from ..deps import get_session
@@ -335,10 +336,119 @@ async def evidence_requests_page(
 async def evidence_packages_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
-    rows = await program.packages(session, _principal_org(request))
+    org = _principal_org(request)
+    rows = await program.packages(session, org)
+    systems = (
+        await session.execute(
+            select(System.id, System.name)
+            .where(System.id.in_(posture.org_system_subq(org)))
+            .order_by(System.name)
+        )
+    ).all()
+    labels = {row["p"].id: row["p"].label for row in rows}
+    comparisons = [
+        d
+        for d in await program.recent_comparisons(session, org)
+        if d.from_package_id in labels and d.to_package_id in labels
+    ]
     return templates.TemplateResponse(
-        request, "evidence_packages.html", {"active": "evidence_pkg", "rows": rows}
+        request,
+        "evidence_packages.html",
+        {
+            "active": "evidence_pkg",
+            "rows": rows,
+            "systems": systems,
+            "kinds": PACKAGE_KINDS,
+            "labels": labels,
+            "comparisons": comparisons,
+        },
     )
+
+
+@router.post("/evidence/packages")
+async def evidence_package_export(  # noqa: PLR0917 -- FastAPI binds these by keyword
+    request: Request,
+    system_id: int = Form(...),
+    kind: str = Form("fedramp20x"),
+    label: str = Form(""),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*program.PACKAGE_ROLES)),
+) -> RedirectResponse:
+    try:
+        pkg = await program.export_package(
+            session,
+            _principal_org(request),
+            actor=principal.email,
+            system_id=system_id,
+            kind=kind,
+            label=label,
+        )
+    except program.RefusalError as exc:
+        raise _http(exc) from None
+    await _event(
+        session,
+        principal,
+        org=pkg.organization_id,
+        entity_type="authorization_package",
+        entity_id=pkg.id,
+        action="create",
+        diff={"event": "exported", "system_id": pkg.system_id, "facts": pkg.fact_count},
+    )
+    await session.commit()
+    return RedirectResponse(f"/evidence/packages#package-{pkg.id}", status_code=303)
+
+
+@router.post("/evidence/packages/{pid}/replay")
+async def evidence_package_replay(
+    pid: int,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*program.PACKAGE_ROLES)),
+) -> RedirectResponse:
+    try:
+        pkg = await program.package_in_scope(session, pid, _principal_org(request))
+    except program.RefusalError as exc:
+        raise _http(exc) from None
+    run = await program.replay_package(session, pkg)
+    await _event(
+        session,
+        principal,
+        org=pkg.organization_id,
+        entity_type="authorization_package",
+        entity_id=pkg.id,
+        action="update",
+        diff={"event": "replayed", "status": run.status},
+    )
+    await session.commit()
+    return RedirectResponse(f"/evidence/packages#package-{pkg.id}", status_code=303)
+
+
+@router.post("/evidence/packages/{pid}/compare")
+async def evidence_package_compare(
+    pid: int,
+    request: Request,
+    other_id: int = Form(...),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role(*program.PACKAGE_ROLES)),
+) -> RedirectResponse:
+    org = _principal_org(request)
+    try:
+        a = await program.package_in_scope(session, pid, org)
+        b = await program.package_in_scope(session, other_id, org)
+        diff = await program.compare_packages(session, a, b)
+    except program.RefusalError as exc:
+        raise _http(exc) from None
+    await _event(
+        session,
+        principal,
+        org=a.organization_id,
+        entity_type="authorization_package",
+        entity_id=a.id,
+        action="update",
+        diff={"event": "compared", "to_package_id": b.id, "summary": diff.summary},
+    )
+    await session.commit()
+    return RedirectResponse("/evidence/packages#comparisons", status_code=303)
 
 
 # ── Assessment schedule ──────────────────────────────────────────────────────

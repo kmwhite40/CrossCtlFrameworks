@@ -1,25 +1,73 @@
 {% extends "base.html" %}
 {% block title %}Evidence Packages · Concord{% endblock %}
 {% block heading %}Evidence packages{% endblock %}
-{% block subtitle %}Authorization packages exported for this organization: what each captured and whether it still reproduces against current records. Read-only; packages are exported and replayed through <code>/api/authorization-packages</code> and shared from the <a href="/admin/portal">Auditor Portal</a>.{% endblock %}
+{% block subtitle %}Authorization packages for this organization's systems. Exporting a package captures the facts it is built from (KSIs, controls, evidence, dependencies, risks, POA&amp;Ms, readiness) as they stand now; the package is then fixed — nothing adds to or edits it. Replaying it re-derives those facts from current records and reports drift; comparing two packages reports what changed between them. Packages are shared with auditors from the <a href="/admin/portal">Auditor Portal</a>.{% endblock %}
 {% block content %}
-{% if rows %}
-<div class="table-wrap"><table>
-  <thead><tr><th>Package</th><th>System</th><th>Kind</th><th>Readiness at export</th><th>Contents</th><th>Latest replay</th><th>Exported</th></tr></thead>
-  <tbody>{% for row in rows %}{% set p = row.p %}<tr>
-    <td><strong>{{ p.label }}</strong></td>
-    <td>{{ row.system or '—' }}</td>
-    <td><span class="chip chip--brand">{{ p.kind }}</span></td>
-    <td>{% if p.readiness_pct is not none %}{{ p.readiness_pct | round | int }}%{% else %}<span class="dim">—</span>{% endif %}</td>
-    <td>
-      <div>{{ p.fact_count }} fact{{ 's' if p.fact_count != 1 }} recorded{% if row.facts %}: {% for t, n in row.facts.items() %}{{ n }} {{ t }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</div>
-      {% if row.artifacts %}<div class="dim">{% for a in row.artifacts %}{{ a.artifact_kind }}{% if a.sha256 %} <span class="mono">{{ a.sha256[:12] }}</span>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% else %}<div class="dim">no rendered artifact stored</div>{% endif %}
-    </td>
-    <td>{% if row.replay %}<span class="chip {% if row.replay.status == 'reproducible' %}chip--ok{% elif row.replay.status == 'drifted' %}chip--warn{% else %}chip--err{% endif %}">{{ row.replay.status }}</span><div class="dim">{{ row.replay.ran_at.strftime('%Y-%m-%d') if row.replay.ran_at else '' }}</div>{% else %}<span class="dim">never replayed</span>{% endif %}</td>
-    <td>{{ p.created_at.strftime('%Y-%m-%d') if p.created_at else '—' }}<div class="dim">{{ p.created_by or '' }}</div></td>
-  </tr>{% endfor %}</tbody>
-</table></div>
-{% else %}
-<div class="card empty-state"><i data-lucide="package"></i><h2>No authorization packages</h2><p>No package has been exported for this organization's systems. A package is exported with <code>POST /api/authorization-packages</code> for a system, which records the facts it was generated from so it can be diffed and replayed later.</p></div>
-{% endif %}
+<div class="layout-split-r">
+  <div>
+    {% if rows %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Package</th><th>System</th><th>Readiness at export</th><th>Contents</th><th>Latest replay</th><th>Exported</th><th></th></tr></thead>
+      <tbody>{% for row in rows %}{% set p = row.p %}<tr id="package-{{ p.id }}">
+        <td><strong>{{ p.label }}</strong><div><span class="chip chip--brand">{{ p.kind }}</span></div></td>
+        <td>{{ row.system or '—' }}</td>
+        <td>{% if p.readiness_pct is not none %}{{ p.readiness_pct | round | int }}%{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>
+          <div>{{ p.fact_count }} fact{{ 's' if p.fact_count != 1 }} recorded{% if row.facts %}: {% for t, n in row.facts.items() %}{{ n }} {{ t }}{% if not loop.last %}, {% endif %}{% endfor %}{% endif %}</div>
+          {% if row.artifacts %}<div class="dim">{% for a in row.artifacts %}{{ a.artifact_kind }}{% if a.sha256 %} <span class="mono">{{ a.sha256[:12] }}</span>{% endif %}{% if not loop.last %} · {% endif %}{% endfor %}</div>{% else %}<div class="dim">no rendered artifact stored</div>{% endif %}
+        </td>
+        <td>{% if row.replay %}<span class="chip {% if row.replay.status == 'reproducible' %}chip--ok{% elif row.replay.status == 'drifted' %}chip--warn{% else %}chip--err{% endif %}">{{ row.replay.status }}</span>
+          {% set sm = (row.replay.drift or {}).get('summary') %}{% if sm %}<div class="dim">{{ sm.changed }} changed · {{ sm.removed }} removed · {{ sm.added }} added</div>{% endif %}
+          <div class="dim">{{ row.replay.ran_at.strftime('%Y-%m-%d %H:%M') if row.replay.ran_at else '' }}</div>{% else %}<span class="dim">never replayed</span>{% endif %}</td>
+        <td>{{ p.created_at.strftime('%Y-%m-%d') if p.created_at else '—' }}<div class="dim">{{ p.created_by or '' }}</div></td>
+        <td>
+          <div class="stack">
+            <form method="post" action="/evidence/packages/{{ p.id }}/replay"><button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="rotate-ccw"></i> Replay</button></form>
+            {% if rows | length > 1 %}
+            <form method="post" action="/evidence/packages/{{ p.id }}/compare" class="row">
+              <select class="select" name="other_id" aria-label="Compare with">
+                {% for other in rows %}{% if other.p.id != p.id %}<option value="{{ other.p.id }}">{{ other.p.label }}</option>{% endif %}{% endfor %}
+              </select>
+              <button class="btn btn--ghost btn--sm" type="submit">Compare</button>
+            </form>
+            {% endif %}
+          </div>
+        </td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}
+    <div class="card empty-state"><i data-lucide="package"></i><h2>No authorization packages</h2><p>No package has been exported for this organization's systems. Export the first with the form beside this list; it records the facts the package is built from so it can be replayed and compared later.</p></div>
+    {% endif %}
+
+    {% if comparisons %}
+    <article class="card panel" id="comparisons">
+      <header class="panel__head"><h2 class="panel__title">Recent comparisons</h2></header>
+      <ul class="feed">
+        {% for d in comparisons %}
+        <li class="feed__item"><span class="feed__main"><span class="feed__title">{{ labels[d.from_package_id] }} → {{ labels[d.to_package_id] }}</span>
+          <span class="feed__meta">{{ d.summary.get('changed', 0) }} changed · {{ d.summary.get('removed', 0) }} removed · {{ d.summary.get('added', 0) }} added</span></span>
+          <span class="feed__meta">{{ d.created_at.strftime('%Y-%m-%d %H:%M') if d.created_at else '' }}</span></li>
+        {% endfor %}
+      </ul>
+    </article>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/evidence/packages" class="card">
+    <div class="card__header"><div class="card__title">Export a package</div></div>
+    <div class="card__body stack">
+      {% if systems %}
+      <label class="field-group"><span class="label">System *</span>
+        <select class="select" name="system_id" required>{% for s in systems %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></label>
+      <label class="field-group"><span class="label">Kind</span>
+        <select class="select" name="kind">{% for k in kinds %}<option value="{{ k }}">{{ k }}</option>{% endfor %}</select></label>
+      <label class="field-group"><span class="label">Label</span><input class="input" name="label" placeholder="e.g. Q4 annual assessment"></label>
+      <button class="btn btn--primary" type="submit"><i data-lucide="package-plus"></i> Export now</button>
+      <p class="dim">Administrators, control owners and assessors may export, replay and compare packages.</p>
+      {% else %}
+      <p class="dim">A package is exported for a system. <a href="/systems">Add a system</a> first.</p>
+      {% endif %}
+    </div>
+  </form>
+</div>
 {% endblock %}
