@@ -45,6 +45,7 @@ async def capture_facts(session: AsyncSession, system_id: int) -> list[Fact]:
     await source("dependencies", _dependency_facts(session, system_id))
     await source("risks", _risk_facts(session, system_id))
     await source("poams", _poam_facts(session, system_id))
+    await source("policies", _policy_facts(session, system_id))
     await source("readiness", _readiness_fact(session, system_id))
     return facts
 
@@ -130,6 +131,31 @@ async def _poam_facts(session: AsyncSession, system_id: int) -> list[Fact]:
         await session.execute(select(POAM).where(POAM.system_id == system_id))
     ).scalars().all()
     return [_fact("poam", str(r.id), r.status, severity=r.severity) for r in rows]
+
+
+async def _policy_facts(session: AsyncSession, system_id: int) -> list[Fact]:
+    """The organization's policies in force, by name, version and body hash.
+
+    A package captures what the system was authorized *under*; a policy that
+    changes after authorization then shows up in the package diff and replay
+    like any other drifted fact. Only versions put in force by an approved
+    activation count -- a draft governs nothing.
+    """
+    from ..models import Policy, PolicyVersion, System  # noqa: PLC0415
+
+    org_id = (
+        await session.execute(select(System.organization_id).where(System.id == system_id))
+    ).scalar_one_or_none()
+    if org_id is None:
+        return []
+    rows = (
+        await session.execute(
+            select(Policy.name, PolicyVersion.version, PolicyVersion.body_sha256)
+            .join(PolicyVersion, PolicyVersion.id == Policy.active_version_id)
+            .where(Policy.organization_id == org_id, Policy.status == "active")
+        )
+    ).all()
+    return [_fact("policy", name, version, digest) for name, version, digest in rows]
 
 
 async def _readiness_fact(session: AsyncSession, system_id: int) -> list[Fact]:

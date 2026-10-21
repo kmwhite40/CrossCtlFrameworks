@@ -20,16 +20,27 @@ here (a plain ``session.get``), not by round-tripping through ``list_*``.
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...boundary import service
 from ...models import InformationType, Interconnection, InventoryItem, SystemComponent
+from ...models_boundary import (
+    CMVP_URL,
+    CRYPTO_STATUSES,
+    CRYPTO_USAGES,
+    PPS_DIRECTIONS,
+    PPS_PROTOCOLS,
+    CryptoModule,
+    PortProtocolService,
+)
 from ..auth_deps import require_role
 from ..deps import get_session
 from .systems import require_system_in_scope
@@ -512,4 +523,180 @@ async def delete_interconnection(
     if existing is None or existing.system_id != system_id:
         raise HTTPException(404, "interconnection not found")
     await service.delete_interconnection(session, interconnection_id=interconnection_id)
+    await session.commit()
+
+
+# --------------------------------------------------------------------------
+# Ports, protocols & services; cryptographic modules (``ccf.models_boundary``)
+# --------------------------------------------------------------------------
+
+_PORT_RE = re.compile(r"^(\d{1,5})(?:-(\d{1,5}))?$")
+
+
+def _check_port(port: str | None, protocol: str) -> str | None:
+    if port is None or not port.strip():
+        if protocol in ("tcp", "udp", "sctp"):
+            raise HTTPException(422, f"a {protocol} entry needs a port or a port range")
+        return None
+    m = _PORT_RE.match(port.strip())
+    if m is None:
+        raise HTTPException(422, "port must be a number (443) or a range (49152-65535)")
+    lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+    if not (0 <= lo <= hi <= 65535):
+        raise HTTPException(422, "ports run from 0 to 65535, low end first")
+    return port.strip()
+
+
+async def _check_component(
+    session: AsyncSession, component_id: int | None, system_id: int
+) -> None:
+    if component_id is None:
+        return
+    comp = await session.get(SystemComponent, component_id)
+    if comp is None or comp.system_id != system_id:
+        raise HTTPException(422, "component_id must name a component of this system")
+
+
+class PortIn(BaseModel):
+    port: str | None = None
+    protocol: str
+    service: str
+    purpose: str | None = None
+    direction: str
+    used_by: str | None = None
+    component_id: int | None = None
+
+
+class CryptoModuleIn(BaseModel):
+    module_name: str
+    vendor: str | None = None
+    module_version: str | None = None
+    cmvp_certificate: str | None = None
+    validation_status: str
+    security_level: int | None = None
+    usage: str
+    notes: str | None = None
+    component_id: int | None = None
+
+
+@router.get("/ports")
+async def list_ports(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "assessor")),
+) -> list[dict[str, Any]]:
+    await require_system_in_scope(session, system_id, principal)
+    rows = (
+        await session.execute(
+            select(PortProtocolService)
+            .where(PortProtocolService.system_id == system_id)
+            .order_by(PortProtocolService.protocol, PortProtocolService.port)
+        )
+    ).scalars().all()
+    return [_out(r) for r in rows]
+
+
+@router.post("/ports", status_code=201)
+async def create_port(
+    system_id: int,
+    body: PortIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "assessor")),
+) -> dict[str, Any]:
+    sys = await require_system_in_scope(session, system_id, principal)
+    _check_choice(body.protocol, frozenset(PPS_PROTOCOLS), "protocol")
+    _check_choice(body.direction, frozenset(PPS_DIRECTIONS), "direction")
+    if not body.service.strip():
+        raise HTTPException(422, "service is required")
+    port = _check_port(body.port, body.protocol)
+    await _check_component(session, body.component_id, system_id)
+    row = PortProtocolService(
+        organization_id=sys.organization_id, system_id=system_id,
+        **{**body.model_dump(), "port": port, "service": body.service.strip()},
+    )
+    session.add(row)
+    await session.commit()
+    return _out(row)
+
+
+@router.delete("/ports/{row_id}", status_code=204)
+async def delete_port(
+    system_id: int,
+    row_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "assessor")),
+) -> None:
+    await require_system_in_scope(session, system_id, principal)
+    row = await session.get(PortProtocolService, row_id)
+    if row is None or row.system_id != system_id:
+        raise HTTPException(404, "port entry not found")
+    await session.delete(row)
+    await session.commit()
+
+
+@router.get("/crypto-modules")
+async def list_crypto_modules(
+    system_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "assessor")),
+) -> list[dict[str, Any]]:
+    await require_system_in_scope(session, system_id, principal)
+    rows = (
+        await session.execute(
+            select(CryptoModule)
+            .where(CryptoModule.system_id == system_id)
+            .order_by(CryptoModule.module_name)
+        )
+    ).scalars().all()
+    return [
+        {**_out(r), "cmvp_url": CMVP_URL.format(n=r.cmvp_certificate)
+         if r.cmvp_certificate else None}
+        for r in rows
+    ]
+
+
+@router.post("/crypto-modules", status_code=201)
+async def create_crypto_module(
+    system_id: int,
+    body: CryptoModuleIn,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "assessor")),
+) -> dict[str, Any]:
+    sys = await require_system_in_scope(session, system_id, principal)
+    _check_choice(body.validation_status, frozenset(CRYPTO_STATUSES), "validation_status")
+    _check_choice(body.usage, frozenset(CRYPTO_USAGES), "usage")
+    cert = (body.cmvp_certificate or "").strip() or None
+    if cert is not None and not cert.isdigit():
+        raise HTTPException(422, "cmvp_certificate is the CMVP certificate number (digits)")
+    if body.validation_status == "validated" and cert is None:
+        # Concord does not look certificates up; "validated" with nothing to
+        # check it against would be a claim with no source.
+        raise HTTPException(422, "a validated module needs its CMVP certificate number")
+    if body.security_level is not None and not 1 <= body.security_level <= 4:
+        raise HTTPException(422, "FIPS 140 security levels run from 1 to 4")
+    if not body.module_name.strip():
+        raise HTTPException(422, "module_name is required")
+    await _check_component(session, body.component_id, system_id)
+    row = CryptoModule(
+        organization_id=sys.organization_id, system_id=system_id,
+        **{**body.model_dump(), "cmvp_certificate": cert,
+           "module_name": body.module_name.strip()},
+    )
+    session.add(row)
+    await session.commit()
+    return _out(row)
+
+
+@router.delete("/crypto-modules/{row_id}", status_code=204)
+async def delete_crypto_module(
+    system_id: int,
+    row_id: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin", "assessor")),
+) -> None:
+    await require_system_in_scope(session, system_id, principal)
+    row = await session.get(CryptoModule, row_id)
+    if row is None or row.system_id != system_id:
+        raise HTTPException(404, "crypto module not found")
+    await session.delete(row)
     await session.commit()

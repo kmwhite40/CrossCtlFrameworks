@@ -1,26 +1,51 @@
 {% extends "base.html" %}
 {% block title %}Policies &amp; Procedures · Concord{% endblock %}
 {% block heading %}Policies &amp; procedures{% endblock %}
-{% block subtitle %}Your organization's policies, their versions, review dates and who has acknowledged the current version.{% endblock %}
-{% block actions %}<a class="btn btn--secondary" href="/docs#/default" title="Policies are created and versioned through the API">API</a>{% endblock %}
+{% block subtitle %}Your organization's policy, plan and procedure documents: drafted from the template library, reviewed, put in force, and acknowledged.{% endblock %}
 {% block content %}
+{% if error %}<div class="note note--err" style="margin-bottom:16px">{{ error }}</div>{% endif %}
+
+<div class="cols-4" style="margin-bottom:16px">
+  <div class="kpi"><div class="kpi__label">Documents</div><div class="kpi__value">{{ counts.total }}</div></div>
+  <div class="kpi"><div class="kpi__label">In force</div><div class="kpi__value">{{ counts.active }}</div></div>
+  <div class="kpi"><div class="kpi__label">Drafts</div><div class="kpi__value">{{ counts.draft }}</div></div>
+  <div class="kpi"><div class="kpi__label">Review due</div><div class="kpi__value"{% if counts.review_due %} style="color:var(--danger-ink)"{% endif %}>{{ counts.review_due }}</div></div>
+</div>
+
 {% if policies %}
-<div class="table-wrap">
+<div class="table-wrap" style="margin-bottom:16px">
   <table>
-    <thead><tr><th>Policy</th><th>Status</th><th>Owner</th><th>Current version</th><th>Next review</th><th>Acknowledged</th></tr></thead>
-    <tbody>{% for p in policies %}{% set vs = versions.get(p.id, []) %}{% set cur = vs[0] if vs else none %}
+    <thead><tr><th>Policy</th><th>Status</th><th>Owner</th><th>Version in force</th><th>Next review</th><th>Acknowledged</th></tr></thead>
+    <tbody>{% for p in policies %}{% set vs = versions.get(p.id, []) %}{% set cur = current.get(p.id) %}
     <tr id="policy-{{ p.id }}">
-      <td><strong>{{ p.name }}</strong>{% if p.category %}<div class="dim" style="font-size:12px">{{ p.category }}</div>{% endif %}</td>
-      <td><span class="chip {% if p.status == 'active' %}chip--ok{% elif p.status == 'retired' %}chip--ghost{% else %}chip--warn{% endif %}">{{ p.status }}</span></td>
+      <td><a href="/policies/{{ p.id }}"><strong>{{ p.name }}</strong></a>{% if p.category %}<div class="dim" style="font-size:12px">{{ p.category }}</div>{% endif %}</td>
+      <td><span class="chip {% if p.status == 'active' %}chip--ok{% elif p.status == 'retired' %}chip--ghost{% else %}chip--warn{% endif %}">{{ 'in force' if p.status == 'active' else p.status }}</span></td>
       <td>{{ owners.get(p.owner_user_id, '—') }}</td>
-      <td>{% if cur %}v{{ cur.version }}{% if cur.effective_on %} · effective {{ cur.effective_on }}{% endif %}{% if vs|length > 1 %} <span class="dim">({{ vs|length }} versions)</span>{% endif %}{% else %}<span class="dim">no version</span>{% endif %}</td>
+      <td>{% if cur %}v{{ cur.version }}{% if cur.effective_on %} · effective {{ cur.effective_on }}{% endif %}{% else %}<span class="dim">none in force</span>{% endif %}{% if vs|length > 1 %} <span class="dim">({{ vs|length }} versions)</span>{% endif %}</td>
       <td>{% if p.next_review_on %}<span class="{% if p.next_review_on < today %}kanban__due--late{% endif %}">{{ p.next_review_on }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
       <td>{% if cur %}{{ attest.get(cur.id, 0) }} of {{ members }}{% if cur.id in mine %} <span class="chip chip--ok">you</span>{% endif %}{% else %}—{% endif %}</td>
     </tr>{% endfor %}</tbody>
   </table>
 </div>
-<p class="dim" id="acknowledgments" style="font-size:13px">Acknowledged counts distinct active members of the organization who attested the most recently created version, over all active members. Versions carry no draft or published state, so the most recent one is treated as current. Attestation is recorded through <code>POST /api/policies/versions/{id}/attest</code>.</p>
+<p class="dim" id="acknowledgments" style="font-size:13px">Acknowledged counts distinct active members of the organization who attested the version in force, over all active members. A policy with no version in force has nothing to acknowledge yet. Members attest on the policy's page.</p>
 {% else %}
-<div class="card empty-state" id="acknowledgments"><i data-lucide="scroll-text"></i><h2>No policies yet</h2><p>No policy is recorded for this organization. Policies, versions and attestations are created through the API (<code>/api/policies</code>); they appear here once they exist.</p></div>
+<div class="card empty-state" id="acknowledgments" style="margin-bottom:16px"><i data-lucide="scroll-text"></i><h2>No policies yet</h2><p>No policy is recorded for this organization. Start one from the template library below.</p></div>
 {% endif %}
+
+<section class="card">
+  <div class="card__header"><div class="card__title">Template library</div>
+    <span class="dim" style="font-size:13px">{{ library|length }} templates · requirements only, no implementation claims · every organization-chosen value is a parameter</span></div>
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Template</th><th>Kind</th><th>Family</th><th>Supports</th><th>Parameters</th><th></th></tr></thead>
+    <tbody>{% for t in library %}<tr>
+      <td><strong>{{ t.title }}</strong><div class="dim" style="font-size:12px">{{ t.summary }}</div></td>
+      <td><span class="chip chip--ghost">{{ t.kind }}</span></td>
+      <td class="dim">{{ t.family }}</td>
+      <td class="dim mono" style="font-size:12px">{{ t.controls[:6]|join(', ') }}{% if t.controls|length > 6 %} +{{ t.controls|length - 6 }}{% endif %}</td>
+      <td class="dim">{{ t.parameters|length }}</td>
+      <td>{% if t.key in adopted %}<span class="chip chip--ok">adopted</span>{% else %}
+        <form method="post" action="/policies/from-template"><input type="hidden" name="template_key" value="{{ t.key }}"><button class="btn btn--sm btn--ghost" type="submit">Start draft</button></form>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
 {% endblock %}

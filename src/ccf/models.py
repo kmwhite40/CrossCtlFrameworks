@@ -1605,9 +1605,21 @@ class Policy(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+    #: The library template this policy was created from (``ccf.policies.library``).
+    template_key: Mapped[str | None] = mapped_column(String(64))
+    #: The organization-defined values its template's ``{{parameters}}`` render with.
+    parameters: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}"
+    )
+    #: The version that is in force -- set only by an approved activation.
+    active_version_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("ccf.policy_versions.id", ondelete="SET NULL", use_alter=True)
+    )
 
     versions: Mapped[list[PolicyVersion]] = relationship(
-        back_populates="policy", cascade="all, delete-orphan"
+        back_populates="policy",
+        cascade="all, delete-orphan",
+        foreign_keys="PolicyVersion.policy_id",
     )
 
     __table_args__ = (UniqueConstraint("organization_id", "name", name="uq_policy_org_name"),)
@@ -1625,8 +1637,18 @@ class PolicyVersion(Base):
     uri: Mapped[str | None] = mapped_column(String(1024))
     effective_on: Mapped[date | None] = mapped_column(Date)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    #: SHA-256 of ``body`` -- what an approval and an authorization package refer to.
+    body_sha256: Mapped[str | None] = mapped_column(String(64))
+    #: Template parameters still unset when this version was rendered. A version
+    #: with any cannot be activated: it would put "[ORGANIZATION-DEFINED: x]" in force.
+    unresolved_parameters: Mapped[list[Any]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
 
-    policy: Mapped[Policy] = relationship(back_populates="versions")
+    policy: Mapped[Policy] = relationship(
+        back_populates="versions", foreign_keys="PolicyVersion.policy_id"
+    )
     attestations: Mapped[list[PolicyAttestation]] = relationship(
         back_populates="policy_version", cascade="all, delete-orphan"
     )
@@ -2099,6 +2121,7 @@ class CatalogIntegrityReport(Base):
 # reintroduced this bug once already; a real reference cannot be stripped.
 from . import (  # noqa: E402
     models_ato,
+    models_boundary,
     models_capability,
     models_cci,
     models_cr26,
@@ -2113,6 +2136,7 @@ from . import (  # noqa: E402
 #: Sibling model modules whose tables must be in ``Base.metadata``.
 CROSS_MODULE_MODEL_MODULES = (
     models_ato,
+    models_boundary,
     models_capability,
     models_cci,
     models_cr26,

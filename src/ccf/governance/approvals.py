@@ -32,7 +32,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ato import roles as system_roles
 from ..config import get_settings
-from ..models import POAM, Approval, Assessment, Risk, SSPProject, System
+from ..models import (
+    POAM,
+    Approval,
+    Assessment,
+    Policy,
+    PolicyVersion,
+    Risk,
+    SSPProject,
+    System,
+)
 from . import bus
 
 #: Which system roles may decide an approval of each entity type (an ``admin``
@@ -45,13 +54,16 @@ APPROVAL_AUTHORITY: dict[str, tuple[str, ...]] = {
     "poam": ("isso", "issm", "authorizing_official"),
     "risk": ("authorizing_official",),
     "assessment": ("issm", "authorizing_official"),
+    # Organization-wide, so no system role applies: an admin decides, and
+    # separation of duties still keeps the author from approving their text.
+    "policy_version": (),
 }
 ENTITY_TYPES = set(APPROVAL_AUTHORITY)
 RISK_ACCEPTANCE_AUTHORITY: tuple[str, ...] = ("authorizing_official",)
 #: Entity types whose approval a gate spends (``consume``). An unspent one may
 #: be replaced by a new request; an SSP approval stamps the project's status,
 #: so it stays final.
-_RESUBMITTABLE = {"poam", "risk"}
+_RESUBMITTABLE = {"poam", "risk", "policy_version"}
 
 
 class WorkflowError(Exception):
@@ -70,6 +82,15 @@ async def _entity_scope(
         eid = int(entity_id)
     except (TypeError, ValueError):
         return None
+    if entity_type == "policy_version":
+        prow = (
+            await session.execute(
+                select(Policy.organization_id)
+                .join(PolicyVersion, PolicyVersion.policy_id == Policy.id)
+                .where(PolicyVersion.id == eid)
+            )
+        ).one_or_none()
+        return (None, prow[0]) if prow is not None else None
     if entity_type == "ssp_project":
         row = (
             await session.execute(
@@ -378,11 +399,30 @@ async def decide(
             )
         if capacity is None:
             raise WorkflowError(
-                "approver must hold an authorizing role: admin, or the system's "
-                + " / ".join(system_roles.ROLE_LABELS[r] for r in allowed)
+                "approver must hold an authorizing role: admin"
+                + (
+                    ", or the system's "
+                    + " / ".join(system_roles.ROLE_LABELS[r] for r in allowed)
+                    if allowed
+                    else ""
+                )
             )
         if actor and a.submitted_by and actor == a.submitted_by:
             raise WorkflowError("separation of duties: approver must differ from submitter")
+        if entity_type == "policy_version" and actor:
+            # The submitter is not the only party with a stake: anyone may
+            # submit a version, so a check on the submitter alone let the
+            # person who rendered the text approve it once a colleague
+            # pressed "submit".
+            author = (
+                await session.execute(
+                    select(PolicyVersion.created_by).where(PolicyVersion.id == int(entity_id))
+                )
+            ).scalar_one_or_none()
+            if author and actor == author:
+                raise WorkflowError(
+                    "separation of duties: approver must differ from the version's author"
+                )
 
     a.state = "approved" if approve else "rejected"
     a.reviewed_by = actor

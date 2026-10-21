@@ -51,6 +51,7 @@ from ...models_evidence import EvidenceObject
 from ...models_grc import AuditEngagement, AuditRequest
 from ...models_tprm import VendorQuestionnaire
 from ...models_waivers import Waiver
+from ...policies.library import TEMPLATES as POLICY_TEMPLATES
 from .. import navigation
 from ..deps import get_session
 from .ui import _principal_org, no_org_page, templates
@@ -712,17 +713,40 @@ async def policies_page(
     owners = await _user_names(
         session, {p.owner_user_id for p in policies if p.owner_user_id is not None}
     )
+    today = date.today()
+    # The version in force, not the newest: a draft written after the version
+    # people acknowledged would otherwise read "0 of N" and hide theirs.
+    by_id = {v.id: v for vs in versions.values() for v in vs}
+    current = {
+        p.id: by_id[p.active_version_id]
+        for p in policies
+        if p.active_version_id is not None and p.active_version_id in by_id
+    }
+    counts = {
+        "total": len(policies),
+        "active": sum(1 for p in policies if p.status == "active"),
+        "draft": sum(1 for p in policies if p.status == "draft"),
+        "review_due": sum(
+            1 for p in policies
+            if p.status == "active" and p.next_review_on is not None and p.next_review_on <= today
+        ),
+    }
     return _render(
         request,
         "policies.html",
         "policies",
         policies=policies,
         versions=versions,
+        current=current,
         attest=attest,
         mine=mine,
         members=members,
         owners=owners,
-        today=date.today(),
+        today=today,
+        counts=counts,
+        library=POLICY_TEMPLATES,
+        adopted={p.template_key for p in policies if p.template_key},
+        error=request.query_params.get("error"),
     )
 
 
