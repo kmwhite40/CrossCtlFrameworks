@@ -113,46 +113,49 @@ def _shape_refusal(url: str) -> tuple[str | None, str]:
     return reason, host
 
 
-def refusal(url: str, *, require_resolution: bool = False) -> str | None:
-    """Why ``url`` may not receive webhooks, or None if it may.
+def _checked(url: str, *, require_resolution: bool) -> tuple[str | None, str, list[str]]:
+    """(refusal, host, addresses) from **one** resolution of the host.
 
-    ``require_resolution`` is set at delivery: a name that does not resolve
-    then cannot be sent to, and every address it resolves to must be allowed."""
+    Everything downstream uses these addresses; nothing resolves the name
+    again, so the answer that was checked is the answer that is used."""
     reason, host = _shape_refusal(url)
     if reason is not None:
-        return reason
+        return reason, host, []
     try:
         ipaddress.ip_address(host)
         addresses = [host]
     except ValueError:
         addresses = _resolve(host)
     if not addresses:
-        return f"{host} does not resolve" if require_resolution else None
+        return (f"{host} does not resolve" if require_resolution else None), host, []
     bad = [a for a in addresses if blocked_address(a)]
-    return f"{host} resolves to an address Concord does not send to ({bad[0]})" if bad else None
+    if bad:
+        return f"{host} resolves to an address Concord does not send to ({bad[0]})", host, []
+    return None, host, addresses
+
+
+def refusal(url: str, *, require_resolution: bool = False) -> str | None:
+    """Why ``url`` may not receive webhooks, or None if it may.
+
+    ``require_resolution`` is set at delivery: a name that does not resolve
+    then cannot be sent to, and every address it resolves to must be allowed."""
+    return _checked(url, require_resolution=require_resolution)[0]
 
 
 def pinned_target(url: str) -> tuple[str | None, dict[str, object]]:
     """(refusal, request) for delivery: resolve once, check every address, and
-    return the request to send **to the address that was checked**.
+    return the request to send **to an address from that same, checked
+    answer**.
 
     Re-resolving at connect time would let a name answer differently the
     second time (DNS rebinding). The URL's host is replaced by the pinned IP;
     the original name travels in the ``Host`` header and as the TLS SNI name,
     so certificate verification still checks the name the user configured."""
-    reason = refusal(url, require_resolution=True)
-    if reason is not None:
-        return reason, {}
+    reason, host, addresses = _checked(url, require_resolution=True)
+    if reason is not None or not addresses:
+        return reason or f"{host} does not resolve", {}
+    address = addresses[0]
     parts = urlsplit(url.strip())
-    host = (parts.hostname or "").rstrip(".").lower()
-    try:
-        ipaddress.ip_address(host)
-        address = host
-    except ValueError:
-        resolved = _resolve(host)
-        if not resolved:
-            return f"{host} does not resolve", {}
-        address = resolved[0]
     netloc_ip = f"[{address}]" if ":" in address else address
     if parts.port:
         netloc_ip = f"{netloc_ip}:{parts.port}"

@@ -240,3 +240,20 @@ async def test_only_an_admin_may_add_a_webhook_and_only_to_a_public_target() -> 
             headers={"Authorization": f"Bearer {tokens['control_owner']}"},
         )
         assert gone.status_code == 403
+
+
+def test_the_pinned_address_comes_from_the_one_checked_answer(monkeypatch) -> None:
+    """A name that answers public the first time and internal the second must
+    be sent to the first (checked) answer: resolution happens exactly once."""
+    answers = iter([["93.184.216.34"], ["10.0.0.1"]])
+    calls: list[str] = []
+
+    def resolve(host: str) -> list[str]:
+        calls.append(host)
+        return next(answers)
+
+    monkeypatch.setattr(webhook_url, "_resolve", resolve)
+    reason, target = webhook_url.pinned_target("https://flip.example/x")
+    assert reason is None
+    assert target["url"] == "https://93.184.216.34/x"
+    assert calls == ["flip.example"]
