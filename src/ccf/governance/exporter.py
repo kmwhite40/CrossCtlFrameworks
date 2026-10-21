@@ -266,6 +266,16 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
             refused = _gated_status_change(model, getattr(obj, "status", None), new)
             if refused:
                 raise ValueError(refused)
+    if model is POAM and getattr(obj, "status", None) == "risk_accepted" and "due_on" in row:
+        # ``due_on`` is the acceptance's expiry (the scanner keeps an accepted
+        # POA&M accepted until it passes). The API spends an approval on any
+        # change but a shortening (``poams._require_expiry_extension_gate``).
+        new_due, held = _coerce_date(row["due_on"]), obj.due_on
+        if new_due != held and not (new_due is not None and held is not None and new_due <= held):
+            raise ValueError(
+                "extending a risk acceptance's expiry (due_on) needs an approved review; "
+                "change it on the POA&M itself"
+            )
     for f in spec["str_fields"]:
         if f in row:
             if f == "status" and model in _IMPORT_STATUSES and _clean(row[f]) is None:

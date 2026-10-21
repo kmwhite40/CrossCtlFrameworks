@@ -166,6 +166,26 @@ async def test_import_cannot_reopen_an_accepted_poam() -> None:
         assert (await s.get(POAM, a["poam"])).status == "risk_accepted"
 
 
+async def test_import_cannot_extend_an_accepted_poams_expiry() -> None:
+    """``due_on`` is the acceptance's expiry: later, or cleared, needs an
+    approval through the API; earlier needs nobody's, here as there."""
+    a = await _org("Imp")
+    held = date.today() + timedelta(days=30)
+    async with session_scope() as s:
+        p = await s.get(POAM, a["poam"])
+        p.status, p.due_on = "risk_accepted", held
+    for due in ((held + timedelta(days=90)).isoformat(), ""):
+        got = await _import(a["org"], "poams", f"id,title,due_on\n{a['poam']},x,{due}\n")
+        assert got["skipped"] == 1 and "expiry" in got["errors"][0], due
+    async with session_scope() as s:
+        assert (await s.get(POAM, a["poam"])).due_on == held
+    sooner = held - timedelta(days=10)
+    ok = await _import(a["org"], "poams", f"id,title,due_on\n{a['poam']},x,{sooner.isoformat()}\n")
+    assert ok["updated"] == 1
+    async with session_scope() as s:
+        assert (await s.get(POAM, a["poam"])).due_on == sooner
+
+
 async def test_import_refuses_a_status_the_register_does_not_have() -> None:
     a = await _org("Imp")
     got = await _import(a["org"], "poams", f"id,title,status\n{a['poam']},x,done\n")
