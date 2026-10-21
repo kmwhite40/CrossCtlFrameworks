@@ -48,12 +48,23 @@ LEVEL = r"^(low|moderate|high)$"
 TREATMENT = r"^(mitigate|transfer|accept|avoid)$"
 STATUS = r"^(open|mitigated|accepted|closed)$"
 REGISTER = r"^(enterprise|cyber)$"
-HIGH_RESIDUAL = 15  # >= this residual score raises a critical alert
 #: Risks are records people maintain; viewers are refused by middleware as
 #: well, and this names the gate on the route itself.
 RISK_WRITE_ROLES = ("admin", "control_owner", "assessor")
 #: A 1-5 score. Strict, so ``true`` or ``"4"`` is not read as a likelihood.
 Score = Annotated[int, Field(strict=True, ge=1, le=5)]
+#: Residual bands that raise an alert, and the alert's severity. Derived from
+#: ``governance.risk.band`` -- the one place a score becomes a band -- because a
+#: separate threshold (``HIGH_RESIDUAL = 15``) raised a "critical" alert for a
+#: residual of 15, which ``band`` calls "high", and stayed silent for the rest
+#: of the high band (10-12).
+ALERT_SEVERITY = {"high": "warning", "critical": "critical"}
+
+
+def residual_alert(score: int | None) -> tuple[str, str] | None:
+    """``(band, severity)`` when a residual score warrants an alert, else None."""
+    b = band(score)
+    return (b, ALERT_SEVERITY[b]) if b in ALERT_SEVERITY else None
 
 
 class RiskCreate(BaseModel):
@@ -291,18 +302,16 @@ async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *,
         org_id=org_id,
         actor=principal.email,
     )
-    if (
-        obj.residual_score is not None
-        and obj.residual_score >= HIGH_RESIDUAL
-        and obj.status not in ("closed", "accepted")
-    ):
+    alert = residual_alert(obj.residual_score)
+    if alert is not None and obj.status not in ("closed", "accepted"):
+        level, severity = alert
         await bus.notify(
             session,
             category="risk",
-            title=f"High residual risk: {obj.title}",
-            body=f"Residual exposure {obj.residual_score}/25 ({band(obj.residual_score)}).",
+            title=f"{level.capitalize()} residual risk: {obj.title}",
+            body=f"Residual exposure {obj.residual_score}/25 ({level}).",
             org_id=org_id,
-            severity="critical",
+            severity=severity,
             entity_type="risk",
             entity_id=obj.id,
             dedupe_key=f"risk-high:{obj.id}",
@@ -320,7 +329,7 @@ async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *,
                     title=f"Mitigate risk: {obj.title}",
                     description=obj.description,
                     kind="remediation",
-                    priority="high" if (obj.residual_score or 0) >= HIGH_RESIDUAL else "medium",
+                    priority="high" if residual_alert(obj.residual_score) else "medium",
                     status="open",
                     source="auto",
                     entity_type="risk",

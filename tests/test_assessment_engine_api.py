@@ -730,3 +730,123 @@ async def test_require_proposal_app_check_rejects_a_foreign_principal_indep_of_r
         with pytest.raises(HTTPException) as exc_info:
             await assessment_engine._require_proposal(s, proposal_b, outsider)
         assert exc_info.value.status_code == 404  # 404, not 403 -- no id disclosure
+
+
+# --- A decided proposal stays decided ---------------------------------------
+# `open_control_proposal` returns the existing first-pass proposal whatever its
+# state, and `evaluate_control_proposal` reset it to draft and re-ran it. So
+# requesting a control again silently reopened a *rejected* proposal -- whose
+# docstring calls rejection terminal -- to complete, where it could then be
+# accepted; and an accepted one went back to complete with stale
+# accepted_by/at. Re-evaluation has its own path (open_reevaluation_proposal).
+
+
+@pytest.mark.parametrize("decided", ["accepted", "rejected"])
+async def test_requesting_a_decided_control_again_is_refused(
+    decided: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, org_id = await _mk_user(f"decided-{decided}@ae-api.test", f"AE Decided {decided}")
+    assessment_id = await _assessment_for(org_id, f"decided-{decided}")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with session_scope() as s:
+        await s.execute(
+            update(AssessmentControlProposal)
+            .where(AssessmentControlProposal.id == proposal_id)
+            .values(state=decided)
+        )
+
+    async with _client() as client:
+        response = await client.post(
+            "/api/assessment-engine/proposals",
+            json={"assessment_id": assessment_id, "control_identifier": _SEQ},
+            headers=_auth(token),
+        )
+    assert response.status_code == 409, response.text
+    async with session_scope() as s:
+        proposal = await s.get(AssessmentControlProposal, proposal_id)
+        assert proposal is not None and proposal.state == decided
+        pending = (
+            await s.execute(
+                select(AssessmentJob).where(
+                    AssessmentJob.control_proposal_id == proposal_id,
+                    AssessmentJob.status == "pending",
+                )
+            )
+        ).scalars().all()
+    assert pending == []
+
+
+async def test_evaluation_refuses_a_decided_proposal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The guard is in the evaluator too: a job queued before the decision
+    must not undo it when a worker finally runs it."""
+    _token, org_id = await _mk_user("decided-eval@ae-api.test", "AE Decided Eval")
+    assessment_id = await _assessment_for(org_id, "decided-eval")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with session_scope() as s:
+        proposal = await s.get(AssessmentControlProposal, proposal_id)
+        assert proposal is not None
+        proposal.state = "rejected"
+        await s.flush()
+        with pytest.raises(service.ProposalDecidedError):
+            await evaluate_control_proposal(s, proposal)
+
+
+async def test_a_job_queued_before_the_decision_leaves_the_decision_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """run_once's failure handler stamps the proposal ``failed``; a job for a
+    proposal decided meanwhile must not reach it, or a rejection becomes a
+    re-runnable failure."""
+    _token, org_id = await _mk_user("decided-job@ae-api.test", "AE Decided Job")
+    assessment_id = await _assessment_for(org_id, "decided-job")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with session_scope() as s:
+        s.add(AssessmentJob(organization_id=org_id, control_proposal_id=proposal_id,
+                            status="pending"))
+        await s.execute(
+            update(AssessmentControlProposal)
+            .where(AssessmentControlProposal.id == proposal_id)
+            .values(state="rejected")
+        )
+    async with session_scope() as s:
+        await engine_jobs.run_once(s, worker="t", limit=50)
+    async with session_scope() as s:
+        proposal = await s.get(AssessmentControlProposal, proposal_id)
+        assert proposal is not None and proposal.state == "rejected"
+
+
+async def test_accept_does_not_silently_replace_a_reviewed_not_applicable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reviewed N/A is a scoping decision. Accepting an engine proposal used
+    to overwrite it, and the assessor's note with it, without a word."""
+    token, org_id = await _mk_user("na-keep@ae-api.test", "AE NA Keep")
+    assessment_id = await _assessment_for(org_id, "na-keep")
+    async with session_scope() as s:
+        s.add(AssessmentControlResult(
+            assessment_id=assessment_id, control_id=_SEQ, finding="not_applicable",
+            reviewed=True, reviewer="lead@ae-api.test",
+            assessor_note="Out of scope: no wireless in the boundary.",
+        ))
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+
+    async with _client() as client:
+        refused = await client.post(
+            f"/api/assessment-engine/proposals/{proposal_id}/accept", headers=_auth(token)
+        )
+        assert refused.status_code == 409 and "not applicable" in refused.json()["detail"]
+        async with session_scope() as s:
+            row = (await s.execute(select(AssessmentControlResult).where(
+                AssessmentControlResult.assessment_id == assessment_id))).scalar_one()
+            assert row.finding == "not_applicable"
+        accepted = await client.post(
+            f"/api/assessment-engine/proposals/{proposal_id}/accept",
+            params={"override_not_applicable": "true"}, headers=_auth(token),
+        )
+    assert accepted.status_code == 200, accepted.text
+    async with session_scope() as s:
+        row = (await s.execute(select(AssessmentControlResult).where(
+            AssessmentControlResult.assessment_id == assessment_id))).scalar_one()
+    assert row.finding == "satisfied"
+    assert row.assessor_note.startswith("Out of scope: no wireless in the boundary.")
+    assert "Engine rationale (accepted by" in row.assessor_note

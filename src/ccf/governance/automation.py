@@ -11,7 +11,7 @@ and the snapshot on the profile is the single source of truth SSP/coverage read.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -19,7 +19,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..capability.service import capability_statements_by_control
 from ..catalog.canonical import canonicalize
-from ..constants import POAM_ACTIVE_STATUSES
+from ..constants import POAM_ACTIVE_STATUSES, POAM_UNRESOLVED_STATUSES
+from ..ingest.scanners import SEVERITY_SLA_DAYS
 from ..logging import get_logger
 from ..models import (
     POAM,
@@ -378,31 +379,50 @@ async def _seed_gap_poams(
     gaps: list[ScoringControl],
     derivation: dict[str, Any],
 ) -> int:
-    """Create an open POA&M placeholder per gap (idempotent by title)."""
-    existing = {
-        t
-        for (t,) in (
-            await session.execute(select(POAM.title).where(POAM.system_id == system_id))
-        ).all()
-    }
+    """Create an open POA&M per gap, once per gap while one is unresolved.
+
+    Keyed on ``source_ref = profile_gap:{system}:{practice}`` among unresolved
+    POA&Ms. It used to key on the *title* across every POA&M ever filed, so
+    renaming the placeholder made the next derivation file a duplicate, and a
+    closed one stopped the same gap from ever being raised again. Rows filed
+    before the key existed are still matched by title, so this does not
+    duplicate them. A new POA&M gets the severity's SLA due date, as every
+    other automatic POA&M writer does -- one with no date can never be overdue.
+    """
+    unresolved = (
+        await session.execute(
+            select(POAM.source_ref, POAM.title).where(
+                POAM.system_id == system_id, POAM.status.in_(POAM_UNRESOLVED_STATUSES)
+            )
+        )
+    ).all()
+    refs = {ref for ref, _ in unresolved if ref}
+    legacy_titles = {title for ref, title in unresolved if not ref}
     today = date.today()
     created = 0
     for sc in gaps:
+        ref = f"profile_gap:{system_id}:{sc.control_id}"
         title = f"{sc.control_id} — {sc.title or 'gap'}"
-        if title in existing:
+        if ref in refs or title in legacy_titles:
             continue
+        severity = _SEV_FOR_PV.get(sc.point_value, "moderate")
+        due = today + timedelta(days=SEVERITY_SLA_DAYS.get(severity, 90))
         session.add(
             POAM(
                 system_id=system_id,
                 title=title,
                 weakness=f"Practice {sc.control_id} ({sc.nist_id}) not yet implemented "
                 f"(responsibility: {derivation[sc.control_id]['responsibility']}).",
-                severity=_SEV_FOR_PV.get(sc.point_value, "moderate"),
+                severity=severity,
                 status="open",
                 source="profile_gap",
+                source_ref=ref,
                 identified_on=today,
+                due_on=due,
+                original_due_on=due,
             )
         )
+        refs.add(ref)
         created += 1
     return created
 

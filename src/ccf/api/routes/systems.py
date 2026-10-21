@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...analytics.framework_posture import baseline_controls, fold_to_control
 from ...ato import lifecycle
 from ...auth import Principal
 from ...catalog.baseline_delta import (
@@ -41,6 +42,12 @@ from ...schemas import (
 )
 from ..auth_deps import get_principal, require_role, resolve_caller_org
 from ..deps import get_session
+
+#: Most-addressed first: how a control with several implementation rows is
+#: summarized. ``not_applicable`` is last, so it wins only when nothing else does.
+_SUMMARY_PRECEDENCE = (
+    "implemented", "inherited", "partial", "planned", "not_implemented", "not_applicable",
+)
 
 router = APIRouter(prefix="/api/systems", tags=["systems"])
 
@@ -235,38 +242,38 @@ async def compliance_summary(
 ) -> ComplianceSummary:
     sys = await require_system_in_scope(session, system_id, principal)
 
-    # Total controls for this baseline.
-    baseline_col = {
-        "low": Control.fisma_low,
-        "moderate": Control.fisma_mod,
-        "high": Control.fisma_high,
-    }.get(sys.baseline or "", Control.fisma_mod)
-    total = (
-        await session.execute(select(func.count(Control.id)).where(baseline_col.is_(True)))
-    ).scalar_one()
+    # The baseline's *controls*, folded the way framework_posture folds them.
+    # This used to count raw catalog rows (objectives and ODP rows inflate that
+    # about 4x), silently assume Moderate when the system declares no baseline,
+    # and count implementation rows outside the baseline. A system with no
+    # baseline has no denominator, and says so.
+    raw: object = sys.baseline
+    baseline = str(getattr(raw, "value", raw) or "") or None
+    controls = await baseline_controls(session, baseline or "")
+    total = len(controls)
 
-    stmt = (
-        select(ControlImplementation.status, func.count())
-        .where(ControlImplementation.system_id == system_id)
-        .group_by(ControlImplementation.status)
-    )
-    buckets = {
-        s: 0
-        for s in (
-            "implemented",
-            "partial",
-            "planned",
-            "not_implemented",
-            "inherited",
-            "not_applicable",
+    # One status per baseline control: a control with several implementation
+    # rows (base and enhancement rows fold together) takes the most-addressed
+    # one, and is N/A only when every row says so.
+    statuses: dict[str, set[str]] = {}
+    for identifier, status in (
+        await session.execute(
+            select(Control.identifier, ControlImplementation.status)
+            .join(Control, Control.id == ControlImplementation.control_id)
+            .where(ControlImplementation.system_id == system_id)
         )
-    }
-    for status, count in (await session.execute(stmt)).all():
-        buckets[status] = count
+    ).all():
+        folded = fold_to_control(identifier)
+        if folded in controls:
+            statuses.setdefault(folded, set()).add(str(status))
+    buckets = dict.fromkeys(_SUMMARY_PRECEDENCE, 0)
+    for found in statuses.values():
+        winner = next(st for st in _SUMMARY_PRECEDENCE if st in found or st == "not_applicable")
+        buckets[winner] += 1
 
     implemented = buckets["implemented"] + buckets["inherited"]
     applicable = total - buckets["not_applicable"]
-    coverage = (implemented / applicable * 100.0) if applicable else 0.0
+    coverage = round(implemented / applicable * 100.0, 2) if applicable > 0 else None
 
     open_poams = (
         await session.execute(
@@ -286,6 +293,7 @@ async def compliance_summary(
 
     return ComplianceSummary(
         system_id=system_id,
+        baseline=baseline,
         total_controls=total,
         implemented=buckets["implemented"],
         partial=buckets["partial"],
@@ -293,7 +301,7 @@ async def compliance_summary(
         not_implemented=buckets["not_implemented"],
         inherited=buckets["inherited"],
         not_applicable=buckets["not_applicable"],
-        coverage_pct=round(coverage, 2),
+        coverage_pct=coverage,
         open_poams=open_poams,
         overdue_poams=overdue_poams,
     )

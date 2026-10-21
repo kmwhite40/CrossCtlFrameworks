@@ -6,7 +6,7 @@ from datetime import date
 from types import SimpleNamespace as N
 
 from ccf.api.routes.poams import _out as poam_out
-from ccf.api.routes.risks import HIGH_RESIDUAL
+from ccf.api.routes.risks import residual_alert
 from ccf.governance.risk import band, compute_scores
 
 TODAY = date(2026, 7, 1)
@@ -72,7 +72,16 @@ def test_poam_deviation_flag() -> None:
     assert d["deviation"] is True
 
 
-def test_high_residual_threshold_matches_band() -> None:
+def test_the_residual_alert_agrees_with_the_band_at_every_score() -> None:
+    """Checked at every score, not one: the old test checked only 25, so a
+    separate threshold that called 15 "critical" (band: "high") passed it."""
     _, residual = compute_scores("high", "high", "accept")  # 25, unchanged
-    assert residual >= HIGH_RESIDUAL
-    assert band(residual) == "critical"
+    assert residual_alert(residual) == ("critical", "critical")
+    for score in range(1, 26):
+        alert = residual_alert(score)
+        if band(score) in ("high", "critical"):
+            assert alert is not None and alert[0] == band(score), score
+        else:
+            assert alert is None, score
+    assert residual_alert(15) == ("high", "warning")
+    assert residual_alert(None) is None

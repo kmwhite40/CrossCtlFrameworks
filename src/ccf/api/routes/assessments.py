@@ -26,6 +26,7 @@ from ...assessment import (
     seed_assessment_results,
     summarize_results,
 )
+from ...assessment.findings import objective_finding_options
 from ...auth import Principal
 from ...config import get_settings
 from ...governance.approvals import entity_state, entity_states
@@ -75,7 +76,9 @@ class AssessmentCreate(BaseModel):
 
 class ResultUpdate(BaseModel):
     finding: str | None = None
-    objective_findings: list[dict[str, str]] | None = None
+    #: Each item names an objective by ``label`` and sets its ``finding``;
+    #: everything else stored on that objective is kept (see ``update_result``).
+    objective_findings: list[dict[str, Any]] | None = None
     examine_note: str | None = None
     interview_note: str | None = None
     test_note: str | None = None
@@ -199,6 +202,38 @@ async def assessment_summary(
     return summarize_results(await _results(session, assessment_id))
 
 
+def _merge_objective_findings(
+    stored: list[dict[str, Any]], posted: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Apply ``posted`` findings by label onto ``stored`` objectives.
+
+    The PUT used to replace the list wholesale, which erased the acceptance
+    projection (rationale, gaps, citations, dissent) from the row the SAR is
+    built from, and took any string as a finding. The page's save was fixed
+    for exactly this (``ui.assessment_save_result``); this is the same rule,
+    on the same vocabulary (``objective_finding_options``), for the API.
+    Validated in full before anything is applied, so a refusal writes nothing.
+    """
+    by_label = {str(p.get("label", "")): p for p in stored}
+    changes: dict[str, str] = {}
+    for item in posted:
+        label = str(item.get("label", ""))
+        if label not in by_label:
+            raise HTTPException(422, f"objective {label!r} is not part of this control's record")
+        current = str(by_label[label].get("finding") or "not_assessed")
+        finding = str(item.get("finding") or current)
+        if finding not in {key for key, _l, _c in objective_finding_options(current)}:
+            raise HTTPException(
+                422, f"objective {label!r}: {finding!r} is not a recognized finding; nothing saved"
+            )
+        changes[label] = finding
+    return [
+        {**p, "finding": changes[str(p.get("label", ""))]}
+        if str(p.get("label", "")) in changes else p
+        for p in stored
+    ]
+
+
 @router.put("/{assessment_id}/controls/{control_id}")
 async def update_result(
     assessment_id: int,
@@ -220,7 +255,12 @@ async def update_result(
     ).scalar_one_or_none()
     if result is None:
         raise HTTPException(404, "control not found in assessment")
-    for k, v in body.model_dump(exclude_none=True).items():
+    data = body.model_dump(exclude_none=True)
+    if "objective_findings" in data:
+        data["objective_findings"] = _merge_objective_findings(
+            list(result.objective_findings or []), data["objective_findings"]
+        )
+    for k, v in data.items():
         setattr(result, k, v)
     result.observed_on = datetime.now(UTC).date()
     await session.commit()
