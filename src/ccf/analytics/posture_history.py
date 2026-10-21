@@ -296,7 +296,7 @@ CHARTS: tuple[dict[str, Any], ...] = (
         "title": "Active risks by residual band",
         "whole": ("risks", "open"),
         "unit": "active",
-        "basis": "Open and mitigated risks on live systems, by residual band.",
+        "basis": "Open and mitigated risks on live systems and enterprise risks, by residual band.",
         "parts": (
             _Part("Critical", "--sev-critical", ("risks", "by_band", "critical")),
             _Part("High", "--sev-high", ("risks", "by_band", "high")),
@@ -550,7 +550,7 @@ FORECAST_METRICS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
         "risks",
         "Active risks",
         ("risks", "open"),
-        "Open and mitigated risks on live systems.",
+        "Open and mitigated risks on live systems and enterprise risks.",
     ),
 )
 

@@ -24,6 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...analytics import posture
 from ...auth import Principal
 from ...governance import audit_program as program
+from ...governance.audit_program import (
+    CC_DECIDE_ROLES,
+    CC_PROPOSE_ROLES,
+    PACKAGE_ROLES,
+    WORKPAPER_ROLES,
+)
 from ...models import System
 from ...models_packages import PACKAGE_KINDS
 from ..audit import record_event
@@ -128,7 +134,7 @@ async def workpaper_create(  # noqa: PLR0917 -- FastAPI binds these by keyword
     conclusion: str = Form(""),
     evidence_refs: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.WORKPAPER_ROLES)),
+    principal: Principal = Depends(require_role(*WORKPAPER_ROLES)),
 ) -> RedirectResponse:
     try:
         engagement = await program.engagement_in_scope(
@@ -198,7 +204,7 @@ async def workpaper_edit(  # noqa: PLR0917 -- FastAPI binds these by keyword
     conclusion: str = Form(""),
     evidence_refs: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.WORKPAPER_ROLES)),
+    principal: Principal = Depends(require_role(*WORKPAPER_ROLES)),
 ) -> RedirectResponse:
     try:
         wp = await program.workpaper_in_scope(session, wp_id, _principal_org(request))
@@ -264,7 +270,7 @@ async def workpaper_submit(
     wp_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.WORKPAPER_ROLES)),
+    principal: Principal = Depends(require_role(*WORKPAPER_ROLES)),
 ) -> RedirectResponse:
     return await _transition(request, session, principal, wp_id, "submitted")
 
@@ -274,7 +280,7 @@ async def workpaper_return(
     wp_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.WORKPAPER_ROLES)),
+    principal: Principal = Depends(require_role(*WORKPAPER_ROLES)),
 ) -> RedirectResponse:
     return await _transition(request, session, principal, wp_id, "returned")
 
@@ -284,7 +290,7 @@ async def workpaper_finalise(
     wp_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.WORKPAPER_ROLES)),
+    principal: Principal = Depends(require_role(*WORKPAPER_ROLES)),
 ) -> RedirectResponse:
     return await _transition(request, session, principal, wp_id, "finalised")
 
@@ -372,7 +378,7 @@ async def evidence_package_export(  # noqa: PLR0917 -- FastAPI binds these by ke
     kind: str = Form("fedramp20x"),
     label: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.PACKAGE_ROLES)),
+    principal: Principal = Depends(require_role(*PACKAGE_ROLES)),
 ) -> RedirectResponse:
     try:
         pkg = await program.export_package(
@@ -403,7 +409,7 @@ async def evidence_package_replay(
     pid: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.PACKAGE_ROLES)),
+    principal: Principal = Depends(require_role(*PACKAGE_ROLES)),
 ) -> RedirectResponse:
     try:
         pkg = await program.package_in_scope(session, pid, _principal_org(request))
@@ -429,7 +435,7 @@ async def evidence_package_compare(
     request: Request,
     other_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.PACKAGE_ROLES)),
+    principal: Principal = Depends(require_role(*PACKAGE_ROLES)),
 ) -> RedirectResponse:
     org = _principal_org(request)
     try:
@@ -513,7 +519,7 @@ async def compensating_propose(  # noqa: PLR0917 -- FastAPI binds these by keywo
     rationale: str = Form(...),
     expires_on: str = Form(""),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.CC_PROPOSE_ROLES)),
+    principal: Principal = Depends(require_role(*CC_PROPOSE_ROLES)),
 ) -> RedirectResponse:
     try:
         cc = await program.propose_compensating(
@@ -582,7 +588,7 @@ async def compensating_approve(
     cc_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.CC_DECIDE_ROLES)),
+    principal: Principal = Depends(require_role(*CC_DECIDE_ROLES)),
 ) -> RedirectResponse:
     return await _decide(request, session, principal, cc_id, "approved")
 
@@ -592,7 +598,7 @@ async def compensating_reject(
     cc_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.CC_DECIDE_ROLES)),
+    principal: Principal = Depends(require_role(*CC_DECIDE_ROLES)),
 ) -> RedirectResponse:
     return await _decide(request, session, principal, cc_id, "rejected")
 
@@ -602,7 +608,7 @@ async def compensating_retire(
     cc_id: int,
     request: Request,
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*program.CC_DECIDE_ROLES)),
+    principal: Principal = Depends(require_role(*CC_DECIDE_ROLES)),
 ) -> RedirectResponse:
     return await _decide(request, session, principal, cc_id, "retired")
 

@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import POAM, Policy, Risk, System, Vendor
-from .risk import band, compute_scores
+from .risk import band, compute_scores, resolve_axis, risk_in_scope
 
 FORMATS = ("csv", "json", "md")
 
@@ -50,14 +50,18 @@ async def _poams(session: AsyncSession, org_id: int | None) -> list[dict[str, An
 async def _risks(session: AsyncSession, org_id: int | None) -> list[dict[str, Any]]:
     stmt = select(Risk).order_by(Risk.id)
     if org_id is not None:
-        stmt = stmt.where(Risk.system_id.in_(_org_systems(org_id)))
+        # Enterprise risks (no system) are the organization's too; the one
+        # scope definition is governance.risk.risk_in_scope.
+        stmt = stmt.where(risk_in_scope(org_id))
     return [
         {
             "id": r.id,
             "title": r.title,
             "category": r.category,
             "likelihood": r.likelihood,
+            "likelihood_score": r.likelihood_score,
             "impact": r.impact,
+            "impact_score": r.impact_score,
             "treatment": r.treatment,
             "status": r.status,
             "inherent_score": r.inherent_score,
@@ -230,10 +234,26 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
         if f in row:
             setattr(obj, f, _coerce_date(row[f]))
     if spec["model"] is Risk:
+        # The 1-5 score is the source of truth and the level follows it
+        # (governance.risk.resolve_axis). An import that sets only the level
+        # used to leave the score where it was, so the two could disagree and
+        # the risk was placed by a score nobody had entered.
+        for axis in ("likelihood", "impact"):
+            raw = row.get(f"{axis}_score")
+            try:
+                score = int(raw) if raw not in (None, "") else None
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{axis}_score must be a whole number 1-5, not {raw!r}") from exc
+            new_score, new_level = resolve_axis(
+                axis=axis,
+                score=score,
+                level=getattr(obj, axis, None),
+                current_score=getattr(obj, f"{axis}_score", None),
+            )
+            setattr(obj, f"{axis}_score", new_score)
+            setattr(obj, axis, new_level)
         inherent, residual = compute_scores(
-            getattr(obj, "likelihood", None),
-            getattr(obj, "impact", None),
-            getattr(obj, "treatment", None),
+            obj.likelihood_score, obj.impact_score, getattr(obj, "treatment", None)
         )
         obj.inherent_score, obj.residual_score = inherent, residual
 

@@ -150,32 +150,11 @@ NAV: tuple[Group, ...] = (
         "triangle-alert",
         (
             Item("risks", "Enterprise Risk Register", "/risks"),
-            _partial(
-                "risks_cyber",
-                "Cybersecurity Risk Register",
-                "/risks",
-                "One register; risks carry a free-text category, not a separate cyber register.",
-            ),
-            _partial(
-                "risk_assess",
-                "Risk Assessments",
-                "/risks",
-                "Likelihood, impact, inherent and residual scores live on the risk itself; "
-                "there is no separate assessment record.",
-            ),
+            Item("risks_cyber", "Cybersecurity Risk Register", "/risks?register=cyber"),
+            Item("risk_assess", "Risk Assessments", "/risks/assessments"),
             Item("riskheat", "Risk Heat Maps", "/risks/heatmap"),
-            _partial(
-                "risk_treat",
-                "Risk Treatment Plans",
-                "/poams",
-                "Treatment is one field on the risk; action plans are tracked as POA&Ms.",
-            ),
-            _planned(
-                "kri",
-                "Risk Appetite & KRIs",
-                "No appetite statement, tolerance threshold or key-risk-indicator model exists.",
-                "/risks/heatmap",
-            ),
+            Item("risk_treat", "Risk Treatment Plans", "/risks/treatment"),
+            Item("kri", "Risk Appetite & KRIs", "/kri"),
             Item("risk_accept", "Risk Acceptance", "/exceptions#risk"),
         ),
     ),

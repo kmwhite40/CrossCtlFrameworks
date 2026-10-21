@@ -458,13 +458,20 @@ def test_every_gap_says_what_is_missing() -> None:
 
 
 async def test_a_planned_page_says_so_and_an_unknown_one_is_404(two_orgs) -> None:
+    """Every planned entry renders its honest placeholder; an unknown slug is 404.
+
+    Reads the planned set from the navigation rather than naming one, so the
+    test keeps working as entries are built and leave the planned state -- and
+    still checks the 404 when none are left."""
     a, _ = two_orgs
+    planned = [i for _, i in navigation.all_items() if i.status is navigation.Status.PLANNED]
     async with _client() as c:
-        page = await c.get("/planned/kri", headers=_auth(str(a["token"])))
+        for item in planned:
+            page = await c.get(item.href, headers=_auth(str(a["token"])))
+            assert page.status_code == 200, item.href
+            assert "Concord does not do this yet" in page.text
+            assert item.note.split(".")[0][:40] in page.text
         missing = await c.get("/planned/not-a-thing", headers=_auth(str(a["token"])))
-    assert page.status_code == 200
-    assert "Concord does not do this yet" in page.text
-    assert "No appetite statement" in page.text
     assert missing.status_code == 404
 
 

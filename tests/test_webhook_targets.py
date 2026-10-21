@@ -240,6 +240,13 @@ async def test_only_an_admin_may_add_a_webhook_and_only_to_a_public_target() -> 
             headers={"Authorization": f"Bearer {tokens['control_owner']}"},
         )
         assert gone.status_code == 403
+        # Remove it: an org-less event is dispatched to every active webhook,
+        # so one left behind would make later tests reach the network.
+        removed = await c.delete(
+            f"/api/webhooks/{created.json()['id']}",
+            headers={"Authorization": f"Bearer {tokens['admin']}"},
+        )
+        assert removed.status_code == 204
 
 
 def test_the_pinned_address_comes_from_the_one_checked_answer(monkeypatch) -> None:

@@ -147,7 +147,7 @@ This page summarises one organization. Sign in as a member of an organization to
     <footer class="panel__foot">
       {% if cc.risk.total %}{{ cc.risk.total }} open risk{{ 's' if cc.risk.total != 1 }}{% if cc.risk.unplaced %} · {{ cc.risk.unplaced }} without likelihood or impact{% endif %}.
       {% else %}No open risks are recorded on this organization's live systems. <a href="/risks">Open the register</a>.{% endif %}
-      Likelihood and impact are recorded on three levels.
+      Likelihood and impact on a five-point scale; enterprise risks without a system are included.
     </footer>
   </article>
 

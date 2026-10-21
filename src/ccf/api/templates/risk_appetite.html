@@ -15,7 +15,7 @@
 {% else %}
 
 <section class="kpi-grid kpi-grid--4">
-  <div class="kpi" title="Open and mitigated risks on live systems whose residual score is above the appetite for their category, or the default">
+  <div class="kpi" title="Open and mitigated risks (on live systems, or enterprise risks owned by the organization) whose residual score is above the appetite for their category, or the default">
     <span class="kpi__label"><i data-lucide="triangle-alert"></i><span>Above appetite</span></span>
     <span class="kpi__value">{{ counts.breach }}</span>
     <span class="kpi__meta">of {{ active_total }} open and mitigated risk{{ 's' if active_total != 1 }}</span>

@@ -43,7 +43,7 @@ from ..evidence import service as evidence_service
 from ..logging import get_logger
 from ..models import Organization, System
 from ..packs import sync as pack_sync
-from . import collection, conmon, control_tests, digest
+from . import collection, conmon, control_tests, digest, kri
 
 log = get_logger(__name__)
 
@@ -322,6 +322,20 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "assurance_graph"})
+        try:
+            # Key risk indicators with a computed metric get today's reading
+            # (manual KRIs are left to people). Before the snapshot, after the
+            # steps that change what the metrics read.
+            async with session.begin_nested():
+                await kri.record_computed_readings(session, org_id, today)
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="kri_readings",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "kri_readings"})
         try:
             # The day's posture, copied from what the steps above just
             # computed, so trends and forecasts read recorded history rather

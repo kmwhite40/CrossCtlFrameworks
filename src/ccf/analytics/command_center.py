@@ -703,7 +703,8 @@ async def command_center(
         "risks": {
             "open": risks["total"],
             "by_band": risks["by_band"],
-            "basis": "Open and mitigated risks on live systems, by residual band "
+            "basis": "Open and mitigated risks on live systems and enterprise risks owned by the "
+            "organization, by residual band "
             "(inherent likelihood x impact, adjusted by treatment).",
         },
         "remediation": {
