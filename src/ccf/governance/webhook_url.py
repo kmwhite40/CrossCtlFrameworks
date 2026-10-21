@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from typing import Any
 from urllib.parse import urlsplit
 
 from ..config import get_settings
@@ -88,7 +89,7 @@ def blocked_address(ip_text: str) -> bool:
 
 def _resolve(host: str) -> list[str]:
     try:
-        return sorted({info[4][0] for info in socket.getaddrinfo(host, None)})
+        return sorted({str(info[4][0]) for info in socket.getaddrinfo(host, None)})
     except (socket.gaierror, UnicodeError):
         return []
 
@@ -148,7 +149,7 @@ def refusal(url: str, *, require_resolution: bool = False) -> str | None:
     return _checked(url, require_resolution=require_resolution)[0]
 
 
-def pinned_target(url: str) -> tuple[str | None, dict[str, object]]:
+def pinned_target(url: str) -> tuple[str | None, dict[str, Any]]:
     """(refusal, request) for delivery: resolve once, check every address, and
     return the request to send **to an address from that same, checked
     answer**.

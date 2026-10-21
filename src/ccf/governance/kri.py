@@ -106,7 +106,7 @@ async def _controls_passing_pct(session: AsyncSession, org_id: int, today: date)
     judged = gaps["passing"] + gaps["failing"] + gaps["manual_review"]
     if judged <= 0:
         return None
-    return round(100.0 * gaps["passing"] / judged, 1)
+    return round(100.0 * float(gaps["passing"]) / float(judged), 1)
 
 
 async def _evidence_expired(session: AsyncSession, org_id: int, today: date) -> float:

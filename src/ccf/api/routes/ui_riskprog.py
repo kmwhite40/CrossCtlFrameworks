@@ -38,6 +38,7 @@ is a 404 otherwise. Every write is role-gated on the route and audited with
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from datetime import date
 from typing import Any
 from urllib.parse import quote
@@ -913,7 +914,7 @@ async def risk_detail_page(
     plans = await _plans_with_actions(session, org, [risk.id])
     owner_org = org if org is not None else risk.organization_id
     users = await _org_users(session, owner_org)
-    poams = []
+    poams: Sequence[Any] = []
     if owner_org is not None:
         poams = (
             await session.execute(

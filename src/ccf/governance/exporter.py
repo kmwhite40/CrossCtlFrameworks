@@ -292,7 +292,7 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
         for axis in ("likelihood", "impact"):
             raw = row.get(f"{axis}_score")
             try:
-                score = int(raw) if raw not in (None, "") else None
+                score = int(raw) if raw is not None and raw != "" else None
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"{axis}_score must be a whole number 1-5, not {raw!r}") from exc
             new_score, new_level = resolve_axis(

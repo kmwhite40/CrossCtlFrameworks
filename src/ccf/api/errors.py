@@ -41,7 +41,9 @@ def wants_html(request: Request) -> bool:
     return "text/html" in accept and request.headers.get("hx-request") != "true"
 
 
-def _render(request: Request, status: int, detail: str | None, headers: dict | None) -> Response:
+def _render(
+    request: Request, status: int, detail: str | None, headers: dict[str, str] | None
+) -> Response:
     from .routes.ui import templates  # noqa: PLC0415 - avoid an import cycle at app build
 
     principal = getattr(request.state, "principal", None)

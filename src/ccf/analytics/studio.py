@@ -241,7 +241,9 @@ async def run(
         .group_by(*[d.column for d in dims])
     )
     raw = (await session.execute(stmt)).all()
-    rows = [{"values": tuple(_label(r[i]) for i in range(len(dims))), "n": int(r[-1])} for r in raw]
+    rows: list[dict[str, Any]] = [
+        {"values": tuple(_label(r[i]) for i in range(len(dims))), "n": int(r[-1])} for r in raw
+    ]
     rows.sort(key=lambda r: (-r["n"], r["values"]))
     by_first: dict[str, int] = {}
     for r in rows:

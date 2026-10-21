@@ -44,7 +44,7 @@ def _render(request: Request, template: str, active: str, **ctx: Any) -> HTMLRes
 def _int_or_none(raw: str | None) -> int | None:
     """Query filters arrive as strings (an empty select option is ``""``)."""
     try:
-        return int(raw) if raw not in (None, "") else None
+        return int(raw) if raw else None
     except ValueError:
         return None
 

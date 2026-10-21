@@ -443,3 +443,26 @@ async def test_packages_of_two_organizations_are_not_compared() -> None:
     second = SimpleNamespace(id=2, organization_id=2)
     with pytest.raises(audit_program.RefusalError, match="different organizations"):
         await audit_program.compare_packages(None, first, second)  # type: ignore[arg-type]
+
+
+async def test_an_audit_program_event_without_an_organization_is_refused() -> None:
+    """A NULL-organization audit row is published to every tenant (0044), so
+    a package that belongs to no organization is refused, not recorded."""
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    from ccf.api.routes import ui_auditprog  # noqa: PLC0415
+
+    principal = Principal(user_id=None, email="p@rs.test", org_id=None, role="admin")
+    async with session_scope() as s:
+        with pytest.raises(HTTPException) as refused:
+            await ui_auditprog._event(
+                s,
+                principal,
+                org=None,
+                entity_type="authorization_package",
+                entity_id=1,
+                action="update",
+                diff={},
+            )
+    assert refused.value.status_code == 409
+    assert "belongs to no organization" in str(refused.value.detail)

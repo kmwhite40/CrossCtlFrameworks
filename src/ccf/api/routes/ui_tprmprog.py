@@ -262,7 +262,7 @@ async def contracts_page(
             .all()
         )
     by_contract: dict[int, Counter[str]] = defaultdict(Counter)
-    attention = []
+    attention: list[dict[str, Any]] = []
     titles = {c.id: c for c in contracts}
     for ob in obligations:
         state = tp.obligation_state(ob, today)

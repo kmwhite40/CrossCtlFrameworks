@@ -169,15 +169,16 @@ def _reason(rating: str, outcomes: list[dict[str, Any]], conclusion: str | None)
 
 
 async def _live_systems(session: AsyncSession, org_id: int) -> dict[int, str]:
-    return dict(
-        (
+    return {
+        sid: name
+        for sid, name in (
             await session.execute(
                 select(System.id, System.name)
                 .where(System.id.in_(org_system_subq(org_id)))
                 .order_by(System.name)
             )
         ).all()
-    )
+    }
 
 
 async def control_effectiveness(
@@ -342,11 +343,11 @@ async def control_effectiveness(
     families = sorted({family_of(k) for k in keys})
     if family:
         keys = {k for k in keys if family_of(k) == family.upper()}
-    rows = []
+    rows: list[dict[str, Any]] = []
     for key in sorted(keys):
         outs = outcomes.get(key, [])
-        wp = conclusions.get(key)
-        conclusion = wp["conclusion"] if wp else None
+        concluded = conclusions.get(key)
+        conclusion = concluded["conclusion"] if concluded else None
         rating = rate([Outcome(o["status"], o["accepted"]) for o in outs], conclusion)
         rows.append(
             {
@@ -357,7 +358,7 @@ async def control_effectiveness(
                 "outcomes": outs,
                 "passing": sum(1 for o in outs if o["status"] == "pass"),
                 "failing": sum(1 for o in outs if o["status"] == "fail"),
-                "workpaper": wp,
+                "workpaper": concluded,
                 "compensating": compensating.get(key, []),
             }
         )
@@ -605,7 +606,7 @@ async def evidence_expiration(
             ).all()
         }
     rows = []
-    counts = Counter()
+    counts: Counter[str] = Counter()
     for o in objs:
         b = bucket(o.expires_on, today)  # type: ignore[arg-type]
         if b is None:

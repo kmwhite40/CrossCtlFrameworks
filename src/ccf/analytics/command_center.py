@@ -524,7 +524,8 @@ async def _milestones(
     # one due date, and listed one by one they push every other kind of
     # milestone off the panel.
     due: Counter[date] = Counter(
-        (
+        d
+        for d in (
             await session.execute(
                 select(POAM.due_on).where(
                     POAM.system_id.in_(posture.org_system_subq(org_id)),
@@ -536,6 +537,7 @@ async def _milestones(
         )
         .scalars()
         .all()
+        if d is not None
     )
     for on, n in due.items():
         items.append(

@@ -33,7 +33,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -165,14 +165,14 @@ async def capture_snapshot(
             )
         )
     ).scalar_one_or_none()
-    stmt = pg_insert(PostureSnapshot).values(
+    insert = pg_insert(PostureSnapshot).values(
         organization_id=org_id, taken_on=today, source=source, metrics=metrics
     )
-    stmt = stmt.on_conflict_do_update(
+    stmt = insert.on_conflict_do_update(
         constraint="uq_posture_snapshot_day",
         set_={
-            "source": stmt.excluded.source,
-            "metrics": stmt.excluded.metrics,
+            "source": insert.excluded.source,
+            "metrics": insert.excluded.metrics,
             "taken_at": func.now(),
         },
     ).returning(PostureSnapshot.id)
@@ -611,7 +611,8 @@ def project(
             f"a projection needs at least {min_span_days}.",
         }
     fit = linear_fit([((d - first).days, float(v)) for d, v in obs])
-    slope, intercept = float(fit["slope"]), float(fit["intercept"])
+    # linear_fit raises rather than return a None slope or intercept; only r2 is optional.
+    slope, intercept = cast(float, fit["slope"]), cast(float, fit["intercept"])
     end = last + timedelta(days=horizon_days)
 
     def at(d: date) -> float:

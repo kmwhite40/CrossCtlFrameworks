@@ -72,12 +72,17 @@ async def _event(
     session: AsyncSession,
     principal: Principal,
     *,
-    org: int,
+    org: int | None,
     entity_type: str,
     entity_id: int,
     action: str,
     diff: dict[str, Any],
 ) -> None:
+    if org is None:
+        # An audit row with no organization is published to every tenant
+        # (migration 0044); a record that belongs to none is refused instead,
+        # and the request's uncommitted write goes with it.
+        raise HTTPException(409, f"this {entity_type.replace('_', ' ')} belongs to no organization")
     await record_event(
         session,
         organization_id=org,

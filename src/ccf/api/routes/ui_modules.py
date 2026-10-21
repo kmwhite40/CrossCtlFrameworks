@@ -118,6 +118,7 @@ async def record_search(
     org = _principal_org(request)
     live = posture.org_system_subq(org)
     out: list[dict[str, Any]] = []
+    r: Any  # each record type below yields its own row shape
 
     def add(kind: str, label: str, href: str) -> None:
         out.append({"kind": kind, "label": label, "href": href})
@@ -498,9 +499,12 @@ async def exceptions_page(
     org = _principal_org(request)
     live = posture.org_system_subq(org)
     today = date.today()
-    sys_names = dict(
-        (await session.execute(select(System.id, System.name).where(System.id.in_(live)))).all()
-    )
+    sys_names: dict[int, str] = {
+        sid: name
+        for sid, name in (
+            await session.execute(select(System.id, System.name).where(System.id.in_(live)))
+        ).all()
+    }
     items: list[dict[str, Any]] = []
     for w in (
         (await session.execute(select(Waiver).where(Waiver.system_id.in_(live)))).scalars().all()
@@ -584,7 +588,7 @@ async def exceptions_page(
                 "status": "accepted",
                 "standing": True,
                 "pending": False,
-                "system": sys_names.get(r.system_id),
+                "system": sys_names.get(r.system_id) if r.system_id is not None else None,
                 "decided_by": None,
                 "expires": r.next_review_on,
                 "href": f"/risks/{r.id}",
@@ -705,7 +709,9 @@ async def policies_page(
             )
         ).scalar_one()
     )
-    owners = await _user_names(session, {p.owner_user_id for p in policies})
+    owners = await _user_names(
+        session, {p.owner_user_id for p in policies if p.owner_user_id is not None}
+    )
     return _render(
         request,
         "policies.html",
@@ -739,18 +745,16 @@ async def control_owners(
     for owner, status, n in rows:
         by_owner[owner][status] += int(n)
     names = await _user_names(session, {o for o in by_owner if o is not None})
-    owners = sorted(
-        (
-            {
-                "id": o,
-                "name": names.get(o, f"User {o}") if o is not None else None,
-                "counts": c,
-                "total": sum(c.values()),
-            }
-            for o, c in by_owner.items()
-        ),
-        key=lambda r: (r["id"] is None, -r["total"]),
-    )
+    owner_rows: list[dict[str, Any]] = [
+        {
+            "id": o,
+            "name": names.get(o, f"User {o}") if o is not None else None,
+            "counts": c,
+            "total": sum(c.values()),
+        }
+        for o, c in by_owner.items()
+    ]
+    owners = sorted(owner_rows, key=lambda r: (r["id"] is None, -r["total"]))
     statuses = sorted({s for c in by_owner.values() for s in c})
     total = sum(r["total"] for r in owners)
     unowned = next((r["total"] for r in owners if r["id"] is None), 0)
