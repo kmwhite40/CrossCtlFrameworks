@@ -2316,5 +2316,63 @@ def kev_sync(
         console.print(f"  [yellow]skipped[/yellow] {line}")
 
 
+@app.command("posture-snapshot")
+def posture_snapshot(
+    org: int | None = typer.Option(
+        None, "--org", help="Organization id; omit to capture every live organization."
+    ),
+) -> None:
+    """Record today's posture snapshot (one row per organization per day).
+
+    A second capture on the same day replaces that day's row. Each capture is
+    written to the audit log with actor ``cli``.
+    """
+    from .analytics import posture_history  # noqa: PLC0415
+    from .api.audit import record_event  # noqa: PLC0415
+
+    today = datetime.now(UTC).date()
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            if org is not None:
+                found = await session.get(Organization, org)
+                if found is None or found.deleted_at is not None:
+                    return {"captured": [], "failed": [], "missing": org}
+                one = await posture_history.capture_snapshot(
+                    session, org, today=today, source="manual"
+                )
+                out: dict[str, Any] = {"captured": [{"organization_id": org, **one}], "failed": []}
+            else:
+                out = await posture_history.capture_all(session, today, source="manual")
+            for c in out["captured"]:
+                await record_event(
+                    session,
+                    actor="cli",
+                    action="posture_snapshot_captured",
+                    entity_type="posture_snapshot",
+                    entity_id=str(c["id"]),
+                    diff={
+                        "taken_on": today.isoformat(),
+                        "source": "manual",
+                        "replaced": c["replaced"],
+                    },
+                    organization_id=c["organization_id"],
+                )
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    if out.get("missing") is not None:
+        console.print(f"[red]No organization with id {out['missing']}.[/red]")
+        raise typer.Exit(1)
+    for c in out["captured"]:
+        verb = "replaced" if c["replaced"] else "recorded"
+        console.print(f"  org {c['organization_id']}: {verb} snapshot for {today.isoformat()}")
+    console.print(f"[green]{len(out['captured'])}[/green] snapshot(s) captured.")
+    if out["failed"]:
+        console.print(f"[red]Failed for organization(s): {out['failed']}[/red]")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()
