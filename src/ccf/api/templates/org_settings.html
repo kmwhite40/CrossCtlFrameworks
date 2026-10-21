@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Organization · Settings · Concord{% endblock %}
 {% block heading %}Organization{% endblock %}
-{% block subtitle %}The organization you are signed in to. Only its administrators can rename it, and only this one.{% endblock %}
+{% block subtitle %}The organization you are signed in to. Organizations are renamed by a platform administrator: Concord finds some organizations by name, so a name is not a tenant's to choose alone.{% endblock %}
 {% block actions %}<a class="btn btn--ghost" href="/settings">All settings</a>{% endblock %}
 {% block content %}
 {% if org %}
@@ -16,21 +16,33 @@
       </dl>
     </div>
   </article>
-  {% if can_admin %}
   <article class="card panel">
-    <header class="panel__head"><h2 class="panel__title">Rename</h2><span class="panel__hint">names are unique across the deployment</span></header>
-    <form method="post" action="/settings/organization" class="card__body filters">
-      <div class="field-group"><label class="label" for="org-name">Name</label><input id="org-name" class="input" name="name" value="{{ org.name }}" required maxlength="255"></div>
-      <button class="btn btn--primary" type="submit">Rename organization</button>
-    </form>
+    <header class="panel__head"><h2 class="panel__title">Renaming</h2></header>
+    <div class="panel__body"><p class="dim" style="margin:0">Renames are done by a platform administrator, not by an organization's own administrators. Ask your Concord operator to change this name.</p></div>
   </article>
-  {% endif %}
 </section>
 <p class="dim" style="margin-top:16px">Structure is kept on <a href="/org-units">business units</a>, <a href="/teams">teams</a>, <a href="/committees">committees</a> and <a href="/objectives">strategic objectives</a>.</p>
+{% elif can_rename %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Organizations</h2><span class="panel__hint">platform administrator · {{ organizations | length }} live</span></header>
+  {% if organizations %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Organization</th><th>Rename</th></tr></thead>
+    <tbody>{% for o in organizations %}<tr>
+      <td><strong>{{ o.name }}</strong></td>
+      <td><form method="post" action="/settings/organization" class="row" style="gap:6px">
+        <input type="hidden" name="organization_id" value="{{ o.id }}">
+        <input class="input" name="name" value="{{ o.name }}" required maxlength="255" aria-label="New name for {{ o.name }}">
+        <button class="btn btn--ghost btn--sm" type="submit">Rename</button>
+      </form></td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="empty-state"><h2>No organizations</h2><p>Organizations are created on Assets &amp; Systems or with <span class="mono">ccf</span> on the command line.</p></div>{% endif %}
+</article>
 {% else %}
 <article class="card panel"><div class="empty-state">
   <h2>No organization</h2>
-  <p>You are not signed in as a member of an organization (a platform-wide principal, or authentication is off), so there is no organization to show or rename here.</p>
+  <p>You are not signed in as a member of an organization, so there is no organization to show here.</p>
 </div></article>
 {% endif %}
 {% endblock %}

@@ -5,10 +5,10 @@ What is pinned, each the shape of a defect this platform has shipped before:
 
 * **Tenant isolation is in the query.** The app runs on an RLS-bypass session
   (``_unscoped_session``), so only the page's or the route's own org predicate
-  can keep Bravo's records off Alpha's screens. Bravo also holds *poisoned*
-  rows -- its own rows pointing at Alpha's team, committee, objective and unit,
-  and an Alpha unit owned by a Bravo user -- so a child-table predicate is
-  tested too, not only the parent's.
+  can keep Bravo's records off Alpha's screens. Foreign keys cannot cross
+  tenants (migration 0101 refuses it), but ids held in JSON can: an Alpha
+  meeting names a Bravo attendee and decision owner, and a Bravo event names
+  an Alpha objective, so the predicates guarding those can fail.
 * **Every write refuses another organization's ids** -- the record changed and
   every record attached (user, system, risk, policy, KRI, unit) -- with 404.
 * **Role gates**: viewers, and roles outside each gate, get 403; the permitted
@@ -50,6 +50,7 @@ from ccf.models_program import (
     Team,
     TeamMember,
 )
+from ccf.self_assurance.service import SELF_ORG
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -214,60 +215,36 @@ async def _org(label: str, tag: str) -> SimpleNamespace:
 
 
 async def _poison(a: SimpleNamespace, b: SimpleNamespace) -> None:
-    """Bravo rows that point at Alpha's records, and an Alpha unit owned by a
-    Bravo user. Writes refuse to create these; they exist so that a missing
-    predicate on a *child* table shows on Alpha's pages."""
-    t = b.tag
+    """The cross-tenant references the database cannot refuse.
+
+    Migration 0101 refuses any foreign key whose parent is another org's (a
+    Bravo member on Alpha's team, an Alpha unit owned by a Bravo user), so the
+    fixtures keep every foreign key inside its own organization. What 0101
+    cannot see is an id held in JSON or in a free-text column: a meeting's
+    attendees and decision owners, and an event's ``entity_id``. Those are
+    planted here, so the page predicates that guard them can fail."""
     async with session_scope() as s:
-        s.add_all(
-            [
-                TeamMember(
-                    organization_id=b.org, team_id=a.team, user_id=b.users["admin"], role="lead"
-                ),
-                CommitteeMember(
-                    organization_id=b.org, committee_id=a.committee, user_id=b.users["admin"]
-                ),
-                CommitteeMeeting(
-                    organization_id=b.org,
-                    committee_id=a.committee,
-                    held_on=TODAY,
-                    attendee_user_ids=[],
-                    minutes=f"Bravo-stray-minutes-{t}",
-                    decisions=[
-                        {
-                            "text": f"Bravo-stray-action-{t}",
-                            "due_on": TODAY.isoformat(),
-                            "closed_on": None,
-                        }
-                    ],
-                ),
-                ObjectiveLink(
-                    organization_id=b.org,
-                    objective_id=a.objective,
-                    entity_type="policy",
-                    entity_id=str(b.policy),
-                ),
-                BusinessUnit(organization_id=b.org, name=f"Bravo-stray-bu-{t}", parent_id=a.root),
-                Team(organization_id=b.org, name=f"Bravo-stray-team-{t}", business_unit_id=a.root),
-                System(
-                    organization_id=b.org,
-                    name=f"Bravo-stray-system-{t}",
-                    baseline="low",
-                    business_unit_id=a.root,
-                ),
-                Event(
-                    organization_id=b.org,
-                    actor="x",
-                    verb="status_changed",
-                    entity_type="objective",
-                    entity_id=str(a.objective),
-                    summary=f"Bravo-stray-event-{t}",
-                ),
-            ]
+        s.add(
+            Event(
+                organization_id=b.org,
+                actor="x",
+                verb="status_changed",
+                entity_type="objective",
+                entity_id=str(a.objective),
+                summary=f"Bravo-stray-event-{b.tag}",
+            )
         )
-        unit = await s.get(BusinessUnit, a.grand)
-        assert unit is not None
-        unit.owner_user_id = b.users["admin"]
+        meeting = await s.get(CommitteeMeeting, a.meeting)
+        assert meeting is not None
+        meeting.attendee_user_ids = [*meeting.attendee_user_ids, b.users["admin"]]
+        meeting.decisions = [
+            *meeting.decisions,
+            {
+                "text": f"Alpha-decision-for-bravo-{a.tag}",
+                "owner_user_id": b.users["admin"],
+                "due_on": None,
+            },
+        ]
 
 
 @pytest.fixture
@@ -376,7 +353,10 @@ async def test_each_page_shows_its_own_records_and_never_another_organizations(
 
 
 async def test_child_rows_of_another_organization_are_not_counted(two) -> None:
-    """Bravo rows hung on Alpha's team, committee, objective and unit."""
+    """Counts on Alpha's pages are Alpha's rows, exactly.
+
+    Since 0101 a child row cannot hang on another org's parent, so these pin
+    the counts rather than prove each child predicate (see the report)."""
     a, _ = two
     async with _client() as c:
         units = await _get(c, a.tokens["viewer"], "/org-units")
@@ -543,27 +523,63 @@ async def test_a_write_naming_another_organizations_record_is_not_found(
     assert await _snapshot(a, b) == before
 
 
-async def test_the_organization_is_renamed_only_as_the_callers_own(two) -> None:
+async def _names(*ids: int) -> dict[int, str]:
+    async with session_scope() as s:
+        rows = (await s.execute(select(Organization).where(Organization.id.in_(ids)))).scalars()
+        return {o.id: o.name for o in rows}
+
+
+def _auth_off() -> None:
+    """The system principal: global, i.e. a platform administrator."""
+    os.environ.pop("CCF_AUTH_ENABLED", None)
+    get_settings.cache_clear()
+
+
+async def test_a_tenant_admin_cannot_rename_an_organization(two) -> None:
+    """Concord finds some organizations by name (SELF_ORG, ``user-create
+    --org``), so a tenant must not choose its own: renames are a platform
+    administrator's."""
     a, b = two
     async with _client() as c:
-        other = await _post(
+        own = await _post(
             c,
             a.tokens["admin"],
             "/settings/organization",
-            {"name": f"Alpha-hijack-{a.tag}", "organization_id": str(b.org)},
+            {"name": f"Alpha-renamed-{a.tag}", "organization_id": str(a.org)},
         )
-        taken = await _post(
-            c, a.tokens["admin"], "/settings/organization", {"name": f"Bravo-org-{b.tag}"}
+        page = await _get(c, a.tokens["admin"], "/settings/organization")
+    assert own.status_code == 403
+    assert "platform" in own.text
+    assert 'method="post"' not in page
+    assert "Renames are done by a platform administrator" in page
+    assert await _names(a.org, b.org) == {a.org: f"Alpha-org-{a.tag}", b.org: f"Bravo-org-{b.tag}"}
+
+
+async def test_a_platform_administrator_renames_an_organization(two) -> None:
+    a, b = two
+    _auth_off()
+    async with _client() as c:
+        page = (await c.get("/settings/organization")).text
+        taken = await c.post(
+            "/settings/organization",
+            data={"name": f"Bravo-org-{b.tag}", "organization_id": str(a.org)},
         )
-        ok = await _post(
-            c, a.tokens["admin"], "/settings/organization", {"name": f"Alpha-renamed-{a.tag}"}
+        ok = await c.post(
+            "/settings/organization",
+            data={"name": f"  Alpha   renamed-{a.tag} ", "organization_id": str(a.org)},
         )
-    assert other.status_code == 403
+        missing = await c.post(
+            "/settings/organization", data={"name": "x", "organization_id": "999999999"}
+        )
+    assert f"Alpha-org-{a.tag}" in page and 'name="organization_id"' in page
     assert taken.status_code == 400 and "already in use" in taken.text
-    assert "Bravo" not in taken.text
     assert ok.status_code == 303
+    assert missing.status_code == 404
+    assert await _names(a.org, b.org) == {
+        a.org: f"Alpha renamed-{a.tag}",
+        b.org: f"Bravo-org-{b.tag}",
+    }
     async with session_scope() as s:
-        names = {o.id: o.name for o in (await s.execute(select(Organization))).scalars()}
         audit = (
             await s.execute(
                 select(AuditLog).where(
@@ -571,9 +587,49 @@ async def test_the_organization_is_renamed_only_as_the_callers_own(two) -> None:
                 )
             )
         ).scalar_one()
-    assert names[a.org] == f"Alpha-renamed-{a.tag}"
-    assert names[b.org] == f"Bravo-org-{b.tag}"
     assert audit.organization_id == a.org
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        SELF_ORG,
+        SELF_ORG.upper(),
+        SELF_ORG.lower(),
+        f"  {SELF_ORG}  ",
+        SELF_ORG.replace(" ", " \t  "),
+    ],
+)
+async def test_the_platform_organizations_name_is_reserved(two, spelling: str) -> None:
+    a, _ = two
+    _auth_off()
+    async with _client() as c:
+        resp = await c.post(
+            "/settings/organization", data={"name": spelling, "organization_id": str(a.org)}
+        )
+    assert resp.status_code == 400, resp.text[:200]
+    assert "reserved" in resp.text
+    assert await _names(a.org) == {a.org: f"Alpha-org-{a.tag}"}
+
+
+async def test_the_platform_organization_cannot_be_renamed_away() -> None:
+    async with session_scope() as s:
+        platform = (
+            await s.execute(select(Organization).where(Organization.name == SELF_ORG))
+        ).scalar_one_or_none()
+        if platform is None:
+            platform = Organization(name=SELF_ORG)
+            s.add(platform)
+            await s.flush()
+        pid = platform.id
+    _auth_off()
+    async with _client() as c:
+        resp = await c.post(
+            "/settings/organization",
+            data={"name": f"Squatted-{next(_SEQ)}", "organization_id": str(pid)},
+        )
+    assert resp.status_code == 400
+    assert await _names(pid) == {pid: SELF_ORG}
 
 
 async def test_a_principal_without_an_organization_cannot_write() -> None:
@@ -618,7 +674,12 @@ GATED: list[tuple[str, dict[str, str], set[str]]] = [
         {"admin", "control_owner", "chair"},
     ),
     ("/objectives/{objective}/links/{link}/remove", {}, {"admin", "control_owner", "chair"}),
-    ("/settings/organization", {"name": "Alpha-org-{tag}-{role}"}, {"admin"}),
+    # Platform administrators only: no tenant role may rename (see below).
+    (
+        "/settings/organization",
+        {"name": "Alpha-org-{tag}-{role}", "organization_id": "{org}"},
+        set(),
+    ),
 ]  # fmt: skip
 
 
@@ -685,18 +746,16 @@ async def test_a_unit_cannot_be_moved_under_itself_or_below_itself(two) -> None:
 
 async def test_deleting_a_unit_moves_its_children_up_and_releases_its_systems(two) -> None:
     a, b = two
+    async with session_scope() as s:
+        system2 = await s.get(System, a.system2)
+        assert system2 is not None
+        system2.business_unit_id = a.child
     async with _client() as c:
         resp = await _post(c, a.tokens["admin"], f"/org-units/{a.child}/delete")
     assert resp.status_code == 303
     async with session_scope() as s:
         grand = await s.get(BusinessUnit, a.grand)
         assert grand is not None and grand.parent_id == a.root
-        stray = (
-            await s.execute(
-                select(BusinessUnit).where(BusinessUnit.name == f"Bravo-stray-bu-{b.tag}")
-            )
-        ).scalar_one()
-        assert stray.parent_id == a.root, "Bravo's unit was re-parented by Alpha's delete"
         audit = (
             await s.execute(
                 select(AuditLog).where(
@@ -706,6 +765,7 @@ async def test_deleting_a_unit_moves_its_children_up_and_releases_its_systems(tw
         ).scalar_one()
     assert audit.organization_id == a.org
     assert audit.diff["sub_units"] == [a.grand]
+    assert audit.diff["systems_unassigned"] == [a.system2]
 
     async with _client() as c:
         await _post(c, a.tokens["admin"], f"/org-units/{a.root}/delete")
@@ -717,16 +777,17 @@ async def test_deleting_a_unit_moves_its_children_up_and_releases_its_systems(tw
                 )
             )
         ).scalar_one()
-        stray = (
-            await s.execute(
-                select(BusinessUnit).where(BusinessUnit.name == f"Bravo-stray-bu-{b.tag}")
-            )
-        ).scalar_one()
-    # Bravo's stray unit and system pointed at Alpha's root: neither is Alpha's
-    # to move, and the foreign key alone clears the pointer.
+    # The grandchild moved up to the root and its system with it; deleting the
+    # root moves the grandchild to the top level. Its system stays assigned.
     assert audit.diff["sub_units"] == [a.grand]
     assert audit.diff["systems_unassigned"] == []
-    assert stray.parent_id is None
+    async with session_scope() as s:
+        grand = await s.get(BusinessUnit, a.grand)
+        system = await s.get(System, a.system)
+        bravo_root = await s.get(BusinessUnit, b.root)
+    assert grand is not None and grand.parent_id is None
+    assert system is not None and system.business_unit_id == a.grand
+    assert bravo_root is not None
 
 
 async def test_assigning_a_system_sets_its_unit_and_is_audited(two) -> None:
@@ -770,6 +831,13 @@ async def test_assigning_a_system_sets_its_unit_and_is_audited(two) -> None:
 
 async def test_a_team_has_one_lead(two) -> None:
     a, b = two
+    async with session_scope() as s:
+        # Bravo's own team has a lead; Alpha naming a lead must not touch it.
+        s.add(
+            TeamMember(
+                organization_id=b.org, team_id=b.team, user_id=b.users["viewer"], role="lead"
+            )
+        )
     async with _client() as c:
         tok = a.tokens["admin"]
         first = await _post(
@@ -789,11 +857,17 @@ async def test_a_team_has_one_lead(two) -> None:
             .scalars()
             .all()
         )
-    roles = {(r.organization_id, r.user_id): r.role for r in rows}
-    assert roles[(a.org, a.users["chair"])] == "lead"
-    assert roles[(a.org, a.users["viewer"])] == "member"
-    # Bravo's stray row on Alpha's team is not Alpha's to demote.
-    assert roles[(b.org, b.users["admin"])] == "lead"
+        bravo_lead = (
+            await s.execute(
+                select(TeamMember.role).where(
+                    TeamMember.team_id == b.team, TeamMember.user_id == b.users["viewer"]
+                )
+            )
+        ).scalar_one()
+    roles = {r.user_id: r.role for r in rows}
+    assert roles[a.users["chair"]] == "lead"
+    assert roles[a.users["viewer"]] == "member"
+    assert bravo_lead == "lead"
 
 
 async def test_a_meeting_records_attendees_minutes_and_actions_until_closed(two) -> None:
@@ -994,3 +1068,17 @@ async def test_empty_pages_say_what_is_missing() -> None:
             body = await _get(c, token, path)
             assert text in body, path
             assert '<form method="post"' not in body, f"{path} offers a viewer a write form"
+
+
+async def test_a_name_another_organization_uses_is_free_here(two) -> None:
+    """Names are unique per organization, not across tenants -- and the
+    refusal must not reveal that another tenant holds the name."""
+    a, b = two
+    async with _client() as c:
+        for path, field, name in (
+            ("/org-units", "name", f"Bravo-bu-root-{b.tag}"),
+            ("/teams", "name", f"Bravo-team-{b.tag}"),
+            ("/committees", "name", f"Bravo-committee-{b.tag}"),
+        ):
+            resp = await _post(c, a.tokens["admin"], path, {field: name})
+            assert resp.status_code == 303, (path, resp.status_code, resp.text[:200])

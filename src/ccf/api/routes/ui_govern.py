@@ -13,8 +13,10 @@ principal is refused with 400 rather than writing a row that belongs to no one.
 
 Role gates:
 
-* business units, teams, committee charter and membership, the organization's
-  name: ``admin`` (configuration);
+* business units, teams, committee charter and membership: ``admin``
+  (configuration);
+* renaming an organization: a platform administrator only
+  (``require_platform_admin``) -- some organizations are identified by name;
 * committee meetings and closing their actions: ``admin`` or the committee's
   chair -- the route admits the three working roles and the handler then
   checks the chair, saying why when it refuses;
@@ -55,9 +57,10 @@ from ...models_program import (
     Team,
     TeamMember,
 )
+from ...self_assurance.service import SELF_ORG
 from .. import navigation
 from ..audit import record_event
-from ..auth_deps import require_role, resolve_caller_org
+from ..auth_deps import require_platform_admin, require_role
 from ..deps import get_session
 from .ui import _principal_org, templates
 
@@ -1467,13 +1470,23 @@ async def objective_link_remove(
 # ── Organization settings ────────────────────────────────────────────────────
 
 
+def _reserved(name: str) -> bool:
+    """Whether ``name`` is, after trimming and collapsing whitespace and
+    ignoring case, a name Concord reads as an identity: ``SELF_ORG`` is the
+    platform's own assurance boundary (``self_assurance.service``)."""
+    return " ".join(name.split()).casefold() == " ".join(SELF_ORG.split()).casefold()
+
+
 @router.get("/settings/organization", response_class=HTMLResponse)
 async def org_settings_page(
     request: Request, session: AsyncSession = Depends(get_session)
 ) -> HTMLResponse:
+    """The caller's organization; for a platform administrator (unscoped),
+    every live organization with a rename form."""
     org = _principal_org(request)
     record = None
     counts: dict[str, int] = {}
+    organizations: list[Organization] = []
     if org is not None:
         record = (
             await session.execute(
@@ -1497,40 +1510,68 @@ async def org_settings_page(
                 StrategicObjective, StrategicObjective.organization_id == org
             ),
         }
+    else:
+        organizations = list(
+            (
+                await session.execute(
+                    select(Organization)
+                    .where(Organization.deleted_at.is_(None))
+                    .order_by(Organization.name)
+                )
+            ).scalars()
+        )
+    principal = _principal(request)
     return _render(
         request,
         "org_settings.html",
         _active("org_settings", "settings"),
         org=record,
         counts=counts,
-        can_admin=_is_admin(request) and record is not None,
+        organizations=organizations,
+        can_rename=org is None and (principal is None or principal.is_global),
     )
 
 
 @router.post("/settings/organization")
 async def org_settings_rename(
     name: str = Form(...),
-    organization_id: int | None = Form(None),
+    organization_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
-    principal: Principal = Depends(require_role(*ADMIN)),
+    principal: Principal = Depends(require_platform_admin()),
 ) -> RedirectResponse:
-    """Rename the caller's own organization. The org is the principal's; a
-    posted ``organization_id`` may only confirm it (another is 403)."""
-    org = _write_org(principal)
-    resolve_caller_org(principal.org_id, organization_id)
+    """Rename an organization: platform administrators only.
+
+    Not a tenant admin's action, because Concord identifies some organizations
+    by name -- ``SELF_ORG`` is the platform's own boundary, and
+    ``ccf user-create --org <name>`` attaches a user to whichever organization
+    holds that name. A tenant that could rename itself could squat either."""
     record = (
         await session.execute(
-            select(Organization).where(Organization.id == org, Organization.deleted_at.is_(None))
+            select(Organization).where(
+                Organization.id == organization_id, Organization.deleted_at.is_(None)
+            )
         )
     ).scalar_one_or_none()
     if record is None:
         raise HTTPException(404, "no such organization")
-    clean = name.strip()
+    clean = " ".join(name.split())
     if not clean:
         raise HTTPException(400, "an organization needs a name")
     if len(clean) > 255:
         raise HTTPException(400, "an organization name is at most 255 characters")
+    if _reserved(clean):
+        raise HTTPException(
+            400,
+            f"{SELF_ORG!r} is reserved: Concord treats the organization with that name "
+            "as the platform's own assurance boundary",
+        )
     previous = record.name
+    if _reserved(previous):
+        raise HTTPException(
+            400,
+            f"{SELF_ORG!r} is the platform's own assurance boundary and is found by "
+            "that name; it cannot be renamed",
+        )
     if clean == previous:
         return _see_other("/settings/organization")
     try:
@@ -1538,16 +1579,14 @@ async def org_settings_rename(
             record.name = clean
             await session.flush()
     except IntegrityError as exc:
-        # Names are unique across the deployment. The holder is another
-        # tenant, so it is not named.
         raise HTTPException(400, "that name is already in use; choose another") from exc
     await _audit(
         session,
         principal,
-        org,
+        record.id,
         "organization_rename",
         "organization",
-        org,
+        record.id,
         {"name": {"from": previous, "to": clean}},
     )
     await session.commit()
