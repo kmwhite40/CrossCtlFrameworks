@@ -157,6 +157,7 @@ This page summarises one organization. Sign in as a member of an organization to
       <div class="seg" role="tablist" aria-label="Trend">
         <button type="button" role="tab" class="seg__opt" :aria-selected="tab === 'flow'" aria-selected="true" @click="tab = 'flow'">POA&amp;M flow</button>
         <button type="button" role="tab" class="seg__opt" :aria-selected="tab === 'tests'" aria-selected="false" @click="tab = 'tests'">Control tests</button>
+        <button type="button" role="tab" class="seg__opt" :aria-selected="tab === 'posture'" aria-selected="false" @click="tab = 'posture'">Posture over time</button>
       </div>
     </header>
     <div class="panel__body">
@@ -167,10 +168,19 @@ This page summarises one organization. Sign in as a member of an organization to
       <div x-show="tab === 'tests'" x-cloak>
         {{ columns(tr.labels, [{'name':'Passed','values':tr.passed,'tone':'--success'},{'name':'Failed','values':tr.failed,'tone':'--danger'}], true, 190, 'Control-test runs per week by outcome') }}
       </div>
+      {% set ph = cc.trends.posture %}
+      <div x-show="tab === 'posture'" x-cloak>
+        {% if ph.enough %}
+        {{ columns(ph.controls.labels, ph.controls.series, true, 190, 'Controls by latest test result, per recorded snapshot') }}
+        {% else %}
+        <p class="panel__empty">{% if ph.count %}One posture snapshot is recorded in the last 90 days ({{ ph.first_on.strftime('%b %-d') }}); a trend needs at least two.{% else %}No posture snapshots are recorded in the last 90 days.{% endif %} Snapshots are taken daily by the scheduler, or by an administrator on <a href="/trends">Compliance Trends</a>.</p>
+        {% endif %}
+      </div>
     </div>
     <footer class="panel__foot">
       <span x-show="tab === 'flow'">By date identified and date closed{% if pf.undated %}; {{ pf.undated }} undated{% endif %}.</span>
       <span x-show="tab === 'tests'" x-cloak>{{ tr.runs }} runs in 12 weeks; a test run twice counts twice.</span>
+      <span x-show="tab === 'posture'" x-cloak>{% if ph.count %}{{ ph.count }} snapshot{{ 's' if ph.count != 1 }} from {{ ph.first_on.strftime('%b %-d') }} to {{ ph.last_on.strftime('%b %-d') }}{% if ph.controls.shown < ph.controls.recorded %}; the latest in each interval is drawn{% endif %}. <a href="/trends">Every metric</a>.{% endif %}</span>
       Not trended, because Concord keeps no history of them: {{ cc.trends.not_recorded | join(', ') }}.
     </footer>
   </article>
