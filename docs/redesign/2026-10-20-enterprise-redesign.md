@@ -5,6 +5,13 @@ at `cdfa107` (2026-10-20). Worked in a separate worktree
 (`../CrossCtlFrameworks-redesign`) because another session was active in the
 main checkout.
 
+> **Updated later on 2026-10-20 — the build-out.** After the first delivery the
+> product owner asked for every navigation entry to be built out. All 94 entries
+> are now live (none partial, none planned), on four new migrations
+> (`0099`–`0102`). §11 covers what was added, the review that followed and the
+> second deployment; §1's "Not delivered" list and §7 describe the state before
+> it and are kept for the record.
+
 ## 1. What was asked, and what was delivered
 
 The brief asked for a full visual redesign, the 11-group navigation, an
@@ -293,8 +300,8 @@ cd /Users/kevinwhite/CrossCtlFrameworks && docker compose up -d --no-build api p
 The data rollback discards anything written after the deploy; it is only
 needed if the old code cannot run on the migrated schema (`0098` drops the
 assurance-edge confidence column). The code rollback alone is the tag swap.
-Migrations `0093`–`0098` come from the base branch, not this one; this branch
-adds no migration. `0097` deletes digest alerts stored without an
+Migrations `0093`–`0098` come from the base branch, not this one; the first
+delivery added no migration. The build-out adds `0099`–`0102` (§11). `0097` deletes digest alerts stored without an
 organization.
 
 
@@ -332,3 +339,100 @@ six Medium defects, all now fixed with a test that fails without each fix
 
 Redeployed after the fixes; signed-in screenshots in the published report are
 from that build.
+
+
+## 11. The build-out: every navigation entry live
+
+Asked for after the first delivery. Eight workstreams, each in its own worktree
+and test database, merged by one integrator who owned the migrations, the
+navigation, the scheduler and `main.py`.
+
+| Workstream | What it added |
+|---|---|
+| A — posture history | A daily per-organization snapshot written by the scheduler (`analytics/posture_history.py`); Compliance Trends and a forecast drawn only from recorded snapshots |
+| B — risk program | A five-point likelihood/impact scale and a 5×5 map; enterprise risks owned by an organization (`0100`); risk appetite, KRIs with recorded readings, dated qualitative and quantitative assessments (ALE), treatment plans and actions |
+| C — organization | Business units, teams, committees and meetings, strategic objectives and their links, organization profile |
+| D — audit program | Audit workpapers with reviewer sign-off, cross-engagement findings, evidence requests, evidence packages (export, replay, compare), the assessment schedule, compensating controls, audit readiness |
+| E — third parties and obligations | Contracts and contract obligations, due-diligence checklists, vendor findings, a vendor risk score that shows its arithmetic, compliance obligations, regulatory requirements and change, projects |
+| F — platform | Role/permission matrix, API tokens, AI settings, the governed AI analysis page |
+| G — intelligence | The CISA KEV catalog matched to open POA&Ms, refreshed by the scheduler; the analytics studio (fixed measures over fixed dimensions, no free-form query) |
+| H — assurance | Control effectiveness, evidence mapping and expiration, the integrations hub, assurance queries |
+
+**Migrations.** `0099` adds the program tables (21 tenant tables, each with a
+forced row-level-security policy, and the global KEV table). `0100` gives risks
+an owning organization so a risk with no system belongs to someone. `0101` adds
+a trigger on 33 references so no row can point at another organization's
+parent (foreign keys are checked without row-level security). `0102` records who
+received a due-diligence item.
+
+**Before the review**, the integrator's own checks fixed: a cross join it had
+introduced into evidence requests; webhooks that any non-viewer could point at
+the server's own network (now admin-only, every address form judged, delivery
+pinned to the address that was checked); a KEV sync any tenant admin could run;
+a way to take another organization's name.
+
+### Independent review of the build-out
+
+A separate agent read the whole branch and reported no Critical finding, two
+High, nine Medium and five Low. Every High and Medium was verified in the code
+before it was fixed; each fix has a test, and each was mutation-checked (the
+fix removed, a test then failing: 27 of 27).
+
+| Severity | Finding | Fix |
+|---|---|---|
+| High | Register import could accept a risk or close a POA&M without the approval the API requires, and wrote any status (predates this branch) | Refused per row; statuses validated; an unchanged status still round-trips. A follow-up automated review found the sibling: import could also push out a risk-accepted POA&M's expiry — now refused too |
+| High | The AI service read a risk's owner through its system, so another tenant's enterprise risk passed its cross-tenant guard (predates this branch; reachable since `0100`) | Owner read from the risk; an unknown owner is refused |
+| Medium | A webhook URL with an invalid port was accepted, then raised on every event the organization emitted | Refused on create; delivery skips an unusable stored URL |
+| Medium | Eight pages added every tenant's records up for a session with no organization | They say "No organization in scope" instead; packages of two organizations cannot be compared |
+| Medium | A global writer's risk events, tasks and alerts carried no organization (an event without one reaches every tenant's webhooks) | They carry the risk's |
+| Medium | Eight readers left enterprise risks out, so pages disagreed | One scope, `posture.risk_in_scope`, everywhere |
+| Medium | The dashboard counted audit findings by their own nullable organization | Scoped through the engagement, as the findings page is |
+| Medium | A failure under a compensating control was "accepted" on one page and failing on every other | Only a waiver accepts; the compensating control is shown beside the failure |
+| Medium | Due diligence: the person who received a document could accept it; accepted evidence could be marked not applicable | Separated (`0102`); refused |
+| Medium | A vendor with no questionnaire could score low because nothing was measured | The score is marked partial |
+| Low | A truncated KEV feed could empty the catalog; an IPv6 Host header lost its brackets | Refused; fixed |
+
+**Not fixed, and why.** The Jira integration accepts any HTTPS origin,
+including internal ones, and sends its credential there. It predates this
+branch, and an on-premises Jira on a private network is a legitimate target, so
+it needs its own opt-in like webhooks rather than the webhook rule. A few
+"add if absent" actions check by title without a unique constraint, so two
+simultaneous submits can both insert. A questionnaire answered entirely "not
+applicable" stores a score of 0 (`tprm.score_responses`, also predating this
+branch).
+
+### Verification
+
+| Check | Result |
+|---|---|
+| Full suite (own database) | **6,015 passed, 2 skipped, 0 failed** at `2b641c9` (28m31s); the two later commits each ran their affected files (52 and 78 passed) |
+| The first full run | 5 failures, all fixed: two audit events correctly global but unclassified; a studio dimension labelled "Control" that grouped by the test's primary control only; a setting missing from the runbook; and a workstream test that left two catalog controls in the Moderate baseline, which broke a later test |
+| Lint and types | No new ruff or mypy finding in the changed files |
+| Browser sweep, signed in on :8088 | 91 pages × dark/light × 1440/390 px: status, console errors, horizontal overflow, a bare "None", the no-organization page shown to a member. Clean except Self-Assurance, which is a platform page: hidden from an organization admin's rail and palette, 403 by URL |
+
+### Second deployment
+
+```bash
+# rollback points
+for s in api migrator prep-worker assessment-worker; do docker tag "ccf-${s}:latest" "ccf-${s}:pre-buildout"; done
+docker exec ccf-db pg_dump -U ccf -d ccf -Fc > ~/CrossCtlFrameworks-backups/ccf-dev-pre-buildout-20261020T2315.dump
+# then build, migrate (0098 -> 0102) and recreate exactly as in §8
+```
+
+The dump was restored into a scratch database and compared with the live one
+before anything was migrated (controls, audit log, users, systems and revision
+all equal). The rollback is §8's with `pre-buildout` in place of
+`pre-redesign`; the data rollback is needed only if the old code must run on
+the new schema.
+
+**Data the deployment cannot fix.** The dev database holds one audit
+engagement, two vendors and three questionnaires with no organization — July
+seed rows from before tenancy. Since `0101` nothing new can be attached to
+them, which the pages already refused. Nine organizations exist and nothing
+records which owns these rows, so assigning one is an administrator's decision,
+not a migration's.
+
+**Outbound connections.** With the scheduler on, the KEV refresh calls
+`cisa.gov` daily by default; an enclave sets `CCF_KEV_SYNC_ENABLED=false`. Both
+outbound settings are in the production runbook.
+
