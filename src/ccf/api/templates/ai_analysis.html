@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}AI-assisted analysis · Concord{% endblock %}
+{% block heading %}AI-assisted analysis{% endblock %}
+{% block subtitle %}Governed AI actions on your organization's records. Each run is recorded with its input and output hashes and its citations. Output here is a draft: nothing on this page changes a record.{% endblock %}
+{% block content %}
+<style>.ai-draft { white-space: pre-wrap; overflow-wrap: anywhere; }</style>
+{%- macro status_chip(s) -%}
+<span class="chip {% if s == 'approved' %}chip--ok{% elif s in ('rejected', 'blocked') %}chip--err{% elif s == 'pending_review' %}chip--warn{% elif s == 'completed' %}chip--info{% else %}chip--ghost{% endif %}">{{ s | replace('_', ' ') }}</span>
+{%- endmacro -%}
+
+{% if not has_org %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No organization in this session</h2><p>AI runs, their records and the provider that drafts them all belong to an organization. Sign in as a member of one to use this page.</p></div>
+{% else %}
+
+{% if not configured %}
+<div class="card empty-state" id="no-provider"><i data-lucide="plug-zap"></i><h2>No AI provider is configured</h2>
+  <p>This organization has no enabled AI provider with a stored key. A run started here is drafted by Concord's built-in stub instead: a template that restates the record's recorded facts and lists the sources it was given. No model reads them, so a stub draft is not analysis, and every such run is recorded with provider <code class="mono">stub</code>.</p>
+  <p>{% if is_admin %}<a class="btn btn--secondary btn--sm" href="/admin/ai-settings">Configure a provider</a>{% else %}An administrator configures providers at <a href="/admin/ai-settings">AI provider settings</a>.{% endif %}</p>
+</div>
+{% endif %}
+
+{% if error %}<p class="chip chip--err" role="alert">{{ error }}</p>{% endif %}
+
+{% if selected %}
+<section class="card panel" id="run">
+  <header class="panel__head"><h2 class="panel__title">Run #{{ selected.id }} · {{ selected.action_key | replace('_', ' ') }}</h2>{{ status_chip(selected.status) }}</header>
+  <div class="panel__body">
+    <p class="dim">On {{ (selected.entity_type or '') | replace('_', ' ') }} #{{ selected.entity_id }} · started by {{ selected.actor or '—' }} · drafted by <span class="mono">{{ selected.provider }}{% if selected.model %} / {{ selected.model }}{% endif %}</span>{% if selected.created_at %} · {{ selected.created_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}</p>
+    {% for o in selected.outputs %}
+    <h3 class="label">Draft, not applied</h3>
+    {% if o.uncited %}<p class="chip chip--warn">This draft cites no source.</p>{% endif %}
+    <div class="card"><div class="card__body mono ai-draft">{{ o.content }}</div></div>
+    {% else %}
+    <p class="dim">This run recorded no output.</p>
+    {% endfor %}
+    <h3 class="label">Citations ({{ selected.citations | length }})</h3>
+    {% if selected.citations %}
+    <ul>{% for c in selected.citations %}<li><span class="chip chip--ghost">{{ c.source_type | replace('_', ' ') }}</span> #{{ c.source_id }}{% if c.label %} · {{ c.label }}{% endif %}</li>{% endfor %}</ul>
+    {% else %}<p class="dim">None. The draft rests on no supplied source.</p>{% endif %}
+    <h3 class="label">Review</h3>
+    {% if reviews %}
+    <ul>{% for r in reviews %}<li>{{ status_chip(r.decision) }} by {{ r.reviewer or '—' }}{% if r.reviewed_at %} on {{ r.reviewed_at.strftime('%Y-%m-%d %H:%M') }}{% endif %}{% if r.note %} · {{ r.note }}{% endif %}</li>{% endfor %}</ul>
+    {% elif selected.status == 'pending_review' %}
+    <p class="dim">Awaiting review. A reviewer approves or rejects it through the review queue (<code class="mono">/api/ai-actions/review-queue</code>); only an approval applies an action's declared change, and never from this page.</p>
+    {% else %}
+    <p class="dim">No review recorded. This action does not require one, and this page applies nothing.</p>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if may_run %}
+<section class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Start a run</h2></header>
+  <div class="panel__body">
+    {% set any_target = picker | selectattr('rows') | list %}
+    {% if any_target %}
+    <form method="post" action="/ai/analysis/run" class="filters">
+      <div class="field-group"><label class="label" for="r-action">Action</label>
+        <select class="select" id="r-action" name="action_key" required>{% for a in actions %}<option value="{{ a.key }}">{{ a.title }} ({{ a.input_entity_types | join(', ') | replace('_', ' ') }})</option>{% endfor %}</select></div>
+      <div class="field-group"><label class="label" for="r-target">Record</label>
+        <select class="select" id="r-target" name="target" required>{% for g in picker if g.rows %}<optgroup label="{{ g.label }}">{% for id, label in g.rows %}<option value="{{ g.type }}:{{ id }}">{{ label }}</option>{% endfor %}</optgroup>{% endfor %}</select></div>
+      <button class="btn btn--primary" type="submit"><i data-lucide="sparkles"></i> Draft</button>
+    </form>
+    <p class="panel__note">Records of your organization on live systems only. The action must accept the record's type; the run is refused otherwise.</p>
+    {% else %}
+    <div class="empty-state"><i data-lucide="inbox"></i><h2>No records to run on</h2><p>This organization has no systems, POA&amp;Ms, risks, control implementations, vendors, policies or evidence yet. Add one, then return here.</p></div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+
+<section class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Runs</h2><span class="panel__hint">latest {{ runs | length }}</span></header>
+  {% if runs %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Run</th><th>Action</th><th>Record</th><th>Review state</th><th>Drafted by</th><th>Citations</th><th>Started</th></tr></thead>
+    <tbody>{% for r in runs %}<tr>
+      <td><a href="/ai/analysis?run={{ r.id }}#run">#{{ r.id }}</a></td>
+      <td>{{ r.action_key | replace('_', ' ') }}</td>
+      <td>{{ (r.entity_type or '') | replace('_', ' ') }} #{{ r.entity_id }}</td>
+      <td>{{ status_chip(r.status) }}{% if r.reviewer %} <span class="dim">{{ r.reviewer }}</span>{% endif %}</td>
+      <td class="mono">{{ r.provider }}</td>
+      <td>{% if r.summary and r.summary.citation_count is not none %}{{ r.summary.citation_count }}{% else %}—{% endif %}</td>
+      <td class="dim">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <div class="empty-state"><i data-lucide="sparkles"></i><h2>No runs yet</h2><p>No AI action has been run for this organization.{% if may_run %} Start one above.{% endif %}</p></div>
+  {% endif %}
+</section>
+
+<section class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Available actions</h2><span class="panel__hint">{{ actions | length }}</span></header>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Action</th><th>Runs on</th><th>Citation required</th><th>Approval required</th><th>On approval it would</th></tr></thead>
+    <tbody>{% for a in actions %}<tr>
+      <td><strong>{{ a.title }}</strong><div class="dim">{{ a.description }}</div></td>
+      <td>{{ a.input_entity_types | join(', ') | replace('_', ' ') }}</td>
+      <td>{% if a.citation_required %}<span class="chip chip--info">yes</span>{% else %}<span class="chip chip--ghost">no</span>{% endif %}</td>
+      <td>{% if a.requires_approval %}<span class="chip chip--info">yes</span>{% elif approval_forced %}<span class="chip chip--info" title="This action does not require approval itself; the deployment's human-approval setting requires it for every action">yes, by setting</span>{% else %}<span class="chip chip--ghost">no</span>{% endif %}</td>
+      <td class="mono dim">{{ (a.allowed_mutation or 'change nothing') | replace('_', ' ') }}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+{% endblock %}
