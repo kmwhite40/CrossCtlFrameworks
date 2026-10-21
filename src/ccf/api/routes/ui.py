@@ -21,6 +21,7 @@ from sqlalchemy.orm import selectinload
 from ... import mfa, onboarding
 from ...ai_actions.provenance import ai_written_poam_ids
 from ...analytics import org_summary
+from ...analytics.posture import org_system_subq
 from ...assessment import FINDINGS, seed_assessment_results, summarize_results
 from ...auth import Principal, sign_session
 from ...capability import divergence
@@ -86,6 +87,7 @@ from ...ssp.platforms import (
 )
 from ...ssp.seed import seed_80053_project, seed_project_entries
 from ...ssp.statements import is_draft_narrative
+from .. import navigation
 from ..audit import record_event
 from ..auth_deps import (
     MFA_PENDING_COOKIE,
@@ -139,6 +141,25 @@ def _asset_version() -> str:
 templates.env.globals["settings"] = get_settings()
 templates.env.globals["asset_v"] = _asset_version()
 
+
+def _shell_principal(request: Request | None) -> Any:
+    """The signed-in user the chrome names, or None (auth off / anonymous).
+
+    Read for display only: no authorization decision consults a template."""
+    if request is None:
+        return None
+    principal = getattr(request.state, "principal", None)
+    return principal if getattr(principal, "user_id", None) is not None else None
+
+
+# The information architecture (ccf/api/navigation.py) for the shell.
+templates.env.globals["nav"] = navigation.NAV
+templates.env.globals["nav_pinned"] = navigation.PINNED
+templates.env.globals["nav_locate"] = navigation.locate
+templates.env.globals["nav_palette"] = navigation.palette_entries
+templates.env.globals["shell_principal"] = _shell_principal
+templates.env.globals["nav_visible"] = navigation.visible_to
+
 router = APIRouter(include_in_schema=False)
 
 # The guided onboarding path's state -> existing chip modifier. Presentation
@@ -188,6 +209,22 @@ def _principal_org(request: Request) -> int | None:
     return getattr(principal, "org_id", None) if principal is not None else None
 
 
+def no_org_page(request: Request, active: str) -> HTMLResponse:
+    """The page an unscoped session gets instead of totals added up across
+    every tenant (``command_center`` and ``ui_history`` take the same stance).
+
+    ``active`` is the navigation key: the heading is that entry's label, so
+    the page and the rail cannot name it differently."""
+    from .. import navigation  # noqa: PLC0415
+
+    _, item = navigation.locate(active)
+    return templates.TemplateResponse(
+        request,
+        "no_org.html",
+        {"active": active, "page_title": item.label if item else "This page"},
+    )
+
+
 async def _scoped_project(
     session: AsyncSession, project_id: int, org: int | None
 ) -> SSPProject | None:
@@ -208,17 +245,46 @@ async def landing(request: Request) -> HTMLResponse:
 
 @router.get("/dashboard", response_class=HTMLResponse)
 async def home(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
-    """What this organization has to fix, first thing on sign-in.
+    """The executive command center: posture, risk, remediation and activity.
+
+    Composes recorded data only (``analytics.command_center``); nothing on the
+    page is computed for display alone. "What is broken" -- the view this
+    route used to serve -- is at ``/gaps``, one click away from the headline
+    figure, and the operational overview is at ``/operations``.
+    """
+    from ...analytics.command_center import command_center  # noqa: PLC0415
+
+    org = _principal_org(request)
+    principal = getattr(request.state, "principal", None)
+    email = getattr(principal, "email", None) or ""
+    org_name = None
+    if org is not None:
+        org_name = (
+            await session.execute(select(Organization.name).where(Organization.id == org))
+        ).scalar_one_or_none()
+    return templates.TemplateResponse(
+        request,
+        "command_center.html",
+        {
+            "active": "dashboard",
+            "cc": await command_center(session, org),
+            "org_name": org_name,
+            # A display name from the address only; nothing is inferred from it.
+            "first_name": email.split("@")[0].split(".")[0].capitalize() if email else "",
+            "asset_v": _asset_version(),
+        },
+    )
+
+
+@router.get("/gaps", response_class=HTMLResponse)
+async def gaps_page(request: Request, session: AsyncSession = Depends(get_session)) -> HTMLResponse:
+    """What this organization has to fix: every assessed control, failures first.
 
     Everything shown here was already recorded -- a scan writes a control test
     per check, a result per test, and a finding per resource -- but the answer
     was spread across `/control-tests`, `/posture`, `/governance` and `/poams`
-    with no page rolling it up. The most important view should not be
-    something you navigate to.
-
-    The operational overview this page used to show is still at
-    `/operations`; it answers a different question (how the programme is
-    running) from the one someone signing in asks first (what is broken).
+    with no page rolling it up. This was `/dashboard` until the command center
+    took that address; the command center's headline figure links here.
     """
     from ...analytics.gaps import compliance_gaps  # noqa: PLC0415
 
@@ -226,7 +292,7 @@ async def home(request: Request, session: AsyncSession = Depends(get_session)) -
         request,
         "dashboard_gaps.html",
         {
-            "active": "dashboard",
+            "active": "gaps",
             "g": await compliance_gaps(session, _principal_org(request)),
             "asset_v": _asset_version(),
         },
@@ -266,7 +332,7 @@ async def operations(
         request,
         "dashboard.html",
         {
-            "active": "dashboard",
+            "active": "operations",
             "overview": overview,
             "asset_v": _asset_version(),
         },
@@ -631,10 +697,10 @@ async def poams_page(
         .options(selectinload(POAM.milestones))
         .order_by(POAM.due_on.nulls_last(), POAM.id.desc())
     )
-    if org is not None:
-        stmt = stmt.where(
-            POAM.system_id.in_(select(System.id).where(System.organization_id == org))
-        )
+    # Live systems only, scoped or not: a deleted system's POA&Ms were counted
+    # here (41 open) while the command center and posture said 37 -- the same
+    # organization, two numbers. org_system_subq is the one definition.
+    stmt = stmt.where(POAM.system_id.in_(org_system_subq(org)))
     if status:
         stmt = stmt.where(POAM.status == status)
     if severity:
@@ -1213,23 +1279,60 @@ async def system_live_audit_open_poam(
 async def risks_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    register: str | None = Query(None),
 ) -> HTMLResponse:
+    """The register: enterprise and cyber risks are two registers over one
+    table (``Risk.register``, 0100); ``?register=`` picks one, none lists both.
+
+    Scoped by ``governance.risk.risk_in_scope``: risks on the organization's
+    live systems and system-less (enterprise) risks it owns; never a risk on a
+    soft-deleted system."""
+    from ...governance.risk import (  # noqa: PLC0415
+        IMPACT_LABELS,
+        LIKELIHOOD_LABELS,
+        SCALE,
+        appetite_placements,
+        band,
+        effective_scores,
+        risk_in_scope,
+    )
+
     org = _principal_org(request)
-    risk_stmt = select(Risk).order_by(Risk.created_at.desc())
+    if register not in ("enterprise", "cyber"):
+        register = None
+    risk_stmt = (
+        select(Risk, System.name.label("system"))
+        .outerjoin(System, System.id == Risk.system_id)
+        .where(risk_in_scope(org))
+        .order_by(Risk.created_at.desc())
+    )
+    if register is not None:
+        risk_stmt = risk_stmt.where(Risk.register == register)
     sys_stmt = select(System).where(System.deleted_at.is_(None)).order_by(System.name)
     if org is not None:
-        org_systems = select(System.id).where(System.organization_id == org)
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_systems))
         sys_stmt = sys_stmt.where(System.organization_id == org)
-    rows = (await session.execute(risk_stmt)).scalars().all()
+    rows = (await session.execute(risk_stmt)).all()
     systems = (await session.execute(sys_stmt)).scalars().all()
+    placements = (
+        await appetite_placements(session, org, risk_ids=[r.Risk.id for r in rows])
+        if org is not None
+        else {}
+    )
     return templates.TemplateResponse(
         request,
         "risks.html",
         {
-            "active": "risks",
+            "active": "risks_cyber" if register == "cyber" else "risks",
+            "register": register,
             "rows": rows,
             "systems": systems,
+            "scale": SCALE,
+            "lk_labels": LIKELIHOOD_LABELS,
+            "im_labels": IMPACT_LABELS,
+            "effective": effective_scores,
+            "band": band,
+            "placements": placements,
+            "scoped": org is not None,
         },
     )
 

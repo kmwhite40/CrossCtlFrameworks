@@ -33,6 +33,7 @@ from typing import Any
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..analytics import posture_history
 from ..assurance import builder as assurance_builder
 from ..capability import derive as capability_derive
 from ..config import get_settings
@@ -42,7 +43,7 @@ from ..evidence import service as evidence_service
 from ..logging import get_logger
 from ..models import Organization, System
 from ..packs import sync as pack_sync
-from . import collection, conmon, control_tests, digest
+from . import collection, conmon, control_tests, digest, kri
 
 log = get_logger(__name__)
 
@@ -147,6 +148,7 @@ async def _run_per_tenant_cycle(
     digest_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
+    snapshot_results: list[dict[str, Any]] = []
     posture_results: list[dict[str, Any]] = []
     derive_enabled = get_settings().capability_derive_enabled
     #: (organization id, step) for every savepointed step that raised. Counted
@@ -320,6 +322,40 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "assurance_graph"})
+        try:
+            # Key risk indicators with a computed metric get today's reading
+            # (manual KRIs are left to people). Before the snapshot, after the
+            # steps that change what the metrics read.
+            async with session.begin_nested():
+                await kri.record_computed_readings(session, org_id, today)
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="kri_readings",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "kri_readings"})
+        try:
+            # The day's posture, copied from what the steps above just
+            # computed, so trends and forecasts read recorded history rather
+            # than reconstruct it. After everything else for the same reason
+            # the assurance graph is: a snapshot taken first would record the
+            # previous cycle. One row per organization per day; a later cycle
+            # the same day replaces it.
+            async with session.begin_nested():
+                snap = await posture_history.capture_snapshot(
+                    session, org_id, today=today, source="scheduler"
+                )
+                snapshot_results.append({"organization_id": org_id, **snap})
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="posture_snapshot",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "posture_snapshot"})
     # Back to bypass before any global step (or the advisory unlock) runs.
     # Suppressed: a prior step's failure must not prevent the tenant clamp
     # from being reset — mirrors the advisory-unlock suppress in run_cycle.
@@ -353,6 +389,9 @@ async def _run_per_tenant_cycle(
             ],
             "captured": sum(r["captured"] for r in collection_results),
             "drift": sum(r["drift"] for r in collection_results),
+        },
+        "posture_snapshots": {
+            "organizations_processed": [r["organization_id"] for r in snapshot_results],
         },
         "assurance_graph": {
             "organizations_processed": [r["organization_id"] for r in assurance_results],
@@ -583,6 +622,19 @@ async def run_cycle() -> dict[str, Any]:
                     "scheduler.global_step_failed", step="fedramp20x_monitoring", error=str(e)[:200]
                 )
                 global_failures.append("fedramp20x_monitoring")
+            if get_settings().kev_sync_enabled:
+                try:
+                    # CISA's KEV catalog is one table for every tenant, so this
+                    # runs once per cycle, unscoped. It skips when already
+                    # synced today and raises on any failure rather than
+                    # writing an empty catalog (ccf.intel.kev).
+                    async with session.begin_nested():
+                        from ..intel import kev  # noqa: PLC0415 — lazy, keeps startup light
+
+                        out["kev"] = await kev.refresh_kev(session, today=today)
+                except Exception as e:
+                    log.warning("scheduler.global_step_failed", step="kev_sync", error=str(e)[:200])
+                    global_failures.append("kev_sync")
         finally:
             # Release the advisory lock, and do not let anything above it stop
             # that from happening.

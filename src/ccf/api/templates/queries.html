@@ -4,7 +4,7 @@
 {% block subtitle %}<p class="page__subtitle">Deterministic, reusable questions over your authorization data — expired evidence, failing controls, expiring access, overdue POA&Ms. Pick a template, set parameters, export the answer.</p>{% endblock %}
 {% block content %}
 
-<div style="display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:20px;align-items:start">
+<div class="layout-split-l">
   <aside class="card"><div class="card__body">
     <div class="card__title" style="margin-bottom:10px">Templates</div>
     {% for t in templates %}
@@ -16,7 +16,7 @@
     {% endfor %}
   </div></aside>
 
-  <main style="min-width:0">
+  <div style="min-width:0">
     {% if not selected %}
       <section class="card"><div class="card__body dim" style="text-align:center;padding:48px">Select a query template to run.</div></section>
     {% else %}
@@ -53,7 +53,7 @@
       </section>
       {% endif %}
     {% endif %}
-  </main>
+  </div>
 </div>
 
 <script>

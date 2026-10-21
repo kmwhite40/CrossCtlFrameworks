@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Exception Management · Concord{% endblock %}
+{% block heading %}Exceptions{% endblock %}
+{% block subtitle %}Every departure from a requirement that is in force: approved control-test waivers, accepted KSI exceptions, accepted POA&amp;Ms, accepted risks and approved compensating controls. Each is decided where it lives, under that record's own approval gate; requests still awaiting a decision are listed separately.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  {% for k in ['Control-test waiver', 'KSI exception', 'Accepted POA&M', 'Accepted risk', 'Compensating control'] %}
+  <div class="kpi"><span class="kpi__label">{{ k }}s</span><span class="kpi__value">{{ counts.get(k, 0) }}</span></div>
+  {% endfor %}
+</section>
+<div class="table-wrap" id="risk">
+  {% if items %}
+  <table>
+    <thead><tr><th>Kind</th><th>Subject</th><th>System</th><th>Status</th><th>Decided by</th><th>Expires / review</th><th></th></tr></thead>
+    <tbody>{% for i in items %}<tr id="{{ i.anchor }}-{{ loop.index }}">
+      <td><span class="chip chip--brand">{{ i.kind }}</span></td>
+      <td><strong>{{ i.subject }}</strong>{% if i.detail %}<div class="dim clamp-3" style="font-size:12.5px;max-width:60ch">{{ i.detail }}</div>{% endif %}</td>
+      <td>{{ i.system or '—' }}</td>
+      <td><span class="chip {% if i.status in ('approved','accepted','risk_accepted') %}chip--warn{% elif i.status in ('rejected','revoked','expired') %}chip--err{% else %}chip--ghost{% endif %}">{{ i.status | replace('_',' ') }}</span></td>
+      <td>{{ i.decided_by or '—' }}</td>
+      <td>{% if i.expires %}<span class="{% if i.expired %}kanban__due--late{% endif %}">{{ i.expires }}{% if i.expired %} · lapsed{% endif %}</span>{% else %}<span class="dim">no expiry</span>{% endif %}</td>
+      <td><a href="{{ i.href }}">Open</a></td>
+    </tr>{% endfor %}</tbody>
+  </table>
+  {% else %}<p class="panel__empty">No approved waivers, accepted KSI exceptions, accepted POA&amp;Ms, accepted risks or approved compensating controls are in force for this organization.</p>{% endif %}
+</div>
+{% if pending %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Awaiting a decision</h2><span class="panel__hint">{{ pending | length }} request{{ 's' if pending|length != 1 }}, not counted above</span></header>
+  <ul class="feed">
+    {% for i in pending %}
+    <li class="feed__item"><span class="chip chip--ghost">{{ i.kind }}</span>
+      <a class="feed__main" href="{{ i.href }}"><span class="feed__title">{{ i.subject }}</span><span class="feed__meta">{{ i.system or '—' }} · {{ i.status }}</span></a>
+      <span class="feed__meta">{{ i.expires or '' }}</span></li>
+    {% endfor %}
+  </ul>
+</article>
+{% endif %}
+{% endblock %}

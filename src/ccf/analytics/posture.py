@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
@@ -65,6 +65,26 @@ def org_system_subq(org_id: int | None) -> Any:
     if org_id is not None:
         stmt = stmt.where(System.organization_id == org_id)
     return stmt
+
+
+def risk_in_scope(org_id: int | None) -> Any:
+    """The predicate every risk query uses (migration 0100).
+
+    A risk is the organization's when it sits on one of the organization's
+    **live** systems, or when it has no system and the organization owns it
+    directly (an enterprise risk). ``Risk.organization_id == org`` alone is not
+    enough: the 0100 trigger copies the system's organization onto a
+    system-linked risk, so a risk on a soft-deleted system still carries it.
+
+    ``org_id`` None (a global principal) admits every system-less risk and
+    every risk on any live system -- still never a deleted system's."""
+    live = org_system_subq(org_id)
+    if org_id is None:
+        return or_(Risk.system_id.is_(None), Risk.system_id.in_(live))
+    return or_(
+        and_(Risk.system_id.is_(None), Risk.organization_id == org_id),
+        Risk.system_id.in_(live),
+    )
 
 
 async def systems_scorecard(
@@ -312,7 +332,7 @@ async def org_summary(
         .group_by(System.ato_status)
     )
     if org_id is not None:
-        risk_stmt = risk_stmt.where(Risk.system_id.in_(org_system_subq(org_id)))
+        risk_stmt = risk_stmt.where(risk_in_scope(org_id))
         ato_stmt = ato_stmt.where(System.organization_id == org_id)
     risk_rows = (await session.execute(risk_stmt)).all()
     ato_rows = (await session.execute(ato_stmt)).all()

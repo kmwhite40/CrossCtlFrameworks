@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
@@ -21,6 +23,7 @@ from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
 from .csrf import CsrfOriginMiddleware
+from .errors import html_aware_http_exception, html_aware_validation_error
 from .limiter import limiter
 from .metrics import metrics_endpoint, metrics_middleware
 from .routes import (
@@ -80,8 +83,17 @@ from .routes import (
     systems,
     tasks,
     ui,
+    ui_assure,
+    ui_auditprog,
     ui_boundary,
+    ui_govern,
     ui_grc,
+    ui_history,
+    ui_intel,
+    ui_modules,
+    ui_platform,
+    ui_riskprog,
+    ui_tprmprog,
     users,
     vendors,
     waivers,
@@ -121,6 +133,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
     app.state.limiter = limiter
+    # People get a page; API clients get the JSON they always did (errors.py).
+    app.add_exception_handler(
+        StarletteHTTPException, cast(ExceptionHandler, html_aware_http_exception)
+    )
+    app.add_exception_handler(
+        RequestValidationError, cast(ExceptionHandler, html_aware_validation_error)
+    )
     app.add_exception_handler(
         RateLimitExceeded,
         cast(ExceptionHandler, _rate_limit_exceeded_handler),
@@ -269,6 +288,15 @@ def create_app() -> FastAPI:
     app.include_router(grc.router)
     app.include_router(ui_grc.router)
     app.include_router(ui_boundary.router)
+    app.include_router(ui_modules.router)
+    app.include_router(ui_assure.router)
+    app.include_router(ui_auditprog.router)
+    app.include_router(ui_govern.router)
+    app.include_router(ui_history.router)
+    app.include_router(ui_intel.router)
+    app.include_router(ui_platform.router)
+    app.include_router(ui_riskprog.router)
+    app.include_router(ui_tprmprog.router)
     app.include_router(ui.router)
     return app
 

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Policies &amp; Procedures · Concord{% endblock %}
+{% block heading %}Policies &amp; procedures{% endblock %}
+{% block subtitle %}Your organization's policies, their versions, review dates and who has acknowledged the current version.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/docs#/default" title="Policies are created and versioned through the API">API</a>{% endblock %}
+{% block content %}
+{% if policies %}
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Policy</th><th>Status</th><th>Owner</th><th>Current version</th><th>Next review</th><th>Acknowledged</th></tr></thead>
+    <tbody>{% for p in policies %}{% set vs = versions.get(p.id, []) %}{% set cur = vs[0] if vs else none %}
+    <tr id="policy-{{ p.id }}">
+      <td><strong>{{ p.name }}</strong>{% if p.category %}<div class="dim" style="font-size:12px">{{ p.category }}</div>{% endif %}</td>
+      <td><span class="chip {% if p.status == 'active' %}chip--ok{% elif p.status == 'retired' %}chip--ghost{% else %}chip--warn{% endif %}">{{ p.status }}</span></td>
+      <td>{{ owners.get(p.owner_user_id, '—') }}</td>
+      <td>{% if cur %}v{{ cur.version }}{% if cur.effective_on %} · effective {{ cur.effective_on }}{% endif %}{% if vs|length > 1 %} <span class="dim">({{ vs|length }} versions)</span>{% endif %}{% else %}<span class="dim">no version</span>{% endif %}</td>
+      <td>{% if p.next_review_on %}<span class="{% if p.next_review_on < today %}kanban__due--late{% endif %}">{{ p.next_review_on }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td>{% if cur %}{{ attest.get(cur.id, 0) }} of {{ members }}{% if cur.id in mine %} <span class="chip chip--ok">you</span>{% endif %}{% else %}—{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table>
+</div>
+<p class="dim" id="acknowledgments" style="font-size:13px">Acknowledged counts distinct active members of the organization who attested the most recently created version, over all active members. Versions carry no draft or published state, so the most recent one is treated as current. Attestation is recorded through <code>POST /api/policies/versions/{id}/attest</code>.</p>
+{% else %}
+<div class="card empty-state" id="acknowledgments"><i data-lucide="scroll-text"></i><h2>No policies yet</h2><p>No policy is recorded for this organization. Policies, versions and attestations are created through the API (<code>/api/policies</code>); they appear here once they exist.</p></div>
+{% endif %}
+{% endblock %}

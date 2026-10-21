@@ -1,98 +1,100 @@
 # Concord — design system
 
-Monochrome chrome, semantic colour. The application is greyscale everywhere
-except where a colour reports a state, because this product's job is to say
-what is true about a control, and colour that means nothing competes with
-colour that does.
+Deep navy surfaces with a cyan primary and violet secondary accent (dark, the
+primary theme); white and slate with a blue primary and violet secondary
+(light). Colour that reports a state is still reserved for state: the accent is
+a brand colour for action, focus, the active rail entry and links, and it is
+kept off every status hue.
 
 All tokens and class names live in
 [`src/ccf/api/static/css/app.css`](../src/ccf/api/static/css/app.css) and are a
-**stable contract** consumed by 54 Jinja templates. Restyle the *values*, never
-rename the tokens or classes.
+**stable contract** consumed by the Jinja templates. Restyle the *values*,
+never rename the tokens or classes. There is no build step and no
+`package.json`; `htmx`, `Alpine`, `Lucide` and `Mermaid` are vendored.
 
-There is no build step and no `package.json`. The stylesheet is hand-authored
-and served as-is; `htmx`, `Alpine`, `Lucide` and `Mermaid` are vendored.
+## What changed in the 2026-10 redesign, and why
 
-## The rule that decides everything else
+The previous system was monochrome: the accent was ink, on the argument that
+any hue competes with a status chip. The redesign brief asked for a cyan/violet
+brand. The argument still holds for *status*, so the redesign keeps its
+consequence rather than its palette:
 
-**Colour is reserved for status.** Action, active, link and focus are ink, not
-a hue. An accent that competes with a status chip is one more thing a reader
-has to learn *not* to read as meaning, and this product renders claims a
-federal regulator will act on.
-
-Two consequences worth stating, because both look like mistakes otherwise:
-
-- **Links carry an underline**, not a colour. Once the accent is ink, colour no
-  longer distinguishes a link from the text beside it (WCAG 1.4.1), so the
-  underline is the only remaining signal and is not decoration.
-- **`chip--brand` is a solid neutral fill**, while every status chip is a tint.
-  It labels a framework code, a connector type, a count — it names a thing, it
-  does not report a state. Three neutral chips cannot be told apart by hue, so
-  it separates from the plain and the ghost chip on *lightness*, which a tint
-  cannot do: a tint composites toward the card and lands on top of them.
+- **`--info` moved off cyan** in dark (now blue `#60a5fa`) because the accent
+  *is* cyan there. In light the accent is blue, so `--info` is sky (`#0369a1`).
+- **Status chips are unchanged in kind**: tinted fills with their own ink
+  tokens, and `chip--brand` (a categorical tag) is the one solid neutral.
+- **Links still carry an underline** inside tables, so colour is never the only
+  link signal (WCAG 1.4.1).
 
 ## Themes
 
-`data-theme` on `<html>`, **dark by default**, persisted to storage. 109 root
-tokens, 42 dark overrides, 107 distinct. Geometry, type and layout metrics are
-deliberately theme-invariant and are not restated in the dark block; a second
-copy of `--radius: 10px` is a second thing to keep in sync.
+`data-theme` on `<html>`. **An explicit choice wins; with no choice the
+operating system decides**, and a change of OS preference is followed live.
+"Use system theme" (profile menu) forgets the choice. The server always sends
+`data-theme="dark"` and never varies the markup by theme; an inline script sets
+the real value before first paint. The previous rule was dark-for-everyone;
+the tests that pinned it now pin this one, including a node harness that runs
+the shipped `app.js` against a stubbed `matchMedia` in both directions.
 
 | Role | Light | Dark |
 |---|---|---|
-| Page / card / inset | `#f2f2f3` · `#ffffff` · `#e7e7e9` | `#0a0a0b` · `#161618` · `#242428` |
-| Text / secondary / muted | `#18181b` · `#51515a` · `#5f5f68` | `#f2f2f3` · `#b2b2b9` · `#9a9aa2` |
-| Accent (action, active, focus) | `#18181b` | `#fafafa` |
-| Categorical tag fill | `#26262c` on white | `#52525a` |
+| Page · rail · card · elevated | `#f5f7fc` · `#ffffff` · `#ffffff` · `#f0f4fa` | `#060b16` · `#091426` · `#101f35` · `#172b45` |
+| Text · secondary · muted | `#0f172a` · `#526075` · `#5a687d` | `#f8fafc` · `#a3b1c6` · `#94a3b8` |
+| Primary · secondary accent | `#2563eb` · `#7c3aed` | `#22d3ee` · `#8b5cf6` |
+| Success · warning · danger · info | `#047857` · `#b45309` · `#e11d48` · `#0369a1` | `#14b8a6` · `#f59e0b` · `#f43f5e` · `#60a5fa` |
 
-Neutrals are true greys. The previous scheme tinted every surface toward blue
-(`--bg: #f4f5f8`, `--bg-elevated: #161b25`), which is what read as "blue and
-black" far more than the accent did.
+The brief's secondary text (`#64748b` light, `#94a3b8` dark) is used as
+`--text-muted` in dark and stepped down in light, where `#64748b` does not
+reach AA on the elevated surface.
 
-## Colour that means something
+Measured by `tests/theme_tokens.py` against the stylesheet as committed
+(2026-10-20): text on card 17.85:1 light / 15.81:1 dark; secondary text on
+card 6.39 / 7.61; muted text on its worst surface 5.13 / 5.58; label on a
+filled accent 5.17 / 10.48. Worst pair of chip variants ΔE 12.5 light / 13.3
+dark (floor 10). Re-run the measurement rather than trusting these
+figures after any token change.
 
-| Token | Carries |
-|---|---|
-| `--success` / `--warning` / `--danger` | pass, attention, fail |
-| `--info` | deliberately **teal**, not a second blue — it must hold off `--success` as well as the accent |
-| `--sev-critical/high/moderate/low/none` | the severity ramp: five ordered steps, so it cannot fold into four statuses without losing one |
+## Charts
 
-The severity ramp is data-viz colour and lived as hex literals inside
-`dashboard.html`, which meant it never followed the theme. It is tokenised in
-both themes now.
+Server-rendered SVG macros in `templates/_viz.html` (`ring`, `stackbar`,
+`columns`, `riskgrid`, `sevlist`); no chart library. Every chart carries three
+channels for the same data: the marks with a hover/focus tooltip (`data-tip`),
+a legend or direct label, and a "View as table" disclosure.
 
-## Type
+`--series-1…4` are categorical, in a fixed order that alternates warm and cool
+(blue, orange, violet, aqua): blue beside violet is not separable under
+deuteranopia, so the brand pair is never adjacent in a chart. The order passes
+the dataviz palette validator (lightness band, chroma, adjacent-pair CVD ΔE,
+normal-vision floor, contrast) in both themes against `--bg-elevated`. Status
+charts (test pass/fail, framework posture) use status tokens, never series.
 
-System stack, no webfont and no network dependency. `--font-display` for page
-and card titles and KPI values, `--font-body` for everything else,
-`--font-mono` for control IDs and telemetry. Numerals are tabular wherever they
-are compared down a column.
+## The shell
 
-## Contrast is a requirement, not a preference
+- **One information architecture**: `ccf/api/navigation.py` drives the rail,
+  the breadcrumbs and the command palette. Every item is `live`, `partial`
+  (with a note on what is missing, shown as a tooltip and a tag) or `planned`
+  (routes to `/planned/<slug>`, which names the missing model and shows no
+  sample data). Items whose route is role-gated carry the same `audience`, so
+  the rail never offers a page that answers 403.
+- **Rail**: collapsible to icons (`[` or the button; persisted per browser),
+  an off-canvas drawer below 1024px. Still one `<nav>`.
+- **Top bar**: palette trigger (⌘K), theme switch, notification bell with an
+  unread badge and drawer, the signed-in user.
+- **Command palette**: pages from the IA plus org-scoped record search
+  (`/ui/search`). Keyboard: ⌘K, `/`, `[`, `g` then a letter, `?`, Esc.
+- **Errors**: a browser that hits a 4xx gets the shell with what happened and
+  where to go; API clients keep their JSON (`ccf/api/errors.py`).
 
-AA in **both** themes: 4.5:1 body text, 3:1 large text, UI boundaries and
-meaningful fills. A compliance platform that publishes other people's control
-evidence should not fail its own accessibility controls.
+## Contrast and layout are tested, not eyeballed
 
-None of this is asserted by eye. `tests/theme_tokens.py` resolves the real
-stylesheet, and `tests/test_ui_shell.py` measures every foreground/background
-pair the tokens produce, failing with the pair and the ratio.
-
-## What the tests pin
-
-- Every one of the 54 pages renders the shell, in both themes.
-- **No two chip variants are visually identical** — every ordered pair, both
-  themes, CIEDE2000 floor of 10. The worst surviving pair is 15.3.
-- No page references a **CSS variable or class that is defined nowhere**. Both
-  are silent: the property simply does not apply and nothing logs it.
-  `--radius-md` was referenced by three templates and defined by none, so every
-  tile using it rendered square for as long as it existed, with a green suite.
-- Every colour token has an explicit dark value, and no theme-invariant token
-  is restated in the dark block.
+`tests/test_ui_shell.py` measures every text/surface pair, boundary and
+meaningful fill in both themes; checks chip distinctness, undefined CSS
+variables and classes, line-height on display type, and `fr` tracks that can
+overflow. A browser sweep (74 pages × 2 themes × 2 widths) found and fixed five
+pages that scrolled sideways on a phone and one link colour at 4.35:1.
 
 ## Out of scope
 
-The landing page (`landing.html`) and the printable questionnaire report
-(`questionnaire_report.html`) are standalone documents with their own local
-design systems. The landing page is monochrome with a single mint accent — a
-deliberate brand choice, in a different register from the application chrome.
+The landing page (`landing.html`), the external portal (`portal.html`) and the
+printable questionnaire report (`questionnaire_report.html`) are standalone
+documents with their own local styles.

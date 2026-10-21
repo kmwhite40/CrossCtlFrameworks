@@ -438,6 +438,10 @@ class System(Base):
         default="none",
     )
     ato_expires_on: Mapped[date | None] = mapped_column(Date)
+    #: Organizational placement (0099); NULL until someone assigns it.
+    business_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.business_units.id", ondelete="SET NULL")
+    )
     # DATA-04: soft-delete marker (see Organization.deleted_at). Set instead of
     # a hard DELETE so the CASCADE to poams/assessments/evidence/implementations/
     # risks never fires; NULL means active.
@@ -1036,6 +1040,20 @@ class Risk(Base):
         Enum("open", "mitigated", "accepted", "closed", name="risk_status", schema="ccf"),
         default="open",
     )
+    # Five-point likelihood and impact (0099). The three-level enums above
+    # remain for compatibility and are kept in step: 1-2 low, 3 moderate,
+    # 4-5 high. Existing rows were backfilled 1/3/5, the values compute_scores
+    # already used for low/moderate/high, so no score changed.
+    likelihood_score: Mapped[int | None] = mapped_column(Integer)
+    impact_score: Mapped[int | None] = mapped_column(Integer)
+    # Owning organization (0100). A risk on a system inherits the system's
+    # organization (a trigger fills it); an enterprise risk has no system and
+    # is owned directly -- before 0100 such a risk belonged to no tenant.
+    organization_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    #: enterprise|cyber (0100). Backfilled: no system -> enterprise, else cyber.
+    register: Mapped[str] = mapped_column(String(16), default="cyber")
     # Quantitative scoring (likelihood x impact on a 1-5 scale, 1-25 exposure).
     inherent_score: Mapped[int | None] = mapped_column(Integer)
     residual_score: Mapped[int | None] = mapped_column(Integer)
@@ -2086,6 +2104,8 @@ from . import (  # noqa: E402
     models_enforcement,
     models_grc,
     models_patching,
+    models_program,
+    models_tprm,
     models_waivers,
 )
 
@@ -2097,6 +2117,8 @@ CROSS_MODULE_MODEL_MODULES = (
     models_enforcement,
     models_grc,
     models_patching,
+    models_program,
+    models_tprm,
     models_waivers,
 )
 

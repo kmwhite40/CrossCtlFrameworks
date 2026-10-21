@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Strategic Objectives · Concord{% endblock %}
+{% block heading %}Strategic objectives{% endblock %}
+{% block subtitle %}What the organization is working toward, who owns it, how it is measured and what it touches: risks, controls, systems, policies and KRIs. Status is set by people and every change is recorded.{% endblock %}
+{% block content %}
+{% set link_names = {'risk': ('risk', 'risks'), 'control': ('control', 'controls'), 'system': ('system', 'systems'), 'policy': ('policy', 'policies'), 'kri': ('KRI', 'KRIs')} %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Objectives</span><span class="kpi__value">{{ total }}</span><span class="kpi__meta">all statuses</span></div>
+  <div class="kpi"><span class="kpi__label">On track</span><span class="kpi__value">{{ counts.get('on_track', 0) }}</span><span class="kpi__meta">of {{ total }}</span></div>
+  <div class="kpi"><span class="kpi__label">At risk or off track</span><span class="kpi__value">{{ counts.get('at_risk', 0) + counts.get('off_track', 0) }}</span><span class="kpi__meta">of {{ total }}</span></div>
+  <div class="kpi"><span class="kpi__label">Achieved</span><span class="kpi__value">{{ counts.get('achieved', 0) }}</span><span class="kpi__meta">of {{ total }}</span></div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head">
+    <h2 class="panel__title">Objectives</h2>
+    <form method="get" action="/objectives" class="row" style="gap:6px">
+      <select class="select select--sm" name="status" aria-label="Filter by status">
+        <option value="">All statuses ({{ total }})</option>
+        {% for s in statuses %}<option value="{{ s }}"{% if s == status %} selected{% endif %}>{{ s | replace('_', ' ') }} ({{ counts.get(s, 0) }})</option>{% endfor %}
+      </select>
+      <button class="btn btn--ghost btn--sm" type="submit">Filter</button>
+    </form>
+  </header>
+  {% if rows %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Objective</th><th>Owner</th><th>Target</th><th>Status</th><th>Measure</th><th>Linked</th></tr></thead>
+    <tbody>{% for r in rows %}<tr id="objective-{{ r.objective.id }}" data-links="{{ r.links.values() | sum }}">
+      <td><a href="/objectives/{{ r.objective.id }}"><strong>{{ r.objective.title }}</strong></a></td>
+      <td>{{ r.owner or '—' }}</td>
+      <td>{% if r.objective.target_on %}<span class="{% if r.late %}kanban__due--late{% endif %}">{{ r.objective.target_on }}{% if r.late %} · passed{% endif %}</span>{% else %}—{% endif %}</td>
+      <td><span class="chip {% if r.objective.status == 'on_track' or r.objective.status == 'achieved' %}chip--ok{% elif r.objective.status == 'at_risk' %}chip--warn{% elif r.objective.status == 'off_track' %}chip--err{% else %}chip--ghost{% endif %}">{{ r.objective.status | replace('_', ' ') }}</span></td>
+      <td><span class="dim clamp-3" style="max-width:40ch;display:block">{{ r.objective.measure or '—' }}</span></td>
+      <td>{% if r.links %}{% for t, n in r.links | dictsort %}<span class="chip chip--ghost">{{ n }} {{ (link_names[t][0] if n == 1 else link_names[t][1]) }}</span> {% endfor %}{% else %}<span class="dim">none</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% elif total %}
+  <p class="panel__empty">No objective is {{ status | replace('_', ' ') }}. <a href="/objectives">Show all</a>.</p>
+  {% else %}
+  <div class="empty-state">
+    <h2>No strategic objectives yet</h2>
+    <p>Concord has no record of what this organization is working toward. {% if can_write %}Add the first objective below, then link the risks, controls, systems, policies and KRIs it depends on.{% else %}An administrator or control owner can add objectives here.{% endif %}</p>
+  </div>
+  {% endif %}
+</article>
+
+{% if can_write %}
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Add an objective</h2><span class="panel__hint">starts as planned</span></header>
+  <form method="post" action="/objectives" class="card__body filters">
+    <div class="field-group"><label class="label" for="o-title">Title</label><input id="o-title" class="input" name="title" required maxlength="255"></div>
+    <div class="field-group"><label class="label" for="o-owner">Owner</label>
+      <select id="o-owner" class="select" name="owner_user_id"><option value="">— none —</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+    <div class="field-group"><label class="label" for="o-target">Target date</label><input id="o-target" class="input" type="date" name="target_on"></div>
+    <div class="field-group" style="grid-column:1/-1"><label class="label" for="o-measure">Measure</label><input id="o-measure" class="input" name="measure" placeholder="How progress is judged"></div>
+    <div class="field-group" style="grid-column:1/-1"><label class="label" for="o-desc">Description</label><textarea id="o-desc" class="input" name="description" rows="3"></textarea></div>
+    <button class="btn btn--primary" type="submit">Add objective</button>
+  </form>
+</article>
+{% endif %}
+{% endblock %}

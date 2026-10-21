@@ -145,6 +145,16 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         # 0070 waivers -- tenant-owned with its own organization_id, so
         # policied directly rather than through a parent chain.
         "waivers", "webhooks",
+        # 0099 GRC program build-out: every table carries its own
+        # organization_id (children included), policied directly.
+        "audit_workpapers", "business_units", "committee_meetings", "committee_members",
+        "committees", "compensating_controls", "compliance_obligations",
+        "contract_obligations", "due_diligence_items", "key_risk_indicators",
+        "kri_readings", "objective_links", "posture_snapshots", "project_links",
+        "projects", "risk_appetites", "strategic_objectives", "team_members", "teams",
+        "vendor_contracts", "vendor_findings",
+        # 0100 risk program: assessments and treatment, organization-owned.
+        "risk_assessments", "risk_treatment_actions", "risk_treatment_plans",
     }
 )
 
@@ -188,7 +198,7 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 143
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 167  # 143 + 21 (0099) + 3 (0100)
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

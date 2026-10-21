@@ -297,13 +297,12 @@ async def _poams(session: AsyncSession, org_id: int, g: _Graph) -> None:
 
 
 async def _risks(session: AsyncSession, org_id: int, g: _Graph) -> None:
+    from ..analytics.posture import risk_in_scope  # noqa: PLC0415
     from ..models import Risk  # noqa: PLC0415
 
-    sys_ids = await _live_system_ids(session, org_id)
-    if not sys_ids:
-        return
+    # Enterprise risks (no system) are nodes too; they just threaten no system.
     for r in (
-        await session.execute(select(Risk).where(Risk.system_id.in_(sys_ids)))
+        await session.execute(select(Risk).where(risk_in_scope(org_id)))
     ).scalars().all():
         rk = g.node("risk", r.id, r.title, r.status, system_id=r.system_id)
         if r.system_id is not None:

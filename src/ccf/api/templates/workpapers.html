@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}{% if wp %}{{ wp.title }} · Workpaper{% else %}Audit Workpapers{% endif %} · Concord{% endblock %}
+{% block heading %}{% if wp %}{{ wp.title }}{% else %}Audit workpapers{% endif %}{% endblock %}
+{% block subtitle %}{% if wp %}<p class="page__subtitle">Workpaper in <a href="/audit-workspace/{{ engagement.id }}">{{ engagement.name }}</a> · prepared by {{ wp.prepared_by or '—' }}</p>{% else %}<p class="page__subtitle">Test procedures and their results, per audit engagement. A workpaper is prepared, submitted for review, and finalised by a reviewer who did not prepare it; once final it is read-only.</p>{% endif %}{% endblock %}
+{% block actions %}{% if wp %}<a class="btn btn--ghost" href="/audit/workpapers?engagement={{ engagement.id }}"><i data-lucide="arrow-left"></i> Workpapers for this engagement</a>{% elif selected %}<a class="btn btn--ghost" href="/audit-workspace/{{ selected.id }}"><i data-lucide="arrow-left"></i> {{ selected.name }}</a>{% endif %}{% endblock %}
+{% block content %}
+{% if wp %}
+{# ── one workpaper ── #}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Status</span><span class="kpi__value">{{ wp.status | replace('_',' ') }}</span></div>
+  <div class="kpi"><span class="kpi__label">Conclusion</span><span class="kpi__value">{{ (wp.conclusion or '—') | replace('_',' ') }}</span></div>
+  <div class="kpi"><span class="kpi__label">Sample size</span><span class="kpi__value">{{ wp.sample_size if wp.sample_size is not none else '—' }}</span></div>
+  <div class="kpi"><span class="kpi__label">Exceptions found</span><span class="kpi__value">{{ wp.exceptions_found if wp.exceptions_found is not none else '—' }}</span><span class="kpi__meta">{% if wp.sample_size %}in a sample of {{ wp.sample_size }}{% else %}no sample recorded{% endif %}</span></div>
+</section>
+
+<div class="layout-split-r">
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Procedure and result</h2>
+      <span class="chip {% if wp.status == 'final' %}chip--ok{% elif wp.status == 'in_review' %}chip--warn{% else %}chip--ghost{% endif %}">{{ wp.status | replace('_',' ') }}</span></header>
+    {% if wp.status == 'draft' and is_preparer %}
+    <form method="post" action="/audit/workpapers/{{ wp.id }}/edit" class="card__body stack">
+      <label class="field-group"><span class="label">Title</span><input class="input" name="title" required value="{{ wp.title }}"></label>
+      <label class="field-group"><span class="label">Control</span><input class="input" name="control_id" value="{{ wp.control_id or '' }}" placeholder="e.g. AC-2"></label>
+      <label class="field-group"><span class="label">Procedure</span><textarea class="input" name="procedure" rows="4">{{ wp.procedure or '' }}</textarea></label>
+      <div class="filters">
+        <label class="field-group"><span class="label">Sample size</span><input class="input" type="number" min="0" name="sample_size" value="{{ wp.sample_size if wp.sample_size is not none else '' }}"></label>
+        <label class="field-group"><span class="label">Exceptions found</span><input class="input" type="number" min="0" name="exceptions_found" value="{{ wp.exceptions_found if wp.exceptions_found is not none else '' }}"></label>
+        <label class="field-group"><span class="label">Conclusion</span>
+          <select class="select" name="conclusion"><option value="">Not yet concluded</option>
+            {% for c in conclusions %}<option value="{{ c }}" {% if wp.conclusion == c %}selected{% endif %}>{{ c | replace('_',' ') }}</option>{% endfor %}
+          </select></label>
+      </div>
+      <label class="field-group"><span class="label">Evidence references (one per line)</span><textarea class="input" name="evidence_refs" rows="3">{{ (wp.evidence_refs or []) | join('\n') }}</textarea></label>
+      <div class="row"><button class="btn btn--primary" type="submit"><i data-lucide="save"></i> Save draft</button></div>
+    </form>
+    {% else %}
+    <div class="card__body stack">
+      <div><span class="label">Control</span><div class="mono">{{ wp.control_id or '—' }}</div></div>
+      <div><span class="label">Procedure</span><div>{{ wp.procedure or '—' }}</div></div>
+      <div><span class="label">Evidence references</span>
+        {% if wp.evidence_refs %}<ul>{% for ref in wp.evidence_refs %}<li class="mono">{{ ref }}</li>{% endfor %}</ul>{% else %}<div class="dim">None recorded.</div>{% endif %}</div>
+      {% if wp.status == 'draft' %}<p class="dim">Only the preparer, {{ wp.prepared_by or 'unrecorded' }}, edits a draft.</p>{% endif %}
+    </div>
+    {% endif %}
+  </article>
+
+  <aside class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Review</h2></header>
+    <div class="card__body stack">
+      <div><span class="label">Prepared by</span><div>{{ wp.prepared_by or '—' }}</div></div>
+      <div><span class="label">Reviewed by</span><div>{{ wp.reviewed_by or '—' }}{% if wp.reviewed_at %}<span class="dim"> · {{ wp.reviewed_at.strftime('%Y-%m-%d %H:%M') }}</span>{% endif %}</div></div>
+      {% if wp.status == 'draft' %}
+      <form method="post" action="/audit/workpapers/{{ wp.id }}/submit"><button class="btn btn--secondary" type="submit"><i data-lucide="send"></i> Submit for review</button></form>
+      {% elif wp.status == 'in_review' %}
+      {% if is_preparer %}
+      <p class="dim">You prepared this workpaper, so another reviewer must finalise it.</p>
+      {% elif wp.conclusion is none %}
+      <p class="dim">No conclusion is recorded; return it to the preparer to conclude before it can be finalised.</p>
+      {% else %}
+      <form method="post" action="/audit/workpapers/{{ wp.id }}/finalise"><button class="btn btn--primary" type="submit"><i data-lucide="badge-check"></i> Finalise</button></form>
+      {% endif %}
+      <form method="post" action="/audit/workpapers/{{ wp.id }}/return"><button class="btn btn--ghost" type="submit"><i data-lucide="undo-2"></i> Return to draft</button></form>
+      {% else %}
+      <p class="dim">Final. This workpaper is read-only.</p>
+      {% endif %}
+    </div>
+  </aside>
+</div>
+
+{% else %}
+{# ── the register ── #}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Workpapers</span><span class="kpi__value">{{ rows | length }}</span><span class="kpi__meta">{% if selected %}in {{ selected.name }}{% else %}across every engagement{% endif %}</span></div>
+  <div class="kpi"><span class="kpi__label">Draft</span><span class="kpi__value">{{ counts.draft }}</span></div>
+  <div class="kpi"><span class="kpi__label">In review</span><span class="kpi__value">{{ counts.in_review }}</span></div>
+  <div class="kpi"><span class="kpi__label">Final</span><span class="kpi__value">{{ counts.final }}</span></div>
+</section>
+
+<form method="get" action="/audit/workpapers" class="filters">
+  <label class="field-group"><span class="label">Engagement</span>
+    <select class="select" name="engagement"><option value="">All engagements</option>
+      {% for e in engagements %}<option value="{{ e.id }}" {% if selected and selected.id == e.id %}selected{% endif %}>{{ e.name }}</option>{% endfor %}
+    </select></label>
+  <button class="btn btn--secondary" type="submit"><i data-lucide="filter"></i> Show</button>
+</form>
+
+<div class="layout-split-r">
+  <div id="workpaper-table">
+    {% if rows %}
+    <div class="table-wrap"><table>
+      <thead><tr><th>Workpaper</th>{% if not selected %}<th>Engagement</th>{% endif %}<th>Control</th><th>Status</th><th>Conclusion</th><th>Prepared by</th><th>Reviewed by</th></tr></thead>
+      <tbody>{% for w, eng_name in rows %}<tr>
+        <td><a href="/audit/workpapers/{{ w.id }}"><strong>{{ w.title }}</strong></a></td>
+        {% if not selected %}<td>{{ eng_name }}</td>{% endif %}
+        <td class="mono">{{ w.control_id or '—' }}</td>
+        <td><span class="chip {% if w.status == 'final' %}chip--ok{% elif w.status == 'in_review' %}chip--warn{% else %}chip--ghost{% endif %}">{{ w.status | replace('_',' ') }}</span></td>
+        <td>{% if w.conclusion %}<span class="chip {% if w.conclusion == 'effective' %}chip--ok{% elif w.conclusion == 'ineffective' %}chip--err{% else %}chip--ghost{% endif %}">{{ w.conclusion | replace('_',' ') }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>{{ w.prepared_by or '—' }}</td>
+        <td>{{ w.reviewed_by or '—' }}</td>
+      </tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}
+    <div class="card empty-state"><i data-lucide="notebook-pen"></i><h2>No workpapers</h2><p>No workpaper is recorded {% if selected %}for {{ selected.name }}{% else %}for this organization's engagements{% endif %}. An administrator or assessor adds the first with the form beside this list.</p></div>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/audit/workpapers" class="card" id="new">
+    <div class="card__header"><div class="card__title">New workpaper</div></div>
+    <div class="card__body stack">
+      {% if engagements %}
+      <label class="field-group"><span class="label">Engagement *</span>
+        <select class="select" name="engagement_id" required>
+          {% for e in engagements %}<option value="{{ e.id }}" {% if selected and selected.id == e.id %}selected{% endif %}>{{ e.name }}</option>{% endfor %}
+        </select></label>
+      <label class="field-group"><span class="label">Title *</span><input class="input" name="title" required></label>
+      <label class="field-group"><span class="label">Control</span><input class="input" name="control_id" placeholder="e.g. AC-2"></label>
+      <label class="field-group"><span class="label">Procedure</span><textarea class="input" name="procedure" rows="3"></textarea></label>
+      <label class="field-group"><span class="label">Sample size</span><input class="input" type="number" min="0" name="sample_size"></label>
+      <button class="btn btn--primary" type="submit"><i data-lucide="plus"></i> Prepare workpaper</button>
+      {% else %}
+      <p class="dim">Workpapers belong to an audit engagement. <a href="/audit-workspace">Open an engagement</a> first.</p>
+      {% endif %}
+    </div>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

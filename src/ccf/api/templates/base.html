@@ -5,15 +5,22 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <meta name="color-scheme" content="dark light" />
   <title>{% block title %}Concord{% endblock %}</title>
-  {#- Theme applied before first paint. app.js is deferred, so without this the
-      page would paint light and then flip. Inline, not a file: a round trip
-      here is the flash. CSP already allows 'unsafe-inline' for scripts. -#}
+  {#- Theme and rail state applied before first paint. app.js is deferred, so
+      without this the page would paint in the markup default and then flip.
+      Inline, not a file: a round trip here is the flash.
+
+      An explicit choice ('light' or 'dark' in localStorage) always wins. With
+      no choice the operating system decides, and a storage that throws is the
+      same as no choice. The server never varies the markup by theme. -#}
   <script>
     (function () {
-      try {
-        var t = localStorage.getItem('concord:theme');
-        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
-      } catch (e) { /* private mode: the markup default (dark) stands */ }
+      var d = document.documentElement, t = null, r = null;
+      try { t = localStorage.getItem('concord:theme'); r = localStorage.getItem('concord:rail'); } catch (e) {}
+      if (t !== 'light' && t !== 'dark') {
+        t = (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'light' : 'dark';
+      }
+      d.setAttribute('data-theme', t);
+      if (r === 'collapsed') d.setAttribute('data-rail', 'collapsed');
     })();
   </script>
   <link rel="icon" type="image/svg+xml" href="/static/img/logo-mark.svg?v={{ asset_v }}" />
@@ -29,127 +36,55 @@
 <a class="skip-link" href="#main">Skip to content</a>
 
 {#- ─────────────────────────────────────────────────────────────────────────
-    Information architecture. One source of truth drives the sidebar, the
-    section nav and the command palette. `members` are the route `active` keys
-    that belong to a product area; `links` are that area's sub-navigation (a
-    `key` marks the active link).
-
-    Membership and ordering are NOT a presentation decision and are unchanged
-    by the sidebar redesign — if the grouping is wrong that is a separate
-    change with its own evidence.
+    Information architecture lives in ccf/api/navigation.py (`nav`), the one
+    source for this rail, the breadcrumbs, the command palette and the
+    "planned" pages. A route passes `active`; exactly one item owns each key.
    ───────────────────────────────────────────────────────────────────────── -#}
-{#- Primary navigation, organized by the authorization lifecycle:
-    define compliance → authorize systems → operate the program → report. -#}
-{% set nav_groups = [
-  {'key':'workspace','label':'Workspace','href':'/workspace','icon':'route','members':['workspace'],'links':[]},
-  {'key':'dashboard','label':'Gaps','href':'/dashboard','icon':'layout-dashboard','members':['dashboard'],'links':[]},
-  {'key':'compliance','label':'Compliance','href':'/posture','icon':'shield-check',
-   'members':['posture','controls','frameworks','coverage','mappings','search','worksheets','diff','packs'],
-   'links':[
-     {'key':'posture','label':'Overview','href':'/posture','desc':'Compliance posture across frameworks.'},
-     {'key':'controls','label':'Controls','href':'/controls','desc':'Browse NIST, CMMC, FedRAMP, CIS, and ISO controls.'},
-     {'key':'frameworks','label':'Frameworks','href':'/frameworks','desc':'Manage source frameworks and baselines.'},
-     {'key':'coverage','label':'Coverage','href':'/coverage','desc':'Review coverage gaps and inherited controls.'},
-     {'key':'mappings','label':'Mappings','href':'/mappings','desc':'Search crosswalks and control relationships.'},
-     {'key':'packs','label':'Compliance packs','href':'/packs','desc':'Install framework/control/evidence/rule packs.'},
-     {'key':'search','label':'Search','href':'/search','desc':'Full-text search across the catalog.'},
-     {'key':'worksheets','label':'Worksheets','href':'/worksheets','desc':'View the source workbook tabs.'},
-     {'key':'diff','label':'Workbook diff','href':'/diff','desc':'Compare workbook versions.'}]},
-  {'key':'authorization','label':'Authorization','href':'/systems','icon':'file-check',
-   'members':['systems','intake','ssp','assessments','scoring','fedramp20x','assurance','graph'],
-   'links':[
-     {'key':'systems','label':'Systems','href':'/systems','desc':'Systems, ownership, and boundaries.'},
-     {'key':'boundary','label':'Boundary & inventory','href':'/systems','desc':'Components, inventory, information types, and interconnections per system, with auto-rendered Mermaid diagrams.'},
-     {'key':'intake','label':'System intake','href':'/intake','desc':'Onboard a new system.'},
-     {'key':'ssp','label':'SSP builder','href':'/ssp','desc':'Compose system security plans.'},
-     {'key':'assessments','label':'Assessments','href':'/assessments','desc':'Run assessments and view findings.'},
-     {'key':'scoring','label':'Live scoring','href':'/scoring','desc':'Score controls in real time.'},
-     {'key':'fedramp20x','label':'FedRAMP 20x / KSI','href':'/fedramp20x','desc':'Key Security Indicators, validation, and 20x readiness.'},
-     {'key':'assurance','label':'Assurance graph','href':'/assurance','desc':'Authorization digital twin + impact analysis.'},
-     {'key':'graph','label':'Compliance graph','href':'/graph','desc':'One system drawn as a graph: every link sourced, nothing inferred.'}]},
-  {'key':'operations','label':'Operations','href':'/governance','icon':'activity',
-   'members':['governance','evidence','ingestions','evidence_repo','scans','controltests','poams','risks','connectors','personnel','questionnaires','ai_agents','auditws','regulatory','tasks','diagrams'],
-   'links':[
-     {'key':'governance','label':'Overview','href':'/governance','desc':'Command center for day-to-day compliance work.'},
-     {'key':'evidence_repo','label':'Evidence repository','href':'/evidence','desc':'Versioned evidence with review and WORM lock.'},
-     {'key':'ingestions','label':'Ingestions','href':'/ingestions','desc':'Workbook ingestion runs and provenance.'},
-     {'key':'scans','label':'Scan ingestion','href':'/scans','desc':'Import Nessus/Inspector/CSV scans → auto-POA&Ms.'},
-     {'key':'controltests','label':'Control tests','href':'/control-tests','desc':'Continuous control test definitions and results.'},
-     {'key':'poams','label':'POA&Ms','href':'/poams','desc':'Plan of action & milestones.'},
-     {'key':'risks','label':'Risks','href':'/risks','desc':'Risk register and residual risk.'},
-     {'key':'connectors','label':'Connectors','href':'/connectors','desc':'Cloud/SaaS evidence connectors.'},
-     {'key':'personnel','label':'Personnel & access','href':'/personnel','desc':'Onboarding, training, screening, and access reviews.'},
-     {'key':'questionnaires','label':'Vendor questionnaires','href':'/vendor-questionnaires','desc':'Third-party security assessments and risk scoring.'},
-     {'key':'ai_agents','label':'AI governance','href':'/ai-agents','desc':'Govern AI agents as privileged non-human actors.'},
-     {'key':'auditws','label':'Audit workspace','href':'/audit-workspace','desc':'Engagements, evidence requests, and findings.'},
-     {'key':'regulatory','label':'Regulatory change','href':'/regulatory','desc':'Track framework and regulatory updates.'},
-     {'key':'tasks','label':'Tasks','href':'/governance#tasks','desc':'Assign and track tasks.'},
-     {'key':'diagrams','label':'Diagrams','href':'/governance#diagrams','desc':'Boundary and data-flow diagrams.'}]},
-  {'key':'insights','label':'Insights','href':'/reports','icon':'bar-chart-3',
-   'members':['reports','executive','queries','trust','portaladmin','audit','reliability','selfassurance','catalogintegrity'],
-   'links':[
-     {'key':'reports','label':'Reports','href':'/reports','desc':'Generate and export compliance reports.'},
-     {'key':'executive','label':'Executive dashboard','href':'/executive','desc':'Consolidated posture, risk, POA&M, and data-quality rollup.'},
-     {'key':'queries','label':'Assurance queries','href':'/queries','desc':'Deterministic, reusable questions over the authorization data.'},
-     {'key':'trust','label':'Trust center','href':'/trust','desc':'Security posture summary and access requests.'},
-     {'key':'portaladmin','label':'External portal','href':'/admin/portal','desc':'Issue scoped, expiring external access to shared packages and evidence.'},
-     {'key':'audit','label':'Audit trail','href':'/audit','desc':'Immutable activity log.'},
-     {'key':'reliability','label':'Reliability','href':'/admin/reliability','desc':'System reliability and readiness checks.'},
-     {'key':'catalogintegrity','label':'Catalog integrity','href':'/catalog/integrity','desc':'OSCAL 800-53r5 control-read reconciliation report.'},
-     {'key':'selfassurance','label':'Self-assurance','href':'/admin/self-assurance','desc':'Concord assessing Concord — controls, evidence, package.'}]}
-] %}
-{#- Pinned quick-access: reachable in one click from anywhere, never buried. -#}
-{% set nav_pinned = [
-  {'label':'Executive','href':'/executive'},
-  {'label':'FedRAMP 20x','href':'/fedramp20x'},
-  {'label':'AI Gov','href':'/ai-agents'}
-] %}
-{#- The workspace destinations the chrome has always carried outside the
-    lifecycle groups. They keep their home at the foot of the rail. -#}
-{% set nav_workspace = [
-  {'key':'users','label':'Users','href':'/users'},
-  {'key':'settings','label':'Settings','href':'/settings'},
-  {'key':'apidocs','label':'API docs','href':'/docs'}
-] %}
-{% set ns = namespace(cur=none) %}
-{% for g in nav_groups %}{% if active in g.members %}{% set ns.cur = g %}{% endif %}{% endfor %}
+{%- set here = nav_locate(active) -%}
+{%- set here_group = here[0] -%}
+{%- set here_item = here[1] -%}
+{%- set who = shell_principal(request) -%}
+{%- set who_email = (who.email if who and who.email else '') -%}
 
 <div class="appshell">
   <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
-    <a href="/" class="sidebar__brand">
-      <img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="26" height="26" />
-      <span>Concord</span>
-    </a>
+    <div class="sidebar__top">
+      <a href="/dashboard" class="sidebar__brand" aria-label="Concord home">
+        <img src="/static/img/logo-mark.svg?v={{ asset_v }}" alt="" width="28" height="28" />
+        <span class="sidebar__wordmark">Concord</span>
+      </a>
+      <button type="button" class="sidebar__collapse" onclick="toggleRail()" aria-controls="sidebar"
+              aria-pressed="false" aria-label="Collapse navigation" title="Collapse navigation ( [ )">
+        <i data-lucide="panel-left-close"></i>
+      </button>
+    </div>
 
     <div class="sidebar__scroll">
       <nav class="sidebar__pinned" aria-label="Quick access">
-        {% for p in nav_pinned %}<a href="{{ p.href }}">{{ p.label }}</a>{% endfor %}
+        {% for label, href in nav_pinned %}<a href="{{ href }}">{{ label }}</a>{% endfor %}
       </nav>
 
       <nav aria-label="Sections">
-        {% for g in nav_groups %}
-        {%- set g_here = (active in g.members) or (g.links | selectattr('key','equalto',active) | list | length > 0) -%}
-        {% if g.links %}
-        <details class="sidebar__group" {% if g_here %}open{% endif %}>
-          <summary class="sidebar__heading">
-            {{ g.label }}<i data-lucide="chevron-right" class="sidebar__caret"></i>
+        {% for g in nav %}
+        {%- set g_here = here_group is not none and here_group.key == g.key -%}
+        <details class="sidebar__group" data-group="{{ g.key }}" {% if g_here %}open{% endif %}>
+          <summary class="sidebar__heading" title="{{ g.label }}">
+            <i data-lucide="{{ g.icon }}" class="sidebar__gicon"></i>
+            <span class="sidebar__glabel">{{ g.label }}</span>
+            <i data-lucide="chevron-right" class="sidebar__caret"></i>
           </summary>
           <div class="sidebar__items">
-            {% for l in g.links %}
-            <a class="sidebar__link" href="{{ l.href }}" title="{{ l.desc }}"
-               {% if l.key == active %}aria-current="page"{% endif %}><span>{{ l.label }}</span></a>
+            {% for l in g['items'] if nav_visible(l, who) %}
+            <a class="sidebar__link{% if l.status != 'live' %} sidebar__link--{{ l.status }}{% endif %}" href="{{ l.href }}"
+               {% if l.note %}title="{{ l.note }}"{% endif %}
+               {% if l.key == active %}aria-current="page"{% endif %}>
+              <span>{{ l.label }}</span>
+              {%- if l.status == 'partial' %}<small class="sidebar__tag">Partial</small>
+              {%- elif l.status == 'planned' %}<small class="sidebar__tag sidebar__tag--planned">Planned</small>{% endif %}
+            </a>
             {% endfor %}
           </div>
         </details>
-        {% else %}
-        <div class="sidebar__group">
-          <div class="sidebar__items">
-            <a class="sidebar__link" href="{{ g.href }}"
-               {% if g_here %}aria-current="page"{% endif %}>
-              <i data-lucide="{{ g.icon }}"></i><span>{{ g.label }}</span></a>
-          </div>
-        </div>
-        {% endif %}
         {% endfor %}
       </nav>
     </div>
@@ -157,19 +92,18 @@
     <div class="sidebar__footer">
       <button type="button" class="sidebar__profile" aria-haspopup="true" aria-expanded="false"
               aria-controls="workspace-menu" onclick="toggleWorkspaceMenu(this)">
-        <span class="sidebar__avatar" aria-hidden="true">C</span>
+        <span class="sidebar__avatar" aria-hidden="true">{{ (who_email[:2] if who_email else 'C') | upper }}</span>
         <span class="sidebar__who">
-          <strong>Concord workspace</strong>
-          <small>{% if settings.readonly %}Read-only{% else %}Signed in{% endif %}</small>
+          <strong>{{ who_email or 'Concord workspace' }}</strong>
+          <small>{% if who and who.role %}{{ who.role | replace('_', ' ') | capitalize }}{% elif settings.readonly %}Read-only{% else %}Signed in{% endif %}</small>
         </span>
       </button>
       <div class="sidebar__menu" id="workspace-menu" role="menu" aria-label="Workspace">
         <div class="menu-list">
-          {% for w in nav_workspace %}
-          <a class="menu-list__item" role="menuitem" href="{{ w.href }}"
-             {% if w.key == active %}aria-current="page"{% endif %}>{{ w.label }}</a>
-          {% endfor %}
-          <button type="button" class="menu-list__item" role="menuitem" onclick="toggleTheme()">Toggle theme</button>
+          <a class="menu-list__item" role="menuitem" href="/settings/security">Security &amp; MFA</a>
+          <a class="menu-list__item" role="menuitem" href="/docs">API reference</a>
+          <button type="button" class="menu-list__item" role="menuitem" onclick="setTheme('system')">Use system theme</button>
+          {% if who %}<button type="button" class="menu-list__item" role="menuitem" onclick="signOut()">Sign out</button>{% endif %}
           {% if settings.readonly %}<span class="menu-list__note">Read-only workspace</span>{% endif %}
         </div>
       </div>
@@ -184,39 +118,47 @@
               aria-controls="sidebar" onclick="toggleMobileNav()">
         <i data-lucide="menu"></i>
       </button>
-      <button type="button" class="topbar__search" onclick="openPalette()" aria-label="Search Concord">
+      <button type="button" class="topbar__search" onclick="openPalette()" aria-label="Search Concord (Command K)">
         <i data-lucide="search"></i>
-        <span>Search systems, controls, evidence…</span>
+        <span>Search risks, controls, systems, evidence…</span>
         <kbd>⌘K</kbd>
       </button>
       <div class="topbar__tools">
-        <button type="button" class="topbar__icon" onclick="toggleTheme()" aria-label="Toggle theme" title="Toggle theme">
-          <i data-lucide="sun-moon"></i>
+        <div class="themeswitch" role="group" aria-label="Theme">
+          <button type="button" class="themeswitch__opt" data-theme-opt="light" onclick="setTheme('light')" aria-label="Light theme" title="Light theme"><i data-lucide="sun"></i></button>
+          <button type="button" class="themeswitch__opt" data-theme-opt="dark" onclick="setTheme('dark')" aria-label="Dark theme" title="Dark theme"><i data-lucide="moon"></i></button>
+        </div>
+        {% if who %}
+        <button type="button" class="topbar__icon topbar__bell" aria-label="Notifications" aria-haspopup="dialog"
+                aria-controls="notif-panel" aria-expanded="false" onclick="toggleNotifications(this)" title="Notifications (g n)">
+          <i data-lucide="bell"></i>
+          <span class="topbar__badge" id="notif-badge" hx-get="/ui/notifications/badge" hx-trigger="load, notif-changed from:body" hx-swap="outerHTML"></span>
         </button>
+        <div class="topbar__user" title="{{ who_email }}">
+          <span class="topbar__avatar" aria-hidden="true">{{ (who_email[:2] if who_email else 'C') | upper }}</span>
+          <span class="topbar__userinfo"><strong>{{ who_email.split('@')[0] if who_email else 'Workspace' }}</strong><small>{{ (who.role or '') | replace('_', ' ') | capitalize }}</small></span>
+        </div>
+        {% endif %}
       </div>
     </header>
 
-    {#- Section navigation — auto-rendered for the current product area. A page
-        may override this block to supply its own section nav. -#}
-    {% block section_nav %}
-    {% if ns.cur and ns.cur.links %}
-    <nav class="sectionnav" aria-label="Section navigation">
-      <div class="sectionnav__inner">
-        <span class="sectionnav__title">{{ ns.cur.label }}</span>
-        {% for l in ns.cur.links %}
-        <a class="sectionnav__link" href="{{ l.href }}"
-           {% if l.key == active %}aria-current="page"{% endif %}>{{ l.label }}</a>
-        {% endfor %}
-      </div>
-    </nav>
-    {% endif %}
-    {% endblock %}
+    {#- Kept as an empty, overridable block: one page supplies its own section nav. -#}
+    {% block section_nav %}{% endblock %}
 
     <main class="main" id="main" tabindex="-1">
-      {% block breadcrumbs %}{% endblock %}
+      {% block breadcrumbs %}
+      {% if here_group is not none %}
+      <nav class="breadcrumbs" aria-label="Breadcrumb">
+        <a href="/dashboard">Concord</a><i data-lucide="chevron-right"></i>
+        <span>{{ here_group.label }}</span><i data-lucide="chevron-right"></i>
+        <span aria-current="page">{{ here_item.label }}</span>
+        {% if here_item.status == 'partial' %}<span class="chip chip--ghost breadcrumbs__status" title="{{ here_item.note }}">Partial coverage</span>{% endif %}
+      </nav>
+      {% endif %}
+      {% endblock %}
 
       <section class="page-hero {% block hero_class %}{% endblock %}">
-        {% set _eyebrow %}{% block hero_eyebrow %}{{ ns.cur.label if ns.cur else '' }}{% endblock %}{% endset %}
+        {% set _eyebrow %}{% block hero_eyebrow %}{% endblock %}{% endset %}
         {% if _eyebrow|trim %}<p class="eyebrow">{{ _eyebrow }}</p>{% endif %}
         <h1 class="page-hero__title page__title">{% block hero_title %}{% block heading %}{% endblock %}{% endblock %}</h1>
         <div class="page-hero__copy">{% block hero_subtitle %}{% block subtitle %}{% endblock %}{% endblock %}</div>
@@ -230,13 +172,35 @@
   </div>
 </div>
 
+{% if who %}
+<!-- Notification center -->
+<aside id="notif-panel" class="drawer" role="dialog" aria-modal="false" aria-labelledby="notif-title" hidden>
+  <div class="drawer__head">
+    <h2 class="drawer__title" id="notif-title">Notifications</h2>
+    <a class="btn btn--ghost btn--sm" href="/notifications">View all</a>
+    <button type="button" class="topbar__icon" aria-label="Close notifications" onclick="closeNotifications()"><i data-lucide="x"></i></button>
+  </div>
+  <div class="drawer__body" id="notif-body" hx-get="/ui/notifications/panel" hx-trigger="notif-open from:body" hx-swap="innerHTML">
+    <div class="skeleton" style="height:56px"></div>
+    <div class="skeleton" style="height:56px;margin-top:8px"></div>
+  </div>
+</aside>
+{% endif %}
+
 <!-- Command palette -->
 <div id="cmd-backdrop" class="cmd-backdrop" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
-  <div class="cmd" role="listbox">
-    <input aria-label="Type a command or search" id="cmd-input" class="cmd__input" placeholder="Type a command or search…" autocomplete="off" />
-    <div id="cmd-root" class="cmd__list"></div>
+  <div class="cmd">
+    <div class="cmd__bar">
+      <i data-lucide="search"></i>
+      <input aria-label="Type a command or search" id="cmd-input" class="cmd__input" placeholder="Jump to a page, or search records…"
+             autocomplete="off" role="combobox" aria-expanded="true" aria-controls="cmd-root" aria-autocomplete="list" />
+      <kbd>esc</kbd>
+    </div>
+    <div id="cmd-root" class="cmd__list" role="listbox" aria-label="Results"></div>
+    <div class="cmd__foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> open</span><span><kbd>g</kbd> <kbd>d</kbd> dashboard</span><span><kbd>[</kbd> rail</span><span><kbd>?</kbd> shortcuts</span></div>
   </div>
 </div>
+<script type="application/json" id="nav-data">{{ nav_palette(who) | tojson }}</script>
 
 </body>
 </html>

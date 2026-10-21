@@ -1,0 +1,32 @@
+{#- The notification list, shared by the drawer (compact) and /notifications.
+    Read-state writes go to the existing API (/api/notifications/...), which is
+    on the viewer allowlist and marks read for the caller only. -#}
+{% set sev_icon = {'critical': 'octagon-alert', 'warning': 'triangle-alert', 'info': 'info'} %}
+{% if box.entries %}
+<div class="drawer__actions">
+  <span class="dim" style="margin-right:auto;font-size:12.5px">{{ box.unread }} unread</span>
+  {% if box.unread %}
+  <button type="button" class="btn btn--ghost btn--sm" hx-post="/api/notifications/read-all" hx-swap="none"
+          data-refresh-notifs="{{ 'panel' if compact else 'page' }}">Mark all read</button>
+  {% endif %}
+</div>
+<ul class="feed">
+  {% for n in box.entries %}
+  {%- set is_read = n.id in box.read -%}
+  <li class="feed__item{% if not is_read %} feed__item--unread{% endif %}" id="notif-{{ n.id }}">
+    <span class="feed__icon feed__icon--{{ n.severity }}"><i data-lucide="{{ sev_icon.get(n.severity, 'bell') }}"></i></span>
+    <div class="feed__main">
+      <span class="feed__title" title="{{ n.title }}">{{ n.title }}</span>
+      <span class="feed__meta">{{ n.severity | capitalize }} · {{ n.category | replace('_', ' ') }} · <time datetime="{{ n.created_at.isoformat() }}" data-relative>{{ n.created_at.strftime('%b %-d, %H:%M') }}</time></span>
+      {% if not compact and n.body %}<span class="feed__body">{{ n.body }}</span>{% endif %}
+    </div>
+    {% if not is_read %}
+    <button type="button" class="btn btn--ghost btn--sm feed__act" hx-post="/api/notifications/{{ n.id }}/read" hx-swap="none"
+            data-refresh-notifs="{{ 'panel' if compact else 'page' }}" aria-label="Mark “{{ n.title }}” read">Mark read</button>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="panel__empty">No notifications{% if box.categories is defined and not compact %} match this view{% endif %}.</p>
+{% endif %}

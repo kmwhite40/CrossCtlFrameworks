@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Vendor Inventory · Concord{% endblock %}
+{% block heading %}Vendors{% endblock %}
+{% block subtitle %}Third parties, their criticality and rating, review cadence, latest questionnaire, open risks linked to them, and a composite risk score whose formula is shown below.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/vendor-questionnaires"><i data-lucide="clipboard-list"></i>Questionnaires</a>
+<a class="btn btn--ghost" href="/contracts"><i data-lucide="file-signature"></i>Contracts</a>
+<a class="btn btn--ghost" href="/due-diligence"><i data-lucide="list-checks"></i>Due diligence</a>
+<a class="btn btn--ghost" href="/vendor-findings"><i data-lucide="alert-triangle"></i>Findings</a>{% endblock %}
+{% block content %}
+{% if vendors %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Vendor</th><th>Criticality</th><th>Risk rating</th><th>Status</th><th>Latest questionnaire</th><th>Open risks</th><th>Risk score</th><th>Next review</th></tr></thead>
+  <tbody>{% for v in vendors %}{% set q = latest.get(v.id) %}
+  <tr id="vendor-{{ v.id }}">
+    <td><strong>{{ v.name }}</strong>{% if v.service_type %}<div class="dim" style="font-size:12px">{{ v.service_type }}{% if v.authorization %} · {{ v.authorization }}{% endif %}</div>{% endif %}</td>
+    <td><span class="sevchip sevchip--{{ {'critical':'critical','high':'high','medium':'moderate','moderate':'moderate','low':'low'}.get(v.criticality, 'none') }}">{{ v.criticality | capitalize }}</span></td>
+    <td>{% if v.risk_rating %}<span class="sevchip sevchip--{{ {'high':'high','moderate':'moderate','low':'low'}.get(v.risk_rating, 'none') }}">{{ v.risk_rating | capitalize }}</span>{% else %}<span class="dim">not rated</span>{% endif %}</td>
+    <td>{{ v.status | replace('_',' ') }}</td>
+    <td>{% if q %}<a href="/vendor-questionnaires/{{ q.id }}">{{ q.name }}</a><div class="dim" style="font-size:12px">{{ q.status }}{% if q.score is not none %} · score {{ '%.0f'|format(q.score) }}{% endif %}{% if counts[v.id] > 1 %} · {{ counts[v.id] }} total{% endif %}</div>{% else %}<span class="dim">none sent</span>{% endif %}</td>
+    <td data-open-risks="{{ risks.get(v.id, 0) }}">{{ risks.get(v.id, 0) }}</td>
+    {% set sc = scores.get(v.id) %}
+    <td data-score="{{ sc.score if sc else 'none' }}">{% if sc %}<strong title="Q {{ sc.q }} + F {{ sc.f }} + D {{ sc.d }} = {{ sc.subtotal }}, × {{ sc.weight }} ({{ sc.criticality or 'unset' }} criticality){% if sc.missing %}; {{ sc.missing | join(', ') }}{% endif %}">{{ sc.score }}</strong>{% if sc.partial %} <span class="chip chip--warn" title="No scored questionnaire: its part (up to 50) counts 0 because nothing was measured, not because the vendor is low risk">partial</span>{% endif %}
+      <div class="dim" style="font-size:12px">Q {{ sc.q }} + F {{ sc.f }} + D {{ sc.d }} = {{ sc.subtotal }} × {{ sc.weight }}{% if not sc.weight_known %} (criticality not on the scale; 1.0 used){% endif %}</div>
+      {% if sc.missing %}<div class="dim" style="font-size:12px">{{ sc.missing | join(', ') }}</div>{% endif %}
+    {% else %}<span class="dim" title="No scored questionnaire, no findings and no due-diligence items: nothing about this vendor has been measured.">—</span>{% endif %}</td>
+    <td>{% if v.next_review_on %}<span class="{% if v.next_review_on < today %}kanban__due--late{% endif %}">{{ v.next_review_on }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+  </tr>{% endfor %}</tbody></table></div>
+<section class="panel" id="vendor-scores" style="margin-top:16px">
+  <div class="panel__head"><h2 class="panel__title">How the vendor risk score is computed</h2></div>
+  <div class="panel__body">
+    <ul>{% for line in formula %}<li>{{ line }}</li>{% endfor %}</ul>
+    <p class="dim">Each score is arithmetic over records kept in Concord: the latest questionnaire with a score, findings recorded on <a href="/vendor-findings">Vendor Findings</a> and requests on <a href="/due-diligence">Due Diligence</a>. A missing input adds nothing and is named beside the score.</p>
+  </div>
+</section>
+{% else %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No vendors recorded</h2><p>Vendors are added through the API (<code>POST /api/vendors</code>) and assessed with questionnaires. None exist for this organization yet.</p></div>
+{% endif %}
+{% endblock %}

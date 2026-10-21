@@ -16,8 +16,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..constants import POAM_CLOSED_STATUSES, POAM_STATUSES, poam_leaves_risk_accepted
 from ..models import POAM, Policy, Risk, System, Vendor
-from .risk import band, compute_scores
+from .risk import band, compute_scores, resolve_axis, risk_in_scope
 
 FORMATS = ("csv", "json", "md")
 
@@ -50,14 +51,18 @@ async def _poams(session: AsyncSession, org_id: int | None) -> list[dict[str, An
 async def _risks(session: AsyncSession, org_id: int | None) -> list[dict[str, Any]]:
     stmt = select(Risk).order_by(Risk.id)
     if org_id is not None:
-        stmt = stmt.where(Risk.system_id.in_(_org_systems(org_id)))
+        # Enterprise risks (no system) are the organization's too; the one
+        # scope definition is governance.risk.risk_in_scope.
+        stmt = stmt.where(risk_in_scope(org_id))
     return [
         {
             "id": r.id,
             "title": r.title,
             "category": r.category,
             "likelihood": r.likelihood,
+            "likelihood_score": r.likelihood_score,
             "impact": r.impact,
+            "impact_score": r.impact_score,
             "treatment": r.treatment,
             "status": r.status,
             "inherent_score": r.inherent_score,
@@ -222,18 +227,84 @@ async def _first_system_id(session: AsyncSession, org_id: int | None) -> int | N
     return (await session.execute(stmt)).scalars().first()
 
 
+#: The statuses each register accepts, as its API validates them.
+_IMPORT_STATUSES: dict[type, tuple[str, ...]] = {
+    Risk: ("open", "mitigated", "accepted", "closed"),
+    POAM: POAM_STATUSES,
+}
+
+
+def _gated_status_change(model: type, old: str | None, new: str) -> str | None:
+    """Why an import may not make this status change, or None.
+
+    Accepting a risk, and closing a POA&M, accepting its risk or reopening an
+    accepted one, are each a decision the API makes only against a spent
+    approval (``risks._require_acceptance_gate``, ``poams`` + ``approvals.consume``).
+    A bulk file is not that decision: the row is refused and the record keeps
+    its status. Re-importing an unchanged status is not a change."""
+    if new == old:
+        return None
+    if model is Risk and new == "accepted":
+        return "accepting a risk needs an approved review; accept it on the risk itself"
+    if model is POAM and (
+        new in POAM_CLOSED_STATUSES
+        or new == "risk_accepted"
+        or poam_leaves_risk_accepted(old or "", new)
+    ):
+        return f"moving a POA&M to {new!r} needs an approved review; change it on the POA&M itself"
+    return None
+
+
 def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
+    model = spec["model"]
+    if model in _IMPORT_STATUSES and "status" in row:
+        new = _clean(row["status"])
+        if new is not None:
+            if new not in _IMPORT_STATUSES[model]:
+                allowed = ", ".join(_IMPORT_STATUSES[model])
+                raise ValueError(f"status must be one of {allowed}, not {new!r}")
+            refused = _gated_status_change(model, getattr(obj, "status", None), new)
+            if refused:
+                raise ValueError(refused)
+    if model is POAM and getattr(obj, "status", None) == "risk_accepted" and "due_on" in row:
+        # ``due_on`` is the acceptance's expiry (the scanner keeps an accepted
+        # POA&M accepted until it passes). The API spends an approval on any
+        # change but a shortening (``poams._require_expiry_extension_gate``).
+        new_due, held = _coerce_date(row["due_on"]), obj.due_on
+        if new_due != held and not (new_due is not None and held is not None and new_due <= held):
+            raise ValueError(
+                "extending a risk acceptance's expiry (due_on) needs an approved review; "
+                "change it on the POA&M itself"
+            )
     for f in spec["str_fields"]:
         if f in row:
+            if f == "status" and model in _IMPORT_STATUSES and _clean(row[f]) is None:
+                continue  # a blank cell leaves the status as it is
             setattr(obj, f, _clean(row[f]))
     for f in spec["date_fields"]:
         if f in row:
             setattr(obj, f, _coerce_date(row[f]))
     if spec["model"] is Risk:
+        # The 1-5 score is the source of truth and the level follows it
+        # (governance.risk.resolve_axis). An import that sets only the level
+        # used to leave the score where it was, so the two could disagree and
+        # the risk was placed by a score nobody had entered.
+        for axis in ("likelihood", "impact"):
+            raw = row.get(f"{axis}_score")
+            try:
+                score = int(raw) if raw is not None and raw != "" else None
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{axis}_score must be a whole number 1-5, not {raw!r}") from exc
+            new_score, new_level = resolve_axis(
+                axis=axis,
+                score=score,
+                level=getattr(obj, axis, None),
+                current_score=getattr(obj, f"{axis}_score", None),
+            )
+            setattr(obj, f"{axis}_score", new_score)
+            setattr(obj, axis, new_level)
         inherent, residual = compute_scores(
-            getattr(obj, "likelihood", None),
-            getattr(obj, "impact", None),
-            getattr(obj, "treatment", None),
+            obj.likelihood_score, obj.impact_score, getattr(obj, "treatment", None)
         )
         obj.inherent_score, obj.residual_score = inherent, residual
 

@@ -2278,5 +2278,101 @@ def oscal_validate(
     raise typer.Exit(1)
 
 
+@app.command(name="kev-sync")
+def kev_sync(
+    file: str | None = typer.Option(
+        None,
+        "--file",
+        help="Sync from a local copy of the KEV JSON feed instead of downloading it "
+        "(air-gapped deployments).",
+    ),
+) -> None:
+    """Refresh CISA's Known Exploited Vulnerabilities catalog (global reference data).
+
+    Exits non-zero, saying why, when the download or the feed is bad; the
+    catalog is then left as it was, never emptied.
+    """
+    from .intel import kev  # noqa: PLC0415
+
+    async def _run() -> dict[str, Any]:
+        payload = (
+            kev.parse_kev(Path(file).read_bytes()) if file is not None else await kev.fetch_kev()
+        )
+        async with session_scope() as session:
+            result = await kev.sync_kev(session, payload)
+            await session.commit()
+            return result
+
+    try:
+        result = asyncio.run(_run())
+    except (kev.KevError, OSError) as exc:
+        console.print(f"[red]KEV sync failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(
+        f"KEV catalog [green]{result['catalog_version']}[/green]: {result['total']} entries "
+        f"({result['added']} new, {result['removed']} withdrawn, {result['skipped']} skipped)."
+    )
+    for line in result["skipped_detail"]:
+        console.print(f"  [yellow]skipped[/yellow] {line}")
+
+
+@app.command("posture-snapshot")
+def posture_snapshot(
+    org: int | None = typer.Option(
+        None, "--org", help="Organization id; omit to capture every live organization."
+    ),
+) -> None:
+    """Record today's posture snapshot (one row per organization per day).
+
+    A second capture on the same day replaces that day's row. Each capture is
+    written to the audit log with actor ``cli``.
+    """
+    from .analytics import posture_history  # noqa: PLC0415
+    from .api.audit import record_event  # noqa: PLC0415
+
+    today = datetime.now(UTC).date()
+
+    async def _run() -> dict[str, Any]:
+        async with session_scope() as session:
+            if org is not None:
+                found = await session.get(Organization, org)
+                if found is None or found.deleted_at is not None:
+                    return {"captured": [], "failed": [], "missing": org}
+                one = await posture_history.capture_snapshot(
+                    session, org, today=today, source="manual"
+                )
+                out: dict[str, Any] = {"captured": [{"organization_id": org, **one}], "failed": []}
+            else:
+                out = await posture_history.capture_all(session, today, source="manual")
+            for c in out["captured"]:
+                await record_event(
+                    session,
+                    actor="cli",
+                    action="posture_snapshot_captured",
+                    entity_type="posture_snapshot",
+                    entity_id=str(c["id"]),
+                    diff={
+                        "taken_on": today.isoformat(),
+                        "source": "manual",
+                        "replaced": c["replaced"],
+                    },
+                    organization_id=c["organization_id"],
+                )
+            await session.commit()
+            return out
+
+    out = asyncio.run(_run())
+    if out.get("missing") is not None:
+        console.print(f"[red]No organization with id {out['missing']}.[/red]")
+        raise typer.Exit(1)
+    for c in out["captured"]:
+        verb = "replaced" if c["replaced"] else "recorded"
+        console.print(f"  org {c['organization_id']}: {verb} snapshot for {today.isoformat()}")
+    console.print(f"[green]{len(out['captured'])}[/green] snapshot(s) captured.")
+    if out["failed"]:
+        console.print(f"[red]Failed for organization(s): {out['failed']}[/red]")
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()

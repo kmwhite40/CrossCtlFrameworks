@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ page_title }} · Concord{% endblock %}
+{% block heading %}{{ page_title }}{% endblock %}
+{% block content %}
+<div class="empty-state card">
+  <i data-lucide="building-2"></i>
+  <h2>No organization in scope</h2>
+  <p>{{ page_title }} is kept per organization and never added up across them. Global and unauthenticated sessions see this instead; sign in as a member of an organization to see it.</p>
+</div>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Approval Workflows · Concord{% endblock %}
+{% block heading %}Approvals{% endblock %}
+{% block subtitle %}Where each approval request stands. Decisions are made through <code>/api/approvals</code>, which enforces separation of duties and spends an approval once.{% endblock %}
+{% block content %}
+<section class="kpi-grid kpi-grid--4">
+  {% for s in ['submitted', 'approved', 'rejected', 'draft'] %}
+  <div class="kpi"><span class="kpi__label">{{ s | capitalize }}</span><span class="kpi__value">{{ states.get(s, 0) }}</span></div>
+  {% endfor %}
+</section>
+{% if rows %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Subject</th><th>State</th><th>Submitted</th><th>Reviewed</th><th>Note</th></tr></thead>
+  <tbody>{% for row in rows %}{% set a = row.a %}<tr>
+    <td>{% if row.href %}<a href="{{ row.href }}">{{ a.entity_type | replace('_',' ') }} #{{ a.entity_id }}</a>{% else %}{{ a.entity_type | replace('_',' ') }} #{{ a.entity_id }}{% endif %}</td>
+    <td><span class="chip {% if a.state == 'approved' %}chip--ok{% elif a.state == 'rejected' %}chip--err{% elif a.state == 'submitted' %}chip--warn{% else %}chip--ghost{% endif %}">{{ a.state }}</span></td>
+    <td>{{ a.submitted_by or '—' }}{% if a.submitted_at %}<div class="dim" style="font-size:12px">{{ a.submitted_at.strftime('%Y-%m-%d %H:%M') }}</div>{% endif %}</td>
+    <td>{{ a.reviewed_by or '—' }}{% if a.reviewed_at %}<div class="dim" style="font-size:12px">{{ a.reviewed_at.strftime('%Y-%m-%d %H:%M') }}</div>{% endif %}</td>
+    <td class="dim">{{ a.decision_note or '' }}</td>
+  </tr>{% endfor %}</tbody></table></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="stamp"></i><h2>No approval requests</h2><p>Approvals are requested for SSPs, POA&amp;M closures, risk acceptances and assessments. None exist for this organization yet.</p></div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}{{ risk.title }} · Risk · Concord{% endblock %}
+{% block heading %}{{ risk.title }}{% endblock %}
+{% block subtitle %}<p class="page__subtitle">{{ 'Enterprise' if risk.register == 'enterprise' else 'Cybersecurity' }} risk{% if system_name %} on {{ system_name }}{% else %}, owned by the organization (no system){% endif %}{% if risk.category %} · {{ risk.category }}{% endif %} · {{ risk.status }}</p>{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/risks?register={{ risk.register }}"><i data-lucide="arrow-left"></i>Register</a><a class="btn btn--secondary" href="/risks/heatmap"><i data-lucide="grid-3x3"></i>Heat map</a>{% endblock %}
+{% macro money(v) -%}{{ '{:,.2f}'.format(v) if v is not none else '—' }}{%- endmacro %}
+{% block content %}
+{% if error %}<div class="note note--err" role="alert">{{ error }}</div>{% endif %}
+
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi" title="The recorded 1-5 score, else the three-level value read as 1, 3 or 5">
+    <span class="kpi__label"><span>Likelihood</span></span>
+    <span class="kpi__value">{{ effective[0] or '—' }}</span>
+    <span class="kpi__meta">{{ lk_labels[effective[0]] if effective[0] else 'Not assessed' }}</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi__label"><span>Impact</span></span>
+    <span class="kpi__value">{{ effective[1] or '—' }}</span>
+    <span class="kpi__meta">{{ im_labels[effective[1]] if effective[1] else 'Not assessed' }}</span>
+  </div>
+  <div class="kpi" title="Likelihood × impact, 1-25">
+    <span class="kpi__label"><span>Inherent</span></span>
+    <span class="kpi__value">{{ risk.inherent_score if risk.inherent_score is not none else '—' }}</span>
+    <span class="kpi__meta">{{ band(risk.inherent_score) }}</span>
+  </div>
+  <div class="kpi" title="Inherent × treatment factor (mitigate 0.4, transfer 0.5, avoid 0.1, accept 1.0)">
+    <span class="kpi__label"><span>Residual</span></span>
+    <span class="kpi__value">{{ risk.residual_score if risk.residual_score is not none else '—' }}</span>
+    <span class="kpi__meta">{{ band(risk.residual_score) }}{% if placement and placement.state == 'breach' %} · above appetite ({{ placement.appetite.max_residual_score }}) by {{ placement.over_by }}{% elif placement and placement.state == 'within' %} · within appetite ({{ placement.appetite.max_residual_score }}){% elif placement and placement.state == 'no_appetite' %} · no appetite set{% endif %}</span>
+  </div>
+</section>
+
+{% if risk.description %}<article class="card panel"><div class="panel__body">{{ risk.description }}</div></article>{% endif %}
+
+<article class="card panel" id="assessments">
+  <header class="panel__head"><h2 class="panel__title">Assessments</h2><span class="panel__hint">{{ assessments | length }} recorded</span></header>
+  {% if assessments %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Date</th><th>Method</th><th>Likelihood</th><th>Impact</th><th>Inherent</th><th>Residual</th><th title="Single-loss expectancy">SLE</th><th title="Annual rate of occurrence">ARO</th><th title="Annualized loss expectancy = SLE × ARO, computed">ALE</th><th>Assessor</th><th>Notes</th></tr></thead>
+    <tbody>{% for a in assessments %}<tr id="assessment-{{ a.id }}">
+      <td>{{ a.assessed_on }}</td><td><span class="chip">{{ a.method }}</span></td>
+      <td>{{ a.likelihood_score or '—' }}</td><td>{{ a.impact_score or '—' }}</td>
+      <td>{{ a.inherent_score if a.inherent_score is not none else '—' }}</td><td>{{ a.residual_score if a.residual_score is not none else '—' }}</td>
+      <td>{{ money(a.sle) }}</td><td>{{ ('%g' | format(a.aro)) if a.aro is not none else '—' }}</td><td><strong>{{ money(a.ale) }}</strong></td>
+      <td>{{ a.assessor or '—' }}</td><td class="dim">{{ a.notes or '' }}</td>
+    </tr>{% endfor %}</tbody></table></div>
+  {% else %}
+  <p class="panel__empty">No assessments recorded. Record the first one below.</p>
+  {% endif %}
+  <div class="panel__body">
+    <form method="post" action="/risks/{{ risk.id }}/assessments" class="stack" style="gap:10px;max-width:80ch">
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="a-on">Assessed on</label><input class="input" id="a-on" name="assessed_on" type="date" value="{{ today }}" max="{{ today }}"></div>
+        <div class="field-group"><label class="label" for="a-l">Likelihood</label><select class="select" id="a-l" name="likelihood_score"><option value="">—</option>{% for n in scale %}<option value="{{ n }}">{{ n }} · {{ lk_labels[n] }}</option>{% endfor %}</select></div>
+        <div class="field-group"><label class="label" for="a-i">Impact</label><select class="select" id="a-i" name="impact_score"><option value="">—</option>{% for n in scale %}<option value="{{ n }}">{{ n }} · {{ im_labels[n] }}</option>{% endfor %}</select></div>
+      </div>
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="a-sle">Single-loss expectancy (SLE)</label><input class="input" id="a-sle" name="sle" type="number" min="0" step="any"></div>
+        <div class="field-group"><label class="label" for="a-aro">Annual rate of occurrence (ARO)</label><input class="input" id="a-aro" name="aro" type="number" min="0" step="any"></div>
+      </div>
+      <div class="field-group"><label class="label" for="a-notes">Notes</label><textarea id="a-notes" name="notes" rows="2" placeholder="Basis for the scores or the loss estimate"></textarea></div>
+      <div><button class="btn btn--primary btn--sm" type="submit"><i data-lucide="plus"></i> Record assessment</button>
+        <span class="dim" style="font-size:12px;margin-left:8px">Likelihood and impact, SLE and ARO, or both. ALE is computed as SLE × ARO. The latest likelihood and impact become the risk's scores.</span></div>
+    </form>
+  </div>
+</article>
+
+<article class="card panel" id="treatment">
+  <header class="panel__head"><h2 class="panel__title">Treatment plans</h2><span class="panel__hint">{{ plans | length }} plan{{ 's' if plans|length != 1 }}</span></header>
+  {% for p in plans %}{% set plan = p.plan %}
+  <section class="panel__body" id="plan-{{ plan.id }}">
+    <div class="row" style="gap:8px;flex-wrap:wrap">
+      <span class="chip chip--brand">{{ plan.strategy }}</span><span class="chip {{ 'chip--ok' if plan.status == 'done' else ('chip--ghost' if plan.status == 'cancelled' else 'chip--info') }}">{{ plan.status }}</span>
+      {% if p.overdue %}<span class="chip chip--err">Overdue</span>{% endif %}
+      <span>Owner: {{ user_names.get(plan.owner_user_id, '—') }}</span><span>Due: {{ plan.due_on or '—' }}</span>
+      <span title="Target residual against the current residual">Target residual: {{ plan.target_residual_score or '—' }} (now {{ risk.residual_score if risk.residual_score is not none else '—' }})</span>
+      <span title="Done actions over actions">Progress: {% if p.progress is none %}—{% else %}{{ p.progress }}% ({{ p.done }} of {{ p.actions | length }}){% endif %}</span>
+    </div>
+    {% if plan.description %}<p>{{ plan.description }}</p>{% endif %}
+    {% if p.actions %}
+    <table>
+      <thead><tr><th>Action</th><th>Owner</th><th>Due</th><th>POA&amp;M</th><th>Status</th><th></th></tr></thead>
+      <tbody>{% for a in p.actions %}<tr id="action-{{ a.id }}">
+        <td>{{ a.description }}</td><td>{{ user_names.get(a.owner_user_id, '—') }}</td><td>{{ a.due_on or '—' }}</td>
+        <td>{% if a.poam_id %}<a href="/poams" title="POA&amp;M #{{ a.poam_id }}">#{{ a.poam_id }}</a>{% else %}—{% endif %}</td>
+        <td><span class="chip {{ 'chip--ok' if a.status == 'done' else '' }}">{{ a.status }}</span></td>
+        <td><form method="post" action="/risks/actions/{{ a.id }}"><input type="hidden" name="status" value="{{ 'open' if a.status == 'done' else 'done' }}"><input type="hidden" name="poam_id" value="{{ a.poam_id or '' }}"><button class="btn btn--ghost btn--sm" type="submit">{{ 'Reopen' if a.status == 'done' else 'Mark done' }}</button></form></td>
+      </tr>{% endfor %}</tbody>
+    </table>
+    {% else %}<p class="dim">No actions yet; progress is not measurable until one is added.</p>{% endif %}
+    <details><summary class="dim" style="cursor:pointer;font-size:13px">Add an action · edit the plan</summary>
+      <div class="grid-2-1" style="margin-top:10px">
+        <form method="post" action="/risks/plans/{{ plan.id }}/actions" class="stack" style="gap:8px">
+          <div class="field-group"><label class="label" for="ad-{{ plan.id }}">Action</label><input class="input" id="ad-{{ plan.id }}" name="description" required></div>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <div class="field-group"><label class="label" for="ao-{{ plan.id }}">Owner</label><select class="select" id="ao-{{ plan.id }}" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+            <div class="field-group"><label class="label" for="adue-{{ plan.id }}">Due</label><input class="input" id="adue-{{ plan.id }}" name="due_on" type="date"></div>
+            <div class="field-group"><label class="label" for="ap-{{ plan.id }}">POA&amp;M</label><select class="select" id="ap-{{ plan.id }}" name="poam_id"><option value="">(none)</option>{% for pm in poams %}<option value="{{ pm.id }}">#{{ pm.id }} {{ pm.title }}</option>{% endfor %}</select></div>
+          </div>
+          <div><button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="plus"></i> Add action</button></div>
+        </form>
+        <form method="post" action="/risks/plans/{{ plan.id }}" class="stack" style="gap:8px">
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <div class="field-group"><label class="label" for="ps-{{ plan.id }}">Strategy</label><select class="select" id="ps-{{ plan.id }}" name="strategy">{% for st in strategies %}<option {% if st == plan.strategy %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></div>
+            <div class="field-group"><label class="label" for="pst-{{ plan.id }}">Status</label><select class="select" id="pst-{{ plan.id }}" name="status">{% for st in plan_statuses %}<option {% if st == plan.status %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></div>
+          </div>
+          <div class="field-group"><label class="label" for="pd-{{ plan.id }}">Description</label><textarea id="pd-{{ plan.id }}" name="description" rows="2">{{ plan.description or '' }}</textarea></div>
+          <div class="row" style="gap:8px;flex-wrap:wrap">
+            <div class="field-group"><label class="label" for="po-{{ plan.id }}">Owner</label><select class="select" id="po-{{ plan.id }}" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}" {% if u.id == plan.owner_user_id %}selected{% endif %}>{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+            <div class="field-group"><label class="label" for="pdue-{{ plan.id }}">Due</label><input class="input" id="pdue-{{ plan.id }}" name="due_on" type="date" value="{{ plan.due_on or '' }}"></div>
+            <div class="field-group"><label class="label" for="pt-{{ plan.id }}">Target residual (1-25)</label><input class="input" id="pt-{{ plan.id }}" name="target_residual_score" type="number" min="1" max="25" value="{{ plan.target_residual_score or '' }}"></div>
+          </div>
+          <div><button class="btn btn--secondary btn--sm" type="submit"><i data-lucide="save"></i> Save plan</button></div>
+        </form>
+      </div>
+    </details>
+  </section>
+  {% else %}
+  <p class="panel__empty">No treatment plan. Add one below.</p>
+  {% endfor %}
+  <div class="panel__body">
+    <form method="post" action="/risks/{{ risk.id }}/plans" class="stack" style="gap:10px;max-width:80ch">
+      <div class="row" style="gap:12px;flex-wrap:wrap">
+        <div class="field-group"><label class="label" for="np-s">Strategy</label><select class="select" id="np-s" name="strategy" required>{% for st in strategies %}<option {% if st == risk.treatment %}selected{% endif %}>{{ st }}</option>{% endfor %}</select></div>
+        <div class="field-group"><label class="label" for="np-o">Owner</label><select class="select" id="np-o" name="owner_user_id"><option value="">(none)</option>{% for u in users %}<option value="{{ u.id }}">{{ u.full_name or u.email }}</option>{% endfor %}</select></div>
+        <div class="field-group"><label class="label" for="np-d">Due</label><input class="input" id="np-d" name="due_on" type="date"></div>
+        <div class="field-group"><label class="label" for="np-t">Target residual (1-25)</label><input class="input" id="np-t" name="target_residual_score" type="number" min="1" max="25"></div>
+      </div>
+      <div class="field-group"><label class="label" for="np-desc">Description</label><textarea id="np-desc" name="description" rows="2"></textarea></div>
+      <div><button class="btn btn--primary btn--sm" type="submit"><i data-lucide="plus"></i> Add treatment plan</button>
+        <span class="dim" style="font-size:12px;margin-left:8px">A plan's strategy does not change the risk's status: accepting a risk still goes through its acceptance review.</span></div>
+    </form>
+  </div>
+</article>
+{% endblock %}

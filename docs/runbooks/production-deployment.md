@@ -87,6 +87,16 @@ switching them on is a compliance decision, not an operational one.
 | `CCF_OSCAL_REQUIRE_OFFICIAL_SCHEMA` | `false` | Validation falls back to a bundled schema rather than requiring the official one. |
 | `CCF_READONLY` | `false` | Not a gap — a mode. Set it for a demonstration or a frozen archive instance so nothing can be written through the UI or API.
 
+### Outbound connections
+
+Two settings decide where the server itself connects. Review both before a
+deployment inside an enclave or behind an egress allowlist.
+
+| Variable | Default | What it decides |
+|---|---|---|
+| `CCF_KEV_SYNC_ENABLED` | **`true`** | With the scheduler on, the platform fetches CISA's Known Exploited Vulnerabilities catalog from `cisa.gov` once a day. Set `false` where there is no route to it (a platform admin's manual sync on `/intel` makes the same request). A feed that would remove more than half the catalog is refused rather than applied. |
+| `CCF_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Webhooks go only to public addresses. Set `true` to allow private ranges (10/8, 172.16/12, 192.168/16, fc00::/7) for a receiver on the internal network. Loopback, link-local, carrier-grade NAT and the cloud metadata addresses stay refused regardless. Only admins add webhooks; each send resolves the name again and connects to the address it checked. |
+
 ## 3. TLS and the reverse proxy
 
 - Session cookies and PIV/CAC both assume TLS termination in front of the app.

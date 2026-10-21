@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}My Tasks · Concord{% endblock %}
+{% block heading %}My tasks{% endblock %}
+{% block subtitle %}Everything assigned to you: tasks, POA&amp;Ms you own, and evidence an auditor is waiting on.{% endblock %}
+{% block content %}
+{% if not signed_in %}
+<div class="card empty-state"><i data-lucide="user"></i><h2>No signed-in user</h2><p>Assignments belong to a user. With authentication off there is nobody to assign to; the organization-wide queue is on <a href="/governance#tasks">Continuous Monitoring</a>.</p></div>
+{% else %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label"><i data-lucide="list-checks"></i>Open tasks</span><span class="kpi__value">{{ open_tasks | length }}</span></div>
+  <div class="kpi"><span class="kpi__label"><i data-lucide="wrench"></i>POA&amp;Ms you own</span><span class="kpi__value">{{ poams | length }}</span></div>
+  <div class="kpi"><span class="kpi__label"><i data-lucide="file-search"></i>Evidence requests</span><span class="kpi__value">{{ requests | length }}</span></div>
+  <div class="kpi"><span class="kpi__label"><i data-lucide="alarm-clock"></i>Overdue</span><span class="kpi__value {% if overdue %}kpi__value--danger{% endif %}">{{ overdue }}</span></div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Tasks</h2>{% if unassigned %}<a class="panel__link" href="/governance#tasks">{{ unassigned }} unassigned in your organization</a>{% endif %}</header>
+  {% if tasks %}
+  <div class="table-wrap" style="border:none;box-shadow:none;border-radius:0"><table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Status</th><th>Due</th><th>Source</th></tr></thead>
+    <tbody>{% for t in tasks %}<tr>
+      <td>{{ t.title }}{% if t.description %}<div class="dim clamp-3" style="font-size:12.5px">{{ t.description }}</div>{% endif %}</td>
+      <td><span class="sevchip sevchip--{{ {'critical':'critical','high':'high','medium':'moderate','low':'low'}.get(t.priority, 'none') }}">{{ t.priority | capitalize }}</span></td>
+      <td><span class="chip {% if t.status in ('done','closed','completed') %}chip--ok{% elif t.status == 'blocked' %}chip--err{% else %}chip--ghost{% endif %}">{{ t.status | replace('_',' ') }}</span></td>
+      <td>{% if t.due_on %}<span class="{% if t.due_on < today and t.status in ('open','in_progress','blocked') %}kanban__due--late{% endif %}">{{ t.due_on }}</span>{% else %}<span class="dim">—</span>{% endif %}</td>
+      <td class="dim">{{ t.source }}{% if t.entity_type %} · {{ t.entity_type }}{% endif %}</td>
+    </tr>{% endfor %}</tbody></table></div>
+  {% else %}<p class="panel__empty">No tasks are assigned to you.</p>{% endif %}
+</article>
+
+<section class="grid-1-1">
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">POA&amp;Ms you own</h2><a class="panel__link" href="/poams">All POA&amp;Ms</a></header>
+    {% if poams %}<ul class="feed">{% for p in poams %}
+      <li class="feed__item"><span class="sevchip sevchip--{{ p.severity }}">{{ p.severity | capitalize }}</span>
+        <a class="feed__main" href="/poams?system_id={{ p.system_id }}"><span class="feed__title">{{ p.title }}</span><span class="feed__meta">{{ p.system }} · {{ p.status | replace('_',' ') }}</span></a>
+        <span class="feed__meta {% if p.due_on and p.due_on < today %}kanban__due--late{% endif %}">{{ p.due_on or 'no due date' }}</span></li>
+    {% endfor %}</ul>{% else %}<p class="panel__empty">You own no open POA&amp;Ms.</p>{% endif %}
+  </article>
+  <article class="card panel">
+    <header class="panel__head"><h2 class="panel__title">Evidence requests you owe</h2><a class="panel__link" href="/audit-workspace">Audits</a></header>
+    {% if requests %}<ul class="feed">{% for r in requests %}
+      <li class="feed__item"><span class="feed__icon"><i data-lucide="file-search"></i></span>
+        <a class="feed__main" href="/audit-workspace/{{ r.eid }}"><span class="feed__title">{{ r.title }}</span><span class="feed__meta">{{ r.engagement }} · {{ r.status }}</span></a>
+        <span class="feed__meta {% if r.due_on and r.due_on < today %}kanban__due--late{% endif %}">{{ r.due_on or 'no due date' }}</span></li>
+    {% endfor %}</ul>{% else %}<p class="panel__empty">No auditor is waiting on you.</p>{% endif %}
+  </article>
+</section>
+{% endif %}
+{% endblock %}
