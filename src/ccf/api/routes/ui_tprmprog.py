@@ -966,9 +966,14 @@ async def obligations_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
     status: str | None = Query(None),
+    source: str | None = Query(None),
 ) -> HTMLResponse:
+    """The obligations register. ``?source=regulatory`` narrows it to duties
+    that come from statute or regulation -- the "Regulatory Requirements"
+    view of the same register (the regulatory *change* log is /regulatory)."""
     org = _principal_org(request)
     today = date.today()
+    regulatory = source == "regulatory"
     rows = list(
         (
             await session.execute(
@@ -980,13 +985,16 @@ async def obligations_page(
         .scalars()
         .all()
     )
+    if regulatory:
+        rows = [r for r in rows if r.source in ("statute", "regulation")]
     counts = obl.summarize(rows, today)
     shown = [r for r in rows if status not in obl.STATUSES or r.status == status]
     users = await _users(session, org)
     return _render(
         request,
         "obligations.html",
-        "obligations",
+        "regreq" if regulatory else "obligations",
+        regulatory=regulatory,
         rows=shown,
         counts=counts,
         status=status if status in obl.STATUSES else None,

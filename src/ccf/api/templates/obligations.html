@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Compliance Obligations · Concord{% endblock %}
-{% block heading %}Compliance obligations{% endblock %}
-{% block subtitle %}What the organization must do, where the duty comes from, who owns it, when it is due, and the catalog controls that satisfy it. Mapped controls are checked against the control catalog when saved.{% endblock %}
+{% block heading %}{% if regulatory %}Regulatory requirements{% else %}Compliance obligations{% endif %}{% endblock %}
+{% block subtitle %}{% if regulatory %}Obligations whose source is a statute or regulation. <a href="/obligations">All obligations</a> · <a href="/regulatory">Regulatory change log</a>.{% else %}What the organization must do, where the duty comes from, who owns it, when it is due, and the catalog controls that satisfy it. Mapped controls are checked against the control catalog when saved.{% endif %}{% endblock %}
 {% block actions %}<a class="btn btn--secondary" href="/regulatory"><i data-lucide="scale"></i>Regulatory change</a>{% endblock %}
 {% block content %}
 <section class="kpi-grid kpi-grid--4">

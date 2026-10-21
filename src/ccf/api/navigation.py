@@ -107,13 +107,8 @@ NAV: tuple[Group, ...] = (
         (
             Item("dashboard", "Executive Dashboard", "/dashboard"),
             Item("posture", "Compliance Posture", "/posture"),
-            _partial(
-                "operations",
-                "Security & Risk Intelligence",
-                "/operations",
-                "Vulnerability response, SLA, MTTR and risk bands. No "
-                "external threat-intelligence feed.",
-            ),
+            Item("intel", "Security & Risk Intelligence", "/intel"),
+            Item("operations", "Operations Overview", "/operations"),
             Item("mytasks", "My Tasks", "/my-tasks"),
             Item("notifications", "Notifications", "/notifications"),
             Item("workspace", "Guided Workspace", "/workspace"),
@@ -190,19 +185,9 @@ NAV: tuple[Group, ...] = (
         "shield-check",
         (
             Item("frameworks", "Framework Library", "/frameworks"),
-            _partial(
-                "regulatory",
-                "Regulatory Requirements",
-                "/regulatory",
-                "A register of regulatory change. Requirements "
-                "themselves come from the framework catalog.",
-            ),
-            _partial(
-                "fedramp20x",
-                "Compliance Obligations",
-                "/fedramp20x",
-                "Only FedRAMP obligations (KSIs and rules) are modelled.",
-            ),
+            Item("regreq", "Regulatory Requirements", "/obligations?source=regulatory"),
+            Item("obligations", "Compliance Obligations", "/obligations"),
+            Item("regulatory", "Regulatory Change", "/regulatory"),
             Item("mappings", "Cross-Framework Mapping", "/mappings"),
             Item("assessments", "Compliance Assessments", "/assessments"),
             Item("governance", "Continuous Monitoring", "/governance"),
@@ -218,6 +203,7 @@ NAV: tuple[Group, ...] = (
             Item("systems", "Systems & Boundaries", "/systems"),
             Item("intake", "System Intake", "/intake"),
             Item("ssp", "SSP Builder", "/ssp"),
+            Item("fedramp20x", "FedRAMP 20x & KSIs", "/fedramp20x"),
             Item("scoring", "CMMC / 800-171 Scoring", "/scoring"),
             Item("assurance", "Assurance Graph", "/assurance"),
             Item("graph", "Compliance Graph", "/graph"),
@@ -229,22 +215,11 @@ NAV: tuple[Group, ...] = (
         "sliders-horizontal",
         (
             Item("controls", "Unified Control Library", "/controls"),
-            _partial(
-                "ctrl_impl",
-                "Control Implementations",
-                "/systems",
-                "Implementations are shown per system (system detail, "
-                "SSP); there is no cross-system list.",
-            ),
+            Item("ctrl_impl", "Control Implementations", "/implementations"),
             Item("controltests", "Control Testing", "/control-tests"),
             Item("ctrl_eff", "Control Effectiveness", "/controls/effectiveness"),
             Item("ctrl_owners", "Control Owners", "/control-owners"),
-            _partial(
-                "ctrl_inherit",
-                "Control Inheritance",
-                "/systems",
-                "Inherited status shows per system; there is no inheritance management page.",
-            ),
+            Item("ctrl_inherit", "Control Inheritance", "/inheritance"),
             Item("compensating", "Compensating Controls", "/compensating-controls"),
         ),
     ),
@@ -284,30 +259,10 @@ NAV: tuple[Group, ...] = (
         (
             Item("vendors", "Vendor Inventory", "/vendors"),
             Item("questionnaires", "Vendor Assessments", "/vendor-questionnaires"),
-            _partial(
-                "vendor_scores",
-                "Vendor Risk Scores",
-                "/vendors",
-                "A rating per vendor and a score per questionnaire; no composite scoring model.",
-            ),
-            _planned(
-                "due_diligence",
-                "Due Diligence",
-                "Nothing beyond questionnaires: no document checklist or onboarding review.",
-                "/vendor-questionnaires",
-            ),
-            _partial(
-                "vendor_findings",
-                "Vendor Findings",
-                "/vendor-questionnaires",
-                "A questionnaire review can open a task per gap; there is no findings model.",
-            ),
-            _planned(
-                "contracts",
-                "Contract Obligations",
-                "No contract or obligation model exists.",
-                "/vendors",
-            ),
+            Item("vendor_scores", "Vendor Risk Scores", "/vendors#vendor-scores"),
+            Item("due_diligence", "Due Diligence", "/due-diligence"),
+            Item("vendor_findings", "Vendor Findings", "/vendor-findings"),
+            Item("contracts", "Contract Obligations", "/contracts"),
         ),
     ),
     Group(
@@ -315,24 +270,9 @@ NAV: tuple[Group, ...] = (
         "Operations",
         "workflow",
         (
-            _partial(
-                "remediation",
-                "Remediation Workflows",
-                "/poams?status=open",
-                "POA&Ms and milestones. Remediation plans and patch campaigns are API-only.",
-            ),
-            _partial(
-                "issues",
-                "Issues & Exceptions",
-                "/exceptions",
-                "Exceptions are unified; issues remain split across POA&Ms, gaps and findings.",
-            ),
-            _partial(
-                "projects",
-                "Projects & Action Plans",
-                "/poams",
-                "Action plans are POA&Ms with milestones; there is no project model.",
-            ),
+            Item("remediation", "Remediation Workflows", "/remediation"),
+            Item("issues", "Issues & Exceptions", "/issues"),
+            Item("projects", "Projects & Action Plans", "/projects"),
             Item("scheduled", "Scheduled Assessments", "/assessments/schedule"),
             Item("approvals", "Approval Workflows", "/approvals"),
         ),
@@ -342,12 +282,8 @@ NAV: tuple[Group, ...] = (
         "Intelligence",
         "bar-chart-3",
         (
-            _partial(
-                "queries",
-                "Analytics Studio",
-                "/queries",
-                "Six fixed assurance queries; no ad-hoc query builder.",
-            ),
+            Item("analytics", "Analytics Studio", "/analytics"),
+            Item("queries", "Assurance Queries", "/queries"),
             Item("executive", "Executive Reporting", "/executive"),
             Item("trends", "Compliance Trends", "/trends"),
             Item("forecast", "Risk Forecasting", "/forecast"),
