@@ -180,3 +180,32 @@ async def unassign(
         organization_id=system.organization_id,
     )
     return True
+
+
+#: The DoD Cloud Computing SRG impact levels a system may declare.
+DOD_IMPACT_LEVELS = ("IL2", "IL4", "IL5", "IL6")
+
+
+async def set_dod_impact_level(
+    session: AsyncSession, *, system: System, level: str | None, principal: Principal
+) -> None:
+    """Declare (or clear) the DoD impact level the system is authorized at.
+
+    It decides what the impact-level checks judge -- the GovCloud partition,
+    AWS's DoD SRG service scope, customer-managed keys -- so the change is
+    audited like any other authorization fact.
+    """
+    value = (level or "").strip().upper() or None
+    if value is not None and value not in DOD_IMPACT_LEVELS:
+        raise RoleError(f"impact level must be one of {', '.join(DOD_IMPACT_LEVELS)}")
+    previous = system.dod_impact_level
+    system.dod_impact_level = value
+    await record_event(
+        session,
+        actor=principal.email or "system",
+        action="dod_impact_level_set",
+        entity_type="system",
+        entity_id=str(system.id),
+        diff={"from": previous, "to": value},
+        organization_id=system.organization_id,
+    )

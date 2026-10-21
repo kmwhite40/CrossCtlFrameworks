@@ -83,6 +83,7 @@ where = ["src"]
 "ccf.catalog" = ["oscal_data/*.json"]
 "ccf.oscal" = ["schemas/*.json"]
 "ccf.cr26" = ["schemas/*.json"]
+"ccf.connectors" = ["data/*.json"]
 
 [tool.ruff]
 line-length = 100

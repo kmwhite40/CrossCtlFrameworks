@@ -419,6 +419,9 @@ class AwsGovCloudConnector(ConfigConnector):
             ]: self._read_trail_bucket_locks,
             # RDS_STORAGE_ENCRYPTED shares rds.describe_db_instances with
             # RDS_NOT_PUBLICLY_ACCESSIBLE: one fleet, two fields.
+            aws_checks.ENDPOINTS[aws_checks.IL_GOVCLOUD_PARTITION.key]: self._read_caller_identity,
+            aws_checks.ENDPOINTS[aws_checks.IL_SERVICE_SCOPE.key]: self._read_resource_counts,
+            aws_checks.ENDPOINTS[aws_checks.IL_CUSTOMER_KEYS.key]: self._read_data_at_rest_keys,
         }
 
     def _client(self, service: str) -> Any:
@@ -500,6 +503,88 @@ class AwsGovCloudConnector(ConfigConnector):
                     except Exception as e:
                         row["Unreadable"] = self._error_code(e) or type(e).__name__
                 rows.append(row)
+        return rows
+
+    def _read_caller_identity(self) -> list[dict[str, Any]]:
+        return [self._client("sts").get_caller_identity()]
+
+    def _read_resource_counts(self) -> list[dict[str, Any]]:
+        """Every resource type AWS Config has discovered, with counts -- which
+        services the account actually uses. Pages on nextToken."""
+        config = self._client("config")
+        rows: list[dict[str, Any]] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"nextToken": token} if token else {}
+            page = config.get_discovered_resource_counts(**kwargs)
+            rows.extend(page.get("resourceCounts") or [])
+            token = page.get("nextToken")
+            if not token:
+                return rows
+
+    def _read_data_at_rest_keys(self) -> list[dict[str, Any]]:
+        """Each data store's encryption key and who manages it.
+
+        S3 default encryption per bucket, the EBS default key, and each RDS
+        instance's storage key; the key's manager comes from ``DescribeKey``
+        (cached per key). A store or key that cannot be read is a row marked
+        unreadable, so it goes to review rather than to pass or fail.
+        """
+        kms = self._client("kms")
+        managers: dict[str, str | None] = {}
+
+        def manager(key_id: str) -> str | None:
+            if key_id not in managers:
+                try:
+                    meta = kms.describe_key(KeyId=key_id).get("KeyMetadata") or {}
+                    managers[key_id] = meta.get("KeyManager")
+                except Exception:
+                    managers[key_id] = None
+            return managers[key_id]
+
+        rows: list[dict[str, Any]] = []
+        s3 = self._client("s3")
+        for bucket in s3.list_buckets().get("Buckets") or []:
+            name = str(bucket.get("Name"))
+            try:
+                enc = s3.get_bucket_encryption(Bucket=name)
+            except Exception as e:
+                code = self._error_code(e)
+                if code == "ServerSideEncryptionConfigurationNotFoundError":
+                    rows.append({"ResourceType": "aws_s3_bucket", "ResourceId": name,
+                                 "Encrypted": False})
+                else:
+                    rows.append({"ResourceType": "aws_s3_bucket", "ResourceId": name,
+                                 "Unreadable": code or type(e).__name__})
+                continue
+            rules = (enc.get("ServerSideEncryptionConfiguration") or {}).get("Rules") or []
+            default = (rules[0] if rules else {}).get("ApplyServerSideEncryptionByDefault") or {}
+            algorithm = default.get("SSEAlgorithm")
+            key_id = default.get("KMSMasterKeyID")
+            rows.append({
+                "ResourceType": "aws_s3_bucket", "ResourceId": name,
+                "Encrypted": bool(algorithm), "Algorithm": algorithm, "KeyId": key_id,
+                # aws:kms with no key named means the AWS-managed aws/s3 key.
+                "KeyManager": manager(key_id) if key_id else (
+                    "AWS" if algorithm in ("aws:kms", "aws:kms:dsse") else None),
+            })
+        ec2 = self._client("ec2")
+        ebs_on = ec2.get_ebs_encryption_by_default().get("EbsEncryptionByDefault") is True
+        ebs_key = ec2.get_ebs_default_kms_key_id().get("KmsKeyId")
+        rows.append({"ResourceType": "aws_ebs_default",
+                     "ResourceId": f"ebs-default/{self._region()}",
+                     "Encrypted": ebs_on, "KeyId": ebs_key,
+                     "KeyManager": manager(ebs_key) if ebs_key else None})
+        rds = self._client("rds")
+        for page in rds.get_paginator("describe_db_instances").paginate():
+            for db in page.get("DBInstances") or []:
+                key_id = db.get("KmsKeyId")
+                rows.append({
+                    "ResourceType": "aws_db_instance",
+                    "ResourceId": db.get("DBInstanceIdentifier"),
+                    "Encrypted": db.get("StorageEncrypted") is True, "KeyId": key_id,
+                    "KeyManager": manager(key_id) if key_id else None,
+                })
         return rows
 
     def _load_balancers(self) -> list[dict[str, Any]]:

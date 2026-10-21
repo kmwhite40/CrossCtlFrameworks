@@ -312,6 +312,7 @@ async def build(
             "id": system.id, "name": system.name, "baseline": system.baseline,
             "ato_status": system.ato_status or "none",
             "ato_expires_on": system.ato_expires_on, "days_to_expiry": days_left,
+            "dod_impact_level": system.dod_impact_level,
         },
         "roles": {
             r: (

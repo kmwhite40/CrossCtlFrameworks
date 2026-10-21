@@ -292,6 +292,43 @@ def conmon_scan() -> None:
     asyncio.run(_run())
 
 
+@app.command(name="aws-scope-refresh")
+def aws_scope_refresh(
+    from_file: str = typer.Option(
+        "", help="A saved copy of AWS's DoD CC SRG services-in-scope page. Fetched if omitted."
+    ),
+    write: bool = typer.Option(False, "--write/--dry-run", help="Rewrite the shipped data file."),
+) -> None:
+    """Refresh which AWS services AWS lists at each DoD impact level.
+
+    Re-reads AWS's own table and reports every service whose IL5 entry
+    changed. Dry run by default; ``--write`` replaces
+    ``ccf/connectors/data/aws_dod_srg_scope.json``, which the
+    ``aws.services.dod_srg_scope`` check reads.
+    """
+    import httpx  # noqa: PLC0415
+
+    from .connectors import aws_service_scope as scope  # noqa: PLC0415
+
+    if from_file:
+        page = Path(from_file).read_text(encoding="utf-8")
+    else:
+        page = httpx.get(scope.SOURCE_URL, timeout=30, follow_redirects=True).text
+    doc = scope.build_document(page, retrieved_on=datetime.now(UTC).date())
+    changes = scope.il5_changes(scope.load(), doc)
+    il5 = sum(1 for r in doc["services"] if r.get("il5_govcloud") == "authorized")
+    console.print(
+        f"{len(doc['services'])} services, {il5} authorized at IL5; page last updated "
+        f"{doc['source_last_updated']}; {len(changes)} IL5 change(s)"
+    )
+    for line in changes:
+        console.print(f"  {line}")
+    if write:
+        target = Path(scope.__file__).parent / "data" / "aws_dod_srg_scope.json"
+        target.write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+        console.print(f"wrote {target}")
+
+
 @app.command(name="attestations-probe")
 def attestations_probe(
     system_id: int = typer.Argument(..., help="System to probe (its org's credential is used)"),

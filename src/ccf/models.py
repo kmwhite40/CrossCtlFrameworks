@@ -442,6 +442,11 @@ class System(Base):
     business_unit_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.business_units.id", ondelete="SET NULL")
     )
+    #: The DoD Cloud Computing SRG impact level this system is authorized at
+    #: (IL2/IL4/IL5/IL6), when it is a DoD system. NULL means none declared,
+    #: and the checks that depend on it report not_applicable rather than
+    #: guessing one (``posture.parameters.SYSTEM_PARAMETERS``).
+    dod_impact_level: Mapped[str | None] = mapped_column(String(4))
     # DATA-04: soft-delete marker (see Organization.deleted_at). Set instead of
     # a hard DELETE so the CASCADE to poams/assessments/evidence/implementations/
     # risks never fires; NULL means active.

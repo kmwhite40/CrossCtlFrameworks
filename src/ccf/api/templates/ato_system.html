@@ -58,6 +58,23 @@
   </table></div>
 </section>
 
+{# ── DoD impact level ─────────────────────────────────────────────────── #}
+<section class="card" style="margin-bottom:16px" id="impact-level">
+  <div class="card__header"><div class="card__title">DoD impact level</div>
+    <span class="dim" style="font-size:13px">decides the GovCloud, DoD SRG service-scope and customer-key checks; none declared means they do not apply</span></div>
+  <div class="card__body">
+    {% if is_admin %}
+    <form method="post" action="/ato/{{ s.id }}/impact-level" class="filters">
+      <select class="select" name="dod_impact_level" aria-label="DoD impact level">
+        <option value="">— not a DoD system —</option>
+        {% for lvl in impact_levels %}<option value="{{ lvl }}" {% if s.dod_impact_level==lvl %}selected{% endif %}>{{ lvl }}</option>{% endfor %}
+      </select>
+      <button class="btn btn--sm btn--primary" type="submit">Save</button>
+    </form>
+    {% else %}<p>{{ s.dod_impact_level or 'Not declared' }}</p>{% endif %}
+  </div>
+</section>
+
 {# ── Blockers ─────────────────────────────────────────────────────────── #}
 <section class="card" style="margin-bottom:16px" id="blockers">
   <div class="card__header"><div class="card__title">Blockers</div>

@@ -392,6 +392,54 @@ RDS_STORAGE_ENCRYPTED = PostureCheck(
     required_permissions=("rds:DescribeDBInstances",),
 )
 
+# ── DoD impact-level checks (m365-docs-hub's IL5 rules, re-grounded) ─────────
+# The source's 14 IL5 rules were mostly an organization's engineering
+# preferences, three passed by default, and its service lists were wrong
+# against AWS's own table. These three are the parts grounded in the DoD CC
+# SRG or in AWS's published scope, and each takes the system's *declared*
+# impact level (``System.dod_impact_level``, injected by the scan --
+# ``posture.parameters.SYSTEM_PARAMETERS``): with none declared they report
+# not_applicable rather than judging against a level nobody chose.
+
+IL_GOVCLOUD_PARTITION = PostureCheck(
+    key="aws.partition.govcloud_for_impact_level",
+    title="An IL4/IL5 workload runs in AWS GovCloud (US)",
+    provider="aws_govcloud",
+    resource_type="aws_account",
+    expected="the account is in the aws-us-gov partition when the system is IL4 or IL5",
+    control_ids=("SA-9(5)",),
+    required_permissions=("sts:GetCallerIdentity",),
+)
+
+IL_SERVICE_SCOPE = PostureCheck(
+    key="aws.services.dod_srg_scope",
+    title="Services in use are in AWS's DoD SRG scope for the system's level",
+    provider="aws_govcloud",
+    resource_type="aws_service",
+    expected="every AWS service with resources in the account is listed by AWS as authorized "
+    "at the system's DoD impact level",
+    control_ids=("SA-9",),
+    required_permissions=("config:GetDiscoveredResourceCounts",),
+)
+
+IL_CUSTOMER_KEYS = PostureCheck(
+    key="aws.kms.customer_managed_keys_at_rest",
+    title="Data at rest is encrypted under keys the mission owner controls",
+    provider="aws_govcloud",
+    resource_type="aws_resource",
+    expected="at IL5 and above, S3 default encryption, the EBS default key and RDS storage use "
+    "customer-managed KMS keys",
+    control_ids=("SC-12", "SC-28(1)"),
+    required_permissions=(
+        "s3:ListAllMyBuckets",
+        "s3:GetEncryptionConfiguration",
+        "ec2:GetEbsEncryptionByDefault",
+        "ec2:GetEbsDefaultKmsKeyId",
+        "rds:DescribeDBInstances",
+        "kms:DescribeKey",
+    ),
+)
+
 CHECKS: tuple[PostureCheck, ...] = (
     ROOT_MFA_ENABLED,
     PASSWORD_POLICY,
@@ -414,6 +462,9 @@ CHECKS: tuple[PostureCheck, ...] = (
     WAF_PUBLIC_ALB,
     TRAIL_BUCKET_OBJECT_LOCK,
     RDS_STORAGE_ENCRYPTED,
+    IL_GOVCLOUD_PARTITION,
+    IL_SERVICE_SCOPE,
+    IL_CUSTOMER_KEYS,
 )
 
 #: The four settings that together make a bucket non-public. All four are
@@ -474,6 +525,9 @@ ENDPOINTS: dict[str, str] = {
     TRAIL_BUCKET_OBJECT_LOCK.key: "s3.get_object_lock_configuration",
     # The same fleet RDS_NOT_PUBLICLY_ACCESSIBLE reads, judged on another field.
     RDS_STORAGE_ENCRYPTED.key: "rds.describe_db_instances",
+    IL_GOVCLOUD_PARTITION.key: "sts.get_caller_identity",
+    IL_SERVICE_SCOPE.key: "config.get_discovered_resource_counts",
+    IL_CUSTOMER_KEYS.key: "kms.describe_key",
 }
 
 #: Evaluators that need to be told which account they are judging, because
@@ -497,6 +551,9 @@ ACCOUNT_SCOPED: frozenset[str] = frozenset(
         WAF_PUBLIC_ALB.key,
         TRAIL_BUCKET_OBJECT_LOCK.key,
         RDS_STORAGE_ENCRYPTED.key,
+        IL_GOVCLOUD_PARTITION.key,
+        IL_SERVICE_SCOPE.key,
+        IL_CUSTOMER_KEYS.key,
     }
 )
 
@@ -1675,6 +1732,150 @@ def evaluate_rds_storage_encrypted(
         ))
     return findings
 
+
+# ── evaluators: DoD impact level ─────────────────────────────────────────────
+
+_IL_LEVELS = ("IL2", "IL4", "IL5", "IL6")
+
+
+def _undeclared(account_id: str, level: str | None) -> list[ResourceFinding] | None:
+    if level not in _IL_LEVELS:
+        return _account_finding(
+            account_id, "not_applicable",
+            "the system declares no DoD impact level, so there is no level to judge against",
+        )
+    return None
+
+
+def evaluate_il_govcloud_partition(
+    rows: list[dict[str, Any]], *, account_id: str, dod_impact_level: str | None = None
+) -> list[ResourceFinding]:
+    """IL4/IL5 data stays in AWS GovCloud: SRG section 5.2 (location), and
+    AWS lists IL4/IL5 only for the GovCloud regions."""
+    undeclared = _undeclared(account_id, dod_impact_level)
+    if undeclared:
+        return undeclared
+    arn = str((rows[0] if rows else {}).get("Arn") or "")
+    partition = arn.split(":")[1] if arn.count(":") >= 2 else None
+    detail = {"partition": partition, "dod_impact_level": dod_impact_level}
+    if partition is None:
+        return _account_finding(
+            account_id, "manual_review_required", "the account's partition was not reported",
+            **detail,
+        )
+    if dod_impact_level == "IL2":
+        return _account_finding(
+            account_id, "not_applicable", "IL2 may run in either partition", **detail
+        )
+    if dod_impact_level == "IL6":
+        return _account_finding(
+            account_id, "manual_review_required",
+            "IL6 runs in the AWS Secret Region, which is not assessed from this connector",
+            **detail,
+        )
+    ok = partition == "aws-us-gov"
+    return _account_finding(
+        account_id, "pass" if ok else "fail",
+        f"the account is in {partition}" + ("" if ok else
+                                             f"; {dod_impact_level} requires AWS GovCloud (US)"),
+        **detail,
+    )
+
+
+def evaluate_il_service_scope(
+    rows: list[dict[str, Any]], *, account_id: str, dod_impact_level: str | None = None
+) -> list[ResourceFinding]:
+    """One finding per AWS service with resources in the account.
+
+    Only a service AWS lists with an empty cell at the level is a failure. A
+    service AWS does not list at all (Elastic Load Balancing, EC2 Auto Scaling)
+    or lists with its own text ("Independent Assessment") is a question for the
+    authorizing official -- review, never a finding nobody can defend.
+    """
+    from ...connectors import aws_service_scope as scope  # noqa: PLC0415
+
+    undeclared = _undeclared(account_id, dod_impact_level)
+    if undeclared:
+        return undeclared
+    assert dod_impact_level is not None
+    if not rows:
+        return _account_finding(
+            account_id, "manual_review_required",
+            "AWS Config reported no resources; is the recorder on?",
+        )
+    namespaces: dict[str, int] = {}
+    for r in rows:
+        parts = str(r.get("resourceType") or "").split("::")
+        if len(parts) >= 2 and parts[0] == "AWS":
+            namespaces[parts[1]] = namespaces.get(parts[1], 0) + int(r.get("count") or 0)
+    source = scope.provenance()
+    findings: list[ResourceFinding] = []
+    for ns in sorted(namespaces):
+        row = scope.row_for_namespace(ns)
+        detail = {"resources": namespaces[ns], "level": dod_impact_level, "source": source}
+        if row is None:
+            verdict, observed = "manual_review_required", (
+                f"{ns} is not listed on AWS's DoD SRG page; confirm its scope with the AO"
+            )
+        else:
+            status = scope.status_at(row, dod_impact_level)
+            detail["service"] = row["service"]
+            if status == "authorized":
+                verdict, observed = "pass", f"{row['service']} is authorized at {dod_impact_level}"
+            elif status == "not_in_scope":
+                verdict, observed = "fail", (
+                    f"{row['service']} is not listed by AWS as authorized at {dod_impact_level}"
+                )
+            else:
+                verdict, observed = "manual_review_required", (
+                    f"{row['service']} is listed with AWS's note rather than an authorization"
+                )
+        findings.append(ResourceFinding(
+            resource_id=f"{account_id}/{ns}", resource_type="aws_service", verdict=verdict,
+            observed=observed, detail=detail,
+        ))
+    return findings
+
+
+def evaluate_il_customer_keys(
+    rows: list[dict[str, Any]], *, account_id: str, dod_impact_level: str | None = None
+) -> list[ResourceFinding]:
+    """At IL5 and above, data at rest uses keys the mission owner controls
+    (SRG sections 5.10.6 and 5.11). One finding per resource read."""
+    undeclared = _undeclared(account_id, dod_impact_level)
+    if undeclared:
+        return undeclared
+    if dod_impact_level in ("IL2", "IL4"):
+        return _account_finding(
+            account_id, "not_applicable",
+            f"{dod_impact_level} does not require customer-managed keys",
+        )
+    if not rows:
+        return _account_finding(account_id, "not_applicable", "no data stores were found")
+    findings: list[ResourceFinding] = []
+    for r in rows:
+        rid = str(r.get("ResourceId") or "unknown")
+        detail = {"kind": r.get("ResourceType"), "key": r.get("KeyId"),
+                  "algorithm": r.get("Algorithm")}
+        if r.get("Unreadable"):
+            verdict, observed = "manual_review_required", f"could not be read ({r['Unreadable']})"
+        elif not r.get("Encrypted"):
+            verdict, observed = "fail", "not encrypted at rest"
+        elif r.get("KeyManager") == "CUSTOMER":
+            verdict, observed = "pass", "encrypted under a customer-managed KMS key"
+        elif r.get("KeyManager") == "AWS" or r.get("Algorithm") == "AES256":
+            verdict, observed = "fail", (
+                "encrypted under an AWS-owned or AWS-managed key, which the mission owner "
+                "does not control"
+            )
+        else:
+            verdict, observed = "manual_review_required", "the key's manager could not be read"
+        findings.append(ResourceFinding(
+            resource_id=rid, resource_type=str(r.get("ResourceType") or "aws_resource"),
+            verdict=verdict, observed=observed, detail=detail,
+        ))
+    return findings
+
 EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     ROOT_MFA_ENABLED.key: evaluate_root_mfa,
     PASSWORD_POLICY.key: evaluate_password_policy,
@@ -1697,4 +1898,7 @@ EVALUATORS: dict[str, Callable[..., list[ResourceFinding]]] = {
     WAF_PUBLIC_ALB.key: evaluate_waf_public_alb,
     TRAIL_BUCKET_OBJECT_LOCK.key: evaluate_trail_bucket_object_lock,
     RDS_STORAGE_ENCRYPTED.key: evaluate_rds_storage_encrypted,
+    IL_GOVCLOUD_PARTITION.key: evaluate_il_govcloud_partition,
+    IL_SERVICE_SCOPE.key: evaluate_il_service_scope,
+    IL_CUSTOMER_KEYS.key: evaluate_il_customer_keys,
 }
