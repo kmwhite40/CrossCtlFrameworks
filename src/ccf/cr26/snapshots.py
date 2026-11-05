@@ -265,7 +265,9 @@ async def list_for_grant(
                 "last_filed_at": r.last_filed_at,
                 "current": bool(r.current),
                 "superseded": not r.current,
-                "withheld_invalid": r.withheld_invalid,
+                # A count, as the live listing gives: which drafts were held
+                # back (an incident report's key, say) is not the grantee's.
+                "withheld_invalid": len(r.withheld_invalid or []),
                 "documents": by_snapshot.get(r.id, []),
             }
             for r in rows

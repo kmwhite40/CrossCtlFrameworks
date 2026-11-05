@@ -70,7 +70,7 @@
             {% for d in snap.documents %}
               <div class="dim" style="font-size:13px;padding:2px 0 2px 12px">{{ d.title }}{% if d.document_key %} · {{ d.document_key }}{% endif %} · <a href="{{ d.markdown_url }}">Read</a> · <a href="{{ d.json_url }}">JSON</a> <span class="mono" style="font-size:11px">sha256 {{ d.sha256[:12] }}…</span></div>
             {% endfor %}
-            {% if snap.withheld_invalid %}<div class="dim" style="font-size:12px;padding-left:12px">{{ snap.withheld_invalid|length }} draft document{{ 's' if snap.withheld_invalid|length != 1 }} not valid at the time {{ 'were' if snap.withheld_invalid|length != 1 else 'was' }} not included.</div>{% endif %}
+            {% if snap.withheld_invalid %}<div class="dim" style="font-size:12px;padding-left:12px">{{ snap.withheld_invalid }} draft document{{ 's' if snap.withheld_invalid != 1 }} not valid at the time {{ 'were' if snap.withheld_invalid != 1 else 'was' }} not included.</div>{% endif %}
           </details>
         {% endfor %}
         {% if cd.snapshots.total > cd.snapshots.snapshots|length %}<div class="dim" style="font-size:12px">Showing the {{ cd.snapshots.snapshots|length }} most recent of {{ cd.snapshots.total }}; all are at <span class="mono">GET /api/portal/certification-data/snapshots</span>.</div>{% endif %}

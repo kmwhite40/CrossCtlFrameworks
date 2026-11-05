@@ -297,7 +297,11 @@ be available for the duration of FedRAMP Certification."*
   serves, by the grant token, logged like live documents. The Markdown is
   step 1's generator over the snapshot's JSON, with the snapshot and report
   period added, and `X-Content-SHA256` is the stored digest in both formats.
-  A deleted system's snapshots are withheld, as its live documents are. The
+  A deleted system's snapshots are withheld, as its live documents are.
+  Grantees get a *count* of the drafts withheld from a snapshot, as the live
+  listing gives, never which ones: a withheld incident report's key would
+  disclose an incident not yet filed (found by the automated security review
+  after commit). The
   listing is paginated (`limit` ≤ 500, `offset`, `total`) and reads only
   summary columns, never document bodies. The portal page shows the 20 most
   recent and points to the API for the rest.

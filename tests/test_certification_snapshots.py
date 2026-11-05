@@ -490,3 +490,34 @@ async def test_a_system_with_snapshots_cannot_be_hard_deleted(_auth_enabled: Non
     assert r.status_code == 409 and "snapshots" in r.json()["detail"]
     assert soft.status_code == 204
     assert len(await _snaps(w.ids["system"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_grantee_learns_how_many_drafts_were_withheld_not_which(
+    _auth_enabled: None,
+) -> None:
+    """Parity with the live listing: a count. A withheld incident report's key
+    would tell an agency an incident exists that the provider has not filed."""
+    w = await _world()
+    async with session_scope() as s:
+        s.add(
+            Cr26Document(
+                organization_id=w.ids["org"],
+                system_id=w.ids["system"],
+                kind="incident",
+                document_key="INC-7/initial",
+                document={"draft": True},
+                ruleset_version="2026.10.13.01",
+                schema_version="0.1.1",
+                is_valid=False,
+                validation_errors=["<root>: draft"],
+            )
+        )
+    await _file_ocr(w.ids["system"], Q3)
+    async with _client() as c:
+        token = await _grant(c, w, [w.ids["system"]])
+        listing = await _listing(c, token)
+        page = await c.get("/api/portal/session", headers={"Authorization": f"Bearer {token}"})
+    (snap,) = listing["snapshots"]
+    assert snap["withheld_invalid"] == 1
+    assert "INC-7" not in str(listing) and "INC-7" not in page.text
