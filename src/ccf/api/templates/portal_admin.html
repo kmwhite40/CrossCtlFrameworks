@@ -55,6 +55,13 @@
         {% else %}<span class="dim" style="font-size:13px">No evidence yet.</span>{% endfor %}
       </fieldset>
     </div>
+    <fieldset style="border:1px solid var(--border);border-radius:var(--radius-md);padding:12px;margin-top:16px">
+      <legend class="dim" style="font-size:12px;padding:0 6px">FedRAMP Certification Data to share</legend>
+      <p class="dim" style="font-size:12px;margin:0 0 6px">The system's FedRAMP deliverables (SDR, CPO, OCR, VDR, AVI and the rest), readable and downloadable through the portal and its API as JSON or Markdown. Only documents that pass FedRAMP's schema are shared.</p>
+      {% for s in systems %}
+        <label class="dim" style="display:block;font-size:13px;padding:3px 0"><input type="checkbox" name="certification_system_ids" value="{{ s.id }}"> {{ s.name }} <span class="mono">#{{ s.id }}</span>{% if s.certification_class %} · Class {{ s.certification_class }}{% endif %}</label>
+      {% else %}<span class="dim" style="font-size:13px">No systems yet.</span>{% endfor %}
+    </fieldset>
     <div style="margin-top:12px"><button class="btn btn--primary" type="submit"><i data-lucide="link"></i> Issue grant</button></div>
   </form>
 </section>

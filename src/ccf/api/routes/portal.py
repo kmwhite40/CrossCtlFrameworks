@@ -22,7 +22,14 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +39,7 @@ from ...config import get_settings, is_dev_env
 from ...models_portal import AssessmentEngagement, ExternalAccessGrant
 from ...portal import (
     add_comment,
+    certification,
     create_engagement,
     create_grant,
     create_principal,
@@ -250,6 +258,9 @@ class GrantIn(BaseModel):
     organization_name: str | None = None
     package_ids: list[int] = []
     evidence_ids: list[int] = []
+    #: Systems whose FedRAMP Certification Data (the CR26 deliverables) the
+    #: grant covers, served at ``/api/portal/certification-data``.
+    certification_system_ids: list[int] = []
     ttl_days: int | None = 30
     label: str | None = None
     engagement_id: int | None = None
@@ -274,6 +285,7 @@ async def create_grant_endpoint(
             session, org_id=org_id, principal_name=body.principal_name,
             kind=body.kind, email=body.email, organization_name=body.organization_name,
             package_ids=body.package_ids, evidence_ids=body.evidence_ids,
+            certification_system_ids=body.certification_system_ids,
             ttl_days=body.ttl_days, label=body.label,
             engagement_id=body.engagement_id, principal_id=body.principal_id,
             actor=principal.email,
@@ -380,6 +392,87 @@ async def portal_session(
     await record_access(session, grant, action="view")
     await session.commit()
     return contents
+
+
+@public_router.get("/certification-data", tags=["certification-data"])
+async def certification_data_index(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """List the FedRAMP Certification Data this grant covers (CDS-TRC-PAC).
+
+    Authenticate with the grant token as ``Authorization: Bearer <token>``.
+    Each entry names the system, the deliverable kind and its title, the
+    schema and FedRAMP rules versions, when it last changed, the SHA-256 of
+    its canonical JSON, and two URLs: ``json_url`` for the document and
+    ``markdown_url`` for the same document rendered for people.
+    ``withheld_invalid`` counts stored documents that fail FedRAMP's schema
+    and so are not shared.
+    """
+    grant = await _require_grant(request, session)
+    listing = await certification.list_documents(session, grant)
+    await record_access(
+        session, grant, action="view", target_type="certification_data",
+        detail=f"index: {len(listing.documents)} documents",
+    )
+    await session.commit()
+    return {
+        "systems": certification.shared_system_ids(grant),
+        "documents": listing.documents,
+        "withheld_invalid": listing.withheld_invalid,
+    }
+
+
+@public_router.get(
+    "/certification-data/{system_id}/{kind}",
+    tags=["certification-data"],
+    response_model=None,
+)
+async def certification_data_document(
+    system_id: int,
+    kind: str,
+    request: Request,
+    *,
+    key: str | None = None,
+    format: str = "json",
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """One certification document, as JSON (default) or ``format=md``.
+
+    ``key`` selects a per-instance deliverable (an incident report or a
+    significant change notification); single-instance kinds take none. The
+    Markdown is generated from the JSON and carries the same SHA-256
+    (CDS-CSO-CBF). A document outside the grant, missing, or not valid
+    against FedRAMP's schema answers 404, and the attempt is logged.
+    """
+    grant = await _require_grant(request, session)
+    if format not in ("json", "md"):
+        raise HTTPException(status_code=422, detail="format must be json or md")
+    target = f"{system_id}/{kind}" + (f"/{key}" if key else "")
+    found = await certification.get_document(
+        session, grant, system_id=system_id, kind=kind, document_key=key
+    )
+    if found is None:
+        await record_access(
+            session, grant, action="denied", target_type="certification_data",
+            target_id=target[:64],
+        )
+        await session.commit()
+        raise HTTPException(status_code=404, detail="certification document not found")
+    doc, system_name = found
+    await record_access(
+        session, grant, action="download", target_type="certification_data",
+        target_id=target[:64], detail=format,
+    )
+    await session.commit()
+    sha = certification.digest(doc.document)
+    headers = {"X-Content-SHA256": sha}
+    if format == "md":
+        return PlainTextResponse(
+            certification.to_markdown(doc, system_name),
+            media_type="text/markdown; charset=utf-8",
+            headers=headers,
+        )
+    return JSONResponse(jsonable_encoder(certification.envelope(doc, system_name)), headers=headers)
 
 
 @public_router.post("/comments")

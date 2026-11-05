@@ -174,7 +174,7 @@ async def test_invalid_kind_refused_at_service_and_route(
     vocabulary defined in one place and used in another, a silent edit to it
     would otherwise pass every test in the suite.
     """
-    assert EXTERNAL_PRINCIPAL_KINDS == ("customer", "assessor", "vendor")
+    assert EXTERNAL_PRINCIPAL_KINDS == ("customer", "assessor", "vendor", "agency")
 
     tag = _tag()
     org = await _org(orgs, f"3PAO Kind Org {tag}")
@@ -938,6 +938,22 @@ async def test_migration_0083_round_trips_and_reports_out_of_vocabulary_kind(
 
     assert await _catalogue() == (1, 1, 1)
 
+    # 0083's vocabulary is frozen at the three kinds it shipped with, by design;
+    # a kind added later (``agency``) is outside it, so rows other modules left
+    # in this shared database count too. Count them the way 0083 does, rather
+    # than assume this row is the only one.
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        outside = (
+            await s.execute(
+                text(
+                    "SELECT count(*) FROM ccf.external_principals WHERE kind IS NOT NULL "
+                    "AND kind <> ALL(ARRAY['customer', 'assessor', 'vendor'])"
+                )
+            )
+        ).scalar_one()
+    assert outside >= 1
+
     capfd.readouterr()  # drop anything logged before the round trip
     command.downgrade(cfg, "0082_pipeline_stage")
     assert await _catalogue() == (0, 0, 0), (
@@ -955,7 +971,7 @@ async def test_migration_0083_round_trips_and_reports_out_of_vocabulary_kind(
         "the upgrade must report out-of-vocabulary kind rows"
     )
     assert "LEFT UNCHANGED" in reported
-    assert "external_principals: 1 row(s)" in reported
+    assert f"external_principals: {outside} row(s)" in reported
 
     # The row is still there, still spelled the way it was.
     async with session_scope() as s:

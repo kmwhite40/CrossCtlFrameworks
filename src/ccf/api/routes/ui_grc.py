@@ -1831,6 +1831,7 @@ async def _portal_admin_context(
     rows: list[dict[str, Any]] = []
     packages: list[Any] = []
     evidence: list[Any] = []
+    systems: list[Any] = []
     if org_id is not None:
         grants = await list_grants(session, org_id=org_id)
         principals = {
@@ -1873,6 +1874,15 @@ async def _portal_admin_context(
                 )
             ).scalars().all()
         )
+        systems = list(
+            (
+                await session.execute(
+                    select(System)
+                    .where(System.organization_id == org_id, System.deleted_at.is_(None))
+                    .order_by(System.name)
+                )
+            ).scalars().all()
+        )
     # The plaintext token, when present, comes straight from the in-memory
     # grant just issued in this same request — never from a query param — so
     # it never transits a URL (IA-09: the DB stores only the hash).
@@ -1880,7 +1890,8 @@ async def _portal_admin_context(
     # The form's kind options come from the one vocabulary, not a hard-coded list in
     # the template: a second copy is a second place for a typo to live.
     return {"active": "portaladmin", "org_id": org_id, "rows": rows,
-            "packages": packages, "evidence": evidence, "issued_link": issued_link,
+            "packages": packages, "evidence": evidence, "systems": systems,
+            "issued_link": issued_link,
             "kinds": EXTERNAL_PRINCIPAL_KINDS}
 
 
@@ -1909,6 +1920,7 @@ async def portal_admin_create(
     label: str = Form(""),
     package_ids: list[int] = Form(default=[]),
     evidence_ids: list[int] = Form(default=[]),
+    certification_system_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
@@ -1919,7 +1931,8 @@ async def portal_admin_create(
     try:
         grant = await create_grant(
             session, org_id=org_id, principal_name=principal_name, kind=kind,
-            package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
+            package_ids=package_ids, evidence_ids=evidence_ids,
+            certification_system_ids=certification_system_ids, ttl_days=ttl_days,
             label=label or None, actor=_actor(request),
         )
     except ValueError as exc:  # a kind outside the vocabulary — the form offers only members

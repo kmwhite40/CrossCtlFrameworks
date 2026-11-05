@@ -33,6 +33,7 @@ from ..models_portal import (
     ExternalPortalAuditEvent,
     ExternalPrincipal,
 )
+from . import certification
 
 _TOKEN_BYTES = 32  # → ~43 url-safe chars, well within the 64-char column
 
@@ -313,6 +314,7 @@ async def create_grant(
     organization_name: str | None = None,
     package_ids: list[int] | tuple[int, ...] = (),
     evidence_ids: list[int] | tuple[int, ...] = (),
+    certification_system_ids: list[int] | tuple[int, ...] = (),
     ttl_days: int | None = 30,
     label: str | None = None,
     engagement_id: int | None = None,
@@ -382,6 +384,28 @@ async def create_grant(
 
     pkg_ids = [int(p) for p in package_ids]
     ev_ids = [int(e) for e in evidence_ids]
+    cert_ids = sorted({int(s) for s in certification_system_ids})
+    if cert_ids:
+        # Certification data is a system's; the grant may only name this
+        # organization's systems, and an assessment credential only its own.
+        owned = set(
+            (
+                await session.execute(
+                    select(System.id).where(
+                        System.id.in_(cert_ids),
+                        System.organization_id == org_id,
+                        System.deleted_at.is_(None),
+                    )
+                )
+            ).scalars()
+        )
+        if missing := [s for s in cert_ids if s not in owned]:
+            raise ValueError(f"systems {missing} not found in organization {org_id}")
+        if engagement is not None and cert_ids != [engagement.system_id]:
+            raise ValueError(
+                "an engagement-backed grant can share only its own system's "
+                "certification data"
+            )
 
     expires_at = (_now() + timedelta(days=ttl_days)) if ttl_days else None
     capped = False
@@ -390,6 +414,8 @@ async def create_grant(
         capped = True
 
     scope: dict[str, Any] = {"package_ids": pkg_ids, "evidence_ids": ev_ids}
+    if cert_ids:
+        scope["certification_system_ids"] = cert_ids
     if engagement is not None:
         scope["system_id"] = engagement.system_id
     grant = ExternalAccessGrant(
@@ -413,6 +439,8 @@ async def create_grant(
         session.add(ExternalEvidenceShare(grant_id=grant.id, evidence_object_id=eid))
 
     detail = f"{len(pkg_ids)}pkg/{len(ev_ids)}ev"
+    if cert_ids:
+        detail += f"/cert:{','.join(map(str, cert_ids))}"
     if capped and expires_at is not None:
         detail += f" expiry capped at engagement period_to {expires_at.isoformat()}"
     await record_access(session, grant, action="issued", detail=detail)
@@ -421,6 +449,7 @@ async def create_grant(
         actor=actor or "system", action="create", entity_type="external_grant",
         entity_id=str(grant.id),
         diff={"org": org_id, "kind": kind, "packages": pkg_ids, "evidence": ev_ids,
+              "certification_systems": cert_ids,
               "engagement": engagement_id, "expiry_capped": capped},
     )
     await session.flush()
@@ -650,9 +679,15 @@ async def grant_contents(session: AsyncSession, grant: ExternalAccessGrant) -> d
         )
     ).scalars().all()
 
+    listing = await certification.list_documents(session, grant)
     return {
         "grant": {"id": grant.id, "kind": grant.kind, "label": grant.label,
                   "expires_at": grant.expires_at, "engagement_id": grant.engagement_id},
+        "certification_data": {
+            "documents": listing.documents,
+            "withheld_invalid": listing.withheld_invalid,
+            "systems": certification.shared_system_ids(grant),
+        },
         "packages": packages,
         "evidence": evidence,
         "comments": [

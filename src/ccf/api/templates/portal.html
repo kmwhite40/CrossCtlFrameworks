@@ -46,6 +46,24 @@
         {% if contents.grant.expires_at %} · access expires {{ contents.grant.expires_at.date() }}{% endif %}
       </p>
 
+      {% set cd = contents.certification_data %}
+      {% if cd.systems %}
+      <section class="portal__card">
+        <h2>FedRAMP Certification Data</h2>
+        {% for d in cd.documents %}
+          <div class="portal__row">
+            <div><strong>{{ d.title }}</strong> <span class="dim">· {{ d.system }}{% if d.document_key %} · {{ d.document_key }}{% endif %}</span>
+              <div class="dim mono" style="font-size:12px">updated {{ d.updated_at.strftime('%Y-%m-%d') if d.updated_at else '—' }} · sha256 {{ d.sha256[:12] }}…</div></div>
+            <div><a href="{{ d.markdown_url }}">Read</a> · <a href="{{ d.json_url }}">JSON</a></div>
+          </div>
+        {% else %}
+          <div class="portal__empty">No certification documents have been published for these systems yet.</div>
+        {% endfor %}
+        {% if cd.withheld_invalid %}<div class="dim" style="font-size:12px">{{ cd.withheld_invalid }} draft document{{ 's' if cd.withheld_invalid != 1 }} not yet valid against FedRAMP's schema {{ 'are' if cd.withheld_invalid != 1 else 'is' }} not shown.</div>{% endif %}
+        <div class="dim" style="font-size:12px">Programmatic access: <span class="mono">GET /api/portal/certification-data</span> with your access token as a bearer token. Each document's Markdown is generated from its JSON and carries the same SHA-256.</div>
+      </section>
+      {% endif %}
+
       <section class="portal__card">
         <h2>Shared packages</h2>
         {% for p in contents.packages %}
