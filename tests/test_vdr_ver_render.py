@@ -191,3 +191,55 @@ async def test_a_seeded_vdr_carries_the_recorded_evaluation() -> None:
     assert result.document.validation_errors == [
         "<root>: 'certificationPackageOverviewUri' is a required property"
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_pending_evaluation_does_not_reach_the_deliverable() -> None:
+    async with session_scope() as s:
+        org = Organization(name="vdr-ver-pending org")
+        s.add(org)
+        await s.flush()
+        system = System(organization_id=org.id, name="vdr-ver-pending", certification_class="C")
+        s.add(system)
+        await s.flush()
+        poam = POAM(
+            system_id=system.id,
+            title="Outdated OpenSSL",
+            severity="high",
+            status="open",
+            identified_on=date(2026, 12, 1),
+            scanner="nessus",
+            source="scan",
+        )
+        s.add(poam)
+        await s.flush()
+        common = {
+            "organization_id": org.id,
+            "poam_id": poam.id,
+            "likely_exploitable": True,
+            "internet_reachable": True,
+            "rationale": "r",
+        }
+        s.add(VulnerabilityEvaluation(pain_rating=5, evaluated_at=T0, **common))
+        s.add(
+            VulnerabilityEvaluation(
+                pain_rating=1,
+                evaluated_at=T0 + timedelta(hours=1),
+                requires_confirmation=True,
+                evaluated_by="a@x",
+                **common,
+            )
+        )
+        system_id = system.id
+    async with session_scope() as s:
+        result = await seed_vdr(
+            s,
+            system_id=system_id,
+            period_from=datetime(2026, 12, 1, tzinfo=UTC),
+            period_to=datetime(2026, 12, 31, tzinfo=UTC),
+            today=TODAY,
+        )
+    (detail,) = result.document.document["vulnerabilities"]
+    assert detail["currentRating"] == 5
+    assert "painReductionEvents" not in detail
+    assert detail["overdueStatus"]["isOverdue"] is True

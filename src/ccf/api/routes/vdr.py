@@ -43,6 +43,20 @@ def _eval_out(e: VulnerabilityEvaluation) -> dict[str, Any]:
         "rationale": e.rationale,
         "evaluated_by": e.evaluated_by,
         "evaluated_at": e.evaluated_at,
+        "requires_confirmation": e.requires_confirmation,
+        "confirmed_by": e.confirmed_by,
+        "confirmed_at": e.confirmed_at,
+        "effective": e.effective,
+    }
+
+
+def _done_out(obj: Any, done: service.Recorded) -> dict[str, Any]:
+    return {
+        "evaluation": _eval_out(done.evaluation),
+        "status": service.status_out(obj, done.status),
+        "pending_confirmation": done.pending_confirmation,
+        "due_on_changed": done.due_on_changed,
+        "previous_due_on": done.tightened_from,
     }
 
 
@@ -78,12 +92,26 @@ async def record_evaluation(
     except service.EvaluationError as e:
         raise HTTPException(e.status, str(e)) from e
     await session.commit()
-    return {
-        "evaluation": _eval_out(done.evaluation),
-        "status": service.status_out(obj, done.status),
-        "due_on_changed": done.due_on_changed,
-        "previous_due_on": done.tightened_from,
-    }
+    return _done_out(obj, done)
+
+
+@router.post("/api/poams/{pid}/evaluations/{eid}/confirm")
+async def confirm_evaluation(
+    pid: int,
+    eid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> dict[str, Any]:
+    """Put an evaluation that relaxes a deadline into effect (not its author)."""
+    obj = await _require_poam(session, pid, principal)
+    try:
+        done = await service.confirm_evaluation(
+            session, poam=obj, evaluation_id=eid, principal=principal
+        )
+    except service.EvaluationError as e:
+        raise HTTPException(e.status, str(e)) from e
+    await session.commit()
+    return _done_out(obj, done)
 
 
 @router.get("/api/systems/{sid}/vdr")

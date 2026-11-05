@@ -75,6 +75,7 @@ async def vdr_system(
             "system": system,
             "view": view,
             "can_write": _can_write(request),
+            "me": getattr(getattr(request.state, "principal", None), "email", None),
             "msg": request.query_params.get("msg"),
             "error": request.query_params.get("error"),
             "labels": tf.COLUMN_LABELS,
@@ -115,9 +116,35 @@ async def vdr_evaluate(
         return RedirectResponse(_with(base, error=f"POA&M #{pid}: {e}"), status_code=303)
     await session.commit()
     note = f"POA&M #{pid} evaluated N{pain_rating}."
+    if done.pending_confirmation:
+        note += " It relaxes a deadline, so it takes effect once someone else confirms it."
     if done.due_on_changed:
         note += f" Due date moved earlier to {poam.due_on}."
     return RedirectResponse(_with(base, msg=note) + f"#poam-{pid}", status_code=303)
+
+
+@router.post("/systems/{sid}/vdr/poams/{pid}/evaluations/{eid}/confirm")
+async def vdr_confirm(
+    sid: int,
+    pid: int,
+    eid: int,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> Response:
+    await require_system_in_scope(session, sid, principal)
+    poam = await _require_poam(session, pid, principal)
+    if poam.system_id != sid:
+        raise HTTPException(404, "poam not found")
+    base = f"/systems/{sid}/vdr"
+    try:
+        await service.confirm_evaluation(session, poam=poam, evaluation_id=eid, principal=principal)
+    except service.EvaluationError as e:
+        return RedirectResponse(_with(base, error=f"POA&M #{pid}: {e}"), status_code=303)
+    await session.commit()
+    return RedirectResponse(
+        _with(base, msg=f"POA&M #{pid}: evaluation confirmed and in effect.") + f"#poam-{pid}",
+        status_code=303,
+    )
 
 
 def _with(base: str, **params: Any) -> str:

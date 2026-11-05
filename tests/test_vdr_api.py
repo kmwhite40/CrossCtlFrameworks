@@ -402,3 +402,148 @@ async def test_a_viewer_cannot_post_the_form(_auth_enabled: None) -> None:
             headers=w.hdr["viewer"],
         )
     assert r.status_code == 403
+
+
+# ── relaxing needs a second person ────────────────────────────────────────
+
+
+async def _eval(c: AsyncClient, pid: int, hdr: dict[str, str], **kw: object) -> dict:
+    r = await c.post(f"/api/poams/{pid}/evaluations", json={**BODY, **kw}, headers=hdr)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+@pytest.mark.asyncio
+async def test_a_lowered_rating_waits_for_someone_else(_auth_enabled: None) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        first = await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        assert first["pending_confirmation"] is False
+        lowered = await _eval(c, pid, w.hdr["owner"], pain_rating=2)
+        assert lowered["pending_confirmation"] is True
+        # Not in effect: the deadline is still N5's.
+        assert lowered["status"]["evaluation"]["pain_rating"] == 5
+        eid = lowered["evaluation"]["id"]
+        view = (await c.get(f"/api/systems/{w.ids['system']}/vdr", headers=w.hdr["viewer"])).json()
+        flaw = next(f for f in view["flaws"] if f["poam_id"] == pid)
+        assert flaw["evaluation"]["pain_rating"] == 5
+        assert [p["id"] for p in flaw["pending"]] == [eid]
+
+        own = await c.post(f"/api/poams/{pid}/evaluations/{eid}/confirm", headers=w.hdr["owner"])
+        assert own.status_code == 403, own.text
+        viewer = await c.post(
+            f"/api/poams/{pid}/evaluations/{eid}/confirm", headers=w.hdr["viewer"]
+        )
+        assert viewer.status_code == 403
+        ok = await c.post(f"/api/poams/{pid}/evaluations/{eid}/confirm", headers=w.hdr["admin"])
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"]["evaluation"]["pain_rating"] == 2
+        assert ok.json()["evaluation"]["confirmed_by"].startswith("admin-")
+        again = await c.post(f"/api/poams/{pid}/evaluations/{eid}/confirm", headers=w.hdr["admin"])
+        assert again.status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kw",
+    [
+        {"pain_rating": 1},
+        {"pain_rating": 0, "false_positive": True},
+    ],
+)
+async def test_a_first_evaluation_that_removes_every_deadline_waits(
+    _auth_enabled: None, kw: dict
+) -> None:
+    w = await _world("C")
+    pid = await _poam(w, identified_on=TODAY - timedelta(days=30))
+    async with _client() as c:
+        out = await _eval(c, pid, w.hdr["owner"], **kw)
+    assert out["pending_confirmation"] is True
+    assert out["status"]["state"] == "overdue"  # still late for evaluation (VER-TFR-EVU)
+
+
+@pytest.mark.asyncio
+async def test_a_raised_rating_takes_effect_at_once(_auth_enabled: None) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        await _eval(c, pid, w.hdr["owner"], pain_rating=3)
+        out = await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+    assert out["pending_confirmation"] is False
+    assert out["status"]["evaluation"]["pain_rating"] == 5
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_pending_evaluation_cannot_be_confirmed(_auth_enabled: None) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        held = await _eval(c, pid, w.hdr["owner"], pain_rating=2)
+        await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        r = await c.post(
+            f"/api/poams/{pid}/evaluations/{held['evaluation']['id']}/confirm",
+            headers=w.hdr["admin"],
+        )
+        view = (await c.get(f"/api/systems/{w.ids['system']}/vdr", headers=w.hdr["viewer"])).json()
+    assert r.status_code == 409 and "supersedes" in r.json()["detail"]
+    assert next(f for f in view["flaws"] if f["poam_id"] == pid)["pending"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_evaluation_in_effect_needs_no_confirmation(_auth_enabled: None) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        out = await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        r = await c.post(
+            f"/api/poams/{pid}/evaluations/{out['evaluation']['id']}/confirm",
+            headers=w.hdr["admin"],
+        )
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_with_auth_off_there_is_no_second_person_to_wait_for() -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        out = await _eval(c, pid, {}, pain_rating=1)
+    assert out["pending_confirmation"] is False
+    assert out["status"]["state"] == "no_timeframe"
+
+
+@pytest.mark.asyncio
+async def test_the_page_offers_confirmation_to_others_but_not_the_author(
+    _auth_enabled: None,
+) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        held = await _eval(c, pid, w.hdr["owner"], pain_rating=2)
+        eid = held["evaluation"]["id"]
+        action = f"/vdr/poams/{pid}/evaluations/{eid}/confirm"
+        mine = await c.get(f"/systems/{w.ids['system']}/vdr", headers=w.hdr["owner"])
+        assert "Awaiting confirmation" in mine.text and action not in mine.text
+        theirs = await c.get(f"/systems/{w.ids['system']}/vdr", headers=w.hdr["admin"])
+        assert action in theirs.text
+        r = await c.post(f"/systems/{w.ids['system']}{action}", headers=w.hdr["admin"])
+        assert r.status_code == 303 and "confirmed" in r.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_an_evaluation_cannot_be_confirmed_through_another_poam(
+    _auth_enabled: None,
+) -> None:
+    w = await _world("C")
+    held_on, other = await _poam(w), await _poam(w)
+    async with _client() as c:
+        await _eval(c, held_on, w.hdr["owner"], pain_rating=5)
+        held = await _eval(c, held_on, w.hdr["owner"], pain_rating=2)
+        r = await c.post(
+            f"/api/poams/{other}/evaluations/{held['evaluation']['id']}/confirm",
+            headers=w.hdr["admin"],
+        )
+    assert r.status_code == 404

@@ -156,6 +156,32 @@ class Evaluation:
         return (self.pain_rating, self.column) == (other.pain_rating, other.column)
 
 
+#: Strictness of each PVR column, strictest first: a move rightward lengthens
+#: every window in the table.
+_COLUMN_ORDER = {c: i for i, c in enumerate(COLUMNS)}
+
+
+def relaxes(previous: Evaluation | None, new: Evaluation) -> bool:
+    """Whether ``new`` would loosen a deadline, so needs a second person.
+
+    Against the evaluation in effect: a lower rating, a less exposed column,
+    or a false positive (which also lifts the KEV deadline). With none in
+    effect, a first rating of N0 or N1 -- the ones with no mitigation
+    timeframe -- relaxes too: FedRAMP's own default for an unknown effect is
+    to treat it as debilitating (FRD-DCE), not as negligible.
+    """
+    if new.false_positive:
+        return True
+    if previous is None:
+        return new.pain_rating <= 1
+    if previous.false_positive:
+        return False
+    return (
+        new.pain_rating < previous.pain_rating
+        or _COLUMN_ORDER[new.column] > _COLUMN_ORDER[previous.column]
+    )
+
+
 @dataclass(frozen=True)
 class Breach:
     rule: str

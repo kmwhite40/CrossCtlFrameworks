@@ -330,3 +330,33 @@ def test_cadence_without_a_class_reports_age_but_no_verdict() -> None:
     out = tf.detection_cadence([("nessus", T0)], cls=None, now=T0 + timedelta(days=90))
     assert out[0].stale is None
     assert out[0].required is None
+
+
+# ── which evaluations need a second person ────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("previous", "new", "relaxes"),
+    [
+        (None, _ev(5), False),
+        (None, _ev(2), False),
+        (None, _ev(1), True),  # a first rating with no timeframe at all
+        (None, _ev(0), True),
+        (None, _ev(0, fp=True), True),
+        (_ev(5), _ev(5), False),
+        (_ev(3), _ev(5), False),  # tightening never waits
+        (_ev(5), _ev(4), True),
+        (_ev(5, irv=True), _ev(5, irv=False), True),  # irv_lev -> nirv_lev
+        (_ev(5, irv=False), _ev(5, irv=True), False),
+        (_ev(5), _ev(5, lev=False), True),  # -> nlev
+        (_ev(5, lev=False), _ev(5), False),
+        (_ev(4), _ev(0, fp=True), True),
+        (_ev(0, fp=True), _ev(3), False),  # back from a false positive is stricter
+        # A false positive over N0 lowers nothing, but it lifts the KEV deadline.
+        (_ev(0), _ev(0, fp=True), True),
+        # Any real rating after a false positive is stricter, even in a wider column.
+        (_ev(0, fp=True), _ev(3, lev=False), False),
+    ],
+)
+def test_relaxes(previous: tf.Evaluation | None, new: tf.Evaluation, relaxes: bool) -> None:
+    assert tf.relaxes(previous, new) is relaxes

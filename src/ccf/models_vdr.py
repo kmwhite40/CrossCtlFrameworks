@@ -6,7 +6,14 @@ exploitability, false positive -- and every 20x VDR timeframe runs from one
 (see docs/superpowers/specs/2026-11-05-vdr-engine-design.md).
 
 Append-only: a new judgement is a new row, so the history is the record of
-PAIN reductions VER-RPT-VDT asks for. No route updates or deletes a row.
+PAIN reductions VER-RPT-VDT asks for. No route deletes a row; the only update
+is the one-time confirmation below.
+
+An evaluation that **relaxes** a deadline -- a lower rating, a less exposed
+reachability column, a false positive, or a first rating with no timeframe at
+all -- takes effect only when someone other than its author confirms it
+(``ccf.vdr.timeframes.relaxes``). Until then the engine and the deliverables
+ignore it. Tightening needs no second person.
 """
 
 from __future__ import annotations
@@ -40,6 +47,10 @@ class VulnerabilityEvaluation(Base):
             "NOT false_positive OR pain_rating = 0", name="ck_vuln_eval_false_positive_unrated"
         ),
         CheckConstraint("length(btrim(rationale)) > 0", name="ck_vuln_eval_rationale"),
+        CheckConstraint(
+            "confirmed_at IS NULL OR (requires_confirmation AND confirmed_by IS NOT NULL)",
+            name="ck_vuln_eval_confirmation",
+        ),
         {"schema": "ccf"},
     )
 
@@ -59,3 +70,11 @@ class VulnerabilityEvaluation(Base):
     evaluated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    requires_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)
+    confirmed_by: Mapped[str | None] = mapped_column(String(255))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def effective(self) -> bool:
+        """Whether deadlines and deliverables may read this evaluation."""
+        return not self.requires_confirmation or self.confirmed_at is not None

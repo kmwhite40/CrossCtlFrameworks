@@ -104,6 +104,19 @@ still apply (class-independent).
 
 ## 7. Writes
 
+**Relaxing needs a second person** (added after the automated security review
+of the first commit, which found one principal could clear an overdue verdict
+in the filed VDT by recording a lower rating or a false positive). An
+evaluation that relaxes a deadline — a lower rating or a less exposed column
+than the one in effect, any false positive (it lifts the KEV deadline), or a
+first rating of N0/N1 (no timeframe at all; FedRAMP's default for an unknown
+effect is debilitating, FRD-DCE) — is stored with `requires_confirmation` and
+ignored by the engine and the deliverables until someone other than its
+author confirms it (`POST /api/poams/{id}/evaluations/{eid}/confirm`). Only
+the latest evaluation can be confirmed; a later one supersedes it. Tightening
+takes effect at once. With auth off there is no second person, so nothing is
+held — the same rule as the closure and extension gates.
+
 `POST /api/poams/{id}/evaluations` — scope-checked like every POA&M route;
 viewers refused by the existing gate. Records an audit event via
 `record_event`. If the computed mitigation or KEV deadline is earlier than
