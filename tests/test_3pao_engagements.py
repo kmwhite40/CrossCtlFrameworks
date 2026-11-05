@@ -37,6 +37,7 @@ from ccf.models_portal import AssessmentEngagement, ExternalAccessGrant
 from ccf.packages import service as pkg_service
 from ccf.portal import service as portal
 from ccf.reliability.checks import _check_external_grant_expiration
+from tests.portal_retention import portal_log_retention_suspended
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -72,8 +73,9 @@ async def orgs() -> AsyncIterator[list[int]]:
     finally:
         async with session_scope() as s:
             await set_session_tenant(s, None)
-            for org_id in created:
-                await s.execute(delete(Organization).where(Organization.id == org_id))
+            async with portal_log_retention_suspended(s):
+                for org_id in created:
+                    await s.execute(delete(Organization).where(Organization.id == org_id))
 
 
 async def _org(created: list[int], name: str) -> int:

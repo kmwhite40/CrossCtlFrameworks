@@ -38,6 +38,7 @@ from ...auth import Principal, sign_session, verify_session
 from ...config import get_settings, is_dev_env
 from ...models_portal import AssessmentEngagement, ExternalAccessGrant
 from ...portal import (
+    access_log,
     add_comment,
     certification,
     create_engagement,
@@ -48,6 +49,7 @@ from ...portal import (
     list_engagements,
     list_grants,
     record_access,
+    record_refusal,
     resolve_grant,
     resolve_grant_by_id,
     revoke_engagement,
@@ -382,6 +384,38 @@ async def certification_access_inventory_endpoint(
     )
 
 
+@router.get("/access-log-summary", tags=["certification-data"])
+async def access_log_summary_endpoint(
+    organization_id: int | None = None,
+    since: datetime | None = None,
+    fmt: str = "json",
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> Response:
+    """FedRAMP CDS-TRC-ACL: access per grantee, per month, per target.
+
+    Raw events behind it are append-only and kept at least six months by the
+    database (migration 0109). ``oldest_event_at`` says how far back the record
+    reaches. The caller's own organization only.
+    """
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    if org_id is None:
+        raise HTTPException(status_code=422, detail="organization_id is required")
+    if fmt not in {"json", "csv"}:
+        raise HTTPException(status_code=422, detail="fmt must be json or csv")
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    result = await access_log.summary(session, org_id=org_id, since=since)
+    stem = f"certification-access-log-summary-org{org_id}-{datetime.now(UTC):%Y%m%d}"
+    if fmt == "csv":
+        return PlainTextResponse(
+            access_log.summary_csv(result),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.csv"'},
+        )
+    return JSONResponse(jsonable_encoder(result))
+
+
 # --- external (token-authenticated) ----------------------------------------
 
 
@@ -413,8 +447,49 @@ async def _require_grant(request: Request, session: AsyncSession) -> Any:
     if grant is None:
         grant = await resolve_grant(session, _token(request))
     if grant is None:
+        await _log_refusal(request, session)
         raise HTTPException(status_code=401, detail="invalid or expired token")
     return grant
+
+
+def _cookie_grant_id(request: Request) -> int | None:
+    """The grant id a validly signed portal cookie names, live or not."""
+    cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
+    if not cookie:
+        return None
+    return verify_session(cookie, _portal_secret(get_settings().auth_session_secret))
+
+
+async def _log_refusal(request: Request, session: AsyncSession) -> None:
+    """CDS-TRC-ACL: a known grant refused is logged and committed now, before
+    the caller answers 401 -- the request session rolls back on the way out.
+
+    One record per request: the cookie's grant if it carries one, else the
+    token's. An unsigned cookie or an unknown token names no party.
+    """
+    grant_id = _cookie_grant_id(request)
+    if grant_id is not None:
+        logged = await record_refusal(session, grant_id=grant_id)
+    else:
+        logged = await record_refusal(session, token=_token(request))
+    if logged is not None:
+        await session.commit()
+
+
+@public_router.get("/access-log", tags=["certification-data"])
+async def portal_access_log(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """CDS-TRC-ACL: the access logged against the caller's own grant.
+
+    The rule asks that access information about a party be available to that
+    party on request; this is the request. Only this grant's events.
+    """
+    grant = await _require_grant(request, session)
+    log = await access_log.party_log(session, grant)
+    await record_access(session, grant, action="view", target_type="access_log")
+    await session.commit()
+    return log
 
 
 class CommentIn(BaseModel):
@@ -536,10 +611,7 @@ async def _grant_from_cookie(request: Request, session: AsyncSession) -> Any:
     re-checks the referenced grant's live revoked/expiry state in the DB —
     the cookie proves who issued it, not that the grant is still valid.
     """
-    cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
-    if not cookie:
-        return None
-    grant_id = verify_session(cookie, _portal_secret(get_settings().auth_session_secret))
+    grant_id = _cookie_grant_id(request)
     if grant_id is None:
         return None
     return await resolve_grant_by_id(session, grant_id)
@@ -552,6 +624,9 @@ async def portal_ui(
     if token:
         grant = await resolve_grant(session, token)
         if grant is None:
+            # The link's token, not a cookie left from an earlier grant.
+            if await record_refusal(session, token=token) is not None:
+                await session.commit()
             return templates.TemplateResponse(
                 request, "portal.html", {"token": token, "grant": None, "contents": None},
             )
@@ -586,6 +661,8 @@ async def portal_ui(
         contents = await grant_contents(session, grant)
         await record_access(session, grant, action="view")
         await session.commit()
+    elif _cookie_grant_id(request) is not None:
+        await _log_refusal(request, session)
     return templates.TemplateResponse(
         request,
         "portal.html",

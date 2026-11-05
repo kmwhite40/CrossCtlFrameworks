@@ -374,9 +374,9 @@ async def test_the_csv_has_the_fields_in_order_and_no_live_formulas(_auth_enable
 
 def test_every_formula_lead_is_neutralized() -> None:
     for lead in ("=", "+", "-", "@", "\t", "\r"):
-        assert inventory._cell(f"{lead}1") == f"'{lead}1"
-    assert inventory._cell("Department") == "Department"
-    assert inventory._cell(None) == ""
+        assert inventory.csv_cell(f"{lead}1") == f"'{lead}1"
+    assert inventory.csv_cell("Department") == "Department"
+    assert inventory.csv_cell(None) == ""
 
 
 # ── the page ──────────────────────────────────────────────────────────────

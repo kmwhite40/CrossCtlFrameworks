@@ -61,6 +61,7 @@
         {% endfor %}
         {% if cd.withheld_invalid %}<div class="dim" style="font-size:12px">{{ cd.withheld_invalid }} draft document{{ 's' if cd.withheld_invalid != 1 }} not yet valid against FedRAMP's schema {{ 'are' if cd.withheld_invalid != 1 else 'is' }} not shown.</div>{% endif %}
         <div class="dim" style="font-size:12px">Programmatic access: <span class="mono">GET /api/portal/certification-data</span> with your access token as a bearer token. Each document's Markdown is generated from its JSON and carries the same SHA-256.</div>
+        <div class="dim" style="font-size:12px">Your access is logged and kept at least six months. <a href="/api/portal/access-log">See what has been logged for your access</a>.</div>
       </section>
       {% endif %}
 

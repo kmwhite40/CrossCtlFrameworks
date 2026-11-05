@@ -739,14 +739,86 @@ async def record_access(
     target_id: str | None = None,
     detail: str | None = None,
 ) -> None:
-    """Append one immutable portal audit event for a grant's access."""
+    """Append one immutable portal audit event for a grant's access.
+
+    The grantee's identity is copied onto the row so the history does not
+    depend on the principal surviving (CDS-TRC-ACL, migration 0109).
+    """
+    principal = (
+        await session.get(ExternalPrincipal, grant.principal_id)
+        if grant.principal_id is not None
+        else None
+    )
     session.add(
         ExternalPortalAuditEvent(
             organization_id=grant.organization_id, grant_id=grant.id, action=action,
             target_type=target_type, target_id=target_id, detail=detail,
+            grantee_name=principal.name if principal else None,
+            grantee_kind=principal.kind if principal else grant.kind,
+            grantee_organization=principal.organization_name if principal else None,
         )
     )
     await session.flush()
+
+
+#: A refused credential is logged at most once per grant per reason in this
+#: window (CDS-TRC-ACL; see ``record_refusal``).
+REFUSAL_LOG_WINDOW = timedelta(minutes=10)
+
+
+async def record_refusal(
+    session: AsyncSession, *, token: str | None = None, grant_id: int | None = None
+) -> str | None:
+    """Log an attempt by a grant that exists but no longer resolves (CDS-TRC-ACL).
+
+    A revoked, expired or ended-engagement credential still being presented is
+    access to certification data attempted by a known party, so it belongs in
+    that party's history. Returns the refusal reason, or ``None`` when nothing
+    was logged: a token matching no grant names no party to attribute it to.
+    The caller commits -- before raising its 401, or the rollback takes the
+    record with it.
+    """
+    grant: ExternalAccessGrant | None = None
+    if grant_id is not None:
+        grant = await session.get(ExternalAccessGrant, grant_id)
+    elif token:
+        grant = (
+            await session.execute(
+                select(ExternalAccessGrant).where(
+                    ExternalAccessGrant.token_hash == hash_token(token)
+                )
+            )
+        ).scalar_one_or_none()
+    if grant is None:
+        return None
+    current = (
+        await current_engagement_ids(session, [grant.engagement_id])
+        if grant.engagement_id is not None
+        else set()
+    )
+    status = grant_status(grant, current)
+    if status == "active":
+        return None
+    # Throttled: a dead token can be replayed without limit, and the log can
+    # neither be edited (to count) nor pruned (for six months). One record per
+    # grant per reason per window says the credential is still being presented
+    # without letting a former grantee grow the table at will.
+    recent = (
+        await session.execute(
+            select(ExternalPortalAuditEvent.id)
+            .where(
+                ExternalPortalAuditEvent.grant_id == grant.id,
+                ExternalPortalAuditEvent.action == "refused",
+                ExternalPortalAuditEvent.detail == status,
+                ExternalPortalAuditEvent.created_at > _now() - REFUSAL_LOG_WINDOW,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if recent is not None:
+        return None
+    await record_access(session, grant, action="refused", detail=status)
+    return status
 
 
 async def add_comment(

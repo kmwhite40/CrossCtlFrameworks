@@ -135,3 +135,16 @@ async def test_migration_0108_backfills_history_from_the_audit_log() -> None:
     assert live_g.revoked_at is None and live_g.revoked_by is None
     assert silent_g.revoked and silent_g.revoked_at is None and silent_g.revoked_by is None
     assert silent_g.issued_by is None
+
+    # 0109 ran again on the way back up: its events name their grantee.
+    async with session_scope() as s:
+        named = (
+            await s.execute(
+                text(
+                    "SELECT DISTINCT grantee_name, grantee_kind "
+                    "FROM ccf.external_portal_audit_events WHERE grant_id = :id"
+                ),
+                {"id": ids["audited"]},
+            )
+        ).all()
+    assert [tuple(r) for r in named] == [("Dept", "agency")]

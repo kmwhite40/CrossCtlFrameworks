@@ -212,7 +212,7 @@ def to_json(rows: list[dict[str, Any]], *, org_id: int, kind: str | None) -> dic
     }
 
 
-def _cell(value: Any) -> str:
+def csv_cell(value: Any) -> str:
     """One CSV cell: ISO dates, ``;``-joined systems, formulas neutralized."""
     if value is None:
         return ""
@@ -231,5 +231,5 @@ def to_csv(rows: list[dict[str, Any]]) -> str:
     writer = csv.writer(buf)
     writer.writerow(FIELDS)
     for row in rows:
-        writer.writerow([_cell(row[f]) for f in FIELDS])
+        writer.writerow([csv_cell(row[f]) for f in FIELDS])
     return buf.getvalue()

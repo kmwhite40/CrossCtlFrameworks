@@ -259,8 +259,15 @@ class ExternalPortalAuditEvent(Base):
     grant_id: Mapped[int | None] = mapped_column(
         ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
     )
-    action: Mapped[str] = mapped_column(String(24))  # view|download|comment|respond|denied
+    #: view|download|comment|respond|denied|refused (access); issued|revoked (admin)
+    action: Mapped[str] = mapped_column(String(24))
     target_type: Mapped[str | None] = mapped_column(String(24))
     target_id: Mapped[str | None] = mapped_column(String(64))
     detail: Mapped[str | None] = mapped_column(Text)
+    #: Who the grantee was, copied when the row is written (0109), so the
+    #: history outlives the principal row. Append-only and kept six months by
+    #: a database trigger (CDS-TRC-ACL).
+    grantee_name: Mapped[str | None] = mapped_column(String(255))
+    grantee_kind: Mapped[str | None] = mapped_column(String(16))
+    grantee_organization: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

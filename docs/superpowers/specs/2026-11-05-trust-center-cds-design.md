@@ -1,6 +1,6 @@
 # A FedRAMP-compatible trust center (CDS rules)
 
-Date: 2026-11-05. Status: steps 1–2 built; steps 3–5 planned. Base:
+Date: 2026-11-05. Status: steps 1–3 built; steps 4–5 planned. Base:
 `feat/vdr-engine`.
 
 ## 1. Why, and by when
@@ -128,6 +128,63 @@ pinned on the source, since a race test on one pool is not deterministic.
 
 **Known limits:** a principal deleted after issuance (`SET NULL`) leaves its
 grant's name blank — step 3 keeps the grantee identity on the row.
+
+## 4c. Step 3 as built (CDS-TRC-ACL)
+
+- **Append-only, six months, every role** (migration 0109). A trigger on
+  `external_portal_audit_events` refuses UPDATE and refuses DELETE of a row
+  younger than `interval '6 months'`. A REVOKE alone would bind only
+  `ccf_app`; unscoped sessions run as the bootstrap superuser
+  (`set_session_tenant`), so the trigger is what holds. `ccf_app` also loses
+  UPDATE/DELETE. The one UPDATE allowed is the foreign key's own `SET NULL`
+  of `grant_id`, and only with nothing else changed.
+- **Organizations are never hard-deleted in production** (soft delete,
+  DATA-04), so the trigger refusing a cascade that would erase recent portal
+  history is correct. Test teardown that hard-deletes organizations uses
+  `tests/portal_retention.py`, which disables the trigger inside its own
+  transaction (table owner only).
+- **The grantee is named on the row**: `grantee_name`, `grantee_kind`,
+  `grantee_organization`, copied at write time and backfilled from the grant
+  and principal. Deleting the principal or the grant leaves the history
+  named.
+- **Refused credentials are logged** (`refused`, detail = `revoked`,
+  `expired`, `engagement ended`) at every resolution site: the API, the
+  `/portal?token=` link, and the page's cookie. They are committed before the
+  401, because the request session rolls back on the way out. One record per
+  request, the cookie's grant first (the same order `_require_grant` resolves
+  in). A token that matches no grant names no party and is not logged.
+- `GET /api/admin/portal/access-log-summary?fmt=json|csv[&since=]`: per
+  grantee, per month, per target, counts of each access action. `issued` and
+  `revoked` are what the provider did, not access, and are left out; any
+  other action lands in `other`. It also gives `oldest_event_at`, so a short
+  record reads as little history, not little access.
+- `GET /api/portal/access-log`, by the grantee's own token: every event on
+  that grant ("as it pertains to specific parties … available upon request by
+  those parties"). Reading it is logged too. The portal page links it.
+
+**From the independent review** (nothing critical; five fixed):
+
+- A dead token replayed without limit wrote a permanent row each time, into
+  a table nobody may prune for six months. A refusal is now logged at most
+  once per grant, reason and 10-minute window (`REFUSAL_LOG_WINDOW`); a log
+  that cannot be edited cannot count, so the repeat is skipped, not counted.
+- The SET NULL exemption could not tell the foreign key from a person: anyone
+  holding UPDATE could detach a live grant's events from its party's log. The
+  trigger now also requires the grant row to be gone.
+- TRUNCATE skips row triggers; a statement trigger refuses it.
+- The teardown helper re-enables the trigger only on success, so a failure
+  shows its own error.
+- One assertion could not fail; replaced by tests for the above and for the
+  refused organization delete.
+- Not changed: exchanging a link token for the cookie is not itself logged.
+  It serves no data, and the page it redirects to logs the view.
+
+**Verified by mutation:** 22 guards; 21 killed, including the trigger and
+migration guards, run through the 0108 round trip so the mutated migration
+actually reaches the database. The survivor is the trigger's `ROW(...)`
+comparison, and it is equivalent: with the grant row required to be gone,
+the only UPDATE that reaches it is the foreign key's own, which changes
+nothing else. It stays as defence in depth.
 
 ## 5. Not done in step 1
 
