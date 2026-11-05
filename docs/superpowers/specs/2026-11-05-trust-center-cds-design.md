@@ -1,6 +1,6 @@
 # A FedRAMP-compatible trust center (CDS rules)
 
-Date: 2026-11-05. Status: step 1 built; steps 2–5 planned. Base:
+Date: 2026-11-05. Status: steps 1–2 built; steps 3–5 planned. Base:
 `feat/vdr-engine`.
 
 ## 1. Why, and by when
@@ -81,6 +81,53 @@ Build on the portal; do not start a third system.
 clamps the session to the grant's tenant first, so a row filed under another
 tenant is already invisible. It is defence in depth behind RLS, and the
 end-to-end test proves the behaviour, not the line.
+
+## 4b. Step 2 as built (CDS-TRC-AAI)
+
+- Migration 0108 adds `issued_by`, `revoked_at`, `revoked_by` to
+  `external_access_grants`, with `CHECK (revoked_at IS NULL OR revoked)`.
+  `revoked` stays the access switch; the new columns say what happened.
+- **The first revocation is the one kept.** Revoking an already-revoked grant
+  succeeds and changes nothing (it used to write a second event); a second
+  revoke must not move the date FedRAMP is told access ended.
+- **Backfill reads the audit log**, actor and time from the same
+  `external_grant` create/delete event. With no event, the columns stay NULL
+  and the page says "not recorded" — no date is invented.
+- `GET /api/admin/portal/certification-access-inventory?fmt=json|csv[&kind=]`:
+  every grant that covers or covered certification data, ended ones
+  included, all principal kinds (an assessor holding the data has access to
+  it; `kind=agency` narrows). Each row: principal, systems (deleted ones keep
+  their names), status from the same `grant_status` the access check uses,
+  issued/revoked who and when, and certification-data downloads. The JSON
+  carries the rule id, its statement read from the pinned rules, and the
+  dataset version. Admin of that organization only.
+- **The CSV is formula-safe** (CWE-1236): a cell that opens with `=`, `+`,
+  `-`, `@`, tab or CR is prefixed with `'`. FedRAMP opens this file, and from
+  step 4 agencies type their own names.
+- The portal-admin page shows the inventory with CSV/JSON links. **How FedRAMP
+  obtains it** (the rule's artifact): an organization admin exports the CSV
+  and sends it on request.
+
+**From the independent review** (four defects, none critical):
+
+- A grant's kind must match a reused principal's; the API body defaulted
+  `kind` to `customer`, which filed an agency's access under another kind and
+  dropped it from `kind=agency`. Issuance refuses the mismatch, and the
+  inventory reports and filters by the principal's kind.
+- Listing the documents is access (it shows titles and digests): first/last
+  access now include views; `downloads` stays downloads only.
+- `revoke_grant` reads the row `FOR UPDATE`, so two concurrent revokes cannot
+  both see it live and overwrite the first revocation.
+- An active grant whose shared systems are all deleted reports `systems
+  deleted`, not `active`.
+
+**Verified by mutation:** 23 guards, all killed (two tests added for the
+first-round survivors: a scope holding `[]`/JSON `null` passes the SQL
+filter; a non-certification download must not count). The row lock is
+pinned on the source, since a race test on one pool is not deterministic.
+
+**Known limits:** a principal deleted after issuance (`SET NULL`) leaves its
+grant's name blank — step 3 keeps the grantee identity on the row.
 
 ## 5. Not done in step 1
 

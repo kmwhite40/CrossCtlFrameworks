@@ -84,6 +84,32 @@
   {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No grants issued yet.</div>{% endif %}
 </section>
 
+<section class="card" style="margin-top:16px" id="certification-access">
+  <div class="card__header"><div class="card__title">Certification data access</div>
+    <span style="display:flex;gap:6px">
+      <a class="btn btn--secondary btn--sm" href="/api/admin/portal/certification-access-inventory?organization_id={{ org_id }}&amp;fmt=csv"><i data-lucide="download"></i> CSV</a>
+      <a class="btn btn--ghost btn--sm" href="/api/admin/portal/certification-access-inventory?organization_id={{ org_id }}&amp;fmt=json" target="_blank"><i data-lucide="braces"></i> JSON</a>
+    </span></div>
+  <p class="dim" style="font-size:13px;margin:0 16px 8px">Everyone who has or had access to this organization's FedRAMP certification data, with who issued and who revoked each grant. FedRAMP requires this inventory and history on request (CDS-TRC-AAI); the CSV is the file to send.</p>
+  {% if cert_access %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Recipient</th><th>Kind</th><th>Systems</th><th>Issued</th><th>Revoked</th><th>Status</th><th>Downloads</th><th>Last access</th></tr></thead>
+    <tbody>
+      {% for a in cert_access %}<tr>
+        <td><strong>{{ a.principal_name or 'not recorded' }}</strong>{% if a.principal_organization %}<div class="dim" style="font-size:12px">{{ a.principal_organization }}</div>{% endif %}</td>
+        <td class="dim">{{ a.principal_kind }}</td>
+        <td class="dim">{% for s in a.systems %}{{ s.name or ('#' ~ s.id) }}{% if s.deleted %} (deleted){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td class="dim">{{ a.issued_at.date() if a.issued_at else '' }}<div style="font-size:12px">{{ a.issued_by or 'issuer not recorded' }}</div></td>
+        <td class="dim">{% if a.revoked_at %}{{ a.revoked_at.date() }}<div style="font-size:12px">{{ a.revoked_by or 'revoker not recorded' }}</div>{% elif a.status == 'revoked' %}date not recorded{% else %}—{% endif %}</td>
+        <td>{% if a.status=='active' %}<span class="chip chip--ok">active</span>{% else %}<span class="chip chip--warn">{{ a.status }}</span>{% endif %}</td>
+        <td class="dim">{{ a.downloads }}</td>
+        <td class="dim">{{ a.last_accessed_at.date() if a.last_accessed_at else 'never' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:24px">No grant has shared certification data.</div>{% endif %}
+</section>
+
 {% endif %}
 <script>if(window.lucide)lucide.createIcons();</script>
 {% endblock %}

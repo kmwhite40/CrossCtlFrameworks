@@ -1827,13 +1827,16 @@ async def _portal_admin_context(
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
     from ...portal import current_engagement_ids, grant_status, list_grants  # noqa: PLC0415
+    from ...portal.inventory import access_inventory  # noqa: PLC0415
 
     rows: list[dict[str, Any]] = []
     packages: list[Any] = []
     evidence: list[Any] = []
     systems: list[Any] = []
+    cert_access: list[dict[str, Any]] = []
     if org_id is not None:
         grants = await list_grants(session, org_id=org_id)
+        cert_access = await access_inventory(session, org_id=org_id)
         principals = {
             p.id: p
             for p in (
@@ -1891,7 +1894,7 @@ async def _portal_admin_context(
     # the template: a second copy is a second place for a typo to live.
     return {"active": "portaladmin", "org_id": org_id, "rows": rows,
             "packages": packages, "evidence": evidence, "systems": systems,
-            "issued_link": issued_link,
+            "issued_link": issued_link, "cert_access": cert_access,
             "kinds": EXTERNAL_PRINCIPAL_KINDS}
 
 

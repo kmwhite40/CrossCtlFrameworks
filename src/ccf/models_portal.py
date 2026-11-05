@@ -125,6 +125,13 @@ class ExternalAccessGrant(Base):
     label: Mapped[str | None] = mapped_column(String(255))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: CDS-TRC-AAI history (0108): who issued the grant, and when and by whom
+    #: it was revoked. ``revoked`` stays the access switch; these say what
+    #: happened. The FIRST revocation is the one recorded -- revoking again
+    #: does not move it. NULL on rows from before 0108 with no audit event.
+    issued_by: Mapped[str | None] = mapped_column(String(255))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(String(255))
     # {package_ids, evidence_ids}
     scope: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

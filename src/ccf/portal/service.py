@@ -373,6 +373,15 @@ async def create_grant(
             raise ValueError(
                 f"external principal {principal_id} not found in organization {org_id}"
             )
+        # The grant's kind mirrors its principal's. A mismatch -- easy to send,
+        # since the API body defaults kind to "customer" -- would file an
+        # agency's access under another kind and drop it from the agency
+        # inventory FedRAMP is given (CDS-TRC-AAI).
+        if existing.kind != kind:
+            raise ValueError(
+                f"external principal {principal_id} is kind {existing.kind!r}; "
+                f"a grant to it must be kind {existing.kind!r}, not {kind!r}"
+            )
         principal = existing
     else:
         principal = ExternalPrincipal(
@@ -428,6 +437,7 @@ async def create_grant(
         expires_at=expires_at,
         revoked=False,
         scope=scope,
+        issued_by=actor or "system",
     )
     grant.expiry_capped = capped
     session.add(grant)
@@ -469,15 +479,36 @@ async def list_grants(session: AsyncSession, *, org_id: int) -> list[ExternalAcc
 
 
 async def revoke_grant(session: AsyncSession, grant_id: int, *, actor: str | None = None) -> bool:
-    grant = await session.get(ExternalAccessGrant, grant_id)
+    """Revoke a grant, recording when and by whom (CDS-TRC-AAI history).
+
+    Revoking an already-revoked grant succeeds and changes nothing: the first
+    revocation is the one that ended access, so a second must not move its
+    date or its author -- that would rewrite the history FedRAMP is given.
+    """
+    # Locked before deciding: two concurrent revokes reading ``revoked=False``
+    # would both write, and the later one would replace the first's time and
+    # author.
+    grant = (
+        await session.execute(
+            select(ExternalAccessGrant)
+            .where(ExternalAccessGrant.id == grant_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if grant is None:
         return False
+    if grant.revoked:
+        return True
     grant.revoked = True
+    grant.revoked_at = _now()
+    grant.revoked_by = actor or "system"
     await record_access(session, grant, action="revoked")
     await _audit(
         session, organization_id=grant.organization_id,
-        actor=actor or "system", action="delete", entity_type="external_grant",
-        entity_id=str(grant.id), diff={"revoked": True},
+        actor=grant.revoked_by, action="delete", entity_type="external_grant",
+        entity_id=str(grant.id),
+        diff={"revoked": True, "revoked_at": grant.revoked_at.isoformat()},
     )
     await session.flush()
     return True

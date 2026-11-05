@@ -44,6 +44,7 @@ from ...portal import (
     create_grant,
     create_principal,
     grant_contents,
+    inventory,
     list_engagements,
     list_grants,
     record_access,
@@ -317,7 +318,8 @@ async def list_grants_endpoint(
     grants = await list_grants(session, org_id=org_id)
     return [
         {"id": g.id, "kind": g.kind, "label": g.label, "engagement_id": g.engagement_id,
-         "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at}
+         "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at,
+         "issued_by": g.issued_by, "revoked_at": g.revoked_at, "revoked_by": g.revoked_by}
         for g in grants
     ]
 
@@ -339,6 +341,45 @@ async def revoke_grant_endpoint(
     if not ok:
         raise HTTPException(status_code=404, detail="grant not found")
     return {"revoked": True}
+
+
+@router.get("/certification-access-inventory", tags=["certification-data"])
+async def certification_access_inventory_endpoint(
+    organization_id: int | None = None,
+    kind: str | None = None,
+    fmt: str = "json",
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> Response:
+    """FedRAMP CDS-TRC-AAI: who has, and who had, access to Certification Data.
+
+    Every grant that has covered certification data, current or ended, with
+    who issued it, who revoked it and when, and its downloads. ``fmt=csv`` is
+    the file to send FedRAMP on request; ``fmt=json`` carries the rule, its
+    pinned statement and the dataset version. ``kind=agency`` narrows it to
+    agencies. The caller's own organization only.
+    """
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    if org_id is None:
+        raise HTTPException(status_code=422, detail="organization_id is required")
+    if fmt not in {"json", "csv"}:
+        raise HTTPException(status_code=422, detail="fmt must be json or csv")
+    try:
+        rows = await inventory.access_inventory(session, org_id=org_id, kind=kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    stamp = datetime.now(UTC).strftime("%Y%m%d")
+    stem = f"certification-access-inventory-org{org_id}-{stamp}"
+    if fmt == "csv":
+        return PlainTextResponse(
+            inventory.to_csv(rows),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.csv"'},
+        )
+    return JSONResponse(
+        inventory.to_json(rows, org_id=org_id, kind=kind),
+        headers={"Content-Disposition": f'inline; filename="{stem}.json"'},
+    )
 
 
 # --- external (token-authenticated) ----------------------------------------
