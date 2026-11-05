@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}{{ system.name }} · 20x Vulnerability Response · Concord{% endblock %}
+{% block heading %}{{ system.name }}: vulnerability response{% endblock %}
+{% block subtitle %}Scan findings against the FedRAMP 20x VDR and VER rules for {% if view.certification_class %}Class {{ view.certification_class }}{% else %}no certification class{% endif %}. Every deadline names the rule it comes from.{% endblock %}
+{% block content %}
+{% if error %}<div class="note note--err" role="alert">{{ error }}</div>{% elif msg %}<div class="note note--info" role="status">{{ msg }}</div>{% endif %}
+{% if not view.certification_class %}
+<div class="note note--warn" role="status"><strong>No certification class is set.</strong> The evaluation, mitigation and detection timeframes differ by class, so none is applied. CISA KEV due dates and the 192-day acceptance rule still are. Set the class on the system to apply the rest.</div>
+{% endif %}
+{% set c = view.counts %}
+<section class="kpi-grid kpi-grid--4">
+  <div class="kpi"><span class="kpi__label">Overdue</span>
+    <span class="kpi__value {% if c.overdue %}kpi__value--danger{% endif %}">{{ c.overdue }}</span>
+    <span class="kpi__meta">breaching a VDR/VER timeframe</span></div>
+  <div class="kpi"><span class="kpi__label">Awaiting evaluation</span>
+    <span class="kpi__value">{{ c.awaiting_evaluation }}</span>
+    <span class="kpi__meta">no PAIN rating yet (VER-EVA-EPA)</span></div>
+  <div class="kpi"><span class="kpi__label">Within timeframe</span>
+    <span class="kpi__value">{{ c.within }}</span>
+    <span class="kpi__meta">evaluated, deadline ahead</span></div>
+  <div class="kpi"><span class="kpi__label">Rules dataset</span>
+    <span class="kpi__value">{{ view.rules_version }}</span>
+    <span class="kpi__meta">FedRAMP consolidated rules, pinned</span></div>
+</section>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Detection cadence</h2>
+    <span class="panel__hint">Latest scan per scanner against VDR-TFR-PSD{% if view.cadence and view.cadence[0].required_days %} ({{ view.cadence[0].required_days }} day{{ 's' if view.cadence[0].required_days != 1 }} for this class){% endif %}</span></header>
+  {% if view.cadence %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>Scanner</th><th>Last scan</th><th>Age</th><th>Verdict</th></tr></thead>
+    <tbody>{% for k in view.cadence %}<tr>
+      <td>{{ k.scanner }}</td><td class="mono">{{ k.last_at.strftime('%Y-%m-%d %H:%M UTC') }}</td><td>{{ k.age_days }} days</td>
+      <td>{% if k.stale is none %}<span class="chip chip--ghost">no class to judge by</span>{% elif k.stale %}<span class="chip chip--err">older than {{ k.required_days }} days</span>{% else %}<span class="chip chip--ok">current</span>{% endif %}</td>
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <p class="panel__empty">No scan has been ingested for this system, so no detection activity can be shown. VDR-CSO-FAV treats a failing detection process as a vulnerability in its own right.</p>
+  {% endif %}
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">Findings</h2>
+    <span class="panel__hint">{{ view.flaws | length }} scan-derived POA&amp;M{{ 's' if view.flaws|length != 1 }} · the same set the CR26 VDR and AVI deliverables report</span></header>
+  {% if view.flaws %}
+  <div class="table-wrap"><table>
+    <thead><tr><th>POA&amp;M</th><th>State</th><th>Evaluation</th><th>Deadlines</th>{% if can_write %}<th>Evaluate</th>{% endif %}</tr></thead>
+    <tbody>{% for f in view.flaws %}<tr id="poam-{{ f.poam_id }}">
+      <td><strong>#{{ f.poam_id }}</strong> {{ f.title }}<div class="dim"><span class="sevchip sevchip--{{ f.severity }}">{{ f.severity | capitalize }}</span> · detected {{ f.detected_at.strftime('%Y-%m-%d') if f.detected_at else 'date unknown' }} · due {{ f.due_on or 'none set' }}</div></td>
+      <td>{% if f.state == 'overdue' %}<span class="chip chip--err">overdue</span>{% elif f.state == 'within' %}<span class="chip chip--ok">within</span>{% elif f.state == 'awaiting_evaluation' %}<span class="chip chip--warn">awaiting evaluation</span>{% else %}<span class="chip chip--ghost">{{ f.state | replace('_',' ') }}</span>{% endif %}
+        {% for b in f.breaches %}<div class="dim"><span class="mono">{{ b.rule }}</span>: {{ b.explanation }}</div>{% endfor %}
+        {% if f.note %}<div class="dim">{{ f.note }}</div>{% endif %}</td>
+      <td>{% if f.evaluation %}<strong>N{{ f.evaluation.pain_rating }}</strong>{% if f.evaluation.false_positive %} · false positive{% else %} · {{ labels[f.mitigation_column] if f.mitigation_column else ('likely exploitable' if f.evaluation.likely_exploitable else 'not likely exploitable') }}{% endif %}<div class="dim">{{ f.evaluation.evaluated_at.strftime('%Y-%m-%d %H:%M UTC') }}</div>{% else %}<span class="dim">not evaluated</span>{% endif %}</td>
+      <td>
+        {% if f.evaluation_due %}<div>Evaluate by <span class="mono">{{ f.evaluation_due.strftime('%Y-%m-%d %H:%M') }}</span> <span class="dim">VER-TFR-EVU</span></div>{% endif %}
+        {% if f.mitigation_due %}<div>Reduce by <span class="mono">{{ f.mitigation_due.strftime('%Y-%m-%d %H:%M') }}</span> <span class="dim">VDR-TFR-PVR</span></div>{% endif %}
+        {% if f.kev_due %}<div>CISA KEV <span class="mono">{{ f.kev_due }}</span> <span class="dim">VDR-TFR-KEV</span></div>{% endif %}
+        {% if f.accept_by %}<div>Accept by <span class="mono">{{ f.accept_by.strftime('%Y-%m-%d') }}</span> <span class="dim">VER-TFR-MAV</span></div>{% endif %}
+      </td>
+      {% if can_write %}<td>{% if f.state not in ('closed',) %}
+        <details><summary>Evaluate</summary>
+        <form method="post" action="/systems/{{ system.id }}/vdr/poams/{{ f.poam_id }}/evaluate" class="stack">
+          <label>Potential Agency Impact (VER-EVA-EPA)
+            <select name="pain_rating" required>{% for n in range(5, -1, -1) %}<option value="{{ n }}" {% if f.evaluation and f.evaluation.pain_rating == n %}selected{% endif %}>N{{ n }}</option>{% endfor %}</select></label>
+          <label><input type="checkbox" name="internet_reachable" {% if not f.evaluation or f.evaluation.internet_reachable %}checked{% endif %}> Internet-reachable (VER-EVA-EIR)</label>
+          <label><input type="checkbox" name="likely_exploitable" {% if not f.evaluation or f.evaluation.likely_exploitable %}checked{% endif %}> Likely exploitable (VER-EVA-ELX; assume automatable, VER-EVA-AIA)</label>
+          <label><input type="checkbox" name="false_positive"> False positive (VER-EVA-EFP; rate N0)</label>
+          <label>Rationale (VER-EVA-EFA factors)<textarea name="rationale" rows="3" required></textarea></label>
+          <button class="btn btn--primary" type="submit">Record evaluation</button>
+        </form></details>{% endif %}</td>{% endif %}
+    </tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}
+  <p class="panel__empty">No scan-derived POA&amp;Ms on this system. Assessment findings are control deficiencies and are reported elsewhere.</p>
+  {% endif %}
+</article>
+
+<article class="card panel">
+  <header class="panel__head"><h2 class="panel__title">How deadlines are computed</h2></header>
+  <div class="panel__body">
+    <p>Every number comes from FedRAMP's machine-readable consolidated rules (dataset {{ view.rules_version }}), not from Concord. Unchecked boxes are judgements, so the form starts with both reachability boxes ticked: the rules tell providers to assume exploitation can be automated unless there is evidence otherwise. The mitigation clock starts when the current rating and reachability were first recorded; re-saving the same evaluation does not restart it. Recording an evaluation can move a POA&amp;M's due date earlier, never later; a later date is an extension and needs an approval.</p>
+    <p class="dim">CISA KEV matching reads CVE ids from each POA&amp;M's title and weakness text, the same match the Security &amp; Risk Intelligence page makes. N0 and N1 have no mitigation timeframe; VDR-TFR-RMN leaves them to routine operations.</p>
+  </div>
+</article>
+{% endblock %}

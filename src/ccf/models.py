@@ -2135,6 +2135,7 @@ from . import (  # noqa: E402
     models_patching,
     models_program,
     models_tprm,
+    models_vdr,
     models_waivers,
 )
 
@@ -2150,6 +2151,7 @@ CROSS_MODULE_MODEL_MODULES = (
     models_patching,
     models_program,
     models_tprm,
+    models_vdr,
     models_waivers,
 )
 
