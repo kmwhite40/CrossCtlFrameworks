@@ -45,6 +45,7 @@ def _eval_out(e: VulnerabilityEvaluation) -> dict[str, Any]:
         "evaluated_at": e.evaluated_at,
         "requires_confirmation": e.requires_confirmation,
         "confirmed_by": e.confirmed_by,
+        "confirmed_as": e.confirmed_as,
         "confirmed_at": e.confirmed_at,
         "effective": e.effective,
     }

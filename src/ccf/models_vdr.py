@@ -72,6 +72,9 @@ class VulnerabilityEvaluation(Base):
     )
     requires_confirmation: Mapped[bool] = mapped_column(Boolean, default=False)
     confirmed_by: Mapped[str | None] = mapped_column(String(255))
+    #: The capacity the confirmer acted in: ``issm``, ``authorizing_official``
+    #: or ``admin`` (``None`` with auth off).
+    confirmed_as: Mapped[str | None] = mapped_column(String(32))
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @property

@@ -360,3 +360,70 @@ def test_cadence_without_a_class_reports_age_but_no_verdict() -> None:
 )
 def test_relaxes(previous: tf.Evaluation | None, new: tf.Evaluation, relaxes: bool) -> None:
     assert tf.relaxes(previous, new) is relaxes
+
+
+# ── loosens: the deadlines, not the cells ─────────────────────────────────
+
+
+def _status(evs: list[tf.Evaluation], now: datetime, cls: str = "C") -> tf.FlawStatus:
+    return tf.assess(_poam(), evs, cls=tf.class_timeframes(cls), kev_due=None, now=now)
+
+
+def test_a_stricter_cell_late_in_the_window_loosens_the_deadline() -> None:
+    """Class C N4 not-internet-reachable is 8 days; re-rated N5 (4 days) on day 7
+    restarts the clock, landing on day 11 -- later than the day 8 it replaces."""
+    old = [_ev(4, irv=False, at=T0)]
+    new = _ev(5, irv=False, at=T0 + timedelta(days=7))
+    now = new.evaluated_at
+    assert tf.relaxes(old[-1], new) is False  # the cell is stricter...
+    assert tf.loosens(_status(old, now), _status([*old, new], now)) is True  # ...the date is not
+
+
+def test_a_stricter_cell_early_in_the_window_does_not_loosen() -> None:
+    old = [_ev(4, irv=False, at=T0)]
+    new = _ev(5, irv=False, at=T0 + timedelta(days=1))  # due day 5, earlier than day 8
+    now = new.evaluated_at
+    assert tf.loosens(_status(old, now), _status([*old, new], now)) is False
+
+
+def test_re_rating_after_the_deadline_clears_a_breach_so_it_loosens() -> None:
+    old = [_ev(5, at=T0)]
+    new = _ev(5, irv=False, at=T0 + timedelta(days=3))  # past the 2-day window
+    now = new.evaluated_at
+    assert [b.rule for b in _status(old, now).breaches] == ["VDR-TFR-PVR"]
+    assert tf.loosens(_status(old, now), _status([*old, new], now)) is True
+
+
+def test_a_late_first_evaluation_cures_the_evaluation_breach_without_loosening() -> None:
+    now = T0 + timedelta(days=30)
+    before = _status([], now)
+    assert [b.rule for b in before.breaches] == ["VER-TFR-EVU"]
+    assert tf.loosens(before, _status([_ev(5, at=now)], now)) is False
+
+
+def test_dropping_to_a_rating_without_a_timeframe_loosens() -> None:
+    old = [_ev(3, at=T0)]
+    new = _ev(1, at=T0 + timedelta(hours=1))
+    now = new.evaluated_at
+    assert tf.loosens(_status(old, now), _status([*old, new], now)) is True
+
+
+def test_any_cleared_breach_loosens_even_with_the_dates_unchanged() -> None:
+    """The contract, independent of which rules happen to exist today: clearing
+    a breach other than the evaluation one is a loosening on its own."""
+    due = T0 + timedelta(days=4)
+    breach = tf.Breach("VDR-TFR-KEV", due, "x")
+    before = tf.FlawStatus(
+        poam_id=1, state="overdue", detected_at=T0, mitigation_due=due, breaches=[breach]
+    )
+    after = tf.FlawStatus(poam_id=1, state="within", detected_at=T0, mitigation_due=due)
+    assert tf.loosens(before, after) is True
+    assert tf.loosens(after, before) is False
+
+
+def test_a_later_acceptance_deadline_loosens() -> None:
+    before = tf.FlawStatus(poam_id=1, state="within", detected_at=T0, accept_by=T0)
+    after = tf.FlawStatus(
+        poam_id=1, state="within", detected_at=T0, accept_by=T0 + timedelta(days=1)
+    )
+    assert tf.loosens(before, after) is True

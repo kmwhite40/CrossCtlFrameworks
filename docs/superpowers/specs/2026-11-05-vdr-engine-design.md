@@ -113,7 +113,19 @@ first rating of N0/N1 (no timeframe at all; FedRAMP's default for an unknown
 effect is debilitating, FRD-DCE) — is stored with `requires_confirmation` and
 ignored by the engine and the deliverables until someone other than its
 author confirms it (`POST /api/poams/{id}/evaluations/{eid}/confirm`). Only
-the latest evaluation can be confirmed; a later one supersedes it. Tightening
+the latest evaluation can be confirmed; a later one supersedes it.
+
+A second review round found the cell comparison was not enough: the clock
+restarts whenever the cell changes, so a move to a **stricter** cell late in a
+window lands a later deadline (Class C: N4 not-reachable, 8 days, re-rated N5
+on day 7 → due day 11, not day 8), and one made after the deadline clears the
+breach. So an evaluation is also held when `timeframes.loosens` finds, on the
+deadlines themselves, a mitigation or acceptance date pushed later or removed,
+or any breach cleared — except the late-evaluation breach (VER-TFR-EVU),
+which evaluating is the cure for. The confirmer must act in the extension
+gate's deciding capacity (the system's ISSM or AO, or an admin — the same
+`DECIDERS`), must be a named person other than the author, and the capacity is
+recorded in `confirmed_as`. Tightening
 takes effect at once. With auth off there is no second person, so nothing is
 held — the same rule as the closure and extension gates.
 

@@ -28,6 +28,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..ato import roles as system_roles
+from ..ato.extensions import DECIDERS
 from ..auth import Principal
 from ..config import get_settings
 from ..constants import POAM_CLOSED_STATUSES
@@ -217,9 +219,19 @@ async def record_evaluation(
     candidate = tf.Evaluation(
         pain_rating, internet_reachable, likely_exploitable, false_positive, now
     )
-    held = get_settings().auth_enabled and tf.relaxes(
-        in_effect[-1] if in_effect else None, candidate
-    )
+    held = False
+    if get_settings().auth_enabled:
+        # Two tests, because a cell is not a deadline: `relaxes` catches a
+        # lower rating, a wider column or a false positive; `loosens` catches
+        # a deadline pushed later or a breach cleared, which a move to a
+        # stricter cell can do by restarting the clock.
+        cls = tf.class_timeframes(system.certification_class)
+        kev_due = (await kev_due_by_poam(session, [poam])).get(poam.id)
+        before = tf.assess(poam, in_effect, cls=cls, kev_due=kev_due, now=now)
+        after = tf.assess(poam, [*in_effect, candidate], cls=cls, kev_due=kev_due, now=now)
+        held = tf.relaxes(in_effect[-1] if in_effect else None, candidate) or tf.loosens(
+            before, after
+        )
     row = VulnerabilityEvaluation(
         organization_id=system.organization_id,
         poam_id=poam.id,
@@ -255,10 +267,27 @@ async def confirm_evaluation(
         raise EvaluationError("this evaluation took effect when recorded", 409)
     if row.confirmed_at is not None:
         raise EvaluationError("this evaluation is already confirmed", 409)
-    if (principal.email or "") == (row.evaluated_by or ""):
+    capacity: str | None = None
+    if get_settings().auth_enabled:
+        # The extension gate's deciders, because confirming a relaxed deadline
+        # is the same decision as granting an extension.
+        capacity = await system_roles.acting_as(
+            session,
+            system_id=poam.system_id,
+            user_id=principal.user_id,
+            user_role=principal.role,
+            allowed=DECIDERS,
+        )
+        if capacity is None:
+            raise EvaluationError(
+                "only the system's ISSM or Authorizing Official (or an admin) can confirm "
+                "an evaluation that relaxes a deadline",
+                403,
+            )
+    if not principal.email or principal.email == (row.evaluated_by or ""):
         raise EvaluationError(
-            "an evaluation that relaxes a deadline is confirmed by someone other than "
-            "its author (separation of duties)",
+            "an evaluation that relaxes a deadline is confirmed by a named person other "
+            "than its author (separation of duties)",
             403,
         )
     if str(poam.status) in POAM_CLOSED_STATUSES:
@@ -269,7 +298,7 @@ async def confirm_evaluation(
         raise EvaluationError(
             f"evaluation #{latest.id} was recorded after this one and supersedes it", 409
         )
-    row.confirmed_by, row.confirmed_at = principal.email, now
+    row.confirmed_by, row.confirmed_at, row.confirmed_as = principal.email, now, capacity
     await session.flush()
     system = await session.get(System, poam.system_id)
     assert system is not None

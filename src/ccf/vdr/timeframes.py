@@ -211,6 +211,34 @@ class FlawStatus:
         return "; ".join(b.explanation for b in self.breaches) or None
 
 
+#: The one breach an evaluation is the cure for: being late to evaluate.
+_CURED_BY_EVALUATING = frozenset({"VER-TFR-EVU"})
+
+
+def loosens(before: FlawStatus, after: FlawStatus) -> bool:
+    """Whether recording an evaluation would push a deadline later or clear a
+    breach -- judged on the deadlines themselves, not on the table cells.
+
+    :func:`relaxes` compares cells, and a cell is not a deadline: the
+    mitigation clock restarts whenever the cell changes, so a move to a
+    *stricter* cell late in a window (N4 with 8 days, re-rated N5 with 4 on
+    day 7) lands a later deadline than the one it replaced, and one made
+    after the deadline clears the breach. Both need a second person, exactly
+    as a lower rating does. A first evaluation clearing the late-evaluation
+    breach does not: evaluating is the cure for that one.
+    """
+    cleared = {b.rule for b in before.breaches} - {b.rule for b in after.breaches}
+    if cleared - _CURED_BY_EVALUATING:
+        return True
+    if before.mitigation_due is not None and (
+        after.mitigation_due is None or after.mitigation_due > before.mitigation_due
+    ):
+        return True
+    return before.accept_by is not None and (
+        after.accept_by is None or after.accept_by > before.accept_by
+    )
+
+
 def detected_at(identified_on: date | None) -> datetime | None:
     """``identified_on`` at 00:00Z -- the convention ``ccf.cr26.ver`` declares
     for ``detection.detectedAt``, so this page and the deliverable agree."""

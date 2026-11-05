@@ -14,12 +14,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete, select
 
 from ccf.api.main import create_app
-from ccf.auth import hash_password, new_api_token
+from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import POAM, AuditLog, Organization, ScanIngestion, System, User
 from ccf.models_program import KevEntry
 from ccf.models_vdr import VulnerabilityEvaluation
+from ccf.vdr import service as vdr_service
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -65,7 +66,13 @@ async def _world(cls: str | None = "C") -> World:
         s.add(sysm)
         await s.flush()
         w.ids.update(org=org.id, system=sysm.id)
-        for key, role in (("owner", "control_owner"), ("viewer", "viewer"), ("admin", "admin")):
+        for key, role in (
+            ("owner", "control_owner"),
+            ("peer", "control_owner"),
+            ("issm", "control_owner"),
+            ("viewer", "viewer"),
+            ("admin", "admin"),
+        ):
             u = User(
                 email=f"{key}-{tag}@vdr.example",
                 organization_id=org.id,
@@ -77,6 +84,7 @@ async def _world(cls: str | None = "C") -> World:
             s.add(u)
             await s.flush()
             w.hdr[key] = {"Authorization": f"Bearer {u.api_token}"}
+            w.ids[key] = u.id
     return w
 
 
@@ -547,3 +555,100 @@ async def test_an_evaluation_cannot_be_confirmed_through_another_poam(
             headers=w.hdr["admin"],
         )
     assert r.status_code == 404
+
+
+# ── who may confirm, and deadlines judged by date ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_peer_without_a_deciding_role_cannot_confirm(_auth_enabled: None) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        held = await _eval(c, pid, w.hdr["owner"], pain_rating=2)
+        r = await c.post(
+            f"/api/poams/{pid}/evaluations/{held['evaluation']['id']}/confirm",
+            headers=w.hdr["peer"],
+        )
+    assert r.status_code == 403
+    assert "ISSM" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_the_systems_issm_can_confirm_and_the_capacity_is_recorded(
+    _auth_enabled: None,
+) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        r = await c.post(
+            f"/ato/{w.ids['system']}/roles",
+            data={"role": "issm", "user_id": str(w.ids["issm"])},
+            headers=w.hdr["admin"],
+        )
+        assert r.status_code == 303 and "error" not in r.headers["location"], r.headers
+        await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        held = await _eval(c, pid, w.hdr["owner"], pain_rating=2)
+        ok = await c.post(
+            f"/api/poams/{pid}/evaluations/{held['evaluation']['id']}/confirm",
+            headers=w.hdr["issm"],
+        )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["evaluation"]["confirmed_as"] == "issm"
+
+
+@pytest.mark.asyncio
+async def test_a_stricter_rating_that_pushes_the_deadline_later_is_held(
+    _auth_enabled: None,
+) -> None:
+    """Through the service with a fixed clock: the API reads the real one."""
+    w = await _world("C")
+    pid = await _poam(w, identified_on=date(2026, 12, 1))
+    t0 = datetime(2026, 12, 1, 9, tzinfo=UTC)
+    who = Principal(user_id=None, email="owner@vdr.example", org_id=w.ids["org"], role="admin")
+    async with session_scope() as s:
+        poam = (await s.execute(select(POAM).where(POAM.id == pid))).scalar_one()
+        first = await vdr_service.record_evaluation(
+            s,
+            poam=poam,
+            pain_rating=4,
+            internet_reachable=False,
+            likely_exploitable=True,
+            false_positive=False,
+            rationale="Admin VPC only.",
+            principal=who,
+            now=t0,
+        )
+        assert first.pending_confirmation is False
+        later = await vdr_service.record_evaluation(
+            s,
+            poam=poam,
+            pain_rating=5,
+            internet_reachable=False,
+            likely_exploitable=True,
+            false_positive=False,
+            rationale="Worse than thought.",
+            principal=who,
+            now=t0 + timedelta(days=7),
+        )
+    assert later.pending_confirmation is True
+    # Still the N4 deadline: day 8, not day 11.
+    assert later.status.mitigation_due == t0 + timedelta(days=8)
+
+
+@pytest.mark.asyncio
+async def test_a_nameless_principal_cannot_confirm(_auth_enabled: None) -> None:
+    w = await _world("C")
+    pid = await _poam(w)
+    async with _client() as c:
+        await _eval(c, pid, w.hdr["owner"], pain_rating=5)
+        held = await _eval(c, pid, w.hdr["owner"], pain_rating=2)
+    nameless = Principal(user_id=None, email="", org_id=w.ids["org"], role="admin")
+    async with session_scope() as s:
+        poam = (await s.execute(select(POAM).where(POAM.id == pid))).scalar_one()
+        with pytest.raises(vdr_service.EvaluationError) as err:
+            await vdr_service.confirm_evaluation(
+                s, poam=poam, evaluation_id=held["evaluation"]["id"], principal=nameless
+            )
+    assert err.value.status == 403
