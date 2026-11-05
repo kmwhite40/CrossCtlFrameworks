@@ -12,12 +12,13 @@ portal cannot leak across tenants.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -270,4 +271,67 @@ class ExternalPortalAuditEvent(Base):
     grantee_name: Mapped[str | None] = mapped_column(String(255))
     grantee_kind: Mapped[str | None] = mapped_column(String(16))
     grantee_organization: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CertificationRequestLink(Base):
+    """A published link through which agencies request certification data
+    access (CDS-TRC-SSM, migration 0110). The link is the capability; only its
+    hash is stored, like a grant token."""
+
+    __tablename__ = "certification_request_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    label: Mapped[str | None] = mapped_column(String(255))
+    #: The systems that may be requested through this link.
+    system_ids: Mapped[list[int]] = mapped_column(JSONB)
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[str | None] = mapped_column(String(255))
+
+
+class CertificationAccessRequest(Base):
+    """An agency's request for access to certification data (0110).
+
+    Lifecycle: ``pending`` -> ``approved`` (then claimed once, with the receipt,
+    which issues the grant) or ``denied`` (which starts the CDS-UTC-AAD
+    FedRAMP notice clock). The database's CHECK constraints hold each state's
+    required fields.
+    """
+
+    __tablename__ = "certification_access_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE"), index=True
+    )
+    link_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.certification_request_links.id", ondelete="SET NULL"), index=True
+    )
+    receipt_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    agency_name: Mapped[str] = mapped_column(String(255))
+    requester_name: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str] = mapped_column(String(320))
+    reason: Mapped[str | None] = mapped_column(Text)
+    system_ids: Mapped[list[int]] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    decided_by: Mapped[str | None] = mapped_column(String(255))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    ttl_days: Mapped[int | None] = mapped_column(Integer)
+    approved_system_ids: Mapped[list[int] | None] = mapped_column(JSONB)
+    grant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ccf.external_access_grants.id", ondelete="SET NULL")
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fedramp_notify_due: Mapped[date | None] = mapped_column(Date)
+    fedramp_notified_on: Mapped[date | None] = mapped_column(Date)
+    fedramp_notified_by: Mapped[str | None] = mapped_column(String(255))
+    fedramp_reference: Mapped[str | None] = mapped_column(String(255))
+    fedramp_notice_recorded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -68,6 +68,7 @@ from .routes import (
     poams,
     policies,
     portal,
+    portal_requests,
     posture,
     prep,
     queries,
@@ -229,6 +230,9 @@ def create_app() -> FastAPI:
     app.include_router(portal.router)
     app.include_router(portal.public_router)
     app.include_router(portal.ui_router)
+    app.include_router(portal_requests.admin_router)
+    app.include_router(portal_requests.public_router)
+    app.include_router(portal_requests.ui_router)
     app.include_router(queries.router)
     app.include_router(queries.ui_router)
     app.include_router(ai_actions.router)

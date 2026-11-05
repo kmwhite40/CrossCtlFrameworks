@@ -84,6 +84,71 @@
   {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No grants issued yet.</div>{% endif %}
 </section>
 
+<section class="card" style="margin-top:16px" id="access-requests">
+  <div class="card__header"><div class="card__title">Agency access requests</div>
+    <span class="dim" style="font-size:13px">{{ access_requests|selectattr('status','equalto','pending')|list|length }} awaiting a decision</span></div>
+  <p class="dim" style="font-size:13px;margin:0 16px 8px">Agencies ask for certification data access themselves through a request link (CDS-TRC-SSM). Approving lets the requester collect access with their receipt; verify who they are first. Denying must be reported to FedRAMP within {{ fedramp_notice_days }} business days (CDS-UTC-AAD) through <a href="{{ fedramp_notice_target.url }}" target="_blank" rel="noopener">{{ fedramp_notice_target.name }}</a>; record it here when filed.</p>
+  {% if issued_request_link %}
+  <div class="card__body" style="border:1px solid var(--accent);border-radius:var(--radius-md);margin:0 16px 12px">
+    <strong>Request link created.</strong> It is shown only once; publish it where agencies will find it.
+    <div class="mono" style="word-break:break-all;margin-top:6px">{{ issued_request_link }}</div>
+  </div>
+  {% endif %}
+  {% if access_requests %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Agency</th><th>Requester</th><th>Systems</th><th>Status</th><th>FedRAMP notice</th><th></th></tr></thead>
+    <tbody>
+      {% for r in access_requests %}<tr>
+        <td><strong>{{ r.agency_name }}</strong>{% if r.reason %}<div class="dim" style="font-size:12px">{{ r.reason }}</div>{% endif %}</td>
+        <td class="dim">{{ r.requester_name }}<div style="font-size:12px">{{ r.email }}</div></td>
+        <td class="dim">{{ (r.approved_system_ids or r.system_ids)|join(', ') }}</td>
+        <td>{% if r.status=='pending' %}<span class="chip chip--warn">pending</span>{% elif r.status=='approved' %}<span class="chip chip--ok">approved</span>{% if r.claimed_at %}<div class="dim" style="font-size:12px">collected</div>{% elif r.claim_by and r.claim_by < now_utc %}<div class="dim" style="font-size:12px">lapsed, not collected by {{ r.claim_by.date() }}</div>{% else %}<div class="dim" style="font-size:12px">not yet collected{% if r.claim_by %} · by {{ r.claim_by.date() }}{% endif %}</div>{% endif %}{% else %}<span class="chip chip--err">denied</span><div class="dim" style="font-size:12px">{{ r.decision_reason }}</div>{% endif %}</td>
+        <td>{% if r.fedramp_notice=='overdue' %}<span class="chip chip--err">overdue · due {{ r.fedramp_notify_due }}</span>
+            {% elif r.fedramp_notice=='due' %}<span class="chip chip--warn">due {{ r.fedramp_notify_due }}</span>
+            {% elif r.fedramp_notice=='filed' %}<span class="chip chip--ok">filed {{ r.fedramp_notified_on }}</span><div class="dim" style="font-size:12px">{{ r.fedramp_reference }} · recorded {{ r.fedramp_notice_recorded_at.date() if r.fedramp_notice_recorded_at else '' }} by {{ r.fedramp_notified_by }}</div>
+            {% elif r.fedramp_notice=='filed_late' %}<span class="chip chip--warn">filed late {{ r.fedramp_notified_on }}</span><div class="dim" style="font-size:12px">due {{ r.fedramp_notify_due }} · {{ r.fedramp_reference }} · recorded {{ r.fedramp_notice_recorded_at.date() if r.fedramp_notice_recorded_at else '' }} by {{ r.fedramp_notified_by }}</div>
+            {% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>
+          {% if r.status=='pending' %}
+          <form method="post" action="/admin/portal/access-requests/{{ r.id }}/approve" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+            <input type="hidden" name="organization_id" value="{{ org_id }}">
+            <input class="input" type="number" name="ttl_days" min="1" max="366" required placeholder="days" style="width:80px" aria-label="Access lasts (days)">
+            <button class="btn btn--secondary btn--sm" type="submit">Approve</button></form>
+          <form method="post" action="/admin/portal/access-requests/{{ r.id }}/deny" style="display:flex;gap:6px;align-items:center">
+            <input type="hidden" name="organization_id" value="{{ org_id }}">
+            <input class="input" name="reason" required placeholder="reason" aria-label="Reason for denial">
+            <button class="btn btn--ghost btn--sm" type="submit">Deny</button></form>
+          {% elif r.status=='denied' and not r.fedramp_notified_on %}
+          <form method="post" action="/admin/portal/access-requests/{{ r.id }}/fedramp-notice" style="display:flex;gap:6px;align-items:center">
+            <input type="hidden" name="organization_id" value="{{ org_id }}">
+            <input class="input" type="date" name="notified_on" required aria-label="Date FedRAMP was notified">
+            <input class="input" name="reference" required placeholder="ticket ref" aria-label="FedRAMP ticket reference">
+            <button class="btn btn--secondary btn--sm" type="submit">Record notice</button></form>
+          {% endif %}
+        </td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:24px">No agency has requested access yet.</div>{% endif %}
+
+  <div class="card__body">
+    <div style="font-weight:600;margin-bottom:6px">Request links</div>
+    {% for l in request_links %}
+      <div class="dim" style="font-size:13px;display:flex;gap:8px;align-items:center;padding:3px 0">
+        <span>{{ l.label or ('link #' ~ l.id) }} · systems {{ l.system_ids|join(', ') }} · by {{ l.created_by }}</span>
+        {% if l.revoked_at %}<span class="chip chip--warn">withdrawn {{ l.revoked_at.date() }}</span>
+        {% else %}<form method="post" action="/admin/portal/request-links/{{ l.id }}/revoke"><input type="hidden" name="organization_id" value="{{ org_id }}"><button class="btn btn--ghost btn--sm" type="submit">Withdraw</button></form>{% endif %}
+      </div>
+    {% else %}<div class="dim" style="font-size:13px">No request links yet.</div>{% endfor %}
+    <form method="post" action="/admin/portal/request-links" style="margin-top:10px">
+      <input type="hidden" name="organization_id" value="{{ org_id }}">
+      <input class="input" name="label" placeholder="label, e.g. Agency onboarding" maxlength="255" style="max-width:320px">
+      {% for s in systems %}<label class="dim" style="display:inline-block;font-size:13px;margin-right:10px"><input type="checkbox" name="system_ids" value="{{ s.id }}"> {{ s.name }}</label>{% endfor %}
+      <button class="btn btn--secondary btn--sm" type="submit">Create request link</button>
+    </form>
+  </div>
+</section>
+
 <section class="card" style="margin-top:16px" id="certification-access">
   <div class="card__header"><div class="card__title">Certification data access</div>
     <span style="display:flex;gap:6px">

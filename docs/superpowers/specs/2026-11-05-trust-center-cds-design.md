@@ -1,6 +1,6 @@
 # A FedRAMP-compatible trust center (CDS rules)
 
-Date: 2026-11-05. Status: steps 1–3 built; steps 4–5 planned. Base:
+Date: 2026-11-05. Status: steps 1–4 built; step 5 planned. Base:
 `feat/vdr-engine`.
 
 ## 1. Why, and by when
@@ -185,6 +185,76 @@ actually reaches the database. The survivor is the trigger's `ROW(...)`
 comparison, and it is equivalent: with the grant row required to be gone,
 the only UPDATE that reaches it is the foreign key's own, which changes
 nothing else. It stays as defence in depth.
+
+## 4d. Step 4 as built (CDS-TRC-SSM, CDS-UTC-AAD)
+
+- **Request links** (migration 0110, `certification_request_links`): the
+  provider creates a link naming the systems agencies may ask for and
+  publishes it. The link is the capability: only its hash is kept, it can be
+  withdrawn, and there is no open per-organization form to find or spam.
+  Public submissions are rate-limited (10/minute per address) and one link
+  holds at most 50 pending requests.
+- **Requests** (`certification_access_requests`): the agency submits agency,
+  name, email, reason and systems (within the link's), and gets a one-time
+  **receipt**. Submission is audited as `external:<email>`.
+- **Approval does not issue the grant.** The provider approves with a
+  required `ttl_days` (1–366; Concord does not choose how long access lasts)
+  and may narrow the systems. The agency then **claims** with its receipt:
+  that issues an ordinary `agency` grant, `issued_by` the approver, and shows
+  the token once. It cannot be made at approval and shown later, since only
+  hashes are stored. The claim locks the request row, so two claims cannot
+  both issue a credential, and a system deleted since approval issues nothing.
+- **Denial** needs a reason (shown to the requester; who decided is not) and
+  sets `fedramp_notify_due` = denial date + the pinned CDS-UTC-AAD window (5
+  `bizdays`), counted from the decision's date in the earliest US zone
+  (UTC−11); "today" for overdue is the latest US date (UTC+10). Business days
+  skip weekends only. So the due date is never later than the true one, and
+  the overdue warning comes early, never late. Concord cannot file FedRAMP's form; the page links the
+  form the rule names ("[CSP] Agency Access Denial") and the provider records
+  the date filed and the ticket reference, and Concord stores when it was
+  recorded and by whom beside that self-reported date. The first record
+  stands. A notice cannot predate the denial or be dated in the future. States: `due`,
+  `overdue`, `filed`, `filed_late`.
+- The database's CHECKs hold each state's fields (a denial without a reason
+  or due date, an approval without a TTL, a claim on a non-approval, a notice
+  on a non-denial are all refused).
+- Pages: `/portal/request?link=` (form), `/portal/request/status` (receipt →
+  status, and "Collect access" when approved), plus a section on
+  `/admin/portal` to decide, record notices and manage links. Receipts move
+  only in form bodies, never in URLs.
+
+**From the independent review** (nothing critical; six fixed):
+
+- The due date was counted from the UTC date: a Monday-evening Eastern
+  denial counted from Tuesday, a day late on a MUST clock. Now UTC−11.
+- An approval could be collected at any time, starting a fresh TTL a year
+  later. It now lapses if not collected within 14 days (`CLAIM_WITHIN`).
+- The pending cap was unlocked and per link only: the link row is now locked
+  while counting, and one address holds at most 3 pending requests.
+- The approval CHECK accepted a NULL TTL (`ttl_days > 0` is NULL, which a
+  CHECK passes); now `ttl_days IS NOT NULL AND ttl_days > 0`, and `claim`
+  refuses an incomplete approval instead of asserting.
+- The notice's filed date was the provider's word alone; the time it was
+  recorded is now stored and shown.
+- Pages and responses carrying a receipt, link or token are `no-store`.
+
+**Not changed, the owner's call:** the requester's identity is not verified.
+Anyone holding a published link can submit in any agency's name with any
+email, and the receipt goes only to whoever submitted. Proving control of
+the address means sending the receipt or claim code by email, which needs
+outbound mail. Until then the admin page tells approvers to verify the
+requester first. A link holder can still fill one link with pending requests
+(the 50-request cap); withdraw and re-issue the link if that happens.
+
+**Verified by mutation:** 39 guards, all killed. The locks on claim and
+submit are pinned on the source; the claim's "incomplete approval" refusal is
+unreachable past the CHECK and stays as a backstop.
+
+**Found, not changed:** the `/admin/portal` page's existing form posts (issue
+and revoke grants) refuse only viewers, so an editor or control owner can
+issue a portal grant there, while the API twin requires `admin`. The new step-4
+form posts require `admin`. Whether to tighten the existing ones changes who
+may share data today, so it is left to the owner.
 
 ## 5. Not done in step 1
 

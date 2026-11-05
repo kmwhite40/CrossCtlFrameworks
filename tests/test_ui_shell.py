@@ -161,9 +161,10 @@ async def test_every_reachable_page_renders_the_shell() -> None:
                 assert '<aside class="sidebar"' not in body, f"{path} is a fragment with a shell"
                 continue
             if "{% extends" in body or '<aside class="sidebar"' not in body:
-                # The standalone pages (landing, portal, login) deliberately do
+                # The standalone pages (landing, portal and its request pages,
+                # login) deliberately do
                 # not use the shell; everything else must.
-                if path in ("/", "/portal", "/login"):
+                if path in ("/", "/portal", "/portal/request", "/portal/request/status", "/login"):
                     continue
                 failures.append(f"{path}: no sidebar (status {resp.status_code})")
                 continue

@@ -1827,6 +1827,7 @@ async def _portal_admin_context(
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
     from ...portal import current_engagement_ids, grant_status, list_grants  # noqa: PLC0415
+    from ...portal import requests as access_requests  # noqa: PLC0415
     from ...portal.inventory import access_inventory  # noqa: PLC0415
 
     rows: list[dict[str, Any]] = []
@@ -1834,9 +1835,17 @@ async def _portal_admin_context(
     evidence: list[Any] = []
     systems: list[Any] = []
     cert_access: list[dict[str, Any]] = []
+    request_links: list[Any] = []
+    request_rows: list[dict[str, Any]] = []
     if org_id is not None:
         grants = await list_grants(session, org_id=org_id)
         cert_access = await access_inventory(session, org_id=org_id)
+        request_links = await access_requests.list_links(session, org_id=org_id)
+        today = access_requests.us_today()
+        request_rows = [
+            access_requests.request_view(r, today)
+            for r in await access_requests.list_requests(session, org_id=org_id)
+        ]
         principals = {
             p.id: p
             for p in (
@@ -1895,6 +1904,10 @@ async def _portal_admin_context(
     return {"active": "portaladmin", "org_id": org_id, "rows": rows,
             "packages": packages, "evidence": evidence, "systems": systems,
             "issued_link": issued_link, "cert_access": cert_access,
+            "request_links": request_links, "access_requests": request_rows,
+            "issued_request_link": None, "now_utc": datetime.now(UTC),
+            "fedramp_notice_target": access_requests.notice_target(),
+            "fedramp_notice_days": access_requests.notice_window(),
             "kinds": EXTERNAL_PRINCIPAL_KINDS}
 
 

@@ -102,6 +102,8 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "capabilities", "capability_components", "capability_controls",
         "capability_ksis", "capability_risks",
         "capture_snapshots",
+        # 0110 agency self-service requests (CDS-TRC-SSM/-UTC-AAD).
+        "certification_access_requests", "certification_request_links",
         "compliance_pack_versions",
         "compliance_packs", "connector_configs", "control_implementations",
         "control_test_results",
@@ -206,7 +208,7 @@ async def test_rls_policy_structural_guard() -> None:
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
     # 143 + 21 (0099) + 3 (0100) + 3 (0103) + 2 (0105)
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 173
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 175
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"

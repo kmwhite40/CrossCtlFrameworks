@@ -135,9 +135,18 @@ PUBLIC_MUTATING = {
     ("POST", "/api/auth/mfa/enroll"),
     ("POST", "/api/auth/mfa/verify"),
     ("POST", "/api/portal/comments"),
+    # CDS-TRC-SSM: an agency with no account requests access with a published
+    # request link, then checks and claims it with its receipt. The link and the
+    # receipt are the credentials, as the grant token is for the portal.
+    ("POST", "/api/portal/access-requests"),
+    ("POST", "/api/portal/access-requests/claim"),
+    ("POST", "/api/portal/access-requests/status"),
     ("POST", "/api/scim/v2/Users"),
     ("POST", "/auth/logout"),
     ("POST", "/login"),
+    ("POST", "/portal/request"),
+    ("POST", "/portal/request/claim"),
+    ("POST", "/portal/request/status"),
     ("POST", "/login/mfa"),
     ("PUT", "/api/scim/v2/Users/{user_id}"),
 }
