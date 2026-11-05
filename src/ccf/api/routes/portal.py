@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session, verify_session
 from ...config import get_settings, is_dev_env
+from ...cr26 import snapshots as cr26_snapshots
 from ...models_portal import AssessmentEngagement, ExternalAccessGrant
 from ...portal import (
     access_log,
@@ -589,6 +590,82 @@ async def certification_data_document(
             headers=headers,
         )
     return JSONResponse(jsonable_encoder(certification.envelope(doc, system_name)), headers=headers)
+
+
+@public_router.get("/certification-data/snapshots", tags=["certification-data"])
+async def certification_snapshots_index(
+    request: Request,
+    limit: int = cr26_snapshots.PAGE,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Snapshots of the certification data, one per Ongoing Certification Report
+    filed (CDS-CSO-HAD), newest first. Each lists its documents with digests
+    and links; a snapshot is ``superseded`` when a corrected OCR for the same
+    period followed it. ``basis: backfill`` marks the one taken at upgrade from
+    the documents then current."""
+    grant = await _require_grant(request, session)
+    page = await cr26_snapshots.list_for_grant(session, grant, limit=limit, offset=offset)
+    await record_access(
+        session, grant, action="view", target_type="certification_data", target_id="snapshots"
+    )
+    await session.commit()
+    out: dict[str, Any] = jsonable_encoder(page)
+    return out
+
+
+@public_router.get(
+    "/certification-data/snapshots/{snapshot_id}/{kind}",
+    tags=["certification-data"],
+    response_model=None,
+)
+async def certification_snapshot_document(
+    snapshot_id: int,
+    kind: str,
+    request: Request,
+    *,
+    key: str | None = None,
+    format: str = "json",
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """One document as it stood in a snapshot, as JSON or ``format=md``, with
+    the same SHA-256 in both. Out of scope or missing answers 404, logged."""
+    grant = await _require_grant(request, session)
+    if format not in ("json", "md"):
+        raise HTTPException(status_code=422, detail="format must be json or md")
+    target = f"snapshot/{snapshot_id}/{kind}" + (f"/{key}" if key else "")
+    found = await cr26_snapshots.get_document(
+        session, grant, snapshot_id=snapshot_id, kind=kind, document_key=key
+    )
+    if found is None:
+        await record_access(
+            session, grant, action="denied", target_type="certification_data",
+            target_id=target[:64],
+        )
+        await session.commit()
+        raise HTTPException(status_code=404, detail="snapshot document not found")
+    doc, snapshot, system_name = found
+    await record_access(
+        session, grant, action="download", target_type="certification_data",
+        target_id=target[:64], detail=format,
+    )
+    await session.commit()
+    headers = {"X-Content-SHA256": doc.sha256}
+    if format == "md":
+        period = f"{snapshot.ocr_period_from} to {snapshot.ocr_period_to}"
+        context = [
+            f"- **Snapshot:** {snapshot.id}, taken {snapshot.taken_at.isoformat()} "
+            f"({snapshot.basis})",
+            f"- **Ongoing Certification Report period:** {period}",
+        ]
+        return PlainTextResponse(
+            certification.to_markdown(doc, system_name, context=context),
+            media_type="text/markdown; charset=utf-8",
+            headers=headers,
+        )
+    return JSONResponse(
+        jsonable_encoder(cr26_snapshots.envelope(doc, snapshot, system_name)), headers=headers
+    )
 
 
 @public_router.post("/comments")

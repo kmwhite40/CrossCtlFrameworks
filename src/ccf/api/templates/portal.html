@@ -61,6 +61,20 @@
         {% endfor %}
         {% if cd.withheld_invalid %}<div class="dim" style="font-size:12px">{{ cd.withheld_invalid }} draft document{{ 's' if cd.withheld_invalid != 1 }} not yet valid against FedRAMP's schema {{ 'are' if cd.withheld_invalid != 1 else 'is' }} not shown.</div>{% endif %}
         <div class="dim" style="font-size:12px">Programmatic access: <span class="mono">GET /api/portal/certification-data</span> with your access token as a bearer token. Each document's Markdown is generated from its JSON and carries the same SHA-256.</div>
+        {% if cd.snapshots.snapshots %}
+        <h2 style="margin-top:18px">Snapshots by Ongoing Certification Report</h2>
+        {% for snap in cd.snapshots.snapshots %}
+          <details class="portal__row" style="display:block">
+            <summary><strong>{{ snap.system }}</strong> · report period {{ snap.report_period.from or '—' }} to {{ snap.report_period.to or '—' }}
+              <span class="dim">· taken {{ snap.taken_at.strftime('%Y-%m-%d') }}{% if snap.basis == 'backfill' %} (when snapshots began; earlier periods were not kept){% endif %}{% if snap.superseded %} · superseded by a later filing for this period{% endif %}</span></summary>
+            {% for d in snap.documents %}
+              <div class="dim" style="font-size:13px;padding:2px 0 2px 12px">{{ d.title }}{% if d.document_key %} · {{ d.document_key }}{% endif %} · <a href="{{ d.markdown_url }}">Read</a> · <a href="{{ d.json_url }}">JSON</a> <span class="mono" style="font-size:11px">sha256 {{ d.sha256[:12] }}…</span></div>
+            {% endfor %}
+            {% if snap.withheld_invalid %}<div class="dim" style="font-size:12px;padding-left:12px">{{ snap.withheld_invalid|length }} draft document{{ 's' if snap.withheld_invalid|length != 1 }} not valid at the time {{ 'were' if snap.withheld_invalid|length != 1 else 'was' }} not included.</div>{% endif %}
+          </details>
+        {% endfor %}
+        {% if cd.snapshots.total > cd.snapshots.snapshots|length %}<div class="dim" style="font-size:12px">Showing the {{ cd.snapshots.snapshots|length }} most recent of {{ cd.snapshots.total }}; all are at <span class="mono">GET /api/portal/certification-data/snapshots</span>.</div>{% endif %}
+        {% endif %}
         <div class="dim" style="font-size:12px">Your access is logged and kept at least six months. <a href="/api/portal/access-log">See what has been logged for your access</a>.</div>
       </section>
       {% endif %}

@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..cr26.store import DELIVERABLE_KINDS
 from ..db import set_session_tenant
 from ..models import System
-from ..models_cr26 import Cr26Document
+from ..models_cr26 import CertificationSnapshotDocument, Cr26Document
 from ..models_portal import ExternalAccessGrant
 
 #: What each deliverable kind is called on the page and in the Markdown.
@@ -107,7 +107,9 @@ async def list_documents(session: AsyncSession, grant: ExternalAccessGrant) -> L
     return Listing([_summary(doc, name) for doc, name in rows], int(withheld))
 
 
-def _summary(doc: Cr26Document, system_name: str) -> dict[str, Any]:
+def _summary(
+    doc: Cr26Document | CertificationSnapshotDocument, system_name: str
+) -> dict[str, Any]:
     path = f"/api/portal/certification-data/{doc.system_id}/{doc.kind}"
     if doc.document_key is not None:
         path += f"?key={doc.document_key}"
@@ -209,16 +211,24 @@ def _render(value: Any, label: str, depth: int, out: list[str]) -> None:
         out.append(f"- **{label}:** {_scalar(value)}")
 
 
-def to_markdown(doc: Cr26Document, system_name: str) -> str:
+def to_markdown(
+    doc: Cr26Document | CertificationSnapshotDocument,
+    system_name: str,
+    *,
+    context: list[str] | None = None,
+) -> str:
     """The document as Markdown, generated from its JSON and nothing else.
 
     Every key and value in the JSON appears, in the JSON's own order; nothing
-    is summarised or dropped, so the two formats say the same thing.
+    is summarised or dropped, so the two formats say the same thing. A
+    snapshot's document renders the same way; ``context`` adds lines saying
+    which snapshot it is.
     """
     meta = _summary(doc, system_name)
     out = [
         f"# {meta['title']}: {system_name}",
         "",
+        *(context or []),
         f"- **System ID:** {doc.system_id}",
         f"- **Kind:** {doc.kind}",
     ]

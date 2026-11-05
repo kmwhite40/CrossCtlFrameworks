@@ -1,8 +1,9 @@
-"""Test teardown's one way past the portal log's six-month retention.
+"""Test teardown's one way past the retention triggers (portal log, snapshots).
 
 Migration 0109's trigger refuses to delete a portal audit event younger than
-six months (FedRAMP CDS-TRC-ACL), so hard-deleting an organization with recent
-portal activity is refused -- the cascade would erase it. Production never
+six months (FedRAMP CDS-TRC-ACL), and 0111's refuse to delete a certification
+snapshot at all (CDS-CSO-HAD), so hard-deleting an organization with recent
+portal activity or any snapshot is refused -- the cascade would erase them. Production never
 hard-deletes an organization (soft delete, DATA-04); test teardown does.
 
 This suspends the trigger for the rest of the caller's transaction only (ALTER
@@ -19,14 +20,22 @@ from contextlib import asynccontextmanager
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_TABLE = "ccf.external_portal_audit_events"
-_TRIGGER = "portal_audit_append_only"
+#: (table, row trigger) pairs whose retention a test teardown may suspend:
+#: the portal access log (0109) and the certification snapshots (0111).
+_TRIGGERS = (
+    ("ccf.external_portal_audit_events", "portal_audit_append_only"),
+    ("ccf.certification_snapshots", "certification_snapshots_append_only"),
+    ("ccf.certification_snapshot_documents", "certification_snapshot_documents_append_only"),
+    ("ccf.certification_snapshot_filings", "certification_snapshot_filings_append_only"),
+)
 
 
 @asynccontextmanager
 async def portal_log_retention_suspended(session: AsyncSession) -> AsyncIterator[None]:
-    await session.execute(text(f"ALTER TABLE {_TABLE} DISABLE TRIGGER {_TRIGGER}"))
+    for table, trigger in _TRIGGERS:
+        await session.execute(text(f"ALTER TABLE {table} DISABLE TRIGGER {trigger}"))
     yield
     # Only on success. On failure the transaction is aborted, the rollback
-    # restores the trigger, and an ENABLE here would fail and hide the real error.
-    await session.execute(text(f"ALTER TABLE {_TABLE} ENABLE TRIGGER {_TRIGGER}"))
+    # restores the triggers, and an ENABLE here would fail and hide the real error.
+    for table, trigger in _TRIGGERS:
+        await session.execute(text(f"ALTER TABLE {table} ENABLE TRIGGER {trigger}"))

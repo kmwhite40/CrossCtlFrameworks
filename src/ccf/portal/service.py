@@ -711,6 +711,9 @@ async def grant_contents(session: AsyncSession, grant: ExternalAccessGrant) -> d
     ).scalars().all()
 
     listing = await certification.list_documents(session, grant)
+    from ..cr26.snapshots import list_for_grant  # noqa: PLC0415 — cr26 imports the portal
+
+    snapshots = await list_for_grant(session, grant, limit=20)
     return {
         "grant": {"id": grant.id, "kind": grant.kind, "label": grant.label,
                   "expires_at": grant.expires_at, "engagement_id": grant.engagement_id},
@@ -718,6 +721,8 @@ async def grant_contents(session: AsyncSession, grant: ExternalAccessGrant) -> d
             "documents": listing.documents,
             "withheld_invalid": listing.withheld_invalid,
             "systems": certification.shared_system_ids(grant),
+            # CDS-CSO-HAD: one per Ongoing Certification Report filed.
+            "snapshots": snapshots,
         },
         "packages": packages,
         "evidence": evidence,

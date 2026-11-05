@@ -1,6 +1,6 @@
 # A FedRAMP-compatible trust center (CDS rules)
 
-Date: 2026-11-05. Status: steps 1–4 built; step 5 planned. Base:
+Date: 2026-11-05. Status: steps 1–5 built. Base:
 `feat/vdr-engine`.
 
 ## 1. Why, and by when
@@ -255,6 +255,66 @@ and revoke grants) refuse only viewers, so an editor or control owner can
 issue a portal grant there, while the API twin requires `admin`. The new step-4
 form posts require `admin`. Whether to tighten the existing ones changes who
 may share data today, so it is left to the owner.
+
+## 4e. Step 5 as built (CDS-CSO-HAD)
+
+*"Providers MUST supply snapshots of FedRAMP Certification Data aligned to
+Ongoing Certification Reports to all necessary parties; these snapshots MUST
+be available for the duration of FedRAMP Certification."*
+
+- **Taken when a valid OCR is stored** (`cr26.store.put_document` →
+  `cr26.snapshots.take_for_ocr`, in the same transaction, so a filed OCR never
+  exists without its snapshot). The seeder and the API's PUT both pass
+  through it. Each snapshot copies every schema-valid deliverable of the
+  system as it stands, the OCR included, with its SHA-256, and names the
+  ones withheld as invalid.
+- **Content-addressed, with filings.** A snapshot is identified by
+  `content_sha256`, a digest over the sorted (kind, key, SHA-256) of what it
+  holds (`UNIQUE (system_id, content_sha256)`, `INSERT … ON CONFLICT DO
+  NOTHING`). Re-filing identical content stores no second copy, even
+  concurrently. Changed deliverables under a byte-identical OCR do produce a
+  new snapshot. Every valid OCR stored appends a row to
+  `certification_snapshot_filings`. A period's **current** snapshot is the
+  one filed most recently; any other is `superseded`, never removed. A revert
+  (A, a corrected B, then A again) reads A as current.
+- **Kept for the duration of certification** (migration 0111): a trigger
+  refuses UPDATE, DELETE and TRUNCATE on all three tables, for every role, and
+  `ccf_app` holds only SELECT and INSERT. (0010's default privileges grant
+  every new table UPDATE/DELETE, so they are revoked explicitly.) Concord
+  does not record when a certification ends, so it never decides a snapshot
+  has outlived it. Hard-deleting a system that has snapshots answers 409 and
+  points to soft delete (the API checked other dependents but not these, and
+  would have answered with the trigger's 500).
+- **Backfill:** one snapshot per live system with a valid OCR at upgrade,
+  `basis = 'backfill'`, `taken_by = 'migration 0111'`. Earlier quarters were
+  overwritten before snapshots existed and cannot be recovered; the basis
+  says so and the portal page says "when snapshots began; earlier periods
+  were not kept". The migration computes digests with a copy of the portal's
+  canonical-JSON function, pinned equal by its test.
+- **Served** (how to access it, the rule's artifact):
+  `GET /api/portal/certification-data/snapshots` lists, and
+  `GET /api/portal/certification-data/snapshots/{id}/{kind}[?key=][&format=md]`
+  serves, by the grant token, logged like live documents. The Markdown is
+  step 1's generator over the snapshot's JSON, with the snapshot and report
+  period added, and `X-Content-SHA256` is the stored digest in both formats.
+  A deleted system's snapshots are withheld, as its live documents are. The
+  listing is paginated (`limit` ≤ 500, `offset`, `total`) and reads only
+  summary columns, never document bodies. The portal page shows the 20 most
+  recent and points to the API for the rest.
+
+**From the independent review** (no showstoppers; three fixed): the hard
+delete above; `superseded` mislabelled a reverted report (the first design
+deduped on the OCR digest and picked the newest snapshot, not the newest
+filing); and every portal page view loaded every document body of every
+snapshot. Also fixed, from its design notes: a byte-identical OCR over changed
+deliverables used to leave the snapshot stale.
+
+**Verified by mutation:** 30 guards; 28 killed, plus the store's and
+`take_for_ocr`'s validity checks, which guard the same thing and were
+mutated together (killed). The two survivors are the `organization_id` pins
+in `list_for_grant` and `get_document`, masked by RLS exactly as step 1's
+pin is: both bind the session to the grant's tenant first. Defence in depth;
+the end-to-end test proves the behaviour and says it does not prove the line.
 
 ## 5. Not done in step 1
 
