@@ -185,7 +185,7 @@ async def integrations_create_webhook(
     own writer -- so the page and ``POST /api/webhooks`` cannot diverge.
 
     Refused without an organization: a webhook with a NULL organization
-    receives every tenant's events (``governance.bus._dispatch_webhooks``)."""
+    receives every tenant's events (``events.outbox._subscribed_webhooks``)."""
     if principal.org_id is None:
         raise HTTPException(
             400, "a webhook belongs to one organization; sign in as that organization's admin"

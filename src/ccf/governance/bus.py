@@ -1,8 +1,10 @@
 """Interoperability backbone — events, notifications, and outbound webhooks.
 
 Every module calls :func:`emit` when something happens; :func:`emit` records an
-append-only :class:`Event` and fans it out to subscribed :class:`Webhook`s, so
-external systems and the internal activity feed both stay in sync. :func:`notify`
+append-only :class:`Event` and, in the same transaction, queues its derived work
+(webhook deliveries and registered consumers) in the outbox
+(:func:`ccf.events.outbox.enqueue`). Nothing is sent during the request: a
+worker delivers after commit, so a rolled-back change reaches no subscriber. :func:`notify`
 raises a de-duplicated :class:`Notification` for a user or an org. This is the
 "everything can communicate" layer the other engines build on.
 """
@@ -20,6 +22,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..events import outbox
 from ..logging import get_logger
 from ..models import Event, Notification, NotificationRead, Webhook
 from . import delivery, webhook_url
@@ -39,7 +42,14 @@ async def emit(
     payload: dict[str, Any] | None = None,
     dispatch: bool = True,
 ) -> Event:
-    """Record an event and (best-effort) dispatch it to subscribed webhooks."""
+    """Record an event and queue the work it triggers, in the caller's transaction.
+
+    ``dispatch=False`` queues no webhook delivery; registered consumers still
+    match. While a consumer runs (``outbox.CURRENT_CONSUMER`` set) the event is
+    stamped with its chain depth (``payload["_depth"]``) for the worker.
+    """
+    if outbox.CURRENT_CONSUMER.get() is not None:
+        payload = {**(payload or {}), "_depth": outbox.CURRENT_DEPTH.get()}
     ev = Event(
         organization_id=org_id,
         actor=actor,
@@ -51,12 +61,16 @@ async def emit(
     )
     session.add(ev)
     await session.flush()
-    if dispatch:
-        await _dispatch_webhooks(session, ev)
+    await outbox.enqueue(session, ev, dispatch=dispatch)
     return ev
 
 
 async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
+    """Post ``ev`` to every subscribed webhook (signed, SSRF-pinned, no redirects).
+
+    No longer called on the request path: :func:`emit` queues ``webhook`` outbox
+    jobs instead. Kept for its send logic, which the webhook consumer takes over.
+    """
     stmt = select(Webhook).where(Webhook.active.is_(True))
     if ev.organization_id is not None:
         stmt = stmt.where(
