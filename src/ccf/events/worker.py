@@ -153,7 +153,7 @@ async def _settle(
     consumer: str,
     attempts: int,
     max_attempts: int,
-    now: datetime,
+    now: datetime | None,
     error: BaseException | str | None = None,
     result: dict[str, Any] | None = None,
     retry: bool = True,
@@ -171,7 +171,11 @@ async def _settle(
         values["last_error"] = _truncate_last_error(msg)
         if retry and attempts < max_attempts:
             outcome = "retried"
-            values.update(status="pending", next_attempt_at=now + _backoff(consumer, attempts))
+            # Backoff counts from the failure, not the drain's start: with a
+            # batch of slow runs, a start-based time is already past by the
+            # time a late job fails, and its first backoff collapses to zero.
+            base = now if now is not None else datetime.now(UTC)
+            values.update(status="pending", next_attempt_at=base + _backoff(consumer, attempts))
         else:
             outcome = "failed"
             values.update(status="failed", finished_at=func.now())
@@ -180,7 +184,7 @@ async def _settle(
     return outcome
 
 
-async def _run_one(job_id: int, now: datetime) -> str:
+async def _run_one(job_id: int, now: datetime | None) -> str:
     async with get_session_factory()() as session:
         await set_session_tenant(session, None)
         job = await session.get(OutboxJob, job_id)
@@ -247,7 +251,7 @@ async def _run_one(job_id: int, now: datetime) -> str:
         return await _settle(session, job_id, result=merged, **settle)
 
 
-async def _record_crash(job_id: int, now: datetime, error: BaseException) -> str:
+async def _record_crash(job_id: int, now: datetime | None, error: BaseException) -> str:
     """A failure outside ``run`` (e.g. its commit) still costs only an attempt."""
     async with get_session_factory()() as session:
         await set_session_tenant(session, None)
@@ -272,11 +276,14 @@ async def drain_once(
 
     ``merged`` counts jobs absorbed by this pass's claims; ``skipped`` counts
     jobs whose scope is gone. ``now`` is the clock eligibility and backoff are
-    measured against (tests pass a later one instead of sleeping).
+    measured against (tests pass a later one instead of sleeping). Without it,
+    eligibility uses the drain's start and each backoff counts from the moment
+    its job failed.
     """
-    now = now or datetime.now(UTC)
     counts = dict.fromkeys(_OUTCOMES, 0)
-    claimed, counts["merged"] = await _claim(worker=worker, limit=limit, now=now)
+    claimed, counts["merged"] = await _claim(
+        worker=worker, limit=limit, now=now or datetime.now(UTC)
+    )
     for job_id in claimed:
         try:
             outcome = await _run_one(job_id, now)

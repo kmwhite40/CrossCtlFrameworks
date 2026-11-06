@@ -19,7 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import delete, func, select, text, update
 
 from ccf.db import session_scope
 from ccf.events import consumers, outbox, worker
@@ -31,6 +31,26 @@ from ccf.models_outbox import OutboxJob
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 PAST = datetime(2000, 1, 1, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+async def _no_live_jobs_left_behind() -> AsyncIterator[None]:
+    """Delete every pending/claimed job this test created, whatever its consumer.
+
+    The test DB is shared: a pending ``webhook`` job left here (next_attempt_at
+    in the past) would be the first thing the real webhook consumer's tests
+    claim. Jobs created during the test are those above the starting id mark;
+    the delete runs on an unscoped superuser session (ccf_app has no DELETE).
+    """
+    async with session_scope() as s:
+        mark = (await s.execute(select(func.coalesce(func.max(OutboxJob.id), 0)))).scalar_one()
+    yield
+    async with session_scope() as s:
+        await s.execute(
+            delete(OutboxJob).where(
+                OutboxJob.id > mark, OutboxJob.status.in_(("pending", "claimed"))
+            )
+        )
 
 
 def _future(seconds: int = 3600) -> datetime:
@@ -443,6 +463,27 @@ async def test_a_failing_job_backs_off_then_dead_letters_at_its_cap(
 
     await worker.drain_once(worker="w1", now=t2 + timedelta(days=30))
     assert (await _get(jid)).attempts == 3  # a dead letter is never reclaimed
+
+
+async def test_backoff_counts_from_the_failure_not_the_drain_start(
+    world: dict[str, Any], registered: list[str]
+) -> None:
+    """A late job in a slow batch must still wait its full first backoff."""
+    failed_at: list[datetime] = []
+
+    async def _slow_boom(session: Any, key: str, job: Any) -> dict[str, Any]:
+        await asyncio.sleep(1.2)
+        failed_at.append(datetime.now(UTC))
+        raise RuntimeError("down")
+
+    c = _add(registered, _slow_boom)
+    jid = await _job(c.name, f"org:{world['org']}", org_id=world["org"], event_id=world["event"])
+    start = datetime.now(UTC)
+    await worker.drain_once(worker="w1")  # no explicit now: the production path
+    job = await _get(jid)
+    assert (job.status, job.attempts) == ("pending", 1)
+    assert failed_at and failed_at[0] - start >= timedelta(seconds=1.2)
+    assert job.next_attempt_at >= failed_at[0] + timedelta(seconds=60)
 
 
 async def test_a_webhook_backs_off_from_ninety_seconds(
