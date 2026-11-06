@@ -17,6 +17,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import delete, func, text
+from sqlalchemy.exc import DBAPIError
 
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
@@ -173,3 +174,31 @@ async def test_claim_jobs_order_by_overrides_created_at(use_order_by: bool, expe
             order_by=OutboxJob.next_attempt_at if use_order_by else None,
         )
         assert [j.scope_key for j in claimed] == [expected]
+
+
+@pytest.mark.asyncio
+async def test_ccf_app_can_update_but_not_delete_outbox_jobs() -> None:
+    """Jobs are finished or dead-lettered, never deleted (0010 grants DELETE by default)."""
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        org = Organization(name=f"outbox-priv-{uuid.uuid4().hex[:6]}")
+        s.add(org)
+        await s.flush()
+        ev = await _event(s, org.id)
+        job = OutboxJob(organization_id=org.id, consumer="c", scope_key="k", trigger_event_id=ev)
+        s.add(job)
+        await s.flush()
+        org_id, job_id = org.id, job.id
+
+    async with session_scope() as s:
+        await set_session_tenant(s, org_id)
+        # Positive control: the role can update its own row.
+        updated = await s.execute(
+            text("UPDATE ccf.outbox_jobs SET status = 'done' WHERE id = :i"), {"i": job_id}
+        )
+        assert updated.rowcount == 1
+
+    async with session_scope() as s:
+        await set_session_tenant(s, org_id)
+        with pytest.raises(DBAPIError, match="permission denied"):
+            await s.execute(text("DELETE FROM ccf.outbox_jobs WHERE id = :i"), {"i": job_id})
