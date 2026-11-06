@@ -45,6 +45,7 @@ _MIGRATION_ROUND_TRIP_MODULES = frozenset(
         "test_conftest_cr26_document_key_cleanup.py",
         "test_migration_0108_grant_history.py",
         "test_migration_0111_snapshot_backfill.py",
+        "test_migration_0114_approval_org.py",
     }
 )
 

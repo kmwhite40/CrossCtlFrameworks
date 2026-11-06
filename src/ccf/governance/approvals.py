@@ -27,7 +27,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ato import roles as system_roles
@@ -152,9 +152,10 @@ async def _entity_scope(
             System, System.id == POAM.system_id
         ).where(POAM.id == eid)
     elif entity_type == "risk":
-        stmt = select(Risk.system_id, System.organization_id).outerjoin(
-            System, System.id == Risk.system_id
-        ).where(Risk.id == eid)
+        # An enterprise risk has no system; its organization is its own.
+        stmt = select(
+            Risk.system_id, func.coalesce(Risk.organization_id, System.organization_id)
+        ).outerjoin(System, System.id == Risk.system_id).where(Risk.id == eid)
     else:
         stmt = select(Assessment.system_id, System.organization_id).outerjoin(
             System, System.id == Assessment.system_id
@@ -165,15 +166,16 @@ async def _entity_scope(
 
 async def _require_scope(
     session: AsyncSession, entity_type: str, entity_id: str | int, org_id: int | None
-) -> int | None:
-    """The entity's system id; raises :class:`EntityNotFoundError` across tenants."""
+) -> tuple[int | None, int | None]:
+    """``(system id, organization id)`` of the entity; raises
+    :class:`EntityNotFoundError` across tenants."""
     scope = await _entity_scope(session, entity_type, entity_id)
     if scope is None:
         raise EntityNotFoundError(f"{entity_type} {entity_id} not found")
     system_id, entity_org = scope
     if org_id is not None and entity_org is not None and entity_org != org_id:
         raise EntityNotFoundError(f"{entity_type} {entity_id} not found")
-    return system_id
+    return system_id, entity_org
 
 
 async def granted_as(
@@ -242,7 +244,12 @@ async def _get_or_create(
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
+    if row is not None and row.organization_id is None and org_id is not None:
+        row.organization_id = org_id  # adopt one stored before the entity's org was used
     if row is None:
+        # The entity's organization, not the caller's: a platform admin's
+        # approval stored with none was invisible to the tenant's own users
+        # (RLS), and their next request collided with it on uq_approval_entity.
         row = Approval(organization_id=org_id, entity_type=entity_type, entity_id=str(entity_id))
         session.add(row)
         await session.flush()
@@ -317,8 +324,8 @@ async def submit(
     if entity_type not in ENTITY_TYPES:
         raise WorkflowError(f"unsupported entity type: {entity_type}")
     _check_purpose(entity_type, purpose)
-    await _require_scope(session, entity_type, entity_id, org_id)
-    a = await _get_or_create(session, entity_type, entity_id, org_id)
+    _, entity_org = await _require_scope(session, entity_type, entity_id, org_id)
+    a = await _get_or_create(session, entity_type, entity_id, entity_org or org_id)
     if a.state == "approved":
         if entity_type not in _RESUBMITTABLE:
             raise WorkflowError("already approved")
@@ -456,8 +463,8 @@ async def decide(
     """
     if entity_type not in ENTITY_TYPES:
         raise WorkflowError(f"unsupported entity type: {entity_type}")
-    system_id = await _require_scope(session, entity_type, entity_id, org_id)
-    a = await _get_or_create(session, entity_type, entity_id, org_id)
+    system_id, entity_org = await _require_scope(session, entity_type, entity_id, org_id)
+    a = await _get_or_create(session, entity_type, entity_id, entity_org or org_id)
     if a.state != "submitted":
         raise WorkflowError(f"cannot decide from state '{a.state}' (must be submitted)")
     if approve and entity_type in PURPOSES and purpose != a.purpose:

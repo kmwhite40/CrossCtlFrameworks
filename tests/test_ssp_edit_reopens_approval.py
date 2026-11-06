@@ -207,3 +207,52 @@ async def test_a_revision_recorded_after_approval_reopens_it_in_its_recorders_na
             await s.execute(select(SSPProject.revision_history).where(SSPProject.id == pid))
         ).scalar_one()
     assert history[-1]["author"] != "the.ao@agency.gov"
+
+
+@pytest.mark.asyncio
+async def test_a_tenant_edit_reopens_a_platform_granted_approval_and_says_so() -> None:
+    """The trigger runs as the writer. A tenant's edit (RLS on) must still reach
+    an approval a platform administrator granted, and the timeline must say the
+    approval was reopened."""
+    from ccf.db import set_session_tenant  # noqa: PLC0415
+    from ccf.governance import approvals  # noqa: PLC0415
+    from ccf.models import Event  # noqa: PLC0415
+
+    tag = uuid.uuid4().hex[:8]
+    async with session_scope() as s:
+        org = Organization(name=f"ssprt-{tag}")
+        s.add(org)
+        await s.flush()
+        proj = SSPProject(organization_id=org.id, customer_name=f"cust {tag}")
+        s.add(proj)
+        await s.flush()
+        s.add(SSPControlEntry(project_id=proj.id, control_id="AC-2"))
+        pid, org_id = proj.id, org.id
+        # Platform principals: no organization of their own.
+        await approvals.submit(s, entity_type="ssp_project", entity_id=str(pid), actor="a")
+        await approvals.decide(
+            s,
+            entity_type="ssp_project",
+            entity_id=str(pid),
+            approve=True,
+            actor="b",
+            role="admin",
+        )
+    assert await _states(pid) == ("approved", "approved")
+    async with session_scope() as s:
+        await set_session_tenant(s, org_id)
+        await s.execute(
+            update(SSPControlEntry)
+            .where(SSPControlEntry.project_id == pid)
+            .values(responsible_role="tenant edit")
+        )
+    assert await _states(pid) == ("draft", "draft")
+    async with session_scope() as s:
+        events = (
+            await s.execute(
+                select(Event.verb, Event.organization_id).where(
+                    Event.entity_type == "ssp_project", Event.entity_id == str(pid)
+                )
+            )
+        ).all()
+    assert ("approval_reopened", org_id) in events

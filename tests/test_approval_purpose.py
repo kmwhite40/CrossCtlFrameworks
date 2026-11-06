@@ -430,3 +430,109 @@ async def test_the_workspace_refuses_a_request_it_cannot_make(
     assert r.status_code == 303 and "error=" in r.headers["location"]
     row = await _approval(probe)
     assert row is None or row.state != "submitted"
+
+
+@pytest.mark.asyncio
+async def test_an_approval_belongs_to_its_entitys_organization() -> None:
+    """Submitted by an unscoped (platform) principal, the row used to carry no
+    organization -- invisible to the tenant under RLS, and a collision on
+    uq_approval_entity for their next request."""
+    w = await _world()
+    async with session_scope() as s:
+        poam = POAM(system_id=w.sys_id, title="W")
+        from ccf.models import Risk  # noqa: PLC0415
+
+        enterprise = Risk(organization_id=w.org_id, title="enterprise risk, no system")
+        s.add_all([poam, enterprise])
+        await s.flush()
+        await approvals.submit(
+            s,
+            entity_type="poam",
+            entity_id=str(poam.id),
+            actor="platform",
+            org_id=None,
+            purpose="close",
+        )
+        await approvals.submit(
+            s,
+            entity_type="risk",
+            entity_id=str(enterprise.id),
+            actor="platform",
+            org_id=None,
+            purpose="accept",
+        )
+        ids = {"poam": str(poam.id), "risk": str(enterprise.id)}
+    for kind, eid in ids.items():
+        async with session_scope() as s:
+            org = (
+                await s.execute(
+                    select(Approval.organization_id).where(
+                        Approval.entity_type == kind, Approval.entity_id == eid
+                    )
+                )
+            ).scalar_one()
+        assert org == w.org_id, kind
+
+
+@pytest.mark.asyncio
+async def test_an_approval_stored_without_an_org_is_adopted_on_its_next_request() -> None:
+    w = await _world()
+    async with session_scope() as s:
+        poam = POAM(system_id=w.sys_id, title="W")
+        s.add(poam)
+        await s.flush()
+        s.add(Approval(entity_type="poam", entity_id=str(poam.id), state="rejected"))
+        pid = str(poam.id)
+    async with session_scope() as s:
+        await approvals.submit(
+            s, entity_type="poam", entity_id=pid, actor="platform", org_id=None, purpose="close"
+        )
+    async with session_scope() as s:
+        org = (
+            await s.execute(
+                select(Approval.organization_id).where(
+                    Approval.entity_type == "poam", Approval.entity_id == pid
+                )
+            )
+        ).scalar_one()
+    assert org == w.org_id
+
+
+@pytest.mark.asyncio
+async def test_an_orgless_request_already_awaiting_review_is_adopted_when_decided() -> None:
+    """Submitted before approvals took their entity's organization, it is
+    decided without a fresh submission -- the decision adopts it."""
+    w = await _world()
+    async with session_scope() as s:
+        poam = POAM(system_id=w.sys_id, title="W")
+        s.add(poam)
+        await s.flush()
+        pid = str(poam.id)
+        s.add(
+            Approval(
+                entity_type="poam",
+                entity_id=pid,
+                state="submitted",
+                purpose="close",
+                submitted_by="someone",
+            )
+        )
+    async with session_scope() as s:
+        await approvals.decide(
+            s,
+            entity_type="poam",
+            entity_id=pid,
+            approve=True,
+            actor="platform",
+            role="admin",
+            purpose="close",
+        )
+    async with session_scope() as s:
+        org = (
+            await s.execute(
+                select(Approval.organization_id).where(
+                    Approval.entity_type == "poam", Approval.entity_id == pid
+                )
+            )
+        ).scalar_one()
+    assert org == w.org_id

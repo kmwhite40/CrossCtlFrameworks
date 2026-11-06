@@ -22,7 +22,7 @@ miss.
   safe direction.
 - Whenever a plan leaves ``approved`` / ``final``, its approval returns to
   draft, so the plan must be submitted and decided again -- what withdrawing
-  it through the API already did.
+  it through the API already did -- and an ``approval_reopened`` event says so.
 
 Comparisons are on ``to_jsonb`` of the row minus the excluded keys, so a
 whole-form client re-saving identical values reopens nothing.
@@ -69,6 +69,14 @@ def upgrade() -> None:
             UPDATE ccf.approvals SET state = 'draft'
              WHERE entity_type = 'ssp_project' AND entity_id = NEW.id::text
                AND state = 'approved';
+            -- Said where the timeline reads it: a plan quietly losing its
+            -- approval is a defect of its own.
+            INSERT INTO ccf.events (organization_id, verb, entity_type, entity_id, summary,
+                                    payload)
+            VALUES (NEW.organization_id, 'approval_reopened', 'ssp_project', NEW.id::text,
+                    'SSP ' || NEW.id || ' left ' || OLD.status || ' (' || NEW.status
+                      || '): its approval must be decided again',
+                    jsonb_build_object('from', OLD.status, 'to', NEW.status));
           END IF;
           RETURN NULL;
         END $$
