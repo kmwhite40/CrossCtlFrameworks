@@ -209,6 +209,23 @@
   {% else %}
   <div class="card__body"><p class="dim">Nothing submitted for review.</p></div>
   {% endif %}
+  {% if ws.requestable %}
+  <form method="post" action="/ato/{{ s.id }}/approvals/request" class="card__body filters" id="request-approval">
+    <label class="dim" for="approval-item">Ask for a decision on</label>
+    <select class="input" name="item" id="approval-item" required>
+      {% for it in ws.requestable %}<option value="{{ it.key }}">{{ it.label }}</option>{% endfor %}
+    </select>
+    <label class="dim" for="approval-purpose">to</label>
+    <select class="input" name="purpose" id="approval-purpose" required>
+      {% for kind, choices in ws.purposes.items() %}
+      <optgroup label="{{ 'POA&M' if kind == 'poam' else 'Risk' }}">
+        {% for key, label in choices.items() %}<option value="{{ key }}">{{ label }}</option>{% endfor %}
+      </optgroup>
+      {% endfor %}
+    </select>
+    <button class="btn btn--sm btn--secondary" type="submit">Request review</button>
+  </form>
+  {% endif %}
 </section>
 
 {# ── Acceptances ─────────────────────────────────────────────────────── #}

@@ -368,3 +368,65 @@ async def test_a_resubmission_in_flight_cannot_be_approved_unseen() -> None:
             )
         ).scalar_one()
     assert (row.state, row.purpose) == ("submitted", "extend_acceptance")
+
+
+async def _approval(pid: int, kind: str = "poam") -> Approval | None:
+    async with session_scope() as s:
+        return (
+            await s.execute(
+                select(Approval).where(Approval.entity_type == kind, Approval.entity_id == str(pid))
+            )
+        ).scalar_one_or_none()
+
+
+@pytest.mark.asyncio
+async def test_a_decision_can_be_requested_from_the_workspace(_auth_enabled: None) -> None:
+    w = await _world()
+    async with _client() as c:
+        pid = await _poam(c, w)
+        page = await c.get(f"/ato/{w.sys_id}", headers=w.prep)
+        r = await c.post(
+            f"/ato/{w.sys_id}/approvals/request",
+            data={"item": f"poam:{pid}", "purpose": "close"},
+            headers=w.prep,
+            follow_redirects=False,
+        )
+        after = await c.get(f"/ato/{w.sys_id}", headers=w.appr)
+    assert 'action="/ato/' in page.text and f'value="poam:{pid}"' in page.text
+    assert r.status_code == 303 and "error" not in r.headers["location"]
+    row = await _approval(pid)
+    assert row is not None and (row.state, row.purpose) == ("submitted", "close")
+    assert row.submitted_by and row.submitted_by.startswith("prep-")
+    assert html.escape(approvals.PURPOSES["poam"]["close"]) in after.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["wrong-kind-purpose", "other-system", "garbage"])
+async def test_the_workspace_refuses_a_request_it_cannot_make(
+    _auth_enabled: None, case: str
+) -> None:
+    w = await _world()
+    async with session_scope() as s:
+        other = System(organization_id=w.org_id, name="another system")
+        s.add(other)
+        await s.flush()
+        foreign = POAM(system_id=other.id, title="not this system's")
+        s.add(foreign)
+        await s.flush()
+        foreign_id = foreign.id
+    async with _client() as c:
+        pid = await _poam(c, w)
+        item, purpose, probe = {
+            "wrong-kind-purpose": (f"poam:{pid}", "accept", pid),  # a risk's purpose
+            "other-system": (f"poam:{foreign_id}", "close", foreign_id),
+            "garbage": ("vendor:1", "close", pid),
+        }[case]
+        r = await c.post(
+            f"/ato/{w.sys_id}/approvals/request",
+            data={"item": item, "purpose": purpose},
+            headers=w.prep,
+            follow_redirects=False,
+        )
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    row = await _approval(probe)
+    assert row is None or row.state != "submitted"
