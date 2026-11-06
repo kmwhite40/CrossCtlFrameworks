@@ -1938,6 +1938,10 @@ async def portal_admin_create(
     evidence_ids: list[int] = Form(default=[]),
     certification_system_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
+    # The API's role: the auth gate refuses only viewers on ``/admin/*``
+    # posts, and a grant is a bearer credential into the org's package and
+    # certification data -- an editor the API refuses must not issue one here.
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
 
@@ -1971,6 +1975,7 @@ async def portal_admin_revoke(
     grant_id: int,
     organization_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),  # as the API; see portal_admin_create
 ) -> RedirectResponse:
     from ...models_portal import ExternalAccessGrant  # noqa: PLC0415
     from ...portal import revoke_grant  # noqa: PLC0415

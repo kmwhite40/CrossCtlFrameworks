@@ -238,23 +238,26 @@ nothing else. It stays as defence in depth.
   recorded is now stored and shown.
 - Pages and responses carrying a receipt, link or token are `no-store`.
 
-**Not changed, the owner's call:** the requester's identity is not verified.
+**Not changed, decided by the owner (2026-11-06): manual review stays.** The
+requester's identity is not verified.
 Anyone holding a published link can submit in any agency's name with any
 email, and the receipt goes only to whoever submitted. Proving control of
 the address means sending the receipt or claim code by email, which needs
-outbound mail. Until then the admin page tells approvers to verify the
-requester first. A link holder can still fill one link with pending requests
+outbound mail, which Concord does not have. The admin page tells approvers
+to verify the requester first; every request still needs an admin's approval,
+and an approval lapses unless it is claimed within 14 days. A link holder can still fill one link with pending requests
 (the 50-request cap); withdraw and re-issue the link if that happens.
 
 **Verified by mutation:** 39 guards, all killed. The locks on claim and
 submit are pinned on the source; the claim's "incomplete approval" refusal is
 unreachable past the CHECK and stays as a backstop.
 
-**Found, not changed:** the `/admin/portal` page's existing form posts (issue
-and revoke grants) refuse only viewers, so an editor or control owner can
-issue a portal grant there, while the API twin requires `admin`. The new step-4
-form posts require `admin`. Whether to tighten the existing ones changes who
-may share data today, so it is left to the owner.
+**Found, then changed on the owner's decision (2026-11-06):** the
+`/admin/portal` page's existing form posts (issue and revoke grants) refused
+only viewers, so an editor or control owner could issue a portal grant there,
+while the API twin requires `admin`. Both now require `admin`, as the API and
+the step-4 form posts do. This narrows who may share data: an editor who issued
+grants from the page must now ask an admin.
 
 ## 4e. Step 5 as built (CDS-CSO-HAD)
 

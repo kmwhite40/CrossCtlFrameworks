@@ -732,3 +732,50 @@ async def test_the_notice_shows_when_it_was_recorded(_auth_enabled: None) -> Non
     assert r.status_code == 200, r.text
     assert r.json()["fedramp_notice_recorded_at"] is not None
     assert r.json()["fedramp_notified_by"] == w.email["admin"]
+
+
+async def _grants(s: Any, org_id: int) -> list[int]:
+    rows = await s.execute(
+        select(ExternalAccessGrant.id).where(ExternalAccessGrant.organization_id == org_id)
+    )
+    return list(rows.scalars())
+
+
+@pytest.mark.asyncio
+async def test_the_grant_issue_and_revoke_forms_need_the_admin_role(_auth_enabled: None) -> None:
+    """The page's grant forms answer to the same role as the API's: a grant is
+    a bearer credential into the org's package and certification data, so an
+    editor who could not issue one over the API must not issue one here."""
+    w = await _world()
+    org = str(w.ids["org"])
+    issue = {
+        "organization_id": org,
+        "principal_name": "Agency reviewer",
+        "kind": "agency",
+        "ttl_days": "30",
+        "certification_system_ids": str(w.ids["a"]),
+    }
+    async with _client() as c:
+        owner_issue = await c.post("/admin/portal/grants", data=issue, headers=w.h["control_owner"])
+        async with session_scope() as s:
+            issued_by_owner = await _grants(s, w.ids["org"])
+        admin_issue = await c.post("/admin/portal/grants", data=issue, headers=w.h["admin"])
+        async with session_scope() as s:
+            grant_id = max(await _grants(s, w.ids["org"]))
+        owner_revoke = await c.post(
+            f"/admin/portal/grants/{grant_id}/revoke",
+            data={"organization_id": org},
+            headers=w.h["control_owner"],
+        )
+        async with session_scope() as s:
+            still_live = not (await s.get(ExternalAccessGrant, grant_id)).revoked
+        admin_revoke = await c.post(
+            f"/admin/portal/grants/{grant_id}/revoke",
+            data={"organization_id": org},
+            headers=w.h["admin"],
+            follow_redirects=False,
+        )
+    assert owner_issue.status_code == 403 and issued_by_owner == []
+    assert admin_issue.status_code == 200 and "/portal?token=" in admin_issue.text
+    assert owner_revoke.status_code == 403 and still_live
+    assert admin_revoke.status_code == 303
