@@ -271,6 +271,18 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
             refused = _gated_status_change(model, getattr(obj, "status", None), new)
             if refused:
                 raise ValueError(refused)
+    if model is Policy and "status" in row:
+        # A policy goes in force only through an approved version and retires
+        # only by an admin (``ccf.policies.service``). Retiring keeps the
+        # active version, so a file re-activating a retired policy put it back
+        # in force unreviewed. A new row starts as a draft.
+        new = _clean(row["status"])
+        held = getattr(obj, "status", None) or "draft"
+        if new is not None and new != held:
+            raise ValueError(
+                f"a policy's status changes only on the policy itself (activating needs an "
+                f"approved version, retiring an admin), not to {new!r} by import"
+            )
     if model is POAM and getattr(obj, "status", None) == "risk_accepted" and "due_on" in row:
         # ``due_on`` is the acceptance's expiry (the scanner keeps an accepted
         # POA&M accepted until it passes). The API spends an approval on any
