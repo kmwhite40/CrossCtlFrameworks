@@ -405,6 +405,9 @@ async def test_a_later_due_date_needs_an_approved_extension(_auth_enabled: None)
 
 @pytest.mark.asyncio
 async def test_an_isso_approval_cannot_accept_risk(_auth_enabled: None) -> None:
+    """Two ways an ISSO's approval used to reach a risk acceptance, both shut:
+    an approval granted to *close* the POA&M is not spendable on accepting its
+    risk, and a request to *accept* risk is one the ISSO cannot approve."""
     w = await _world("AtoRiskA")
     async with _client() as c:
         await _signers(c, w)
@@ -414,19 +417,38 @@ async def test_an_isso_approval_cannot_accept_risk(_auth_enabled: None) -> None:
             "due_on": str(date.today() + timedelta(days=60)),
             "acceptance_rationale": "compensating control in place",
         }
-        await c.post(f"/api/approvals/poam/{pid}/submit", headers=w.hdr["prep"])
+        close = {"purpose": "close"}
+        await c.post(f"/api/approvals/poam/{pid}/submit", json=close, headers=w.hdr["prep"])
         r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["isso"])
         assert r.status_code == 200, r.text
         r = await c.patch(f"/api/poams/{pid}", json=accept, headers=w.hdr["prep"])
-        assert r.status_code == 409 and "Authorizing Official" in r.json()["detail"]
-        # Ask again -- the ISSO's unspent approval is voided, not spent -- and
-        # the same request goes through once the AO decides.
-        r = await c.post(f"/api/approvals/poam/{pid}/submit", headers=w.hdr["prep"])
+        assert r.status_code == 409, r.text
+        # Asked for what it is, the ISSO cannot decide it -- the AO can.
+        ask = {"purpose": "accept_risk"}
+        r = await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
         assert r.status_code == 200, r.text
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["isso"])
+        assert r.status_code == 403 and "Authorizing Official" in r.json()["detail"]
         r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
         assert r.status_code == 200, r.text
         r = await c.patch(f"/api/poams/{pid}", json=accept, headers=w.hdr["prep"])
         assert r.status_code == 200, r.text
+
+
+async def _regrant_to_isso(w: World, pid: int) -> None:
+    """Stage the race the reviewer pin exists for: the stored approval is now
+    the ISSO's, as if the AO's was spent and the ISSO re-approved in between."""
+    from ccf.models import Approval  # noqa: PLC0415
+
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(Approval).where(
+                    Approval.entity_type == "poam", Approval.entity_id == str(pid)
+                )
+            )
+        ).scalar_one()
+        row.reviewed_by = f"isso@{w.name.lower()}.example"
 
 
 @pytest.mark.asyncio
@@ -444,9 +466,11 @@ async def test_the_spend_refuses_an_approval_regranted_after_the_ao_check(
     async with _client() as c:
         await _signers(c, w)
         pid = await _poam(c, w, date.today() + timedelta(days=10))
-        await c.post(f"/api/approvals/poam/{pid}/submit", headers=w.hdr["prep"])
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["isso"])
+        ask = {"purpose": "accept_risk"}
+        await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
         assert r.status_code == 200, r.text
+        await _regrant_to_isso(w, pid)
 
         async def saw_the_ao(*_a: object, **_k: object) -> str:
             return f"ao@{w.name.lower()}.example"
@@ -475,7 +499,8 @@ async def test_extending_an_acceptance_spends_only_the_aos_approval(
     async with _client() as c:
         await _signers(c, w)
         pid = await _poam(c, w, date.today() + timedelta(days=10))
-        await c.post(f"/api/approvals/poam/{pid}/submit", headers=w.hdr["prep"])
+        ask = {"purpose": "accept_risk"}
+        await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
         await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
         r = await c.patch(f"/api/poams/{pid}", json={
             "status": "risk_accepted", "owner_user_id": w.ids["prep"],
@@ -483,9 +508,11 @@ async def test_extending_an_acceptance_spends_only_the_aos_approval(
             "acceptance_rationale": "compensating control in place",
         }, headers=w.hdr["prep"])
         assert r.status_code == 200, r.text
-        await c.post(f"/api/approvals/poam/{pid}/submit", headers=w.hdr["prep"])
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["isso"])
+        ext = {"purpose": "extend_acceptance"}
+        await c.post(f"/api/approvals/poam/{pid}/submit", json=ext, headers=w.hdr["prep"])
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
         assert r.status_code == 200, r.text
+        await _regrant_to_isso(w, pid)
 
         async def saw_the_ao(*_a: object, **_k: object) -> str:
             return f"ao@{w.name.lower()}.example"
@@ -513,7 +540,11 @@ async def test_the_ao_of_one_system_cannot_approve_for_another(_auth_enabled: No
         poam_id = poam.id
     async with _client() as c:
         await _signers(c, w)
-        await c.post(f"/api/approvals/poam/{poam_id}/submit", headers=w.hdr["prep"])
+        await c.post(
+            f"/api/approvals/poam/{poam_id}/submit",
+            json={"purpose": "close"},
+            headers=w.hdr["prep"],
+        )
         r = await c.post(f"/api/approvals/poam/{poam_id}/approve", headers=w.hdr["ao"])
     assert r.status_code == 403, r.text
 
@@ -528,7 +559,11 @@ async def test_another_tenants_poam_cannot_be_submitted(_auth_enabled: None) -> 
         await s.flush()
         poam_id = poam.id
     async with _client() as c:
-        r = await c.post(f"/api/approvals/poam/{poam_id}/submit", headers=w.hdr["prep"])
+        r = await c.post(
+            f"/api/approvals/poam/{poam_id}/submit",
+            json={"purpose": "close"},
+            headers=w.hdr["prep"],
+        )
     assert r.status_code == 404
 
 

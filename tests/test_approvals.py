@@ -86,10 +86,16 @@ def _email(key: str, name: str) -> str:
     return f"{key}@{name.lower()}.example"
 
 
+#: The decision each helper submission asks for: closing is what an ISSO may
+#: approve on a POA&M; a risk's only decisions are the AO's.
+_PURPOSE = {"poam": "close", "risk": "accept"}
+
+
 async def _submit(kind: str, eid: int, name: str, org: int) -> None:
     async with session_scope() as s:
         await approvals.submit(
-            s, entity_type=kind, entity_id=str(eid), actor=_email("prep", name), org_id=org
+            s, entity_type=kind, entity_id=str(eid), actor=_email("prep", name), org_id=org,
+            purpose=_PURPOSE[kind],
         )
 
 
@@ -146,7 +152,7 @@ async def test_separation_of_duties_binds_the_ao_too(_auth_enabled: None) -> Non
     async with session_scope() as s:
         await approvals.submit(
             s, entity_type="risk", entity_id=str(ids["risk"]),
-            actor=_email("ao", name), org_id=ids["org"],
+            actor=_email("ao", name), org_id=ids["org"], purpose="accept",
         )
     with pytest.raises(WorkflowError, match="separation of duties"):
         await _decide("risk", ids["risk"], name, "ao", ids)
@@ -157,7 +163,8 @@ async def test_a_missing_entity_cannot_be_submitted() -> None:
     async with session_scope() as s:
         with pytest.raises(EntityNotFoundError):
             await approvals.submit(
-                s, entity_type="poam", entity_id="999999999", actor="a", org_id=None
+                s, entity_type="poam", entity_id="999999999", actor="a", org_id=None,
+                purpose="close",
             )
 
 
@@ -167,7 +174,8 @@ async def test_single_operator_mode_skips_authority_and_sod() -> None:
     ids = await _world(name)
     async with session_scope() as s:
         await approvals.submit(
-            s, entity_type="risk", entity_id=str(ids["risk"]), actor="system", org_id=None
+            s, entity_type="risk", entity_id=str(ids["risk"]), actor="system", org_id=None,
+            purpose="accept",
         )
         a = await approvals.decide(
             s, entity_type="risk", entity_id=str(ids["risk"]), approve=True,

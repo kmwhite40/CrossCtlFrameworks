@@ -192,9 +192,10 @@
     <span class="dim" style="font-size:13px">POA&amp;M closures and risk acceptances; accepting risk takes the AO</span></div>
   {% if ws.approvals %}
   <div class="table-wrap"><table class="data">
-    <thead><tr><th>Item</th><th>Submitted by</th><th>Decision</th></tr></thead>
+    <thead><tr><th>Item</th><th>Asked to authorize</th><th>Submitted by</th><th>Decision</th></tr></thead>
     <tbody>{% for a in ws.approvals %}<tr>
       <td><span class="chip chip--ghost">{{ 'POA&M' if a.entity_type=='poam' else 'Risk' }}</span> {{ a.title }}</td>
+      <td>{{ a.purpose_label }}</td>
       <td class="dim">{{ a.submitted_by or '—' }}</td>
       <td>
         <form method="post" action="/ato/{{ s.id }}/approvals/{{ a.entity_type }}/{{ a.entity_id }}/approve" class="filters" style="margin-bottom:4px">

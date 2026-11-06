@@ -60,6 +60,44 @@ APPROVAL_AUTHORITY: dict[str, tuple[str, ...]] = {
 }
 ENTITY_TYPES = set(APPROVAL_AUTHORITY)
 RISK_ACCEPTANCE_AUTHORITY: tuple[str, ...] = ("authorizing_official",)
+#: The decisions an approval of each entity type can authorize. Requested at
+#: submission, decided as such, and spent only by the gate for that decision
+#: (``consume(purpose=...)``): an ISSO's approval to close a POA&M is not an
+#: approval to extend its risk acceptance. Entity types not listed have one
+#: decision and no purpose.
+PURPOSES: dict[str, dict[str, str]] = {
+    "poam": {
+        "close": "Close the POA&M as remediated",
+        "accept_risk": "Accept the risk (risk_accepted)",
+        "extend_acceptance": "Extend the risk acceptance's expiry",
+    },
+    "risk": {
+        "accept": "Accept the risk",
+        "extend_review": "Move the accepted risk's next review later",
+    },
+}
+#: Purposes only the AO (or an admin) may approve, whatever
+#: :data:`APPROVAL_AUTHORITY` admits for the entity type.
+_AO_PURPOSES = {("poam", "accept_risk"), ("poam", "extend_acceptance")}
+
+
+def purpose_label(entity_type: str, purpose: str | None) -> str | None:
+    return PURPOSES.get(entity_type, {}).get(purpose or "")
+
+
+def _check_purpose(entity_type: str, purpose: str | None) -> None:
+    allowed = PURPOSES.get(entity_type)
+    if allowed is None:
+        if purpose is not None:
+            raise PurposeError(f"a {entity_type} approval has no purpose to name")
+        return
+    if purpose not in allowed:
+        raise PurposeError(
+            f"say which decision this {entity_type} approval is for: purpose must be one of "
+            + ", ".join(allowed)
+        )
+
+
 #: Entity types whose approval a gate spends (``consume``). An unspent one may
 #: be replaced by a new request; an SSP approval stamps the project's status,
 #: so it stays final.
@@ -72,6 +110,10 @@ class WorkflowError(Exception):
 
 class EntityNotFoundError(WorkflowError):
     """The entity does not exist, or is not visible to the caller's org."""
+
+
+class PurposeError(WorkflowError):
+    """The request names no purpose, or one its entity type does not have."""
 
 
 async def _entity_scope(
@@ -205,6 +247,8 @@ def out(a: Approval) -> dict[str, Any]:
         "reviewed_by": a.reviewed_by,
         "reviewed_at": a.reviewed_at,
         "decision_note": a.decision_note,
+        "purpose": a.purpose,
+        "purpose_label": purpose_label(a.entity_type, a.purpose),
     }
 
 
@@ -256,9 +300,11 @@ async def submit(
     entity_id: str,
     actor: str | None,
     org_id: int | None = None,
+    purpose: str | None = None,
 ) -> Approval:
     if entity_type not in ENTITY_TYPES:
         raise WorkflowError(f"unsupported entity type: {entity_type}")
+    _check_purpose(entity_type, purpose)
     await _require_scope(session, entity_type, entity_id, org_id)
     a = await _get_or_create(session, entity_type, entity_id, org_id)
     if a.state == "approved":
@@ -280,23 +326,26 @@ async def submit(
             dispatch=False,
         )
     a.state = "submitted"
+    a.purpose = purpose
     a.submitted_by = actor
     a.submitted_at = datetime.now(UTC)
     a.reviewed_by = None
     a.reviewed_at = None
+    label = purpose_label(entity_type, purpose)
     await bus.emit(
         session,
         verb="submitted",
         entity_type=entity_type,
         entity_id=entity_id,
-        summary=f"{entity_type} {entity_id} submitted for review by {actor}",
+        summary=f"{entity_type} {entity_id} submitted for review by {actor}"
+        + (f": {label}" if label else ""),
         org_id=org_id,
         actor=actor,
     )
     await bus.notify(
         session,
         category="approval",
-        title=f"Review requested: {entity_type} {entity_id}",
+        title=f"Review requested: {entity_type} {entity_id}" + (f" -- {label}" if label else ""),
         body=f"Submitted by {actor}.",
         org_id=org_id,
         severity="info",
@@ -315,8 +364,13 @@ async def consume(
     actor: str | None,
     org_id: int | None = None,
     reviewed_by: str | None = None,
+    purpose: str | None = None,
 ) -> bool:
     """Spend an approval on the gated transition it authorizes. True if spent.
+
+    ``purpose`` is the gate's decision; only an approval requested and granted
+    for it is spent. An entity type with purposes must name one -- a gate that
+    forgot would spend any approval, which is the defect this exists to stop.
 
     ``reviewed_by`` pins whose approval may be spent (see
     :func:`authorized_reviewer`): an approval re-granted by anyone else since
@@ -331,12 +385,15 @@ async def consume(
     ``reviewed_by``/``decision_note`` stay until the next submission, and the
     event records who approved what was spent.
     """
+    if entity_type in PURPOSES and purpose not in PURPOSES[entity_type]:
+        raise ValueError(f"a {entity_type} gate must name its purpose, not {purpose!r}")
     if entity_id is None:
         return False
     conditions = [
         Approval.entity_type == entity_type,
         Approval.entity_id == str(entity_id),
         Approval.state == "approved",
+        Approval.purpose == purpose if purpose is not None else Approval.purpose.is_(None),
     ]
     if reviewed_by is not None:
         conditions.append(Approval.reviewed_by == reviewed_by)
@@ -387,6 +444,10 @@ async def decide(
     capacity: str | None = None
     if auth_on:
         allowed = APPROVAL_AUTHORITY[entity_type]
+        if (entity_type, a.purpose) in _AO_PURPOSES:
+            # Accepting risk is the AO's decision under RMF; refused here, at
+            # the decision, rather than only when a gate tries to spend it.
+            allowed = RISK_ACCEPTANCE_AUTHORITY
         if user_id is not None:
             capacity = await system_roles.acting_as(
                 session, system_id=system_id, user_id=user_id, user_role=role, allowed=allowed
@@ -452,7 +513,8 @@ async def decide(
     await bus.notify(
         session,
         category="approval",
-        title=f"{entity_type} {entity_id} {a.state}",
+        title=f"{entity_type} {entity_id} {a.state}"
+        + (f": {purpose_label(entity_type, a.purpose)}" if a.purpose else ""),
         body=(note or ""),
         org_id=org_id,
         severity="info" if approve else "warning",

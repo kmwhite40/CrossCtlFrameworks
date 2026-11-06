@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
 from ...governance import approvals
-from ...governance.approvals import EntityNotFoundError, WorkflowError
+from ...governance.approvals import EntityNotFoundError, PurposeError, WorkflowError
 from ...models import Approval
 from ..auth_deps import get_principal
 from ..deps import get_session
@@ -21,6 +21,12 @@ router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
 class Decision(BaseModel):
     note: str | None = None
+
+
+class Submission(BaseModel):
+    #: The decision the approval is requested for (``approvals.PURPOSES``):
+    #: required for a POA&M or risk, absent for every other entity type.
+    purpose: str | None = None
 
 
 @router.get("")
@@ -66,6 +72,7 @@ async def get_approval(
 async def submit(
     entity_type: str,
     entity_id: str,
+    body: Submission | None = None,
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
@@ -76,9 +83,12 @@ async def submit(
             entity_id=entity_id,
             actor=principal.email,
             org_id=principal.org_id,
+            purpose=body.purpose if body else None,
         )
     except EntityNotFoundError as e:
         raise HTTPException(404, str(e)) from e
+    except PurposeError as e:
+        raise HTTPException(422, str(e)) from e
     except WorkflowError as e:
         raise HTTPException(409, str(e)) from e
     await session.commit()

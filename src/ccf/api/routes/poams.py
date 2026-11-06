@@ -232,12 +232,13 @@ async def _require_closure_gate(
             "evidence artifact for the remediated control",
         )
     if get_settings().auth_enabled and not await approvals.consume(
-        session, entity_type="poam", entity_id=obj.id, actor=actor
+        session, entity_type="poam", entity_id=obj.id, actor=actor, purpose="close"
     ):
         raise HTTPException(
             409,
-            "cannot close: requires an approved review (submit for approval, then have a "
-            "different principal approve it — separation of duties)",
+            "cannot close: requires an approved review to close (submit for approval with "
+            "purpose 'close', then have a different principal approve it — separation of "
+            "duties)",
         )
 
 
@@ -276,11 +277,16 @@ async def _require_risk_accepted_gate(
         return
     refusal = (
         "risk_accepted requires an approved authorizing-official review (submit for "
-        "approval, then have an AO/admin approve it)"
+        "approval with purpose 'accept_risk', then have an AO/admin approve it)"
     )
     reviewer = await _ao_reviewer(session, poam_id, refusal=refusal)
     if not await approvals.consume(
-        session, entity_type="poam", entity_id=poam_id, actor=actor, reviewed_by=reviewer
+        session,
+        entity_type="poam",
+        entity_id=poam_id,
+        actor=actor,
+        reviewed_by=reviewer,
+        purpose="accept_risk",
     ):
         raise HTTPException(409, refusal)
 
@@ -326,11 +332,17 @@ async def _require_expiry_extension_gate(
         return
     refusal = (
         "extending a risk acceptance's expiry (due_on) requires a fresh approved review "
-        "(submit for approval, then have an AO/admin approve it)"
+        "(submit for approval with purpose 'extend_acceptance', then have an AO/admin "
+        "approve it)"
     )
     reviewer = await _ao_reviewer(session, obj.id, refusal=refusal)
     if not await approvals.consume(
-        session, entity_type="poam", entity_id=obj.id, actor=actor, reviewed_by=reviewer
+        session,
+        entity_type="poam",
+        entity_id=obj.id,
+        actor=actor,
+        reviewed_by=reviewer,
+        purpose="extend_acceptance",
     ):
         raise HTTPException(409, refusal)
 

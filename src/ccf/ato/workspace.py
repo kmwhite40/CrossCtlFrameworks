@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import POAM_ACTIVE_STATUSES
 from ..fedramp20x import readiness
-from ..governance import conmon
+from ..governance import approvals, conmon
 from ..models import POAM, Approval, Risk, System
 from ..models_ato import (
     SYSTEM_ROLES,
@@ -168,6 +168,10 @@ async def _pending_approvals(
         {
             "entity_type": a.entity_type, "entity_id": a.entity_id,
             "title": titles.get((a.entity_type, a.entity_id), ""),
+            # What the reviewer is being asked to authorize -- without it an
+            # approval to close and one to accept risk looked the same.
+            "purpose_label": approvals.purpose_label(a.entity_type, a.purpose)
+            or "No decision named: ask again with one",
             "submitted_by": a.submitted_by, "submitted_at": a.submitted_at,
         }
         for a in rows
