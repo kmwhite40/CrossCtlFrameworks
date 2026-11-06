@@ -16,10 +16,12 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from datetime import timedelta
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..logging import get_logger
 from ..models import Event, Webhook
 from ..models_outbox import OutboxJob
 from . import consumers
@@ -31,6 +33,8 @@ CURRENT_DEPTH: ContextVar[int] = ContextVar("CURRENT_DEPTH", default=0)
 
 #: An event at this depth or deeper queues nothing.
 MAX_DEPTH = 3
+
+log = get_logger(__name__)
 
 WEBHOOK_CONSUMER = "webhook"
 WEBHOOK_MAX_ATTEMPTS = 8
@@ -52,6 +56,49 @@ async def _subscribed_webhooks(session: AsyncSession, ev: Event) -> list[Webhook
     return [h for h in hooks if not h.events or ev.verb in h.events or ev.entity_type in h.events]
 
 
+def _log_failure(msg: str, ev: Event, e: Exception, **kw: Any) -> None:
+    log.warning(msg, event_id=ev.id, error=f"{type(e).__name__}: {str(e)[:200]}", **kw)
+
+
+async def _consumer_job(
+    session: AsyncSession, c: consumers.Consumer, ev: Event
+) -> OutboxJob | None:
+    if not c.matches(ev.entity_type, ev.verb):
+        return None
+    key = c.scope(ev)
+    if key is None:
+        return None
+    org_id = ev.organization_id
+    if org_id is None:
+        # Its own savepoint: a failed read must not leave the caller's
+        # transaction aborted when this consumer is skipped.
+        async with session.begin_nested():
+            resolved = await consumers.scope_org(session, key)
+        org_id = resolved if isinstance(resolved, int) else None
+    return OutboxJob(
+        organization_id=org_id,
+        consumer=c.name,
+        scope_key=key,
+        trigger_event_id=ev.id,
+        max_attempts=c.max_attempts,
+        next_attempt_at=func.now() + timedelta(seconds=c.settle_seconds),
+    )
+
+
+def _webhook_job(ev: Event, hook: Webhook) -> OutboxJob:
+    return OutboxJob(
+        organization_id=(
+            ev.organization_id if ev.organization_id is not None else hook.organization_id
+        ),
+        consumer=WEBHOOK_CONSUMER,
+        scope_key=f"event:{ev.id}",
+        trigger_event_id=ev.id,
+        max_attempts=WEBHOOK_MAX_ATTEMPTS,
+        next_attempt_at=func.now(),
+        result={"webhook_id": hook.id},
+    )
+
+
 async def enqueue(session: AsyncSession, ev: Event, *, dispatch: bool) -> list[OutboxJob]:
     """Insert the outbox jobs ``ev`` triggers, in the caller's transaction.
 
@@ -69,40 +116,37 @@ async def enqueue(session: AsyncSession, ev: Event, *, dispatch: bool) -> list[O
 
     jobs: list[OutboxJob] = []
     for c in consumers.REGISTRY.values():
-        if c.name == emitter or not c.matches(ev.entity_type, ev.verb):
+        if c.name == emitter:
             continue
-        key = c.scope(ev)
-        if key is None:
+        # One consumer's bug costs that consumer's job, never the request: emit
+        # runs at ~56 call sites, none of which can afford a derived view's
+        # exception. Logged, never skipped silently.
+        try:
+            job = await _consumer_job(session, c, ev)
+        except Exception as e:
+            _log_failure("event_outbox.consumer_scope_failed", ev, e, consumer=c.name)
             continue
-        org_id = ev.organization_id
-        if org_id is None:
-            resolved = await consumers.scope_org(session, key)
-            org_id = resolved if isinstance(resolved, int) else None
-        jobs.append(
-            OutboxJob(
-                organization_id=org_id,
-                consumer=c.name,
-                scope_key=key,
-                trigger_event_id=ev.id,
-                max_attempts=c.max_attempts,
-                next_attempt_at=func.now() + timedelta(seconds=c.settle_seconds),
-            )
-        )
+        if job is not None:
+            jobs.append(job)
 
     if dispatch:
-        for hook in await _subscribed_webhooks(session, ev):
-            org = ev.organization_id if ev.organization_id is not None else hook.organization_id
-            jobs.append(
-                OutboxJob(
-                    organization_id=org,
+        try:
+            async with session.begin_nested():  # a SQL error must not abort the caller
+                hooks = await _subscribed_webhooks(session, ev)
+        except Exception as e:
+            _log_failure("event_outbox.webhook_select_failed", ev, e, consumer=WEBHOOK_CONSUMER)
+            hooks = []
+        for hook in hooks:
+            try:
+                jobs.append(_webhook_job(ev, hook))
+            except Exception as e:
+                _log_failure(
+                    "event_outbox.webhook_job_failed",
+                    ev,
+                    e,
                     consumer=WEBHOOK_CONSUMER,
-                    scope_key=f"event:{ev.id}",
-                    trigger_event_id=ev.id,
-                    max_attempts=WEBHOOK_MAX_ATTEMPTS,
-                    next_attempt_at=func.now(),
-                    result={"webhook_id": hook.id},
+                    webhook_id=getattr(hook, "id", None),
                 )
-            )
 
     if jobs:
         session.add_all(jobs)

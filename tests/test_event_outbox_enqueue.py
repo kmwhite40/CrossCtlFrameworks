@@ -19,9 +19,10 @@ from typing import Any
 
 import httpx
 import pytest
+import structlog
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
@@ -435,3 +436,116 @@ async def test_emit_still_returns_the_flushed_event(world: dict[str, Any], entit
     async with session_scope() as s:
         ev = await bus.emit(s, verb="created", entity_type=entity, summary="x", org_id=world["org"])
         assert isinstance(ev, Event) and ev.id is not None
+
+
+# ── a broken consumer costs its own job, never the request ───────────────────
+
+
+def _failures(cap: list[dict[str, Any]], msg: str) -> list[dict[str, Any]]:
+    return [r for r in cap if r.get("event") == msg]
+
+
+async def test_a_broken_consumer_costs_only_its_own_job(
+    world: dict[str, Any], entity: str, registered: list[str]
+) -> None:
+    hook = await _hook(world, world["org"])
+
+    def bad_scope(ev: Any) -> str:
+        return ev.payload["missing"]  # KeyError
+
+    def bad_matches(e: str, v: str) -> bool:
+        if e == entity:
+            raise RuntimeError("matches exploded")
+        return False
+
+    broken_scope = _add(registered, entity, bad_scope)
+    broken_matches = Consumer(
+        name=f"c{uuid.uuid4().hex[:10]}", matches=bad_matches, scope=lambda ev: "org:1", run=_noop
+    )
+    register(broken_matches)
+    registered.append(broken_matches.name)
+    good = _add(registered, entity, lambda ev: f"org:{world['org']}")
+
+    with structlog.testing.capture_logs() as cap:
+        async with session_scope() as s:
+            ev = await bus.emit(
+                s, verb="created", entity_type=entity, summary="x", org_id=world["org"]
+            )
+            assert isinstance(ev, Event) and ev.id is not None
+            ev_id = ev.id
+    jobs = await _jobs(ev_id)
+    names = {j.consumer for j in jobs}
+    assert good.name in names  # positive control: the healthy consumer still queued
+    assert hook in _webhook_ids(jobs)  # and so did the webhook
+    assert broken_scope.name not in names and broken_matches.name not in names
+    logged = _failures(cap, "event_outbox.consumer_scope_failed")
+    assert {r["consumer"] for r in logged} == {broken_scope.name, broken_matches.name}
+    assert all(r["event_id"] == ev_id for r in logged)
+    errors = {r["consumer"]: r["error"] for r in logged}
+    assert errors[broken_scope.name].startswith("KeyError")
+    assert errors[broken_matches.name] == "RuntimeError: matches exploded"
+
+
+async def test_a_failed_scope_org_read_leaves_the_session_usable(
+    world: dict[str, Any], entity: str, registered: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_scope_org(session: Any, key: str) -> int:
+        await session.execute(text("SELECT 1/0"))  # aborts the transaction it runs in
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(consumers, "scope_org", failing_scope_org)
+    broken = _add(registered, entity, lambda ev: f"system:{world['system']}")
+    with structlog.testing.capture_logs() as cap:
+        async with session_scope() as s:
+            ev = await bus.emit(s, verb="updated", entity_type=entity, summary="x")  # org-less
+            ev_id = ev.id
+            # The caller's transaction is still alive after the failed read.
+            assert (await s.execute(text("SELECT 1"))).scalar_one() == 1
+    async with session_scope() as s:
+        assert await s.get(Event, ev_id) is not None  # committed
+    assert broken.name not in {j.consumer for j in await _jobs(ev_id)}
+    [r] = _failures(cap, "event_outbox.consumer_scope_failed")
+    assert r["consumer"] == broken.name and r["error"].startswith("DBAPIError")
+
+
+async def test_one_broken_webhook_job_does_not_stop_the_others(
+    world: dict[str, Any], entity: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = await _hook(world, world["org"])
+    second = await _hook(world, world["org"])
+    real = outbox._webhook_job
+
+    def flaky(ev: Any, hook: Any) -> OutboxJob:
+        if hook.id == first:
+            raise RuntimeError("cannot build")
+        return real(ev, hook)
+
+    monkeypatch.setattr(outbox, "_webhook_job", flaky)
+    with structlog.testing.capture_logs() as cap:
+        async with session_scope() as s:
+            ev = await bus.emit(
+                s, verb="created", entity_type=entity, summary="x", org_id=world["org"]
+            )
+    ids = _webhook_ids(await _jobs(ev.id))
+    assert second in ids and first not in ids
+    [r] = _failures(cap, "event_outbox.webhook_job_failed")
+    assert r["webhook_id"] == first and r["event_id"] == ev.id
+
+
+async def test_a_failed_webhook_selection_leaves_the_session_usable(
+    world: dict[str, Any], entity: str, registered: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def failing_select(session: Any, ev: Any) -> list[Any]:
+        await session.execute(text("SELECT 1/0"))
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(outbox, "_subscribed_webhooks", failing_select)
+    good = _add(registered, entity, lambda ev: f"org:{world['org']}")
+    with structlog.testing.capture_logs() as cap:
+        async with session_scope() as s:
+            ev = await bus.emit(
+                s, verb="created", entity_type=entity, summary="x", org_id=world["org"]
+            )
+            assert (await s.execute(text("SELECT 1"))).scalar_one() == 1
+    assert [j.consumer for j in await _jobs(ev.id)] == [good.name]  # consumers unaffected
+    assert len(_failures(cap, "event_outbox.webhook_select_failed")) == 1
