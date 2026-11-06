@@ -19,7 +19,6 @@ from ...ato import extensions as poam_extensions
 from ...auth import Principal
 from ...config import get_settings
 from ...constants import (
-    POAM_ACTIVE_STATUSES,
     POAM_CLOSED_STATUSES,
     POAM_STATUSES,
     poam_leaves_risk_accepted,
@@ -232,12 +231,13 @@ async def _require_closure_gate(
             "evidence artifact for the remediated control",
         )
     if get_settings().auth_enabled and not await approvals.consume(
-        session, entity_type="poam", entity_id=obj.id, actor=actor
+        session, entity_type="poam", entity_id=obj.id, actor=actor, purpose="close"
     ):
         raise HTTPException(
             409,
-            "cannot close: requires an approved review (submit for approval, then have a "
-            "different principal approve it — separation of duties)",
+            "cannot close: requires an approved review to close (submit for approval with "
+            "purpose 'close', then have a different principal approve it — separation of "
+            "duties)",
         )
 
 
@@ -276,11 +276,16 @@ async def _require_risk_accepted_gate(
         return
     refusal = (
         "risk_accepted requires an approved authorizing-official review (submit for "
-        "approval, then have an AO/admin approve it)"
+        "approval with purpose 'accept_risk', then have an AO/admin approve it)"
     )
     reviewer = await _ao_reviewer(session, poam_id, refusal=refusal)
     if not await approvals.consume(
-        session, entity_type="poam", entity_id=poam_id, actor=actor, reviewed_by=reviewer
+        session,
+        entity_type="poam",
+        entity_id=poam_id,
+        actor=actor,
+        reviewed_by=reviewer,
+        purpose="accept_risk",
     ):
         raise HTTPException(409, refusal)
 
@@ -326,11 +331,17 @@ async def _require_expiry_extension_gate(
         return
     refusal = (
         "extending a risk acceptance's expiry (due_on) requires a fresh approved review "
-        "(submit for approval, then have an AO/admin approve it)"
+        "(submit for approval with purpose 'extend_acceptance', then have an AO/admin "
+        "approve it)"
     )
     reviewer = await _ao_reviewer(session, obj.id, refusal=refusal)
     if not await approvals.consume(
-        session, entity_type="poam", entity_id=obj.id, actor=actor, reviewed_by=reviewer
+        session,
+        entity_type="poam",
+        entity_id=obj.id,
+        actor=actor,
+        reviewed_by=reviewer,
+        purpose="extend_acceptance",
     ):
         raise HTTPException(409, refusal)
 
@@ -557,8 +568,12 @@ async def update_poam(
         )
     if (
         get_settings().auth_enabled
-        and old_status in POAM_ACTIVE_STATUSES
-        and data.get("status", old_status) in POAM_ACTIVE_STATUSES
+        # Any later date but an acceptance's, whatever the status was or
+        # becomes: reopened with a fresh date, or moved while closed and then
+        # reopened, an overdue weakness stopped being overdue with no
+        # extension decided. Entering or staying risk_accepted sets the
+        # acceptance's expiry, which its own gates below decide.
+        and data.get("status", old_status) != "risk_accepted"
         and "due_on" in data
         and obj.due_on is not None
         and data["due_on"] > obj.due_on
@@ -568,8 +583,9 @@ async def update_poam(
         # author typed a new date. Shortening, or setting a first date, is free.
         raise HTTPException(
             409,
-            "moving an open POA&M's due date later needs an approved extension: "
-            f"POST /api/poams/{obj.id}/extensions with the new date and a reason",
+            "moving a POA&M's due date later needs an approved extension: "
+            f"POST /api/poams/{obj.id}/extensions with the new date and a reason "
+            "(an open POA&M; reopen it first, keeping its date)",
         )
     if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
         # The transition, not every write naming it: an approval is spent on

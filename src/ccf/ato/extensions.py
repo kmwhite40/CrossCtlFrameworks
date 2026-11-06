@@ -136,6 +136,15 @@ async def decide(
 ) -> PoamExtension:
     if extension.status != "requested":
         raise ExtensionError(409, f"this request is already {extension.status}")
+    if approve and poam.status not in POAM_ACTIVE_STATUSES:
+        # Checked again here, not only at request: a POA&M accepted since has
+        # a due_on that is the acceptance's expiry, which only the AO extends
+        # (``extend_acceptance``). An ISSM's approval must not move it.
+        raise ExtensionError(
+            409,
+            f"this POA&M is {poam.status} now; an extension applies only to an open one "
+            "(reject this request, or ask for the decision its status needs)",
+        )
     capacity: str | None = None
     if get_settings().auth_enabled:
         capacity = await system_roles.acting_as(

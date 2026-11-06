@@ -28,6 +28,7 @@ from ...analytics import posture
 from ...analytics.command_center import RISK_LEVELS, TASK_OPEN_STATUSES, risk_matrix
 from ...constants import POAM_ACTIVE_STATUSES
 from ...governance import audit_program, inbox, third_party
+from ...governance.approvals import purpose_label as approval_purpose_label
 from ...governance.risk import band, risk_in_scope
 from ...models import (
     KSI,
@@ -894,6 +895,7 @@ async def approvals_page(
     rows = [
         {
             "a": a,
+            "purpose": approval_purpose_label(a.entity_type, a.purpose),
             "href": (
                 _APPROVAL_LINKS[a.entity_type].format(id=a.entity_id)
                 if a.entity_type in _APPROVAL_LINKS

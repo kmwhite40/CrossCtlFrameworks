@@ -17,6 +17,7 @@ so the tenant tests below exercise exactly the boundary an attacker would.
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 import pytest
@@ -850,3 +851,87 @@ async def test_accept_does_not_silently_replace_a_reviewed_not_applicable(
     assert row.finding == "satisfied"
     assert row.assessor_note.startswith("Out of scope: no wireless in the boundary.")
     assert "Engine rationale (accepted by" in row.assessor_note
+
+
+# --- Independence: an engine proposal on a 3PAO/IG/audit assessment ----------
+
+
+async def _independent_world(kind: str) -> tuple[dict[str, str], int]:
+    """An org with a control owner and an assessor, and a ``kind`` assessment.
+    Returns ({role: token}, assessment id)."""
+    tag = uuid.uuid4().hex[:8]
+    tokens: dict[str, str] = {}
+    async with session_scope() as s:
+        org = Organization(name=f"ae-indep-{tag}")
+        s.add(org)
+        await s.flush()
+        for role in ("control_owner", "assessor"):
+            user = User(
+                email=f"{role}-{tag}@ae-indep.test",
+                organization_id=org.id,
+                role=role,
+                active=True,
+                password_hash=hash_password("pw"),
+                api_token=new_api_token(),
+            )
+            s.add(user)
+            tokens[role] = user.api_token
+        system = System(organization_id=org.id, name=f"indep-{tag}")
+        s.add(system)
+        await s.flush()
+        assessment = Assessment(system_id=system.id, name=f"indep-{tag}", kind=kind)
+        s.add(assessment)
+        await s.flush()
+        return tokens, int(assessment.id)
+
+
+@pytest.mark.parametrize("kind", ["3pao", "ig", "audit"])
+async def test_on_an_independent_assessment_only_an_assessor_decides_a_proposal(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Accepting writes the assessment result and rejecting records the
+    correct finding: on an independent assessment both are the assessor's
+    determination, as a result written by hand is (``require_independent_recorder``).
+    Without this a control owner could accept the engine's ``satisfied`` on
+    their own control and it would reach the SAR as the 3PAO's finding."""
+    tokens, assessment_id = await _independent_world(kind)
+    accept_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    url = f"/api/assessment-engine/proposals/{accept_id}"
+    correction = {"corrected_finding": "other_than_satisfied", "note": "gap seen on site"}
+    async with _client() as client:
+        owner_accept = await client.post(f"{url}/accept", headers=_auth(tokens["control_owner"]))
+        owner_reject = await client.post(
+            f"{url}/reject", json=correction, headers=_auth(tokens["control_owner"])
+        )
+        async with session_scope() as s:
+            untouched = (
+                await s.execute(
+                    select(AssessmentControlProposal.state).where(
+                        AssessmentControlProposal.id == accept_id
+                    )
+                )
+            ).scalar_one()
+            no_result = (
+                await s.execute(
+                    select(AssessmentControlResult.id).where(
+                        AssessmentControlResult.assessment_id == assessment_id
+                    )
+                )
+            ).scalar_one_or_none()
+        assessor_accept = await client.post(f"{url}/accept", headers=_auth(tokens["assessor"]))
+    assert (owner_accept.status_code, owner_reject.status_code) == (403, 403)
+    assert untouched == "complete" and no_result is None
+    assert assessor_accept.status_code == 200
+
+
+async def test_on_a_self_assessment_a_control_owner_still_decides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tokens, assessment_id = await _independent_world("self")
+    proposal_id = await _evaluated_proposal(assessment_id, monkeypatch)
+    async with _client() as client:
+        r = await client.post(
+            f"/api/assessment-engine/proposals/{proposal_id}/accept",
+            headers=_auth(tokens["control_owner"]),
+        )
+    assert r.status_code == 200

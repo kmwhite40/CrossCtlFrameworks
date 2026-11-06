@@ -25,7 +25,7 @@ from ...ato import lifecycle, workspace
 from ...ato import roles as system_roles
 from ...auth import Principal
 from ...governance import approvals
-from ...models import POAM, System, User
+from ...models import POAM, Risk, System, User
 from ...models_ato import SYSTEM_ROLES, PoamExtension
 from ...models_packages import AuthorizationPackage
 from ...packages import service as package_service
@@ -284,6 +284,46 @@ async def ato_decide_extension(  # noqa: PLR0917 -- FastAPI binds these by keywo
     return _back(system_id, anchor="extensions")
 
 
+@router.post("/ato/{system_id}/approvals/request")
+async def ato_request_approval(
+    system_id: int,
+    request: Request,
+    *,
+    item: str = Form(...),
+    purpose: str = Form(...),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(get_principal),
+) -> RedirectResponse:
+    """Ask for a decision on one of this system's POA&Ms or risks.
+
+    The request names what it asks to authorize (``approvals.PURPOSES``); the
+    reviewer decides that, and only the gate for it can spend the approval.
+    """
+    await _system(session, system_id, request)
+    entity_type, _, raw_id = item.partition(":")
+    if entity_type not in ("poam", "risk") or not raw_id.isdigit():
+        return _back(system_id, error="choose a POA&M or risk", anchor="approvals")
+    # approvals.submit scopes the entity to the caller's organization; this
+    # page is one system's, so the item must be that system's too.
+    owner_of = (
+        select(POAM.system_id).where(POAM.id == int(raw_id))
+        if entity_type == "poam"
+        else select(Risk.system_id).where(Risk.id == int(raw_id))
+    )
+    owner = (await session.execute(owner_of)).scalar_one_or_none()
+    if owner != system_id:
+        return _back(system_id, error="that item is not this system's", anchor="approvals")
+    try:
+        await approvals.submit(
+            session, entity_type=entity_type, entity_id=raw_id, actor=principal.email,
+            org_id=principal.org_id, purpose=purpose,
+        )
+    except approvals.WorkflowError as e:
+        return _back(system_id, error=str(e), anchor="approvals")
+    await session.commit()
+    return _back(system_id, anchor="approvals")
+
+
 @router.post("/ato/{system_id}/approvals/{entity_type}/{entity_id}/{decision}")
 async def ato_decide_approval(  # noqa: PLR0917 -- FastAPI binds these by keyword
     system_id: int,
@@ -292,6 +332,7 @@ async def ato_decide_approval(  # noqa: PLR0917 -- FastAPI binds these by keywor
     decision: str,
     request: Request,
     note: str = Form(""),
+    purpose: str = Form(""),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> RedirectResponse:
@@ -308,6 +349,9 @@ async def ato_decide_approval(  # noqa: PLR0917 -- FastAPI binds these by keywor
             session, entity_type=entity_type, entity_id=str(entity_id),
             approve=decision == "approve", actor=principal.email, role=principal.role,
             note=note.strip() or None, org_id=principal.org_id, user_id=principal.user_id,
+            # The purpose the page showed, so a request re-submitted for
+            # something else since is refused rather than approved unseen.
+            purpose=purpose or None,
         )
     except approvals.WorkflowError as e:
         return _back(system_id, error=str(e), anchor="approvals")

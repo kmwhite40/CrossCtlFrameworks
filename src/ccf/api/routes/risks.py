@@ -253,12 +253,12 @@ async def _require_acceptance_gate(
     # One review authorizes one acceptance: reopening and re-accepting needs
     # another. consume() is the check and the spend in one statement.
     if get_settings().auth_enabled and not await approvals.consume(
-        session, entity_type="risk", entity_id=risk_id, actor=actor
+        session, entity_type="risk", entity_id=risk_id, actor=actor, purpose="accept"
     ):
         raise HTTPException(
             409,
             "risk acceptance requires an approved authorizing-official review (submit for "
-            "approval, then have an AO/admin approve it)",
+            "approval with purpose 'accept', then have an AO/admin approve it)",
         )
 
 
@@ -278,11 +278,14 @@ async def _require_review_extension_gate(
         and new_review_on <= obj.next_review_on
     ):
         return
-    if not await approvals.consume(session, entity_type="risk", entity_id=obj.id, actor=actor):
+    if not await approvals.consume(
+        session, entity_type="risk", entity_id=obj.id, actor=actor, purpose="extend_review"
+    ):
         raise HTTPException(
             409,
             "moving an accepted risk's next_review_on later requires a fresh approved review "
-            "(submit for approval, then have an AO/admin approve it)",
+            "(submit for approval with purpose 'extend_review', then have an AO/admin "
+            "approve it)",
         )
 
 

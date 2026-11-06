@@ -440,7 +440,6 @@ async def set_metadata(
 class RevisionIn(BaseModel):
     version: str
     date: str | None = None
-    author: str | None = None
     notes: str | None = None
 
 
@@ -451,10 +450,14 @@ async def add_revision(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role(*AUTHOR_ROLES)),
 ) -> dict[str, Any]:
-    """Append a revision-history entry (and bump the project version)."""
+    """Append a revision-history entry (and bump the project version).
+
+    The author is whoever records it: the document prints this log, so an
+    author named by the client could attribute a revision to anyone. Changing
+    the log of an approved plan sends it back for review (migration 0113).
+    """
     proj = await _require_project(session, project_id, principal)
-    rev = body.model_dump()
-    rev["author"] = rev.get("author") or principal.email
+    rev = {**body.model_dump(), "author": principal.email}
     proj.revision_history = [*(proj.revision_history or []), rev]
     proj.version = body.version
     await session.commit()
