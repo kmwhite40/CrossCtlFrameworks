@@ -184,6 +184,7 @@ async def reap_stale_jobs[J: JobLike](
     *,
     older_than_minutes: int,
     max_attempts: int,
+    eligible: ColumnElement[bool] | None = None,
 ) -> dict[str, int]:
     """Return stale ``claimed`` rows of ``model`` to ``pending``; dead-letter
     the ones that have exhausted ``max_attempts``.
@@ -191,10 +192,15 @@ async def reap_stale_jobs[J: JobLike](
     See the module docstring for why the requeue/dead-letter split is on
     ``attempts < max_attempts`` vs ``attempts >= max_attempts``, and why
     ``last_error`` is truncated. Returns ``{"requeued": n, "dead_lettered": n}``.
+
+    ``eligible`` is an extra predicate ANDed into both updates, so a queue whose
+    cap is per row (``OutboxJob.max_attempts``) can reap one cap at a time and
+    still name that cap in :data:`DEAD_LETTER_REASON`. Without it, unchanged.
     """
     # See claim_jobs' comment / JobLike's docstring for why `m` is `Any`.
     m: Any = model
     threshold = datetime.now(UTC) - timedelta(minutes=max(1, older_than_minutes))
+    extra = [eligible] if eligible is not None else []
 
     requeued = await session.execute(
         update(m)
@@ -202,6 +208,7 @@ async def reap_stale_jobs[J: JobLike](
             m.status == "claimed",
             m.claimed_at <= threshold,
             m.attempts < max_attempts,
+            *extra,
         )
         .values(status="pending", claimed_by=None, claimed_at=None)
     )
@@ -212,6 +219,7 @@ async def reap_stale_jobs[J: JobLike](
             m.status == "claimed",
             m.claimed_at <= threshold,
             m.attempts >= max_attempts,
+            *extra,
         )
         .values(
             status="failed",
