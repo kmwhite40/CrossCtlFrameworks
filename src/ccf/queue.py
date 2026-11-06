@@ -45,7 +45,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 
-from sqlalchemy import select, update
+from sqlalchemy import ColumnElement, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .logging import get_logger
@@ -112,7 +112,11 @@ class JobLike(Protocol):
     """
 
     id: int
-    organization_id: int
+    # A read-only property so it is covariant: ``PrepJob``/``AssessmentJob``
+    # (``int``) and ``OutboxJob`` (NULL for platform-only jobs) both conform.
+    @property
+    def organization_id(self) -> int | None: ...
+
     status: str
     attempts: int
     claimed_at: datetime | None
@@ -122,13 +126,24 @@ class JobLike(Protocol):
 
 
 async def claim_jobs[J: JobLike](
-    session: AsyncSession, model: type[J], *, worker: str, limit: int
+    session: AsyncSession,
+    model: type[J],
+    *,
+    worker: str,
+    limit: int,
+    eligible: ColumnElement[bool] | None = None,
+    order_by: Any | None = None,
 ) -> list[J]:
     """Atomically claim up to ``limit`` pending rows of ``model`` for ``worker``.
 
     See the module docstring for why the claiming ``SELECT`` uses
     ``FOR UPDATE SKIP LOCKED``, why the follow-up ``UPDATE`` is one atomic
     statement, and why ``attempts`` is bumped inside it rather than after.
+
+    ``eligible`` is an extra predicate ANDed into the pending filter (e.g. a
+    backoff or settle-delay test on ``next_attempt_at``); ``order_by`` replaces
+    the default ``model.created_at`` ordering. With neither, behaviour is
+    unchanged.
     """
     # See JobLike's docstring: `m` recovers real SQLAlchemy query-building
     # typing (InstrumentedAttribute, ColumnElement, ...) that a Protocol-bound
@@ -136,19 +151,15 @@ async def claim_jobs[J: JobLike](
     # checked types at the function boundary -- only the statements below,
     # which need class-level column access, use `m`.
     m: Any = model
-    candidates = (
-        (
-            await session.execute(
-                select(m.id)
-                .where(m.status == "pending")
-                .order_by(m.created_at)
-                .limit(limit)
-                .with_for_update(skip_locked=True)
-            )
-        )
-        .scalars()
-        .all()
+    query = select(m.id).where(m.status == "pending")
+    if eligible is not None:
+        query = query.where(eligible)
+    query = (
+        query.order_by(m.created_at if order_by is None else order_by)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
     )
+    candidates = (await session.execute(query)).scalars().all()
     if not candidates:
         return []
     await session.execute(
