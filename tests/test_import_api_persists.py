@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import uuid
 from collections.abc import Iterator
+from datetime import date, timedelta
+from typing import Any
 
 import pytest
 from alembic import command
@@ -221,3 +223,69 @@ async def test_a_row_refused_halfway_changes_nothing(
     async with session_scope() as s:
         title = (await s.execute(select(model.title).where(model.id == rid))).scalar_one()
     assert title == f"Before {tag}"
+
+
+async def _org_user(role: str) -> tuple[int, int, str]:
+    tag = uuid.uuid4().hex[:8]
+    async with session_scope() as s:
+        org = Organization(name=f"impr-{tag}")
+        s.add(org)
+        await s.flush()
+        sysm = System(organization_id=org.id, name=f"impr {tag}")
+        user = User(
+            email=f"{role}-{tag}@imp.example",
+            organization_id=org.id,
+            role=role,
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        s.add_all([sysm, user])
+        await s.flush()
+        return org.id, sysm.id, user.api_token
+
+
+async def _import(token: str, dataset: str, csv: str) -> Any:
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        return await c.post(
+            f"/api/import/{dataset}",
+            files={"file": ("x.csv", csv.encode(), "text/csv")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_status_cell_leaves_an_existing_policy_as_it_is(_auth_enabled: None) -> None:
+    org_id, _, token = await _org_user("control_owner")
+    async with session_scope() as s:
+        policy = Policy(organization_id=org_id, name="Keep", status="active")
+        s.add(policy)
+        await s.flush()
+        pid = policy.id
+    r = await _import(token, "policies", f"id,name,status\n{pid},Keep renamed,\n")
+    assert r.status_code == 200, r.text
+    async with session_scope() as s:
+        status = (await s.execute(select(Policy.status).where(Policy.id == pid))).scalar_one()
+    assert status == "active"
+
+
+@pytest.mark.asyncio
+async def test_an_import_cannot_push_a_policys_review_date_later(_auth_enabled: None) -> None:
+    """The API has no way to move a policy's next review; activation sets it.
+    An import that pushed it out -- or cleared it -- hid an overdue review."""
+    org_id, _, token = await _org_user("control_owner")
+    due = date.today() - timedelta(days=3)
+    async with session_scope() as s:
+        policy = Policy(organization_id=org_id, name="Review", next_review_on=due)
+        s.add(policy)
+        await s.flush()
+        pid = policy.id
+    later = await _import(token, "policies", f"id,name,next_review_on\n{pid},Review,2099-01-01\n")
+    cleared = await _import(token, "policies", f"id,name,next_review_on\n{pid},Review,\n")
+    sooner = due - timedelta(days=1)
+    earlier = await _import(token, "policies", f"id,name,next_review_on\n{pid},Review,{sooner}\n")
+    assert (later.json()["skipped"], cleared.json()["skipped"]) == (1, 1)
+    assert earlier.json()["updated"] == 1
+    async with session_scope() as s:
+        held = (await s.execute(select(Policy.next_review_on).where(Policy.id == pid))).scalar_one()
+    assert held == sooner

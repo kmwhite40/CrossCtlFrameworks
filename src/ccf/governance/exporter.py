@@ -283,6 +283,15 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
                 f"a policy's status changes only on the policy itself (activating needs an "
                 f"approved version, retiring an admin), not to {new!r} by import"
             )
+    if model is Policy and getattr(obj, "id", None) is not None and "next_review_on" in row:
+        # The API never moves a policy's next review -- activation sets it.
+        # Pushed out or cleared by a file, an overdue review stops showing.
+        new_review, held = _coerce_date(row["next_review_on"]), obj.next_review_on
+        if held is not None and (new_review is None or new_review > held):
+            raise ValueError(
+                "moving a policy's next review later, or clearing it, is not done by import; "
+                "putting a reviewed version in force sets it"
+            )
     if model is POAM and getattr(obj, "status", None) == "risk_accepted" and "due_on" in row:
         # ``due_on`` is the acceptance's expiry (the scanner keeps an accepted
         # POA&M accepted until it passes). The API spends an approval on any
@@ -314,7 +323,9 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
     values: dict[str, Any] = {}
     for f in spec["str_fields"]:
         if f in row:
-            if f == "status" and model in _IMPORT_STATUSES and _clean(row[f]) is None:
+            if f == "status" and (model in _IMPORT_STATUSES or model is Policy) and (
+                _clean(row[f]) is None
+            ):
                 continue  # a blank cell leaves the status as it is
             values[f] = _clean(row[f])
     for f in spec["date_fields"]:
