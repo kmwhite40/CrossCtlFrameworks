@@ -2,5 +2,7 @@
 
 Consumers register themselves on import (``ccf.events.consumers.register``);
 import each consumer module here so the registry is complete whenever the
-package is. It starts with none.
+package is. The ``webhook`` consumer is the first.
 """
+
+from . import webhooks  # noqa: F401  (registers the ``webhook`` consumer)

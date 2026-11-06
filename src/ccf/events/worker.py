@@ -164,8 +164,6 @@ async def _settle(
     if error is None:
         outcome = "done"
         values.update(status="done", finished_at=func.now())
-        if result is not None:
-            values["result"] = result
     else:
         msg = error if isinstance(error, str) else f"{type(error).__name__}: {error}"
         values["last_error"] = _truncate_last_error(msg)
@@ -179,6 +177,8 @@ async def _settle(
         else:
             outcome = "failed"
             values.update(status="failed", finished_at=func.now())
+    if result is not None:
+        values["result"] = result
     await session.execute(update(OutboxJob).where(OutboxJob.id == job_id).values(**values))
     await session.commit()
     return outcome
@@ -246,7 +246,16 @@ async def _run_one(job_id: int, now: datetime | None) -> str:
                 attempts=settle["attempts"],
                 error=f"{type(failure).__name__}: {str(failure)[:200]}",
             )
-            return await _settle(session, job_id, error=failure, **settle)
+            # A failure may carry state to keep across the retry (the webhook's
+            # attempts log): the savepoint's rollback would otherwise lose it.
+            kept = getattr(failure, "result", None)
+            return await _settle(
+                session,
+                job_id,
+                error=failure,
+                result={**prior, **kept} if isinstance(kept, dict) else None,
+                **settle,
+            )
         merged = {**prior, **(out if isinstance(out, dict) else {})}
         return await _settle(session, job_id, result=merged, **settle)
 

@@ -1,0 +1,331 @@
+"""The webhook consumer: signed, SSRF-pinned, event-identified delivery from the outbox.
+
+No test reaches the network: DNS is stubbed and ``httpx.AsyncClient`` is
+replaced by a recorder. Job rows are read back on an UNSCOPED session.
+
+The test DB is shared, so each test starts by clearing live webhook jobs other
+modules left behind (the worker would claim them), and removes its own on exit.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import uuid
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+import pytest
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import delete, func, select, update
+
+from ccf.config import get_settings
+from ccf.db import session_scope
+from ccf.events import consumers, webhooks, worker
+from ccf.governance import bus, webhook_url
+from ccf.models import Event, Organization, Webhook
+from ccf.models_outbox import OutboxJob
+
+pytestmark = pytest.mark.usefixtures("fresh_engine")
+
+LATER = datetime.now(UTC) + timedelta(days=1)
+SECRET = "s3cret-value"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _migrate() -> None:
+    cfg = Config("alembic.ini")
+    cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
+    command.upgrade(cfg, "head")
+
+
+@pytest.fixture(autouse=True)
+async def _no_live_jobs_left_behind() -> AsyncIterator[None]:
+    async with session_scope() as s:
+        await s.execute(
+            delete(OutboxJob).where(
+                OutboxJob.consumer == "webhook", OutboxJob.status.in_(("pending", "claimed"))
+            )
+        )
+        mark = (await s.execute(select(func.coalesce(func.max(OutboxJob.id), 0)))).scalar_one()
+    yield
+    async with session_scope() as s:
+        await s.execute(
+            delete(OutboxJob).where(
+                OutboxJob.id > mark, OutboxJob.status.in_(("pending", "claimed"))
+            )
+        )
+
+
+class Net:
+    """Records every request; ``respond`` decides the answer (status or exception)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.client_kwargs: list[dict[str, Any]] = []
+        self.respond: Callable[[dict[str, Any]], int] = lambda call: 200
+
+
+@pytest.fixture
+def net(monkeypatch: pytest.MonkeyPatch) -> Net:
+    n = Net()
+
+    class _Client:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            n.client_kwargs.append(k)
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def post(self, url: str, **k: Any) -> httpx.Response:
+            call = {"url": url, **k}
+            n.calls.append(call)
+            return httpx.Response(n.respond(call), request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(webhooks.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(webhook_url, "_resolve", lambda host: ["93.184.216.34"])
+    return n
+
+
+@pytest.fixture
+async def world() -> AsyncIterator[dict[str, Any]]:
+    async with session_scope() as s:
+        org = Organization(name=f"whk-{uuid.uuid4().hex[:8]}")
+        s.add(org)
+        await s.flush()
+        w: dict[str, Any] = {"org": org.id, "hooks": []}
+    yield w
+    if w["hooks"]:
+        async with session_scope() as s:
+            await s.execute(delete(Webhook).where(Webhook.id.in_(w["hooks"])))
+
+
+async def _hook(
+    world: dict[str, Any], *, url: str = "https://hooks.example/in", secret: str | None = SECRET
+) -> int:
+    async with session_scope() as s:
+        h = Webhook(organization_id=world["org"], url=url, secret=secret, events=[], active=True)
+        s.add(h)
+        await s.flush()
+        world["hooks"].append(h.id)
+        return h.id
+
+
+async def _emit(world: dict[str, Any], org: int | str | None = "org") -> int:
+    org_id = world["org"] if org == "org" else org
+    async with session_scope() as s:
+        ev = await bus.emit(
+            s,
+            verb="created",
+            entity_type=f"t{uuid.uuid4().hex[:8]}",
+            summary="a summary",
+            org_id=org_id,  # type: ignore[arg-type]
+            entity_id="42",
+            payload={"k": "v"},
+        )
+        return ev.id
+
+
+async def _job(event_id: int, hook_id: int) -> OutboxJob:
+    async with session_scope() as s:
+        jobs = (
+            (
+                await s.execute(
+                    select(OutboxJob).where(
+                        OutboxJob.trigger_event_id == event_id, OutboxJob.consumer == "webhook"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        (j,) = [j for j in jobs if j.result.get("webhook_id") == hook_id]
+        s.expunge(j)
+        return j
+
+
+async def _drain(now: datetime | None = None, passes: int = 1) -> dict[str, int]:
+    """Deliveries of one event are serialized (one claim per scope per pass), so
+    N webhooks on one event take N passes."""
+    total: dict[str, int] = {}
+    for _ in range(passes):
+        for k, v in (await worker.drain_once(worker="t", limit=10, now=now)).items():
+            total[k] = total.get(k, 0) + v
+    return total
+
+
+async def test_the_webhook_consumer_is_registered_and_never_routed_by_matches() -> None:
+    c = consumers.REGISTRY["webhook"]
+    assert c.matches("poam", "created") is False
+    assert c.max_attempts == 8
+
+
+async def test_one_job_per_webhook_even_with_the_consumer_registered(
+    world: dict[str, Any], net: Net
+) -> None:
+    hook = await _hook(world)
+    ev = await _emit(world)
+    async with session_scope() as s:
+        n = (
+            await s.execute(
+                select(func.count())
+                .select_from(OutboxJob)
+                .where(OutboxJob.trigger_event_id == ev, OutboxJob.consumer == "webhook")
+            )
+        ).scalar_one()
+    assert n == 1
+    assert (await _job(ev, hook)).status == "pending"
+
+
+async def test_delivery_carries_the_event_id_and_signature(world: dict[str, Any], net: Net) -> None:
+    signed = await _hook(world, url="https://hooks.example/signed")
+    plain = await _hook(world, url="https://hooks.example/plain", secret=None)
+    ev_id = await _emit(world)
+    await _drain(passes=2)
+
+    assert len(net.calls) == 2
+    s_call = next(c for c in net.calls if c["url"].endswith("/signed"))
+    p_call = next(c for c in net.calls if c["url"].endswith("/plain"))
+    assert s_call["url"].startswith("https://93.184.216.34/")
+    assert s_call["headers"]["Host"] == "hooks.example"
+
+    body = s_call["content"]
+    expected = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+    assert s_call["headers"]["X-CCF-Signature"] == f"sha256={expected}"
+    assert s_call["headers"]["X-CCF-Event-Id"] == str(ev_id)
+    assert "X-CCF-Signature" not in p_call["headers"]  # positive control: no secret, no sig
+    assert p_call["headers"]["X-CCF-Event-Id"] == str(ev_id)
+
+    async with session_scope() as s:
+        ev = await s.get(Event, ev_id)
+        created = ev.created_at
+    doc = json.loads(body)
+    assert doc == {
+        "verb": "created",
+        "entity_type": ev.entity_type,
+        "entity_id": "42",
+        "summary": "a summary",
+        "payload": {"k": "v"},
+        "event_id": ev_id,
+        "occurred_at": created.isoformat(),
+    }
+    for hook in (signed, plain):
+        j = await _job(ev_id, hook)
+        assert j.status == "done" and j.result["webhook_id"] == hook
+        assert [e["status"] for e in j.result["attempts_log"]] == [200]
+
+
+async def test_a_500_is_retried_and_logged(world: dict[str, Any], net: Net) -> None:
+    hook = await _hook(world)
+    ev = await _emit(world)
+    net.respond = lambda call: 500
+
+    assert (await _drain())["retried"] == 1
+    j = await _job(ev, hook)
+    assert j.status == "pending" and j.attempts == 1
+    assert j.result["webhook_id"] == hook
+    log = j.result["attempts_log"]
+    assert len(log) == 1
+    assert log[0]["status"] == 500 and log[0]["error"] == "HTTP 500"
+    assert set(log[0]) == {"at", "status", "ms", "error"}
+
+    # A second failure: the log keeps one entry per attempt.
+    await _drain(LATER)
+    j = await _job(ev, hook)
+    assert j.status == "pending" and j.attempts == 2
+    assert [e["status"] for e in j.result["attempts_log"]] == [500, 500]
+
+    # Recovery: delivered, and the log shows all three attempts.
+    net.respond = lambda call: 204
+    assert (await _drain(LATER + timedelta(days=1)))["done"] == 1
+    j = await _job(ev, hook)
+    assert j.status == "done" and j.attempts == 3
+    assert [e["status"] for e in j.result["attempts_log"]] == [500, 500, 204]
+    assert len(net.calls) == 3
+
+
+async def test_a_transport_error_is_retried_and_logged(world: dict[str, Any], net: Net) -> None:
+    hook = await _hook(world)
+    ev = await _emit(world)
+
+    def boom(call: dict[str, Any]) -> int:
+        raise httpx.ConnectError("no route")
+
+    net.respond = boom
+    assert (await _drain())["retried"] == 1
+    j = await _job(ev, hook)
+    (entry,) = j.result["attempts_log"]
+    assert entry["status"] is None and "ConnectError" in entry["error"]
+    assert j.status == "pending"
+
+
+async def test_a_redirect_is_not_followed(world: dict[str, Any], net: Net) -> None:
+    hook = await _hook(world)
+    ev = await _emit(world)
+    net.respond = lambda call: 302
+    await _drain()
+    assert len(net.calls) == 1  # the Location is never requested
+    assert net.client_kwargs and all(k["follow_redirects"] is False for k in net.client_kwargs)
+    j = await _job(ev, hook)
+    assert j.status == "pending"  # a 3xx is not a delivery
+    assert j.result["attempts_log"][0]["status"] == 302
+
+
+async def test_a_url_that_now_resolves_inward_is_refused_and_not_retried(
+    world: dict[str, Any], net: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = await _hook(world, url="https://rebind.example/x")
+    good = await _hook(world, url="https://hooks.example/ok")  # positive control
+    ev = await _emit(world)
+    monkeypatch.setattr(
+        webhook_url,
+        "_resolve",
+        lambda host: ["10.9.9.9"] if host == "rebind.example" else ["93.184.216.34"],
+    )
+    out = await _drain(passes=2)
+    assert out["done"] == 2 and out["retried"] == 0
+
+    j = await _job(ev, bad)
+    assert j.status == "done" and j.attempts == 1
+    assert j.result["refused"]
+    assert [c["url"] for c in net.calls] == ["https://93.184.216.34/ok"]
+    assert (await _job(ev, good)).status == "done"
+    # Final: another pass has nothing left to retry.
+    assert (await _drain(LATER))["retried"] == 0
+
+
+async def test_a_deactivated_or_deleted_webhook_is_skipped(world: dict[str, Any], net: Net) -> None:
+    off = await _hook(world, url="https://hooks.example/off")
+    gone = await _hook(world, url="https://hooks.example/gone")
+    live = await _hook(world, url="https://hooks.example/live")  # positive control
+    ev = await _emit(world)
+    async with session_scope() as s:
+        await s.execute(update(Webhook).where(Webhook.id == off).values(active=False))
+        await s.execute(delete(Webhook).where(Webhook.id == gone))
+    world["hooks"].remove(gone)
+
+    await _drain(passes=3)
+    for h in (off, gone):
+        j = await _job(ev, h)
+        assert j.status == "done" and j.result["skipped"] == "webhook inactive"
+    assert [c["url"] for c in net.calls] == ["https://93.184.216.34/live"]
+    assert (await _job(ev, live)).status == "done"
+
+
+async def test_an_org_less_event_reaches_an_organizations_webhook(
+    world: dict[str, Any], net: Net
+) -> None:
+    hook = await _hook(world)
+    ev = await _emit(world, org=None)
+    j = await _job(ev, hook)
+    assert j.organization_id == world["org"]
+    await _drain()
+    assert len(net.calls) == 1
+    assert (await _job(ev, hook)).status == "done"

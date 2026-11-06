@@ -22,7 +22,7 @@ import pytest
 import structlog
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, func, select, text
 
 from ccf.config import get_settings
 from ccf.db import session_scope, set_session_tenant
@@ -40,6 +40,26 @@ def _migrate() -> None:
     cfg = Config("alembic.ini")
     cfg.set_main_option("sqlalchemy.url", str(get_settings().database_url_sync))
     command.upgrade(cfg, "head")
+
+
+@pytest.fixture(autouse=True)
+async def _no_live_jobs_left_behind() -> AsyncIterator[None]:
+    """Delete every pending/claimed job this test created, whatever its consumer.
+
+    The test DB is shared: a pending ``webhook`` job left here (next_attempt_at
+    in the past) would be the first thing the real webhook consumer's tests
+    claim. Jobs created during the test are those above the starting id mark;
+    the delete runs on an unscoped superuser session (ccf_app has no DELETE).
+    """
+    async with session_scope() as s:
+        mark = (await s.execute(select(func.coalesce(func.max(OutboxJob.id), 0)))).scalar_one()
+    yield
+    async with session_scope() as s:
+        await s.execute(
+            delete(OutboxJob).where(
+                OutboxJob.id > mark, OutboxJob.status.in_(("pending", "claimed"))
+            )
+        )
 
 
 @pytest.fixture
@@ -422,14 +442,21 @@ async def test_the_contextvars_default_to_a_request() -> None:
     assert outbox.CURRENT_DEPTH.get() == 0
 
 
-async def test_a_webhook_job_is_queued_with_no_consumer_registered(
-    world: dict[str, Any], entity: str
+async def test_a_webhook_job_is_queued_whether_or_not_the_consumer_is_registered(
+    world: dict[str, Any], entity: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert "webhook" not in consumers.REGISTRY
+    """Webhook selection happens at enqueue, not through the consumer registry."""
     hook = await _hook(world, world["org"])
-    async with session_scope() as s:
-        ev = await bus.emit(s, verb="created", entity_type=entity, summary="x", org_id=world["org"])
-    assert hook in _webhook_ids(await _jobs(ev.id))
+    for registered_now in (True, False):
+        if not registered_now:
+            monkeypatch.delitem(consumers.REGISTRY, "webhook")
+        assert ("webhook" in consumers.REGISTRY) is registered_now
+        async with session_scope() as s:
+            ev = await bus.emit(
+                s, verb="created", entity_type=entity, summary="x", org_id=world["org"]
+            )
+        jobs = [j for j in await _jobs(ev.id) if j.consumer == "webhook"]
+        assert [j.result["webhook_id"] for j in jobs] == [hook]  # exactly one
 
 
 async def test_emit_still_returns_the_flushed_event(world: dict[str, Any], entity: str) -> None:

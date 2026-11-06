@@ -9,18 +9,20 @@ from __future__ import annotations
 
 import itertools
 import os
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.governance import bus, webhook_url
+from ccf.events import webhooks
+from ccf.governance import webhook_url
 from ccf.models import Organization, User
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -140,8 +142,9 @@ async def test_dispatch_never_posts_to_a_refused_target(monkeypatch) -> None:
 
         async def post(self, url, **k):
             posted.append((url, k.get("headers", {}).get("Host")))
+            return Response(200)
 
-    monkeypatch.setattr(bus.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(webhooks.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(
         webhook_url,
         "_resolve",
@@ -154,11 +157,9 @@ async def test_dispatch_never_posts_to_a_refused_target(monkeypatch) -> None:
         SimpleNamespace(id=4, url="https://hooks.example/ok", events=[], secret=None),
     ]
 
-    class _Session:
-        async def execute(self, stmt):
-            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: hooks))
-
     ev = SimpleNamespace(
+        id=1,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
         organization_id=1,
         verb="created",
         entity_type="poam",
@@ -166,7 +167,8 @@ async def test_dispatch_never_posts_to_a_refused_target(monkeypatch) -> None:
         summary="s",
         payload={},
     )
-    await bus._dispatch_webhooks(_Session(), ev)  # type: ignore[arg-type]
+    for hook in hooks:
+        await webhooks.send(hook, ev)  # type: ignore[arg-type]
     assert posted == [
         ("https://1.1.1.1/ok", "1.1.1.1"),
         ("https://93.184.216.34/ok", "hooks.example"),

@@ -11,21 +11,16 @@ raises a de-duplicated :class:`Notification` for a user or an org. This is the
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import hmac
-import json
 from typing import Any
 
-import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..events import outbox
 from ..logging import get_logger
-from ..models import Event, Notification, NotificationRead, Webhook
-from . import delivery, webhook_url
+from ..models import Event, Notification, NotificationRead
+from . import delivery
 
 log = get_logger(__name__)
 
@@ -63,59 +58,6 @@ async def emit(
     await session.flush()
     await outbox.enqueue(session, ev, dispatch=dispatch)
     return ev
-
-
-async def _dispatch_webhooks(session: AsyncSession, ev: Event) -> None:
-    """Post ``ev`` to every subscribed webhook (signed, SSRF-pinned, no redirects).
-
-    No longer called on the request path: :func:`emit` queues ``webhook`` outbox
-    jobs instead. Kept for its send logic, which the webhook consumer takes over.
-    """
-    stmt = select(Webhook).where(Webhook.active.is_(True))
-    if ev.organization_id is not None:
-        stmt = stmt.where(
-            (Webhook.organization_id == ev.organization_id) | (Webhook.organization_id.is_(None))
-        )
-    hooks = (await session.execute(stmt)).scalars().all()
-    if not hooks:
-        return
-    body = json.dumps(
-        {
-            "verb": ev.verb,
-            "entity_type": ev.entity_type,
-            "entity_id": ev.entity_id,
-            "summary": ev.summary,
-            "payload": ev.payload,
-        }
-    ).encode()
-    for hook in hooks:
-        subs = hook.events or []
-        if subs and ev.verb not in subs and ev.entity_type not in subs:
-            continue
-        headers = {"Content-Type": "application/json"}
-        if hook.secret:
-            sig = hmac.new(hook.secret.encode(), body, hashlib.sha256).hexdigest()
-            headers["X-CCF-Signature"] = f"sha256={sig}"
-        # Re-resolved at every send: a name that now points inward is not
-        # followed even if it was public when the webhook was created.
-        try:
-            reason, target = await asyncio.to_thread(webhook_url.pinned_target, hook.url)
-        except Exception as e:  # a malformed stored URL is skipped, never raised
-            reason = f"unusable URL: {type(e).__name__}"
-        if reason is not None:
-            log.warning("webhook.target_refused", webhook_id=hook.id, reason=reason)
-            continue
-        try:
-            # Sent to the address that was checked, never re-resolved.
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-                await client.post(
-                    target["url"],
-                    content=body,
-                    headers={**headers, **target["headers"]},
-                    extensions=target["extensions"],
-                )
-        except Exception as e:  # best-effort — a bad webhook must not break the txn
-            log.warning("webhook.dispatch_failed", url=hook.url, error=str(e)[:200])
 
 
 #: Higher is more severe; an update that raises severity re-surfaces an alert.

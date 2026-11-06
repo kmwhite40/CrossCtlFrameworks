@@ -29,7 +29,7 @@ from types import SimpleNamespace
 import pytest
 from alembic import command
 from alembic.config import Config
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import select
 
 from ccf.ai_actions import service as ai_service
@@ -41,7 +41,8 @@ from ccf.assurance import builder
 from ccf.auth import Principal, hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import get_session_factory, session_scope, set_session_tenant
-from ccf.governance import audit_program, bus, digest, exporter, insights, webhook_url
+from ccf.events import webhooks
+from ccf.governance import audit_program, digest, exporter, insights, webhook_url
 from ccf.models import POAM, Notification, Organization, Risk, System, Task, User
 from ccf.models_grc import AuditEngagement, AuditFinding
 
@@ -244,28 +245,28 @@ async def test_dispatch_skips_a_stored_url_that_cannot_be_parsed(monkeypatch) ->
 
         async def post(self, url, **k):
             posted.append(url)
+            return Response(200)
 
     def explode(url: str):
         if "bad" in url:
             raise ValueError("Port out of range 0-65535")
         return None, {"url": url, "headers": {}, "extensions": {}}
 
-    monkeypatch.setattr(bus.httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(webhooks.httpx, "AsyncClient", _Client)
     monkeypatch.setattr(webhook_url, "pinned_target", explode)
     hooks = [
         SimpleNamespace(id=1, url="https://bad.example/x", events=[], secret=None),
         SimpleNamespace(id=2, url="https://good.example/x", events=[], secret=None),
     ]
 
-    class _Session:
-        async def execute(self, stmt):
-            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: hooks))
-
     ev = SimpleNamespace(
+        id=1,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
         organization_id=1, verb="created", entity_type="poam", entity_id="1", summary="s",
         payload={},
     )
-    await bus._dispatch_webhooks(_Session(), ev)  # type: ignore[arg-type]
+    for hook in hooks:
+        await webhooks.send(hook, ev)  # type: ignore[arg-type]
     assert posted == ["https://good.example/x"]
 
 
