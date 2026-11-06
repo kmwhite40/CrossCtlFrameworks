@@ -308,14 +308,18 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
                 "moving an open POA&M's due date later needs an approved extension; "
                 "request one on the POA&M itself"
             )
+    # Every value is worked out before any is assigned: a row refused halfway
+    # (a malformed date, a bad score) must leave an existing record exactly as
+    # it was, now that the import is committed.
+    values: dict[str, Any] = {}
     for f in spec["str_fields"]:
         if f in row:
             if f == "status" and model in _IMPORT_STATUSES and _clean(row[f]) is None:
                 continue  # a blank cell leaves the status as it is
-            setattr(obj, f, _clean(row[f]))
+            values[f] = _clean(row[f])
     for f in spec["date_fields"]:
         if f in row:
-            setattr(obj, f, _coerce_date(row[f]))
+            values[f] = _coerce_date(row[f])
     if spec["model"] is Risk:
         # The 1-5 score is the source of truth and the level follows it
         # (governance.risk.resolve_axis). An import that sets only the level
@@ -330,15 +334,17 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
             new_score, new_level = resolve_axis(
                 axis=axis,
                 score=score,
-                level=getattr(obj, axis, None),
+                level=values[axis] if axis in values else getattr(obj, axis, None),
                 current_score=getattr(obj, f"{axis}_score", None),
             )
-            setattr(obj, f"{axis}_score", new_score)
-            setattr(obj, axis, new_level)
-        inherent, residual = compute_scores(
-            obj.likelihood_score, obj.impact_score, getattr(obj, "treatment", None)
+            values[f"{axis}_score"] = new_score
+            values[axis] = new_level
+        treatment = values.get("treatment", getattr(obj, "treatment", None))
+        values["inherent_score"], values["residual_score"] = compute_scores(
+            values["likelihood_score"], values["impact_score"], treatment
         )
-        obj.inherent_score, obj.residual_score = inherent, residual
+    for f, v in values.items():
+        setattr(obj, f, v)
 
 
 async def import_rows(

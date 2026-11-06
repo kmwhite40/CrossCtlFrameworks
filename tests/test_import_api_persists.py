@@ -22,7 +22,7 @@ from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
 from ccf.config import get_settings
 from ccf.db import session_scope
-from ccf.models import Organization, Policy, Risk, System, User
+from ccf.models import POAM, Organization, Policy, Risk, System, User
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
@@ -173,3 +173,51 @@ async def test_an_import_may_create_a_draft_policy_and_keep_a_status_unchanged(
         )
     # A blank cell leaves the status as it is -- for a new row, a draft.
     assert statuses == {f"Keep {tag}": "active", f"Draft {tag}": "draft", f"Blank {tag}": "draft"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("dataset", "bad"),
+    [("risks", "likelihood_score=x"), ("poams", "identified_on=not-a-date")],
+    ids=["bad-score", "bad-date"],
+)
+async def test_a_row_refused_halfway_changes_nothing(
+    _auth_enabled: None, dataset: str, bad: str
+) -> None:
+    """The fields are applied in order, so a row that failed on a later field
+    used to leave the earlier ones changed -- and saved, once imports were
+    committed -- while the response called it skipped."""
+    tag = uuid.uuid4().hex[:8]
+    async with session_scope() as s:
+        org = Organization(name=f"imph-{tag}")
+        s.add(org)
+        await s.flush()
+        sysm = System(organization_id=org.id, name=f"imph {tag}")
+        s.add(sysm)
+        await s.flush()
+        user = User(
+            email=f"editor-{tag}@imp.example",
+            organization_id=org.id,
+            role="control_owner",
+            active=True,
+            password_hash=hash_password("pw"),
+            api_token=new_api_token(),
+        )
+        model = Risk if dataset == "risks" else POAM
+        row = model(system_id=sysm.id, title=f"Before {tag}", status="open")
+        s.add_all([user, row])
+        await s.flush()
+        token, rid = user.api_token, row.id
+    field, value = bad.split("=")
+    csv = f"id,title,{field}\n{rid},After {tag},{value}\n"
+    async with AsyncClient(transport=ASGITransport(app=create_app()), base_url="http://t") as c:
+        r = await c.post(
+            f"/api/import/{dataset}",
+            files={"file": ("x.csv", csv.encode(), "text/csv")},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert r.status_code == 200, r.text
+    assert (r.json()["updated"], r.json()["skipped"]) == (0, 1), r.json()
+    async with session_scope() as s:
+        title = (await s.execute(select(model.title).where(model.id == rid))).scalar_one()
+    assert title == f"Before {tag}"
