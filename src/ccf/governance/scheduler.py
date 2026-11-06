@@ -44,6 +44,7 @@ from ..evidence import service as evidence_service
 from ..logging import get_logger
 from ..models import Organization, System
 from ..packs import sync as pack_sync
+from ..vdr import service as vdr_service
 from . import collection, conmon, control_tests, digest, kri
 
 log = get_logger(__name__)
@@ -148,6 +149,7 @@ async def _run_per_tenant_cycle(
     control_test_results: list[dict[str, Any]] = []
     digest_results: list[dict[str, Any]] = []
     ato_expiry_results: list[dict[str, Any]] = []
+    vdr_due_results: list[dict[str, Any]] = []
     derive_results: list[dict[str, Any]] = []
     assurance_results: list[dict[str, Any]] = []
     snapshot_results: list[dict[str, Any]] = []
@@ -213,6 +215,20 @@ async def _run_per_tenant_cycle(
                 error=str(e)[:200],
             )
             step_failures.append({"organization_id": str(org_id), "step": "conmon"})
+        try:
+            # A KEV due date (synced above) or a class deadline earlier than a
+            # flaw's due_on moves it earlier -- before, only recording an
+            # evaluation did. Before the digest, so this cycle's alerts see it.
+            async with session.begin_nested():
+                vdr_due_results.append(await vdr_service.tighten_due_dates(session, org_id=org_id))
+        except Exception as e:
+            log.warning(
+                "scheduler.per_tenant_step_failed",
+                org_id=org_id,
+                step="vdr_due",
+                error=str(e)[:200],
+            )
+            step_failures.append({"organization_id": str(org_id), "step": "vdr_due"})
         try:
             # Before the digest, so this cycle's alerts already see an ATO that
             # just lapsed as expired. Nothing else ever writes ``expired``.
@@ -437,6 +453,7 @@ async def _run_per_tenant_cycle(
         "control_tests": control_test_results,
         "digest_per_org": digest_results,
         "ato_expiry": ato_expiry_results,
+        "vdr_due": vdr_due_results,
         "capability_derive": {
             "organizations_processed": [r["organization_id"] for r in derive_results],
             "systems": sum(r["systems"] for r in derive_results),
@@ -541,6 +558,8 @@ def cycle_summary(out: dict[str, Any]) -> dict[str, Any]:
         "poams_recovered": _total(conmon, "poams_recovered"),
         "tasks_created": _total(conmon, "tasks_created"),
         "tests_evaluated": _total(tests, "evaluated"),
+        # Due dates moved earlier by a KEV due date or class deadline.
+        "vdr_due_tightened": _total(out.get("vdr_due") or [], "tightened"),
         "tests_failed": _total(tests, "fail"),
         "tests_warned": _total(tests, "warn"),
         "derive_systems": int(derive.get("systems") or 0),
@@ -617,6 +636,22 @@ async def run_cycle() -> dict[str, Any]:
                 log.warning("scheduler.global_step_failed", step="poll_sources", error=str(e)[:200])
                 global_failures.append("poll_sources")
 
+            if get_settings().kev_sync_enabled:
+                try:
+                    # CISA's KEV catalog is one table for every tenant, so this
+                    # runs once per cycle, unscoped. It skips when already
+                    # synced today and raises on any failure rather than
+                    # writing an empty catalog (ccf.intel.kev). Before the
+                    # per-tenant pass, whose vdr_due step reads it: run after,
+                    # a CVE CISA listed today reached its POA&Ms a cycle late.
+                    async with session.begin_nested():
+                        from ..intel import kev  # noqa: PLC0415 — lazy, keeps startup light
+
+                        out["kev"] = await kev.refresh_kev(session, today=today)
+                except Exception as e:
+                    log.warning("scheduler.global_step_failed", step="kev_sync", error=str(e)[:200])
+                    global_failures.append("kev_sync")
+
             # PER-TENANT: collection, ConMon, and control-test auto-run — one
             # pass per organization, each clamped to its own RLS tenant.
             org_ids = await _active_org_ids(session)
@@ -643,19 +678,6 @@ async def run_cycle() -> dict[str, Any]:
                     "scheduler.global_step_failed", step="fedramp20x_monitoring", error=str(e)[:200]
                 )
                 global_failures.append("fedramp20x_monitoring")
-            if get_settings().kev_sync_enabled:
-                try:
-                    # CISA's KEV catalog is one table for every tenant, so this
-                    # runs once per cycle, unscoped. It skips when already
-                    # synced today and raises on any failure rather than
-                    # writing an empty catalog (ccf.intel.kev).
-                    async with session.begin_nested():
-                        from ..intel import kev  # noqa: PLC0415 — lazy, keeps startup light
-
-                        out["kev"] = await kev.refresh_kev(session, today=today)
-                except Exception as e:
-                    log.warning("scheduler.global_step_failed", step="kev_sync", error=str(e)[:200])
-                    global_failures.append("kev_sync")
         finally:
             # Release the advisory lock, and do not let anything above it stop
             # that from happening.

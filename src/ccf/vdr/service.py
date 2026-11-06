@@ -32,7 +32,7 @@ from ..ato import roles as system_roles
 from ..ato.extensions import DECIDERS
 from ..auth import Principal
 from ..config import get_settings
-from ..constants import POAM_CLOSED_STATUSES
+from ..constants import POAM_ACTIVE_STATUSES, POAM_CLOSED_STATUSES
 from ..intel.kev import cve_ids
 from ..models import POAM, ScanIngestion, System
 from ..models_program import KevEntry
@@ -322,16 +322,77 @@ async def _apply(
         kev_due=kev_due,
         now=now,
     )
+    changed, previous = await _tighten(
+        session, poam, system=system, status=status, actor=principal.email or "system"
+    )
+    return status, changed, previous
+
+
+async def _tighten(
+    session: AsyncSession, poam: POAM, *, system: System, status: tf.FlawStatus, actor: str
+) -> tuple[bool, date | None]:
+    """Move ``due_on`` to the status's earliest deadline when that is earlier,
+    and audit it. Returns whether it moved and the date it moved from."""
     mitigation_day = status.mitigation_due.date() if status.mitigation_due else None
     new_due = _tighter(poam.due_on, mitigation_day, status.kev_due)
-    previous = poam.due_on
     if new_due is None:
-        return status, False, None
+        return False, None
+    previous = poam.due_on
     poam.due_on = new_due
     await _audit_tightening(
-        session, poam, system=system, previous=previous, new_due=new_due, principal=principal
+        session, poam, system=system, previous=previous, new_due=new_due, actor=actor
     )
-    return status, True, previous
+    return True, previous
+
+
+#: Who the audit trail names when the scheduler, not a person, moved a date.
+SCHEDULER_ACTOR = "scheduler"
+
+
+async def tighten_due_dates(
+    session: AsyncSession, *, org_id: int, now: datetime | None = None
+) -> dict[str, Any]:
+    """Tighten every open flaw of ``org_id`` to its earliest deadline.
+
+    Recording an evaluation already does this for one POA&M; this is the same
+    step for flaws nobody is evaluating, run by the scheduler after the KEV
+    sync, so a CVE CISA lists with a due date reaches its POA&Ms without
+    waiting for a person. Open flaws only (``POAM_ACTIVE_STATUSES``): a
+    ``risk_accepted`` POA&M's ``due_on`` is the acceptance's expiry, which an
+    approval moves, not a deadline. Earlier only, as everywhere here.
+    """
+    now = now or datetime.now(UTC)
+    rows = (
+        await session.execute(
+            select(POAM, System)
+            .join(System, System.id == POAM.system_id)
+            .where(
+                System.organization_id == org_id,
+                System.deleted_at.is_(None),
+                POAM.status.in_(POAM_ACTIVE_STATUSES),
+                POAM.source.in_(FLAW_SOURCES),
+            )
+            .order_by(POAM.id)
+        )
+    ).all()
+    poams = [p for p, _ in rows]
+    evaluations = await evaluations_by_poam(session, [p.id for p in poams])
+    kev = await kev_due_by_poam(session, poams)
+    tightened = 0
+    for poam, system in rows:
+        status = tf.assess(
+            poam,
+            evaluations.get(poam.id, []),
+            cls=tf.class_timeframes(system.certification_class),
+            kev_due=kev.get(poam.id),
+            now=now,
+        )
+        changed, _ = await _tighten(
+            session, poam, system=system, status=status, actor=SCHEDULER_ACTOR
+        )
+        tightened += changed
+    await session.flush()
+    return {"organization_id": org_id, "flaws_checked": len(rows), "tightened": tightened}
 
 
 async def _audit_tightening(
@@ -341,13 +402,13 @@ async def _audit_tightening(
     system: System,
     previous: date | None,
     new_due: date,
-    principal: Principal,
+    actor: str,
 ) -> None:
     from ..api.audit import record_event  # noqa: PLC0415 -- avoid an import cycle
 
     await record_event(
         session,
-        actor=principal.email or "system",
+        actor=actor,
         action="vdr_due_tightened",
         entity_type="poam",
         entity_id=str(poam.id),
