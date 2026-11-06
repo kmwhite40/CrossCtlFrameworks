@@ -227,11 +227,19 @@ async def _reviewer_acting_as(
 async def _get_or_create(
     session: AsyncSession, entity_type: str, entity_id: str, org_id: int | None
 ) -> Approval:
+    """The entity's approval row, **locked** for this transaction.
+
+    ``submit`` and ``decide`` each check the row and then write it. Unlocked,
+    a re-submission for another purpose could land between a decision's check
+    and its write, and be approved unseen. ``populate_existing`` re-reads the
+    row rather than trusting a copy this session loaded before the lock.
+    """
     row = (
         await session.execute(
-            select(Approval).where(
-                Approval.entity_type == entity_type, Approval.entity_id == str(entity_id)
-            )
+            select(Approval)
+            .where(Approval.entity_type == entity_type, Approval.entity_id == str(entity_id))
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if row is None:

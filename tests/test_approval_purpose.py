@@ -19,6 +19,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from ccf.api.main import create_app
 from ccf.auth import hash_password, new_api_token
@@ -316,3 +317,54 @@ async def test_the_workspace_form_approves_what_it_showed(_auth_enabled: None) -
         state = await _state(c, w, "poam", pid)
     assert 'name="purpose" value="close"' in page.text
     assert form.status_code == 303 and state == "approved"
+
+
+@pytest.mark.asyncio
+async def test_a_resubmission_in_flight_cannot_be_approved_unseen() -> None:
+    """Stages the race: a re-submission for another purpose holds the row,
+    uncommitted, when a decision for the old purpose starts. The decision
+    must wait for it and then refuse -- not read the old purpose, pass, and
+    write "approved" over the new request once the lock is released."""
+    import asyncio  # noqa: PLC0415
+
+    w = await _world()
+    async with session_scope() as s:
+        poam = POAM(system_id=w.sys_id, title="W")
+        s.add(poam)
+        await s.flush()
+        pid = str(poam.id)
+        await approvals.submit(s, entity_type="poam", entity_id=pid, actor="p", purpose="close")
+
+    resubmitting = session_scope()
+    s1 = await resubmitting.__aenter__()
+    try:
+        await approvals.submit(
+            s1, entity_type="poam", entity_id=pid, actor="p", purpose="extend_acceptance"
+        )
+
+        async def decide_as_close() -> None:
+            async with session_scope() as s2:
+                await approvals.decide(
+                    s2,
+                    entity_type="poam",
+                    entity_id=pid,
+                    approve=True,
+                    actor="r",
+                    role="admin",
+                    purpose="close",
+                )
+
+        decision = asyncio.create_task(decide_as_close())
+        await asyncio.sleep(0.5)
+        assert not decision.done(), "the decision must wait on the re-submission's lock"
+    finally:
+        await resubmitting.__aexit__(None, None, None)
+    with pytest.raises(approvals.PurposeChangedError):
+        await decision
+    async with session_scope() as s:
+        row = (
+            await s.execute(
+                select(Approval).where(Approval.entity_type == "poam", Approval.entity_id == pid)
+            )
+        ).scalar_one()
+    assert (row.state, row.purpose) == ("submitted", "extend_acceptance")
