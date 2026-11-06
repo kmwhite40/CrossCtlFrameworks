@@ -24,7 +24,7 @@ from alembic.config import Config
 from sqlalchemy import delete, func, select, update
 
 from ccf.config import get_settings
-from ccf.db import session_scope
+from ccf.db import session_scope, set_session_tenant
 from ccf.events import consumers, webhooks, worker
 from ccf.governance import bus, webhook_url
 from ccf.models import Event, Organization, Webhook
@@ -314,7 +314,14 @@ async def test_a_deactivated_or_deleted_webhook_is_skipped(world: dict[str, Any]
     await _drain(passes=3)
     for h in (off, gone):
         j = await _job(ev, h)
-        assert j.status == "done" and j.result["skipped"] == "webhook inactive"
+        assert (
+            j.status == "done"
+            and j.result["skipped"]
+            == {
+                off: "webhook deactivated",
+                gone: "webhook deleted",
+            }[h]
+        )
     assert [c["url"] for c in net.calls] == ["https://93.184.216.34/live"]
     assert (await _job(ev, live)).status == "done"
 
@@ -329,3 +336,109 @@ async def test_an_org_less_event_reaches_an_organizations_webhook(
     await _drain()
     assert len(net.calls) == 1
     assert (await _job(ev, hook)).status == "done"
+
+
+async def _forged_job(ev_id: int, hook_id: int, org: int | None, *, uniq: str | None = None) -> int:
+    async with session_scope() as s:
+        j = OutboxJob(
+            organization_id=org,
+            consumer="webhook",
+            scope_key=f"event:{ev_id}",
+            trigger_event_id=ev_id,
+            max_attempts=8,
+            next_attempt_at=func.now(),
+            result={"webhook_id": hook_id},
+        )
+        s.add(j)
+        await s.flush()
+        return j.id
+
+
+async def _result(job_id: int) -> OutboxJob:
+    async with session_scope() as s:
+        return await s.get(OutboxJob, job_id)  # type: ignore[return-value]
+
+
+async def test_a_global_webhook_receives_an_org_event(world: dict[str, Any], net: Net) -> None:
+    async with session_scope() as s:
+        h = Webhook(organization_id=None, url="https://hooks.example/g", events=[], active=True)
+        s.add(h)
+        await s.flush()
+        gid = h.id
+        world["hooks"].append(gid)
+    ev = await _emit(world)  # unscoped emitter: the global hook is selected
+    j = await _job(ev, gid)
+    assert j.organization_id == world["org"]
+    await _drain()
+    assert [c["url"] for c in net.calls] == ["https://93.184.216.34/g"]
+    assert (await _job(ev, gid)).status == "done"
+
+
+async def test_a_job_naming_another_organizations_webhook_is_refused(
+    world: dict[str, Any], net: Net
+) -> None:
+    async with session_scope() as s:
+        other = Organization(name=f"whk-other-{uuid.uuid4().hex[:6]}")
+        s.add(other)
+        await s.flush()
+        b = Webhook(organization_id=other.id, url="https://hooks.example/b", events=[], active=True)
+        s.add(b)
+        await s.flush()
+        bid, other_org = b.id, other.id
+        world["hooks"].append(bid)
+    ev = await _emit(world)  # org A event
+    jid = await _forged_job(ev, bid, world["org"])
+    await _drain()
+    j = await _result(jid)
+    assert j.status == "done" and j.result["refused"] == "webhook belongs to another organization"
+    assert net.calls == []
+    # Positive control: the same hook under its own organization's event delivers.
+    ev_b = await _emit(world, org=other_org)
+    jb = await _forged_job(ev_b, bid, other_org)
+    await _drain(passes=2)
+    assert (await _result(jb)).status == "done" and net.calls  # the real job also delivers
+
+
+async def test_a_job_naming_another_organizations_event_is_refused(
+    world: dict[str, Any], net: Net
+) -> None:
+    hook = await _hook(world)
+    async with session_scope() as s:
+        other = Organization(name=f"whk-other-{uuid.uuid4().hex[:6]}")
+        s.add(other)
+        await s.flush()
+        other_org = other.id
+    ev_other = await _emit(world, org=other_org)
+    jid = await _forged_job(ev_other, hook, world["org"])
+    await _drain()
+    j = await _result(jid)
+    assert j.status == "done" and j.result["refused"] == "event belongs to another organization"
+    assert net.calls == []
+
+
+async def test_a_gone_event_is_its_own_skip(world: dict[str, Any]) -> None:
+    """The FK keeps a queued job's event alive, so run() is called directly."""
+    from types import SimpleNamespace  # noqa: PLC0415
+
+    hook = await _hook(world)
+    job = SimpleNamespace(
+        result={"webhook_id": hook}, trigger_event_id=2_000_000_000, organization_id=world["org"]
+    )
+    async with session_scope() as s:
+        out = await webhooks.run(s, "event:2000000000", job)  # type: ignore[arg-type]
+    assert out == {"skipped": "event gone"}
+
+
+async def test_the_tenant_is_restored_after_the_unscoped_reads(
+    world: dict[str, Any], net: Net
+) -> None:
+    from sqlalchemy import text  # noqa: PLC0415
+
+    hook = await _hook(world)
+    ev = await _emit(world)
+    job = await _job(ev, hook)
+    async with session_scope() as s:
+        await set_session_tenant(s, world["org"])
+        await webhooks.run(s, job.scope_key, job)
+        tenant = (await s.execute(text("SELECT ccf.current_tenant()"))).scalar()
+    assert tenant == world["org"]

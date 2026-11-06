@@ -486,7 +486,7 @@ async def test_backoff_counts_from_the_failure_not_the_drain_start(
     assert job.next_attempt_at >= failed_at[0] + timedelta(seconds=60)
 
 
-async def test_a_webhook_backs_off_from_ninety_seconds(
+async def test_a_webhook_backs_off_from_170_seconds(
     world: dict[str, Any], monkeypatch: Any
 ) -> None:
     async def _down(session: Any, key: str, job: Any) -> dict[str, Any]:
@@ -510,7 +510,7 @@ async def test_a_webhook_backs_off_from_ninety_seconds(
     await worker.drain_once(worker="w1", limit=1, now=t0)
     job = await _get(jid)
     assert (job.status, job.attempts) == ("pending", 1)
-    assert job.next_attempt_at == t0 + timedelta(seconds=90)
+    assert job.next_attempt_at == t0 + timedelta(seconds=170)
     assert job.result == {"webhook_id": 7}  # a failure keeps the delivery's target
 
 

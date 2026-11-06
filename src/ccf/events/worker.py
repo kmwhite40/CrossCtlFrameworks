@@ -36,7 +36,8 @@ running it unscoped would bypass RLS.
 
 **Outcome** (spec 5.5). Success is ``done`` with the run's dict merged into
 ``result``. A failure below the job's own ``max_attempts`` goes back to
-``pending`` at ``now + base * 2**(attempts - 1)`` (base 90 s for webhooks, 60 s
+``pending`` at ``now + base * 2**(attempts - 1)``
+(base 170 s for webhooks, so 8 attempts span about 6 h; 60 s
 otherwise) with a truncated ``last_error``; at the cap it stays ``failed``.
 """
 
@@ -61,7 +62,7 @@ log = get_logger(__name__)
 
 #: Backoff bases, seconds: attempt n waits base * 2**(n-1).
 BACKOFF_SECONDS = 60
-WEBHOOK_BACKOFF_SECONDS = 90
+WEBHOOK_BACKOFF_SECONDS = 170
 
 _CLAIM_LOCK = "SELECT pg_advisory_xact_lock(hashtext('ccf.outbox.claim'))"
 

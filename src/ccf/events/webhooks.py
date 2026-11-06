@@ -99,21 +99,40 @@ async def send(hook: Any, ev: Event) -> tuple[str | None, int | None]:
     return None, resp.status_code
 
 
+def _precheck(job: OutboxJob, hook: Webhook | None, ev: Event | None) -> dict[str, Any] | None:
+    """A skip or a final refusal, or ``None`` when the delivery may proceed."""
+    if hook is None:
+        return {"skipped": "webhook deleted"}
+    if not hook.active:
+        return {"skipped": "webhook deactivated"}
+    if ev is None:
+        return {"skipped": "event gone"}
+    # A job names its webhook and event by id in a JSON blob and a column: never
+    # deliver across organizations because those disagree with the job's own.
+    if ev.organization_id is not None and ev.organization_id != job.organization_id:
+        return {"refused": "event belongs to another organization"}
+    if hook.organization_id is not None and hook.organization_id != job.organization_id:
+        return {"refused": "webhook belongs to another organization"}
+    return None
+
+
 async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str, Any]:
     prior = dict(job.result or {})
     hook_id = prior.get("webhook_id")
-    hook = await session.get(Webhook, hook_id) if isinstance(hook_id, int) else None
-    if hook is None or not hook.active:
-        return {"skipped": "webhook inactive"}
-    ev = await session.get(Event, job.trigger_event_id)
-    if ev is None and job.organization_id is not None:
-        # An org-less event is invisible to a tenant session, yet an
-        # organization's webhook still receives it (the inline dispatcher did).
-        # Read it by primary key unscoped: it goes to this one webhook only.
-        await set_session_tenant(session, None)
+    # Both rows are read by primary key on an unscoped session, then the tenant
+    # is restored: a global webhook (NULL organization) and an org-less event are
+    # invisible to a tenant session under RLS, yet both are legitimately
+    # delivered. The organizations are cross-checked below instead.
+    await set_session_tenant(session, None)
+    try:
+        hook = await session.get(Webhook, hook_id) if isinstance(hook_id, int) else None
         ev = await session.get(Event, job.trigger_event_id)
-    if ev is None:
-        return {"skipped": "event gone"}
+    finally:
+        if job.organization_id is not None:
+            await set_session_tenant(session, job.organization_id)
+    if (early := _precheck(job, hook, ev)) is not None:
+        return early
+    assert hook is not None and ev is not None
 
     log_: list[dict[str, Any]] = list(prior.get("attempts_log") or [])
     started = time.monotonic()
