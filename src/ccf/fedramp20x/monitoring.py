@@ -29,14 +29,18 @@ log = get_logger(__name__)
 _REGRESSED_TO = ("fail", "warn")
 
 
+def _twentyx_ids() -> Any:
+    """Ids of systems with any 20x footprint: a CSO profile or prior KSI state.
+
+    The one definition of "a 20x system" for the sweep and for a single
+    system, so :func:`scan` and :func:`is_20x_system` cannot disagree.
+    """
+    return select(KSIState.system_id).union(select(FedRAMP20xProfile.system_id))
+
+
 async def _systems_with_20x(session: AsyncSession) -> list[System]:
     """Systems that have any 20x footprint (profile or prior KSI state)."""
-    ids = set(
-        (await session.execute(select(KSIState.system_id).distinct())).scalars().all()
-    )
-    ids |= set(
-        (await session.execute(select(FedRAMP20xProfile.system_id).distinct())).scalars().all()
-    )
+    ids = set((await session.execute(_twentyx_ids())).scalars().all())
     if not ids:
         return []
     return list(
@@ -44,10 +48,33 @@ async def _systems_with_20x(session: AsyncSession) -> list[System]:
     )
 
 
+async def is_20x_system(session: AsyncSession, system_id: int) -> bool:
+    """Whether :func:`scan` would include this system."""
+    sub = _twentyx_ids().subquery()
+    found = (
+        await session.execute(select(sub.c[0]).where(sub.c[0] == system_id).limit(1))
+    ).first()
+    return found is not None
+
+
+async def _ksi_ident(session: AsyncSession) -> dict[int, str]:
+    return {k.id: k.identifier for k in (await session.execute(select(KSI))).scalars().all()}
+
+
 async def scan_system(
-    session: AsyncSession, system: System, *, ksi_ident: dict[int, str]
+    session: AsyncSession, *, system_id: int, ksi_ident: dict[int, str] | None = None
 ) -> dict[str, Any]:
-    """Re-validate one system, snapshot readiness, and report drift."""
+    """Re-validate one system, snapshot readiness, and report drift.
+
+    The per-system body of :func:`scan`. It does not check the system's 20x
+    footprint (the sweep only calls it for 20x systems): a caller that may
+    hold any system checks :func:`is_20x_system` first.
+    """
+    system = await session.get(System, system_id)
+    if system is None:
+        raise ValueError(f"unknown system: {system_id!r}")
+    if ksi_ident is None:
+        ksi_ident = await _ksi_ident(session)
     prior = {
         ksi_ident.get(s.ksi_id, str(s.ksi_id)): s.status
         for s in (
@@ -130,10 +157,10 @@ async def scan(session: AsyncSession, *, today: date | None = None) -> dict[str,
     systems = await _systems_with_20x(session)
     if not systems:
         return {"systems_scanned": 0, "drift_events": 0}
-    ksi_ident = {
-        k.id: k.identifier for k in (await session.execute(select(KSI))).scalars().all()
-    }
-    per_system = [await scan_system(session, s, ksi_ident=ksi_ident) for s in systems]
+    ksi_ident = await _ksi_ident(session)
+    per_system = [
+        await scan_system(session, system_id=s.id, ksi_ident=ksi_ident) for s in systems
+    ]
     drift = sum(1 for r in per_system if r["regressions"] > 0)
     return {
         "systems_scanned": len(systems),

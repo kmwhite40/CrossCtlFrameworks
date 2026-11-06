@@ -479,9 +479,7 @@ async def test_drift_on_a_ksi_the_class_does_not_owe_is_not_alerted() -> None:
         ).scalar_one()
         impl.status = "not_implemented"
     async with session_scope() as s:
-        system = await s.get(System, sid)
-        ksi_ident = {k.id: k.identifier for k in (await s.execute(select(KSI))).scalars()}
-        row = await monitoring.scan_system(s, system, ksi_ident=ksi_ident)  # type: ignore[arg-type]
+        row = await monitoring.scan_system(s, system_id=sid)
     # KSI-IAM-ELP regressed pass -> fail, but Class A does not owe it; the
     # owed KSI-IAM-APM falls to manual review, which is not a regression.
     assert row["regressions"] == 0
