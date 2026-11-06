@@ -76,6 +76,7 @@ async def record_review(
         summary=f"Assessor review {rv.status} for KSI {rv.ksi_id}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": rv.system_id},
     )
     return rv
 
@@ -109,5 +110,6 @@ async def record_exception(
         summary=f"KSI exception ({status}) for KSI {ksi_id}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": system_id},
     )
     return exc

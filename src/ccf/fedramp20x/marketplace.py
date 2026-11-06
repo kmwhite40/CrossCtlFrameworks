@@ -443,5 +443,6 @@ async def link(
         summary=f"Dependency '{dep.name}' -> Marketplace {wanted or 'none'}",
         org_id=org_id,
         actor=actor,
+        payload={"system_id": dep.system_id},
     )
     return product

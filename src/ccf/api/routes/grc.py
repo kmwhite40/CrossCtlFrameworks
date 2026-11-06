@@ -772,6 +772,7 @@ async def promote_finding_to_poam(
         summary=f"POA&M opened from audit finding: {poam.title}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": poam.system_id},
     )
     await session.commit()
     return {
@@ -1068,6 +1069,7 @@ async def run_control_test(
         summary=f"Control test {body.status}: {t.control_id}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": t.system_id},
     )
     await session.commit()
     return {"test_id": t.id, "status": body.status, "last_tested_at": t.last_tested_at}

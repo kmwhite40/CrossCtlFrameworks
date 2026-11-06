@@ -120,6 +120,10 @@ async def collect_evidence(
         summary=f"Evidence '{title}' collected for control {impl.control_id}",
         org_id=org_id,
         actor=uploaded_by,
-        payload={"implementation_id": implementation_id, "artifact_id": ev.artifact_id},
+        payload={
+            "system_id": impl.system_id,
+            "implementation_id": implementation_id,
+            "artifact_id": ev.artifact_id,
+        },
     )
     return ev, artifact

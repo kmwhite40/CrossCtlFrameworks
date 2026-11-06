@@ -3,7 +3,7 @@
 No test reaches the network: DNS is stubbed and ``httpx.AsyncClient`` is
 replaced by a recorder. Job rows are read back on an UNSCOPED session.
 
-The test DB is shared, so each test starts by clearing live webhook jobs other
+The test DB is shared, so each test starts by clearing the live jobs other
 modules left behind (the worker would claim them), and removes its own on exit.
 """
 
@@ -46,11 +46,9 @@ def _migrate() -> None:
 @pytest.fixture(autouse=True)
 async def _no_live_jobs_left_behind() -> AsyncIterator[None]:
     async with session_scope() as s:
-        await s.execute(
-            delete(OutboxJob).where(
-                OutboxJob.consumer == "webhook", OutboxJob.status.in_(("pending", "claimed"))
-            )
-        )
+        # Every consumer's, not only the webhook's: the derived views are
+        # registered too, and a leftover job of theirs takes a drain's slot.
+        await s.execute(delete(OutboxJob).where(OutboxJob.status.in_(("pending", "claimed"))))
         mark = (await s.execute(select(func.coalesce(func.max(OutboxJob.id), 0)))).scalar_one()
     yield
     async with session_scope() as s:

@@ -401,6 +401,7 @@ async def add_dependency(
         summary=f"Dependency '{dep.name}' ({dep.fedramp_status})",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": dep.system_id},
     )
     await session.commit()
     return _dep_out(dep)
@@ -621,6 +622,7 @@ async def update_review(
         summary=f"Assessor review {rv.status} for KSI {rv.ksi_id}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": rv.system_id},
     )
     await session.commit()
     return _review_out(rv)
@@ -754,6 +756,7 @@ async def update_exception(
         summary=f"KSI exception {exc.status} for KSI {exc.ksi_id}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": exc.system_id},
     )
     await session.commit()
     return _exc_out(exc)

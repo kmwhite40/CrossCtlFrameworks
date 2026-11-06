@@ -247,6 +247,9 @@ async def record_evaluation(
     session.add(row)
     await session.flush()
     status, changed, previous = await _apply(session, poam, system, principal, now)
+    await _emit_evaluation(
+        session, "recorded", row=row, poam=poam, system=system, principal=principal
+    )
     return Recorded(row, status, previous, changed, pending_confirmation=held)
 
 
@@ -303,7 +306,49 @@ async def confirm_evaluation(
     system = await session.get(System, poam.system_id)
     assert system is not None
     status, changed, previous = await _apply(session, poam, system, principal, now)
+    await _emit_evaluation(
+        session, "confirmed", row=row, poam=poam, system=system, principal=principal
+    )
     return Recorded(row, status, previous, changed)
+
+
+async def _emit_evaluation(
+    session: AsyncSession,
+    verb: str,
+    *,
+    row: VulnerabilityEvaluation,
+    poam: POAM,
+    system: System,
+    principal: Principal,
+) -> None:
+    """The event an evaluation's write emits, naming its system for the
+    derived views (the VER deliverables read evaluations). Two literal calls,
+    not one with ``verb=verb``: the trigger guard reads literals."""
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    summary = f"VDR evaluation {verb} for POA&M {poam.id}"
+    if verb == "recorded":
+        await bus.emit(
+            session,
+            verb="recorded",
+            entity_type="vdr_evaluation",
+            entity_id=row.id,
+            summary=summary,
+            org_id=system.organization_id,
+            actor=principal.email,
+            payload={"system_id": system.id, "poam_id": poam.id},
+        )
+    else:
+        await bus.emit(
+            session,
+            verb="confirmed",
+            entity_type="vdr_evaluation",
+            entity_id=row.id,
+            summary=summary,
+            org_id=system.organization_id,
+            actor=principal.email,
+            payload={"system_id": system.id, "poam_id": poam.id},
+        )
 
 
 async def _apply(
@@ -379,6 +424,7 @@ async def tighten_due_dates(
     evaluations = await evaluations_by_poam(session, [p.id for p in poams])
     kev = await kev_due_by_poam(session, poams)
     tightened = 0
+    moved: dict[int, int] = {}
     for poam, system in rows:
         status = tf.assess(
             poam,
@@ -391,7 +437,27 @@ async def tighten_due_dates(
             session, poam, system=system, status=status, actor=SCHEDULER_ACTOR
         )
         tightened += changed
+        if changed:
+            moved[system.id] = moved.get(system.id, 0) + 1
     await session.flush()
+    if moved:
+        from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+        # Internal bookkeeping (dispatch=False): each move is already in the
+        # audit chain, and this step posted no webhook before; the event is
+        # here so the derived views (the VER deliverables) see the new dates.
+        for system_id, n in sorted(moved.items()):
+            await bus.emit(
+                session,
+                verb="vdr_due_tightened",
+                entity_type="system",
+                entity_id=system_id,
+                summary=f"{n} flaw due date(s) tightened",
+                org_id=org_id,
+                actor=SCHEDULER_ACTOR,
+                payload={"tightened": n},
+                dispatch=False,
+            )
     return {"organization_id": org_id, "flaws_checked": len(rows), "tightened": tightened}
 
 

@@ -881,6 +881,7 @@ async def record_result(
         summary=f"Control test {status}: {test.control_id}",
         org_id=test.organization_id,
         actor=actor,
+        payload={"system_id": test.system_id},
     )
     return res
 

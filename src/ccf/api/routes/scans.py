@@ -90,6 +90,7 @@ async def ingest_upload(
         ),
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": system_id},
     )
     if result.created or result.reopened or result.closed:
         # Closures are announced too: they bypass the closure gate (scan

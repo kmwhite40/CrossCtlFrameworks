@@ -520,6 +520,7 @@ async def create_poam(
         summary=f"POA&M opened ({obj.severity}): {obj.title}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": obj.system_id},
     )
     await session.commit()
     obj = await _require_poam(session, obj.id, principal)
@@ -666,6 +667,7 @@ async def update_poam(
         summary=f"POA&M {obj.status}: {obj.title}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": obj.system_id},
     )
     await session.commit()
     if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
@@ -699,6 +701,7 @@ async def close_poam(
         summary=f"POA&M closed: {obj.title}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": obj.system_id},
     )
     await session.commit()
     if not was_closed:
@@ -869,5 +872,15 @@ async def decide_extension(
             )
     except poam_extensions.ExtensionError as e:
         raise HTTPException(e.status, str(e)) from e
+    await bus.emit(
+        session,
+        verb="extension_decided",
+        entity_type="poam",
+        entity_id=obj.id,
+        summary=f"POA&M extension {decision}: {obj.title}",
+        org_id=principal.org_id,
+        actor=principal.email,
+        payload={"system_id": obj.system_id, "extension_id": ext.id, "decision": decision},
+    )
     await session.commit()
     return _ext_out(ext)

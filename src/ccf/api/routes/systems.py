@@ -96,6 +96,16 @@ async def create_system(
     data["organization_id"] = resolve_caller_org(principal.org_id, data["organization_id"])
     obj = System(**data)
     session.add(obj)
+    await session.flush()
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="system",
+        entity_id=obj.id,
+        summary=f"System {obj.name} created",
+        org_id=obj.organization_id,
+        actor=principal.email,
+    )
     await session.commit()
     await session.refresh(obj)
     return SystemOut.model_validate(obj)
@@ -198,6 +208,16 @@ async def delete_system(
         await session.delete(sys)
     else:
         sys.deleted_at = datetime.now(UTC)
+    await bus.emit(
+        session,
+        verb="deleted",
+        entity_type="system",
+        entity_id=system_id,
+        summary=f"System {sys.name} {'purged' if hard else 'deleted'}",
+        org_id=sys.organization_id,
+        actor=principal.email,
+        payload={"hard": hard},
+    )
     await session.commit()
 
 
@@ -385,6 +405,7 @@ async def upsert_implementation(
         summary=f"Control implementation {control_id} → {obj.status}",
         org_id=principal.org_id,
         actor=principal.email,
+        payload={"system_id": system_id},
     )
     # Reaction: suggest the crosswalked controls this status may also apply to.
     propagation = await reactions.propagate_implementation(
@@ -440,6 +461,18 @@ async def bulk_import_implementations(
         if r.narrative is not None:
             obj.narrative = r.narrative
         upserted += 1
+    if upserted:
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="bulk_updated",
+            entity_type="control_implementation",
+            entity_id=system_id,
+            summary=f"{upserted} control implementation(s) bulk-imported",
+            org_id=principal.org_id,
+            actor=principal.email,
+            payload={"system_id": system_id, "upserted": upserted},
+        )
     await session.commit()
     return {"upserted": upserted, "skipped": skipped, "total": len(rows)}
 
