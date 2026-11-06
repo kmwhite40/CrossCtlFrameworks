@@ -375,9 +375,13 @@ async def test_close_poam_blocked_when_approver_is_same_as_submitter(_auth_enabl
             headers=_auth(preparer),
         )
 
-        await c.post(f"/api/approvals/poam/{pid}/submit", headers=_auth(preparer))
+        await c.post(
+            f"/api/approvals/poam/{pid}/submit", json={"purpose": "close"}, headers=_auth(preparer)
+        )
         # Same principal tries to approve their own submission — SoD blocks it.
-        approve = await c.post(f"/api/approvals/poam/{pid}/approve", headers=_auth(preparer))
+        approve = await c.post(
+            f"/api/approvals/poam/{pid}/approve", json={"purpose": "close"}, headers=_auth(preparer)
+        )
         assert approve.status_code == 403, approve.text
 
         r = await c.post(f"/api/poams/{pid}/close", headers=_auth(preparer))
@@ -411,8 +415,12 @@ async def test_close_poam_succeeds_with_distinct_approver_when_auth_enabled(
             headers=_auth(preparer),
         )
 
-        await c.post(f"/api/approvals/poam/{pid}/submit", headers=_auth(preparer))
-        approve = await c.post(f"/api/approvals/poam/{pid}/approve", headers=_auth(approver))
+        await c.post(
+            f"/api/approvals/poam/{pid}/submit", json={"purpose": "close"}, headers=_auth(preparer)
+        )
+        approve = await c.post(
+            f"/api/approvals/poam/{pid}/approve", json={"purpose": "close"}, headers=_auth(approver)
+        )
         assert approve.status_code == 200, approve.text
 
         r = await c.post(f"/api/poams/{pid}/close", headers=_auth(preparer))
@@ -477,8 +485,12 @@ async def test_accept_risk_succeeds_with_ao_approval_when_auth_enabled(_auth_ena
         )
         rid = created.json()["id"]
 
-        await c.post(f"/api/approvals/risk/{rid}/submit", headers=_auth(preparer))
-        approve = await c.post(f"/api/approvals/risk/{rid}/approve", headers=_auth(ao))
+        await c.post(
+            f"/api/approvals/risk/{rid}/submit", json={"purpose": "accept"}, headers=_auth(preparer)
+        )
+        approve = await c.post(
+            f"/api/approvals/risk/{rid}/approve", json={"purpose": "accept"}, headers=_auth(ao)
+        )
         assert approve.status_code == 200, approve.text
 
         r = await c.patch(

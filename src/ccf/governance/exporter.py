@@ -17,7 +17,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..constants import (
-    POAM_ACTIVE_STATUSES,
     POAM_CLOSED_STATUSES,
     POAM_STATUSES,
     poam_leaves_risk_accepted,
@@ -271,6 +270,27 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
             refused = _gated_status_change(model, getattr(obj, "status", None), new)
             if refused:
                 raise ValueError(refused)
+    if model is Policy and "status" in row:
+        # A policy goes in force only through an approved version and retires
+        # only by an admin (``ccf.policies.service``). Retiring keeps the
+        # active version, so a file re-activating a retired policy put it back
+        # in force unreviewed. A new row starts as a draft.
+        new = _clean(row["status"])
+        held = getattr(obj, "status", None) or "draft"
+        if new is not None and new != held:
+            raise ValueError(
+                f"a policy's status changes only on the policy itself (activating needs an "
+                f"approved version, retiring an admin), not to {new!r} by import"
+            )
+    if model is Policy and getattr(obj, "id", None) is not None and "next_review_on" in row:
+        # The API never moves a policy's next review -- activation sets it.
+        # Pushed out or cleared by a file, an overdue review stops showing.
+        new_review, held = _coerce_date(row["next_review_on"]), obj.next_review_on
+        if held is not None and (new_review is None or new_review > held):
+            raise ValueError(
+                "moving a policy's next review later, or clearing it, is not done by import; "
+                "putting a reviewed version in force sets it"
+            )
     if model is POAM and getattr(obj, "status", None) == "risk_accepted" and "due_on" in row:
         # ``due_on`` is the acceptance's expiry (the scanner keeps an accepted
         # POA&M accepted until it passes). The API spends an approval on any
@@ -281,29 +301,36 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
                 "extending a risk acceptance's expiry (due_on) needs an approved review; "
                 "change it on the POA&M itself"
             )
-    if model is POAM and getattr(obj, "status", None) in POAM_ACTIVE_STATUSES and "due_on" in row:
-        # An open weakness's due date moving later -- or cleared, which is the
-        # same without a limit -- is a deviation the API takes only as an
-        # extension the ISSM or AO decides (``ccf.ato.extensions``).
-        new_status = _clean(row.get("status")) or obj.status
+    if (
+        model is POAM
+        and getattr(obj, "id", None) is not None
+        and getattr(obj, "status", None) != "risk_accepted"
+        and "due_on" in row
+    ):
+        # A due date moving later -- or cleared, which is the same without a
+        # limit -- is a deviation the API takes only as an extension the ISSM
+        # or AO decides (``ccf.ato.extensions``). Whatever the status: a closed
+        # POA&M's date moved out here would be carried by a later reopen.
         new_due, held = _coerce_date(row["due_on"]), obj.due_on
-        if (
-            new_status in POAM_ACTIVE_STATUSES
-            and held is not None
-            and (new_due is None or new_due > held)
-        ):
+        if held is not None and (new_due is None or new_due > held):
             raise ValueError(
-                "moving an open POA&M's due date later needs an approved extension; "
+                "moving a POA&M's due date later needs an approved extension; "
                 "request one on the POA&M itself"
             )
+    # Every value is worked out before any is assigned: a row refused halfway
+    # (a malformed date, a bad score) must leave an existing record exactly as
+    # it was, now that the import is committed.
+    values: dict[str, Any] = {}
     for f in spec["str_fields"]:
         if f in row:
-            if f == "status" and model in _IMPORT_STATUSES and _clean(row[f]) is None:
+            if f == "status" and (model in _IMPORT_STATUSES or model is Policy) and (
+                _clean(row[f]) is None
+            ):
                 continue  # a blank cell leaves the status as it is
-            setattr(obj, f, _clean(row[f]))
+            values[f] = _clean(row[f])
     for f in spec["date_fields"]:
         if f in row:
-            setattr(obj, f, _coerce_date(row[f]))
+            values[f] = _coerce_date(row[f])
     if spec["model"] is Risk:
         # The 1-5 score is the source of truth and the level follows it
         # (governance.risk.resolve_axis). An import that sets only the level
@@ -318,15 +345,17 @@ def _apply_fields(obj: Any, row: dict[str, Any], spec: dict[str, Any]) -> None:
             new_score, new_level = resolve_axis(
                 axis=axis,
                 score=score,
-                level=getattr(obj, axis, None),
+                level=values[axis] if axis in values else getattr(obj, axis, None),
                 current_score=getattr(obj, f"{axis}_score", None),
             )
-            setattr(obj, f"{axis}_score", new_score)
-            setattr(obj, axis, new_level)
-        inherent, residual = compute_scores(
-            obj.likelihood_score, obj.impact_score, getattr(obj, "treatment", None)
+            values[f"{axis}_score"] = new_score
+            values[axis] = new_level
+        treatment = values.get("treatment", getattr(obj, "treatment", None))
+        values["inherent_score"], values["residual_score"] = compute_scores(
+            values["likelihood_score"], values["impact_score"], treatment
         )
-        obj.inherent_score, obj.residual_score = inherent, residual
+    for f, v in values.items():
+        setattr(obj, f, v)
 
 
 async def import_rows(

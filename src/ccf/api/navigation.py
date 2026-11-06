@@ -169,6 +169,7 @@ NAV: tuple[Group, ...] = (
             Item("intake", "System Intake", "/intake"),
             Item("ssp", "SSP Builder", "/ssp"),
             Item("fedramp20x", "FedRAMP 20x & KSIs", "/fedramp20x"),
+            Item("vdr", "20x Vulnerability Response", "/vdr"),
             Item("scoring", "CMMC / 800-171 Scoring", "/scoring"),
             Item("assurance", "Assurance Graph", "/assurance"),
             Item("graph", "Compliance Graph", "/graph"),

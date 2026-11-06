@@ -1734,6 +1734,9 @@ class Approval(Base):
     reviewed_by: Mapped[str | None] = mapped_column(String(255))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decision_note: Mapped[str | None] = mapped_column(Text)
+    #: The decision this approval authorizes (``approvals.PURPOSES``), set at
+    #: submission; NULL for entity types with a single decision.
+    purpose: Mapped[str | None] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -2135,6 +2138,7 @@ from . import (  # noqa: E402
     models_patching,
     models_program,
     models_tprm,
+    models_vdr,
     models_waivers,
 )
 
@@ -2150,6 +2154,7 @@ CROSS_MODULE_MODEL_MODULES = (
     models_patching,
     models_program,
     models_tprm,
+    models_vdr,
     models_waivers,
 )
 

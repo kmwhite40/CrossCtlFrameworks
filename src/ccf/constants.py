@@ -303,4 +303,8 @@ PIPELINE_STAGES: tuple[str, ...] = (
 # docs/superpowers/specs/2026-09-21-3pao-engagement-design.md §1.1: the two must
 # not be merged, because merging them would put an independent firm inside the
 # tenant's own user table.
-EXTERNAL_PRINCIPAL_KINDS: tuple[str, ...] = ("customer", "assessor", "vendor")
+#
+# ``agency`` is a federal agency (a user or a system) given access to FedRAMP
+# Certification Data through the trust center. CDS-TRC-AAI asks for an inventory
+# of exactly these, so they are a kind of their own rather than a "customer".
+EXTERNAL_PRINCIPAL_KINDS: tuple[str, ...] = ("customer", "assessor", "vendor", "agency")

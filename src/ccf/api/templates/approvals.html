@@ -10,9 +10,10 @@
 </section>
 {% if rows %}
 <div class="table-wrap"><table>
-  <thead><tr><th>Subject</th><th>State</th><th>Submitted</th><th>Reviewed</th><th>Note</th></tr></thead>
+  <thead><tr><th>Subject</th><th>For</th><th>State</th><th>Submitted</th><th>Reviewed</th><th>Note</th></tr></thead>
   <tbody>{% for row in rows %}{% set a = row.a %}<tr>
     <td>{% if row.href %}<a href="{{ row.href }}">{{ a.entity_type | replace('_',' ') }} #{{ a.entity_id }}</a>{% else %}{{ a.entity_type | replace('_',' ') }} #{{ a.entity_id }}{% endif %}</td>
+    <td class="dim">{{ row.purpose or '—' }}</td>
     <td><span class="chip {% if a.state == 'approved' %}chip--ok{% elif a.state == 'rejected' %}chip--err{% elif a.state == 'submitted' %}chip--warn{% else %}chip--ghost{% endif %}">{{ a.state }}</span></td>
     <td>{{ a.submitted_by or '—' }}{% if a.submitted_at %}<div class="dim" style="font-size:12px">{{ a.submitted_at.strftime('%Y-%m-%d %H:%M') }}</div>{% endif %}</td>
     <td>{{ a.reviewed_by or '—' }}{% if a.reviewed_at %}<div class="dim" style="font-size:12px">{{ a.reviewed_at.strftime('%Y-%m-%d %H:%M') }}</div>{% endif %}</td>

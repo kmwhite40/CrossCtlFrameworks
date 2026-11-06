@@ -55,6 +55,13 @@
         {% else %}<span class="dim" style="font-size:13px">No evidence yet.</span>{% endfor %}
       </fieldset>
     </div>
+    <fieldset style="border:1px solid var(--border);border-radius:var(--radius-md);padding:12px;margin-top:16px">
+      <legend class="dim" style="font-size:12px;padding:0 6px">FedRAMP Certification Data to share</legend>
+      <p class="dim" style="font-size:12px;margin:0 0 6px">The system's FedRAMP deliverables (SDR, CPO, OCR, VDR, AVI and the rest), readable and downloadable through the portal and its API as JSON or Markdown. Only documents that pass FedRAMP's schema are shared.</p>
+      {% for s in systems %}
+        <label class="dim" style="display:block;font-size:13px;padding:3px 0"><input type="checkbox" name="certification_system_ids" value="{{ s.id }}"> {{ s.name }} <span class="mono">#{{ s.id }}</span>{% if s.certification_class %} · Class {{ s.certification_class }}{% endif %}</label>
+      {% else %}<span class="dim" style="font-size:13px">No systems yet.</span>{% endfor %}
+    </fieldset>
     <div style="margin-top:12px"><button class="btn btn--primary" type="submit"><i data-lucide="link"></i> Issue grant</button></div>
   </form>
 </section>
@@ -75,6 +82,98 @@
     </tbody>
   </table></div>
   {% else %}<div class="card__body dim" style="text-align:center;padding:40px">No grants issued yet.</div>{% endif %}
+</section>
+
+<section class="card" style="margin-top:16px" id="access-requests">
+  <div class="card__header"><div class="card__title">Agency access requests</div>
+    <span class="dim" style="font-size:13px">{{ access_requests|selectattr('status','equalto','pending')|list|length }} awaiting a decision</span></div>
+  <p class="dim" style="font-size:13px;margin:0 16px 8px">Agencies ask for certification data access themselves through a request link (CDS-TRC-SSM). Approving lets the requester collect access with their receipt; verify who they are first. Denying must be reported to FedRAMP within {{ fedramp_notice_days }} business days (CDS-UTC-AAD) through <a href="{{ fedramp_notice_target.url }}" target="_blank" rel="noopener">{{ fedramp_notice_target.name }}</a>; record it here when filed.</p>
+  {% if issued_request_link %}
+  <div class="card__body" style="border:1px solid var(--accent);border-radius:var(--radius-md);margin:0 16px 12px">
+    <strong>Request link created.</strong> It is shown only once; publish it where agencies will find it.
+    <div class="mono" style="word-break:break-all;margin-top:6px">{{ issued_request_link }}</div>
+  </div>
+  {% endif %}
+  {% if access_requests %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Agency</th><th>Requester</th><th>Systems</th><th>Status</th><th>FedRAMP notice</th><th></th></tr></thead>
+    <tbody>
+      {% for r in access_requests %}<tr>
+        <td><strong>{{ r.agency_name }}</strong>{% if r.reason %}<div class="dim" style="font-size:12px">{{ r.reason }}</div>{% endif %}</td>
+        <td class="dim">{{ r.requester_name }}<div style="font-size:12px">{{ r.email }}</div></td>
+        <td class="dim">{{ (r.approved_system_ids or r.system_ids)|join(', ') }}</td>
+        <td>{% if r.status=='pending' %}<span class="chip chip--warn">pending</span>{% elif r.status=='approved' %}<span class="chip chip--ok">approved</span>{% if r.claimed_at %}<div class="dim" style="font-size:12px">collected</div>{% elif r.claim_by and r.claim_by < now_utc %}<div class="dim" style="font-size:12px">lapsed, not collected by {{ r.claim_by.date() }}</div>{% else %}<div class="dim" style="font-size:12px">not yet collected{% if r.claim_by %} · by {{ r.claim_by.date() }}{% endif %}</div>{% endif %}{% else %}<span class="chip chip--err">denied</span><div class="dim" style="font-size:12px">{{ r.decision_reason }}</div>{% endif %}</td>
+        <td>{% if r.fedramp_notice=='overdue' %}<span class="chip chip--err">overdue · due {{ r.fedramp_notify_due }}</span>
+            {% elif r.fedramp_notice=='due' %}<span class="chip chip--warn">due {{ r.fedramp_notify_due }}</span>
+            {% elif r.fedramp_notice=='filed' %}<span class="chip chip--ok">filed {{ r.fedramp_notified_on }}</span><div class="dim" style="font-size:12px">{{ r.fedramp_reference }} · recorded {{ r.fedramp_notice_recorded_at.date() if r.fedramp_notice_recorded_at else '' }} by {{ r.fedramp_notified_by }}</div>
+            {% elif r.fedramp_notice=='filed_late' %}<span class="chip chip--warn">filed late {{ r.fedramp_notified_on }}</span><div class="dim" style="font-size:12px">due {{ r.fedramp_notify_due }} · {{ r.fedramp_reference }} · recorded {{ r.fedramp_notice_recorded_at.date() if r.fedramp_notice_recorded_at else '' }} by {{ r.fedramp_notified_by }}</div>
+            {% else %}<span class="dim">—</span>{% endif %}</td>
+        <td>
+          {% if r.status=='pending' %}
+          <form method="post" action="/admin/portal/access-requests/{{ r.id }}/approve" style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+            <input type="hidden" name="organization_id" value="{{ org_id }}">
+            <input class="input" type="number" name="ttl_days" min="1" max="366" required placeholder="days" style="width:80px" aria-label="Access lasts (days)">
+            <button class="btn btn--secondary btn--sm" type="submit">Approve</button></form>
+          <form method="post" action="/admin/portal/access-requests/{{ r.id }}/deny" style="display:flex;gap:6px;align-items:center">
+            <input type="hidden" name="organization_id" value="{{ org_id }}">
+            <input class="input" name="reason" required placeholder="reason" aria-label="Reason for denial">
+            <button class="btn btn--ghost btn--sm" type="submit">Deny</button></form>
+          {% elif r.status=='denied' and not r.fedramp_notified_on %}
+          <form method="post" action="/admin/portal/access-requests/{{ r.id }}/fedramp-notice" style="display:flex;gap:6px;align-items:center">
+            <input type="hidden" name="organization_id" value="{{ org_id }}">
+            <input class="input" type="date" name="notified_on" required aria-label="Date FedRAMP was notified">
+            <input class="input" name="reference" required placeholder="ticket ref" aria-label="FedRAMP ticket reference">
+            <button class="btn btn--secondary btn--sm" type="submit">Record notice</button></form>
+          {% endif %}
+        </td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:24px">No agency has requested access yet.</div>{% endif %}
+
+  <div class="card__body">
+    <div style="font-weight:600;margin-bottom:6px">Request links</div>
+    {% for l in request_links %}
+      <div class="dim" style="font-size:13px;display:flex;gap:8px;align-items:center;padding:3px 0">
+        <span>{{ l.label or ('link #' ~ l.id) }} · systems {{ l.system_ids|join(', ') }} · by {{ l.created_by }}</span>
+        {% if l.revoked_at %}<span class="chip chip--warn">withdrawn {{ l.revoked_at.date() }}</span>
+        {% else %}<form method="post" action="/admin/portal/request-links/{{ l.id }}/revoke"><input type="hidden" name="organization_id" value="{{ org_id }}"><button class="btn btn--ghost btn--sm" type="submit">Withdraw</button></form>{% endif %}
+      </div>
+    {% else %}<div class="dim" style="font-size:13px">No request links yet.</div>{% endfor %}
+    <form method="post" action="/admin/portal/request-links" style="margin-top:10px">
+      <input type="hidden" name="organization_id" value="{{ org_id }}">
+      <input class="input" name="label" placeholder="label, e.g. Agency onboarding" maxlength="255" style="max-width:320px">
+      {% for s in systems %}<label class="dim" style="display:inline-block;font-size:13px;margin-right:10px"><input type="checkbox" name="system_ids" value="{{ s.id }}"> {{ s.name }}</label>{% endfor %}
+      <button class="btn btn--secondary btn--sm" type="submit">Create request link</button>
+    </form>
+  </div>
+</section>
+
+<section class="card" style="margin-top:16px" id="certification-access">
+  <div class="card__header"><div class="card__title">Certification data access</div>
+    <span style="display:flex;gap:6px">
+      <a class="btn btn--secondary btn--sm" href="/api/admin/portal/certification-access-inventory?organization_id={{ org_id }}&amp;fmt=csv"><i data-lucide="download"></i> CSV</a>
+      <a class="btn btn--ghost btn--sm" href="/api/admin/portal/certification-access-inventory?organization_id={{ org_id }}&amp;fmt=json" target="_blank"><i data-lucide="braces"></i> JSON</a>
+      <a class="btn btn--ghost btn--sm" href="/api/admin/portal/access-log-summary?organization_id={{ org_id }}&amp;fmt=csv"><i data-lucide="scroll-text"></i> Access log summary</a>
+    </span></div>
+  <p class="dim" style="font-size:13px;margin:0 16px 8px">Every portal access, refused attempts included, is logged against its grantee and kept at least six months; the database refuses to alter the log or delete anything younger (CDS-TRC-ACL). The summary counts it per grantee per month. Everyone who has or had access to this organization's FedRAMP certification data, with who issued and who revoked each grant. FedRAMP requires this inventory and history on request (CDS-TRC-AAI); the CSV is the file to send.</p>
+  {% if cert_access %}
+  <div class="table-wrap"><table class="data">
+    <thead><tr><th>Recipient</th><th>Kind</th><th>Systems</th><th>Issued</th><th>Revoked</th><th>Status</th><th>Downloads</th><th>Last access</th></tr></thead>
+    <tbody>
+      {% for a in cert_access %}<tr>
+        <td><strong>{{ a.principal_name or 'not recorded' }}</strong>{% if a.principal_organization %}<div class="dim" style="font-size:12px">{{ a.principal_organization }}</div>{% endif %}</td>
+        <td class="dim">{{ a.principal_kind }}</td>
+        <td class="dim">{% for s in a.systems %}{{ s.name or ('#' ~ s.id) }}{% if s.deleted %} (deleted){% endif %}{% if not loop.last %}, {% endif %}{% endfor %}</td>
+        <td class="dim">{{ a.issued_at.date() if a.issued_at else '' }}<div style="font-size:12px">{{ a.issued_by or 'issuer not recorded' }}</div></td>
+        <td class="dim">{% if a.revoked_at %}{{ a.revoked_at.date() }}<div style="font-size:12px">{{ a.revoked_by or 'revoker not recorded' }}</div>{% elif a.status == 'revoked' %}date not recorded{% else %}—{% endif %}</td>
+        <td>{% if a.status=='active' %}<span class="chip chip--ok">active</span>{% else %}<span class="chip chip--warn">{{ a.status }}</span>{% endif %}</td>
+        <td class="dim">{{ a.downloads }}</td>
+        <td class="dim">{{ a.last_accessed_at.date() if a.last_accessed_at else 'never' }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}<div class="card__body dim" style="text-align:center;padding:24px">No grant has shared certification data.</div>{% endif %}
 </section>
 
 {% endif %}

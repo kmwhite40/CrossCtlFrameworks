@@ -101,6 +101,20 @@ async def create_system(
     return SystemOut.model_validate(obj)
 
 
+async def _certification_snapshot_count(session: AsyncSession, system_id: int) -> int:
+    from ...models_cr26 import CertificationSnapshot  # noqa: PLC0415
+
+    return int(
+        (
+            await session.execute(
+                select(func.count(CertificationSnapshot.id)).where(
+                    CertificationSnapshot.system_id == system_id
+                )
+            )
+        ).scalar_one()
+    )
+
+
 async def _dependent_authorization_record_count(session: AsyncSession, system_id: int) -> int:
     """Count POA&Ms, assessments, risks, evidence, control implementations, and
     scoring statuses attached to ``system_id`` (DATA-04 hard-delete guard) —
@@ -166,6 +180,15 @@ async def delete_system(
     sys = await require_system_in_scope(session, system_id, principal)
     if hard:
         dependent_count = await _dependent_authorization_record_count(session, system_id)
+        if await _certification_snapshot_count(session, system_id):
+            # CDS-CSO-HAD: snapshots stay for the duration of certification,
+            # and the database refuses to remove them; say so, not a 500.
+            raise HTTPException(
+                409,
+                "cannot hard-delete: system has FedRAMP certification snapshots, "
+                "which are kept for the duration of certification — use the "
+                "default soft delete instead",
+            )
         if dependent_count:
             raise HTTPException(
                 409,

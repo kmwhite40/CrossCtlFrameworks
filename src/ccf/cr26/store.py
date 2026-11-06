@@ -218,4 +218,11 @@ async def put_document(
         diff=diff,
     )
     await session.flush()
+    if kind == "ocr" and report.ok:
+        # CDS-CSO-HAD: a valid OCR is the moment the certification data is
+        # snapshotted -- in this transaction, so a filed OCR never exists
+        # without its snapshot. Idempotent per OCR digest.
+        from .snapshots import take_for_ocr  # noqa: PLC0415 — snapshots imports the portal
+
+        await take_for_ocr(session, system=system, ocr=row, actor=updated_by)
     return row

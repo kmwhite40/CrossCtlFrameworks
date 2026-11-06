@@ -68,6 +68,7 @@ from .routes import (
     poams,
     policies,
     portal,
+    portal_requests,
     posture,
     prep,
     queries,
@@ -96,7 +97,9 @@ from .routes import (
     ui_policies,
     ui_riskprog,
     ui_tprmprog,
+    ui_vdr,
     users,
+    vdr,
     vendors,
     waivers,
     worksheets,
@@ -227,6 +230,9 @@ def create_app() -> FastAPI:
     app.include_router(portal.router)
     app.include_router(portal.public_router)
     app.include_router(portal.ui_router)
+    app.include_router(portal_requests.admin_router)
+    app.include_router(portal_requests.public_router)
+    app.include_router(portal_requests.ui_router)
     app.include_router(queries.router)
     app.include_router(queries.ui_router)
     app.include_router(ai_actions.router)
@@ -268,6 +274,7 @@ def create_app() -> FastAPI:
     app.include_router(poams.router)
     app.include_router(risks.router)
     app.include_router(scans.router)
+    app.include_router(vdr.router)
     app.include_router(personnel.router)
     app.include_router(questionnaires.router)
     app.include_router(users.router)
@@ -298,6 +305,7 @@ def create_app() -> FastAPI:
     app.include_router(ui_govern.router)
     app.include_router(ui_history.router)
     app.include_router(ui_intel.router)
+    app.include_router(ui_vdr.router)
     app.include_router(ui_platform.router)
     app.include_router(ui_riskprog.router)
     app.include_router(ui_tprmprog.router)

@@ -22,23 +22,35 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal, sign_session, verify_session
 from ...config import get_settings, is_dev_env
+from ...cr26 import snapshots as cr26_snapshots
 from ...models_portal import AssessmentEngagement, ExternalAccessGrant
 from ...portal import (
+    access_log,
     add_comment,
+    certification,
     create_engagement,
     create_grant,
     create_principal,
     grant_contents,
+    inventory,
     list_engagements,
     list_grants,
     record_access,
+    record_refusal,
     resolve_grant,
     resolve_grant_by_id,
     revoke_engagement,
@@ -250,6 +262,9 @@ class GrantIn(BaseModel):
     organization_name: str | None = None
     package_ids: list[int] = []
     evidence_ids: list[int] = []
+    #: Systems whose FedRAMP Certification Data (the CR26 deliverables) the
+    #: grant covers, served at ``/api/portal/certification-data``.
+    certification_system_ids: list[int] = []
     ttl_days: int | None = 30
     label: str | None = None
     engagement_id: int | None = None
@@ -274,6 +289,7 @@ async def create_grant_endpoint(
             session, org_id=org_id, principal_name=body.principal_name,
             kind=body.kind, email=body.email, organization_name=body.organization_name,
             package_ids=body.package_ids, evidence_ids=body.evidence_ids,
+            certification_system_ids=body.certification_system_ids,
             ttl_days=body.ttl_days, label=body.label,
             engagement_id=body.engagement_id, principal_id=body.principal_id,
             actor=principal.email,
@@ -305,7 +321,8 @@ async def list_grants_endpoint(
     grants = await list_grants(session, org_id=org_id)
     return [
         {"id": g.id, "kind": g.kind, "label": g.label, "engagement_id": g.engagement_id,
-         "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at}
+         "revoked": g.revoked, "expires_at": g.expires_at, "created_at": g.created_at,
+         "issued_by": g.issued_by, "revoked_at": g.revoked_at, "revoked_by": g.revoked_by}
         for g in grants
     ]
 
@@ -327,6 +344,77 @@ async def revoke_grant_endpoint(
     if not ok:
         raise HTTPException(status_code=404, detail="grant not found")
     return {"revoked": True}
+
+
+@router.get("/certification-access-inventory", tags=["certification-data"])
+async def certification_access_inventory_endpoint(
+    organization_id: int | None = None,
+    kind: str | None = None,
+    fmt: str = "json",
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> Response:
+    """FedRAMP CDS-TRC-AAI: who has, and who had, access to Certification Data.
+
+    Every grant that has covered certification data, current or ended, with
+    who issued it, who revoked it and when, and its downloads. ``fmt=csv`` is
+    the file to send FedRAMP on request; ``fmt=json`` carries the rule, its
+    pinned statement and the dataset version. ``kind=agency`` narrows it to
+    agencies. The caller's own organization only.
+    """
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    if org_id is None:
+        raise HTTPException(status_code=422, detail="organization_id is required")
+    if fmt not in {"json", "csv"}:
+        raise HTTPException(status_code=422, detail="fmt must be json or csv")
+    try:
+        rows = await inventory.access_inventory(session, org_id=org_id, kind=kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    stamp = datetime.now(UTC).strftime("%Y%m%d")
+    stem = f"certification-access-inventory-org{org_id}-{stamp}"
+    if fmt == "csv":
+        return PlainTextResponse(
+            inventory.to_csv(rows),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.csv"'},
+        )
+    return JSONResponse(
+        inventory.to_json(rows, org_id=org_id, kind=kind),
+        headers={"Content-Disposition": f'inline; filename="{stem}.json"'},
+    )
+
+
+@router.get("/access-log-summary", tags=["certification-data"])
+async def access_log_summary_endpoint(
+    organization_id: int | None = None,
+    since: datetime | None = None,
+    fmt: str = "json",
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> Response:
+    """FedRAMP CDS-TRC-ACL: access per grantee, per month, per target.
+
+    Raw events behind it are append-only and kept at least six months by the
+    database (migration 0109). ``oldest_event_at`` says how far back the record
+    reaches. The caller's own organization only.
+    """
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    if org_id is None:
+        raise HTTPException(status_code=422, detail="organization_id is required")
+    if fmt not in {"json", "csv"}:
+        raise HTTPException(status_code=422, detail="fmt must be json or csv")
+    if since is not None and since.tzinfo is None:
+        since = since.replace(tzinfo=UTC)
+    result = await access_log.summary(session, org_id=org_id, since=since)
+    stem = f"certification-access-log-summary-org{org_id}-{datetime.now(UTC):%Y%m%d}"
+    if fmt == "csv":
+        return PlainTextResponse(
+            access_log.summary_csv(result),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{stem}.csv"'},
+        )
+    return JSONResponse(jsonable_encoder(result))
 
 
 # --- external (token-authenticated) ----------------------------------------
@@ -360,8 +448,49 @@ async def _require_grant(request: Request, session: AsyncSession) -> Any:
     if grant is None:
         grant = await resolve_grant(session, _token(request))
     if grant is None:
+        await _log_refusal(request, session)
         raise HTTPException(status_code=401, detail="invalid or expired token")
     return grant
+
+
+def _cookie_grant_id(request: Request) -> int | None:
+    """The grant id a validly signed portal cookie names, live or not."""
+    cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
+    if not cookie:
+        return None
+    return verify_session(cookie, _portal_secret(get_settings().auth_session_secret))
+
+
+async def _log_refusal(request: Request, session: AsyncSession) -> None:
+    """CDS-TRC-ACL: a known grant refused is logged and committed now, before
+    the caller answers 401 -- the request session rolls back on the way out.
+
+    One record per request: the cookie's grant if it carries one, else the
+    token's. An unsigned cookie or an unknown token names no party.
+    """
+    grant_id = _cookie_grant_id(request)
+    if grant_id is not None:
+        logged = await record_refusal(session, grant_id=grant_id)
+    else:
+        logged = await record_refusal(session, token=_token(request))
+    if logged is not None:
+        await session.commit()
+
+
+@public_router.get("/access-log", tags=["certification-data"])
+async def portal_access_log(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """CDS-TRC-ACL: the access logged against the caller's own grant.
+
+    The rule asks that access information about a party be available to that
+    party on request; this is the request. Only this grant's events.
+    """
+    grant = await _require_grant(request, session)
+    log = await access_log.party_log(session, grant)
+    await record_access(session, grant, action="view", target_type="access_log")
+    await session.commit()
+    return log
 
 
 class CommentIn(BaseModel):
@@ -380,6 +509,163 @@ async def portal_session(
     await record_access(session, grant, action="view")
     await session.commit()
     return contents
+
+
+@public_router.get("/certification-data", tags=["certification-data"])
+async def certification_data_index(
+    request: Request, session: AsyncSession = Depends(get_session)
+) -> dict[str, Any]:
+    """List the FedRAMP Certification Data this grant covers (CDS-TRC-PAC).
+
+    Authenticate with the grant token as ``Authorization: Bearer <token>``.
+    Each entry names the system, the deliverable kind and its title, the
+    schema and FedRAMP rules versions, when it last changed, the SHA-256 of
+    its canonical JSON, and two URLs: ``json_url`` for the document and
+    ``markdown_url`` for the same document rendered for people.
+    ``withheld_invalid`` counts stored documents that fail FedRAMP's schema
+    and so are not shared.
+    """
+    grant = await _require_grant(request, session)
+    listing = await certification.list_documents(session, grant)
+    await record_access(
+        session, grant, action="view", target_type="certification_data",
+        detail=f"index: {len(listing.documents)} documents",
+    )
+    await session.commit()
+    return {
+        "systems": certification.shared_system_ids(grant),
+        "documents": listing.documents,
+        "withheld_invalid": listing.withheld_invalid,
+    }
+
+
+@public_router.get(
+    "/certification-data/{system_id}/{kind}",
+    tags=["certification-data"],
+    response_model=None,
+)
+async def certification_data_document(
+    system_id: int,
+    kind: str,
+    request: Request,
+    *,
+    key: str | None = None,
+    format: str = "json",
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """One certification document, as JSON (default) or ``format=md``.
+
+    ``key`` selects a per-instance deliverable (an incident report or a
+    significant change notification); single-instance kinds take none. The
+    Markdown is generated from the JSON and carries the same SHA-256
+    (CDS-CSO-CBF). A document outside the grant, missing, or not valid
+    against FedRAMP's schema answers 404, and the attempt is logged.
+    """
+    grant = await _require_grant(request, session)
+    if format not in ("json", "md"):
+        raise HTTPException(status_code=422, detail="format must be json or md")
+    target = f"{system_id}/{kind}" + (f"/{key}" if key else "")
+    found = await certification.get_document(
+        session, grant, system_id=system_id, kind=kind, document_key=key
+    )
+    if found is None:
+        await record_access(
+            session, grant, action="denied", target_type="certification_data",
+            target_id=target[:64],
+        )
+        await session.commit()
+        raise HTTPException(status_code=404, detail="certification document not found")
+    doc, system_name = found
+    await record_access(
+        session, grant, action="download", target_type="certification_data",
+        target_id=target[:64], detail=format,
+    )
+    await session.commit()
+    sha = certification.digest(doc.document)
+    headers = {"X-Content-SHA256": sha}
+    if format == "md":
+        return PlainTextResponse(
+            certification.to_markdown(doc, system_name),
+            media_type="text/markdown; charset=utf-8",
+            headers=headers,
+        )
+    return JSONResponse(jsonable_encoder(certification.envelope(doc, system_name)), headers=headers)
+
+
+@public_router.get("/certification-data/snapshots", tags=["certification-data"])
+async def certification_snapshots_index(
+    request: Request,
+    limit: int = cr26_snapshots.PAGE,
+    offset: int = 0,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Snapshots of the certification data, one per Ongoing Certification Report
+    filed (CDS-CSO-HAD), newest first. Each lists its documents with digests
+    and links; a snapshot is ``superseded`` when a corrected OCR for the same
+    period followed it. ``basis: backfill`` marks the one taken at upgrade from
+    the documents then current."""
+    grant = await _require_grant(request, session)
+    page = await cr26_snapshots.list_for_grant(session, grant, limit=limit, offset=offset)
+    await record_access(
+        session, grant, action="view", target_type="certification_data", target_id="snapshots"
+    )
+    await session.commit()
+    out: dict[str, Any] = jsonable_encoder(page)
+    return out
+
+
+@public_router.get(
+    "/certification-data/snapshots/{snapshot_id}/{kind}",
+    tags=["certification-data"],
+    response_model=None,
+)
+async def certification_snapshot_document(
+    snapshot_id: int,
+    kind: str,
+    request: Request,
+    *,
+    key: str | None = None,
+    format: str = "json",
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """One document as it stood in a snapshot, as JSON or ``format=md``, with
+    the same SHA-256 in both. Out of scope or missing answers 404, logged."""
+    grant = await _require_grant(request, session)
+    if format not in ("json", "md"):
+        raise HTTPException(status_code=422, detail="format must be json or md")
+    target = f"snapshot/{snapshot_id}/{kind}" + (f"/{key}" if key else "")
+    found = await cr26_snapshots.get_document(
+        session, grant, snapshot_id=snapshot_id, kind=kind, document_key=key
+    )
+    if found is None:
+        await record_access(
+            session, grant, action="denied", target_type="certification_data",
+            target_id=target[:64],
+        )
+        await session.commit()
+        raise HTTPException(status_code=404, detail="snapshot document not found")
+    doc, snapshot, system_name = found
+    await record_access(
+        session, grant, action="download", target_type="certification_data",
+        target_id=target[:64], detail=format,
+    )
+    await session.commit()
+    headers = {"X-Content-SHA256": doc.sha256}
+    if format == "md":
+        period = f"{snapshot.ocr_period_from} to {snapshot.ocr_period_to}"
+        context = [
+            f"- **Snapshot:** {snapshot.id}, taken {snapshot.taken_at.isoformat()} "
+            f"({snapshot.basis})",
+            f"- **Ongoing Certification Report period:** {period}",
+        ]
+        return PlainTextResponse(
+            certification.to_markdown(doc, system_name, context=context),
+            media_type="text/markdown; charset=utf-8",
+            headers=headers,
+        )
+    return JSONResponse(
+        jsonable_encoder(cr26_snapshots.envelope(doc, snapshot, system_name)), headers=headers
+    )
 
 
 @public_router.post("/comments")
@@ -402,10 +688,7 @@ async def _grant_from_cookie(request: Request, session: AsyncSession) -> Any:
     re-checks the referenced grant's live revoked/expiry state in the DB —
     the cookie proves who issued it, not that the grant is still valid.
     """
-    cookie = request.cookies.get(PORTAL_SESSION_COOKIE)
-    if not cookie:
-        return None
-    grant_id = verify_session(cookie, _portal_secret(get_settings().auth_session_secret))
+    grant_id = _cookie_grant_id(request)
     if grant_id is None:
         return None
     return await resolve_grant_by_id(session, grant_id)
@@ -418,6 +701,9 @@ async def portal_ui(
     if token:
         grant = await resolve_grant(session, token)
         if grant is None:
+            # The link's token, not a cookie left from an earlier grant.
+            if await record_refusal(session, token=token) is not None:
+                await session.commit()
             return templates.TemplateResponse(
                 request, "portal.html", {"token": token, "grant": None, "contents": None},
             )
@@ -452,6 +738,8 @@ async def portal_ui(
         contents = await grant_contents(session, grant)
         await record_access(session, grant, action="view")
         await session.commit()
+    elif _cookie_grant_id(request) is not None:
+        await _log_refusal(request, session)
     return templates.TemplateResponse(
         request,
         "portal.html",

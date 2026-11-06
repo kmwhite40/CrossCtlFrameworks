@@ -18,15 +18,18 @@ from __future__ import annotations
 import copy
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time
+from itertools import pairwise
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import POAM
+from ..constants import POAM_CLOSED_STATUSES
+from ..models import POAM, System
 from ..models_cr26 import Cr26Document
 from ..patching.sla import FLAW_SOURCES, RemediationWindow, accepted_weakness_state, classify
+from ..vdr import timeframes as vdr_tf
 from .store import put_document
 
 #: An omitted row: its id and one reason. The id is an int for a row read from
@@ -131,8 +134,64 @@ def _overdue_status(poam: Any, *, today: date, window: RemediationWindow) -> dic
     return None if value is None else {"isOverdue": value}
 
 
+@dataclass(frozen=True)
+class VdrFacts:
+    """A flaw's recorded evaluations and the 20x VDR engine's status for it.
+
+    The source §3.4 asked for before ``currentRating`` and its siblings could
+    be rendered (docs/superpowers/specs/2026-11-05-vdr-engine-design.md §9).
+    ``status`` is ``None`` when the system has no certification class: there
+    is then no class rule to judge overdue by, and the severity window stays.
+    """
+
+    evaluations: Sequence[vdr_tf.Evaluation]
+    status: vdr_tf.FlawStatus | None
+
+
+def _evaluation_fields(facts: VdrFacts) -> dict[str, Any]:
+    """The fields an evaluation is the source for. Empty with no evaluation."""
+    ordered = sorted(facts.evaluations, key=lambda e: e.evaluated_at)
+    if not ordered:
+        return {}
+    latest = ordered[-1]
+    out: dict[str, Any] = {
+        # The first evaluation: the schema says the VER-TFR-MAV clock runs
+        # from this date, and the engine's acceptance deadline does too.
+        "evaluationCompletedAt": _instant(ordered[0].evaluated_at),
+        "isInternetReachable": latest.internet_reachable,
+        "isLikelyExploitable": latest.likely_exploitable,
+    }
+    # nRating is enum [1..5]. N0 (VER-EVA-EPA, added 2026-10-05) is outside
+    # it, so an N0 flaw carries no rating rather than a wrong one.
+    if 1 <= latest.pain_rating <= 5:
+        out["currentRating"] = latest.pain_rating
+    events = [
+        {"reducedAt": _instant(cur.evaluated_at), "rating": cur.pain_rating}
+        for prev, cur in pairwise(ordered)
+        if cur.pain_rating < prev.pain_rating and 1 <= cur.pain_rating <= 5
+    ]
+    if events:
+        out["painReductionEvents"] = events
+    return out
+
+
+def _engine_overdue(status: vdr_tf.FlawStatus) -> dict[str, Any] | None:
+    """``overdueStatus`` from the class rules: VER-TFR-EVU, VDR-TFR-PVR,
+    VDR-TFR-KEV and VER-TFR-MAV, with the explanation the schema requires
+    when it is true. Closed and false-positive rows answer nothing."""
+    if status.state in ("closed", "false_positive"):
+        return None
+    if status.breaches:
+        return {"isOverdue": True, "explanation": status.overdue_explanation}
+    return {"isOverdue": False}
+
+
 def render_vulnerability(
-    poam: Any, *, today: date, window: RemediationWindow
+    poam: Any,
+    *,
+    today: date,
+    window: RemediationWindow,
+    vdr: VdrFacts | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """One POA&M as a ``vulnerabilityDetail``, or ``None`` and why not.
 
@@ -167,7 +226,19 @@ def render_vulnerability(
         },
         "vulnerabilityDescription": description,
     }
-    overdue = _overdue_status(poam, today=today, window=window)
+    if vdr is not None:
+        detail.update(_evaluation_fields(vdr))
+        latest = max(vdr.evaluations, key=lambda e: e.evaluated_at, default=None)
+        if (
+            latest is not None
+            and latest.false_positive
+            and str(poam.status) in POAM_CLOSED_STATUSES
+        ):
+            detail["finalDisposition"] = "False Positive"
+    if vdr is not None and vdr.status is not None:
+        overdue = _engine_overdue(vdr.status)
+    else:
+        overdue = _overdue_status(poam, today=today, window=window)
     if overdue is not None:
         detail["overdueStatus"] = overdue
     return detail, []
@@ -218,6 +289,7 @@ def render_all(
     today: date,
     window: RemediationWindow,
     period: tuple[datetime, datetime] | None = None,
+    vdr: Mapping[int, VdrFacts] | None = None,
 ) -> VerRendering:
     """Filter to flaws and to the period, partition accepted from not-accepted,
     render each.
@@ -307,7 +379,9 @@ def render_all(
             # favourable answer for a row nobody can measure.
             reasons.append("not measurable as accepted or not")
 
-        detail, render_reasons = render_vulnerability(poam, today=today, window=window)
+        detail, render_reasons = render_vulnerability(
+            poam, today=today, window=window, vdr=None if vdr is None else vdr.get(poam.id)
+        )
         reasons.extend(render_reasons)
 
         if reasons or detail is None:
@@ -774,6 +848,32 @@ def _promote_rationales(rows: Sequence[POAM], promoted: Sequence[tuple[int, str]
             row.acceptance_rationale = rationale
 
 
+async def _vdr_facts(
+    session: AsyncSession, system_id: int, rows: Sequence[POAM], today: date
+) -> dict[int, VdrFacts]:
+    """Evaluations and engine status for every flaw row, as of the end of
+    ``today`` -- the latest instant the report can speak for."""
+    from ..vdr import service as vdr_service  # noqa: PLC0415 -- avoid an import cycle
+
+    flaws = [p for p in rows if (p.source or "") in FLAW_SOURCES]
+    if not flaws:
+        return {}
+    system = await session.get(System, system_id)
+    cls = vdr_tf.class_timeframes(system.certification_class if system else None)
+    evals = await vdr_service.evaluations_by_poam(session, [p.id for p in flaws])
+    kev = await vdr_service.kev_due_by_poam(session, flaws)
+    now = datetime.combine(today, time.max, UTC)
+    return {
+        p.id: VdrFacts(
+            evaluations=evals.get(p.id, []),
+            status=None
+            if cls is None
+            else vdr_tf.assess(p, evals.get(p.id, []), cls=cls, kev_due=kev.get(p.id), now=now),
+        )
+        for p in flaws
+    }
+
+
 async def _seed(
     session: AsyncSession,
     *,
@@ -787,7 +887,11 @@ async def _seed(
     today = today or datetime.now(UTC).date()
     rows = await _poam_rows(session, system_id)
     rendering = render_all(
-        rows, today=today, window=RemediationWindow(), period=period
+        rows,
+        today=today,
+        window=RemediationWindow(),
+        period=period,
+        vdr=await _vdr_facts(session, system_id, rows, today),
     )
     current = await _current(session, system_id, kind)
     # `authored_kind` is the document the ACCEPTANCE RATIONALES are authored

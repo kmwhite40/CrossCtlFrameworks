@@ -21,9 +21,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..constants import POAM_ACTIVE_STATUSES
+from ..constants import POAM_ACTIVE_STATUSES, POAM_UNRESOLVED_STATUSES
 from ..fedramp20x import readiness
-from ..governance import conmon
+from ..governance import approvals, conmon
 from ..models import POAM, Approval, Risk, System
 from ..models_ato import (
     SYSTEM_ROLES,
@@ -134,6 +134,35 @@ async def _pending_extensions(session: AsyncSession, poam_ids: list[int]) -> lis
     ]
 
 
+async def _requestable(session: AsyncSession, system_id: int) -> list[dict[str, Any]]:
+    """The system's POA&Ms and risks a decision can still be asked about:
+    unresolved POA&Ms (an accepted one can still be extended or closed) and
+    risks not closed."""
+    poams = (
+        await session.execute(
+            select(POAM.id, POAM.title, POAM.status)
+            .where(POAM.system_id == system_id, POAM.status.in_(POAM_UNRESOLVED_STATUSES))
+            .order_by(POAM.id)
+        )
+    ).all()
+    risks = (
+        await session.execute(
+            select(Risk.id, Risk.title, Risk.status)
+            .where(Risk.system_id == system_id, Risk.status != "closed")
+            .order_by(Risk.id)
+        )
+    ).all()
+    items = [
+        {"key": f"poam:{i}", "kind": "poam", "label": f"POA&M #{i} — {t} ({st})"}
+        for i, t, st in poams
+    ]
+    items += [
+        {"key": f"risk:{i}", "kind": "risk", "label": f"Risk #{i} — {t} ({st})"}
+        for i, t, st in risks
+    ]
+    return items
+
+
 async def _pending_approvals(
     session: AsyncSession, system_id: int, poam_ids: list[int]
 ) -> list[dict[str, Any]]:
@@ -166,8 +195,12 @@ async def _pending_approvals(
             titles[("risk", str(rid))] = title
     return [
         {
-            "entity_type": a.entity_type, "entity_id": a.entity_id,
+            "entity_type": a.entity_type, "entity_id": a.entity_id, "purpose": a.purpose,
             "title": titles.get((a.entity_type, a.entity_id), ""),
+            # What the reviewer is being asked to authorize -- without it an
+            # approval to close and one to accept risk looked the same.
+            "purpose_label": approvals.purpose_label(a.entity_type, a.purpose)
+            or "No decision named: ask again with one",
             "submitted_by": a.submitted_by, "submitted_at": a.submitted_at,
         }
         for a in rows
@@ -352,6 +385,8 @@ async def build(
         "poams": poams,
         "extensions": await _pending_extensions(session, poams["ids"]),
         "approvals": await _pending_approvals(session, system.id, poams["ids"]),
+        "requestable": await _requestable(session, system.id),
+        "purposes": approvals.PURPOSES,
         "acceptances": [
             {"kind": a.kind, "label": a.label, "id": a.id, "title": a.title,
              "expires_on": a.expires_on, "expired": a.expired(today),

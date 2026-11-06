@@ -87,10 +87,16 @@ async def _org_with_people(name: str) -> tuple[int, int, int, dict, dict]:
         )
 
 
-async def _approve(c: AsyncClient, kind: str, eid: int, prep: dict, appr: dict) -> None:
-    sub = await c.post(f"/api/approvals/{kind}/{eid}/submit", headers=prep)
+async def _approve(
+    c: AsyncClient, kind: str, eid: int, prep: dict, appr: dict, *, purpose: str
+) -> None:
+    sub = await c.post(
+        f"/api/approvals/{kind}/{eid}/submit", json={"purpose": purpose}, headers=prep
+    )
     assert sub.status_code == 200, sub.text
-    ok = await c.post(f"/api/approvals/{kind}/{eid}/approve", headers=appr)
+    ok = await c.post(
+        f"/api/approvals/{kind}/{eid}/approve", json={"purpose": purpose}, headers=appr
+    )
     assert ok.status_code == 200, ok.text
 
 
@@ -110,7 +116,7 @@ async def test_a_closure_approval_does_not_close_the_poam_twice(_auth_enabled: N
     sys_id, _owner, _org, prep, appr = await _org_with_people("SingleUseOrgA")
     async with _client() as c:
         pid = await _closable_poam(c, sys_id, prep)
-        await _approve(c, "poam", pid, prep, appr)
+        await _approve(c, "poam", pid, prep, appr, purpose="close")
         assert (await c.post(f"/api/poams/{pid}/close", headers=prep)).status_code == 200
 
         reopened = await c.patch(f"/api/poams/{pid}", json={"status": "open"}, headers=prep)
@@ -124,11 +130,11 @@ async def test_a_spent_approval_can_be_requested_again(_auth_enabled: None) -> N
     sys_id, _owner, _org, prep, appr = await _org_with_people("SingleUseOrgB")
     async with _client() as c:
         pid = await _closable_poam(c, sys_id, prep)
-        await _approve(c, "poam", pid, prep, appr)
+        await _approve(c, "poam", pid, prep, appr, purpose="close")
         assert (await c.post(f"/api/poams/{pid}/close", headers=prep)).status_code == 200
         await c.patch(f"/api/poams/{pid}", json={"status": "open"}, headers=prep)
 
-        await _approve(c, "poam", pid, prep, appr)
+        await _approve(c, "poam", pid, prep, appr, purpose="close")
         assert (await c.post(f"/api/poams/{pid}/close", headers=prep)).status_code == 200
 
 
@@ -144,7 +150,7 @@ async def test_a_risk_acceptance_approval_does_not_accept_twice(_auth_enabled: N
         rid = (
             await c.post("/api/risks", json={"system_id": sys_id, "title": "R"}, headers=prep)
         ).json()["id"]
-        await _approve(c, "risk", rid, prep, appr)
+        await _approve(c, "risk", rid, prep, appr, purpose="accept")
         assert (await c.patch(f"/api/risks/{rid}", json=accept, headers=prep)).status_code == 200
 
         await c.patch(f"/api/risks/{rid}", json={"status": "open"}, headers=prep)
@@ -162,7 +168,7 @@ async def test_extending_an_accepted_poams_expiry_needs_a_fresh_approval(
         pid = (
             await c.post("/api/poams", json={"system_id": sys_id, "title": "W"}, headers=prep)
         ).json()["id"]
-        await _approve(c, "poam", pid, prep, appr)
+        await _approve(c, "poam", pid, prep, appr, purpose="accept_risk")
         accepted = await c.patch(
             f"/api/poams/{pid}",
             json={
@@ -186,7 +192,7 @@ async def test_extending_an_accepted_poams_expiry_needs_a_fresh_approval(
         assert (
             await c.patch(f"/api/poams/{pid}", json={"due_on": sooner}, headers=prep)
         ).status_code == 200
-        await _approve(c, "poam", pid, prep, appr)
+        await _approve(c, "poam", pid, prep, appr, purpose="extend_acceptance")
         assert (
             await c.patch(f"/api/poams/{pid}", json={"due_on": later}, headers=prep)
         ).status_code == 200
@@ -206,7 +212,7 @@ async def test_resaving_an_accepted_risk_needs_no_second_approval(_auth_enabled:
         rid = (
             await c.post("/api/risks", json={"system_id": sys_id, "title": "R"}, headers=prep)
         ).json()["id"]
-        await _approve(c, "risk", rid, prep, appr)
+        await _approve(c, "risk", rid, prep, appr, purpose="accept")
         assert (await c.patch(f"/api/risks/{rid}", json=accept, headers=prep)).status_code == 200
         resave = await c.patch(
             f"/api/risks/{rid}", json={**accept, "title": "R, renamed"}, headers=prep
@@ -219,7 +225,7 @@ async def test_resaving_a_closed_poam_needs_no_second_approval(_auth_enabled: No
     sys_id, _owner, _org, prep, appr = await _org_with_people("SingleUseOrgF")
     async with _client() as c:
         pid = await _closable_poam(c, sys_id, prep)
-        await _approve(c, "poam", pid, prep, appr)
+        await _approve(c, "poam", pid, prep, appr, purpose="close")
         assert (await c.post(f"/api/poams/{pid}/close", headers=prep)).status_code == 200
         resave = await c.patch(
             f"/api/poams/{pid}", json={"status": "closed", "title": "W, renamed"}, headers=prep
@@ -247,6 +253,7 @@ async def test_two_concurrent_spends_of_one_approval_succeed_once() -> None:
                 entity_type="poam",
                 entity_id="race-1",
                 state="approved",
+                purpose="close",
                 reviewed_by="appr@race.example",
             )
         )
@@ -254,7 +261,11 @@ async def test_two_concurrent_spends_of_one_approval_succeed_once() -> None:
     async def spend() -> bool:
         async with session_scope() as s:
             return await approvals.consume(
-                s, entity_type="poam", entity_id="race-1", actor="prep@race.example"
+                s,
+                entity_type="poam",
+                entity_id="race-1",
+                actor="prep@race.example",
+                purpose="close",
             )
 
     results = await asyncio.gather(spend(), spend())
@@ -274,7 +285,7 @@ async def test_extending_an_accepted_risks_review_date_needs_a_fresh_approval(
         rid = (
             await c.post("/api/risks", json={"system_id": sys_id, "title": "R"}, headers=prep)
         ).json()["id"]
-        await _approve(c, "risk", rid, prep, appr)
+        await _approve(c, "risk", rid, prep, appr, purpose="accept")
         accepted = await c.patch(
             f"/api/risks/{rid}",
             json={"status": "accepted", "owner_user_id": owner_id, "next_review_on": str(review)},
@@ -290,7 +301,7 @@ async def test_extending_an_accepted_risks_review_date_needs_a_fresh_approval(
         assert (
             await c.patch(f"/api/risks/{rid}", json={"next_review_on": sooner}, headers=prep)
         ).status_code == 200
-        await _approve(c, "risk", rid, prep, appr)
+        await _approve(c, "risk", rid, prep, appr, purpose="extend_review")
         assert (
             await c.patch(f"/api/risks/{rid}", json={"next_review_on": later}, headers=prep)
         ).status_code == 200

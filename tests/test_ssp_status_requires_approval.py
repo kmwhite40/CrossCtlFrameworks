@@ -92,10 +92,17 @@ async def test_saving_metadata_keeps_an_approval() -> None:
         ).status_code == 200
         assert await _status(pid) == "approved"
 
-        # What the browser sends when no <option> matches: the first one.
-        r = await c.post(f"/ssp/{pid}/meta", data={"customer_name": "Renamed", "status": "draft"})
+        # What the browser sends when no <option> matches: the first one. The
+        # other fields are re-sent unchanged: changing the plan's content does
+        # reopen it (migration 0113), and that is not what this pins.
+        same = {"customer_name": "SspStatusOrg-keep customer", "status": "draft"}
+        r = await c.post(f"/ssp/{pid}/meta", data=same)
         assert r.status_code == 303, r.text
-    assert await _status(pid) == "approved"
+        assert await _status(pid) == "approved"
+        # Renaming the customer is a content change, and sends it back to draft.
+        r = await c.post(f"/ssp/{pid}/meta", data={**same, "customer_name": "Renamed"})
+        assert r.status_code == 303, r.text
+    assert await _status(pid) == "draft"
 
 
 @pytest.mark.asyncio

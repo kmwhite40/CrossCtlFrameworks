@@ -1827,12 +1827,25 @@ async def _portal_admin_context(
     from ...models_packages import AuthorizationPackage  # noqa: PLC0415
     from ...models_portal import ExternalPrincipal  # noqa: PLC0415
     from ...portal import current_engagement_ids, grant_status, list_grants  # noqa: PLC0415
+    from ...portal import requests as access_requests  # noqa: PLC0415
+    from ...portal.inventory import access_inventory  # noqa: PLC0415
 
     rows: list[dict[str, Any]] = []
     packages: list[Any] = []
     evidence: list[Any] = []
+    systems: list[Any] = []
+    cert_access: list[dict[str, Any]] = []
+    request_links: list[Any] = []
+    request_rows: list[dict[str, Any]] = []
     if org_id is not None:
         grants = await list_grants(session, org_id=org_id)
+        cert_access = await access_inventory(session, org_id=org_id)
+        request_links = await access_requests.list_links(session, org_id=org_id)
+        today = access_requests.us_today()
+        request_rows = [
+            access_requests.request_view(r, today)
+            for r in await access_requests.list_requests(session, org_id=org_id)
+        ]
         principals = {
             p.id: p
             for p in (
@@ -1873,6 +1886,15 @@ async def _portal_admin_context(
                 )
             ).scalars().all()
         )
+        systems = list(
+            (
+                await session.execute(
+                    select(System)
+                    .where(System.organization_id == org_id, System.deleted_at.is_(None))
+                    .order_by(System.name)
+                )
+            ).scalars().all()
+        )
     # The plaintext token, when present, comes straight from the in-memory
     # grant just issued in this same request — never from a query param — so
     # it never transits a URL (IA-09: the DB stores only the hash).
@@ -1880,7 +1902,12 @@ async def _portal_admin_context(
     # The form's kind options come from the one vocabulary, not a hard-coded list in
     # the template: a second copy is a second place for a typo to live.
     return {"active": "portaladmin", "org_id": org_id, "rows": rows,
-            "packages": packages, "evidence": evidence, "issued_link": issued_link,
+            "packages": packages, "evidence": evidence, "systems": systems,
+            "issued_link": issued_link, "cert_access": cert_access,
+            "request_links": request_links, "access_requests": request_rows,
+            "issued_request_link": None, "now_utc": datetime.now(UTC),
+            "fedramp_notice_target": access_requests.notice_target(),
+            "fedramp_notice_days": access_requests.notice_window(),
             "kinds": EXTERNAL_PRINCIPAL_KINDS}
 
 
@@ -1909,7 +1936,12 @@ async def portal_admin_create(
     label: str = Form(""),
     package_ids: list[int] = Form(default=[]),
     evidence_ids: list[int] = Form(default=[]),
+    certification_system_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
+    # The API's role: the auth gate refuses only viewers on ``/admin/*``
+    # posts, and a grant is a bearer credential into the org's package and
+    # certification data -- an editor the API refuses must not issue one here.
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     from ...portal import create_grant  # noqa: PLC0415
 
@@ -1919,7 +1951,8 @@ async def portal_admin_create(
     try:
         grant = await create_grant(
             session, org_id=org_id, principal_name=principal_name, kind=kind,
-            package_ids=package_ids, evidence_ids=evidence_ids, ttl_days=ttl_days,
+            package_ids=package_ids, evidence_ids=evidence_ids,
+            certification_system_ids=certification_system_ids, ttl_days=ttl_days,
             label=label or None, actor=_actor(request),
         )
     except ValueError as exc:  # a kind outside the vocabulary — the form offers only members
@@ -1942,6 +1975,7 @@ async def portal_admin_revoke(
     grant_id: int,
     organization_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),  # as the API; see portal_admin_create
 ) -> RedirectResponse:
     from ...models_portal import ExternalAccessGrant  # noqa: PLC0415
     from ...portal import revoke_grant  # noqa: PLC0415

@@ -98,4 +98,7 @@ async def import_dataset(
         )
     except ValueError as e:
         raise HTTPException(422, str(e)) from e
+    # The request session rolls back what is not committed: without this the
+    # response reported rows created that the register never received.
+    await session.commit()
     return {"dataset": dataset, **summary}
