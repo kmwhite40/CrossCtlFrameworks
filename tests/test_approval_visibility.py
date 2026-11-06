@@ -77,7 +77,7 @@ async def test_poam_approval_reflects_onto_entity_payload_via_production_flow() 
         # Not fabricating a terminal transition: status is untouched.
         assert after_submit.json()["status"] == "open"
 
-        approved = await c.post(f"/api/approvals/poam/{pid}/approve")
+        approved = await c.post(f"/api/approvals/poam/{pid}/approve", json={"purpose": "close"})
         assert approved.status_code == 200, approved.text
         assert approved.json()["state"] == "approved"
 
@@ -123,7 +123,7 @@ async def test_risk_approval_reflects_onto_entity_payload_via_production_flow() 
         assert created.json()["approval_state"] == "draft"
 
         await c.post(f"/api/approvals/risk/{rid}/submit", json={"purpose": "accept"})
-        approved = await c.post(f"/api/approvals/risk/{rid}/approve")
+        approved = await c.post(f"/api/approvals/risk/{rid}/approve", json={"purpose": "accept"})
         assert approved.status_code == 200, approved.text
 
         fetched = await c.get(f"/api/risks/{rid}")

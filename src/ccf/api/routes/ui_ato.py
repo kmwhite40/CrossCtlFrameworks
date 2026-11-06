@@ -292,6 +292,7 @@ async def ato_decide_approval(  # noqa: PLR0917 -- FastAPI binds these by keywor
     decision: str,
     request: Request,
     note: str = Form(""),
+    purpose: str = Form(""),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> RedirectResponse:
@@ -308,6 +309,9 @@ async def ato_decide_approval(  # noqa: PLR0917 -- FastAPI binds these by keywor
             session, entity_type=entity_type, entity_id=str(entity_id),
             approve=decision == "approve", actor=principal.email, role=principal.role,
             note=note.strip() or None, org_id=principal.org_id, user_id=principal.user_id,
+            # The purpose the page showed, so a request re-submitted for
+            # something else since is refused rather than approved unseen.
+            purpose=purpose or None,
         )
     except approvals.WorkflowError as e:
         return _back(system_id, error=str(e), anchor="approvals")

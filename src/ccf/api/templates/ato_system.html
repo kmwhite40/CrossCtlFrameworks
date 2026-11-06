@@ -199,6 +199,7 @@
       <td class="dim">{{ a.submitted_by or '—' }}</td>
       <td>
         <form method="post" action="/ato/{{ s.id }}/approvals/{{ a.entity_type }}/{{ a.entity_id }}/approve" class="filters" style="margin-bottom:4px">
+          <input type="hidden" name="purpose" value="{{ a.purpose or '' }}">
           <input class="input" name="note" placeholder="Note (optional)"><button class="btn btn--sm btn--primary" type="submit">Approve</button></form>
         <form method="post" action="/ato/{{ s.id }}/approvals/{{ a.entity_type }}/{{ a.entity_id }}/reject" class="filters">
           <input class="input" name="note" placeholder="Why"><button class="btn btn--sm btn--ghost" type="submit">Reject</button></form>

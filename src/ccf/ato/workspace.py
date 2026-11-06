@@ -166,7 +166,7 @@ async def _pending_approvals(
             titles[("risk", str(rid))] = title
     return [
         {
-            "entity_type": a.entity_type, "entity_id": a.entity_id,
+            "entity_type": a.entity_type, "entity_id": a.entity_id, "purpose": a.purpose,
             "title": titles.get((a.entity_type, a.entity_id), ""),
             # What the reviewer is being asked to authorize -- without it an
             # approval to close and one to accept risk looked the same.

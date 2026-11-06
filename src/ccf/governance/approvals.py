@@ -116,6 +116,10 @@ class PurposeError(WorkflowError):
     """The request names no purpose, or one its entity type does not have."""
 
 
+class PurposeChangedError(WorkflowError):
+    """An approval named a purpose other than the one the request asks for."""
+
+
 async def _entity_scope(
     session: AsyncSession, entity_type: str, entity_id: str | int
 ) -> tuple[int | None, int | None] | None:
@@ -432,13 +436,28 @@ async def decide(
     note: str | None = None,
     org_id: int | None = None,
     user_id: int | None = None,
+    purpose: str | None = None,
 ) -> Approval:
+    """Approve or reject a submitted request.
+
+    Approving a POA&M or risk request must name the ``purpose`` the reviewer
+    was shown, and is refused if the request now asks for something else: the
+    submitter can re-submit with another purpose while it awaits review, and an
+    approval read off a stale page would otherwise authorize a decision its
+    reviewer never saw. Rejecting authorizes nothing, so it needs no purpose.
+    """
     if entity_type not in ENTITY_TYPES:
         raise WorkflowError(f"unsupported entity type: {entity_type}")
     system_id = await _require_scope(session, entity_type, entity_id, org_id)
     a = await _get_or_create(session, entity_type, entity_id, org_id)
     if a.state != "submitted":
         raise WorkflowError(f"cannot decide from state '{a.state}' (must be submitted)")
+    if approve and entity_type in PURPOSES and purpose != a.purpose:
+        asked = purpose_label(entity_type, a.purpose) or "no decision"
+        raise PurposeChangedError(
+            f"this request asks to approve: {asked}. Approve it as that, not as "
+            f"{purpose!r} -- reload and decide what is being asked"
+        )
 
     auth_on = get_settings().auth_enabled
     capacity: str | None = None

@@ -419,7 +419,9 @@ async def test_an_isso_approval_cannot_accept_risk(_auth_enabled: None) -> None:
         }
         close = {"purpose": "close"}
         await c.post(f"/api/approvals/poam/{pid}/submit", json=close, headers=w.hdr["prep"])
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["isso"])
+        r = await c.post(
+            f"/api/approvals/poam/{pid}/approve", json={"purpose": "close"}, headers=w.hdr["isso"]
+        )
         assert r.status_code == 200, r.text
         r = await c.patch(f"/api/poams/{pid}", json=accept, headers=w.hdr["prep"])
         assert r.status_code == 409, r.text
@@ -427,9 +429,9 @@ async def test_an_isso_approval_cannot_accept_risk(_auth_enabled: None) -> None:
         ask = {"purpose": "accept_risk"}
         r = await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
         assert r.status_code == 200, r.text
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["isso"])
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", json=ask, headers=w.hdr["isso"])
         assert r.status_code == 403 and "Authorizing Official" in r.json()["detail"]
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", json=ask, headers=w.hdr["ao"])
         assert r.status_code == 200, r.text
         r = await c.patch(f"/api/poams/{pid}", json=accept, headers=w.hdr["prep"])
         assert r.status_code == 200, r.text
@@ -468,7 +470,7 @@ async def test_the_spend_refuses_an_approval_regranted_after_the_ao_check(
         pid = await _poam(c, w, date.today() + timedelta(days=10))
         ask = {"purpose": "accept_risk"}
         await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", json=ask, headers=w.hdr["ao"])
         assert r.status_code == 200, r.text
         await _regrant_to_isso(w, pid)
 
@@ -501,7 +503,7 @@ async def test_extending_an_acceptance_spends_only_the_aos_approval(
         pid = await _poam(c, w, date.today() + timedelta(days=10))
         ask = {"purpose": "accept_risk"}
         await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
-        await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
+        await c.post(f"/api/approvals/poam/{pid}/approve", json=ask, headers=w.hdr["ao"])
         r = await c.patch(f"/api/poams/{pid}", json={
             "status": "risk_accepted", "owner_user_id": w.ids["prep"],
             "due_on": str(accepted_until),
@@ -510,7 +512,7 @@ async def test_extending_an_acceptance_spends_only_the_aos_approval(
         assert r.status_code == 200, r.text
         ext = {"purpose": "extend_acceptance"}
         await c.post(f"/api/approvals/poam/{pid}/submit", json=ext, headers=w.hdr["prep"])
-        r = await c.post(f"/api/approvals/poam/{pid}/approve", headers=w.hdr["ao"])
+        r = await c.post(f"/api/approvals/poam/{pid}/approve", json=ext, headers=w.hdr["ao"])
         assert r.status_code == 200, r.text
         await _regrant_to_isso(w, pid)
 
@@ -545,7 +547,9 @@ async def test_the_ao_of_one_system_cannot_approve_for_another(_auth_enabled: No
             json={"purpose": "close"},
             headers=w.hdr["prep"],
         )
-        r = await c.post(f"/api/approvals/poam/{poam_id}/approve", headers=w.hdr["ao"])
+        r = await c.post(
+            f"/api/approvals/poam/{poam_id}/approve", json={"purpose": "close"}, headers=w.hdr["ao"]
+        )
     assert r.status_code == 403, r.text
 
 

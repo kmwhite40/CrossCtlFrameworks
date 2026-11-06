@@ -104,7 +104,7 @@ async def _decide(kind: str, eid: int, name: str, key: str, ids: dict[str, int])
         await approvals.decide(
             s, entity_type=kind, entity_id=str(eid), approve=True,
             actor=_email(key, name), role="control_owner", org_id=ids["org"],
-            user_id=ids[key],
+            user_id=ids[key], purpose=_PURPOSE[kind],
         )
 
 
@@ -141,7 +141,7 @@ async def test_the_ao_of_another_system_cannot_approve(_auth_enabled: None) -> N
             await approvals.decide(
                 s, entity_type="risk", entity_id=str(other["risk"]), approve=True,
                 actor=_email("ao", "ApprAuthD"), role="control_owner", org_id=ids["org"],
-                user_id=ids["ao"],
+                user_id=ids["ao"], purpose="accept",
             )
 
 
@@ -179,7 +179,7 @@ async def test_single_operator_mode_skips_authority_and_sod() -> None:
         )
         a = await approvals.decide(
             s, entity_type="risk", entity_id=str(ids["risk"]), approve=True,
-            actor="system", role="viewer", org_id=None,
+            actor="system", role="viewer", org_id=None, purpose="accept",
         )
         assert a.state == "approved"
 

@@ -752,7 +752,11 @@ async def test_patch_poam_to_risk_accepted_succeeds_with_approval_when_auth_enab
                 json={"purpose": "accept_risk"},
                 headers=prep_headers,
             )
-            approve = await c.post(f"/api/approvals/poam/{pid}/approve", headers=appr_headers)
+            approve = await c.post(
+                f"/api/approvals/poam/{pid}/approve",
+                json={"purpose": "accept_risk"},
+                headers=appr_headers,
+            )
             assert approve.status_code == 200, approve.text
 
             r = await c.patch(

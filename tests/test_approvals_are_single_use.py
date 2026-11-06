@@ -94,7 +94,9 @@ async def _approve(
         f"/api/approvals/{kind}/{eid}/submit", json={"purpose": purpose}, headers=prep
     )
     assert sub.status_code == 200, sub.text
-    ok = await c.post(f"/api/approvals/{kind}/{eid}/approve", headers=appr)
+    ok = await c.post(
+        f"/api/approvals/{kind}/{eid}/approve", json={"purpose": purpose}, headers=appr
+    )
     assert ok.status_code == 200, ok.text
 
 

@@ -93,7 +93,9 @@ async def _approve(c: AsyncClient, w: W, kind: str, eid: int, purpose: str) -> d
         f"/api/approvals/{kind}/{eid}/submit", json={"purpose": purpose}, headers=w.prep
     )
     assert sub.status_code == 200, sub.text
-    ok = await c.post(f"/api/approvals/{kind}/{eid}/approve", headers=w.appr)
+    ok = await c.post(
+        f"/api/approvals/{kind}/{eid}/approve", json={"purpose": purpose}, headers=w.appr
+    )
     assert ok.status_code == 200, ok.text
     return ok.json()
 
@@ -261,3 +263,56 @@ async def test_the_reviewer_sees_what_they_are_asked_to_authorize(_auth_enabled:
     for label in (approvals.PURPOSES["poam"]["accept_risk"], approvals.PURPOSES["poam"]["close"]):
         assert html.escape(label) in workspace.text
         assert html.escape(label) in listing.text
+
+
+@pytest.mark.asyncio
+async def test_an_approval_read_off_a_stale_page_is_refused(_auth_enabled: None) -> None:
+    """The submitter may re-submit for another purpose while a request awaits
+    review. A reviewer who read "close" and pressed Approve must not authorize
+    the extension asked for since: the approval names what it approves."""
+    w = await _world()
+    async with _client() as c:
+        pid = await _poam(c, w)
+        for purpose in ("close", "extend_acceptance"):
+            r = await c.post(
+                f"/api/approvals/poam/{pid}/submit", json={"purpose": purpose}, headers=w.prep
+            )
+            assert r.status_code == 200, r.text
+        stale = await c.post(
+            f"/api/approvals/poam/{pid}/approve", json={"purpose": "close"}, headers=w.appr
+        )
+        unnamed = await c.post(f"/api/approvals/poam/{pid}/approve", json={}, headers=w.appr)
+        still = await _state(c, w, "poam", pid)
+        # From the workspace page: its form carries the purpose it showed.
+        form = await c.post(
+            f"/ato/{w.sys_id}/approvals/poam/{pid}/approve",
+            data={"purpose": "close", "note": ""},
+            headers=w.appr,
+            follow_redirects=False,
+        )
+        after_form = await _state(c, w, "poam", pid)
+        # Rejecting grants nothing, so it needs no purpose.
+        rejected = await c.post(f"/api/approvals/poam/{pid}/reject", json={}, headers=w.appr)
+    assert stale.status_code == 409 and "Extend the risk acceptance" in stale.json()["detail"]
+    assert unnamed.status_code == 409
+    assert still == "submitted"
+    assert form.status_code == 303 and after_form == "submitted"
+    assert rejected.status_code == 200 and rejected.json()["state"] == "rejected"
+
+
+@pytest.mark.asyncio
+async def test_the_workspace_form_approves_what_it_showed(_auth_enabled: None) -> None:
+    w = await _world()
+    async with _client() as c:
+        pid = await _poam(c, w)
+        await c.post(f"/api/approvals/poam/{pid}/submit", json={"purpose": "close"}, headers=w.prep)
+        page = await c.get(f"/ato/{w.sys_id}", headers=w.appr)
+        form = await c.post(
+            f"/ato/{w.sys_id}/approvals/poam/{pid}/approve",
+            data={"purpose": "close", "note": ""},
+            headers=w.appr,
+            follow_redirects=False,
+        )
+        state = await _state(c, w, "poam", pid)
+    assert 'name="purpose" value="close"' in page.text
+    assert form.status_code == 303 and state == "approved"
