@@ -403,6 +403,74 @@ async def test_a_later_due_date_needs_an_approved_extension(_auth_enabled: None)
     assert got["original_due_on"] == str(due)
 
 
+
+async def _accept_risk(c: AsyncClient, w: World, pid: int, until: date) -> None:
+    ask = {"purpose": "accept_risk"}
+    await c.post(f"/api/approvals/poam/{pid}/submit", json=ask, headers=w.hdr["prep"])
+    r = await c.post(f"/api/approvals/poam/{pid}/approve", json=ask, headers=w.hdr["ao"])
+    assert r.status_code == 200, r.text
+    r = await c.patch(f"/api/poams/{pid}", json={
+        "status": "risk_accepted", "owner_user_id": w.ids["prep"], "due_on": str(until),
+        "acceptance_rationale": "compensating control in place",
+    }, headers=w.hdr["prep"])
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_an_extension_approved_after_the_risk_was_accepted_is_refused(
+    _auth_enabled: None,
+) -> None:
+    """Requested while open, decided after acceptance: approving it would push
+    out the acceptance's expiry on the ISSM's say -- the AO's decision."""
+    w = await _world("AtoExtAfterAccept")
+    due = date.today() + timedelta(days=10)
+    until = date.today() + timedelta(days=60)
+    async with _client() as c:
+        await _signers(c, w)
+        pid = await _poam(c, w, due)
+        r = await c.post(
+            f"/api/poams/{pid}/extensions",
+            json={"requested_due_on": str(until + timedelta(days=300)), "reason": "slips"},
+            headers=w.hdr["prep"],
+        )
+        assert r.status_code == 201, r.text
+        eid = r.json()["id"]
+        await _accept_risk(c, w, pid, until)
+        r = await c.post(f"/api/poams/{pid}/extensions/{eid}/approve", headers=w.hdr["issm"])
+        got = (await c.get(f"/api/poams/{pid}", headers=w.hdr["prep"])).json()
+    assert r.status_code == 409, r.text
+    assert got["due_on"] == str(until)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["risk_accepted", "closed"])
+async def test_reopening_a_poam_cannot_move_its_date_later(_auth_enabled: None, held: str) -> None:
+    """The later-date rule looked only at the status the POA&M had. Reopened
+    from an acceptance (or a closure) with a fresh date, an overdue weakness
+    stopped being overdue with no extension decided."""
+    w = await _world(f"AtoReopen{held}")
+    until = date.today() + timedelta(days=5)
+    async with _client() as c:
+        await _signers(c, w)
+        pid = await _poam(c, w, until)
+        if held == "risk_accepted":
+            await _accept_risk(c, w, pid, until)
+        else:
+            from ccf.models import POAM as _P  # noqa: PLC0415
+
+            async with session_scope() as s:
+                (await s.get(_P, pid)).status = "closed"  # type: ignore[union-attr]
+        later = str(until + timedelta(days=365))
+        refused = await c.patch(
+            f"/api/poams/{pid}", json={"status": "open", "due_on": later}, headers=w.hdr["prep"]
+        )
+        kept = await c.patch(f"/api/poams/{pid}", json={"status": "open"}, headers=w.hdr["prep"])
+        got = (await c.get(f"/api/poams/{pid}", headers=w.hdr["prep"])).json()
+    assert refused.status_code == 409 and "extension" in refused.json()["detail"]
+    assert kept.status_code == 200, kept.text
+    assert got["due_on"] == str(until)
+
+
 @pytest.mark.asyncio
 async def test_an_isso_approval_cannot_accept_risk(_auth_enabled: None) -> None:
     """Two ways an ISSO's approval used to reach a risk acceptance, both shut:

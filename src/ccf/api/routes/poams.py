@@ -569,7 +569,9 @@ async def update_poam(
         )
     if (
         get_settings().auth_enabled
-        and old_status in POAM_ACTIVE_STATUSES
+        # The status it ends up with, not only the one it had: reopened from
+        # an acceptance or a closure with a fresh date, an overdue weakness
+        # stopped being overdue with no extension decided.
         and data.get("status", old_status) in POAM_ACTIVE_STATUSES
         and "due_on" in data
         and obj.due_on is not None
