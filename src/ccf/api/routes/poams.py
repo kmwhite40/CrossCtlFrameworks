@@ -19,7 +19,6 @@ from ...ato import extensions as poam_extensions
 from ...auth import Principal
 from ...config import get_settings
 from ...constants import (
-    POAM_ACTIVE_STATUSES,
     POAM_CLOSED_STATUSES,
     POAM_STATUSES,
     poam_leaves_risk_accepted,
@@ -569,10 +568,12 @@ async def update_poam(
         )
     if (
         get_settings().auth_enabled
-        # The status it ends up with, not only the one it had: reopened from
-        # an acceptance or a closure with a fresh date, an overdue weakness
-        # stopped being overdue with no extension decided.
-        and data.get("status", old_status) in POAM_ACTIVE_STATUSES
+        # Any later date but an acceptance's, whatever the status was or
+        # becomes: reopened with a fresh date, or moved while closed and then
+        # reopened, an overdue weakness stopped being overdue with no
+        # extension decided. Entering or staying risk_accepted sets the
+        # acceptance's expiry, which its own gates below decide.
+        and data.get("status", old_status) != "risk_accepted"
         and "due_on" in data
         and obj.due_on is not None
         and data["due_on"] > obj.due_on
@@ -582,8 +583,9 @@ async def update_poam(
         # author typed a new date. Shortening, or setting a first date, is free.
         raise HTTPException(
             409,
-            "moving an open POA&M's due date later needs an approved extension: "
-            f"POST /api/poams/{obj.id}/extensions with the new date and a reason",
+            "moving a POA&M's due date later needs an approved extension: "
+            f"POST /api/poams/{obj.id}/extensions with the new date and a reason "
+            "(an open POA&M; reopen it first, keeping its date)",
         )
     if data.get("status") in POAM_CLOSED_STATUSES and not was_closed:
         # The transition, not every write naming it: an approval is spent on

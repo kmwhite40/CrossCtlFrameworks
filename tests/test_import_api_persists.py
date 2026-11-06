@@ -289,3 +289,21 @@ async def test_an_import_cannot_push_a_policys_review_date_later(_auth_enabled: 
     async with session_scope() as s:
         held = (await s.execute(select(Policy.next_review_on).where(Policy.id == pid))).scalar_one()
     assert held == sooner
+
+
+@pytest.mark.asyncio
+async def test_an_import_cannot_move_a_closed_poams_date_later(_auth_enabled: None) -> None:
+    """The import's half of the two-step: a closed POA&M's date moved out by a
+    file, then reopened through the API carrying it."""
+    _, sys_id, token = await _org_user("control_owner")
+    due = date.today() - timedelta(days=2)
+    async with session_scope() as s:
+        poam = POAM(system_id=sys_id, title="closed weakness", status="closed", due_on=due)
+        s.add(poam)
+        await s.flush()
+        pid = poam.id
+    r = await _import(token, "poams", f"id,title,due_on\n{pid},closed weakness,2099-01-01\n")
+    assert r.json()["skipped"] == 1, r.json()
+    async with session_scope() as s:
+        held = (await s.execute(select(POAM.due_on).where(POAM.id == pid))).scalar_one()
+    assert held == due

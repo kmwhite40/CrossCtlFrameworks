@@ -471,6 +471,52 @@ async def test_reopening_a_poam_cannot_move_its_date_later(_auth_enabled: None, 
     assert got["due_on"] == str(until)
 
 
+
+@pytest.mark.asyncio
+async def test_a_closed_poams_date_cannot_be_moved_later_then_reopened(
+    _auth_enabled: None,
+) -> None:
+    """The two-step way round the rule: move a closed POA&M's date out while it
+    is closed (the rule looked only at the status it ends up with), then
+    reopen it carrying the new date. Moving the date is refused while closed."""
+    from ccf.models import POAM as _P  # noqa: PLC0415
+
+    w = await _world("AtoClosedLater")
+    due = date.today() + timedelta(days=5)
+    async with _client() as c:
+        await _signers(c, w)
+        pid = await _poam(c, w, due)
+        async with session_scope() as s:
+            (await s.get(_P, pid)).status = "closed"  # type: ignore[union-attr]
+        moved = await c.patch(
+            f"/api/poams/{pid}", json={"due_on": str(due + timedelta(days=365))},
+            headers=w.hdr["prep"],
+        )
+        got = (await c.get(f"/api/poams/{pid}", headers=w.hdr["prep"])).json()
+    assert moved.status_code == 409 and "extension" in moved.json()["detail"]
+    assert got["due_on"] == str(due)
+
+
+@pytest.mark.asyncio
+async def test_leaving_an_acceptance_with_a_later_date_is_refused(_auth_enabled: None) -> None:
+    """risk_accepted -> closed (or anything but risk_accepted) carrying a later
+    date is neither an extension of the acceptance nor of the remediation."""
+    w = await _world("AtoLeaveLater")
+    until = date.today() + timedelta(days=5)
+    async with _client() as c:
+        await _signers(c, w)
+        pid = await _poam(c, w, until)
+        await _accept_risk(c, w, pid, until)
+        r = await c.patch(
+            f"/api/poams/{pid}",
+            json={"status": "in_progress", "due_on": str(until + timedelta(days=200))},
+            headers=w.hdr["prep"],
+        )
+        got = (await c.get(f"/api/poams/{pid}", headers=w.hdr["prep"])).json()
+    assert r.status_code == 409, r.text
+    assert got["due_on"] == str(until) and got["status"] == "risk_accepted"
+
+
 @pytest.mark.asyncio
 async def test_an_isso_approval_cannot_accept_risk(_auth_enabled: None) -> None:
     """Two ways an ISSO's approval used to reach a risk acceptance, both shut:
