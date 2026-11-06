@@ -7,9 +7,8 @@ trigger (migration 0113) returns the plan -- and its approval -- to draft on
 any content change, from any writer: the editor's routes, statement
 generation, autofill, templates and the UI's forms alike.
 
-Not content: the status itself, timestamps, the entries' order, and the
-revision log (``version`` / ``revision_history``), which records the plan's
-history rather than changing what it says.
+Not content: the status itself, timestamps and the entries' order. The
+revision log is content: the document prints it.
 """
 
 from __future__ import annotations
@@ -127,11 +126,7 @@ async def test_what_is_not_content_leaves_it_approved() -> None:
             f"/api/ssp/projects/{pid}/entries/AC-2",
             json={"part_narratives": [{"text": "approved text"}]},
         )
-        # The revision log records the approval; it does not change the text.
-        rev = await c.post(
-            f"/api/ssp/projects/{pid}/revisions", json={"version": "1.0", "notes": "Approved"}
-        )
-    assert (resend.status_code, same.status_code, rev.status_code) == (200, 200, 201)
+    assert (resend.status_code, same.status_code) == (200, 200)
     async with session_scope() as s:
         await s.execute(
             update(SSPControlEntry).where(SSPControlEntry.id == eid).values(sort_order=99)
@@ -192,3 +187,23 @@ async def test_an_approved_plan_can_still_be_deleted() -> None:
             await s.execute(select(SSPProject.id).where(SSPProject.id == pid))
         ).scalar_one_or_none()
     assert gone is None
+
+
+@pytest.mark.asyncio
+async def test_a_revision_recorded_after_approval_reopens_it_in_its_recorders_name() -> None:
+    """The document prints the revision log. Exempting it let an author add
+    "1.0, approved by the AO" to an approved plan -- and name anyone as its
+    author -- while it stayed approved."""
+    pid, _ = await _approved_plan()
+    async with _client() as c:
+        r = await c.post(
+            f"/api/ssp/projects/{pid}/revisions",
+            json={"version": "1.0", "notes": "Approved by the AO", "author": "the.ao@agency.gov"},
+        )
+    assert r.status_code == 201, r.text
+    assert await _states(pid) == ("draft", "draft")
+    async with session_scope() as s:
+        history = (
+            await s.execute(select(SSPProject.revision_history).where(SSPProject.id == pid))
+        ).scalar_one()
+    assert history[-1]["author"] != "the.ao@agency.gov"

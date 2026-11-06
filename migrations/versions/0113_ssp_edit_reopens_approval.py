@@ -14,10 +14,12 @@ miss.
   column but ``updated_at`` / ``sort_order``, on a plan in ``approved`` or
   ``final``, sets the plan to ``draft``.
 - ``ssp_projects``: an update that changes the plan's content while leaving
-  its status alone sets it to ``draft``. Not content: the status, the
-  timestamps, and the revision log (``version`` / ``revision_history``), which
-  records the plan's history rather than changing what it says. A column added
-  later counts as content until listed here -- the safe direction.
+  its status alone sets it to ``draft``. Not content: the status and the
+  timestamps. The revision log (``version`` / ``revision_history``) *is*: the
+  document prints it, so an entry added after approval -- "1.0, approved by
+  the AO", say -- is text the reviewer never read. Record the version before
+  submitting. A column added later counts as content until listed here -- the
+  safe direction.
 - Whenever a plan leaves ``approved`` / ``final``, its approval returns to
   draft, so the plan must be submitted and decided again -- what withdrawing
   it through the API already did.
@@ -45,11 +47,9 @@ def upgrade() -> None:
         LANGUAGE plpgsql AS $$
         BEGIN
           IF OLD.status IN {_APPROVED} AND NEW.status = OLD.status
-             AND (to_jsonb(NEW) - 'status' - 'updated_at' - 'created_at'
-                    - 'version' - 'revision_history')
+             AND (to_jsonb(NEW) - 'status' - 'updated_at' - 'created_at')
                  IS DISTINCT FROM
-                 (to_jsonb(OLD) - 'status' - 'updated_at' - 'created_at'
-                    - 'version' - 'revision_history') THEN
+                 (to_jsonb(OLD) - 'status' - 'updated_at' - 'created_at') THEN
             NEW.status := 'draft';
           END IF;
           RETURN NEW;
