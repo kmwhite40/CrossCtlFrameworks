@@ -242,13 +242,12 @@ services:
       disable: true
 
   # Event bus outbox worker: webhook deliveries and the derived views.
-  # `docker compose --profile events up -d event-worker`. Without this profile
-  # the api drains inline (see CCF_EVENT_DRAIN_INLINE); with it, CCF_EVENT_WORKER_ENABLED
-  # is true on api and worker so exactly one of them drains.
+  # Runs with the stack (no profile): CCF_EVENT_WORKER_ENABLED is true on `api`,
+  # so the api skips its inline drain and this worker is the only drainer. The
+  # inline loop is for running the API without compose (flag unset).
   event-worker:
     build: .
     container_name: ccf-event-worker
-    profiles: ["events"]
     depends_on:
       db:       { condition: service_healthy }
       migrator: { condition: service_completed_successfully }

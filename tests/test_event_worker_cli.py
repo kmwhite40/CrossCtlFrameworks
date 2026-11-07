@@ -151,6 +151,8 @@ def test_compose_sets_the_worker_flag_on_api_and_worker() -> None:
     assert services["api"]["environment"]["CCF_EVENT_WORKER_ENABLED"] in ("true", True)
     worker = services["event-worker"]
     assert worker["environment"]["CCF_EVENT_WORKER_ENABLED"] in ("true", True)
-    assert worker["profiles"] == ["events"]
+    # No profile: it must start with a plain `docker compose up`, since the api
+    # (flag true) skips the inline drain.
+    assert "profiles" not in worker
     assert worker["healthcheck"] == {"disable": True}
     assert "event-worker" in " ".join(worker["command"])
