@@ -440,3 +440,36 @@ async def test_the_tenant_is_restored_after_the_unscoped_reads(
         await webhooks.run(s, job.scope_key, job)
         tenant = (await s.execute(text("SELECT ccf.current_tenant()"))).scalar()
     assert tenant == world["org"]
+
+
+async def test_a_requeued_dead_letter_is_delivered_to_its_webhook(
+    world: dict[str, Any], net: Net
+) -> None:
+    """A requeue keeps the job's ``webhook_id``: without it the consumer reads the
+    delivery as "webhook deleted", marks it done, and the dead letter vanishes."""
+    from ccf.events import retention  # noqa: PLC0415
+
+    hook = await _hook(world)
+    ev = await _emit(world)
+    jid = (await _job(ev, hook)).id
+    async with session_scope() as s:  # one attempt short of the cap
+        await s.execute(update(OutboxJob).where(OutboxJob.id == jid).values(attempts=7))
+    net.respond = lambda call: 500
+    assert (await _drain())["failed"] == 1
+    j = await _result(jid)
+    assert j.status == "failed" and j.result["webhook_id"] == hook
+
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        assert await retention.requeue_failed(s, consumer="webhook", org_id=world["org"]) == 1
+    j = await _result(jid)
+    assert j.status == "pending" and j.attempts == 0
+    assert j.result["webhook_id"] == hook
+    assert j.result["requeued_from_error"] == "DeliveryError: HTTP 500"
+
+    net.respond = lambda call: 200
+    assert (await _drain(LATER))["done"] == 1
+    j = await _result(jid)
+    assert j.status == "done" and "skipped" not in j.result
+    assert [e["status"] for e in j.result["attempts_log"]][-1] == 200
+    assert len(net.calls) == 2  # the failed attempt, then the requeued delivery

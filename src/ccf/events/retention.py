@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, func, select, update
+from sqlalchemy import and_, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models_outbox import OutboxJob
@@ -63,7 +63,7 @@ async def requeue_failed(session: AsyncSession, *, consumer: str, org_id: int | 
 
     The explicit ``org_id`` filter is the guard (RLS is only the backstop);
     ``None`` is the unscoped platform admin and requeues every organization's.
-    The prior error is kept in ``result``.
+    The prior error is merged into ``result``; the rest of ``result`` is kept.
     """
     stmt = (
         update(OutboxJob)
@@ -75,7 +75,11 @@ async def requeue_failed(session: AsyncSession, *, consumer: str, org_id: int | 
             claimed_at=None,
             claimed_by=None,
             finished_at=None,
-            result=func.jsonb_build_object("requeued_from_error", OutboxJob.last_error),
+            # Merged, never replaced: a webhook job's ``webhook_id`` lives in
+            # ``result``, and without it the delivery reads as "webhook deleted".
+            result=func.coalesce(OutboxJob.result, text("'{}'::jsonb")).op("||")(
+                func.jsonb_build_object("requeued_from_error", OutboxJob.last_error)
+            ),
             last_error=None,
         )
     )
