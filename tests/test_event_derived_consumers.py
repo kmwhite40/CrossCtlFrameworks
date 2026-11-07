@@ -1302,10 +1302,13 @@ async def test_a_soft_deleted_system_is_skipped_not_dead_lettered() -> None:
 async def test_a_reseed_promotes_an_authored_rationale_into_a_blank_column() -> None:
     """Pinned so the fix report's claim is evidence: a ver_history re-seed runs
     `_promote_rationales` (cr26/ver.py:818), which copies a rationale a person
-    authored in the AVI into a BLANK `POAM.acceptance_rationale`. It never
-    overwrites one, and it changes no status."""
+    authored in the AVI into a BLANK `POAM.acceptance_rationale`, never over a
+    filled one, and changes no status."""
     org_id, sid = await _system("promote")
-    pid = await _poam(sid, status="risk_accepted", acceptance_rationale=None)
+    blank = await _poam(sid, status="risk_accepted", acceptance_rationale=None, title="blank")
+    filled = await _poam(
+        sid, status="risk_accepted", acceptance_rationale="approved by the AO", title="filled"
+    )
     async with session_scope() as s:
         await seed_ver_history(s, system_id=sid)
         await put_document(
@@ -1315,9 +1318,13 @@ async def test_a_reseed_promotes_an_authored_rationale_into_a_blank_column() -> 
             document={
                 "acceptedVulnerabilities": [
                     {
-                        "vulnerabilityDetail": {"providerTrackingId": str(pid)},
+                        "vulnerabilityDetail": {"providerTrackingId": str(blank)},
                         "acceptanceRationale": "vendor EOL, isolated",
-                    }
+                    },
+                    {
+                        "vulnerabilityDetail": {"providerTrackingId": str(filled)},
+                        "acceptanceRationale": "a different reason typed into the AVI",
+                    },
                 ]
             },
             updated_by="carol@x",
@@ -1328,23 +1335,24 @@ async def test_a_reseed_promotes_an_authored_rationale_into_a_blank_column() -> 
             s,
             verb="updated",
             entity_type="poam",
-            entity_id=pid,
+            entity_id=blank,
             summary="t",
             org_id=org_id,
             payload={"system_id": sid},
         )
     await _drain(mark)
+    job = next(j for j in await _jobs_since(mark) if j.consumer == "cr26_documents")
+    assert job.status == "done" and job.result["ver_history"] == "reseeded"
     async with session_scope() as s:
-        row = await s.get(POAM, pid)
-        assert row is not None
-        assert (row.status, row.acceptance_rationale) == ("risk_accepted", "vendor EOL, isolated")
+        b, f = await s.get(POAM, blank), await s.get(POAM, filled)
+        assert b is not None and f is not None
+        # Positive control: the blank column is promoted ...
+        assert (b.status, b.acceptance_rationale) == ("risk_accepted", "vendor EOL, isolated")
+        # ... and the filled one keeps its own rationale, whatever the AVI says.
+        assert (f.status, f.acceptance_rationale) == ("risk_accepted", "approved by the AO")
 
 
-async def test_a_control_test_poam_opened_on_request_is_emitted() -> None:
-    """``ensure_poam_for_control_test`` is reached by two routes that emit
-    nothing of their own, so it emits: created once, updated on refresh."""
-    org_id, system_id = await _system("ct-poam")
-    ev_mark = await _event_mark()
+async def _control_test(org_id: int, system_id: int) -> int:
     async with session_scope() as s:
         test = ControlTest(
             organization_id=org_id,
@@ -1355,13 +1363,52 @@ async def test_a_control_test_poam_opened_on_request_is_emitted() -> None:
         )
         s.add(test)
         await s.flush()
+        return test.id
+
+
+async def test_a_control_test_poam_opened_on_request_is_emitted() -> None:
+    """``ensure_poam_for_control_test`` is reached by two routes that emit
+    nothing of their own, so it emits: created once, then updated only when a
+    refresh changes something (ruling R26)."""
+    org_id, system_id = await _system("ct-poam")
+    test_id = await _control_test(org_id, system_id)
+    ev_mark = await _event_mark()
+    async with session_scope() as s:
+        test = await s.get(ControlTest, test_id)
+        assert test is not None
         poam, created = await control_tests.ensure_poam_for_control_test(s, test, "fail")
         assert poam is not None and created
-        again, created_again = await control_tests.ensure_poam_for_control_test(s, test, "fail")
-        assert again is not None and again.id == poam.id and not created_again
+        same, _ = await control_tests.ensure_poam_for_control_test(s, test, "fail")
+        changed, _ = await control_tests.ensure_poam_for_control_test(s, test, "3 users lack MFA")
+        assert same is not None and changed is not None and same.id == changed.id == poam.id
     evs = await _events_since(ev_mark, entity_type="poam")
     assert [(e.verb, e.entity_id) for e in evs] == [
         ("created", str(poam.id)),
-        ("updated", str(poam.id)),
+        ("updated", str(poam.id)),  # the changed detail; the identical refresh emits nothing
     ]
     assert all(e.organization_id == org_id and e.payload["system_id"] == system_id for e in evs)
+
+
+async def test_a_repeated_identical_failure_queues_no_more_derived_work() -> None:
+    """Ruling R26: a failing test re-run with the same result changes no POA&M
+    field, so it emits no POA&M event and queues no graph or VER work for it."""
+    org_id, system_id = await _system("ct-repeat")
+    test_id = await _control_test(org_id, system_id)
+
+    async def run(detail: str) -> tuple[list[Event], list[OutboxJob]]:
+        ev_mark, mark = await _event_mark(), await _mark()
+        async with session_scope() as s:
+            test = await s.get(ControlTest, test_id)
+            assert test is not None
+            await control_tests.record_result(s, test, status="fail", detail=detail)
+        return await _events_since(ev_mark, entity_type="poam"), [
+            j for j in await _jobs_since(mark) if j.consumer == "cr26_documents"
+        ]
+
+    first_events, first_jobs = await run("MFA off for 3 users")
+    assert [e.verb for e in first_events] == ["created"] and first_jobs
+    again_events, again_jobs = await run("MFA off for 3 users")
+    assert again_events == [] and again_jobs == []
+    # Positive control: a failure whose detail moved does refresh, and emits.
+    moved_events, moved_jobs = await run("MFA off for 5 users")
+    assert [e.verb for e in moved_events] == ["updated"] and moved_jobs

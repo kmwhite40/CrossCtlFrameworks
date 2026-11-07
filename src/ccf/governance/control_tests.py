@@ -561,6 +561,11 @@ async def ensure_poam_for_control_test(
         )
     ).scalar_one_or_none()
     if existing is not None:
+        # The fields this refresh writes, before and after: a refresh that
+        # changes nothing is not an event (ruling R26). A failing test re-runs
+        # on every scheduled and connector pass, and an emit each time would
+        # post a webhook and queue a graph rebuild and a VER re-seed per run.
+        before = (existing.weakness, existing.remediation_plan, existing.remediation_plan_source)
         existing.weakness = weakness
         # Refresh only a plan this module wrote. The observed condition and the
         # failing-resource counts move between scans, so a generated plan has to
@@ -577,6 +582,9 @@ async def ensure_poam_for_control_test(
             # the next scan may keep it current.
             existing.remediation_plan = guidance
             existing.remediation_plan_source = GENERATED_PLAN
+        after = (existing.weakness, existing.remediation_plan, existing.remediation_plan_source)
+        if after == before:
+            return existing, False
         await bus.emit(
             session,
             verb="updated",
