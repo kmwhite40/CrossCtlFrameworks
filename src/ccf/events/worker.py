@@ -39,6 +39,14 @@ running it unscoped would bypass RLS.
 ``pending`` at ``now + base * 2**(attempts - 1)``
 (base 170 s for webhooks, so 8 attempts span about 6 h; 60 s
 otherwise) with a truncated ``last_error``; at the cap it stays ``failed``.
+
+**Fencing.** A claim is ``(claimed_by, attempts)``, taken from the claim
+itself. A run can outlive its claim: the reaper requeues a claim older than its
+threshold and another worker re-claims it, bumping ``attempts``. So the run
+starts only if the row still holds this claim, and the outcome is written only
+``WHERE status = 'claimed'`` and the row still holds it. A write that matches
+no row is ``lost``: logged, counted, never raised, and the newer claim's state
+is untouched.
 """
 
 from __future__ import annotations
@@ -66,7 +74,7 @@ WEBHOOK_BACKOFF_SECONDS = 170
 
 _CLAIM_LOCK = "SELECT pg_advisory_xact_lock(hashtext('ccf.outbox.claim'))"
 
-_OUTCOMES = ("done", "merged", "retried", "failed", "skipped")
+_OUTCOMES = ("done", "merged", "retried", "failed", "skipped", "lost")
 
 
 def _eligible(now: datetime) -> ColumnElement[bool]:
@@ -82,10 +90,13 @@ def _eligible(now: datetime) -> ColumnElement[bool]:
     )
 
 
-async def _claim(*, worker: str, limit: int, now: datetime) -> tuple[list[int], int]:
+async def _claim(*, worker: str, limit: int, now: datetime) -> tuple[list[tuple[int, int]], int]:
     """Claim up to ``limit`` jobs, one per scope, merging each scope's other
-    pending jobs into it. One transaction, committed before anything runs."""
-    claimed: list[int] = []
+    pending jobs into it. One transaction, committed before anything runs.
+
+    Returns each claim as ``(job id, attempts)`` (``claimed_by`` is ``worker``)
+    and the merged count."""
+    claimed: list[tuple[int, int]] = []
     merged = 0
     async with get_session_factory()() as session:
         await set_session_tenant(session, None)
@@ -104,7 +115,7 @@ async def _claim(*, worker: str, limit: int, now: datetime) -> tuple[list[int], 
             if not jobs:
                 break
             job = jobs[0]
-            claimed.append(job.id)
+            claimed.append((job.id, job.attempts))
             if job.consumer == WEBHOOK_CONSUMER:
                 continue
             res = await session.execute(
@@ -152,6 +163,7 @@ async def _settle(
     job_id: int,
     *,
     consumer: str,
+    claimed_by: str,
     attempts: int,
     max_attempts: int,
     now: datetime | None,
@@ -159,7 +171,12 @@ async def _settle(
     result: dict[str, Any] | None = None,
     retry: bool = True,
 ) -> str:
-    """Write a claimed job's outcome (unscoped, by primary key) and name it."""
+    """Write a claimed job's outcome (unscoped) and name it.
+
+    The write is fenced on this claim: if the row is no longer ``claimed`` by
+    ``claimed_by`` at ``attempts`` (reaped, and perhaps re-claimed), nothing is
+    written and the outcome is ``lost``.
+    """
     await set_session_tenant(session, None)
     values: dict[str, Any] = {"claimed_by": None, "claimed_at": None}
     if error is None:
@@ -180,21 +197,55 @@ async def _settle(
             values.update(status="failed", finished_at=func.now())
     if result is not None:
         values["result"] = result
-    await session.execute(update(OutboxJob).where(OutboxJob.id == job_id).values(**values))
+    res = await session.execute(
+        update(OutboxJob)
+        .where(
+            OutboxJob.id == job_id,
+            OutboxJob.status == "claimed",
+            OutboxJob.claimed_by == claimed_by,
+            OutboxJob.attempts == attempts,
+        )
+        .values(**values)
+    )
     await session.commit()
+    if not getattr(res, "rowcount", 0):
+        log.warning(
+            "event_worker.settle_lost_claim",
+            job_id=job_id,
+            consumer=consumer,
+            claimed_by=claimed_by,
+            attempts=attempts,
+            outcome=outcome,
+        )
+        return "lost"
     return outcome
 
 
-async def _run_one(job_id: int, now: datetime | None) -> str:
+def _holds(job: OutboxJob, worker: str, attempts: int) -> bool:
+    return job.status == "claimed" and job.claimed_by == worker and job.attempts == attempts
+
+
+async def _run_one(job_id: int, worker: str, attempts: int, now: datetime | None) -> str:
     async with get_session_factory()() as session:
         await set_session_tenant(session, None)
         job = await session.get(OutboxJob, job_id)
-        if job is None:  # pragma: no cover - deleted between claim and run
-            return "skipped"
+        if job is None or not _holds(job, worker, attempts):
+            # Reaped while it waited its turn in the batch, perhaps re-claimed
+            # (running it now would run it twice), or deleted since the claim.
+            log.warning(
+                "event_worker.settle_lost_claim",
+                job_id=job_id,
+                consumer=job.consumer if job is not None else None,
+                claimed_by=worker,
+                attempts=attempts,
+                outcome="not run",
+            )
+            return "lost"
         name, key = job.consumer, job.scope_key
         settle: dict[str, Any] = {
             "consumer": name,
-            "attempts": job.attempts,
+            "claimed_by": worker,
+            "attempts": attempts,
             "max_attempts": job.max_attempts,
             "now": now,
         }
@@ -209,8 +260,10 @@ async def _run_one(job_id: int, now: datetime | None) -> str:
         except ValueError:
             org = None
         if org == "gone":
-            await _settle(session, job_id, result={**prior, "skipped": "scope gone"}, **settle)
-            return "skipped"
+            settled = await _settle(
+                session, job_id, result={**prior, "skipped": "scope gone"}, **settle
+            )
+            return "skipped" if settled == "done" else settled
         if org is None:
             if not key.startswith("event:"):
                 return await _settle(
@@ -261,7 +314,9 @@ async def _run_one(job_id: int, now: datetime | None) -> str:
         return await _settle(session, job_id, result=merged, **settle)
 
 
-async def _record_crash(job_id: int, now: datetime | None, error: BaseException) -> str:
+async def _record_crash(
+    job_id: int, worker: str, attempts: int, now: datetime | None, error: BaseException
+) -> str:
     """A failure outside ``run`` (e.g. its commit) still costs only an attempt."""
     async with get_session_factory()() as session:
         await set_session_tenant(session, None)
@@ -272,7 +327,8 @@ async def _record_crash(job_id: int, now: datetime | None, error: BaseException)
             session,
             job_id,
             consumer=job.consumer,
-            attempts=job.attempts,
+            claimed_by=worker,
+            attempts=attempts,
             max_attempts=job.max_attempts,
             now=now,
             error=error,
@@ -285,21 +341,23 @@ async def drain_once(
     """Claim, merge and run one batch. Returns counts per outcome.
 
     ``merged`` counts jobs absorbed by this pass's claims; ``skipped`` counts
-    jobs whose scope is gone. ``now`` is the clock eligibility and backoff are
-    measured against (tests pass a later one instead of sleeping). Without it,
-    eligibility uses the drain's start and each backoff counts from the moment
-    its job failed.
+    jobs whose scope is gone; ``lost`` counts claims another worker took over
+    (reaped and re-claimed) before this one could run or settle them.
+
+    ``now`` is the clock eligibility and backoff are measured against (tests
+    pass a later one instead of sleeping). Without it, eligibility uses the
+    drain's start and each backoff counts from the moment its job failed.
     """
     counts = dict.fromkeys(_OUTCOMES, 0)
     claimed, counts["merged"] = await _claim(
         worker=worker, limit=limit, now=now or datetime.now(UTC)
     )
-    for job_id in claimed:
+    for job_id, attempts in claimed:
         try:
-            outcome = await _run_one(job_id, now)
+            outcome = await _run_one(job_id, worker, attempts, now)
         except Exception as e:
             log.warning("event_worker.job_crashed", job_id=job_id, error=type(e).__name__)
-            outcome = await _record_crash(job_id, now, e)
+            outcome = await _record_crash(job_id, worker, attempts, now, e)
         counts[outcome] += 1
     return counts
 

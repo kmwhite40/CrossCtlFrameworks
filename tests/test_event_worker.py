@@ -570,6 +570,113 @@ async def test_a_killed_worker_is_reaped_and_rerun(
     assert (job.status, job.attempts) == ("done", 2)
 
 
+async def _reclaim(job_id: int, *, by: str = "w2") -> None:
+    """What a reap then another worker's claim does to a row, committed."""
+    async with session_scope() as s:
+        await s.execute(
+            update(OutboxJob)
+            .where(OutboxJob.id == job_id)
+            .values(
+                status="claimed",
+                claimed_by=by,
+                claimed_at=datetime.now(UTC),
+                attempts=OutboxJob.attempts + 1,
+            )
+        )
+
+
+async def _reap_only(job_id: int) -> None:
+    """The reaper's requeue, with no worker having re-claimed it yet."""
+    async with session_scope() as s:
+        await s.execute(
+            update(OutboxJob)
+            .where(OutboxJob.id == job_id)
+            .values(status="pending", claimed_by=None, claimed_at=None)
+        )
+
+
+_TAKEOVERS = {
+    "w2": ("claimed", "w2", 2),
+    "w1-again": ("claimed", "w1", 2),  # same worker name: only attempts tells them apart
+    "reaped": ("pending", None, 1),
+}
+
+
+@pytest.mark.parametrize("takeover", list(_TAKEOVERS))
+@pytest.mark.parametrize("fails", [False, True], ids=["success", "failure"])
+async def test_a_late_settle_never_overwrites_a_newer_claim(
+    world: dict[str, Any], registered: list[str], fails: bool, takeover: str
+) -> None:
+    """The run outlives its claim: the reaper requeues it and (maybe) another
+    claim takes it. w1's outcome must not land on the row, success or failure."""
+    holder: dict[str, int] = {}
+
+    async def _overtaken(session: Any, key: str, job: Any) -> dict[str, Any]:
+        if takeover == "reaped":
+            await _reap_only(holder["id"])
+        else:
+            await _reclaim(holder["id"], by="w2" if takeover == "w2" else "w1")
+        if fails:
+            raise RuntimeError("late failure")
+        return {"late": True}
+
+    c = _add(registered, _overtaken)
+    jid = await _job(c.name, f"org:{world['org']}", org_id=world["org"], event_id=world["event"])
+    holder["id"] = jid
+
+    counts = await worker.drain_once(worker="w1", now=_future())
+
+    assert counts["lost"] == 1
+    assert counts["done"] == counts["retried"] == counts["failed"] == 0
+    job = await _get(jid)
+    assert (job.status, job.claimed_by, job.attempts) == _TAKEOVERS[takeover]
+    assert job.finished_at is None
+    assert job.last_error is None and "late" not in (job.result or {})
+
+
+async def test_the_settle_fence_lets_the_current_claim_settle(
+    world: dict[str, Any], registered: list[str]
+) -> None:
+    """Positive control for the fence: an un-overtaken run settles normally."""
+
+    async def _ok(session: Any, key: str, job: Any) -> dict[str, Any]:
+        return {"ok": True}
+
+    c = _add(registered, _ok)
+    jid = await _job(c.name, f"org:{world['org']}", org_id=world["org"], event_id=world["event"])
+    counts = await worker.drain_once(worker="w1", now=_future())
+    assert counts["done"] == 1 and counts["lost"] == 0
+    job = await _get(jid)
+    assert (job.status, job.claimed_by, job.result) == ("done", None, {"ok": True})
+
+
+async def test_a_claim_lost_before_the_run_starts_is_not_run(
+    world: dict[str, Any], registered: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch's later job can wait past the reap threshold behind slow runs; by
+    the time its turn comes another worker may hold it. It must not run twice."""
+    runs: list[int] = []
+
+    async def _rec(session: Any, key: str, job: Any) -> dict[str, Any]:
+        runs.append(job.id)
+        return {}
+
+    c = _add(registered, _rec)
+    jid = await _job(c.name, f"org:{world['org']}", org_id=world["org"], event_id=world["event"])
+    real_claim = worker._claim
+
+    async def _claim_then_lose(**kw: Any) -> Any:
+        out = await real_claim(**kw)
+        await _reclaim(jid)
+        return out
+
+    monkeypatch.setattr(worker, "_claim", _claim_then_lose)
+    counts = await worker.drain_once(worker="w1", now=_future())
+    assert runs == [] and counts["lost"] == 1
+    job = await _get(jid)
+    assert (job.status, job.claimed_by, job.attempts) == ("claimed", "w2", 2)
+
+
 # ── which tenant a job runs under ────────────────────────────────────────────
 
 
