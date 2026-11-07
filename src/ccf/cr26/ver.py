@@ -883,6 +883,7 @@ async def _seed(
     today: date | None = None,
     period: tuple[datetime, datetime] | None = None,
     authored_kind: str | None = None,
+    updated_by: str | None = None,
 ) -> VerSeedResult:
     today = today or datetime.now(UTC).date()
     rows = await _poam_rows(session, system_id)
@@ -915,7 +916,7 @@ async def _seed(
     _carry_uri(built.document, current)
     _promote_rationales(rows, built.promoted)
     stored = await put_document(
-        session, system_id=system_id, kind=kind, document=built.document
+        session, system_id=system_id, kind=kind, document=built.document, updated_by=updated_by
     )
     omitted: list[OmittedRow] = [*rendering.omitted, *built.omitted]
     omitted.sort(key=_omitted_sort_key)
@@ -979,6 +980,7 @@ async def seed_vdr(
     period_from: datetime,
     period_to: datetime,
     today: date | None = None,
+    updated_by: str | None = None,
 ) -> VerSeedResult:
     """Non-accepted vulnerabilities for the caller's reporting period."""
 
@@ -1005,6 +1007,7 @@ async def seed_vdr(
         build=build,
         today=today,
         period=(period_from, period_to),
+        updated_by=updated_by,
     )
 
 
@@ -1015,6 +1018,7 @@ async def seed_avi(
     period_from: datetime,
     period_to: datetime,
     today: date | None = None,
+    updated_by: str | None = None,
 ) -> VerSeedResult:
     """Accepted vulnerabilities, keeping each authored acceptance rationale."""
 
@@ -1053,11 +1057,16 @@ async def seed_avi(
         today=today,
         period=(period_from, period_to),
         authored_kind="avi",
+        updated_by=updated_by,
     )
 
 
 async def seed_ver_history(
-    session: AsyncSession, *, system_id: int, today: date | None = None
+    session: AsyncSession,
+    *,
+    system_id: int,
+    today: date | None = None,
+    updated_by: str | None = None,
 ) -> VerSeedResult:
     """Both halves at once. No period -- the schema has none, and carries
     ``generatedAt`` instead.
@@ -1111,4 +1120,5 @@ async def seed_ver_history(
         build=build,
         today=today,
         authored_kind="avi",
+        updated_by=updated_by,
     )

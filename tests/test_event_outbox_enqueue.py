@@ -413,6 +413,34 @@ async def test_a_consumers_own_event_does_not_retrigger_it_or_reach_webhooks(
     assert "_depth" not in plain.payload
 
 
+async def test_an_external_event_from_a_consumer_still_reaches_webhooks(
+    world: dict[str, Any], entity: str, registered: list[str]
+) -> None:
+    """Ruling R20: a finding a consumer makes is news; its bookkeeping is not."""
+    hook = await _hook(world, world["org"])
+    a = _add(registered, entity, lambda ev: f"org:{world['org']}")
+    async with session_scope() as s:
+        tok_c = outbox.CURRENT_CONSUMER.set(a.name)
+        tok_d = outbox.CURRENT_DEPTH.set(1)
+        try:
+            found = await bus.emit(
+                s,
+                verb="drift",
+                entity_type=entity,
+                summary="x",
+                org_id=world["org"],
+                external=True,
+            )
+            bookkeeping = await bus.emit(
+                s, verb="updated", entity_type=entity, summary="x", org_id=world["org"]
+            )
+        finally:
+            outbox.CURRENT_DEPTH.reset(tok_d)
+            outbox.CURRENT_CONSUMER.reset(tok_c)
+    assert hook in _webhook_ids(await _jobs(found.id))
+    assert hook not in _webhook_ids(await _jobs(bookkeeping.id))
+
+
 async def test_depth_three_queues_nothing(
     world: dict[str, Any], entity: str, registered: list[str]
 ) -> None:

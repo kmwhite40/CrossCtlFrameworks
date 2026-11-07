@@ -483,24 +483,37 @@ async def _ensure_poam_for_other_than_satisfied(
             severity = "moderate"
             today = datetime.now(UTC).date()
             due_on = today + timedelta(days=SEVERITY_SLA_DAYS.get(severity, 90))
-            session.add(
-                POAM(
-                    system_id=system_id,
-                    title=f"{proposal.control_identifier} — other than satisfied",
-                    weakness=(
-                        proposal.rollup_rationale
-                        or f"{proposal.control_identifier} assessed other than satisfied."
-                    ),
-                    severity=severity,
-                    status="open",
-                    identified_on=today,
-                    due_on=due_on,
-                    original_due_on=due_on,
-                    source="assessment",
-                    source_ref=source_ref,
-                )
+            poam = POAM(
+                system_id=system_id,
+                title=f"{proposal.control_identifier} — other than satisfied",
+                weakness=(
+                    proposal.rollup_rationale
+                    or f"{proposal.control_identifier} assessed other than satisfied."
+                ),
+                severity=severity,
+                status="open",
+                identified_on=today,
+                due_on=due_on,
+                original_due_on=due_on,
+                source="assessment",
+                source_ref=source_ref,
             )
+            session.add(poam)
             await session.flush()
+            from ...governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+            # Inside the savepoint: a failed emit costs the derived POA&M, as
+            # a failed insert does, never the acceptance.
+            await bus.emit(
+                session,
+                verb="created",
+                entity_type="poam",
+                entity_id=poam.id,
+                summary=f"POA&M opened from accepted assessment finding: {poam.title}",
+                org_id=await bus.system_org(session, system_id),
+                actor="assessment-engine",
+                payload={"system_id": system_id},
+            )
     except Exception as exc:  # a derived-row failure must not cost the acceptance
         log.warning(
             "assessment.poam_bridge_failed",

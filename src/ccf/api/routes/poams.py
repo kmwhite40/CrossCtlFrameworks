@@ -518,7 +518,7 @@ async def create_poam(
         entity_type="poam",
         entity_id=obj.id,
         summary=f"POA&M opened ({obj.severity}): {obj.title}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, obj.system_id),
         actor=principal.email,
         payload={"system_id": obj.system_id},
     )
@@ -665,7 +665,7 @@ async def update_poam(
         entity_type="poam",
         entity_id=obj.id,
         summary=f"POA&M {obj.status}: {obj.title}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, obj.system_id),
         actor=principal.email,
         payload={"system_id": obj.system_id},
     )
@@ -699,7 +699,7 @@ async def close_poam(
         entity_type="poam",
         entity_id=obj.id,
         summary=f"POA&M closed: {obj.title}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, obj.system_id),
         actor=principal.email,
         payload={"system_id": obj.system_id},
     )
@@ -878,7 +878,7 @@ async def decide_extension(
         entity_type="poam",
         entity_id=obj.id,
         summary=f"POA&M extension {decision}: {obj.title}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, obj.system_id),
         actor=principal.email,
         payload={"system_id": obj.system_id, "extension_id": ext.id, "decision": decision},
     )

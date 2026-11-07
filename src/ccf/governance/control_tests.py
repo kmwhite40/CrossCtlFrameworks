@@ -577,6 +577,16 @@ async def ensure_poam_for_control_test(
             # the next scan may keep it current.
             existing.remediation_plan = guidance
             existing.remediation_plan_source = GENERATED_PLAN
+        await bus.emit(
+            session,
+            verb="updated",
+            entity_type="poam",
+            entity_id=existing.id,
+            summary=f"POA&M refreshed from control test: {existing.title}",
+            org_id=await bus.system_org(session, test.system_id),
+            actor="control-test",
+            payload={"system_id": test.system_id},
+        )
         return existing, False
 
     control_id = (
@@ -605,6 +615,19 @@ async def ensure_poam_for_control_test(
         )
     )
     session.add(poam)
+    await session.flush()
+    # Here and not only in the caller: two routes open this POA&M on request
+    # (api/routes/posture.py, api/routes/ui.py) and emit nothing of their own.
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="poam",
+        entity_id=poam.id,
+        summary=f"POA&M opened from control test: {poam.title}",
+        org_id=await bus.system_org(session, test.system_id),
+        actor="control-test",
+        payload={"system_id": test.system_id},
+    )
     return poam, True
 
 

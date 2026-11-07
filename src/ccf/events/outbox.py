@@ -8,8 +8,9 @@ webhook. A worker claims and runs them.
 
 Chained events (spec 6.3a): while a consumer runs, the worker sets
 :data:`CURRENT_CONSUMER` and :data:`CURRENT_DEPTH`. An event emitted then reaches
-no webhook, never re-triggers the consumer that emitted it, and at depth
-:data:`MAX_DEPTH` or more queues nothing at all.
+no webhook (unless emitted ``external=True``, ruling R20), never re-triggers
+the consumer that emitted it, and at depth :data:`MAX_DEPTH` or more queues
+nothing at all.
 """
 
 from __future__ import annotations
@@ -99,7 +100,9 @@ def _webhook_job(ev: Event, hook: Webhook) -> OutboxJob:
     )
 
 
-async def enqueue(session: AsyncSession, ev: Event, *, dispatch: bool) -> list[OutboxJob]:
+async def enqueue(
+    session: AsyncSession, ev: Event, *, dispatch: bool, external: bool = False
+) -> list[OutboxJob]:
     """Insert the outbox jobs ``ev`` triggers, in the caller's transaction.
 
     A job's organization is the event's when it has one. An org-less event's
@@ -112,7 +115,8 @@ async def enqueue(session: AsyncSession, ev: Event, *, dispatch: bool) -> list[O
     if emitter is not None:
         if CURRENT_DEPTH.get() >= MAX_DEPTH:
             return []
-        dispatch = False  # a derived recompute produces no webhook noise
+        if not external:
+            dispatch = False  # a derived recompute produces no webhook noise
 
     jobs: list[OutboxJob] = []
     for c in consumers.REGISTRY.values():

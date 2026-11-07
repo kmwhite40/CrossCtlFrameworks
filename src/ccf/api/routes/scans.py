@@ -88,7 +88,7 @@ async def ingest_upload(
             f"{resolved} scan: {result.findings_total} findings → "
             f"{result.created} new, {result.reopened} reopened, {result.closed} closed POA&Ms"
         ),
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=principal.email,
         payload={"system_id": system_id},
     )

@@ -1,7 +1,13 @@
 """The derived-view consumers: recompute a view from current records, never decide.
 
 Four consumers, each a full recompute of its scope (spec 5.1), so running one
-twice is harmless and order between jobs does not matter:
+twice is harmless and two jobs of ONE consumer may run in either order.
+
+Order between consumers does matter where one reads what another writes: the
+graph draws KSI state, which ``fedramp20x`` writes. That dependency is an
+event, not an ordering assumption: after re-scoring, ``fedramp20x`` emits the
+internal ``system ksi_rescored`` (``dispatch=False``), which the graph
+triggers on, so a graph rebuilt before the re-score is rebuilt again after it.
 
 * ``assurance_graph`` (``org:N``): :func:`ccf.assurance.builder.rebuild_org`.
 * ``capability_derive`` (``system:N``, or ``org:N`` for a capability edit):
@@ -11,7 +17,12 @@ twice is harmless and order between jobs does not matter:
   footprint.
 * ``cr26_documents`` (``system:N``): re-seeds the VER-derived deliverables a
   provider has already started, through the seeders and so through
-  ``store.put_document`` (validation still applies).
+  ``store.put_document`` (validation still applies). Only rows a seeder last
+  wrote are refreshed; a row a person authored is kept and they are told it
+  is out of date (ruling R22).
+
+A system-scoped job for a soft-deleted system finishes ``{"skipped": "system
+deleted"}`` rather than failing into a dead letter (ruling R24).
 
 **Triggers** are module-level frozensets of ``(entity_type, verb)`` read off the
 emit sites; ``tests/test_event_derived_consumers.py`` pins them and checks that
@@ -35,7 +46,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Event
+from ..models import Event, System
 from ..models_cr26 import Cr26Document
 from ..models_outbox import OutboxJob
 from .consumers import Consumer, register
@@ -55,8 +66,9 @@ ASSURANCE_GRAPH_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
         ("system", "validated"),  # writes KSI state
         ("system", "drift"),  # written by a KSI re-validation
         ("system", "derived"),  # bulk implementations, POA&Ms, vendors
+        ("system", "implementations_imported"),
+        ("system", "ksi_rescored"),  # fedramp20x re-scored KSI state (internal)
         ("control_implementation", "updated"),
-        ("control_implementation", "bulk_updated"),
         ("poam", "created"),
         ("poam", "updated"),
         ("poam", "closed"),
@@ -89,7 +101,7 @@ ASSURANCE_GRAPH_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
 CAPABILITY_SYSTEM_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("control_implementation", "updated"),
-        ("control_implementation", "bulk_updated"),
+        ("system", "implementations_imported"),
         ("system", "derived"),
     }
 )
@@ -116,7 +128,7 @@ CAPABILITY_ORG_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
 FEDRAMP20X_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("control_implementation", "updated"),
-        ("control_implementation", "bulk_updated"),
+        ("system", "implementations_imported"),
         ("control_test", "tested"),
         ("evidence", "captured"),
         ("fedramp20x_profile", "updated"),
@@ -183,6 +195,21 @@ def _ident(scope_key: str, kind: str) -> int:
     return int(raw)
 
 
+async def _live_system(session: AsyncSession, system_id: int) -> System | None:
+    """The system, or ``None`` when it is gone or soft-deleted (ruling R24).
+
+    The worker already skips a scope whose system was deleted before the
+    claim; this covers one deleted between the claim and the run, where a
+    seeder's ``put_document`` would raise and the job would retry into a dead
+    letter, and ``derive_for_system`` would annotate a deleted system.
+    """
+    system = await session.get(System, system_id)
+    return None if system is None or system.deleted_at is not None else system
+
+
+_DELETED = "system deleted"
+
+
 # ── assurance_graph ──────────────────────────────────────────────────────────
 
 
@@ -214,6 +241,8 @@ async def _run_capability(session: AsyncSession, scope_key: str, job: OutboxJob)
     if scope_key.startswith("org:"):
         return await derive.derive_for_org(session, organization_id=_ident(scope_key, "org"))
     sid = _ident(scope_key, "system")
+    if await _live_system(session, sid) is None:
+        return {"system_id": sid, "skipped": _DELETED}
     return {
         "system_id": sid,
         "rows_annotated": await derive.derive_for_system(session, system_id=sid),
@@ -225,11 +254,29 @@ async def _run_capability(session: AsyncSession, scope_key: str, job: OutboxJob)
 
 async def _run_fedramp20x(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str, Any]:
     from ..fedramp20x import monitoring  # noqa: PLC0415
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
 
     sid = _ident(scope_key, "system")
+    system = await _live_system(session, sid)
+    if system is None:
+        return {"system_id": sid, "skipped": _DELETED}
     if not await monitoring.is_20x_system(session, sid):
         return {"system_id": sid, "skipped": "no 20x footprint"}
-    return await monitoring.scan_system(session, system_id=sid)
+    out = await monitoring.scan_system(session, system_id=sid)
+    # KSI state changed under the graph: tell it. Internal (no webhook); the
+    # graph triggers on it and this consumer does not.
+    await bus.emit(
+        session,
+        verb="ksi_rescored",
+        entity_type="system",
+        entity_id=sid,
+        summary=f"KSI state re-scored for {system.name}",
+        org_id=system.organization_id,
+        actor="event:fedramp20x",
+        payload={"system_id": sid},
+        dispatch=False,
+    )
+    return out
 
 
 # ── cr26_documents ───────────────────────────────────────────────────────────
@@ -239,23 +286,62 @@ async def _run_fedramp20x(session: AsyncSession, scope_key: str, job: OutboxJob)
 CR26_RESEEDED_KINDS = ("vdr", "avi", "ver_history")
 
 
-async def _stored(session: AsyncSession, system_id: int, kind: str) -> dict[str, Any] | None:
-    row = (
+#: ``updated_by`` this consumer writes, and the rows it may therefore refresh:
+#: these, or ``None`` (a seeder run from the route, which records no author).
+#: Anything else was written by a person (``PUT /cr26-documents``).
+CR26_AUTHOR = "event:cr26_documents"
+
+_LABEL = {"vdr": "VDR", "avi": "AVI", "ver_history": "VER history"}
+
+
+async def _locked_rows(session: AsyncSession, system_id: int) -> dict[str, Cr26Document]:
+    """This system's stored VER rows, locked ``FOR UPDATE`` in one statement.
+
+    Locked before anything is read, so a person's ``PUT`` committing between
+    this read and the seeder's write cannot be overwritten: it waits for this
+    transaction, or this one waits for it and then sees its author.
+    """
+    rows = (
         (
             await session.execute(
-                select(Cr26Document).where(
+                select(Cr26Document)
+                .where(
                     Cr26Document.system_id == system_id,
-                    Cr26Document.kind == kind,
+                    Cr26Document.kind.in_(CR26_RESEEDED_KINDS),
                     Cr26Document.document_key.is_(None),
                 )
+                .order_by(Cr26Document.id)
+                .with_for_update()
             )
         )
         .scalars()
-        .first()
+        .all()
     )
-    if row is None:
-        return None
-    return dict(row.document) if isinstance(row.document, dict) else {}
+    return {r.kind: r for r in rows}
+
+
+def _seeder_written(row: Cr26Document) -> bool:
+    return row.updated_by is None or row.updated_by == CR26_AUTHOR
+
+
+async def _tell_author(session: AsyncSession, system: System, row: Cr26Document) -> None:
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    label = _LABEL[row.kind]
+    await bus.notify(
+        session,
+        category="cr26",
+        title=f"{label} is out of date with this system's POA&Ms",
+        body=(
+            f"The {label} for {system.name} was last edited by {row.updated_by}, so it "
+            "was not refreshed automatically. Re-seed it to refresh."
+        ),
+        org_id=system.organization_id,
+        severity="warning",
+        entity_type="cr26_document",
+        entity_id=row.id,
+        dedupe_key=f"cr26-stale:{system.id}:{row.kind}",
+    )
 
 
 def _instant(value: Any) -> datetime | None:
@@ -287,28 +373,42 @@ async def _run_cr26(session: AsyncSession, scope_key: str, job: OutboxJob) -> di
     from ..cr26 import ver  # noqa: PLC0415 -- avoid an import cycle
 
     sid = _ident(scope_key, "system")
+    system = await _live_system(session, sid)
+    if system is None:
+        return {"system_id": sid, "skipped": _DELETED}
+    rows = await _locked_rows(session, sid)
     out: dict[str, Any] = {"system_id": sid}
     omitted = 0
     # VDR and AVI before ver_history: ver_history reads its acceptance
     # rationales from the stored AVI.
-    for kind, seeder in (("vdr", ver.seed_vdr), ("avi", ver.seed_avi)):
-        current = await _stored(session, sid, kind)
-        if current is None:
+    for kind in CR26_RESEEDED_KINDS:
+        row = rows.get(kind)
+        if row is None:
             out[kind] = "absent"  # never start a deliverable the provider has not
             continue
-        period = stored_period(current)
-        if period is None:
-            out[kind] = "no stored period"
+        if not _seeder_written(row):
+            await _tell_author(session, system, row)
+            out[kind] = "author-edited"
             continue
-        result = await seeder(session, system_id=sid, period_from=period[0], period_to=period[1])
+        if kind == "ver_history":
+            result = await ver.seed_ver_history(session, system_id=sid, updated_by=CR26_AUTHOR)
+        else:
+            period = stored_period(row.document if isinstance(row.document, dict) else {})
+            if period is None:
+                out[kind] = "no stored period"
+                continue
+            seeder = ver.seed_vdr if kind == "vdr" else ver.seed_avi
+            result = await seeder(
+                session,
+                system_id=sid,
+                period_from=period[0],
+                period_to=period[1],
+                updated_by=CR26_AUTHOR,
+            )
         omitted += len(result.omitted_poam_ids)
         out[kind] = "reseeded"
-    if await _stored(session, sid, "ver_history") is None:
-        out["ver_history"] = "absent"
-    else:
-        result = await ver.seed_ver_history(session, system_id=sid)
-        omitted += len(result.omitted_poam_ids)
-        out["ver_history"] = "reseeded"
+    if "author-edited" in out.values():
+        out["skipped"] = "author-edited"
     out["omitted_rows"] = omitted
     return out
 

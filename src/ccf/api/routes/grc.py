@@ -770,7 +770,7 @@ async def promote_finding_to_poam(
         entity_type="poam",
         entity_id=poam.id,
         summary=f"POA&M opened from audit finding: {poam.title}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, poam.system_id),
         actor=principal.email,
         payload={"system_id": poam.system_id},
     )
@@ -908,7 +908,7 @@ async def sync_connector(
         entity_type="connector_config",
         entity_id=c.id,
         summary=f"Connector '{c.name}' sync: {discovered} objects (mock)",
-        org_id=principal.org_id,
+        org_id=c.organization_id,
         actor=principal.email,
         payload={"objects": discovered, "mock": True},
     )
@@ -1067,7 +1067,11 @@ async def run_control_test(
         entity_type="control_test",
         entity_id=t.id,
         summary=f"Control test {body.status}: {t.control_id}",
-        org_id=principal.org_id,
+        org_id=(
+            t.organization_id
+            if t.organization_id is not None
+            else await bus.system_org(session, t.system_id)
+        ),
         actor=principal.email,
         payload={"system_id": t.system_id},
     )

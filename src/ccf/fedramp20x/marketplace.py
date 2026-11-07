@@ -441,7 +441,7 @@ async def link(
         entity_type="fedramp_dependency",
         entity_id=dep.id,
         summary=f"Dependency '{dep.name}' -> Marketplace {wanted or 'none'}",
-        org_id=org_id,
+        org_id=await bus.system_org(session, dep.system_id),
         actor=actor,
         payload={"system_id": dep.system_id},
     )

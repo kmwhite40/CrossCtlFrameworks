@@ -366,7 +366,7 @@ async def derive_system(
             f"Profile derived: SPRS {summary.score}/110, {len(gaps)} gaps, "
             f"{by_resp.get('inherited', 0)} inherited"
         ),
-        org_id=org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=actor,
         payload=result,
     )

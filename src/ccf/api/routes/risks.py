@@ -295,7 +295,11 @@ async def _post_write(session: AsyncSession, obj: Risk, principal: Principal, *,
     Each lands in the **risk's** organization: a global principal writing to a
     tenant's risk has no organization of its own, and an org-less event goes to
     every tenant's webhooks."""
-    org_id = obj.organization_id if obj.organization_id is not None else principal.org_id
+    org_id = obj.organization_id
+    if org_id is None:
+        org_id = await bus.system_org(session, obj.system_id)
+    if org_id is None:
+        org_id = principal.org_id
     await bus.emit(
         session,
         verb=verb,

@@ -29,6 +29,7 @@ from ...assessment import (
 from ...assessment.findings import objective_finding_options
 from ...auth import Principal
 from ...config import get_settings
+from ...governance import bus
 from ...governance.approvals import entity_state, entity_states
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, Assessment, AssessmentControlResult, Control, PoamMilestone, System
@@ -350,6 +351,17 @@ async def poams_from_findings(
             )
         )
         session.add(poam)
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="poam",
+            entity_id=poam.id,
+            summary=f"POA&M opened from assessment finding: {poam.title}",
+            org_id=await bus.system_org(session, a.system_id),
+            actor=principal.email,
+            payload={"system_id": a.system_id},
+        )
         created += 1
     await session.commit()
     return {"created": created}

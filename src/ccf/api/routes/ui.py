@@ -30,6 +30,7 @@ from ...config import get_settings, is_dev_env
 from ...constants import POAM_ACTIVE_STATUSES, SSP_APPROVED_STATUSES, SSP_AUTHOR_STATUSES
 from ...fedramp20x import cr26_display_label
 from ...governance import automation as automation_engine
+from ...governance import bus
 from ...governance import conmon as conmon_engine
 from ...governance import digest as digest_engine
 from ...identity import mfa_service
@@ -2831,18 +2832,28 @@ async def assessment_make_poams_ui(
             title = f"{r.control_id} — {r.title or 'Other than satisfied'}"
             if title in existing:
                 continue
-            session.add(
-                POAM(
-                    system_id=a.system_id,
-                    title=title,
-                    weakness=(
-                        f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
-                        f"{r.assessor_note or ''}"
-                    ).strip(),
-                    severity="moderate",
-                    status="open",
-                    identified_on=today,
-                )
+            poam = POAM(
+                system_id=a.system_id,
+                title=title,
+                weakness=(
+                    f"Practice {r.control_id} ({r.nist_id}) assessed Other Than Satisfied. "
+                    f"{r.assessor_note or ''}"
+                ).strip(),
+                severity="moderate",
+                status="open",
+                identified_on=today,
+            )
+            session.add(poam)
+            await session.flush()
+            await bus.emit(
+                session,
+                verb="created",
+                entity_type="poam",
+                entity_id=poam.id,
+                summary=f"POA&M opened from assessment finding: {poam.title}",
+                org_id=await bus.system_org(session, a.system_id),
+                actor=getattr(getattr(request.state, "principal", None), "email", None),
+                payload={"system_id": a.system_id},
             )
         await session.commit()
     return RedirectResponse(f"/assessments/{assessment_id}", status_code=303)

@@ -270,7 +270,7 @@ async def authorize_system(
             f"System {sys.name} authorized ({previous_status or 'none'} → authorized), "
             f"expires {sys.ato_expires_on}"
         ),
-        org_id=principal.org_id,
+        org_id=sys.organization_id,
         actor=principal.email,
     )
     await session.commit()
@@ -403,7 +403,7 @@ async def upsert_implementation(
         entity_type="control_implementation",
         entity_id=obj.id,
         summary=f"Control implementation {control_id} → {obj.status}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=principal.email,
         payload={"system_id": system_id},
     )
@@ -465,11 +465,11 @@ async def bulk_import_implementations(
         await session.flush()
         await bus.emit(
             session,
-            verb="bulk_updated",
-            entity_type="control_implementation",
+            verb="implementations_imported",
+            entity_type="system",
             entity_id=system_id,
             summary=f"{upserted} control implementation(s) bulk-imported",
-            org_id=principal.org_id,
+            org_id=await bus.system_org(session, system_id),
             actor=principal.email,
             payload={"system_id": system_id, "upserted": upserted},
         )

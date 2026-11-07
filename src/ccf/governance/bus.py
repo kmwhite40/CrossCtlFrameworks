@@ -36,12 +36,15 @@ async def emit(
     entity_id: str | int | None = None,
     payload: dict[str, Any] | None = None,
     dispatch: bool = True,
+    external: bool = False,
 ) -> Event:
     """Record an event and queue the work it triggers, in the caller's transaction.
 
     ``dispatch=False`` queues no webhook delivery; registered consumers still
     match. While a consumer runs (``outbox.CURRENT_CONSUMER`` set) the event is
-    stamped with its chain depth (``payload["_depth"]``) for the worker.
+    stamped with its chain depth (``payload["_depth"]``) for the worker, and
+    reaches no webhook unless ``external=True``: a recompute's bookkeeping is
+    not news, but a finding a consumer makes (KSI drift) is (ruling R20).
     """
     if outbox.CURRENT_CONSUMER.get() is not None:
         payload = {**(payload or {}), "_depth": outbox.CURRENT_DEPTH.get()}
@@ -56,8 +59,24 @@ async def emit(
     )
     session.add(ev)
     await session.flush()
-    await outbox.enqueue(session, ev, dispatch=dispatch)
+    await outbox.enqueue(session, ev, dispatch=dispatch, external=external)
     return ev
+
+
+async def system_org(session: AsyncSession, system_id: int | None) -> int | None:
+    """The organization that owns ``system_id`` (``None`` if unknown).
+
+    An event's organization is the owning record's, never the caller's: a
+    global principal (``org_id is None``) writing a tenant's record would
+    otherwise emit an org-less event that no org-scoped consumer can place.
+    """
+    if system_id is None:
+        return None
+    from ..models import System  # noqa: PLC0415
+
+    return (
+        await session.execute(select(System.organization_id).where(System.id == system_id))
+    ).scalar_one_or_none()
 
 
 #: Higher is more severe; an update that raises severity re-surfaces an alert.

@@ -194,7 +194,7 @@ async def validate(
             else f"20x validation: no readiness figure ({score['status']}), "
         )
         + f"{score['high_risk_findings']} high-risk findings",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=principal.email,
         payload={"readiness": score, "count": len(results)},
     )
@@ -399,7 +399,7 @@ async def add_dependency(
         entity_type="fedramp_dependency",
         entity_id=dep.id,
         summary=f"Dependency '{dep.name}' ({dep.fedramp_status})",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, dep.system_id),
         actor=principal.email,
         payload={"system_id": dep.system_id},
     )
@@ -473,7 +473,7 @@ async def upsert_profile(
         entity_type="fedramp20x_profile",
         entity_id=system_id,
         summary=f"20x CSO profile updated for system {system_id}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=principal.email,
     )
     await session.commit()
@@ -620,7 +620,7 @@ async def update_review(
         entity_type="ksi_assessor_review",
         entity_id=rv.id,
         summary=f"Assessor review {rv.status} for KSI {rv.ksi_id}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, rv.system_id),
         actor=principal.email,
         payload={"system_id": rv.system_id},
     )
@@ -754,7 +754,7 @@ async def update_exception(
         entity_type="ksi_exception",
         entity_id=exc.id,
         summary=f"KSI exception {exc.status} for KSI {exc.ksi_id}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, exc.system_id),
         actor=principal.email,
         payload={"system_id": exc.system_id},
     )

@@ -74,7 +74,7 @@ async def record_review(
         entity_type="ksi_assessor_review",
         entity_id=rv.id,
         summary=f"Assessor review {rv.status} for KSI {rv.ksi_id}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, rv.system_id),
         actor=principal.email,
         payload={"system_id": rv.system_id},
     )
@@ -108,7 +108,7 @@ async def record_exception(
         entity_type="ksi_exception",
         entity_id=exc.id,
         summary=f"KSI exception ({status}) for KSI {ksi_id}",
-        org_id=principal.org_id,
+        org_id=await bus.system_org(session, system_id),
         actor=principal.email,
         payload={"system_id": system_id},
     )

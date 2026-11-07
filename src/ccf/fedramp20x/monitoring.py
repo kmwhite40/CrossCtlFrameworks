@@ -115,6 +115,9 @@ async def scan_system(
             org_id=system.organization_id,
             actor="scheduler",
             payload={"regressions": regressions, "readiness": readiness},
+            # A finding, not bookkeeping: subscribers get it even when a
+            # derived-view consumer, not the scheduler, found it (ruling R20).
+            external=True,
         )
         log.warning(
             "fedramp20x.drift",
