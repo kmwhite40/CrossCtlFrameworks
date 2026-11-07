@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -114,13 +115,26 @@ log = get_logger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
-async def _event_drain_inline_loop(interval: float) -> None:
+async def _event_drain_inline_loop(interval: float, reap_interval: float = 300.0) -> None:
     """Drain the outbox from inside the API process (the dev loop, no worker).
 
     One job per tick. A failing or hung drain is logged and the loop carries on:
-    it must never take the API down or stop draining.
+    it must never take the API down or stop draining. A drain that times out (or
+    is cancelled at shutdown) after claiming a job leaves it ``claimed``, and a
+    claimed job blocks its scope, so stale claims are reaped here too: on the
+    first iteration and then every ``reap_interval`` (as ``ccf event-worker`` does).
     """
+    last_reap = float("-inf")
     while True:
+        current = time.monotonic()
+        if current - last_reap >= reap_interval:
+            last_reap = current
+            try:
+                await event_worker.reap()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("event_drain_inline.reap_failed", error=type(e).__name__)
         try:
             await asyncio.wait_for(event_worker.drain_once(worker="api-inline", limit=1), 120)
         except asyncio.CancelledError:
