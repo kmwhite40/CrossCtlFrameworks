@@ -606,7 +606,7 @@ async def test_an_ocr_is_never_filed_by_a_consumer() -> None:
     assert await filings() == filed
 
 
-async def _gated(org_id: int, system_id: int) -> dict[str, Any]:
+async def _gated(org_id: int, system_id: int, *, ksi_state_ids: set[int]) -> dict[str, Any]:
     """Every status a person or a gate owns, for one system and its org.
 
     Derived columns (``derived_status``, ``KSIState.status``) are deliberately
@@ -666,9 +666,11 @@ async def _gated(org_id: int, system_id: int) -> dict[str, Any]:
                 e.id: e.status
                 for e in await rows(select(KSIException).where(KSIException.system_id == system_id))
             },
+            # The fixture's own rows only: validation creates a KSIState per
+            # catalog KSI (derived), and those are checked separately below.
             "assessor_status": {
                 k.id: k.assessor_status
-                for k in await rows(select(KSIState).where(KSIState.system_id == system_id))
+                for k in await rows(select(KSIState).where(KSIState.id.in_(ksi_state_ids)))
             },
             "readiness_status": profile.readiness_status if profile else None,
             "system": (
@@ -685,6 +687,11 @@ async def _gated(org_id: int, system_id: int) -> dict[str, Any]:
 
 
 async def test_a_derived_consumer_never_changes_a_gated_status() -> None:
+    # The shipped catalog, seeded here, so validation creates KSI state rows
+    # whatever ran before: alone the catalog is empty and no rows are created,
+    # after a module that seeds it (tests/test_reliability.py) they are.
+    async with session_scope() as s:
+        await catalog.seed_ksis(s)
     org_id, system_id = await _system("gated", twentyx=True)
     open_id = await _poam(system_id, due_on=date.today() + timedelta(days=90), severity="critical")
     accepted_id = await _poam(
@@ -749,7 +756,10 @@ async def test_a_derived_consumer_never_changes_a_gated_status() -> None:
         s.add(ksi)
         await s.flush()
         ksi_id = ksi.id
-        s.add(KSIState(system_id=system_id, ksi_id=ksi.id, assessor_status="accepted"))
+        own_state = KSIState(system_id=system_id, ksi_id=ksi.id, assessor_status="accepted")
+        s.add(own_state)
+        await s.flush()
+        own_state_ids = {own_state.id}
         s.add(KSIAssessorReview(system_id=system_id, ksi_id=ksi.id, status="accepted"))
         s.add(KSIException(system_id=system_id, ksi_id=ksi.id, rationale="r", status="accepted"))
         # A capability bound through a component to an implemented control.
@@ -780,7 +790,7 @@ async def test_a_derived_consumer_never_changes_a_gated_status() -> None:
         await seed_ver_history(s, system_id=system_id)
 
     try:
-        before = await _gated(org_id, system_id)
+        before = await _gated(org_id, system_id, ksi_state_ids=own_state_ids)
         assert len(before["poams"]) == 4 and before["extensions"] and before["reviews"]
         mark = await _mark()
         async with session_scope() as s:
@@ -833,7 +843,21 @@ async def test_a_derived_consumer_never_changes_a_gated_status() -> None:
                 )
             ).scalar_one()
             assert impl.derived_status == "implemented"  # it really derived
-        assert await _gated(org_id, system_id) == before
+        assert await _gated(org_id, system_id, ksi_state_ids=own_state_ids) == before
+        # KSI state the drain CREATED is derived, but it must assert no review:
+        # an assessor status is a person's, so a new row carries the default.
+        async with session_scope() as s:
+            created = list(
+                (
+                    await s.execute(
+                        select(KSIState.assessor_status).where(
+                            KSIState.system_id == system_id, KSIState.id.not_in(own_state_ids)
+                        )
+                    )
+                ).scalars()
+            )
+        assert created, "the catalog is seeded, so validation must have created KSI state"
+        assert set(created) == {"not_reviewed"}
     finally:
         async with session_scope() as s:
             await s.execute(delete(KSI).where(KSI.id == ksi_id))
