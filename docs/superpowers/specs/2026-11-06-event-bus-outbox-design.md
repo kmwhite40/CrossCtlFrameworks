@@ -1,6 +1,8 @@
 # Event bus: committed events drive webhooks and derived views
 
-Status: design, with the owner's three decisions recorded (section 8); awaiting approval of the document. Sub-project 1 of the two structural
+Status: built on branch `design/event-bus` (2026-11-06), approved by the owner
+2026-11-06, with the owner's three decisions recorded (section 8). Where the build
+differs from this design, see section 9. Sub-project 1 of the two structural
 fixes from the 2026-10-20 seam audit. Sub-project 2, one record per (system,
 control), gets its own design afterwards and will publish its changes through this
 bus.
@@ -300,3 +302,30 @@ There are two migrations.
   - Each message gains an `X-CCF-Event-Id` header plus `event_id` and
     `occurred_at` body fields.
   - The release notes tell receivers to drop duplicates by event id.
+
+## 9. Deviations from this design (as built)
+
+- **`practice_reaction` was not built.** Section 5.1 and 6.4 say
+  `reactions.on_scoring_status_changed` becomes a `practice_reaction` consumer
+  (triggered by `scoring_status` `status_changed`, scope `system:N`, proposing and
+  never closing), and that the route stops calling it. The route
+  (`ccf.api.routes.scoring`) still calls it inline. This remains open.
+- **Job states.** Section 5.2's `running` is named `claimed` (the `ccf.queue`
+  vocabulary the worker reuses); a job absorbed by a claim is `merged`, with
+  `merged_into` naming the claimed job. The table also has `claimed_by` and a
+  per-row `max_attempts` (webhooks 8, derived views 5), beyond section 6.6's list.
+- **One migration, not two.** Section 6.6 says two; `events` gains no columns, so
+  only `0115_outbox_jobs` exists.
+- **Settings defaults.** Section 6.1 says `CCF_EVENT_WORKER_ENABLED` and
+  `CCF_EVENT_DRAIN_INLINE` both default on. As built, `CCF_EVENT_WORKER_ENABLED`
+  defaults **off** and `CCF_EVENT_DRAIN_INLINE` defaults on, so with no settings the
+  API drains in-process (the dev / single-operator mode of section 8). Compose sets
+  `CCF_EVENT_WORKER_ENABLED=true` on both `api` and `event-worker`, which turns the
+  inline loop off. `ccf event-worker` refuses to run without the flag.
+- **The `event-worker` compose service runs by default**, not under a profile
+  (section 6.1), so production gets the separate container section 8 asks for.
+- **Webhook backoff** is `170 s * 2**(n-1)`, so 8 attempts span about 6 h.
+- **Claim fencing.** Not in the design: a job's outcome is written only while its
+  claim (`claimed_by`, `attempts`) still holds. A run that outlived its claim
+  (reaped, then re-claimed) reports `lost` and writes nothing.
+- **Requeue** is on the reliability page only; there is no CLI requeue command.
