@@ -31,6 +31,7 @@ from ccf.api.main import create_app
 from ccf.assessment.engine import service as engine
 from ccf.assurance.builder import rebuild_org
 from ccf.auth import Principal
+from ccf.cr26 import ver as cr26_ver
 from ccf.cr26.store import put_document
 from ccf.cr26.ver import seed_avi, seed_vdr, seed_ver_history
 from ccf.db import session_scope
@@ -1412,3 +1413,25 @@ async def test_a_repeated_identical_failure_queues_no_more_derived_work() -> Non
     # Positive control: a failure whose detail moved does refresh, and emits.
     moved_events, moved_jobs = await run("MFA off for 5 users")
     assert [e.verb for e in moved_events] == ["updated"] and moved_jobs
+
+
+def test_each_promotion_guard_alone_keeps_a_filled_rationale() -> None:
+    """Two independent guards stand between an AVI and a filled column; the
+    end-to-end probe above fails only when both are gone, so each is pinned."""
+    # Guard 1: the column wins when it carries content (no promotion asked).
+    assert cr26_ver._resolve_rationale(
+        "7", {"acceptanceRationale": "the AVI's reason"}, {"7": "approved by the AO"}
+    ) == ("approved by the AO", False)
+    assert cr26_ver._resolve_rationale("7", {"acceptanceRationale": "the AVI's reason"}, {}) == (
+        "the AVI's reason",
+        True,
+    )  # positive control: a blank column asks for promotion
+
+    # Guard 2: even when asked, a promotion never overwrites a filled column.
+    filled = POAM(id=7, system_id=1, title="t", acceptance_rationale="approved by the AO")
+    blank = POAM(id=8, system_id=1, title="t", acceptance_rationale=None)
+    cr26_ver._promote_rationales(
+        [filled, blank], [(7, "the AVI's reason"), (8, "the AVI's reason")]
+    )
+    assert filled.acceptance_rationale == "approved by the AO"
+    assert blank.acceptance_rationale == "the AVI's reason"  # positive control
