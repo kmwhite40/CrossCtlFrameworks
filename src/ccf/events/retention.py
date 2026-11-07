@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, func
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models_outbox import OutboxJob
@@ -43,3 +43,42 @@ async def purge_outbox(session: AsyncSession, *, now: datetime | None = None) ->
         "derived": derived.rowcount or 0,  # type: ignore[attr-defined]
         "webhook": webhook.rowcount or 0,  # type: ignore[attr-defined]
     }
+
+
+async def failed_counts(session: AsyncSession, *, org_id: int | None) -> list[tuple[str, int]]:
+    """Dead-lettered job counts per consumer; ``org_id=None`` counts every org."""
+    stmt = (
+        select(OutboxJob.consumer, func.count())
+        .where(OutboxJob.status == "failed")
+        .group_by(OutboxJob.consumer)
+        .order_by(OutboxJob.consumer)
+    )
+    if org_id is not None:
+        stmt = stmt.where(OutboxJob.organization_id == org_id)
+    return [(c, n) for c, n in (await session.execute(stmt)).all()]
+
+
+async def requeue_failed(session: AsyncSession, *, consumer: str, org_id: int | None) -> int:
+    """Put a consumer's failed jobs back on the queue; returns how many.
+
+    The explicit ``org_id`` filter is the guard (RLS is only the backstop);
+    ``None`` is the unscoped platform admin and requeues every organization's.
+    The prior error is kept in ``result``.
+    """
+    stmt = (
+        update(OutboxJob)
+        .where(OutboxJob.consumer == consumer, OutboxJob.status == "failed")
+        .values(
+            status="pending",
+            attempts=0,
+            next_attempt_at=func.now(),
+            claimed_at=None,
+            claimed_by=None,
+            finished_at=None,
+            result=func.jsonb_build_object("requeued_from_error", OutboxJob.last_error),
+            last_error=None,
+        )
+    )
+    if org_id is not None:
+        stmt = stmt.where(OutboxJob.organization_id == org_id)
+    return (await session.execute(stmt)).rowcount or 0  # type: ignore[attr-defined]

@@ -320,6 +320,21 @@ async def test_the_page_offers_requeue_only_for_failed_consumers() -> None:
     assert _url(OTHER_DERIVED) not in page.text
 
 
+async def test_requeue_and_count_helpers_filter_by_org_on_an_unscoped_session() -> None:
+    # RLS cannot mask this: the session is unscoped, so only the filter separates A from B.
+    a, b = await _org(), await _org()
+    ja, jb = await _failed(DERIVED, a), await _failed(DERIVED, b)
+    async with session_scope() as s:
+        assert await retention.failed_counts(s, org_id=a) == [(DERIVED, 1)]
+        assert await retention.failed_counts(s, org_id=None) == [(DERIVED, 2)]  # control
+        assert await retention.requeue_failed(s, consumer=DERIVED, org_id=a) == 1
+    assert (await _get(ja)).status == "pending"  # type: ignore[union-attr]
+    assert (await _get(jb)).status == "failed"  # type: ignore[union-attr]
+    async with session_scope() as s:  # positive control: no org requeues the rest
+        assert await retention.requeue_failed(s, consumer=DERIVED, org_id=None) == 1
+    assert (await _get(jb)).status == "pending"  # type: ignore[union-attr]
+
+
 # --- retention ---------------------------------------------------------------
 
 

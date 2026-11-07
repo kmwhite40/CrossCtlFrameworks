@@ -3184,20 +3184,12 @@ async def reliability_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
-    from ...models_outbox import OutboxJob  # noqa: PLC0415
+    from ...events import retention  # noqa: PLC0415
     from ...reliability import run_checks, summarize  # noqa: PLC0415
 
     summary = summarize(await run_checks(session))
     org = _principal_org(request)
-    failed_stmt = (
-        select(OutboxJob.consumer, func.count())
-        .where(OutboxJob.status == "failed")
-        .group_by(OutboxJob.consumer)
-        .order_by(OutboxJob.consumer)
-    )
-    if org is not None:
-        failed_stmt = failed_stmt.where(OutboxJob.organization_id == org)
-    failed_consumers = [(c, n) for c, n in (await session.execute(failed_stmt)).all()]
+    failed_consumers = await retention.failed_counts(session, org_id=org)
     return templates.TemplateResponse(
         request,
         "reliability.html",
@@ -3224,28 +3216,10 @@ async def reliability_outbox_requeue(
     requeues every organization's. The prior error is kept in ``result`` so the
     history of why the job died is not lost, and the action is audited.
     """
-    from sqlalchemy import update  # noqa: PLC0415
-
-    from ...models_outbox import OutboxJob  # noqa: PLC0415
+    from ...events import retention  # noqa: PLC0415
 
     org = _principal_org(request)
-    stmt = (
-        update(OutboxJob)
-        .where(OutboxJob.consumer == consumer, OutboxJob.status == "failed")
-        .values(
-            status="pending",
-            attempts=0,
-            next_attempt_at=func.now(),
-            claimed_at=None,
-            claimed_by=None,
-            finished_at=None,
-            result=func.jsonb_build_object("requeued_from_error", OutboxJob.last_error),
-            last_error=None,
-        )
-    )
-    if org is not None:
-        stmt = stmt.where(OutboxJob.organization_id == org)
-    requeued = (await session.execute(stmt)).rowcount or 0  # type: ignore[attr-defined]
+    requeued = await retention.requeue_failed(session, consumer=consumer, org_id=org)
     await record_event(
         session,
         actor=principal.email,
