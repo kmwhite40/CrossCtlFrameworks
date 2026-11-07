@@ -1195,6 +1195,44 @@ async def test_drift_a_consumer_finds_reaches_webhooks_and_bookkeeping_does_not(
             await s.execute(delete(Webhook).where(Webhook.id == hook_id))
 
 
+async def _regress(sid: int) -> None:
+    async with session_scope() as s:
+        await s.execute(
+            update(ControlImplementation)
+            .where(ControlImplementation.system_id == sid)
+            .values(status="not_implemented")
+        )
+
+
+@pytest.mark.usefixtures("_shipped_catalog_after")
+async def test_drift_names_who_found_it() -> None:
+    """Drift the fedramp20x consumer finds is the consumer's, not the scheduler's;
+    a direct scan (the scheduler's sweep) still says ``scheduler``."""
+    _, by_consumer = await _engine_system("drift-actor-consumer", implemented=True)
+    _, by_scan = await _engine_system("drift-actor-scan", implemented=True)
+    await _regress(by_consumer)
+    await _regress(by_scan)
+
+    ev_mark, mark = await _event_mark(), await _mark()
+    async with session_scope() as s:
+        await bus.emit(
+            s,
+            verb="updated",
+            entity_type="fedramp20x_profile",
+            entity_id=by_consumer,
+            summary="t",
+            org_id=(await s.get(System, by_consumer)).organization_id,  # type: ignore[union-attr]
+            dispatch=False,
+        )
+    await _drain(mark)
+    async with session_scope() as s:  # positive control: the scheduler's path
+        await monitoring.scan_system(s, system_id=by_scan)
+
+    drift = await _events_since(ev_mark, entity_type="system", verb="drift")
+    actors = {e.entity_id: e.actor for e in drift}
+    assert actors == {str(by_consumer): "event:fedramp20x", str(by_scan): "scheduler"}
+
+
 async def test_a_seeder_written_vdr_is_refreshed_and_an_authored_one_is_kept() -> None:
     """Ruling R22: refresh what a seeder wrote; tell the author about theirs."""
     org_id, sys_a = await _system("vdr-seeded")

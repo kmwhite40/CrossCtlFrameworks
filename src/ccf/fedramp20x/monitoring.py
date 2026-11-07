@@ -62,9 +62,16 @@ async def _ksi_ident(session: AsyncSession) -> dict[int, str]:
 
 
 async def scan_system(
-    session: AsyncSession, *, system_id: int, ksi_ident: dict[int, str] | None = None
+    session: AsyncSession,
+    *,
+    system_id: int,
+    ksi_ident: dict[int, str] | None = None,
+    actor: str = "scheduler",
 ) -> dict[str, Any]:
     """Re-validate one system, snapshot readiness, and report drift.
+
+    ``actor`` is who the drift event names as having found it: the scheduler's
+    sweep by default, or the event consumer that called this.
 
     The per-system body of :func:`scan`. It does not check the system's 20x
     footprint (the sweep only calls it for 20x systems): a caller that may
@@ -113,7 +120,7 @@ async def scan_system(
                 f"{len(regressions)} regression(s); readiness now {readiness['readiness_pct']}%"
             ),
             org_id=system.organization_id,
-            actor="scheduler",
+            actor=actor,
             payload={"regressions": regressions, "readiness": readiness},
             # A finding, not bookkeeping: subscribers get it even when a
             # derived-view consumer, not the scheduler, found it (ruling R20).

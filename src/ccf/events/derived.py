@@ -262,7 +262,7 @@ async def _run_fedramp20x(session: AsyncSession, scope_key: str, job: OutboxJob)
         return {"system_id": sid, "skipped": _DELETED}
     if not await monitoring.is_20x_system(session, sid):
         return {"system_id": sid, "skipped": "no 20x footprint"}
-    out = await monitoring.scan_system(session, system_id=sid)
+    out = await monitoring.scan_system(session, system_id=sid, actor="event:fedramp20x")
     # KSI state changed under the graph: tell it. Internal (no webhook); the
     # graph triggers on it and this consumer does not.
     await bus.emit(
