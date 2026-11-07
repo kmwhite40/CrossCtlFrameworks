@@ -48,6 +48,7 @@ posture page that never changes.
 | `CCF_AWS_CAPTURE_ENABLED` | `false` | AWS configuration capture. Leave off unless an AWS connector is bound. |
 | `CCF_PREP_ENABLED` | `false` | The evidence-prep pipeline and its worker. |
 | `CCF_AI_ENABLED` | `false` | AI drafting. Off is a defensible production posture; on requires a configured provider and leaves AI-drafted content visibly badged. |
+| `CCF_EVENT_WORKER_ENABLED` | `false` | **Says a separate `event-worker` process drains the event bus** (webhook deliveries and the derived views: assurance graph, capability derivation, FedRAMP 20x re-scoring, CR26 documents). Production sets it `true` on **both** the `api` and `event-worker` services. With it `false` and `CCF_EVENT_DRAIN_INLINE` at its default `true`, the API drains the outbox in-process instead (one job every `CCF_EVENT_DRAIN_INTERVAL_SECONDS`, default 3 s) — the dev / single-operator mode. Set on the worker alone, the API keeps its inline loop and drains alongside the worker; set on neither with `CCF_EVENT_DRAIN_INLINE=false`, nothing drains and webhooks and derived views stop. `ccf event-worker` refuses to run while the flag is `false`. |
 
 Verify it took, rather than assuming — see section 6.
 
@@ -72,6 +73,14 @@ docker compose --profile prep --profile assessment up -d prep-worker assessment-
 
 Both poll in a loop and log `{"claimed": 0, ...}` against an empty queue, which
 is what healthy-and-idle looks like. Neither is needed for the scheduler.
+
+**The `event-worker` service is not behind a profile**: it starts with a plain
+`docker compose up` and runs `ccf event-worker --loop`. The compose stack sets
+`CCF_EVENT_WORKER_ENABLED: "true"` on both `api` and `event-worker`, so the API's
+inline drain loop stays off and the worker is the only drainer. A deployment
+without compose that runs the API alone inherits the `false` default and drains
+inline; one that adds a worker must set the flag on both. Against an empty queue
+the worker logs all-zero counts per cycle, which is healthy-and-idle.
 
 ### Defaults that weaken an assurance claim rather than a feature
 
@@ -150,6 +159,7 @@ psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 | `/api/posture/summary` `systems_total` | equals live systems in that org |
 | `GET /api/reliability` → `assurance_graph_freshness` | `pass`, within a day or two of deploy. A persistent `warn` that the graph is *N*d old means no scheduler is running — see section 2a. |
 | The API log on start | `scheduler.started` with the interval, if `CCF_SCHEDULER_ENABLED=true`. Its absence is the only signal that nothing recurring will happen. |
+| `GET /api/reliability` → `event_outbox` | `pass`. A `fail` names the consumer with dead-lettered (`failed`) jobs: fix the cause (for a webhook, the receiver), then requeue from the reliability page (**Requeue** beside that consumer, admin only; a tenant admin requeues only their own organization's jobs). Requeued jobs keep their target and prior error and are retried from attempt 1. A `warn` that the queue is stalled means nothing is draining — check `CCF_EVENT_WORKER_ENABLED` above and that `event-worker` is running. |
 
 ## 7. Known limits to state before anyone relies on this
 
