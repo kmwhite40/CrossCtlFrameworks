@@ -652,6 +652,21 @@ async def run_cycle() -> dict[str, Any]:
                     log.warning("scheduler.global_step_failed", step="kev_sync", error=str(e)[:200])
                     global_failures.append("kev_sync")
 
+            # GLOBAL: outbox retention. Deletes finished derived-view jobs after
+            # a day and finished webhook jobs after 30 days, never `failed`
+            # ones; ccf_app has no DELETE, so it runs here on the unscoped
+            # session.
+            try:
+                async with session.begin_nested():
+                    from ..events import retention  # noqa: PLC0415 — lazy, keeps startup light
+
+                    out["outbox_retention"] = await retention.purge_outbox(session)
+            except Exception as e:
+                log.warning(
+                    "scheduler.global_step_failed", step="outbox_retention", error=str(e)[:200]
+                )
+                global_failures.append("outbox_retention")
+
             # PER-TENANT: collection, ConMon, and control-test auto-run — one
             # pass per organization, each clamped to its own RLS tenant.
             org_ids = await _active_org_ids(session)

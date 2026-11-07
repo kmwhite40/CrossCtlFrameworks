@@ -1176,6 +1176,101 @@ async def _check_ssp_platform_agreement(session: AsyncSession) -> Check:
     )
 
 
+_OUTBOX_STALL = timedelta(minutes=5)
+_OUTBOX_FRESHNESS_TARGET_S = 60.0
+
+
+async def _check_event_outbox(session: AsyncSession) -> Check:
+    """The event bus's outbox: dead letters, a stalled queue, derived-view freshness.
+
+    FAIL on any ``failed`` job (named per consumer, with the oldest error). WARN
+    when the oldest *eligible* pending job of a REGISTERED consumer is over five
+    minutes late (the worker is down or behind; an unregistered consumer's jobs
+    are left pending by design, and a job backing off for a retry is not
+    eligible). WARN when the p95 of ``finished_at - events.created_at`` for
+    derived-view jobs over the last 24 h exceeds 60 s; webhook jobs are left out
+    of that figure (ruling R29) but a failed webhook still FAILs.
+    """
+    if not await _regclass(session, "ccf.outbox_jobs"):
+        return Check(
+            "event_outbox", WARN, "outbox_jobs table is missing.", "Run `alembic upgrade head`."
+        )
+    from ..events import consumers  # noqa: PLC0415 — lazy; importing registers the consumers
+
+    registered = sorted(consumers.REGISTRY)
+    derived = sorted(n for n in registered if n != "webhook")
+
+    failed = (
+        await session.execute(
+            text(
+                "SELECT consumer, count(*) AS n, "
+                "(array_agg(last_error ORDER BY id))[1] AS oldest_error "
+                "FROM ccf.outbox_jobs WHERE status = 'failed' "
+                "GROUP BY consumer ORDER BY consumer"
+            )
+        )
+    ).all()
+    if failed:
+        parts = [
+            f"{c}: {n} failed (oldest error: {(err or 'none recorded')[:160]})"
+            for c, n, err in failed
+        ]
+        return Check(
+            "event_outbox",
+            FAIL,
+            "Dead-lettered jobs: " + "; ".join(parts),
+            "Fix the cause, then Requeue the consumer on the System Health page.",
+        )
+
+    now = datetime.now(UTC)
+    warnings: list[str] = []
+    oldest = (
+        await session.execute(
+            text(
+                "SELECT min(next_attempt_at) FROM ccf.outbox_jobs "
+                "WHERE status = 'pending' AND next_attempt_at <= :now "
+                "AND consumer = ANY(:reg)"
+            ),
+            {"now": now, "reg": registered},
+        )
+    ).scalar()
+    if oldest is not None and now - _as_utc(oldest) > _OUTBOX_STALL:
+        mins = int((now - _as_utc(oldest)).total_seconds() // 60)
+        warnings.append(
+            f"The oldest eligible pending job has waited {mins} min: "
+            "the event worker is down or behind."
+        )
+
+    p95 = (
+        await session.execute(
+            text(
+                "SELECT percentile_cont(0.95) WITHIN GROUP "
+                "(ORDER BY extract(epoch FROM j.finished_at - e.created_at)) "
+                "FROM ccf.outbox_jobs j JOIN ccf.events e ON e.id = j.trigger_event_id "
+                "WHERE j.status IN ('done', 'merged') AND j.finished_at IS NOT NULL "
+                "AND j.finished_at > :since AND j.consumer = ANY(:derived)"
+            ),
+            {"since": now - timedelta(hours=24), "derived": derived},
+        )
+    ).scalar()
+    if p95 is not None and float(p95) > _OUTBOX_FRESHNESS_TARGET_S:
+        warnings.append(
+            f"Derived views are {float(p95):.0f} s behind at p95 over the last 24 h; "
+            f"the freshness target is {_OUTBOX_FRESHNESS_TARGET_S:.0f} s."
+        )
+    if warnings:
+        return Check(
+            "event_outbox",
+            WARN,
+            " ".join(warnings),
+            "Check the event-worker service and its logs.",
+        )
+    fresh = "no derived-view jobs finished in the last 24 h" if p95 is None else (
+        f"derived-view freshness p95 {float(p95):.1f} s (target {_OUTBOX_FRESHNESS_TARGET_S:.0f} s)"
+    )
+    return Check("event_outbox", PASS, f"No dead letters, queue is moving; {fresh}.")
+
+
 _CHECKS = [
     _check_database,
     _check_migrations,
@@ -1190,6 +1285,7 @@ _CHECKS = [
     _check_evidence_confidence_freshness,
     _check_evidence_replayability,
     _check_assurance_graph_freshness,
+    _check_event_outbox,
     _check_ai_disabled_safe_default,
     _check_ai_guardrail_violations,
     _check_ai_action_review_backlog,

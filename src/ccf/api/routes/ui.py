@@ -3184,11 +3184,76 @@ async def reliability_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
+    from ...models_outbox import OutboxJob  # noqa: PLC0415
     from ...reliability import run_checks, summarize  # noqa: PLC0415
 
     summary = summarize(await run_checks(session))
+    org = _principal_org(request)
+    failed_stmt = (
+        select(OutboxJob.consumer, func.count())
+        .where(OutboxJob.status == "failed")
+        .group_by(OutboxJob.consumer)
+        .order_by(OutboxJob.consumer)
+    )
+    if org is not None:
+        failed_stmt = failed_stmt.where(OutboxJob.organization_id == org)
+    failed_consumers = [(c, n) for c, n in (await session.execute(failed_stmt)).all()]
     return templates.TemplateResponse(
         request,
         "reliability.html",
-        {"active": "reliability", "asset_v": _asset_version(), "summary": summary},
+        {
+            "active": "reliability",
+            "asset_v": _asset_version(),
+            "summary": summary,
+            "failed_consumers": failed_consumers,
+        },
     )
+
+
+@router.post("/admin/reliability/outbox/{consumer}/requeue")
+async def reliability_outbox_requeue(
+    consumer: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    """Put a consumer's dead-lettered jobs back on the queue.
+
+    A tenant admin requeues only their own organization's jobs (the explicit
+    filter is the guard; RLS is the backstop). An unscoped platform admin
+    requeues every organization's. The prior error is kept in ``result`` so the
+    history of why the job died is not lost, and the action is audited.
+    """
+    from sqlalchemy import update  # noqa: PLC0415
+
+    from ...models_outbox import OutboxJob  # noqa: PLC0415
+
+    org = _principal_org(request)
+    stmt = (
+        update(OutboxJob)
+        .where(OutboxJob.consumer == consumer, OutboxJob.status == "failed")
+        .values(
+            status="pending",
+            attempts=0,
+            next_attempt_at=func.now(),
+            claimed_at=None,
+            claimed_by=None,
+            finished_at=None,
+            result=func.jsonb_build_object("requeued_from_error", OutboxJob.last_error),
+            last_error=None,
+        )
+    )
+    if org is not None:
+        stmt = stmt.where(OutboxJob.organization_id == org)
+    requeued = (await session.execute(stmt)).rowcount or 0  # type: ignore[attr-defined]
+    await record_event(
+        session,
+        actor=principal.email,
+        action="outbox.requeue",
+        entity_type="outbox_consumer",
+        entity_id=consumer,
+        diff={"requeued": requeued},
+        organization_id=org,
+    )
+    await session.commit()
+    return RedirectResponse("/admin/reliability", status_code=303)
