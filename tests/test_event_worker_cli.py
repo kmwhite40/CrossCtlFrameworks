@@ -165,6 +165,9 @@ async def test_a_failing_drain_does_not_stop_the_inline_loop(
     assert n >= 2
 
 
+_REAP_DEADLINE_S = 10.0
+
+
 async def test_the_inline_loop_reaps_a_stale_claim(
     monkeypatch: pytest.MonkeyPatch, settings_env: Any
 ) -> None:
@@ -204,12 +207,24 @@ async def test_the_inline_loop_reaps_a_stale_claim(
     # Stub the drain so only the reap can change the job's state.
     monkeypatch.setattr(api_main.event_worker, "drain_once", _fake_drain([]))
     try:
-        await _run_lifespan_briefly([], 0.3)
-        async with session_scope() as s:
-            status = (
-                await s.execute(select(OutboxJob.status).where(OutboxJob.id == job_id))
-            ).scalar_one()
-        assert status == "pending"
+        # Poll, never a fixed sleep: under a loaded suite, startup plus the first
+        # reap's round-trip took 2.7 s and a 0.3 s window saw ``claimed``.
+        status = "claimed"
+        async with api_main.lifespan(api_main.create_app()):
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + _REAP_DEADLINE_S
+            while loop.time() < deadline:
+                async with session_scope() as s:
+                    status = (
+                        await s.execute(select(OutboxJob.status).where(OutboxJob.id == job_id))
+                    ).scalar_one()
+                if status == "pending":
+                    break
+                await asyncio.sleep(0.05)
+        assert status == "pending", (
+            f"the inline loop did not requeue the stale claim within {_REAP_DEADLINE_S:.0f} s "
+            f"(status still {status!r})"
+        )
     finally:
         async with session_scope() as s:
             await s.execute(delete(OutboxJob).where(OutboxJob.id == job_id))
