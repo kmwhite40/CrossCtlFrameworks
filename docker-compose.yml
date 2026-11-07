@@ -83,6 +83,10 @@ services:
       <<: *ccf_env
       CCF_PREP_ENABLED: "true"
       CCF_ASSESSMENT_ENGINE_ENABLED: "true"
+      # Set on BOTH `api` and `event-worker`. Set on the worker alone, the api
+      # (flag off) keeps its inline drain and double-drains alongside the worker,
+      # the same one-sided-flag defect as the routers above.
+      CCF_EVENT_WORKER_ENABLED: "true"
       # The in-app automation scheduler. Off by default in `config.py` and
       # deliberately turned on here: without it nothing recurs, and every
       # freshness check, ConMon scan and due control test only ever runs
@@ -234,6 +238,28 @@ services:
     # so the inherited /healthz HEALTHCHECK can never pass. Disable it rather
     # than report `unhealthy` forever for a worker that is functioning
     # correctly. Do not re-add the api's HTTP healthcheck to this service.
+    healthcheck:
+      disable: true
+
+  # Event bus outbox worker: webhook deliveries and the derived views.
+  # `docker compose --profile events up -d event-worker`. Without this profile
+  # the api drains inline (see CCF_EVENT_DRAIN_INLINE); with it, CCF_EVENT_WORKER_ENABLED
+  # is true on api and worker so exactly one of them drains.
+  event-worker:
+    build: .
+    container_name: ccf-event-worker
+    profiles: ["events"]
+    depends_on:
+      db:       { condition: service_healthy }
+      migrator: { condition: service_completed_successfully }
+    environment:
+      <<: *ccf_env
+      CCF_EVENT_WORKER_ENABLED: "true"
+    entrypoint: ["sh", "-c"]
+    command: ["ccf event-worker --loop"]
+    restart: "unless-stopped"
+    # No HTTP server in a worker: the inherited /healthz HEALTHCHECK can never
+    # pass. Same reasoning as prep-worker; do not re-add the api's healthcheck.
     healthcheck:
       disable: true
 

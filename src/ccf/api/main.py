@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +21,7 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import ExceptionHandler
 
 from ..config import enforce_secure_config, get_settings, is_dev_env
+from ..events import worker as event_worker
 from ..logging import configure_logging, get_logger
 from .audit import audit_middleware
 from .auth_deps import auth_gate_middleware
@@ -111,6 +114,22 @@ log = get_logger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 
 
+async def _event_drain_inline_loop(interval: float) -> None:
+    """Drain the outbox from inside the API process (the dev loop, no worker).
+
+    One job per tick. A failing or hung drain is logged and the loop carries on:
+    it must never take the API down or stop draining.
+    """
+    while True:
+        try:
+            await asyncio.wait_for(event_worker.drain_once(worker="api-inline", limit=1), 120)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("event_drain_inline.failed", error=type(e).__name__)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     configure_logging()
@@ -118,7 +137,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from ..governance import scheduler  # noqa: PLC0415 — lazy to keep factory import light
 
     scheduler.start()  # no-op unless CCF_SCHEDULER_ENABLED
+    settings = get_settings()
+    inline: asyncio.Task[None] | None = None
+    if settings.event_drain_inline and not settings.event_worker_enabled:
+        inline = asyncio.create_task(
+            _event_drain_inline_loop(settings.event_drain_interval_seconds)
+        )
     yield
+    if inline is not None:
+        inline.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await inline
     await scheduler.stop()
     log.info("api.shutdown")
 

@@ -41,6 +41,9 @@ os.environ.setdefault("CCF_ENV", "test")
 # The scheduler refreshes CISA KEV over the network each cycle; tests never
 # touch the network (tests/test_intel.py drives the step with a fixture).
 os.environ.setdefault("CCF_KEV_SYNC_ENABLED", "false")
+# The API's inline outbox drain is a background task; no test wants one racing it
+# (ruling R27). tests/test_event_worker_cli.py turns it on explicitly.
+os.environ.setdefault("CCF_EVENT_DRAIN_INLINE", "false")
 
 
 def _delete_keyed_cr26_documents_before_wipe(cfg: Config) -> None:

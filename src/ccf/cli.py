@@ -26,6 +26,7 @@ from .etl.dedupe import apply_dedupe, plan_dedupe
 from .etl.reclassify import apply_reclassification, plan_reclassification
 from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
+from .events import worker as event_worker
 from .governance import conmon, digest, insights, scheduler
 from .logging import configure_logging
 from .models import (
@@ -822,6 +823,60 @@ def assessment_worker(
 
     batch = limit if limit is not None else settings.assessment_engine_batch_size
     asyncio.run(_assessment_drain_loop(once=once, worker=worker, batch=batch, settings=settings))
+
+
+async def _event_drain_loop(
+    *,
+    once: bool,
+    worker: str,
+    batch: int,
+    settings: Settings,
+    reap_interval: float = 300.0,
+    now: Callable[[], float] = time.monotonic,
+) -> None:
+    """Outbox drain cycles until ``once``, or forever in ``--loop`` mode.
+
+    Same shape as ``_assessment_drain_loop``: stale claims are reaped on a
+    cadence inside the loop (not once at start, which could never find a stale
+    claim), and an empty cycle sleeps rather than spinning the claim query.
+    """
+    last_reap = float("-inf")  # forces a reap on the very first cycle
+    while True:
+        current = now()
+        if current - last_reap >= reap_interval:
+            reaped = await event_worker.reap()
+            if reaped:
+                console.print(f"[yellow]Reaped {reaped} stale outbox job(s)[/yellow]")
+            last_reap = current
+        stats = await event_worker.drain_once(worker=worker, limit=batch)
+        console.print_json(json.dumps(stats))
+        if once:
+            break
+        if not any(stats.values()):
+            await asyncio.sleep(settings.event_drain_interval_seconds)
+
+
+@app.command(name="event-worker")
+def event_worker_cmd(
+    once: bool = typer.Option(
+        True,
+        "--once/--loop",
+        help="Run one cycle, or loop forever (sleeping between empty cycles).",
+    ),
+    limit: int = typer.Option(10, help="Jobs to claim per cycle."),
+    worker: str = typer.Option("event-worker", help="Worker name recorded on claimed jobs."),
+) -> None:
+    """Drain the event bus's outbox (webhook deliveries and the derived views)."""
+    settings = get_settings()
+    if not settings.event_worker_enabled:
+        # Same gate as `ccf assessment-worker`: without the flag the API drains
+        # inline, and a second drainer here would only double the work.
+        console.print(
+            "[yellow]Event worker is disabled (CCF_EVENT_WORKER_ENABLED=false) — "
+            "nothing to do. Set CCF_EVENT_WORKER_ENABLED=true to enable it.[/yellow]"
+        )
+        return
+    asyncio.run(_event_drain_loop(once=once, worker=worker, batch=limit, settings=settings))
 
 
 @app.command(name="calibration-snapshot")
