@@ -81,7 +81,10 @@ async def create_object(
     owner: str | None = None,
     source_type: str = "manual_upload",
     expires_on: date | None = None,
+    announce: bool = True,
 ) -> EvidenceObject:
+    """Create a draft evidence object. ``announce=False`` is for a bulk writer
+    that emits one summary event for the batch itself (it must)."""
     obj = EvidenceObject(
         organization_id=org_id,
         title=title,
@@ -97,7 +100,8 @@ async def create_object(
     )
     session.add(obj)
     await session.flush()
-    await _emit(session, obj, "created", f"Evidence object '{obj.title}' created")
+    if announce:
+        await _emit(session, obj, "created", f"Evidence object '{obj.title}' created")
     return obj
 
 

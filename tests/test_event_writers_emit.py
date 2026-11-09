@@ -57,9 +57,11 @@ from ccf.models import (
 )
 from ccf.models_ai_agents import AiAgent
 from ccf.models_capability import Capability, CapabilityComponent
+from ccf.models_evidence import EvidenceObject
 from ccf.models_grc import ConnectorConfig, ControlTest
 from ccf.models_outbox import OutboxJob
 from ccf.models_waivers import Waiver
+from ccf.self_assurance import init_self_assurance
 from tests.test_event_derived_consumers import _SRC, _calls_named, _function
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
@@ -763,3 +765,41 @@ async def test_a_policy_import_enters_no_view_and_emits_nothing() -> None:
             await s.execute(select(func.count()).select_from(Event).where(Event.id > em))
         ).scalar_one()
     assert n == 0
+
+
+# ── self-assurance bootstrap ───────────────────────────────────────────────────
+
+
+async def test_the_self_assurance_bootstrap_announces_its_evidence_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """N stubbed evidence objects are one summary event, so the bootstrap
+    queues one job per consumer, not one per requirement."""
+    monkeypatch.setenv("CCF_EVIDENCE_BACKEND", "local")
+    monkeypatch.setenv("CCF_EVIDENCE_LOCAL_DIR", str(tmp_path / "ev"))
+    get_settings.cache_clear()
+    async with session_scope() as s:
+        out = await init_self_assurance(s)
+    async with session_scope() as s:  # make it stub every requirement again
+        await s.execute(
+            delete(EvidenceObject).where(
+                EvidenceObject.system_id == out["system_id"], EvidenceObject.framework == "CONCORD"
+            )
+        )
+    jm, em = await _marks()
+    async with session_scope() as s:
+        await init_self_assurance(s)
+    get_settings.cache_clear()
+    evs = await _events(em, "evidence_object")
+    assert len(evs) == 1 and evs[0].payload["count"] > 1
+    assert evs[0].organization_id == out["organization_id"]
+    async with session_scope() as s:
+        rows = (
+            await s.execute(
+                select(OutboxJob.consumer, func.count())
+                .where(OutboxJob.id > jm, OutboxJob.trigger_event_id == evs[0].id)
+                .group_by(OutboxJob.consumer)
+            )
+        ).all()
+    assert dict(rows).get("assurance_graph") == 1
+    assert all(n == 1 for c, n in rows if c != "webhook")

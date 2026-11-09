@@ -1081,7 +1081,8 @@ VIEW_INPUT_WRITERS_COVERED: dict[str, str] = {
     "cli.py::_run": "the CLI agent create's inner body (above)",
     "posture/scan.py::_upsert_generated_test": "control_test tested (record_result, same scan)",
     "self_assurance/service.py::_self_ids": "Concord's own boundary bootstrap (CLI/admin)",
-    "self_assurance/service.py::init_self_assurance": "Concord's own boundary bootstrap",
+    # init_self_assurance emits one evidence_object summary for its batch
+    # (create_object(announce=False)); its implementation stubs ride on it.
     "governance/collection.py::collect_for_org": "capture_snapshot created (_emit_new_captures)",
 }
 

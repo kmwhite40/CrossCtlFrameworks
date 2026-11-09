@@ -156,6 +156,7 @@ async def init_self_assurance(session: AsyncSession, *, actor: str | None = None
 
     controls = manifest.get("controls", [])
     ev_reqs = {e["control_id"]: e["description"] for e in manifest.get("evidence_requirements", [])}
+    stubbed = 0
     for c in controls:
         cid = str(c["control_id"])
         control = await _resolve_control(session, cid)
@@ -192,7 +193,23 @@ async def init_self_assurance(session: AsyncSession, *, actor: str | None = None
                 await ev_service.create_object(
                     session, org_id=org_id, title=ev_reqs[cid], system_id=system_id,
                     control_id=cid, framework="CONCORD", source_type="api_import",
+                    announce=False,
                 )
+                stubbed += 1
+    if stubbed:
+        # One event for the batch, not one per requirement: a bootstrap queues
+        # one graph rebuild (and one delivery per webhook), not N.
+        from ..governance import bus  # noqa: PLC0415
+
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="evidence_object",
+            summary=f"Self-assurance bootstrap: {stubbed} evidence object(s) stubbed",
+            org_id=org_id,
+            actor=actor,
+            payload={"system_id": system_id, "count": stubbed, "bootstrap": True},
+        )
     await _audit(
         session, organization_id=org_id,
         actor=actor or "system", action="create", entity_type="self_assurance",
