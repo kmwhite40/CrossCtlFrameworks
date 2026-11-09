@@ -301,13 +301,14 @@ async def test_a_consumer_that_ignores_an_event_queues_nothing(
 async def test_webhook_jobs_take_the_events_org_else_the_hooks(
     world: dict[str, Any], entity: str
 ) -> None:
-    org_hook = await _hook(world, world["org"])
-    global_hook = await _hook(world, None, events=[entity])
+    org_hook = await _hook(world, world["org"], events=[entity, "ksi_catalog"])
+    global_hook = await _hook(world, None, events=[entity, "ksi_catalog"])
     async with session_scope() as s:
         scoped = await bus.emit(
             s, verb="created", entity_type=entity, summary="x", org_id=world["org"]
         )
-        orgless = await bus.emit(s, verb="created", entity_type=entity, summary="x")
+        # A platform broadcast: the one kind of org-less event an org's webhook gets.
+        orgless = await bus.emit(s, verb="seeded", entity_type="ksi_catalog", summary="x")
     by_hook = {j.result["webhook_id"]: j for j in await _jobs(scoped.id) if j.consumer == "webhook"}
     # A global webhook delivering an org's event belongs to that org.
     assert by_hook[global_hook].organization_id == world["org"]
@@ -604,3 +605,52 @@ async def test_a_failed_webhook_selection_leaves_the_session_usable(
             assert (await s.execute(text("SELECT 1"))).scalar_one() == 1
     assert [j.consumer for j in await _jobs(ev.id)] == [good.name]  # consumers unaffected
     assert len(_failures(cap, "event_outbox.webhook_select_failed")) == 1
+
+
+async def _webhook_jobs_for(event_id: int) -> dict[int, OutboxJob]:
+    async with session_scope() as s:  # unscoped: RLS would hide a mis-filed job
+        rows = (
+            (
+                await s.execute(
+                    select(OutboxJob).where(
+                        OutboxJob.trigger_event_id == event_id, OutboxJob.consumer == "webhook"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {j.result["webhook_id"]: j for j in rows}
+
+
+async def test_an_orgless_tenant_like_event_reaches_global_webhooks_only(
+    world: dict[str, Any],
+) -> None:
+    """An org-less ``ai_agent`` event (a global principal's write whose org
+    could not be resolved) must not fan its name out to every tenant."""
+    org_hook = await _hook(world, world["org"], events=["ai_agent"])
+    global_hook = await _hook(world, None, events=["ai_agent"])
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        ev = await bus.emit(
+            s, verb="created", entity_type="ai_agent", summary="AI agent inventoried: x"
+        )
+    jobs = await _webhook_jobs_for(ev.id)
+    assert org_hook not in jobs
+    assert global_hook in jobs and jobs[global_hook].organization_id is None
+
+
+async def test_an_orgless_platform_catalog_event_still_reaches_an_orgs_webhook(
+    world: dict[str, Any],
+) -> None:
+    org_hook = await _hook(world, world["org"], events=["ksi_catalog"])
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        ev = await bus.emit(s, verb="seeded", entity_type="ksi_catalog", summary="KSIs seeded")
+    jobs = await _webhook_jobs_for(ev.id)
+    assert org_hook in jobs and jobs[org_hook].organization_id == world["org"]
+
+
+def test_the_broadcast_allowlist_is_the_catalog_types() -> None:
+    """Widening it is a disclosure decision; this makes it a visible one."""
+    assert frozenset({"ksi_catalog", "catalog_source"}) == outbox.PLATFORM_BROADCAST_ENTITY_TYPES

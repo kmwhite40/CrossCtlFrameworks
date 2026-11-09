@@ -116,13 +116,15 @@ async def _hook(
         return h.id
 
 
-async def _emit(world: dict[str, Any], org: int | str | None = "org") -> int:
+async def _emit(
+    world: dict[str, Any], org: int | str | None = "org", entity_type: str | None = None
+) -> int:
     org_id = world["org"] if org == "org" else org
     async with session_scope() as s:
         ev = await bus.emit(
             s,
             verb="created",
-            entity_type=f"t{uuid.uuid4().hex[:8]}",
+            entity_type=entity_type or f"t{uuid.uuid4().hex[:8]}",
             summary="a summary",
             org_id=org_id,  # type: ignore[arg-type]
             entity_id="42",
@@ -324,16 +326,34 @@ async def test_a_deactivated_or_deleted_webhook_is_skipped(world: dict[str, Any]
     assert (await _job(ev, live)).status == "done"
 
 
-async def test_an_org_less_event_reaches_an_organizations_webhook(
+async def test_an_org_less_platform_broadcast_reaches_an_organizations_webhook(
     world: dict[str, Any], net: Net
 ) -> None:
     hook = await _hook(world)
-    ev = await _emit(world, org=None)
+    ev = await _emit(world, org=None, entity_type="ksi_catalog")
     j = await _job(ev, hook)
     assert j.organization_id == world["org"]
-    await _drain()
-    assert len(net.calls) == 1
+    for _ in range(50):  # every org's webhook in the shared DB gets one, serially
+        if (await _job(ev, hook)).status == "done":
+            break
+        await _drain()
     assert (await _job(ev, hook)).status == "done"
+    assert any(c["url"] == "https://93.184.216.34/in" for c in net.calls)
+
+
+async def test_an_already_queued_org_less_event_is_refused_at_an_orgs_webhook(
+    world: dict[str, Any], net: Net
+) -> None:
+    """Delivery re-checks the rule: a job queued before it (or forged) for an
+    org-less, non-broadcast event never reaches an organization's webhook."""
+    hook = await _hook(world)
+    ev = await _emit(world, org=None, entity_type="ai_agent")
+    jid = await _forged_job(ev, hook, world["org"])
+    await _drain()
+    assert net.calls == []
+    assert (await _result(jid)).result.get("refused") == (
+        "an org-less event is not a platform broadcast"
+    )
 
 
 async def _forged_job(ev_id: int, hook_id: int, org: int | None, *, uniq: str | None = None) -> int:

@@ -39,6 +39,27 @@ log = get_logger(__name__)
 
 WEBHOOK_CONSUMER = "webhook"
 WEBHOOK_MAX_ATTEMPTS = 8
+
+#: Entity types whose organization-less events are platform news, delivered to
+#: EVERY organization's webhooks (owner decision: catalog events keep fanning
+#: out). Deny by default: any other org-less event reaches global webhooks only.
+#: An org-less event is usually a tenant record written by a global principal
+#: (or one whose org could not be resolved), and fanning its name and summary
+#: out to every tenant would disclose it. Add a type here only if it names
+#: shared platform content, never a tenant-like record.
+PLATFORM_BROADCAST_ENTITY_TYPES = frozenset(
+    {
+        "ksi_catalog",  # api/routes/fedramp20x.py seed_ksis: the FedRAMP KSI catalog
+        "catalog_source",  # etl/sources.py check_source: upstream catalog drift
+    }
+)
+
+
+def broadcasts_to_every_org(ev: Event) -> bool:
+    """An org-less event every organization's webhooks may receive."""
+    return ev.organization_id is None and ev.entity_type in PLATFORM_BROADCAST_ENTITY_TYPES
+
+
 #: Slack/Teams delivery of one notification (:mod:`ccf.events.notify_delivery`).
 NOTIFY_CONSUMER = "notify_delivery"
 #: Deliveries out of the app: each job is its own message, so the worker never
@@ -47,17 +68,21 @@ AT_LEAST_ONCE = frozenset({WEBHOOK_CONSUMER, NOTIFY_CONSUMER})
 
 
 async def _subscribed_webhooks(session: AsyncSession, ev: Event) -> list[Webhook]:
-    """Today's selection rule: active, the event's org or global, and subscribed.
+    """Active, subscribed, and the event's org or global.
 
-    An empty subscription list means every event; otherwise the verb or the
-    entity type must be listed. Run in the caller's session, so a tenant session
-    sees what the tenant's RLS lets it see, as the inline dispatcher did.
+    An org-less event reaches global webhooks only, unless its entity type is a
+    platform broadcast (:data:`PLATFORM_BROADCAST_ENTITY_TYPES`), which reaches
+    every organization's. An empty subscription list means every event;
+    otherwise the verb or the entity type must be listed. Run in the caller's
+    session, so a tenant session sees what the tenant's RLS lets it see.
     """
     stmt = select(Webhook).where(Webhook.active.is_(True))
     if ev.organization_id is not None:
         stmt = stmt.where(
             (Webhook.organization_id == ev.organization_id) | (Webhook.organization_id.is_(None))
         )
+    elif not broadcasts_to_every_org(ev):
+        stmt = stmt.where(Webhook.organization_id.is_(None))
     hooks = (await session.execute(stmt.order_by(Webhook.id))).scalars().all()
     return [h for h in hooks if not h.events or ev.verb in h.events or ev.entity_type in h.events]
 

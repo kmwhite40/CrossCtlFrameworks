@@ -357,3 +357,9 @@ There are two migrations.
   seeder-written). The POA&M API shows it beside the rationale, and a `poam
   rationale_promoted` event (in no trigger set) puts it on the timeline. Writing a
   different rationale on the POA&M, or leaving `risk_accepted`, clears it.
+- **Org-less events are deny-by-default for tenant webhooks** (follow-up, security
+  review). Section 6.3 kept today's selection rule, under which an org-less event
+  reached every organization's webhooks. It now reaches global webhooks only,
+  unless its entity type is in `outbox.PLATFORM_BROADCAST_ENTITY_TYPES`
+  (`ksi_catalog`, `catalog_source`: the owner decision that platform catalog events
+  keep fanning out). The webhook consumer re-checks it at delivery.
