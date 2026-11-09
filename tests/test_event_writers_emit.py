@@ -15,6 +15,7 @@ rows are read on an UNSCOPED session: RLS would hide a mis-filed one.
 from __future__ import annotations
 
 import ast
+import json
 import uuid
 from collections.abc import AsyncIterator
 from datetime import date, timedelta
@@ -41,8 +42,9 @@ from ccf.connectors import credentials as connector_credentials
 from ccf.db import session_scope
 from ccf.events import derived
 from ccf.evidence import service as evidence_service
-from ccf.governance import collection, control_tests, tprm
+from ccf.governance import collection, control_tests, exporter, tprm
 from ccf.models import (
+    POAM,
     Control,
     ControlImplementation,
     Event,
@@ -693,3 +695,71 @@ def test_a_package_decision_that_moves_ato_status_reaches_the_graph() -> None:
     for action, rule in TRANSITIONS.items():
         moves = action == "submit" or rule.authorizes or rule.target in ("returned", "denied")
         assert (("authorization_package", f"package_{action}") in graph) is moves, action
+
+
+# ── bulk import (POST /api/import/{dataset}) ───────────────────────────────────
+
+
+async def _import(org_id: int, dataset: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    async with session_scope() as s:
+        return await exporter.import_rows(
+            s, dataset=dataset, content=json.dumps(rows).encode(), fmt="json", org_id=org_id
+        )
+
+
+async def test_a_poam_import_queues_the_graph_and_the_ver_deliverables_once() -> None:
+    org_id, system_id = await _system()
+    jm, em = await _marks()
+    out = await _import(
+        org_id, "poams", [{"title": "Patch A", "severity": "high"}, {"title": "Patch B"}]
+    )
+    assert out["created"] == 2
+    (ev,) = await _events(em, "poam", "updated")  # one summary, not one per row
+    assert ev.organization_id == org_id
+    assert ev.payload == {"import": "poams", "created": 2, "updated": 0, "system_id": system_id}
+    jobs = await _jobs(jm)
+    assert ("assurance_graph", f"org:{org_id}") in jobs
+    assert ("cr26_documents", f"system:{system_id}") in jobs
+
+
+async def test_an_import_that_changes_nothing_queues_nothing() -> None:
+    org_id, system_id = await _system()
+    async with session_scope() as s:
+        p = POAM(system_id=system_id, title="Patch A", severity="high", status="open")
+        s.add(p)
+        await s.flush()
+        pid = p.id
+    jm, em = await _marks()
+    out = await _import(
+        org_id, "poams", [{"id": pid, "title": "Patch A", "severity": "high", "status": "open"}]
+    )
+    assert out["updated"] == 1  # matched, but every value was already so
+    assert await _events(em, "poam") == []
+    assert await _jobs(jm) == set()
+    # Positive control: a real change to the same row is announced.
+    await _import(org_id, "poams", [{"id": pid, "title": "Patch A, renamed"}])
+    (ev,) = await _events(em, "poam", "updated")
+    assert (ev.payload["updated"], ev.payload["system_id"]) == (1, system_id)
+
+
+async def test_vendor_and_risk_imports_reach_the_graph() -> None:
+    org_id, system_id = await _system()
+    jm, em = await _marks()
+    await _import(org_id, "vendors", [{"name": f"v-{_tag()}"}])
+    await _import(org_id, "risks", [{"title": "Phishing", "likelihood": "high"}])
+    (v,) = await _events(em, "vendor", "updated")
+    (r,) = await _events(em, "risk", "updated")
+    assert (v.organization_id, v.payload["created"]) == (org_id, 1)
+    assert (r.organization_id, r.payload["system_id"]) == (org_id, system_id)
+    assert ("assurance_graph", f"org:{org_id}") in await _jobs(jm)
+
+
+async def test_a_policy_import_enters_no_view_and_emits_nothing() -> None:
+    org_id, _ = await _system()
+    _, em = await _marks()
+    await _import(org_id, "policies", [{"name": f"p-{_tag()}"}])
+    async with session_scope() as s:
+        n = (
+            await s.execute(select(func.count()).select_from(Event).where(Event.id > em))
+        ).scalar_one()
+    assert n == 0

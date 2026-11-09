@@ -381,6 +381,10 @@ async def import_rows(
     system_id = await _first_system_id(session, org_id) if link == "system" else None
 
     summary: dict[str, Any] = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
+    # What actually changed, for the summary events: created rows, and updated
+    # rows whose values really moved (a round-trip of an untouched export
+    # changes nothing and announces nothing).
+    changed: list[tuple[Any, str]] = []
     for i, row in enumerate(rows):
         try:
             if not _clean(row.get(required)):
@@ -393,6 +397,8 @@ async def import_rows(
                 obj = await session.get(model, rid)
                 _apply_fields(obj, row, spec)
                 summary["updated"] += 1
+                if session.is_modified(obj):
+                    changed.append((obj, "updated"))
                 continue
             obj = model()
             _apply_fields(obj, row, spec)
@@ -406,10 +412,58 @@ async def import_rows(
                 obj.organization_id = org_id
             session.add(obj)
             summary["created"] += 1
+            changed.append((obj, "created"))
         except (ValueError, TypeError) as exc:
             summary["skipped"] += 1
             summary["errors"].append(f"row {i + 1}: {exc}")
 
     await session.flush()
+    await _emit_import(session, dataset, changed, org_id=org_id)
     summary["errors"] = summary["errors"][:20]  # cap noise
     return summary
+
+
+#: The event each importable view-input register announces an import as: one
+#: per system (or per org, where a row names none), never one per row.
+_IMPORT_EVENT = {"poams": "poam", "risks": "risk", "vendors": "vendor"}
+
+
+async def _emit_import(
+    session: AsyncSession, dataset: str, changed: list[tuple[Any, str]], *, org_id: int | None
+) -> None:
+    """One ``<entity> updated`` summary per affected system or org.
+
+    A POA&M import changes the system's graph and its VER deliverables, a risk
+    or vendor import its org's graph (all three pairs are triggers). Policies
+    enter no derived view. Each event takes the records' organization: the
+    system's for a system-linked row, else the row's own.
+    """
+    entity_type = _IMPORT_EVENT.get(dataset)
+    if entity_type is None or not changed:
+        return
+    from . import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    groups: dict[tuple[int | None, int | None], dict[str, int]] = {}
+    for obj, how in changed:
+        system_id = getattr(obj, "system_id", None)
+        org = (
+            await bus.system_org(session, system_id)
+            if system_id is not None
+            else getattr(obj, "organization_id", None)
+        )
+        counts = groups.setdefault((org, system_id), {"created": 0, "updated": 0})
+        counts[how] += 1
+    for (org, system_id), counts in groups.items():
+        payload: dict[str, Any] = {"import": dataset, **counts}
+        if system_id is not None:
+            payload["system_id"] = system_id
+        await bus.emit(
+            session,
+            verb="updated",
+            entity_type=entity_type,
+            summary=(
+                f"Import of {dataset}: {counts['created']} created, {counts['updated']} updated"
+            ),
+            org_id=org if org is not None else org_id,
+            payload=payload,
+        )

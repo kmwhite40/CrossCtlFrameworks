@@ -1086,6 +1086,19 @@ VIEW_INPUT_WRITERS_COVERED: dict[str, str] = {
 }
 
 
+#: Writers that build view-input rows through a dynamic constructor
+#: (``model()`` chosen from a spec table), which ``_funcs_constructing`` cannot
+#: see by name. Each must still emit; ``tests/test_event_writers_emit.py``
+#: covers its behaviour.
+DYNAMIC_CONSTRUCTOR_WRITERS = ("governance/exporter.py::import_rows",)
+
+
+def test_every_dynamic_constructor_writer_emits() -> None:
+    for where in DYNAMIC_CONSTRUCTOR_WRITERS:
+        path, name = where.split("::")
+        assert _emits(_function(_SRC / path, name)), where
+
+
 def _silent_constructors(models: tuple[str, ...]) -> list[str]:
     return sorted(
         {where for model in models for where, fn in _funcs_constructing(model) if not _emits(fn)}
