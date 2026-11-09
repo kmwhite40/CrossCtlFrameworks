@@ -444,13 +444,15 @@ async def _emit_import(
     from . import bus  # noqa: PLC0415 -- avoid an import cycle
 
     groups: dict[tuple[int | None, int | None], dict[str, int]] = {}
+    system_orgs: dict[int, int | None] = {}  # one lookup per system, not per row
     for obj, how in changed:
         system_id = getattr(obj, "system_id", None)
-        org = (
-            await bus.system_org(session, system_id)
-            if system_id is not None
-            else getattr(obj, "organization_id", None)
-        )
+        if system_id is not None:
+            if system_id not in system_orgs:
+                system_orgs[system_id] = await bus.system_org(session, system_id)
+            org = system_orgs[system_id]
+        else:
+            org = getattr(obj, "organization_id", None)
         counts = groups.setdefault((org, system_id), {"created": 0, "updated": 0})
         counts[how] += 1
     for (org, system_id), counts in groups.items():
