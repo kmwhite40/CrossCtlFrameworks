@@ -259,6 +259,31 @@ async def test_a_worker_without_the_url_dead_letters_the_alert_loudly(
     assert job.result["text"].startswith("[CRITICAL]")  # kept for a requeue
 
 
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 410])
+async def test_a_refusing_receiver_dead_letters_once(
+    org: int, configured: Any, net: Net, code: int
+) -> None:
+    net.respond = lambda call: code
+    nid = await _notify(org)
+    assert nid is not None
+    await _drain()
+    (job,) = await _jobs(nid)
+    assert (job.status, job.attempts) == ("failed", 1)
+    assert len(net.calls) == 1
+
+
+@pytest.mark.parametrize("code", [408, 429, 502, 503])
+async def test_a_transient_status_is_retried(
+    org: int, configured: Any, net: Net, code: int
+) -> None:
+    net.respond = lambda call: code
+    nid = await _notify(org)
+    assert nid is not None
+    await _drain()
+    (job,) = await _jobs(nid)
+    assert (job.status, job.attempts) == ("pending", 1)
+
+
 # ── dedupe and escalation ─────────────────────────────────────────────────────
 
 

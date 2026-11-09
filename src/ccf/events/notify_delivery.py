@@ -6,10 +6,10 @@ rendered under the delivery policy (:func:`ccf.governance.delivery.render`).
 So nothing is posted before commit, and a rolled-back alert is never posted.
 
 Like the ``webhook`` consumer it ``matches`` no event, its jobs never merge,
-and it retries on the webhook schedule (8 attempts, backoff from 170 s): a
-non-2xx or a transport error raises :class:`~ccf.events.webhooks.DeliveryError`
-with the attempts log. No URL configured in this process is final: it is
-dead-lettered at once. A
+and it retries on the webhook schedule (8 attempts, backoff from 170 s): a 5xx,
+408, 429 or transport error raises :class:`~ccf.events.webhooks.DeliveryError`
+with the attempts log. Final, dead-lettered at once: any other 4xx (the
+receiver refuses the URL), and no URL configured in this process. A
 notification that is gone, or that belongs to another organization than its
 job, is not posted.
 """
@@ -87,12 +87,15 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
         error = f"{type(e).__name__}: {str(e)[:200]}"
     if error is None and not (status is not None and 200 <= status < 300):
         error = f"HTTP {status}"
+    # A 4xx other than 408/429 is the receiver refusing this request (a revoked
+    # or mistyped URL): it will refuse every retry too, so dead-letter it once.
+    final = status is not None and 400 <= status < 500 and status not in (408, 429)
     ms = int((time.monotonic() - started) * 1000)
     log_.append({"at": datetime.now(UTC).isoformat(), "status": status, "ms": ms, "error": error})
     log_ = log_[-_MAX_LOG:]
     if error is not None:
         log.warning("notify_delivery.failed", notification_id=nid, error=error)
-        raise DeliveryError(error, {**prior, "attempts_log": log_})
+        raise DeliveryError(error, {**prior, "attempts_log": log_}, final=final)
     return {"status_code": status, "attempts_log": log_}
 
 
