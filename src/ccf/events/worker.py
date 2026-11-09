@@ -45,8 +45,8 @@ itself. A run can outlive its claim: the reaper requeues a claim older than its
 threshold and another worker re-claims it, bumping ``attempts``. So the run
 starts only if the row still holds this claim, and the outcome is written only
 ``WHERE status = 'claimed'`` and the row still holds it. A write that matches
-no row is ``lost``: logged, counted, never raised, and the newer claim's state
-is untouched.
+no row is ``lost``: logged, counted, never raised; the run's own writes are
+rolled back with it, and the newer claim's state is untouched.
 """
 
 from __future__ import annotations
@@ -174,8 +174,9 @@ async def _settle(
     """Write a claimed job's outcome (unscoped) and name it.
 
     The write is fenced on this claim: if the row is no longer ``claimed`` by
-    ``claimed_by`` at ``attempts`` (reaped, and perhaps re-claimed), nothing is
-    written and the outcome is ``lost``.
+    ``claimed_by`` at ``attempts`` (reaped, and perhaps re-claimed), the whole
+    transaction -- the run's own writes with it -- is rolled back and the
+    outcome is ``lost``.
     """
     await set_session_tenant(session, None)
     values: dict[str, Any] = {"claimed_by": None, "claimed_at": None}
@@ -207,8 +208,11 @@ async def _settle(
         )
         .values(**values)
     )
-    await session.commit()
     if not getattr(res, "rowcount", 0):
+        # The run's own writes share this transaction. Committing them would
+        # land a rebuild from older state after the newer claim's, and any
+        # events it emitted under fresh ids: the newer claim does the work.
+        await session.rollback()
         log.warning(
             "event_worker.settle_lost_claim",
             job_id=job_id,
@@ -218,6 +222,7 @@ async def _settle(
             outcome=outcome,
         )
         return "lost"
+    await session.commit()
     return outcome
 
 

@@ -677,6 +677,36 @@ async def test_a_claim_lost_before_the_run_starts_is_not_run(
     assert (job.status, job.claimed_by, job.attempts) == ("claimed", "w2", 2)
 
 
+async def test_a_run_that_lost_its_claim_keeps_none_of_its_writes(
+    world: dict[str, Any], registered: list[str]
+) -> None:
+    """The fence protects the job row; the run's own writes share its commit.
+    Committing them anyway would land a rebuild from older state after the
+    newer claim's -- the late overwrite the fence exists to stop -- and any
+    events it emitted, under ids no receiver can drop as duplicates."""
+    marker = f"overtaken-{uuid.uuid4().hex[:8]}"
+
+    async def _write_then_lose(session: Any, key: str, job: Any) -> dict[str, Any]:
+        session.add(
+            Event(organization_id=world["org"], verb="noted", entity_type="t", summary=marker)
+        )
+        await session.flush()
+        await _reclaim(job.id)  # reaped and re-claimed while this run was working
+        return {}
+
+    c = _add(registered, _write_then_lose)
+    jid = await _job(c.name, f"org:{world['org']}", org_id=world["org"], event_id=world["event"])
+    counts = await worker.drain_once(worker="w1", now=_future())
+    assert counts["lost"] == 1
+    async with session_scope() as s:
+        written = (
+            await s.execute(select(func.count()).select_from(Event).where(Event.summary == marker))
+        ).scalar_one()
+    assert written == 0
+    job = await _get(jid)
+    assert (job.status, job.claimed_by) == ("claimed", "w2")
+
+
 # ── which tenant a job runs under ────────────────────────────────────────────
 
 
