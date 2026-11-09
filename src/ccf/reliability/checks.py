@@ -1195,10 +1195,11 @@ async def _check_event_outbox(session: AsyncSession) -> Check:
         return Check(
             "event_outbox", WARN, "outbox_jobs table is missing.", "Run `alembic upgrade head`."
         )
-    from ..events import consumers  # noqa: PLC0415 — lazy; importing registers the consumers
+    # Lazy: importing registers the consumers.
+    from ..events import consumers, outbox  # noqa: PLC0415
 
     registered = sorted(consumers.REGISTRY)
-    derived = sorted(n for n in registered if n != "webhook")
+    derived = sorted(n for n in registered if n not in outbox.AT_LEAST_ONCE)
 
     failed = (
         await session.execute(

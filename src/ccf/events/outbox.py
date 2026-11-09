@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging import get_logger
-from ..models import Event, Webhook
+from ..models import Event, Notification, Webhook
 from ..models_outbox import OutboxJob
 from . import consumers
 
@@ -39,6 +39,11 @@ log = get_logger(__name__)
 
 WEBHOOK_CONSUMER = "webhook"
 WEBHOOK_MAX_ATTEMPTS = 8
+#: Slack/Teams delivery of one notification (:mod:`ccf.events.notify_delivery`).
+NOTIFY_CONSUMER = "notify_delivery"
+#: Deliveries out of the app: each job is its own message, so the worker never
+#: merges them, and they retry on the webhook schedule (8 attempts, ~6 h).
+AT_LEAST_ONCE = frozenset({WEBHOOK_CONSUMER, NOTIFY_CONSUMER})
 
 
 async def _subscribed_webhooks(session: AsyncSession, ev: Event) -> list[Webhook]:
@@ -156,3 +161,37 @@ async def enqueue(
         session.add_all(jobs)
         await session.flush()
     return jobs
+
+
+async def enqueue_notification(session: AsyncSession, n: Notification, text: str) -> None:
+    """Queue the outbound post of ``n`` in the caller's transaction.
+
+    ``text`` is the message as rendered now (:func:`ccf.governance.delivery.render`),
+    so a later refresh of the row cannot change what this raising said. The job
+    is keyed ``notification:N`` and runs under the notification's organization;
+    an org-less notification's job is platform-only, as an org-less event's
+    delivery to a global webhook is. It has no trigger event.
+
+    Its own savepoint: a failed insert costs this one post, never the caller's
+    transaction (the digest raises an org's alerts in one step).
+    """
+    try:
+        async with session.begin_nested():
+            session.add(
+                OutboxJob(
+                    organization_id=n.organization_id,
+                    consumer=NOTIFY_CONSUMER,
+                    scope_key=f"notification:{n.id}",
+                    trigger_event_id=None,
+                    max_attempts=WEBHOOK_MAX_ATTEMPTS,
+                    next_attempt_at=func.now(),
+                    result={"text": text},
+                )
+            )
+            await session.flush()
+    except Exception as e:
+        log.warning(
+            "event_outbox.notify_job_failed",
+            notification_id=n.id,
+            error=f"{type(e).__name__}: {str(e)[:200]}",
+        )

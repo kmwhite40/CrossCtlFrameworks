@@ -5,7 +5,8 @@ append-only :class:`Event` and, in the same transaction, queues its derived work
 (webhook deliveries and registered consumers) in the outbox
 (:func:`ccf.events.outbox.enqueue`). Nothing is sent during the request: a
 worker delivers after commit, so a rolled-back change reaches no subscriber. :func:`notify`
-raises a de-duplicated :class:`Notification` for a user or an org. This is the
+raises a de-duplicated :class:`Notification` for a user or an org; its Slack/Teams
+post is queued the same way and sent after commit. This is the
 "everything can communicate" layer the other engines build on.
 """
 
@@ -107,7 +108,8 @@ async def notify(
             await session.execute(select(Notification).where(Notification.dedupe_key == dedupe_key))
         ).scalar_one_or_none()
         if existing is not None:
-            if _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity, 0):
+            escalated = _SEVERITY_RANK.get(severity, 0) > _SEVERITY_RANK.get(existing.severity, 0)
+            if escalated:
                 # Escalated (a warning became critical): it is news again, so
                 # it comes back for everyone who had read the milder version.
                 await session.execute(
@@ -117,6 +119,10 @@ async def notify(
             existing.title = title[:512]
             existing.severity = severity
             existing.body = body
+            if escalated:
+                # News again, so it is posted (if policy sends its new severity);
+                # a refresh at the same or a lower severity is not.
+                await _queue_delivery(session, existing)
             return existing
     n = Notification(
         organization_id=org_id,
@@ -142,6 +148,12 @@ async def notify(
     except IntegrityError:
         log.warning("notify.dedupe_key_hidden_collision", dedupe_key=dedupe_key, org_id=org_id)
         return None
-    # Best-effort outbound delivery (Slack/Teams webhook) for severe alerts.
-    await delivery.deliver(n)
+    await _queue_delivery(session, n)
     return n
+
+
+async def _queue_delivery(session: AsyncSession, n: Notification) -> None:
+    """Queue the Slack/Teams post of ``n`` if policy sends it; posted after commit."""
+    text = delivery.render(n)
+    if text is not None:
+        await outbox.enqueue_notification(session, n, text)

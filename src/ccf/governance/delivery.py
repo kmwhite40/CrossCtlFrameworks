@@ -1,8 +1,13 @@
 """Outbound notification delivery — fan critical alerts out of the app.
 
 Posts to a configured Slack/Teams incoming webhook (``CCF_NOTIFY_WEBHOOK_URL``)
-when a notification meets the minimum severity. Best-effort: never raises, so a
-delivery failure can't break the request that raised the alert.
+when a notification meets the minimum severity (``CCF_NOTIFY_MIN_SEVERITY``).
+
+Nothing here is called during a request. :func:`ccf.governance.bus.notify`
+renders the message with :func:`render` and queues it in the outbox in the
+caller's transaction; the ``notify_delivery`` consumer
+(:mod:`ccf.events.notify_delivery`) posts it with :func:`send` after commit, so
+an alert raised by a change that rolls back is never announced.
 """
 
 from __future__ import annotations
@@ -10,30 +15,39 @@ from __future__ import annotations
 import httpx
 
 from ..config import get_settings
-from ..logging import get_logger
 from ..models import Notification
-
-log = get_logger(__name__)
 
 _RANK = {"info": 0, "warning": 1, "critical": 2}
 
+TIMEOUT_SECONDS = 10.0
 
-async def deliver(notification: Notification) -> bool:
-    """Send a notification to the outbound webhook if configured + severe enough."""
+
+def render(notification: Notification) -> str | None:
+    """The message to post for ``notification``, or ``None`` when policy sends nothing.
+
+    Nothing is sent without a configured URL, or below the minimum severity
+    (an unknown threshold counts as ``critical``, an unknown severity as
+    ``info``).
+    """
     s = get_settings()
-    url = s.notify_webhook_url
-    if not url:
-        return False
+    if not s.notify_webhook_url:
+        return None
     threshold = _RANK.get(s.notify_min_severity, 2)
     if _RANK.get(notification.severity, 0) < threshold:
-        return False
+        return None
     text = f"[{notification.severity.upper()}] {notification.title}"
     if notification.body:
         text += f"\n{notification.body}"
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(url, json={"text": text})
-        return True
-    except Exception as e:
-        log.warning("delivery.failed", error=str(e)[:200])
-        return False
+    return text
+
+
+def target() -> str | None:
+    """The configured outbound URL, read at send time."""
+    return get_settings().notify_webhook_url or None
+
+
+async def send(url: str, text: str) -> int:
+    """Post ``text`` to ``url``; returns the HTTP status. A transport error propagates."""
+    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+        resp = await client.post(url, json={"text": text})
+    return resp.status_code

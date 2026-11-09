@@ -35,7 +35,8 @@ class OutboxJob(Base):
     )
     consumer: Mapped[str] = mapped_column(String(48))
     scope_key: Mapped[str] = mapped_column(String(96))
-    trigger_event_id: Mapped[int] = mapped_column(
+    #: NULL only for a job no event triggered: a notification's outbound post.
+    trigger_event_id: Mapped[int | None] = mapped_column(
         BigInteger, ForeignKey("ccf.events.id", ondelete="CASCADE")
     )
     #: Pending jobs this one absorbed when it was claimed (coalescing).

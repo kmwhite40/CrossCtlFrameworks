@@ -1,9 +1,10 @@
 """Outbox retention: finished jobs are history, dead letters are work.
 
-Derived-view ``done``/``merged`` jobs go after a day, ``done`` webhook jobs
-after 30 days. ``failed`` jobs are never deleted: they are the operator's
-queue. Keyed on ``finished_at``, falling back to ``created_at`` for a row the
-reaper dead-lettered without stamping it. Run on an UNSCOPED session
+Derived-view ``done``/``merged`` jobs go after a day; ``done`` webhook jobs and
+notification posts (``notify_delivery``) after 30 days. ``failed`` jobs are
+never deleted: they are the operator's queue. Keyed on ``finished_at``,
+falling back to ``created_at`` for a row the reaper dead-lettered without
+stamping it. Run on an UNSCOPED session
 (``ccf_app`` has no DELETE on this table).
 """
 
@@ -15,6 +16,7 @@ from sqlalchemy import and_, delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models_outbox import OutboxJob
+from .outbox import AT_LEAST_ONCE
 
 DERIVED_RETENTION = timedelta(days=1)
 WEBHOOK_RETENTION = timedelta(days=30)
@@ -25,7 +27,7 @@ async def purge_outbox(session: AsyncSession, *, now: datetime | None = None) ->
     finished = func.coalesce(OutboxJob.finished_at, OutboxJob.created_at)
     derived = await session.execute(
         delete(OutboxJob).where(
-            OutboxJob.consumer != "webhook",
+            OutboxJob.consumer.not_in(AT_LEAST_ONCE),
             OutboxJob.status.in_(("done", "merged")),
             finished < now - DERIVED_RETENTION,
         )
@@ -33,7 +35,7 @@ async def purge_outbox(session: AsyncSession, *, now: datetime | None = None) ->
     webhook = await session.execute(
         delete(OutboxJob).where(
             and_(
-                OutboxJob.consumer == "webhook",
+                OutboxJob.consumer.in_(AT_LEAST_ONCE),
                 OutboxJob.status == "done",
                 finished < now - WEBHOOK_RETENTION,
             )

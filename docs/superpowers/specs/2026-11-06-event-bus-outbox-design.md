@@ -329,3 +329,13 @@ There are two migrations.
   claim (`claimed_by`, `attempts`) still holds. A run that outlived its claim
   (reaped, then re-claimed) reports `lost` and writes nothing.
 - **Requeue** is on the reliability page only; there is no CLI requeue command.
+- **Slack/Teams notification posts** (follow-up, not in the design). `bus.notify`
+  posted inside the caller's transaction. It now renders the message under the
+  same policy (`delivery.render`: configured URL, `notify_min_severity`) and queues
+  a `notify_delivery` job keyed `notification:N` (migration
+  `0116_outbox_trigger_nullable`: such a job has no trigger event). The job never
+  merges, retries on the webhook schedule (8 attempts, 170 s base), runs under the
+  notification's organization (org-less: platform-only, the `event:N` rule), and
+  refuses a notification whose organization disagrees with the job's. A non-2xx is
+  now a retried failure (it used to count as sent). An escalation that re-surfaces
+  a notification is posted; a same-or-lower-severity refresh is not.

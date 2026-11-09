@@ -21,23 +21,26 @@ lock two workers claiming at the same instant could each take a job for one
 scope (two runs at once), and their merge updates could deadlock. The lock is
 held for the claim and merge only, never during a run.
 
-**Webhook jobs never merge.** Every webhook subscribed to one event shares
-``(webhook, event:N)``; merging them would drop all but one delivery. They are
-still held back while a delivery of the same event runs.
+**Webhook and notification-post jobs never merge** (``outbox.AT_LEAST_ONCE``).
+Every webhook subscribed to one event shares ``(webhook, event:N)``; merging
+them would drop all but one delivery. A notification raised and then escalated
+files two ``notify_delivery`` jobs on ``notification:N``, each its own message.
+They are still held back while a delivery of the same scope runs.
 
 **Tenant** (spec 6.3, ruling R6). ``scope_org`` decides it: ``system:N`` and
 ``org:N`` run under the scope entity's organization, whatever the job was filed
 under; a gone scope finishes ``done`` with ``{"skipped": "scope gone"}``. An
-``event:N`` job runs under its own ``organization_id``, and is the only kind
-that may run unscoped (an organization-less event delivered to a global
-webhook). Any other scope ``scope_org`` cannot place, including a malformed
-one, fails at once with no retry: retrying cannot make it resolvable, and
-running it unscoped would bypass RLS.
+``event:N`` job, and a ``notify_delivery`` job's ``notification:N``, run under
+the job's own ``organization_id``, and are the only kinds that may run unscoped
+(an organization-less event delivered to a global webhook; an
+organization-less notification's post). Any other scope ``scope_org`` cannot
+place, including a malformed one, fails at once with no retry: retrying
+cannot make it resolvable, and running it unscoped would bypass RLS.
 
 **Outcome** (spec 5.5). Success is ``done`` with the run's dict merged into
 ``result``. A failure below the job's own ``max_attempts`` goes back to
 ``pending`` at ``now + base * 2**(attempts - 1)``
-(base 170 s for webhooks, so 8 attempts span about 6 h; 60 s
+(base 170 s for webhooks and notification posts, so 8 attempts span about 6 h; 60 s
 otherwise) with a truncated ``last_error``; at the cap it stays ``failed``.
 
 **Fencing.** A claim is ``(claimed_by, attempts)``, taken from the claim
@@ -64,7 +67,13 @@ from ..models import Event
 from ..models_outbox import OutboxJob
 from ..queue import _truncate_last_error, claim_jobs, reap_stale_jobs
 from . import consumers
-from .outbox import CURRENT_CONSUMER, CURRENT_DEPTH, MAX_DEPTH, WEBHOOK_CONSUMER
+from .outbox import (
+    AT_LEAST_ONCE,
+    CURRENT_CONSUMER,
+    CURRENT_DEPTH,
+    MAX_DEPTH,
+    NOTIFY_CONSUMER,
+)
 
 log = get_logger(__name__)
 
@@ -116,7 +125,7 @@ async def _claim(*, worker: str, limit: int, now: datetime) -> tuple[list[tuple[
                 break
             job = jobs[0]
             claimed.append((job.id, job.attempts))
-            if job.consumer == WEBHOOK_CONSUMER:
+            if job.consumer in AT_LEAST_ONCE:  # each job is its own message
                 continue
             res = await session.execute(
                 update(OutboxJob)
@@ -154,7 +163,7 @@ def _depth(payload: Any) -> int:
 
 
 def _backoff(consumer: str, attempts: int) -> timedelta:
-    base = WEBHOOK_BACKOFF_SECONDS if consumer == WEBHOOK_CONSUMER else BACKOFF_SECONDS
+    base = WEBHOOK_BACKOFF_SECONDS if consumer in AT_LEAST_ONCE else BACKOFF_SECONDS
     return timedelta(seconds=base * 2 ** max(0, attempts - 1))
 
 
@@ -226,6 +235,15 @@ async def _settle(
     return outcome
 
 
+def _self_tenanted(consumer: str, key: str) -> bool:
+    """A job that carries its own tenant: an ``event:N`` delivery, or a
+    notification's post (``notification:N``, the ``notify_delivery`` consumer
+    only). Only these may run unscoped, and only when filed org-less."""
+    if key.startswith("event:"):
+        return True
+    return consumer == NOTIFY_CONSUMER and key.startswith("notification:")
+
+
 def _holds(job: OutboxJob, worker: str, attempts: int) -> bool:
     return job.status == "claimed" and job.claimed_by == worker and job.attempts == attempts
 
@@ -270,7 +288,7 @@ async def _run_one(job_id: int, worker: str, attempts: int, now: datetime | None
             )
             return "skipped" if settled == "done" else settled
         if org is None:
-            if not key.startswith("event:"):
+            if not _self_tenanted(name, key):
                 return await _settle(
                     session, job_id, error=f"unresolvable scope: {key}", retry=False, **settle
                 )
