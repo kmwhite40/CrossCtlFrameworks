@@ -30,6 +30,39 @@ from . import bus
 log = get_logger(__name__)
 
 
+async def _emit_new_captures(session: AsyncSession, org_id: int, keys: list[str]) -> None:
+    """KSI validation reads which parameters the org's connectors have
+    captured (presence, not value), for every system in the org. A parameter
+    captured for the first time therefore changes each system's 20x state: one
+    internal event per live system, since the ``fedramp20x`` consumer is
+    per-system. A changed value is not announced: validation does not read it.
+    """
+    from ..models import System  # noqa: PLC0415
+
+    system_ids = (
+        (
+            await session.execute(
+                select(System.id).where(
+                    System.organization_id == org_id, System.deleted_at.is_(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for sid in system_ids:
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="capture_snapshot",
+            entity_id=None,
+            summary=f"{len(keys)} parameter(s) captured for the first time",
+            org_id=org_id,
+            payload={"system_id": sid, "keys": sorted(keys)[:50]},
+            dispatch=False,  # a fan-out for the per-system consumer, not news
+        )
+
+
 async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
     """Capture from every connector ``org_id`` has its own bound credential for.
 
@@ -38,6 +71,7 @@ async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
     written for it.
     """
     captured = drift = 0
+    new_keys: list[str] = []
     ran: list[str] = []
     not_configured: list[str] = []
     for key in connector_keys():
@@ -74,6 +108,18 @@ async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
             )
         ).scalars().first()
         if cfg is not None:
+            if cfg.status != "configured":
+                # The graph draws a connector's status: a capture that brings
+                # one back from an error (or a first capture) is news to it.
+                await bus.emit(
+                    session,
+                    verb="synced",
+                    entity_type="connector_config",
+                    entity_id=cfg.id,
+                    summary=f"Connector '{cfg.name}' captured {len(caps)} parameter(s)",
+                    org_id=org_id,
+                    payload={"objects": len(caps), "status_was": cfg.status},
+                )
             cfg.objects_discovered = len(caps)
             cfg.evidence_produced = len(caps)
             cfg.last_sync = datetime.now(UTC)
@@ -99,6 +145,7 @@ async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
                 )
             ).scalar_one_or_none()
             if snap is None:
+                new_keys.append(f"{conn.key}:{cap.odp_key}")
                 session.add(
                     CaptureSnapshot(
                         organization_id=org_id,
@@ -132,6 +179,8 @@ async def collect_for_org(session: AsyncSession, org_id: int) -> dict[str, Any]:
                 )
                 snap.value = cap.value
     await session.flush()
+    if new_keys:
+        await _emit_new_captures(session, org_id, new_keys)
     return {
         "organization_id": org_id,
         "connectors_run": ran,

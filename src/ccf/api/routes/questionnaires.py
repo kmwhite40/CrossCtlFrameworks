@@ -325,6 +325,8 @@ async def review_questionnaire(
     q.risk_rating = scored["rating"]
 
     vendor = await _require_vendor(session, q.vendor_id, principal)
+    if vendor.risk_rating != scored["rating"]:
+        await tprm.emit_vendor_rated(session, vendor, scored["rating"], actor=principal.email)
     vendor.risk_rating = scored["rating"]
     vendor.last_reviewed_on = q.reviewed_on
 
@@ -364,7 +366,9 @@ async def review_questionnaire(
             f"Questionnaire reviewed for {vendor.name}: {scored['rating']} risk"
             + (f", {tasks_opened} remediation task(s) opened" if tasks_opened else "")
         ),
-        org_id=principal.org_id,
+        # The questionnaire's own organization: a global reviewer's is None,
+        # and an org-less event reaches every tenant's webhooks.
+        org_id=q.organization_id,
         actor=principal.email,
     )
     await session.commit()

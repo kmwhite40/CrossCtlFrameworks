@@ -207,6 +207,20 @@ NON_LITERAL_EMITTERS: dict[tuple[str, str], str] = {
     ("risk", "updated"): "api/routes/risks.py",
     ("fedramp_dependency", "linked"): "fedramp20x/marketplace.py",
     ("fedramp_dependency", "unlinked"): "fedramp20x/marketplace.py",
+    # Writers' emit helpers, which take the verb as a parameter.
+    ("connector_config", "created"): "connectors/credentials.py",
+    ("connector_config", "updated"): "connectors/credentials.py",
+    ("evidence_object", "created"): "evidence/service.py",
+    ("evidence_object", "updated"): "evidence/service.py",
+    ("evidence", "deleted"): "api/routes/evidence.py",
+    ("waiver", "approved"): "api/routes/waivers.py",
+    ("waiver", "revoked"): "api/routes/waivers.py",
+    # ``verb=f"package_{action}"``: the decisions that move a system's ato_status.
+    ("authorization_package", "package_submit"): "ato/lifecycle.py",
+    ("authorization_package", "package_return"): "ato/lifecycle.py",
+    ("authorization_package", "package_authorize"): "ato/lifecycle.py",
+    ("authorization_package", "package_authorize_conditional"): "ato/lifecycle.py",
+    ("authorization_package", "package_deny"): "ato/lifecycle.py",
 }
 
 
@@ -262,11 +276,24 @@ def test_each_trigger_set_is_pinned() -> None:
                 ("risk", "created"),
                 ("risk", "updated"),
                 ("vendor", "created"),
+                ("vendor", "updated"),
+                ("connector_config", "created"),
+                ("connector_config", "updated"),
                 ("connector_config", "synced"),
                 ("scan_ingestion", "ingested"),
                 ("monitoring_run", "scanned"),
+                ("control_test", "created"),
                 ("control_test", "tested"),
                 ("ai_agent", "created"),
+                ("ai_agent", "updated"),
+                ("evidence_object", "created"),
+                ("evidence_object", "updated"),
+                ("system_component", "deleted"),
+                ("authorization_package", "package_submit"),
+                ("authorization_package", "package_return"),
+                ("authorization_package", "package_authorize"),
+                ("authorization_package", "package_authorize_conditional"),
+                ("authorization_package", "package_deny"),
                 ("ksi_assessor_review", "reviewed"),
                 ("ksi_assessor_review", "updated"),
                 ("capability", "created"),
@@ -286,6 +313,7 @@ def test_each_trigger_set_is_pinned() -> None:
                 ("control_implementation", "updated"),
                 ("system", "implementations_imported"),
                 ("system", "derived"),
+                ("system_component", "deleted"),
             }
         )
         == derived.CAPABILITY_SYSTEM_TRIGGERS
@@ -308,6 +336,10 @@ def test_each_trigger_set_is_pinned() -> None:
                 ("system", "implementations_imported"),
                 ("control_test", "tested"),
                 ("evidence", "captured"),
+                ("evidence", "deleted"),
+                ("capture_snapshot", "created"),
+                ("waiver", "approved"),
+                ("waiver", "revoked"),
                 ("fedramp20x_profile", "updated"),
                 ("fedramp_dependency", "created"),
                 ("fedramp_dependency", "linked"),
@@ -987,6 +1019,100 @@ def test_every_poam_constructor_emits_or_is_covered() -> None:
     found = {w for w, _fn in _funcs_constructing("POAM")}
     stale = set(POAM_WRITERS_COVERED_BY_CALLER) - found
     assert not stale, f"allowlisted writers that no longer exist: {stale}"
+
+
+def _function(path: Path, name: str) -> ast.AST:
+    """The (first) function called ``name`` defined in ``path``."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef) and fn.name == name:
+            return fn
+    raise AssertionError(f"{path}: no function {name}")
+
+
+def _callee(call: ast.Call) -> str | None:
+    f = call.func
+    return f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+
+
+def _calls_named(node: ast.AST, name: str) -> bool:
+    return any(isinstance(n, ast.Call) and _callee(n) == name for n in ast.walk(node))
+
+
+def _emits(fn: ast.AST) -> bool:
+    """``bus.emit`` itself, or a writer's emit helper (``emit_*`` / ``_emit_*``)."""
+    return any(
+        isinstance(n, ast.Call) and (_callee(n) or "").lstrip("_").startswith("emit")
+        for n in ast.walk(fn)
+    )
+
+
+#: Every model a derived view reads, by the constructor name a writer calls.
+#: A function that constructs one must emit, or be listed below with the
+#: event that covers it or the reason no view changes.
+VIEW_INPUT_MODELS = (
+    "System",
+    "ControlImplementation",
+    "ControlTest",
+    "ConnectorConfig",
+    "AiAgent",
+    "Vendor",
+    "Risk",
+    "EvidenceObject",
+    "Evidence",
+    "FedRAMPDependency",
+    "FedRAMP20xProfile",
+    "KSIException",
+    "KSIAssessorReview",
+    "Waiver",
+    "CaptureSnapshot",
+    "SystemComponent",
+    "Capability",
+)
+
+VIEW_INPUT_WRITERS_COVERED: dict[str, str] = {
+    "api/routes/automation.py::intake_system": "system derived (derive_system, same txn)",
+    "api/routes/ui.py::intake_submit": "system derived (derive_system, same txn)",
+    "api/routes/risks.py::create_risk": "risk created (_post_write)",
+    "api/routes/risks.py::create_risk_from_finding": "risk created (_post_write)",
+    "api/routes/waivers.py::create_waiver": "a requested waiver is not in force: no view reads it",
+    "boundary/service.py::create_component": "an unbound component enters no view",
+    "cli.py::ai_agents_create": "an org-less agent: no tenant graph draws it",
+    "cli.py::_run": "the CLI agent create's inner body (above)",
+    "posture/scan.py::_upsert_generated_test": "control_test tested (record_result, same scan)",
+    "self_assurance/service.py::_self_ids": "Concord's own boundary bootstrap (CLI/admin)",
+    "self_assurance/service.py::init_self_assurance": "Concord's own boundary bootstrap",
+    "governance/collection.py::collect_for_org": "capture_snapshot created (_emit_new_captures)",
+}
+
+
+def _silent_constructors(models: tuple[str, ...]) -> list[str]:
+    return sorted(
+        {where for model in models for where, fn in _funcs_constructing(model) if not _emits(fn)}
+    )
+
+
+def test_every_view_input_constructor_emits_or_is_covered() -> None:
+    """The POA&M guard below, for every model a derived view reads: a writer
+    that adds one silently leaves its view stale until the scheduler runs."""
+    silent = [
+        w for w in _silent_constructors(VIEW_INPUT_MODELS) if w not in VIEW_INPUT_WRITERS_COVERED
+    ]
+    assert not silent, f"view-input writers that emit nothing: {silent}"
+    found = {w for m in VIEW_INPUT_MODELS for w, _fn in _funcs_constructing(m)}
+    stale = set(VIEW_INPUT_WRITERS_COVERED) - found
+    assert not stale, f"allowlisted writers that no longer exist: {stale}"
+
+
+def test_the_constructor_guard_can_fail() -> None:
+    """Positive control: a function that builds a ``System`` and emits nothing
+    is caught (the guard reads real constructors, not names in comments)."""
+    tree = ast.parse("async def f(s):\n    s.add(System(name='x'))\n")
+    (fn,) = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
+    assert not _emits(fn)
+    tree = ast.parse("async def f(s):\n    s.add(System(name='x'))\n    await bus.emit(s)\n")
+    (fn,) = [n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef)]
+    assert _emits(fn)
 
 
 async def _assessment(system_id: int) -> tuple[int, int]:

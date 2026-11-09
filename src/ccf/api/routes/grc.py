@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from ...auth import Principal
 from ...config import get_settings, is_dev_env
 from ...connectors.credential_spec import configurable_types
+from ...connectors.credentials import emit_connector_changed
 from ...governance import bus, control_tests, trust_corroboration
 from ...ingest.scanners import SEVERITY_SLA_DAYS
 from ...models import POAM, System, Task
@@ -857,6 +858,9 @@ async def create_connector(
         )
     c = ConnectorConfig(organization_id=principal.org_id, **body.model_dump())
     session.add(c)
+    await emit_connector_changed(
+        session, c, status_was=None, created=True, actor=principal.email
+    )
     await session.commit()
     return _conn_out(c)
 
@@ -984,6 +988,8 @@ async def create_control_test(
 ) -> dict[str, Any]:
     t = ControlTest(organization_id=principal.org_id, **body.model_dump())
     session.add(t)
+    await session.flush()
+    await control_tests.emit_control_test_created(session, t, actor=principal.email)
     await session.commit()
     return _test_out(t)
 

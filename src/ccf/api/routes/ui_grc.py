@@ -35,7 +35,7 @@ from ...connectors.credential_spec import (
     spec_for,
 )
 from ...evidence import service as evidence_service
-from ...governance import control_tests, insights, personnel, tprm, trust_corroboration
+from ...governance import bus, control_tests, insights, personnel, tprm, trust_corroboration
 from ...governance import waivers as waiver_service
 from ...logging import get_logger
 from ...models import CaptureSnapshot, ScanIngestion, System, Task, Vendor
@@ -438,13 +438,15 @@ async def connectors_create(
             f"this organization already has a {connector_type} connector; "
             "configure that one rather than adding a second",
         )
-    session.add(
-        ConnectorConfig(
-            organization_id=org,
-            name=name,
-            connector_type=connector_type,
-            environment=environment or None,
-        )
+    cfg = ConnectorConfig(
+        organization_id=org,
+        name=name,
+        connector_type=connector_type,
+        environment=environment or None,
+    )
+    session.add(cfg)
+    await connector_credentials.emit_connector_changed(
+        session, cfg, status_was=None, created=True, actor=_actor(request)
     )
     await session.commit()
     return RedirectResponse("/connectors", status_code=303)
@@ -497,10 +499,14 @@ async def connectors_sync(
     connector.credential = secret
 
     result = await connector.verify()
+    status_was = c.status
     if result.get("connected"):
         c.status = "configured"
         c.error_message = None
         c.last_sync = _now()
+        await connector_credentials.emit_connector_changed(
+            session, c, status_was=status_was, actor=_actor(request)
+        )
         await session.commit()
 
         # Scan straight away, and land on the gaps. Connecting a provider is
@@ -517,6 +523,9 @@ async def connectors_sync(
     reason = str(result.get("reason") or "the provider did not say why")
     c.status = "error"
     c.error_message = reason[:2000]
+    await connector_credentials.emit_connector_changed(
+        session, c, status_was=status_was, actor=_actor(request)
+    )
     await session.commit()
     return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
 
@@ -724,8 +733,12 @@ async def connectors_aws_external_id(
                     session, c.organization_id, c.connector_type, dict(stored),
                     name=c.name, config=c,
                 )
+        status_was = c.status
         c.status = "error"
         c.error_message = "External ID rotated: update the role's trust policy, then test"
+        await connector_credentials.emit_connector_changed(
+            session, c, status_was=status_was, actor=_actor(request)
+        )
     await record_event(
         session,
         actor=principal.email or "system",
@@ -768,15 +781,16 @@ async def control_tests_create(
     session: AsyncSession = Depends(get_session),
 ) -> RedirectResponse:
     org = _principal_org(request)
-    session.add(
-        ControlTest(
-            organization_id=org,
-            control_id=control_id,
-            name=name,
-            method=method,
-            frequency=frequency or None,
-        )
+    test = ControlTest(
+        organization_id=org,
+        control_id=control_id,
+        name=name,
+        method=method,
+        frequency=frequency or None,
     )
+    session.add(test)
+    await session.flush()
+    await control_tests.emit_control_test_created(session, test, actor=_actor(request))
     await session.commit()
     return RedirectResponse("/control-tests", status_code=303)
 
@@ -1470,6 +1484,8 @@ async def questionnaire_review(
     q.risk_rating = scored["rating"]
     vendor = await session.get(Vendor, q.vendor_id)
     if vendor is not None:
+        if vendor.risk_rating != scored["rating"]:
+            await tprm.emit_vendor_rated(session, vendor, scored["rating"], actor=_actor(request))
         vendor.risk_rating = scored["rating"]
         vendor.last_reviewed_on = q.reviewed_on
         if open_tasks and scored["flagged"]:
@@ -1702,6 +1718,15 @@ async def ai_agents_create_ui(
     session.add(agent)
     await session.flush()
     await risk_assess(session, agent, actor=_actor(request))
+    await bus.emit(  # the API's event, with the agent's own organization
+        session,
+        verb="created",
+        entity_type="ai_agent",
+        entity_id=agent.id,
+        summary=f"AI agent inventoried: {agent.name}",
+        org_id=agent.organization_id,
+        actor=_actor(request),
+    )
     await session.commit()
     return RedirectResponse("/ai-agents", status_code=303)
 
@@ -2141,15 +2166,22 @@ async def connectors_test_credential(
         )
 
     result = await connector.verify()
+    status_was = cfg.status
     if result.get("connected"):
         cfg.status = "configured"
         cfg.error_message = None
+        await connector_credentials.emit_connector_changed(
+            session, cfg, status_was=status_was, actor=_actor(request)
+        )
         await session.commit()
         return RedirectResponse(f"/connectors/{cfg_id}?tested=1", status_code=303)
 
     reason = str(result.get("reason") or "the provider did not say why")
     cfg.status = "error"
     cfg.error_message = reason[:2000]
+    await connector_credentials.emit_connector_changed(
+        session, cfg, status_was=status_was, actor=_actor(request)
+    )
     await session.commit()
     return RedirectResponse(f"/connectors/{cfg_id}?error={quote(reason)}", status_code=303)
 

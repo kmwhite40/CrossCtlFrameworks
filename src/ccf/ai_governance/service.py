@@ -81,12 +81,36 @@ async def _audit(
     await record_event(session, organization_id=organization_id, **kw)
 
 
+async def emit_agent_updated(
+    session: AsyncSession, agent: AiAgent, *, actor: str | None, fields: list[str]
+) -> None:
+    """The assurance graph draws an agent's name, approval, risk rating,
+    autonomy and systems: a change to any of them is news to it. Emitted with
+    the agent's own organization, and only by a writer that changed something."""
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    await bus.emit(
+        session,
+        verb="updated",
+        entity_type="ai_agent",
+        entity_id=agent.id,
+        summary=f"AI agent {agent.name} updated: {', '.join(fields)}",
+        org_id=agent.organization_id,
+        actor=actor,
+        payload={"fields": fields},
+    )
+
+
 async def risk_assess(
     session: AsyncSession, agent: AiAgent, *, actor: str | None = None
 ) -> AiAgentRiskAssessment:
     result = score_agent(agent)
+    prior = agent.risk_rating
     agent.risk_score = result["score"]
     agent.risk_rating = result["rating"]
+    if prior is not None and prior != agent.risk_rating:
+        # Not on creation (no prior rating): the "created" event covers it.
+        await emit_agent_updated(session, agent, actor=actor, fields=["risk_rating"])
     assessment = AiAgentRiskAssessment(
         organization_id=agent.organization_id, agent_id=agent.id,
         score=result["score"], rating=result["rating"], factors=result["factors"],
@@ -108,7 +132,10 @@ async def review_agent(
 ) -> AiAgentApproval:
     if decision not in ("approved", "rejected"):
         raise ValueError("decision must be 'approved' or 'rejected'")
+    changed = agent.approval_status != decision
     agent.approval_status = decision
+    if changed:
+        await emit_agent_updated(session, agent, actor=reviewer, fields=["approval_status"])
     agent.last_reviewed_on = datetime.now(UTC).date()
     approval = AiAgentApproval(
         organization_id=agent.organization_id, agent_id=agent.id,

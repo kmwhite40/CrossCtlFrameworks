@@ -210,6 +210,11 @@ def _principal_org(request: Request) -> int | None:
     return getattr(principal, "org_id", None) if principal is not None else None
 
 
+def _actor_email(request: Request) -> str | None:
+    """The signed-in principal's email, for an event's ``actor`` (None when auth is off)."""
+    return getattr(getattr(request.state, "principal", None), "email", None)
+
+
 def no_org_page(request: Request, active: str) -> HTMLResponse:
     """The page an unscoped session gets instead of totals added up across
     every tenant (``command_center`` and ``ui_history`` take the same stance).
@@ -651,13 +656,23 @@ async def create_system(
     # organization does not depend on an unrelated form field being filled in.
     org_id = resolve_caller_org(_principal_org(request), organization_id)
     if name.strip():
-        session.add(
-            System(
-                organization_id=org_id,
-                name=name.strip(),
-                description=(description or None),
-                baseline=(baseline or None),
-            )
+        obj = System(
+            organization_id=org_id,
+            name=name.strip(),
+            description=(description or None),
+            baseline=(baseline or None),
+        )
+        session.add(obj)
+        await session.flush()
+        # The API's event: the graph draws every system (and webhooks hear it).
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="system",
+            entity_id=obj.id,
+            summary=f"System {obj.name} created",
+            org_id=obj.organization_id,
+            actor=_actor_email(request),
         )
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
@@ -679,6 +694,16 @@ async def delete_system_ui(
         # DATA-04: soft-delete only — a hard DELETE here would CASCADE away
         # the system's POA&Ms/assessments/evidence/implementations/risks.
         sys.deleted_at = datetime.now(UTC)
+        await bus.emit(
+            session,
+            verb="deleted",
+            entity_type="system",
+            entity_id=sys.id,
+            summary=f"System {sys.name} deleted",
+            org_id=sys.organization_id,
+            actor=_actor_email(request),
+            payload={"hard": False},
+        )
         await session.commit()
     return RedirectResponse("/systems", status_code=303)
 
@@ -1743,6 +1768,15 @@ async def scoring_create_system(
         sysm = System(organization_id=org.id, name=sys_name, baseline=(baseline or None))
         session.add(sysm)
         await session.flush()
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="system",
+            entity_id=sysm.id,
+            summary=f"System {sysm.name} created",
+            org_id=sysm.organization_id,
+            actor=_actor_email(request),
+        )
     sid = sysm.id
     await session.commit()
     return RedirectResponse(f"/scoring?system_id={sid}", status_code=303)
@@ -3012,15 +3046,32 @@ async def fedramp20x_save_profile(
             select(FedRAMP20xProfile).where(FedRAMP20xProfile.system_id == system_id)
         )
     ).scalar_one_or_none()
+    created = profile is None
     if profile is None:
         profile = FedRAMP20xProfile(system_id=system_id)
         session.add(profile)
-    profile.service_name = service_name.strip() or None
-    profile.deployment_model = deployment_model.strip() or None
-    profile.cloud_environment = cloud_environment.strip() or None
-    profile.boundary_description = boundary_description.strip() or None
-    profile.cryptographic_boundary = cryptographic_boundary.strip() or None
-    profile.logging_boundary = logging_boundary.strip() or None
+    values = {
+        "service_name": service_name.strip() or None,
+        "deployment_model": deployment_model.strip() or None,
+        "cloud_environment": cloud_environment.strip() or None,
+        "boundary_description": boundary_description.strip() or None,
+        "cryptographic_boundary": cryptographic_boundary.strip() or None,
+        "logging_boundary": logging_boundary.strip() or None,
+    }
+    changed = created or any(getattr(profile, k) != v for k, v in values.items())
+    for k, v in values.items():
+        setattr(profile, k, v)
+    if changed:  # a re-save of the same form is not a change (ruling R26)
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="updated",
+            entity_type="fedramp20x_profile",
+            entity_id=system_id,
+            summary=f"20x CSO profile updated for system {system_id}",
+            org_id=await bus.system_org(session, system_id),
+            actor=_actor_email(request),
+        )
     await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)
 
@@ -3041,15 +3092,25 @@ async def fedramp20x_add_dependency(
     from ...models import FedRAMPDependency  # noqa: PLC0415
 
     if name.strip() and await _fedramp20x_system_visible(request, session, system_id):
-        session.add(
-            FedRAMPDependency(
-                system_id=system_id,
-                name=name.strip(),
-                provider=provider.strip() or None,
-                service_type=service_type.strip() or None,
-                fedramp_status=fedramp_status.strip() or "unknown",
-                dependency_risk=dependency_risk.strip() or None,
-            )
+        dep = FedRAMPDependency(
+            system_id=system_id,
+            name=name.strip(),
+            provider=provider.strip() or None,
+            service_type=service_type.strip() or None,
+            fedramp_status=fedramp_status.strip() or "unknown",
+            dependency_risk=dependency_risk.strip() or None,
+        )
+        session.add(dep)
+        await session.flush()
+        await bus.emit(
+            session,
+            verb="created",
+            entity_type="fedramp_dependency",
+            entity_id=dep.id,
+            summary=f"Dependency '{dep.name}' ({dep.fedramp_status})",
+            org_id=await bus.system_org(session, system_id),
+            actor=_actor_email(request),
+            payload={"system_id": system_id},
         )
         await session.commit()
     return RedirectResponse(f"/fedramp20x?system_id={system_id}", status_code=303)

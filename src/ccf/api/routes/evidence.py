@@ -11,6 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Principal
+from ...governance import bus
 from ...models import ControlImplementation, Evidence, System
 from ...models_capability import Capability
 from ...schemas import EvidenceOut
@@ -58,6 +59,35 @@ async def _cap_in_scope(
         )
     ).scalar_one_or_none()
     return ok is not None
+
+
+async def _emit_evidence(
+    session: AsyncSession, obj: Evidence, *, verb: str, actor: str | None
+) -> None:
+    """KSI validation reads an implementation's evidence records, so adding or
+    removing one is a change to that system's 20x state. Capability-parented
+    evidence enters no derived view and emits nothing."""
+    if obj.implementation_id is None:
+        return
+    system_id = (
+        await session.execute(
+            select(ControlImplementation.system_id).where(
+                ControlImplementation.id == obj.implementation_id
+            )
+        )
+    ).scalar_one_or_none()
+    if system_id is None:
+        return
+    await bus.emit(
+        session,
+        verb=verb,
+        entity_type="evidence",
+        entity_id=obj.id,
+        summary=f"Evidence '{obj.title}' {verb}",
+        org_id=await bus.system_org(session, system_id),
+        actor=actor,
+        payload={"system_id": system_id, "implementation_id": obj.implementation_id},
+    )
 
 
 async def _evidence_in_scope(
@@ -143,6 +173,8 @@ async def create_evidence(
         raise HTTPException(404, "capability not found")
     obj = Evidence(**body.model_dump(exclude_none=False))
     session.add(obj)
+    await session.flush()
+    await _emit_evidence(session, obj, verb="captured", actor=principal.email)
     await session.commit()
     await session.refresh(obj)
     return EvidenceOut.model_validate(obj)
@@ -157,5 +189,6 @@ async def delete_evidence(
     obj = (await session.execute(select(Evidence).where(Evidence.id == eid))).scalar_one_or_none()
     if obj is None or not await _evidence_in_scope(session, obj, principal):
         raise HTTPException(404, "evidence not found")
+    await _emit_evidence(session, obj, verb="deleted", actor=principal.email)
     await session.delete(obj)
     await session.commit()

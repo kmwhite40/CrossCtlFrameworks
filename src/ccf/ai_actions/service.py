@@ -345,6 +345,9 @@ async def _apply_mutation(
         )
         session.add(test)
         await session.flush()
+        from ..governance.control_tests import emit_control_test_created  # noqa: PLC0415
+
+        await emit_control_test_created(session, test, actor=f"ai_action:{run.id}")
         return {"mutation_type": "create_control_test", "target_type": "control_test",
                 "target_id": str(test.id)}
     elif action.allowed_mutation == "set_response_suggestion":

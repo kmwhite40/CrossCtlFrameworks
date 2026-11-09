@@ -305,7 +305,7 @@ async def delete_component(
     existing = await session.get(SystemComponent, component_id)
     if existing is None or existing.system_id != system_id:
         raise HTTPException(404, "component not found")
-    await service.delete_component(session, component_id=component_id)
+    await service.delete_component(session, component_id=component_id, actor=principal.email)
     await session.commit()
 
 

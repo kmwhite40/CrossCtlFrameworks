@@ -12,10 +12,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import InformationType, Interconnection, InventoryItem, SystemComponent
+from ..models_capability import CapabilityComponent
 
 # Fields a caller must never set directly via ``data`` — ownership/identity and
 # server-generated bookkeeping columns.
@@ -54,11 +55,42 @@ async def update_component(
     return row
 
 
-async def delete_component(session: AsyncSession, *, component_id: int) -> None:
+async def delete_component(
+    session: AsyncSession, *, component_id: int, actor: str | None = None
+) -> None:
+    """Delete a component; its capability bindings cascade with it.
+
+    A bound component is how a capability reaches a system, so deleting one
+    changes that system's capability derivation and its graph: that, and only
+    that, is announced (``system_component deleted``). An unbound component
+    enters no derived view.
+    """
     row = await session.get(SystemComponent, component_id)
-    if row is not None:
-        await session.delete(row)
-        await session.flush()
+    if row is None:
+        return
+    bound = (
+        await session.execute(
+            select(func.count())
+            .select_from(CapabilityComponent)
+            .where(CapabilityComponent.component_id == component_id)
+        )
+    ).scalar_one()
+    system_id, title = row.system_id, row.title
+    await session.delete(row)
+    await session.flush()
+    if bound:
+        from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+        await bus.emit(
+            session,
+            verb="deleted",
+            entity_type="system_component",
+            entity_id=component_id,
+            summary=f"Component '{title}' removed, unbinding {bound} capability link(s)",
+            org_id=await bus.system_org(session, system_id),
+            actor=actor,
+            payload={"system_id": system_id, "capability_links": int(bound)},
+        )
 
 
 async def list_components(session: AsyncSession, system_id: int) -> Sequence[SystemComponent]:

@@ -727,6 +727,31 @@ async def _resolve_on_recovery(
         )
 
 
+async def emit_control_test_created(
+    session: AsyncSession, test: ControlTest, *, actor: str | None
+) -> None:
+    """A new test is a new node in the assurance graph, before any result.
+
+    Every writer that creates a :class:`ControlTest` outside a scan calls this
+    (a scan's tests reach the graph through :func:`record_result`'s
+    ``control_test tested``). The event takes the test's organization, else its
+    system's: never the caller's, which is None for a global principal.
+    """
+    org_id = test.organization_id
+    if org_id is None:
+        org_id = await bus.system_org(session, test.system_id)
+    await bus.emit(
+        session,
+        verb="created",
+        entity_type="control_test",
+        entity_id=test.id,
+        summary=f"Control test '{test.name}' added for {test.control_id}",
+        org_id=org_id,
+        actor=actor,
+        payload={"system_id": test.system_id} if test.system_id is not None else {},
+    )
+
+
 async def record_result(
     session: AsyncSession,
     test: ControlTest,

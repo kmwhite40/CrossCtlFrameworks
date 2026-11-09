@@ -56,8 +56,9 @@ SYSTEM_ENTITY_TYPES = frozenset({"system", "fedramp20x_profile"})
 
 #: The assurance graph's contributors (``assurance/builder.py``): systems,
 #: implementations, KSI state, capabilities, POA&Ms, risks, vendors,
-#: connectors, scans, control tests and AI agents. Rebuilding replaces the
-#: org's graph, so this lists the writers of those records and nothing else.
+#: connectors, scans, control tests, evidence objects and AI agents. Rebuilding
+#: replaces the org's graph, so this lists the writers of those records and
+#: nothing else. A package decision moves its system's ``ato_status``.
 ASSURANCE_GRAPH_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("system", "created"),
@@ -76,11 +77,24 @@ ASSURANCE_GRAPH_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
         ("risk", "created"),
         ("risk", "updated"),
         ("vendor", "created"),
+        ("vendor", "updated"),  # a review moves its risk rating
+        ("connector_config", "created"),
+        ("connector_config", "updated"),  # status
         ("connector_config", "synced"),
         ("scan_ingestion", "ingested"),  # bulk POA&M create / reopen / close
         ("monitoring_run", "scanned"),  # ConMon opens POA&Ms
+        ("control_test", "created"),
         ("control_test", "tested"),
         ("ai_agent", "created"),
+        ("ai_agent", "updated"),
+        ("evidence_object", "created"),
+        ("evidence_object", "updated"),  # status
+        ("system_component", "deleted"),  # unbinds capabilities from its system
+        ("authorization_package", "package_submit"),
+        ("authorization_package", "package_return"),
+        ("authorization_package", "package_authorize"),
+        ("authorization_package", "package_authorize_conditional"),
+        ("authorization_package", "package_deny"),
         ("ksi_assessor_review", "reviewed"),  # KSI assessor status, finding POA&M
         ("ksi_assessor_review", "updated"),
         ("capability", "created"),
@@ -96,13 +110,15 @@ ASSURANCE_GRAPH_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
 #: Changes that alter which implementation rows a system's derivation can
 #: annotate. ``derive_for_system`` reads capabilities and their edges and
 #: writes ``derived_*`` onto EXISTING implementation rows, so a new row (an
-#: upsert, a bulk import, a profile derivation) is new work. It reads no
-#: control tests.
+#: upsert, a bulk import, a profile derivation) is new work. Deleting a bound
+#: component unbinds its capabilities from the system. It reads no control
+#: tests.
 CAPABILITY_SYSTEM_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
     {
         ("control_implementation", "updated"),
         ("system", "implementations_imported"),
         ("system", "derived"),
+        ("system_component", "deleted"),
     }
 )
 
@@ -121,7 +137,8 @@ CAPABILITY_ORG_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
 )
 
 #: What KSI validation and readiness read: implementations, control tests,
-#: evidence, the CSO profile, dependencies, assessor reviews and exceptions.
+#: evidence, the CSO profile, dependencies, assessor reviews, exceptions, the
+#: waivers in force, and which parameters the org's connectors have captured.
 #: Not POA&Ms (neither reads them). Not ``system validated`` or ``drift``:
 #: the first already ran this validation inline, the second is this
 #: consumer's own output.
@@ -131,6 +148,10 @@ FEDRAMP20X_TRIGGERS: frozenset[tuple[str, str]] = frozenset(
         ("system", "implementations_imported"),
         ("control_test", "tested"),
         ("evidence", "captured"),
+        ("evidence", "deleted"),
+        ("capture_snapshot", "created"),
+        ("waiver", "approved"),
+        ("waiver", "revoked"),
         ("fedramp20x_profile", "updated"),
         ("fedramp_dependency", "created"),
         ("fedramp_dependency", "linked"),

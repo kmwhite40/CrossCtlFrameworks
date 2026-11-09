@@ -339,3 +339,12 @@ There are two migrations.
   refuses a notification whose organization disagrees with the job's. A non-2xx is
   now a retried failure (it used to count as sent). An escalation that re-surfaces
   a notification is posted; a same-or-lower-severity refresh is not.
+- **Trigger sets grew with the writers that were silent** (follow-up). Writers of
+  view inputs that emitted nothing now emit, and the pairs they emit joined the
+  trigger sets: the graph gained `control_test`/`connector_config`/`evidence_object`
+  `created`, `connector_config`/`evidence_object`/`ai_agent`/`vendor` `updated`,
+  `system_component deleted` and the five `authorization_package` decisions that
+  move a system's `ato_status`; `capability_derive` gained `system_component
+  deleted`; `fedramp20x` gained `evidence deleted`, `waiver approved`/`revoked` and
+  `capture_snapshot created`. `test_every_view_input_constructor_emits_or_is_covered`
+  extends the POA&M constructor guard to every model a view reads.

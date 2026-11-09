@@ -160,6 +160,38 @@ def _prepare_aws_bundle(secret: dict[str, Any], cfg: ConnectorConfig) -> dict[st
     return {**secret, "external_id": external_id}
 
 
+async def emit_connector_changed(
+    session: AsyncSession,
+    cfg: ConnectorConfig,
+    *,
+    status_was: str | None,
+    created: bool = False,
+    actor: str | None = None,
+) -> None:
+    """The assurance graph draws every connector with its status, so a new
+    connector, or a status change, is news to it; anything else is not.
+    Emitted with the connector's own organization."""
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    if created:
+        verb, summary = "created", f"Connector '{cfg.name}' ({cfg.connector_type}) added"
+    elif cfg.status != status_was:
+        verb, summary = "updated", f"Connector '{cfg.name}': {status_was} -> {cfg.status}"
+    else:
+        return
+    await session.flush()
+    await bus.emit(
+        session,
+        verb=verb,
+        entity_type="connector_config",
+        entity_id=cfg.id,
+        summary=summary,
+        org_id=cfg.organization_id,
+        actor=actor,
+        payload={"status": cfg.status},
+    )
+
+
 async def set_credential(
     session: AsyncSession,
     org_id: int,
@@ -204,6 +236,7 @@ async def set_credential(
                 .order_by(ConnectorConfig.id)
             )
         ).scalars().first()
+    created = cfg is None
     if cfg is None:
         cfg = ConnectorConfig(
             organization_id=org_id,
@@ -212,6 +245,7 @@ async def set_credential(
             environment=environment,
         )
         session.add(cfg)
+    status_was = None if created else cfg.status
     # A value Concord generates is never taken from the request -- for AWS that
     # is the External ID, the confused-deputy guard, which a caller choosing it
     # would defeat. Dropped here, the one place both write paths go through.
@@ -243,6 +277,9 @@ async def set_credential(
     if actor is not None:
         cfg.auth_method = cfg.auth_method or "credential"
     await session.flush()
+    await emit_connector_changed(
+        session, cfg, status_was=status_was, created=created, actor=actor
+    )
     return cfg
 
 

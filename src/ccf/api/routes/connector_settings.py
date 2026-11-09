@@ -133,8 +133,12 @@ async def remove_credential(
     ).scalars().first()
     if cfg is None or not cfg.encrypted_credential:
         raise HTTPException(404, "no credential bound for this connector")
+    status_was = cfg.status
     cfg.encrypted_credential = None
     cfg.key_last4 = None
     cfg.status = "not_configured"
+    await connector_credentials.emit_connector_changed(
+        session, cfg, status_was=status_was, actor=principal.email
+    )
     await session.commit()
     return connector_credentials.masked_view(cfg)

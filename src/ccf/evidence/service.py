@@ -50,6 +50,24 @@ class EvidenceContentMissingError(EvidenceError):
     """
 
 
+async def _emit(session: AsyncSession, obj: EvidenceObject, verb: str, summary: str) -> None:
+    """The assurance graph draws every evidence object with its status, so a
+    new object, or a status change, is news to it. Each writer below emits only
+    when it made one; the object's own organization, never the caller's."""
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    await bus.emit(
+        session,
+        verb=verb,
+        entity_type="evidence_object",
+        entity_id=obj.id,
+        summary=summary,
+        org_id=obj.organization_id,
+        payload={"status": obj.status}
+        | ({"system_id": obj.system_id} if obj.system_id is not None else {}),
+    )
+
+
 async def create_object(
     session: AsyncSession,
     *,
@@ -79,6 +97,7 @@ async def create_object(
     )
     session.add(obj)
     await session.flush()
+    await _emit(session, obj, "created", f"Evidence object '{obj.title}' created")
     return obj
 
 
@@ -162,14 +181,18 @@ async def add_version(
     # approve -- and WORM-lock -- a version they were never shown.
     if obj.status in ("submitted", "approved", "rejected", "expired"):
         obj.status = "draft"
+        await _emit(session, obj, "updated", f"Evidence object '{obj.title}' reopened for review")
     return version
 
 
 async def submit_object(session: AsyncSession, obj: EvidenceObject) -> EvidenceObject:
     if obj.current_version_id is None:
         raise EvidenceError("cannot submit evidence with no versions")
+    changed = obj.status != "submitted"
     obj.status = "submitted"
     await session.flush()
+    if changed:
+        await _emit(session, obj, "updated", f"Evidence object '{obj.title}' submitted")
     return obj
 
 
@@ -204,6 +227,7 @@ async def review_object(
     if decision == "approved":
         obj.immutable_lock = True  # WORM: approved evidence is frozen
     await session.flush()
+    await _emit(session, obj, "updated", f"Evidence object '{obj.title}' {decision}")
     return review
 
 

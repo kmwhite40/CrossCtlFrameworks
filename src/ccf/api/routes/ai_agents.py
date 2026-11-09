@@ -123,13 +123,18 @@ async def create_agent(
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
-    agent = AiAgent(organization_id=principal.org_id, **body.model_dump())
+    org_id = principal.org_id
+    if org_id is None and body.system_id is not None:
+        # A global principal inventorying a tenant system's agent: the agent
+        # is that tenant's (as a waiver or risk is), not every tenant's.
+        org_id = await bus.system_org(session, body.system_id)
+    agent = AiAgent(organization_id=org_id, **body.model_dump())
     session.add(agent)
     await session.flush()
     await gov.risk_assess(session, agent, actor=principal.email)  # score on creation
     await bus.emit(
         session, verb="created", entity_type="ai_agent", entity_id=agent.id,
-        summary=f"AI agent inventoried: {agent.name}", org_id=principal.org_id,
+        summary=f"AI agent inventoried: {agent.name}", org_id=agent.organization_id,
         actor=principal.email,
     )
     await session.commit()
@@ -153,8 +158,13 @@ async def update_agent(
     principal: Principal = Depends(get_principal),
 ) -> dict[str, Any]:
     agent = await _require(session, aid, principal)
+    changed = sorted(
+        k for k, v in body.model_dump(exclude_none=True).items() if getattr(agent, k) != v
+    )
     for k, v in body.model_dump(exclude_none=True).items():
         setattr(agent, k, v)
+    if changed:  # a PATCH that changes nothing is not an event (ruling R26)
+        await gov.emit_agent_updated(session, agent, actor=principal.email, fields=changed)
     await gov.risk_assess(session, agent, actor=principal.email)  # rescore on change
     await session.commit()
     return _out(agent)
