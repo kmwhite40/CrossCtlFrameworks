@@ -815,7 +815,12 @@ def _carry_uri(document: dict[str, Any], current: dict[str, Any]) -> None:
         document["certificationPackageOverviewUri"] = str(uri).strip()
 
 
-def _promote_rationales(rows: Sequence[POAM], promoted: Sequence[tuple[int, str]]) -> None:
+def _promote_rationales(
+    rows: Sequence[POAM],
+    promoted: Sequence[tuple[int, str]],
+    *,
+    provenance: dict[str, Any] | None = None,
+) -> list[POAM]:
     """Write each ``(poam_id, rationale)`` :attr:`AcceptedMerge.promoted` pair
     back to ``POAM.acceptance_rationale`` (spec §9.1).
 
@@ -838,14 +843,82 @@ def _promote_rationales(rows: Sequence[POAM], promoted: Sequence[tuple[int, str]
     (each tid is handled by exactly one of `merge_accepted`'s two loops), but
     a caller-supplied `rows` future refactor might not honour that, and a
     stale value must never overwrite a value a concurrent write already set.
+
+    Each promoted row also records ``provenance`` (who saved the document the
+    rationale came from, and who ran the promotion), so the POA&M never reads
+    as if someone typed the rationale on it. Returns the rows promoted.
     """
     if not promoted:
-        return
+        return []
     by_id = {row.id: row for row in rows}
+    written: list[POAM] = []
     for poam_id, rationale in promoted:
         row = by_id.get(poam_id)
         if row is not None and is_blank(row.acceptance_rationale):
             row.acceptance_rationale = rationale
+            row.acceptance_rationale_provenance = (
+                dict(provenance) if provenance is not None else None
+            )
+            written.append(row)
+    return written
+
+
+async def _promotion_provenance(
+    session: AsyncSession, system_id: int, authored_kind: str | None, *, promoted_by: str | None
+) -> dict[str, Any]:
+    """Where a promoted rationale came from: the stored document it was read
+    from, as it stands BEFORE this seed overwrites it (for the AVI seeding
+    itself, ``put_document`` is about to replace ``updated_by``), and who ran
+    the promotion (``event:cr26_documents`` or the person who seeded)."""
+    source = (
+        (
+            await session.execute(
+                select(Cr26Document).where(
+                    Cr26Document.system_id == system_id,
+                    Cr26Document.kind == authored_kind,
+                    Cr26Document.document_key.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .first()
+        if authored_kind is not None
+        else None
+    )
+    saved_at = source.updated_at if source is not None else None
+    return {
+        "source": "cr26_document",
+        "document_kind": authored_kind,
+        "document_id": source.id if source is not None else None,
+        "document_updated_by": source.updated_by if source is not None else None,
+        "document_updated_at": saved_at.isoformat() if saved_at is not None else None,
+        "promoted_by": promoted_by,
+        "promoted_at": datetime.now(UTC).isoformat(),
+    }
+
+
+async def _emit_promotions(
+    session: AsyncSession, system_id: int, rows: Sequence[POAM], provenance: dict[str, Any]
+) -> None:
+    """One event per promoted POA&M, on its timeline. ``rationale_promoted``
+    is in no consumer's trigger set: the seed that wrote it already rendered
+    the deliverables, so it queues no derived work."""
+    from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
+
+    org_id = await bus.system_org(session, system_id)
+    author = provenance.get("document_updated_by") or "an unrecorded author"
+    label = str(provenance.get("document_kind") or "document").upper()
+    for row in rows:
+        await bus.emit(
+            session,
+            verb="rationale_promoted",
+            entity_type="poam",
+            entity_id=row.id,
+            summary=f"Acceptance rationale copied from the {label} last saved by {author}",
+            org_id=org_id,
+            actor=provenance.get("promoted_by"),
+            payload={"system_id": system_id, **provenance},
+        )
 
 
 async def _vdr_facts(
@@ -884,6 +957,7 @@ async def _seed(
     period: tuple[datetime, datetime] | None = None,
     authored_kind: str | None = None,
     updated_by: str | None = None,
+    actor: str | None = None,
 ) -> VerSeedResult:
     today = today or datetime.now(UTC).date()
     rows = await _poam_rows(session, system_id)
@@ -914,10 +988,20 @@ async def _seed(
         authored = entries if isinstance(entries, list) else []
     built = build(rendering, current, authored)
     _carry_uri(built.document, current)
-    _promote_rationales(rows, built.promoted)
+    provenance: dict[str, Any] | None = None
+    if built.promoted:
+        provenance = await _promotion_provenance(
+            session,
+            system_id,
+            authored_kind,
+            promoted_by=actor if actor is not None else updated_by,
+        )
+    promoted_rows = _promote_rationales(rows, built.promoted, provenance=provenance)
     stored = await put_document(
         session, system_id=system_id, kind=kind, document=built.document, updated_by=updated_by
     )
+    if promoted_rows and provenance is not None:
+        await _emit_promotions(session, system_id, promoted_rows, provenance)
     omitted: list[OmittedRow] = [*rendering.omitted, *built.omitted]
     omitted.sort(key=_omitted_sort_key)
     return VerSeedResult(
@@ -981,6 +1065,7 @@ async def seed_vdr(
     period_to: datetime,
     today: date | None = None,
     updated_by: str | None = None,
+    actor: str | None = None,
 ) -> VerSeedResult:
     """Non-accepted vulnerabilities for the caller's reporting period."""
 
@@ -1008,6 +1093,7 @@ async def seed_vdr(
         today=today,
         period=(period_from, period_to),
         updated_by=updated_by,
+        actor=actor,
     )
 
 
@@ -1019,6 +1105,7 @@ async def seed_avi(
     period_to: datetime,
     today: date | None = None,
     updated_by: str | None = None,
+    actor: str | None = None,
 ) -> VerSeedResult:
     """Accepted vulnerabilities, keeping each authored acceptance rationale."""
 
@@ -1058,6 +1145,7 @@ async def seed_avi(
         period=(period_from, period_to),
         authored_kind="avi",
         updated_by=updated_by,
+        actor=actor,
     )
 
 
@@ -1067,6 +1155,7 @@ async def seed_ver_history(
     system_id: int,
     today: date | None = None,
     updated_by: str | None = None,
+    actor: str | None = None,
 ) -> VerSeedResult:
     """Both halves at once. No period -- the schema has none, and carries
     ``generatedAt`` instead.
@@ -1121,4 +1210,5 @@ async def seed_ver_history(
         today=today,
         authored_kind="avi",
         updated_by=updated_by,
+        actor=actor,
     )

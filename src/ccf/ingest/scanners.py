@@ -413,6 +413,7 @@ async def reconcile_findings(
                 # stale rationale riding along. See
                 # ccf.constants.poam_leaves_risk_accepted's docstring.
                 poam.acceptance_rationale = None
+                poam.acceptance_rationale_provenance = None
             poam.status = "open"
             poam.closed_on = None
             poam.severity = f.severity

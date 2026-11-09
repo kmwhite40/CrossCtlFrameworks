@@ -151,6 +151,10 @@ def _out(p: POAM, today: date | None = None, approval_state: str | None = None) 
         "risk_id": p.risk_id,
         "vendor_id": p.vendor_id,
         "acceptance_rationale": p.acceptance_rationale,
+        # Set only when the CR26 re-seed promoted the rationale from a stored
+        # document: who saved that document, and who ran the promotion. None
+        # for a rationale written on this POA&M.
+        "acceptance_rationale_provenance": p.acceptance_rationale_provenance,
         # Read-time reflection of the ISSM-08/09 approval workflow (ISSM-07): draft
         # (never submitted) | submitted (pending review) | approved | rejected. This
         # does NOT drive the closure gate itself — see _require_closure_gate — it
@@ -615,8 +619,15 @@ async def update_poam(
         and data["due_on"] != obj.due_on
     ):
         await _require_expiry_extension_gate(session, obj, data["due_on"], actor=principal.email)
+    rationale_typed = (
+        "acceptance_rationale" in data and data["acceptance_rationale"] != obj.acceptance_rationale
+    )
     for k, v in data.items():
         setattr(obj, k, v)
+    if rationale_typed:
+        # Written on the POA&M by this caller: it no longer came from a CR26
+        # document, so the promotion's provenance would now misattribute it.
+        obj.acceptance_rationale_provenance = None
     if "remediation_plan" in data:
         # A person wrote this, so a later scan must leave it alone. Set from the
         # write rather than offered as a field on POAMUpdate: provenance is a
@@ -659,6 +670,7 @@ async def update_poam(
         # its docstring for why a second, hand-written copy of "left
         # risk_accepted" here would risk drifting from that one.
         obj.acceptance_rationale = None
+        obj.acceptance_rationale_provenance = None
     await bus.emit(
         session,
         verb="updated",

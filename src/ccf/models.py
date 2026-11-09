@@ -989,6 +989,11 @@ class POAM(Base):
     # to a rationale authored into the stored document before this column
     # existed.
     acceptance_rationale: Mapped[str | None] = mapped_column(Text)
+    #: Where ``acceptance_rationale`` came from when nobody typed it here: the
+    #: CR26 re-seed promoted it from a stored document (``ccf.cr26.ver``). Names
+    #: who last saved that document, when, and who ran the promotion. NULL for
+    #: a rationale written on the POA&M itself; writing one there clears it.
+    acceptance_rationale_provenance: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

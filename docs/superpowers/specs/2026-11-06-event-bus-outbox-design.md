@@ -348,3 +348,12 @@ There are two migrations.
   deleted`; `fedramp20x` gained `evidence deleted`, `waiver approved`/`revoked` and
   `capture_snapshot created`. `test_every_view_input_constructor_emits_or_is_covered`
   extends the POA&M constructor guard to every model a view reads.
+- **A promoted rationale records its provenance** (follow-up to section 9.1's C1
+  promotion, which stays). `poams.acceptance_rationale_provenance` (migration
+  `0117_poam_rationale_provenance`) names the stored document the rationale came
+  from, who last saved it and when (read before the seed overwrites it), and who
+  ran the promotion (`event:cr26_documents`, or the person who seeded, passed as
+  the seeders' new `actor`, distinct from `updated_by` so the row stays
+  seeder-written). The POA&M API shows it beside the rationale, and a `poam
+  rationale_promoted` event (in no trigger set) puts it on the timeline. Writing a
+  different rationale on the POA&M, or leaving `risk_accepted`, clears it.

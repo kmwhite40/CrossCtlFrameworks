@@ -36,6 +36,7 @@ def _poam(**kw):
         risk_id=None,
         vendor_id=None,
         acceptance_rationale=None,
+        acceptance_rationale_provenance=None,
         milestones=[],
     )
     base.update(kw)

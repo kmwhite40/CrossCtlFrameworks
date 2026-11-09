@@ -433,6 +433,7 @@ async def seed_vdr_document(
         system_id=system_id,
         period_from=period.period_from,
         period_to=period.period_to,
+        actor=principal.email,  # who ran it; not `updated_by`, which marks authorship
     )
     await session.commit()
     await session.refresh(result.document)
@@ -453,6 +454,7 @@ async def seed_avi_document(
         system_id=system_id,
         period_from=period.period_from,
         period_to=period.period_to,
+        actor=principal.email,  # who ran it; not `updated_by`, which marks authorship
     )
     await session.commit()
     await session.refresh(result.document)
@@ -468,7 +470,7 @@ async def seed_ver_history_document(
     """Seed this system's Historical VER Activity. Admin only. No period --
     the schema has none; the document carries ``generatedAt`` instead."""
     await _owned_system(session, system_id, principal)
-    result = await seed_ver_history(session, system_id=system_id)
+    result = await seed_ver_history(session, system_id=system_id, actor=principal.email)
     await session.commit()
     await session.refresh(result.document)
     return _ver_body(result)
