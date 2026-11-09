@@ -50,11 +50,9 @@ async def _no_live_jobs_left_behind() -> AsyncIterator[None]:
         mark = (await s.execute(select(func.coalesce(func.max(OutboxJob.id), 0)))).scalar_one()
     yield
     async with session_scope() as s:
-        await s.execute(
-            delete(OutboxJob).where(
-                OutboxJob.id > mark, OutboxJob.status.in_(("pending", "claimed"))
-            )
-        )
+        # Every status: a dead letter left here would FAIL other modules'
+        # reliability checks on the shared DB.
+        await s.execute(delete(OutboxJob).where(OutboxJob.id > mark))
 
 
 def _configure(monkeypatch: pytest.MonkeyPatch, *, url: str | None, min_severity: str) -> None:
@@ -243,16 +241,22 @@ async def test_policy_below_threshold_or_unconfigured_queues_nothing(
     assert [c["json"]["text"] for c in net.calls] == ["[WARNING] Boundary drift\n3 checks failed"]
 
 
-async def test_delivery_unconfigured_after_queueing_is_a_skip(
+async def test_a_worker_without_the_url_dead_letters_the_alert_loudly(
     org: int, configured: Any, net: Net
 ) -> None:
+    """Queued where the URL was set (the api), drained where it is not (an
+    event-worker with different settings): a FAILED job naming the setting,
+    once, so the reliability check shows it. Never a quiet "done"."""
     nid = await _notify(org)
     assert nid is not None
     configured(url=None)
-    await _drain()
+    counts = await _drain()
     assert net.calls == []
+    assert counts["failed"] == 1 and counts["retried"] == 0
     (job,) = await _jobs(nid)
-    assert (job.status, job.result.get("skipped")) == ("done", "delivery not configured")
+    assert (job.status, job.attempts) == ("failed", 1)
+    assert "CCF_NOTIFY_WEBHOOK_URL" in (job.last_error or "")
+    assert job.result["text"].startswith("[CRITICAL]")  # kept for a requeue
 
 
 # ── dedupe and escalation ─────────────────────────────────────────────────────

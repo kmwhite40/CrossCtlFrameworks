@@ -331,6 +331,7 @@ async def _run_one(job_id: int, worker: str, attempts: int, now: datetime | None
                 job_id,
                 error=failure,
                 result={**prior, **kept} if isinstance(kept, dict) else None,
+                retry=not getattr(failure, "final", False),
                 **settle,
             )
         merged = {**prior, **(out if isinstance(out, dict) else {})}

@@ -46,12 +46,15 @@ _MAX_LOG = 50
 
 
 class DeliveryError(Exception):
-    """A delivery attempt that should be retried. ``result`` is what the worker
-    should keep on the job (it carries the attempts log)."""
+    """A failed delivery attempt. ``result`` is what the worker should keep on
+    the job (it carries the attempts log). Retried with backoff unless
+    ``final``: then the job is dead-lettered at once (``failed``), because
+    retrying cannot succeed and the operator has to act."""
 
-    def __init__(self, message: str, result: dict[str, Any]) -> None:
+    def __init__(self, message: str, result: dict[str, Any], *, final: bool = False) -> None:
         super().__init__(message)
         self.result = result
+        self.final = final
 
 
 def _body(ev: Event) -> bytes:

@@ -35,6 +35,14 @@ x-ccf-env: &ccf_env
   # than editing this in place (see ccf.ai.rotation).
   CCF_AI_CREDENTIAL_MASTER_KEY: ${CCF_AI_CREDENTIAL_MASTER_KEY:-dev-only-master-key-32-chars-xx}
 
+  # Slack/Teams alert delivery. On the anchor, so api, worker and event-worker
+  # all agree: the api decides to queue an alert from these, and the
+  # event-worker posts it. A URL set on one and not the other dead-letters
+  # every alert (the reliability check then FAILs naming the setting).
+  # Empty URL = delivery off.
+  CCF_NOTIFY_WEBHOOK_URL: ${CCF_NOTIFY_WEBHOOK_URL:-}
+  CCF_NOTIFY_MIN_SEVERITY: ${CCF_NOTIFY_MIN_SEVERITY:-critical}
+
 services:
   db:
     image: pgvector/pgvector:pg16

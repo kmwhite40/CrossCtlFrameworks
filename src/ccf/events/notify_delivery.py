@@ -8,8 +8,10 @@ So nothing is posted before commit, and a rolled-back alert is never posted.
 Like the ``webhook`` consumer it ``matches`` no event, its jobs never merge,
 and it retries on the webhook schedule (8 attempts, backoff from 170 s): a
 non-2xx or a transport error raises :class:`~ccf.events.webhooks.DeliveryError`
-with the attempts log. A notification that is gone, or that belongs to another
-organization than its job, is not posted.
+with the attempts log. No URL configured in this process is final: it is
+dead-lettered at once. A
+notification that is gone, or that belongs to another organization than its
+job, is not posted.
 """
 
 from __future__ import annotations
@@ -64,7 +66,16 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
         return {"skipped": "nothing to send"}
     url = delivery.target()
     if url is None:
-        return {"skipped": "delivery not configured"}
+        # Queued because the api had a URL; this process has none. Never a
+        # quiet "done": the alert would vanish with the health check green.
+        # Dead-lettered at once (a retry cannot conjure the setting), so the
+        # reliability check FAILs and names it.
+        msg = (
+            "CCF_NOTIFY_WEBHOOK_URL is not set in this process (it was where the "
+            "alert was queued): set the notify settings identically on every service"
+        )
+        log.warning("notify_delivery.unconfigured", notification_id=nid)
+        raise DeliveryError(msg, prior, final=True)
 
     log_: list[dict[str, Any]] = list(prior.get("attempts_log") or [])
     started = time.monotonic()
