@@ -46,6 +46,7 @@ directly, which would silently break its ``prev_hash``/``row_hash`` chain.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -95,6 +96,58 @@ def _versions(kind: str) -> tuple[str, str | None]:
     filename = CR26_KINDS[kind][0]
     entry = manifest["files"][filename]
     return str(manifest["ruleset_version"]), entry.get("schema_version")
+
+
+#: ``updated_by`` the event-bus re-seed writes (``ccf.events.derived.CR26_AUTHOR``;
+#: a test pins the two equal). With ``None`` (a seeder run from a route), a
+#: write by one of these is a seeder's, and never stamps itself as an author.
+SEEDER_AUTHORS = (None, "event:cr26_documents")
+
+
+def _rationales(document: Any) -> dict[str, str]:
+    """``providerTrackingId -> acceptanceRationale`` for an AVI's entries that
+    carry both (stripped); entries without either are not attributable."""
+    entries = document.get("acceptedVulnerabilities") if isinstance(document, dict) else None
+    out: dict[str, str] = {}
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        detail = entry.get("vulnerabilityDetail")
+        tid = detail.get("providerTrackingId") if isinstance(detail, dict) else None
+        text = entry.get("acceptanceRationale")
+        if (
+            isinstance(tid, str | int)
+            and str(tid).strip()
+            and isinstance(text, str)
+            and text.strip()
+        ):
+            out[str(tid).strip()] = text.strip()
+    return out
+
+
+def rationale_authors(
+    previous: Any, prior_authors: Any, document: Any, *, updated_by: str | None
+) -> dict[str, Any]:
+    """Who wrote each rationale in ``document``, given the stored one.
+
+    An unchanged rationale keeps its prior author (or stays unknown). A new or
+    changed one is stamped with ``updated_by`` -- unless this is a seeder's
+    write, which is never an author: a seeder that changed a rationale (it
+    carries the POA&M column's text in) leaves it unknown rather than
+    attributing it to itself or to the last person.
+    """
+    before = _rationales(previous)
+    prior = prior_authors if isinstance(prior_authors, dict) else {}
+    seeder = updated_by in SEEDER_AUTHORS
+    now = datetime.now(UTC).isoformat()
+    out: dict[str, Any] = {}
+    for tid, text in _rationales(document).items():
+        if before.get(tid) == text:
+            if tid in prior:
+                out[tid] = prior[tid]
+        elif not seeder:
+            out[tid] = {"by": updated_by, "at": now}
+    return out
 
 
 async def put_document(
@@ -164,6 +217,15 @@ async def put_document(
 
     # Tenant comes from the system, never from a caller-supplied value.
     row.organization_id = system.organization_id
+    if kind == "avi":
+        # Computed from the stored document before it is replaced; the map is
+        # never taken from a caller.
+        row.rationale_authors = rationale_authors(
+            None if created else row.document,
+            None if created else row.rationale_authors,
+            document,
+            updated_by=updated_by,
+        )
     row.document = document
     row.ruleset_version = ruleset_version
     row.schema_version = schema_version

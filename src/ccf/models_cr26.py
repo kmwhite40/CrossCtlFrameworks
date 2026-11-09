@@ -103,6 +103,14 @@ class Cr26Document(Base):
     validation_errors: Mapped[list[Any]] = mapped_column(JSONB, nullable=False, default=list)
 
     updated_by: Mapped[str | None] = mapped_column(String(255))
+    #: Who wrote each acceptance rationale in an AVI, keyed on the entry's
+    #: ``providerTrackingId``: ``{"by": principal, "at": iso}``. Kept beside
+    #: the document, never in it (the document must stay schema-valid), and
+    #: written only by :func:`ccf.cr26.store.put_document`, never from a body.
+    #: A rationale written before migration 0118 has no entry: unknown.
+    rationale_authors: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -819,7 +819,7 @@ def _promote_rationales(
     rows: Sequence[POAM],
     promoted: Sequence[tuple[int, str]],
     *,
-    provenance: dict[str, Any] | None = None,
+    provenance: Mapping[int, dict[str, Any]] | None = None,
 ) -> list[POAM]:
     """Write each ``(poam_id, rationale)`` :attr:`AcceptedMerge.promoted` pair
     back to ``POAM.acceptance_rationale`` (spec §9.1).
@@ -844,9 +844,10 @@ def _promote_rationales(
     a caller-supplied `rows` future refactor might not honour that, and a
     stale value must never overwrite a value a concurrent write already set.
 
-    Each promoted row also records ``provenance`` (who saved the document the
-    rationale came from, and who ran the promotion), so the POA&M never reads
-    as if someone typed the rationale on it. Returns the rows promoted.
+    Each promoted row also records its ``provenance`` (``provenance[poam_id]``:
+    who wrote that rationale, when known, the document it came from, and who
+    ran the promotion), so the POA&M never reads as if someone typed it there.
+    Returns the rows promoted.
     """
     if not promoted:
         return []
@@ -856,20 +857,30 @@ def _promote_rationales(
         row = by_id.get(poam_id)
         if row is not None and is_blank(row.acceptance_rationale):
             row.acceptance_rationale = rationale
-            row.acceptance_rationale_provenance = (
-                dict(provenance) if provenance is not None else None
-            )
+            prov = (provenance or {}).get(poam_id)
+            row.acceptance_rationale_provenance = dict(prov) if prov is not None else None
             written.append(row)
     return written
 
 
 async def _promotion_provenance(
-    session: AsyncSession, system_id: int, authored_kind: str | None, *, promoted_by: str | None
-) -> dict[str, Any]:
-    """Where a promoted rationale came from: the stored document it was read
-    from, as it stands BEFORE this seed overwrites it (for the AVI seeding
-    itself, ``put_document`` is about to replace ``updated_by``), and who ran
-    the promotion (``event:cr26_documents`` or the person who seeded)."""
+    session: AsyncSession,
+    system_id: int,
+    authored_kind: str | None,
+    poam_ids: Sequence[int],
+    *,
+    promoted_by: str | None,
+) -> dict[int, dict[str, Any]]:
+    """Where each promoted rationale came from, per POA&M.
+
+    Read from the stored source document BEFORE this seed overwrites it (for
+    the AVI seeding itself, ``put_document`` is about to replace it).
+    ``rationale_written_by`` / ``_at`` come from the document's per-entry
+    ``rationale_authors`` (who wrote or last changed THAT rationale) and are
+    present only when known; ``document_last_saved_by`` / ``_at`` name whoever
+    last saved the whole document, which is not authorship of any one entry.
+    ``promoted_by`` is ``event:cr26_documents`` or the person who seeded.
+    """
     source = (
         (
             await session.execute(
@@ -886,38 +897,58 @@ async def _promotion_provenance(
         else None
     )
     saved_at = source.updated_at if source is not None else None
-    return {
+    authors = source.rationale_authors if source is not None else None
+    authors = authors if isinstance(authors, dict) else {}
+    base = {
         "source": "cr26_document",
         "document_kind": authored_kind,
         "document_id": source.id if source is not None else None,
-        "document_updated_by": source.updated_by if source is not None else None,
-        "document_updated_at": saved_at.isoformat() if saved_at is not None else None,
+        "document_last_saved_by": source.updated_by if source is not None else None,
+        "document_last_saved_at": saved_at.isoformat() if saved_at is not None else None,
         "promoted_by": promoted_by,
         "promoted_at": datetime.now(UTC).isoformat(),
     }
+    out: dict[int, dict[str, Any]] = {}
+    for pid in poam_ids:
+        prov = dict(base)
+        who = authors.get(str(pid))
+        if isinstance(who, dict) and who.get("by"):
+            prov["rationale_written_by"] = who["by"]
+            prov["rationale_written_at"] = who.get("at")
+        out[pid] = prov
+    return out
 
 
-async def _emit_promotions(
-    session: AsyncSession, system_id: int, rows: Sequence[POAM], provenance: dict[str, Any]
-) -> None:
-    """One event per promoted POA&M, on its timeline. ``rationale_promoted``
-    is in no consumer's trigger set: the seed that wrote it already rendered
-    the deliverables, so it queues no derived work."""
+def promotion_summary(prov: Mapping[str, Any]) -> str:
+    """The timeline line: authorship only when it is known."""
+    label = str(prov.get("document_kind") or "document").upper()
+    if prov.get("rationale_written_by"):
+        return f"Acceptance rationale written by {prov['rationale_written_by']} in the {label}"
+    saved = prov.get("document_last_saved_by") or "an unrecorded user"
+    return (
+        f"Acceptance rationale copied from the {label} (author not recorded; "
+        f"the {label} was last saved by {saved})"
+    )
+
+
+async def _emit_promotions(session: AsyncSession, system_id: int, rows: Sequence[POAM]) -> None:
+    """One event per promoted POA&M, on its timeline, carrying its provenance.
+    ``rationale_promoted`` is in no consumer's trigger set: the seed that wrote
+    it already rendered the deliverables, so it queues no derived work."""
     from ..governance import bus  # noqa: PLC0415 -- avoid an import cycle
 
     org_id = await bus.system_org(session, system_id)
-    author = provenance.get("document_updated_by") or "an unrecorded author"
-    label = str(provenance.get("document_kind") or "document").upper()
     for row in rows:
+        prov = row.acceptance_rationale_provenance or {}
         await bus.emit(
             session,
             verb="rationale_promoted",
             entity_type="poam",
             entity_id=row.id,
-            summary=f"Acceptance rationale copied from the {label} last saved by {author}",
+            summary=promotion_summary(prov),
             org_id=org_id,
-            actor=provenance.get("promoted_by"),
-            payload={"system_id": system_id, **provenance},
+            actor=prov.get("promoted_by"),
+            payload={"system_id": system_id, **prov},
         )
 
 
@@ -988,20 +1019,21 @@ async def _seed(
         authored = entries if isinstance(entries, list) else []
     built = build(rendering, current, authored)
     _carry_uri(built.document, current)
-    provenance: dict[str, Any] | None = None
+    provenance: dict[int, dict[str, Any]] | None = None
     if built.promoted:
         provenance = await _promotion_provenance(
             session,
             system_id,
             authored_kind,
+            [pid for pid, _text in built.promoted],
             promoted_by=actor if actor is not None else updated_by,
         )
     promoted_rows = _promote_rationales(rows, built.promoted, provenance=provenance)
     stored = await put_document(
         session, system_id=system_id, kind=kind, document=built.document, updated_by=updated_by
     )
-    if promoted_rows and provenance is not None:
-        await _emit_promotions(session, system_id, promoted_rows, provenance)
+    if promoted_rows:
+        await _emit_promotions(session, system_id, promoted_rows)
     omitted: list[OmittedRow] = [*rendering.omitted, *built.omitted]
     omitted.sort(key=_omitted_sort_key)
     return VerSeedResult(

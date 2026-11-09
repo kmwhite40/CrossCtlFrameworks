@@ -363,3 +363,10 @@ There are two migrations.
   unless its entity type is in `outbox.PLATFORM_BROADCAST_ENTITY_TYPES`
   (`ksi_catalog`, `catalog_source`: the owner decision that platform catalog events
   keep fanning out). The webhook consumer re-checks it at delivery.
+- **Rationale authorship is per entry** (fix round 1). The provenance above named
+  whoever last saved the whole AVI. `cr26_documents.rationale_authors` (migration
+  `0118_cr26_rationale_authors`) now records, per `providerTrackingId`, who wrote
+  or last changed that rationale, stamped by `put_document` on every AVI write
+  and never from a body; a seeder's write is never an author. Promotion records
+  `rationale_written_by` / `_at` only when known, plus `document_last_saved_by` /
+  `_at`; with no entry the timeline says the author is not recorded.
