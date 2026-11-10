@@ -30,7 +30,7 @@ from ccf import logging as ccf_logging
 from ccf.config import get_settings
 from ccf.db import get_session_factory, session_scope, set_session_tenant
 from ccf.events import outbox, worker
-from ccf.governance import bus, delivery, ops_threads, org_channel, webhook_url
+from ccf.governance import bus, delivery, ops_threads, org_channel, slack, webhook_url
 from ccf.models import Event, OpsNotifyThread, Organization, OrgNotifyChannel
 from ccf.models_outbox import OutboxJob
 from ccf.reliability import checks
@@ -486,17 +486,21 @@ async def test_http_429_and_5xx_are_retried(env: Env, fake: FakeSlack, status: i
     assert (await _jobs(nid))["ops"].status == "pending"
 
 
-async def test_retry_after_holds_the_retry_back(env: Env, fake: FakeSlack) -> None:
+@pytest.mark.parametrize(("header", "expected"), [("600", 600), ("3600", 900), ("86400", 900)])
+async def test_retry_after_holds_the_retry_back_up_to_15_minutes(
+    env: Env, fake: FakeSlack, header: str, expected: int
+) -> None:
     env.slack()
     fake.answer = lambda r, b: (
-        httpx.Response(429, headers={"Retry-After": "3600"}) if r.url.host == "slack.com" else None
+        httpx.Response(429, headers={"Retry-After": header}) if r.url.host == "slack.com" else None
     )
     nid = await _notify(None)
     before = datetime.now(UTC)
     await _drain(1)
     job = (await _jobs(nid))["ops"]
     wait = (job.next_attempt_at - before).total_seconds()
-    assert 3590 <= wait <= 3700, wait  # not the 170 s backoff
+    assert expected - 10 <= wait <= expected + 60, wait  # not the 170 s backoff
+    assert slack.MAX_RETRY_AFTER_SECONDS == 900
 
 
 async def test_a_short_retry_after_never_shortens_the_backoff(env: Env, fake: FakeSlack) -> None:

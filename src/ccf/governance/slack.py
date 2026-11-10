@@ -41,6 +41,11 @@ import httpx
 SLACK_POST_MESSAGE = "https://slack.com/api/chat.postMessage"
 TIMEOUT_SECONDS = 10.0
 
+#: A Retry-After longer than this is held to it: Slack's own are seconds to a
+#: minute, and a larger value (a proxy's, or a typo) must not park an alert for
+#: hours. The worker never retries sooner than its own backoff either way.
+MAX_RETRY_AFTER_SECONDS = 15 * 60
+
 #: Retried: Slack is busy or faulted, not refusing.
 RETRY_ERRORS = frozenset(
     {
@@ -139,7 +144,7 @@ def _retry_after(resp: httpx.Response) -> float | None:
     raw = resp.headers.get("retry-after")
     if raw is None or not raw.strip().isdigit():
         return None
-    return float(min(int(raw.strip()), 24 * 3600))
+    return float(min(int(raw.strip()), MAX_RETRY_AFTER_SECONDS))
 
 
 def _code(value: Any) -> str:
