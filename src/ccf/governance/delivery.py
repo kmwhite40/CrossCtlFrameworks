@@ -68,12 +68,17 @@ def target() -> str | None:
     return get_settings().notify_webhook_url or None
 
 
+def _slack_values(s: Settings) -> tuple[str, str]:
+    """The two Slack settings, trimmed. Whitespace-only is unset -- the one
+    rule :func:`slack_settings` and :func:`config_warnings` both use."""
+    token = s.notify_slack_bot_token.get_secret_value() if s.notify_slack_bot_token else ""
+    return token.strip(), (s.notify_slack_channel or "").strip()
+
+
 def slack_settings(settings: Settings | None = None) -> tuple[str, str] | None:
     """``(bot token, channel)`` when BOTH are set, read at send time; else ``None``."""
-    s = settings or get_settings()
-    token = s.notify_slack_bot_token.get_secret_value() if s.notify_slack_bot_token else ""
-    channel = (s.notify_slack_channel or "").strip()
-    return (token, channel) if token.strip() and channel else None
+    token, channel = _slack_values(settings or get_settings())
+    return (token, channel) if token and channel else None
 
 
 def ops_mode(settings: Settings | None = None) -> Literal["slack", "webhook"] | None:
@@ -91,8 +96,8 @@ def config_warnings(settings: Settings | None = None) -> list[str]:
     Not refused -- the webhook URL (if any) keeps working -- but said at
     startup, because the operator meant to turn threads on and has not."""
     s = settings or get_settings()
-    has_token = bool(s.notify_slack_bot_token and s.notify_slack_bot_token.get_secret_value())
-    has_channel = bool((s.notify_slack_channel or "").strip())
+    token, channel = _slack_values(s)
+    has_token, has_channel = bool(token), bool(channel)
     if has_token == has_channel:
         return []
     missing = "CCF_NOTIFY_SLACK_CHANNEL" if has_token else "CCF_NOTIFY_SLACK_BOT_TOKEN"

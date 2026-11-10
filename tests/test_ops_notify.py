@@ -1127,3 +1127,41 @@ def test_slack_text_with_a_plain_at_channel_is_not_a_mention() -> None:
     out = delivery.escape("@channel @here <!channel>", "slack")
     assert out == "@channel @here &lt;!channel&gt;"
     assert "<!" not in out and SAFE_AT not in out
+
+
+# ── fix round 1, item 6: whitespace is unset, everywhere ─────────────────────
+
+
+@pytest.mark.parametrize(
+    ("token", "channel", "missing"),
+    [
+        ("   ", CHANNEL, "CCF_NOTIFY_SLACK_BOT_TOKEN"),
+        (TOKEN, " \t", "CCF_NOTIFY_SLACK_CHANNEL"),
+    ],
+)
+async def test_a_whitespace_setting_is_unset_for_mode_and_warning_alike(
+    env: Env, fake: FakeSlack, token: str, channel: str, missing: str
+) -> None:
+    env.set(token=token, channel=channel)
+    assert delivery.slack_settings() is None
+    assert delivery.ops_mode() == "webhook"
+    (warning,) = delivery.config_warnings()
+    assert missing in warning
+    await _notify(None)
+    await _drain()
+    assert len(fake.webhook_texts()) == 1 and fake.slack_posts() == []
+
+
+def test_both_whitespace_is_simply_unconfigured(env: Env) -> None:
+    env.set(token="  ", channel="  ")
+    assert delivery.config_warnings() == [] and delivery.slack_settings() is None
+
+
+async def test_surrounding_whitespace_is_trimmed_from_the_values_used(
+    env: Env, fake: FakeSlack
+) -> None:
+    env.set(token=f"  {TOKEN}\n", channel=f" {CHANNEL} ")
+    assert delivery.slack_settings() == (TOKEN, CHANNEL)
+    await _notify(None)
+    await _drain()
+    assert fake.requests[-1].headers["authorization"] == f"Bearer {TOKEN}"
