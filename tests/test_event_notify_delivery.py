@@ -33,7 +33,7 @@ from ccf.models_outbox import OutboxJob
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
-URL = "https://hooks.slack.example/services/T/B/x"
+URL = "https://hooks.slack.com/services/T/B/x"  # Slack: only & < > are escaped
 LATER = datetime.now(UTC) + timedelta(days=1)
 
 

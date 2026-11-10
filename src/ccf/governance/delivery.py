@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import asyncio
 from typing import Literal
+from urllib.parse import urlsplit
 
 import httpx
 
 from ..config import Settings, get_settings
 from ..models import Notification
-from . import webhook_url
+from . import slack, webhook_url
 
 _RANK = {"info": 0, "warning": 1, "critical": 2}
 
@@ -102,13 +103,69 @@ def config_warnings(settings: Settings | None = None) -> list[str]:
     return [f"Slack ops threads need {missing} as well; until it is set, {fallback}"]
 
 
-def tag(org_name: str | None) -> str:
-    """``[Org name]`` (``[Platform]`` for an org-less alert) for a webhook post.
+# ── escaping for the destination ─────────────────────────────────────────────
+#
+# Alert titles and bodies, and organization names, come from data (a scan, a
+# connector, a tenant). Posted raw, ``<!channel>`` pages a whole Slack channel,
+# ``<https://evil|click>`` is a disguised link, and on Teams ``[x](https://evil)``
+# or ``![](https://evil/b.png)`` is a link or a remote image. So every outbound
+# text is escaped for where it is going, decided at send time from the URL:
+#
+# * **slack** -- the bot API, or an incoming webhook on ``hooks.slack.com``
+#   (or GovSlack's ``hooks.slack-gov.com``): exactly ``&`` ``<`` ``>``, as
+#   Slack's own docs prescribe (:func:`ccf.governance.slack.escape`). That is
+#   all Slack's mrkdwn needs: mentions, links and specials all start with
+#   ``<``; ``*bold*``-style formatting cannot link or ping.
+# * **markdown** -- any other webhook (Teams, generic): a backslash before each
+#   of :data:`MARKDOWN_SPECIALS`. That set is CommonMark's ASCII punctuation
+#   that opens or shapes markup -- emphasis, code, links and images, headings,
+#   lists, tables, block quotes, HTML -- and the backslash itself. A
+#   backslash-escaped ASCII punctuation character renders as itself, so
+#   ``\[CRITICAL\]`` still reads ``[CRITICAL]``.
 
-    ``<`` and ``>`` are neutralised: on Slack ``<!channel>`` in a name would
-    page the whole ops channel."""
-    name = (org_name or "Platform").replace("<", "\u2039").replace(">", "\u203a")
-    return f"[{name}]"
+Flavour = Literal["slack", "markdown"]
+
+#: Incoming-webhook hosts that render Slack mrkdwn rather than Markdown.
+SLACK_WEBHOOK_HOSTS = frozenset({"hooks.slack.com", "hooks.slack-gov.com"})
+
+#: Backslash-escaped for a markdown destination. escape() makes one pass over
+#: its input, so the backslashes it inserts are never escaped again.
+MARKDOWN_SPECIALS = frozenset("\\`*_{}[]()#+-.!|<>~")
+
+
+def flavour_for(url: str | None) -> Flavour:
+    """``slack`` for the Slack bot API (``url=None``) or a Slack webhook host."""
+    if url is None:
+        return "slack"
+    try:
+        host = (urlsplit(url.strip()).hostname or "").rstrip(".").lower()
+    except ValueError:
+        host = ""
+    return "slack" if host in SLACK_WEBHOOK_HOSTS else "markdown"
+
+
+def escape(text: str, flavour: Flavour) -> str:
+    """``text`` made inert for ``flavour`` (see the comment above)."""
+    if flavour == "slack":
+        return slack.escape(text)
+    return "".join(f"\\{ch}" if ch in MARKDOWN_SPECIALS else ch for ch in text)
+
+
+def tag(org_name: str | None, flavour: Flavour = "slack") -> str:
+    """``[Org name]`` (``[Platform]`` for an org-less alert), the name escaped.
+
+    The brackets are Concord's and stay literal; a name alone in brackets,
+    followed by a space, is neither a Slack nor a Markdown link."""
+    return f"[{escape(org_name or 'Platform', flavour)}]"
+
+
+def outbound(text: str, flavour: Flavour, *, tagged: str | None = None) -> str:
+    """The text as posted: escaped for ``flavour``, after the ``tagged`` org's tag
+    when one is given (``tagged=""`` tags it ``[Platform]``)."""
+    body = escape(text, flavour)
+    if tagged is None:
+        return body
+    return f"{tag(tagged or None, flavour)} {body}"
 
 
 async def send(url: str, text: str) -> int:

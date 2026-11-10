@@ -197,9 +197,10 @@ async def _org_name(session: AsyncSession, org_id: int) -> str:
 
 async def send_test(url: str, org_name: str, min_severity: str) -> ProbeResult:
     """Post a test message to ``url``. The result never contains the URL."""
-    text = (
+    text = delivery.outbound(
         f"Concord: this channel will receive {org_name}'s alerts at {min_severity} "
-        "severity and above. (Test post.)"
+        "severity and above. (Test post.)",
+        delivery.flavour_for(url),
     )
     try:
         reason, status = await delivery.send_pinned(url, text)

@@ -39,7 +39,7 @@ pytestmark = pytest.mark.usefixtures("fresh_engine")
 
 TOKEN = "xoxb-TESTTOKEN-4242-sekret"
 CHANNEL = "C0OPS"
-OPS_URL = "https://hooks.slack.example/services/T/B/opssecret"
+OPS_URL = "https://hooks.slack.com/services/T/B/opssecret"
 ORG_HOST = "a-hooks.example"
 #: Spelled out, not slack.SLACK_POST_MESSAGE: the test must not trust the constant.
 SLACK_URL = "https://slack.com/api/chat.postMessage"
@@ -258,8 +258,7 @@ async def test_a_tag_cannot_page_the_channel(env: Env, fake: FakeSlack) -> None:
     await _notify(a)
     await _drain()
     (posted,) = fake.webhook_texts()
-    left, right = chr(0x2039), chr(0x203A)  # what < and > become in a tag
-    assert "<!channel>" not in posted and posted.startswith(f"[{left}!channel{right} ")
+    assert "<!channel>" not in posted and posted.startswith("[&lt;!channel&gt; ")
 
 
 # ── mode selection and the startup warning ───────────────────────────────────
@@ -880,3 +879,125 @@ async def test_a_webhook_transport_error_does_not_record_the_ops_url(
     job = (await _jobs(nid))["ops"]
     assert job.last_error == "DeliveryError: ConnectError"
     assert "opssecret" not in json.dumps(job.result)
+
+
+# ── fix round 1, item 2: alert text is escaped for its destination ───────────
+
+EVIL = "<!channel> <@U123> <https://evil|click> [x](https://evil) ![](https://evil/b.png)"
+
+
+def _inert_for_slack(text: str) -> None:
+    assert "<" not in text and ">" not in text, text  # every mention/link opens with <
+    assert "&lt;!channel&gt;" in text and "&lt;@U123&gt;" in text
+
+
+def _inert_for_markdown(text: str) -> None:
+    import re  # noqa: PLC0415
+
+    # Every Markdown special is preceded by a backslash: no link, image, mention.
+    bare = re.findall(r"(?<!\\)[\[\]()!<>]", text.replace("\\\\", ""))
+    assert bare == [], (bare, text)
+    assert "](" not in text.replace("\\]\\(", "")
+
+
+async def test_the_ops_webhook_on_slack_escapes_for_slack(env: Env, fake: FakeSlack) -> None:
+    a = await _org()
+    await _notify(a, title=EVIL)
+    await _drain()
+    (posted,) = fake.webhook_texts()
+    assert posted.startswith(f"[{await _name(a)}] [CRITICAL] ")  # tag and severity readable
+    _inert_for_slack(posted.split("] [CRITICAL] ", 1)[1])
+
+
+async def test_the_ops_webhook_elsewhere_escapes_markdown(env: Env, fake: FakeSlack) -> None:
+    env.set(webhook="https://teams.example.webhook.office.com/webhookb2/x")
+    nid = await _notify(None, title=EVIL)
+    await _drain()
+    (posted,) = fake.webhook_texts()
+    assert posted.startswith("[Platform] \\[CRITICAL\\] ")  # renders as [CRITICAL]
+    _inert_for_markdown(posted.split("] ", 1)[1])
+    assert (await _jobs(nid))["ops"].status == "done"
+
+
+async def test_the_ops_slack_reply_and_top_level_post_are_escaped(
+    env: Env, fake: FakeSlack
+) -> None:
+    env.slack()
+    a = await _org(f"Acme <!here> {uuid.uuid4().hex[:6]}")
+    await _notify(a, title=EVIL)
+    await _notify(None, title=EVIL)
+    await _drain(3)
+    reply = next(m for m in fake.slack_posts() if m.get("thread_ts"))
+    top = next(m for m in fake.parents() if m["text"].startswith("[Platform]"))
+    parent = next(m for m in fake.parents() if m["text"].startswith("Alerts for"))
+    assert reply["text"].startswith("[CRITICAL] ")
+    _inert_for_slack(reply["text"])
+    assert top["text"].startswith("[Platform] [CRITICAL] ")
+    _inert_for_slack(top["text"])
+    assert "<!here>" not in parent["text"] and "&lt;!here&gt;" in parent["text"]
+
+
+@pytest.mark.parametrize("host", [ORG_HOST, "hooks.slack.com"])
+async def test_the_org_channel_post_is_escaped_for_its_host(
+    env: Env, fake: FakeSlack, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    monkeypatch.setattr(webhook_url, "_resolve", lambda h: ["93.184.216.34"])
+    env.set(webhook=None)
+    a = await _org()
+    url = f"https://{host}/services/T0/B0/orgsecret{uuid.uuid4().hex}"
+    async with session_scope() as s:
+        s.add(
+            OrgNotifyChannel(
+                organization_id=a,
+                encrypted_url=org_channel.cipher().encrypt(url),
+                url_hint=org_channel.url_hint(url),
+            )
+        )
+    nid = await _notify(a, title=EVIL)
+    await _drain()
+    assert (await _jobs(nid))["org"].status == "done"
+    (posted,) = fake.webhook_texts()
+    if host == "hooks.slack.com":
+        assert posted.startswith("[CRITICAL] ")
+        _inert_for_slack(posted)
+    else:
+        assert posted.startswith("\\[CRITICAL\\] ")
+        _inert_for_markdown(posted)
+
+
+@pytest.mark.parametrize("host", [ORG_HOST, "hooks.slack.com"])
+async def test_the_org_test_post_escapes_the_org_name(
+    env: Env, fake: FakeSlack, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    monkeypatch.setattr(webhook_url, "_resolve", lambda h: ["93.184.216.34"])
+    result = await org_channel.send_test(f"https://{host}/x", EVIL, "critical")
+    assert result.ok
+    (posted,) = fake.webhook_texts()
+    if host == "hooks.slack.com":
+        _inert_for_slack(posted)
+    else:
+        _inert_for_markdown(posted)
+
+
+def test_the_flavour_is_decided_by_host() -> None:
+    assert delivery.flavour_for(None) == "slack"
+    assert delivery.flavour_for("https://hooks.slack.com/services/x") == "slack"
+    assert delivery.flavour_for("https://HOOKS.SLACK.COM./services/x") == "slack"
+    assert delivery.flavour_for("https://hooks.slack-gov.com/services/x") == "slack"
+    for other in (
+        "https://x.webhook.office.com/webhookb2/y",
+        "https://hooks.slack.com.evil.example/x",
+        "https://evil.example/hooks.slack.com",
+        "not a url",
+    ):
+        assert delivery.flavour_for(other) == "markdown", other
+
+
+def test_markdown_escaping_renders_back_to_the_text() -> None:
+    raw = "a\\b `c` *d* _e_ {f} [g](h) #i +j -k .l !m |n >o <p ~q"
+    out = delivery.escape(raw, "markdown")
+    # CommonMark: a backslash before ASCII punctuation renders that character.
+    import re  # noqa: PLC0415
+
+    assert re.sub(r"\\(.)", r"\1", out) == raw
+    assert delivery.escape("&<>", "slack") == "&amp;&lt;&gt;"

@@ -122,7 +122,8 @@ async def _run_ops(
     status: int | None = None
     error: str | None = None
     try:
-        status = await delivery.send(url, f"{delivery.tag(org_name)} {text}")
+        out = delivery.outbound(text, delivery.flavour_for(url), tagged=org_name or "")
+        status = await delivery.send(url, out)
     except Exception as e:
         # The type only: an HTTP library's message can carry the request URL,
         # and an incoming webhook's URL is its credential.
@@ -142,9 +143,12 @@ async def _run_slack(
     started = time.monotonic()
     org_id = job.organization_id
     if org_id is None:
-        reply = await slack.post_message(token, channel, f"[Platform] {text}")
+        out = delivery.outbound(text, "slack", tagged="")
+        reply = await slack.post_message(token, channel, out)
         return _slack_settle(nid, prior, started, reply, {})
     name = org_name or f"Organization {org_id}"
+    # In its org's thread: the parent names the org, so no tag; escaped.
+    reply_text = delivery.outbound(text, "slack")
     extra: dict[str, Any] = {}
     try:
         ts = await ops_threads.thread_for(
@@ -152,7 +156,7 @@ async def _run_slack(
         )
     except ops_threads.ThreadOpenError as e:
         return _slack_settle(nid, prior, started, e.reply, {"step": "open_thread"})
-    reply = await slack.post_message(token, channel, text, thread_ts=ts)
+    reply = await slack.post_message(token, channel, reply_text, thread_ts=ts)
     if not reply.ok and slack.classify(reply.error, reply.http_status) == "thread_gone":
         # The parent was deleted (or can no longer take replies): drop it and
         # open a new thread, once. A second refusal is retried like any other.
@@ -164,7 +168,7 @@ async def _run_slack(
             )
         except ops_threads.ThreadOpenError as e:
             return _slack_settle(nid, prior, started, e.reply, {**extra, "step": "open_thread"})
-        reply = await slack.post_message(token, channel, text, thread_ts=ts)
+        reply = await slack.post_message(token, channel, reply_text, thread_ts=ts)
     elif reply.ok and reply.thread_ts != ts:
         # Slack accepted the reply but posted it at the top level: the parent
         # is gone and Slack said nothing. This alert is out (untagged, at the
@@ -272,7 +276,9 @@ async def _run_org(
     status: int | None = None
     error: str | None = None
     try:
-        reason, status = await delivery.send_pinned(url, text)
+        reason, status = await delivery.send_pinned(
+            url, delivery.outbound(text, delivery.flavour_for(url))
+        )
         if reason is not None:
             # The guard's reason names the host at most, never the path (the
             # secret). Retried: a name may resolve, or stop pointing inward.

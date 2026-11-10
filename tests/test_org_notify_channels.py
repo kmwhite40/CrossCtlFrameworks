@@ -38,7 +38,7 @@ from ccf.models_outbox import OutboxJob
 
 pytestmark = pytest.mark.usefixtures("fresh_engine")
 
-OPS_URL = "https://hooks.slack.example/services/T/B/ops"
+OPS_URL = "https://hooks.slack.com/services/T/B/ops"
 HOSTS = {"a-hooks.example": "93.184.216.34", "b-hooks.example": "93.184.216.35"}
 ROLES = ("admin", "control_owner", "assessor", "viewer")
 
@@ -258,7 +258,8 @@ async def test_a_tenant_alert_reaches_its_own_channel_and_never_another_orgs(net
     assert len(posted) == 1
     assert posted[0]["url"] == f"https://{HOSTS['a-hooks.example']}/" + url_a.split("/", 3)[3]
     assert posted[0]["extensions"] == {"sni_hostname": "a-hooks.example"}
-    assert posted[0]["json"] == {"text": "[CRITICAL] Drift\n3 checks failed"}
+    # A Markdown receiver (not a Slack host): escaped, still reading [CRITICAL].
+    assert posted[0]["json"] == {"text": "\\[CRITICAL\\] Drift\n3 checks failed"}
     assert {"timeout": delivery.TIMEOUT_SECONDS, "follow_redirects": False} in net.clients
     assert net.to("b-hooks.example") == []
     assert len(net.ops()) == 1
