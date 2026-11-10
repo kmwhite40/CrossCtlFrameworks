@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 from sqlalchemy import literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -78,7 +78,8 @@ class ProbeResult:
     status_code: int | None
     error: str | None
     #: ``test_sent`` | ``test_failed`` (the receiver answered non-2xx) |
-    #: ``test_refused`` (the URL guard) | ``test_unreachable`` (transport).
+    #: ``test_refused`` (the URL guard refused the address) | ``test_unresolved``
+    #: (the host does not resolve) | ``test_unreachable`` (transport).
     code: str = "test_sent"
 
 
@@ -107,19 +108,47 @@ def url_hint(url: str) -> str:
     return f"{scheme}://{host}"
 
 
-def refusal_with_code(url: str) -> tuple[str, str] | None:
-    """``(code, reason)`` if ``url`` may not be an alert channel. Never echoes it."""
-    clean = url.strip()
+def _port_ok(parts: SplitResult) -> bool:
+    try:
+        parts.port  # noqa: B018 -- raises for ``:abc`` or ``:99999``
+    except ValueError:
+        return False
+    return True
+
+
+def _shape_refusal(clean: str) -> tuple[str, str] | None:
+    """What is wrong with the URL itself, before the address guard.
+
+    Told apart from the guard's refusal: "private, loopback or metadata
+    address" is the wrong thing to tell someone who pasted ``user:pass@`` or a
+    mistyped port."""
     if not clean:
         return "url_required", "a channel URL is required"
     if len(clean) > MAX_URL_LENGTH:
         return "refused_url", f"a channel URL is at most {MAX_URL_LENGTH} characters"
     try:
-        scheme = urlsplit(clean).scheme
+        parts = urlsplit(clean)
     except ValueError:
         return "refused_url", "not a valid URL"
-    if scheme != "https":
-        return "refused_scheme", "the channel URL must use https"
+    checks = (
+        (parts.scheme != "https", "refused_scheme", "the channel URL must use https"),
+        (
+            bool(parts.username or parts.password),
+            "refused_credentials",
+            "credentials may not be embedded in the URL",
+        ),
+        (not _port_ok(parts), "refused_port", "the URL's port is not a number from 0 to 65535"),
+        (not parts.hostname, "refused_url", "the URL has no host"),
+    )
+    return next(((code, why) for bad, code, why in checks if bad), None)
+
+
+def refusal_with_code(url: str) -> tuple[str, str] | None:
+    """``(code, reason)`` if ``url`` may not be an alert channel. Never echoes it."""
+    clean = url.strip()
+    shaped = _shape_refusal(clean)
+    if shaped is not None:
+        return shaped
     try:
         reason = webhook_url.refusal(clean)
     except Exception as e:  # malformed beyond what the guard parses
@@ -178,7 +207,11 @@ async def send_test(url: str, org_name: str, min_severity: str) -> ProbeResult:
         msg = f"the test post could not be sent ({type(e).__name__})"
         return ProbeResult(False, None, msg, "test_unreachable")
     if reason is not None:
-        return ProbeResult(False, None, f"the test post was refused: {reason}", "test_refused")
+        # ``pinned_target`` says "<host> does not resolve" when DNS has no
+        # answer -- the commonest real failure (a typo, or a name not yet
+        # created), and not an address Concord refuses to send to.
+        code = "test_unresolved" if reason.endswith(" does not resolve") else "test_refused"
+        return ProbeResult(False, None, f"the test post was refused: {reason}", code)
     if status is None or not 200 <= status < 300:
         msg = f"the receiver answered the test post with HTTP {status}"
         return ProbeResult(False, status, msg, "test_failed")

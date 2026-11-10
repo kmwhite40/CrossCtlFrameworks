@@ -1237,5 +1237,64 @@ def test_every_refusal_code_has_a_fixed_message() -> None:
         "url_required", "refused_url", "refused_scheme", "refused_target", "invalid_severity",
         "test_failed", "test_refused", "test_unreachable", "no_channel", "kms_unavailable",
         "undecryptable", "saved", "removed", "test_sent", "storage_unavailable",
+        "refused_credentials", "refused_port", "test_unresolved",
     }  # fmt: skip
     assert codes <= set(CHANNEL_MESSAGES)
+
+
+
+# ── task 2 item 4: each refusal says what is actually wrong ──────────────────
+
+
+@pytest.mark.parametrize(
+    ("url", "code"),
+    [
+        ("https://user:pw@a-hooks.example/x", "refused_credentials"),
+        ("https://:pw@a-hooks.example/x", "refused_credentials"),
+        ("https://a-hooks.example:99999/x", "refused_port"),
+        ("https://a-hooks.example:abc/x", "refused_port"),
+        ("https://127.0.0.1/x", "refused_target"),
+        ("https://localhost/x", "refused_target"),
+        ("http://a-hooks.example/x", "refused_scheme"),
+        ("https:///x", "refused_url"),
+    ],
+)
+def test_each_url_refusal_has_its_own_code(url: str, code: str) -> None:
+    found = org_channel.refusal_with_code(url)
+    assert found is not None and found[0] == code, found
+
+
+async def test_a_host_that_does_not_resolve_is_unresolved_not_refused(
+    net: Net, auth_on: None
+) -> None:
+    a = await _tenant("ncunres")
+    async with _client() as c:
+        h = _h(a.tokens["admin"])
+        r = await c.post(UI, data={"webhook_url": "https://typo-hooks.example/x"}, headers=h)
+        page = (await c.get(r.headers["location"], headers=h)).text
+        assert net.calls == []
+        inward = await c.post(UI, data={"webhook_url": "https://a-hooks.example/x"}, headers=h)
+    assert "channel=test_unresolved" in r.headers["location"]
+    assert "does not resolve" in page and "private, loopback" not in page
+    assert "channel=saved" in inward.headers["location"]  # positive control
+
+
+async def test_an_inward_resolution_at_test_time_is_test_refused(
+    net: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(webhook_url, "_resolve", lambda host: ["10.1.2.3"])
+    result = await org_channel.send_test("https://a-hooks.example/x", "o", "critical")
+    assert result.code == "test_refused" and net.calls == []
+
+
+async def test_ui_refusals_for_credentials_and_port_say_so(net: Net, auth_on: None) -> None:
+    a = await _tenant("nccred")
+    async with _client() as c:
+        h = _h(a.tokens["admin"])
+        cred = await c.post(UI, data={"webhook_url": "https://u:p@a-hooks.example/x"}, headers=h)
+        port = await c.post(UI, data={"webhook_url": "https://a-hooks.example:0x1/x"}, headers=h)
+        cred_page = (await c.get(cred.headers["location"], headers=h)).text
+        port_page = (await c.get(port.headers["location"], headers=h)).text
+    assert "channel=refused_credentials" in cred.headers["location"]
+    assert "channel=refused_port" in port.headers["location"]
+    assert "user name or password" in cred_page and "valid port number" in port_page

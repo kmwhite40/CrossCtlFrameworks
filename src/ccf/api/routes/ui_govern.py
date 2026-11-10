@@ -1648,6 +1648,11 @@ CHANNEL_MESSAGES: dict[str, tuple[bool, str]] = {
         "address). Nothing was saved.",
     ),
     "refused_url": (True, "That is not a usable channel URL. Nothing was saved."),
+    "refused_credentials": (
+        True,
+        "The URL may not contain a user name or password. Nothing was saved.",
+    ),
+    "refused_port": (True, "The URL's port is not a valid port number. Nothing was saved."),
     "url_required": (True, "Enter the channel's incoming-webhook URL."),
     "invalid_severity": (True, "Choose a minimum severity from the list."),
     "test_failed": (True, "The receiver refused the test post. Nothing was saved."),
@@ -1656,6 +1661,10 @@ CHANNEL_MESSAGES: dict[str, tuple[bool, str]] = {
         "Concord does not send to the address that URL resolves to. Nothing was saved.",
     ),
     "test_unreachable": (True, "The test post could not be delivered. Nothing was saved."),
+    "test_unresolved": (
+        True,
+        "The URL's host name does not resolve. Check it for typos. Nothing was saved.",
+    ),
     "no_channel": (True, "This organization has no alert channel."),
     "kms_unavailable": (True, "The key service could not be reached. Try again later."),
     "undecryptable": (True, "The stored channel URL cannot be read. Set the channel again."),
