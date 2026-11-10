@@ -30,13 +30,14 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai.cipher import KmsUnavailableError
 from ..db import set_session_tenant
-from ..governance import delivery, org_channel
+from ..governance import delivery, ops_threads, org_channel, slack
 from ..logging import get_logger
-from ..models import Notification
+from ..models import Notification, Organization
 from ..models_outbox import OutboxJob
 from .consumers import Consumer, register
 from .outbox import NOTIFY_CONSUMER, WEBHOOK_MAX_ATTEMPTS
@@ -63,8 +64,17 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
     # an org-less notification is invisible to a tenant session. The
     # organizations are cross-checked instead.
     await set_session_tenant(session, None)
+    org_name: str | None = None
     try:
         n = await session.get(Notification, nid)
+        if n is not None and n.organization_id is not None:
+            # The ops post's tag, read now by primary key (a rename since the
+            # alert was raised shows the current name).
+            org_name = (
+                await session.execute(
+                    select(Organization.name).where(Organization.id == n.organization_id)
+                )
+            ).scalar_one_or_none() or f"Organization {n.organization_id}"
     finally:
         if job.organization_id is not None:
             await set_session_tenant(session, job.organization_id)
@@ -83,28 +93,123 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
             if destination == "org"
             else {"refused": f"unknown destination: {str(destination)[:32]}"}
         )
-    url = delivery.target()
-    if url is None:
-        # Queued because the api had a URL; this process has none. Never a
-        # quiet "done": the alert would vanish with the health check green.
+    return await _run_ops(nid, job, prior, text, org_name)
+
+
+async def _run_ops(
+    nid: int, job: OutboxJob, prior: dict[str, Any], text: str, org_name: str | None
+) -> dict[str, Any]:
+    """The operator's post: Slack threads, else the webhook URL, tagged."""
+    mode = delivery.ops_mode()
+    if mode is None:
+        # Queued because the api had ops settings; this process has none. Never
+        # a quiet "done": the alert would vanish with the health check green.
         # Dead-lettered at once (a retry cannot conjure the setting), so the
         # reliability check FAILs and names it.
         msg = (
-            "CCF_NOTIFY_WEBHOOK_URL is not set in this process (it was where the "
+            "neither CCF_NOTIFY_WEBHOOK_URL nor both CCF_NOTIFY_SLACK_BOT_TOKEN and "
+            "CCF_NOTIFY_SLACK_CHANNEL is set in this process (they were where the "
             "alert was queued): set the notify settings identically on every service"
         )
         log.warning("notify_delivery.unconfigured", notification_id=nid)
         raise DeliveryError(msg, prior, final=True)
+    if mode == "slack":
+        return await _run_slack(nid, job, prior, text, org_name)
 
+    url = delivery.target()
+    assert url is not None  # ops_mode() said "webhook"
     started = time.monotonic()
     status: int | None = None
     error: str | None = None
     try:
-        status = await delivery.send(url, text)
+        status = await delivery.send(url, f"{delivery.tag(org_name)} {text}")
     except Exception as e:
-        error = f"{type(e).__name__}: {str(e)[:200]}"
+        # The type only: an HTTP library's message can carry the request URL,
+        # and an incoming webhook's URL is its credential.
+        error = type(e).__name__
     return _settle(
         nid, prior, destination="ops", started=started, status=status, error=error
+    )
+
+
+async def _run_slack(
+    nid: int, job: OutboxJob, prior: dict[str, Any], text: str, org_name: str | None
+) -> dict[str, Any]:
+    """The ops post as a Slack thread reply (an org-less alert at the top level)."""
+    settings = delivery.slack_settings()
+    assert settings is not None  # ops_mode() said "slack"
+    token, channel = settings
+    started = time.monotonic()
+    org_id = job.organization_id
+    if org_id is None:
+        reply = await slack.post_message(token, channel, f"[Platform] {text}")
+        return _slack_settle(nid, prior, started, reply, {})
+    name = org_name or f"Organization {org_id}"
+    extra: dict[str, Any] = {}
+    try:
+        ts = await ops_threads.thread_for(
+            org_id=org_id, org_name=name, channel=channel, token=token
+        )
+    except ops_threads.ThreadOpenError as e:
+        return _slack_settle(nid, prior, started, e.reply, {"step": "open_thread"})
+    reply = await slack.post_message(token, channel, text, thread_ts=ts)
+    if not reply.ok and slack.classify(reply.error, reply.http_status) == "thread_gone":
+        # The parent was deleted (or can no longer take replies): drop it and
+        # open a new thread, once. A second refusal is retried like any other.
+        await ops_threads.forget(org_id=org_id, channel=channel, thread_ts=ts)
+        extra["thread_reopened"] = True
+        try:
+            ts = await ops_threads.thread_for(
+                org_id=org_id, org_name=name, channel=channel, token=token
+            )
+        except ops_threads.ThreadOpenError as e:
+            return _slack_settle(nid, prior, started, e.reply, {**extra, "step": "open_thread"})
+        reply = await slack.post_message(token, channel, text, thread_ts=ts)
+    elif reply.ok and reply.thread_ts != ts:
+        # Slack accepted the reply but posted it at the top level: the parent
+        # is gone and Slack said nothing. This alert is out (untagged, at the
+        # top); forget the thread so the next one opens a new parent.
+        await ops_threads.forget(org_id=org_id, channel=channel, thread_ts=ts)
+        extra["thread_reset"] = True
+    return _slack_settle(nid, prior, started, reply, extra)
+
+
+def _slack_settle(
+    nid: int,
+    prior: dict[str, Any],
+    started: float,
+    reply: slack.SlackReply,
+    extra: dict[str, Any],
+) -> dict[str, Any]:
+    """The attempts log and outcome of a Slack post. Names Slack's error code,
+    never the token."""
+    log_: list[dict[str, Any]] = list(prior.get("attempts_log") or [])
+    ms = int((time.monotonic() - started) * 1000)
+    log_.append(
+        {
+            "at": datetime.now(UTC).isoformat(),
+            "status": reply.http_status,
+            "ms": ms,
+            "error": reply.error,
+            "via": "slack",
+        }
+    )
+    log_ = log_[-_MAX_LOG:]
+    if reply.ok:
+        return {
+            "status_code": reply.http_status,
+            "slack_ts": reply.ts,
+            "attempts_log": log_,
+            **extra,
+        }
+    kind = slack.classify(reply.error, reply.http_status)
+    msg = f"Slack chat.postMessage: {reply.error}"
+    log.warning("notify_delivery.failed", notification_id=nid, destination="ops", error=msg)
+    raise DeliveryError(
+        msg,
+        {**prior, "attempts_log": log_, **extra},
+        final=kind == "final",
+        retry_after=reply.retry_after,
     )
 
 

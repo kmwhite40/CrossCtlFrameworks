@@ -28,7 +28,7 @@ from .etl.sources import poll as poll_sources
 from .etl.sources import seed_sources
 from .events import worker as event_worker
 from .governance import conmon, digest, insights, scheduler
-from .logging import configure_logging
+from .logging import configure_logging, get_logger
 from .models import (
     CatalogSource,
     Control,
@@ -50,6 +50,7 @@ from .ssp.templates_seed import seed_statement_templates
 
 app = typer.Typer(help="Concord administration & query CLI", no_args_is_help=True)
 console = Console()
+log = get_logger(__name__)
 
 
 @app.callback()
@@ -876,6 +877,12 @@ def event_worker_cmd(
             "nothing to do. Set CCF_EVENT_WORKER_ENABLED=true to enable it.[/yellow]"
         )
         return
+    from .governance import delivery  # noqa: PLC0415
+
+    for warning in delivery.config_warnings(settings):
+        # The event-worker is what posts, so it says so too, not just the api.
+        log.warning("config.notify_incomplete", detail=warning)
+        console.print(f"[yellow]{warning}[/yellow]")
     asyncio.run(_event_drain_loop(once=once, worker=worker, batch=limit, settings=settings))
 
 

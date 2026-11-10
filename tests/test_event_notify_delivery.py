@@ -12,6 +12,7 @@ Job rows are read back on an UNSCOPED session; tenant assertions read
 from __future__ import annotations
 
 import dataclasses
+import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -159,6 +160,15 @@ async def _jobs(nid: int) -> list[OutboxJob]:
         return list(rows)
 
 
+_TAG = re.compile(r"\A\[ntf2?-[0-9a-f]{8}\] ")
+
+
+def _untag(text: str) -> str:
+    """The post without its ``[Org name] `` tag, which must be there."""
+    assert _TAG.match(text), text
+    return _TAG.sub("", text, count=1)
+
+
 async def _drain(passes: int = 1, now: datetime | None = None) -> dict[str, int]:
     total: dict[str, int] = {}
     for _ in range(passes):
@@ -209,7 +219,10 @@ async def test_after_commit_a_drain_posts_what_deliver_posted(
     assert len(net.calls) == 1
     call = net.calls[0]
     assert call["url"] == URL
-    assert call["json"] == {"text": "[CRITICAL] Boundary drift\n3 checks failed"}
+    # Tagged with the organization's name, read at send time (spec section 3).
+    async with session_scope() as s:
+        name = (await s.get(Organization, org)).name  # type: ignore[union-attr]
+    assert call["json"] == {"text": f"[{name}] [CRITICAL] Boundary drift\n3 checks failed"}
     (job,) = await _jobs(nid)
     assert job.status == "done"
     assert job.result["status_code"] == 200
@@ -221,7 +234,7 @@ async def test_without_a_body_the_message_is_the_title_line(
     nid = await _notify(org, title="Just a title", body=None)
     assert nid is not None
     await _drain()
-    assert [c["json"]["text"] for c in net.calls] == ["[CRITICAL] Just a title"]
+    assert [_untag(c["json"]["text"]) for c in net.calls] == ["[CRITICAL] Just a title"]
 
 
 async def test_policy_below_threshold_or_unconfigured_queues_nothing(
@@ -238,7 +251,8 @@ async def test_policy_below_threshold_or_unconfigured_queues_nothing(
     assert await _jobs(unconfigured) == []
     assert len(await _jobs(loud)) == 1  # positive control
     await _drain()
-    assert [c["json"]["text"] for c in net.calls] == ["[WARNING] Boundary drift\n3 checks failed"]
+    posted = [_untag(c["json"]["text"]) for c in net.calls]
+    assert posted == ["[WARNING] Boundary drift\n3 checks failed"]
 
 
 async def test_a_worker_without_the_url_dead_letters_the_alert_loudly(
@@ -308,7 +322,7 @@ async def test_an_escalation_is_posted_once_and_a_refresh_is_not(
     assert len(await _jobs(nid)) == 1
 
     await _drain(passes=2)
-    assert [c["json"]["text"] for c in net.calls] == [
+    assert [_untag(c["json"]["text"]) for c in net.calls] == [
         "[CRITICAL] Drift (critical)\n3 checks failed"
     ]
 
@@ -326,7 +340,7 @@ async def test_a_raising_and_its_escalation_are_two_posts_never_merged(
     counts = await _drain(passes=2)
     assert counts["merged"] == 0
     # Each post says what that raising said, not the row's current state.
-    assert [c["json"]["text"] for c in net.calls] == [
+    assert [_untag(c["json"]["text"]) for c in net.calls] == [
         "[WARNING] First\n3 checks failed",
         "[CRITICAL] Second\n3 checks failed",
     ]

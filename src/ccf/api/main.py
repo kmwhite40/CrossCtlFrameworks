@@ -172,6 +172,10 @@ def create_app() -> FastAPI:
     # Fail closed on insecure configuration outside dev (IA-01/IA-11).
     for _warning in enforce_secure_config(settings):
         log.warning("config.insecure_default", detail=_warning)
+    from ..governance import delivery as _delivery  # noqa: PLC0415
+
+    for _warning in _delivery.config_warnings(settings):
+        log.warning("config.notify_incomplete", detail=_warning)
     app = FastAPI(
         title="Concord",
         version="0.2.0",

@@ -1180,6 +1180,58 @@ _OUTBOX_STALL = timedelta(minutes=5)
 _OUTBOX_FRESHNESS_TARGET_S = 60.0
 
 
+async def _notify_failures_by_destination(session: AsyncSession) -> str:
+    """`` -- ops: 2; org 7 (Acme): 1 (oldest error: ...)`` for dead-lettered posts.
+
+    The operator's own channel failing and a tenant's revoked channel are
+    different problems with different owners; one count hid which. A job with
+    no ``destination`` predates org channels and is an ops post. Run on the
+    caller's session: a tenant admin's sees only that tenant's jobs and name,
+    and is not shown the ops channel's error text (the ops channel is the
+    operator's, spec section 2.4).
+    """
+    tenant = (await session.execute(text("SELECT ccf.current_tenant()"))).scalar()
+    rows = (
+        await session.execute(
+            text(
+                "SELECT CASE WHEN coalesce(j.result->>'destination', 'ops') = 'org' "
+                "THEN 'org' ELSE 'ops' END AS dest, "
+                "CASE WHEN coalesce(j.result->>'destination', 'ops') = 'org' "
+                "THEN j.organization_id END AS org_id, "
+                "count(*) AS n, (array_agg(j.last_error ORDER BY j.id))[1] AS oldest_error "
+                "FROM ccf.outbox_jobs j "
+                "WHERE j.status = 'failed' AND j.consumer = :c "
+                "GROUP BY 1, 2 ORDER BY 1 DESC, 2"
+            ),
+            {"c": "notify_delivery"},
+        )
+    ).all()
+    if not rows:
+        return ""
+    org_ids = [r.org_id for r in rows if r.org_id is not None]
+    names: dict[int, str] = {}
+    if org_ids:
+        names = {
+            i: nm
+            for i, nm in (
+                await session.execute(
+                    text("SELECT id, name FROM ccf.organizations WHERE id = ANY(:ids)"),
+                    {"ids": org_ids},
+                )
+            ).all()
+        }
+    parts = []
+    for r in rows:
+        err = (r.oldest_error or "none recorded")[:120]
+        if r.dest == "ops":
+            detail = "" if tenant is not None else f" (oldest error: {err})"
+            parts.append(f"ops: {r.n}{detail}")
+        else:
+            name = names.get(r.org_id, "unknown organization")
+            parts.append(f"org {r.org_id} ({name}): {r.n} (oldest error: {err})")
+    return " -- by destination: " + ", ".join(parts)
+
+
 async def _check_event_outbox(session: AsyncSession) -> Check:
     """The event bus's outbox: dead letters, a stalled queue, derived-view freshness.
 
@@ -1212,8 +1264,10 @@ async def _check_event_outbox(session: AsyncSession) -> Check:
         )
     ).all()
     if failed:
+        by_dest = await _notify_failures_by_destination(session)
         parts = [
             f"{c}: {n} failed (oldest error: {(err or 'none recorded')[:160]})"
+            + (by_dest if c == outbox.NOTIFY_CONSUMER else "")
             for c, n, err in failed
         ]
         return Check(

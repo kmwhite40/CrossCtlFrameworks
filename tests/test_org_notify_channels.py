@@ -508,9 +508,11 @@ async def test_ops_jobs_carry_their_destination_and_legacy_jobs_are_ops(net: Net
             )
         )
     await _drain(3)
+    async with session_scope() as s:
+        name = (await s.get(Organization, a)).name  # type: ignore[union-attr]
     assert sorted(c["json"]["text"] for c in net.ops()) == [
-        "[CRITICAL] Drift\n3 checks failed",
-        "[CRITICAL] legacy",
+        f"[{name}] [CRITICAL] Drift\n3 checks failed",
+        f"[{name}] [CRITICAL] legacy",
     ]
 
 

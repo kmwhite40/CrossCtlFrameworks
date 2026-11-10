@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 import pytest
+import structlog
 
 from ccf import logging as ccf_logging
 from ccf.events import webhooks
@@ -64,7 +65,13 @@ def production_logging() -> Iterator[None]:
     for n in names:
         logging.getLogger(n).disabled = False
         logging.getLogger(n).setLevel(logging.NOTSET)
+    # Only its stdlib side (the root and httpx levels) is wanted here. Its
+    # structlog.configure() would leave every logger first used during the
+    # test cached on a processor list the suite then drops, so later
+    # capture_logs() blocks elsewhere would see nothing.
+    saved_structlog = dict(structlog.get_config())
     ccf_logging.configure_logging()
+    structlog.configure(**saved_structlog)
     root.setLevel(logging.INFO)
     yield
     root.setLevel(saved[0])

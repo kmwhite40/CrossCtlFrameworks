@@ -1,7 +1,11 @@
 """Outbound notification delivery — fan critical alerts out of the app.
 
-Posts to a configured Slack/Teams incoming webhook (``CCF_NOTIFY_WEBHOOK_URL``)
-when a notification meets the minimum severity (``CCF_NOTIFY_MIN_SEVERITY``).
+The operator's ops channel receives every notification that meets the
+minimum severity (``CCF_NOTIFY_MIN_SEVERITY``), in one of two modes
+(:func:`ops_mode`): Slack threads, one per organization, when both
+``CCF_NOTIFY_SLACK_BOT_TOKEN`` and ``CCF_NOTIFY_SLACK_CHANNEL`` are set
+(:mod:`ccf.governance.slack`); otherwise the Slack/Teams incoming webhook
+``CCF_NOTIFY_WEBHOOK_URL``, each post prefixed ``[Org name]``.
 
 Nothing here is called during a request. :func:`ccf.governance.bus.notify`
 renders the message with :func:`render` and queues it in the outbox in the
@@ -13,10 +17,11 @@ an alert raised by a change that rolls back is never announced.
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import httpx
 
-from ..config import get_settings
+from ..config import Settings, get_settings
 from ..models import Notification
 from . import webhook_url
 
@@ -49,7 +54,7 @@ def render(notification: Notification) -> str | None:
     ``info``).
     """
     s = get_settings()
-    if not s.notify_webhook_url:
+    if ops_mode(s) is None:
         return None
     if not meets(notification.severity, s.notify_min_severity):
         return None
@@ -59,6 +64,51 @@ def render(notification: Notification) -> str | None:
 def target() -> str | None:
     """The configured outbound URL, read at send time."""
     return get_settings().notify_webhook_url or None
+
+
+def slack_settings(settings: Settings | None = None) -> tuple[str, str] | None:
+    """``(bot token, channel)`` when BOTH are set, read at send time; else ``None``."""
+    s = settings or get_settings()
+    token = s.notify_slack_bot_token.get_secret_value() if s.notify_slack_bot_token else ""
+    channel = (s.notify_slack_channel or "").strip()
+    return (token, channel) if token.strip() and channel else None
+
+
+def ops_mode(settings: Settings | None = None) -> Literal["slack", "webhook"] | None:
+    """Where ops posts go: Slack threads if both Slack settings are set, else
+    the webhook URL if it is set, else nowhere."""
+    s = settings or get_settings()
+    if slack_settings(s) is not None:
+        return "slack"
+    return "webhook" if s.notify_webhook_url else None
+
+
+def config_warnings(settings: Settings | None = None) -> list[str]:
+    """Half-configured Slack threads: one of the two settings without the other.
+
+    Not refused -- the webhook URL (if any) keeps working -- but said at
+    startup, because the operator meant to turn threads on and has not."""
+    s = settings or get_settings()
+    has_token = bool(s.notify_slack_bot_token and s.notify_slack_bot_token.get_secret_value())
+    has_channel = bool((s.notify_slack_channel or "").strip())
+    if has_token == has_channel:
+        return []
+    missing = "CCF_NOTIFY_SLACK_CHANNEL" if has_token else "CCF_NOTIFY_SLACK_BOT_TOKEN"
+    fallback = (
+        "ops alerts go to CCF_NOTIFY_WEBHOOK_URL instead"
+        if s.notify_webhook_url
+        else "no ops alerts are sent at all"
+    )
+    return [f"Slack ops threads need {missing} as well; until it is set, {fallback}"]
+
+
+def tag(org_name: str | None) -> str:
+    """``[Org name]`` (``[Platform]`` for an org-less alert) for a webhook post.
+
+    ``<`` and ``>`` are neutralised: on Slack ``<!channel>`` in a name would
+    page the whole ops channel."""
+    name = (org_name or "Platform").replace("<", "\u2039").replace(">", "\u203a")
+    return f"[{name}]"
 
 
 async def send(url: str, text: str) -> int:

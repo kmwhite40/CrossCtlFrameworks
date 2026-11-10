@@ -49,12 +49,22 @@ class DeliveryError(Exception):
     """A failed delivery attempt. ``result`` is what the worker should keep on
     the job (it carries the attempts log). Retried with backoff unless
     ``final``: then the job is dead-lettered at once (``failed``), because
-    retrying cannot succeed and the operator has to act."""
+    retrying cannot succeed and the operator has to act. ``retry_after``
+    (seconds; a receiver's ``Retry-After``) holds the retry back at least that
+    long, never sooner than the backoff."""
 
-    def __init__(self, message: str, result: dict[str, Any], *, final: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        result: dict[str, Any],
+        *,
+        final: bool = False,
+        retry_after: float | None = None,
+    ) -> None:
         super().__init__(message)
         self.result = result
         self.final = final
+        self.retry_after = retry_after
 
 
 def _body(ev: Event) -> bytes:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -126,6 +126,12 @@ class Settings(BaseSettings):
     # webhook to fan critical alerts out of the app.
     notify_webhook_url: str | None = Field(default=None)
     notify_min_severity: str = Field(default="critical")  # info|warning|critical
+    # The operator's ops channel as Slack threads, one per organization, through
+    # the Slack Web API (chat.postMessage). Used only when BOTH are set; then it
+    # replaces CCF_NOTIFY_WEBHOOK_URL for ops posts. The token is a secret: a
+    # SecretStr, so no repr or validation error of the settings prints it.
+    notify_slack_bot_token: SecretStr | None = Field(default=None)
+    notify_slack_channel: str | None = Field(default=None)
 
     # AI-assisted authoring (Anthropic). Narratives/remediation plans/risk text.
     anthropic_api_key: str | None = Field(default=None)

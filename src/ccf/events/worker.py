@@ -162,6 +162,11 @@ def _depth(payload: Any) -> int:
     return trusted + 1
 
 
+def _retry_after(failure: Exception) -> float | None:
+    raw = getattr(failure, "retry_after", None)
+    return float(raw) if isinstance(raw, (int, float)) and raw > 0 else None
+
+
 def _backoff(consumer: str, attempts: int) -> timedelta:
     base = WEBHOOK_BACKOFF_SECONDS if consumer in AT_LEAST_ONCE else BACKOFF_SECONDS
     return timedelta(seconds=base * 2 ** max(0, attempts - 1))
@@ -179,6 +184,7 @@ async def _settle(
     error: BaseException | str | None = None,
     result: dict[str, Any] | None = None,
     retry: bool = True,
+    not_before: float | None = None,
 ) -> str:
     """Write a claimed job's outcome (unscoped) and name it.
 
@@ -201,7 +207,10 @@ async def _settle(
             # batch of slow runs, a start-based time is already past by the
             # time a late job fails, and its first backoff collapses to zero.
             base = now if now is not None else datetime.now(UTC)
-            values.update(status="pending", next_attempt_at=base + _backoff(consumer, attempts))
+            wait = _backoff(consumer, attempts)
+            if not_before is not None and not_before > wait.total_seconds():
+                wait = timedelta(seconds=not_before)  # the receiver's Retry-After
+            values.update(status="pending", next_attempt_at=base + wait)
         else:
             outcome = "failed"
             values.update(status="failed", finished_at=func.now())
@@ -332,6 +341,7 @@ async def _run_one(job_id: int, worker: str, attempts: int, now: datetime | None
                 error=failure,
                 result={**prior, **kept} if isinstance(kept, dict) else None,
                 retry=not getattr(failure, "final", False),
+                not_before=_retry_after(failure),
                 **settle,
             )
         merged = {**prior, **(out if isinstance(out, dict) else {})}
