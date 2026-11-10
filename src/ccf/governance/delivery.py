@@ -151,26 +151,39 @@ def flavour_for(url: str | None) -> Flavour:
 
 
 #: Plain-text mass mentions on the markdown path: Mattermost, Rocket.Chat and
-#: Discord ping a whole channel for these, and no Markdown escape stops it. An
-#: ``@`` not preceded by a word character or dot (so ``user@all.example`` is an
-#: address, left alone), before one of the four words and a word boundary.
-_MASS_MENTION = re.compile(r"(?<![\w.])@(?=(?:channel|here|all|everyone)\b)", re.IGNORECASE)
+#: Discord ping a whole channel for these, and no Markdown escape stops it.
+#: EVERY ``@`` followed (case-insensitively) by one of the four words is
+#: neutralised, whatever comes before or after: receivers disagree on what
+#: counts as a word boundary (``_@here_``, ``.@channel``, ``é@all``,
+#: ``@everyone_``, ``@here123`` all ping somewhere). The cost is that an address
+#: like ``user@all.example`` shows a full-width ``@``; it still reads correctly.
+_MASS_MENTION = re.compile(r"@(?=(?:channel|here|all|everyone))", re.IGNORECASE)
 
 #: FULLWIDTH COMMERCIAL AT: reads as ``@``, is no platform's mention sigil.
 _SAFE_AT = "\uff20"
 
 
-def escape(text: str, flavour: Flavour) -> str:
-    """``text`` made inert for ``flavour`` (see the comment above).
+def _neutralise(text: str, flavour: Flavour) -> str:
+    """Whole-text substitutions, before any per-character escaping or cut.
 
-    Slack needs nothing for ``@channel``: in its message syntax a mention is
-    ``<!channel>``, and ``<`` is escaped. On the markdown path the four mass
-    mentions get a full-width ``@``; any other ``@`` (an address, ``@alice``)
-    is left as it is."""
+    Slack needs none: its mentions are ``<!channel>``, and ``<`` is escaped.
+    On the markdown path the four mass mentions get a full-width ``@``; any
+    other ``@`` (``user@example.com``, ``@alice``) is left as it is. Run on the
+    whole text, never per character: ``@`` and ``channel`` only form a mention
+    together."""
+    return text if flavour == "slack" else _MASS_MENTION.sub(_SAFE_AT, text)
+
+
+def _escape_char(ch: str, flavour: Flavour) -> str:
+    """One character, escaped: an entity for Slack, a backslash pair for markdown."""
     if flavour == "slack":
-        return slack.escape(text)
-    text = _MASS_MENTION.sub(_SAFE_AT, text)
-    return "".join(f"\\{ch}" if ch in MARKDOWN_SPECIALS else ch for ch in text)
+        return slack.escape(ch)
+    return f"\\{ch}" if ch in MARKDOWN_SPECIALS else ch
+
+
+def escape(text: str, flavour: Flavour) -> str:
+    """``text`` made inert for ``flavour`` (see the comment above)."""
+    return "".join(_escape_char(ch, flavour) for ch in _neutralise(text, flavour))
 
 
 def tag(org_name: str | None, flavour: Flavour = "slack") -> str:
@@ -188,15 +201,17 @@ MAX_TEXT_CHARS = 3000
 TRUNCATED = "\u2026 (truncated)"
 
 
-def _cut(text: str, flavour: Flavour, room: int) -> str:
-    """The longest prefix of ``text`` whose escaped form fits ``room``, escaped.
+def _cut(neutral: str, flavour: Flavour, room: int) -> str:
+    """The longest prefix of ``neutral`` whose escaped form fits ``room``, escaped.
 
-    Cut on the raw text, character by character, so an escape (``&amp;``,
-    ``\\[``) is never split."""
+    ``neutral`` has already been through :func:`_neutralise`, whose
+    replacements are single characters. The cut is made between raw
+    characters, each escaped whole, so an entity (``&amp;``), a backslash pair
+    (``\\[``) or a replacement is never split."""
     out: list[str] = []
     used = 0
-    for ch in text:
-        piece = escape(ch, flavour)
+    for ch in neutral:
+        piece = _escape_char(ch, flavour)
         if used + len(piece) > room:
             break
         out.append(piece)
@@ -209,14 +224,17 @@ def outbound(text: str, flavour: Flavour, *, tagged: str | None = None) -> str:
     when one is given (``tagged=""`` tags it ``[Platform]``), and never longer
     than :data:`MAX_TEXT_CHARS` -- a longer one ends "… (truncated)"."""
     prefix = "" if tagged is None else f"{tag(tagged or None, flavour)} "
-    body = escape(text, flavour)
+    # Whole-text substitutions first, before the length check and the cut, so
+    # a mention past what fits is as neutral as one before it.
+    neutral = _neutralise(text, flavour)
+    body = "".join(_escape_char(ch, flavour) for ch in neutral)
     if len(prefix) + len(body) <= MAX_TEXT_CHARS:
         return prefix + body
     suffix = escape(TRUNCATED, flavour)
     room = max(0, MAX_TEXT_CHARS - len(prefix) - len(suffix))
     # The tag is at most an escaped 255-character name, so prefix and suffix
     # always leave room.
-    return prefix + _cut(text, flavour, room) + suffix
+    return prefix + _cut(neutral, flavour, room) + suffix
 
 
 async def send(url: str, text: str) -> int:

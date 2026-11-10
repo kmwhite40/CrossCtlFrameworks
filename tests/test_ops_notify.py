@@ -1115,9 +1115,49 @@ async def test_mass_mentions_are_neutralised_in_a_markdown_test_post(
     _no_mass_mention(posted)
 
 
-def test_an_at_word_that_is_part_of_an_address_or_longer_word_is_kept() -> None:
-    out = delivery.escape("x@here.com @allison @channels me@all", "markdown")
-    assert SAFE_AT not in out
+@pytest.mark.parametrize(
+    "text",
+    ["_@here_", ".@channel", "\u00e9@all", "@everyone_", "@here123", "x@ALL", "user@all.example"],
+)
+def test_every_at_before_a_mass_mention_word_is_neutralised_whatever_surrounds_it(
+    text: str,
+) -> None:
+    out = delivery.escape(text, "markdown")
+    assert "@" not in out and SAFE_AT in out, out
+
+
+@pytest.mark.parametrize("text", ["user@example.com", "@alice", "@chan", "@her"])
+def test_other_ats_are_left_alone(text: str) -> None:
+    assert delivery.escape(text, "markdown").replace("\\", "") == text
+
+
+def test_a_mention_past_the_cut_is_as_neutral_as_one_before_it() -> None:
+    text = "@channel early " + ("x" * 2990) + " @channel late @here"
+    out = delivery.outbound(text, "markdown", tagged="Acme")
+    assert len(out) <= delivery.MAX_TEXT_CHARS
+    assert "@channel" not in out and "@here" not in out
+    assert out.count(SAFE_AT) >= 1
+    # And straddling the cut: "@" kept, "channel" cut off, must still not be "@".
+    for pad in range(2970, 2995):
+        cut = delivery.outbound("y" * pad + "@channel" + "z" * 500, "markdown")
+        assert "@" not in cut, pad
+
+
+def test_a_slack_cut_never_leaves_part_of_an_entity() -> None:
+    import re  # noqa: PLC0415
+
+    for pad in range(2960, 3000):
+        out = delivery.outbound("x" * pad + "&" * 50, "slack")
+        body = out[: -len(delivery.TRUNCATED)]
+        assert out.endswith(delivery.TRUNCATED) and len(out) <= 3000
+        assert re.fullmatch(r"x*(?:&amp;)*", body), body[-12:]
+
+
+def test_a_markdown_cut_never_leaves_half_a_backslash_pair() -> None:
+    for pad in range(2960, 3000):
+        out = delivery.outbound("x" * pad + "[" * 50, "markdown")
+        body = out[: -len(delivery.escape(delivery.TRUNCATED, "markdown"))]
+        assert body.lstrip("x").replace("\\[", "") == "", body[-12:]
 
 
 def test_slack_text_with_a_plain_at_channel_is_not_a_mention() -> None:
