@@ -13,13 +13,15 @@ recreates them only as backfills. No later module reads another's snapshots.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ccf.config import get_settings
 from ccf.cr26 import snapshots
@@ -29,7 +31,6 @@ from ccf.models_cr26 import (
     CertificationSnapshot,
     CertificationSnapshotDocument,
     CertificationSnapshotFiling,
-    Cr26Document,
 )
 from ccf.portal import certification
 
@@ -45,16 +46,30 @@ def _cfg() -> Config:
     return cfg
 
 
-def _doc(org: int, system: int, kind: str, document: dict, *, valid: bool) -> Cr26Document:
-    return Cr26Document(
-        organization_id=org,
-        system_id=system,
-        kind=kind,
-        document=document,
-        ruleset_version="2026.10.13.01",
-        schema_version="0.1.1",
-        is_valid=valid,
-        validation_errors=[] if valid else ["<root>: draft"],
+async def _doc(
+    s: AsyncSession, org: int, system: int, kind: str, document: dict, *, valid: bool
+) -> None:
+    """A document as the schema stood at 0110: raw SQL naming only the columns
+    that existed then. The ORM model also writes columns later migrations added
+    (``rationale_authors``, 0118), which do not exist while this test is
+    downgraded."""
+    await s.execute(
+        text(
+            "INSERT INTO ccf.cr26_documents (organization_id, system_id, kind, document,"
+            " ruleset_version, schema_version, is_valid, validation_errors)"
+            " VALUES (:org, :system, :kind, CAST(:document AS jsonb), :rules, :schema,"
+            " :valid, CAST(:errors AS jsonb))"
+        ),
+        {
+            "org": org,
+            "system": system,
+            "kind": kind,
+            "document": json.dumps(document),
+            "rules": "2026.10.13.01",
+            "schema": "0.1.1",
+            "valid": valid,
+            "errors": json.dumps([] if valid else ["<root>: draft"]),
+        },
     )
 
 
@@ -74,15 +89,14 @@ async def test_migration_0111_backfills_what_is_current_and_says_so() -> None:
             draft = System(organization_id=org.id, name=f"Draft {tag}")
             s.add_all([live, gone, draft])
             await s.flush()
-            s.add_all(
-                [
-                    _doc(org.id, live.id, "ocr", OCR, valid=True),
-                    _doc(org.id, live.id, "sdr", SDR, valid=True),
-                    _doc(org.id, live.id, "cpo", {"x": 1}, valid=False),
-                    _doc(org.id, gone.id, "ocr", OCR, valid=True),
-                    _doc(org.id, draft.id, "ocr", OCR, valid=False),
-                ]
-            )
+            for system_id, kind, document, valid in [
+                (live.id, "ocr", OCR, True),
+                (live.id, "sdr", SDR, True),
+                (live.id, "cpo", {"x": 1}, False),
+                (gone.id, "ocr", OCR, True),
+                (draft.id, "ocr", OCR, False),
+            ]:
+                await _doc(s, org.id, system_id, kind, document, valid=valid)
             ids = {"live": live.id, "gone": gone.id, "draft": draft.id}
     finally:
         command.upgrade(cfg, "head")
