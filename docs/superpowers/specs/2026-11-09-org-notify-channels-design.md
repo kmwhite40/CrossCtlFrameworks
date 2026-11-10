@@ -42,9 +42,13 @@ tagged — nothing goes quiet.
   (`info|warning|critical`, default `critical`), `enabled`, `created_by/at`, `updated_by/at`.
   The URL is a secret (anyone holding it can post to the channel): never returned by any API,
   never logged.
-- `ops_notify_threads` — the ops Slack thread per organization: `organization_id` (unique),
-  `channel`, `thread_ts`, `created_at`. Platform-owned: no tenant may read or write it (RLS deny
-  for tenant sessions, written only by the consumer on an unscoped session).
+- `ops_notify_threads` — the ops Slack thread per organization: `organization_id`, `channel`,
+  `thread_ts`, `created_at`, **unique on (`organization_id`, `channel`)** rather than on
+  `organization_id` alone (as built, migration 0120): pointing `CCF_NOTIFY_SLACK_CHANNEL` at
+  another channel starts new threads there instead of replying to parents in a channel no longer
+  used. Platform-owned: no tenant may read or write it (`ccf_app` holds no privilege on it, and
+  RLS is forced with a policy admitting only an unscoped session); written only by the consumer,
+  on its own unscoped session.
 
 ## 5. Delivery
 
@@ -59,12 +63,38 @@ tagged — nothing goes quiet.
 - **Ops job (Slack threads)**: `chat.postMessage` to the configured channel. For an org alert,
   look up the org's `ops_notify_threads` row; if none, create the thread parent ("Alerts for
   {org name}") and store its `ts`, under a per-org transaction advisory lock so two first alerts
-  open one thread. Then post the alert with `thread_ts`. If Slack reports the parent gone
-  (`thread_not_found` / `message_not_found`), drop the row and open a new thread once.
-- **Slack errors**: Slack answers HTTP 200 with `{"ok": false, "error": ...}`. `ratelimited`
-  (or HTTP 429) retries; `invalid_auth`, `not_authed`, `account_inactive`, `token_revoked`,
-  `channel_not_found`, `not_in_channel`, `is_archived`, `missing_scope` are final (a retry cannot
-  fix them; the reliability check FAILs and names the error). Others retry.
+  open one thread. The parent is written in its own committed transaction, so a reply that fails
+  and retries never opens a second parent. Then post the alert with `thread_ts`. An org-less alert
+  posts at the top level, tagged `[Platform]`.
+- **A gone or locked thread.** If Slack reports the parent unusable -- `thread_not_found`,
+  `invalid_thread_ts`, `message_not_found`, `cannot_reply_to_message`, or
+  `restricted_action_thread_locked` (a lock is per thread, so dead-lettering would lose every later
+  alert of that org) -- drop the row, open a new thread **once**, and reply there; a second refusal
+  is retried like any other. **Unverified:** Slack's chat.postMessage reference (checked
+  2026-11-09) names no error for a deleted or unknown `thread_ts`, and Slack may instead accept
+  the reply and post it at the top level. Both are handled: an error code above reopens the
+  thread; an accepted reply whose `message.thread_ts` is not the thread's means it went to the top
+  level, so the row is dropped and the next alert opens a new parent (that one alert is at the
+  top, untagged).
+- **Slack errors**: Slack answers HTTP 200 with `{"ok": false, "error": ...}`, classified against
+  the documented chat.postMessage error list:
+  - **retry** -- rate limits (`ratelimited`, `rate_limited`, `message_limit_exceeded`, HTTP 429),
+    Slack-side faults (`internal_error`, `fatal_error`, `service_unavailable`,
+    `request_timeout`), workspace migrations, 5xx, and any code not listed. `Retry-After` is
+    honoured, **capped at 15 minutes**, and never shortens the normal backoff;
+  - **final** (dead-lettered at once; `last_error` names Slack's code, never the token) -- the
+    token (`invalid_auth`, `not_authed`, `token_revoked`, `token_expired`, `account_inactive`,
+    ...), its scopes and permissions (`missing_scope`, `no_permission`, ...), the channel
+    (`channel_not_found`, `not_in_channel`, `is_archived`, read-only and other restricted actions
+    except a locked thread), workspace policy, malformed requests (`invalid_arguments`, `no_text`,
+    `msg_too_long`, ...), and HTTP 4xx other than 408/429. The full set is
+    `ccf.governance.slack.FINAL_ERRORS`.
+- **Text.** Every outbound text is escaped for its destination, decided at send time from the
+  URL's host: Slack (the bot API, `hooks.slack.com`, `hooks.slack-gov.com`) gets `&`, `<`, `>` as
+  entities; any other webhook gets Markdown metacharacters backslash-escaped and `@channel`,
+  `@here`, `@all`, `@everyone` given a full-width `@`. It is then cut to **3,000 characters**,
+  ending "… (truncated)", so `msg_too_long` (kept final as a backstop) cannot dead-letter an
+  alert.
 - Retries, backoff and dead letters as the existing `notify_delivery` consumer (webhook schedule;
   4xx other than 408/429 final). Delivery is at least once.
 - Severity and destination are decided at queue time; the URL/token is read at send time.
