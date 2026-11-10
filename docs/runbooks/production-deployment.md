@@ -150,6 +150,19 @@ docker compose up migrator
 psql -c "select version_num from ccf.alembic_version;"   # confirm the head
 ```
 
+**Upgrading to per-organization alert channels and Slack ops threads
+(migrations 0119 and 0120): deploy in this order.**
+
+1. Run the migrator, and confirm the head is `0120_ops_notify_threads` or later.
+2. Roll the `event-worker`.
+3. Roll the `api` (and every other service).
+
+An `event-worker` older than the API does not know a job's `destination`. It
+posts an organization-channel job to the ops URL instead, and in Slack-only
+mode (no `CCF_NOTIFY_WEBHOOK_URL`) it has no ops URL at all, so it
+dead-letters every ops job. A new worker against an unmigrated database fails
+on the missing tables.
+
 ## 6. What to verify after the first deploy
 
 | Check | Expected |
