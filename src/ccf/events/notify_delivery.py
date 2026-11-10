@@ -32,6 +32,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..ai.cipher import KmsUnavailableError
 from ..db import set_session_tenant
 from ..governance import delivery, org_channel
 from ..logging import get_logger
@@ -148,8 +149,16 @@ async def _run_org(
         return {"skipped": "organization channel disabled"}
     try:
         url = org_channel.cipher().decrypt(ch.encrypted_url)
+    except KmsUnavailableError:
+        # KMS could not answer (throttling, a network failure, ...): a retry may
+        # well work, so this is not the dead letter an unreadable value is.
+        log.warning("notify_delivery.kms_unavailable", notification_id=nid, org_id=org_id)
+        raise DeliveryError(
+            "the key service could not decrypt the organization channel URL now", prior
+        ) from None
     except Exception as e:
-        # A retry cannot make a ciphertext decrypt (or conjure a missing key).
+        # A retry cannot make a ciphertext decrypt (or conjure a missing key):
+        # PayloadAuthenticationError, UnknownKeyError, a malformed token.
         msg = f"the organization channel URL could not be decrypted ({type(e).__name__})"
         log.warning("notify_delivery.undecryptable", notification_id=nid, org_id=org_id)
         raise DeliveryError(msg, prior, final=True) from None

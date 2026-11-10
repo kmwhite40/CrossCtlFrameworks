@@ -34,7 +34,12 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..ai.cipher import AAD_NOTIFY_CHANNEL, CredentialCipher, build_cipher
+from ..ai.cipher import (
+    AAD_NOTIFY_CHANNEL,
+    CredentialCipher,
+    KmsUnavailableError,
+    build_cipher,
+)
 from ..config import get_settings
 from ..logging import get_logger
 from ..models import Notification, Organization, OrgNotifyChannel
@@ -287,6 +292,10 @@ async def send_stored_test(session: AsyncSession, org_id: int) -> ProbeResult:
         raise ChannelRefusedError("this organization has no alert channel")
     try:
         url = cipher().decrypt(ch.encrypted_url)
+    except KmsUnavailableError:
+        raise ChannelRefusedError(
+            "the key service could not be reached to read the channel URL; try again later"
+        ) from None
     except Exception as e:
         raise ChannelRefusedError(
             f"the stored channel URL could not be decrypted ({type(e).__name__}); set it again"

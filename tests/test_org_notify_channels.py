@@ -955,3 +955,62 @@ async def test_key_rotation_rewraps_the_channel_url(
     assert len(net.to("a-hooks.example")) == 1
     assert _by_dest(await _jobs(nid))["org"].status == "done"
     cipher_mod.reset_key_cache()
+
+
+# ── fix round 1: a key service outage is retried, not dead-lettered ──────────
+
+
+class _KmsDown:
+    def encrypt(self, plaintext: str) -> str:  # pragma: no cover - not reached
+        raise AssertionError("not used")
+
+    def decrypt(self, token: str) -> str:
+        from ccf.ai.cipher import KmsUnavailableError  # noqa: PLC0415
+
+        raise KmsUnavailableError("abc123", RuntimeError("ThrottlingException"))
+
+
+async def test_kms_unavailable_at_send_is_retried(
+    net: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = await _org()
+    await _seed_channel(a, _url("a-hooks.example"))
+    nid = await _notify(a)
+    monkeypatch.setattr(org_channel, "cipher", _KmsDown)
+    await _drain()
+    job = _by_dest(await _jobs(nid))["org"]
+    assert (job.status, job.attempts) == ("pending", 1)
+    assert "key service" in (job.last_error or "")
+    assert net.to("a-hooks.example") == []
+
+
+@pytest.mark.parametrize("kind", ["payload", "unknown_key"])
+async def test_an_unreadable_value_stays_final(
+    net: Net, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from ccf.ai.cipher import PayloadAuthenticationError, UnknownKeyError  # noqa: PLC0415
+
+    class _Bad:
+        def decrypt(self, token: str) -> str:
+            raise PayloadAuthenticationError("x") if kind == "payload" else UnknownKeyError("k")
+
+    a = await _org()
+    await _seed_channel(a, _url("a-hooks.example"))
+    nid = await _notify(a)
+    monkeypatch.setattr(org_channel, "cipher", _Bad)
+    await _drain()
+    job = _by_dest(await _jobs(nid))["org"]
+    assert (job.status, job.attempts) == ("failed", 1)
+
+
+async def test_kms_unavailable_on_a_test_post_says_try_later(
+    net: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = await _org()
+    await _seed_channel(a, _url("a-hooks.example"))
+    monkeypatch.setattr(org_channel, "cipher", _KmsDown)
+    async with session_scope() as s:
+        with pytest.raises(org_channel.ChannelRefusedError) as e:
+            await org_channel.send_stored_test(s, a)
+    assert "try again later" in str(e.value) and "set it again" not in str(e.value)
+    assert net.calls == []
