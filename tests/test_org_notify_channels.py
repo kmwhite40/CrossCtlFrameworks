@@ -933,12 +933,11 @@ async def test_an_admin_manages_the_channel_from_the_page(net: Net, auth_on: Non
         stored_off = await _stored(a.org)
         removed = await c.post(f"{UI}/delete", headers=h)
         foreign = await c.post(UI, data={"organization_id": "999999999"}, headers=h)
-    assert bad.status_code == 303 and "channel_error=" in bad.headers["location"]
-    assert "https" in bad.headers["location"]
-    assert ok.status_code == 303 and "channel_notice=" in ok.headers["location"]
+    assert bad.status_code == 303 and "channel=refused_scheme" in bad.headers["location"]
+    assert ok.status_code == 303 and "channel=saved" in ok.headers["location"]
     assert stored is not None and stored.min_severity == "warning" and stored.enabled
     assert "Alert channel saved" in page and org_channel.url_hint(url) in page
-    assert tested.status_code == 303 and "Test%20post%20delivered" in tested.headers["location"]
+    assert tested.status_code == 303 and "channel=test_sent" in tested.headers["location"]
     assert stored_off is not None and not stored_off.enabled and stored_off.min_severity == "info"
     assert off.status_code == 303
     assert removed.status_code == 303 and await _stored(a.org) is None
@@ -1181,3 +1180,62 @@ async def test_two_concurrent_first_saves_leave_one_channel_and_no_error(
             .all()
         )
     assert sorted(verbs) == ["created", "updated"]  # the second save is told it updated
+
+
+
+# ── fix round 1: the page renders fixed messages, never query-string text ────
+
+
+async def test_free_text_in_the_query_string_is_never_rendered(net: Net, auth_on: None) -> None:
+    a = await _tenant("ncspoof")
+    bait = "Paste your Slack token at evil.example to continue"
+    async with _client() as c:
+        h = _h(a.tokens["admin"])
+        pages = [
+            (await c.get("/settings/organization", params=params, headers=h)).text
+            for params in (
+                {"channel_error": bait},
+                {"channel_notice": bait},
+                {"channel": bait},
+                {"channel": "saved", "status": bait},
+                {"channel": "test_failed", "status": "4044"},
+                {"channel": "test_failed", "status": "<b>"},
+            )
+        ]
+        known = (
+            await c.get(
+                "/settings/organization",
+                params={"channel": "test_failed", "status": "404"},
+                headers=h,
+            )
+        ).text
+    for page in pages:
+        assert "evil.example" not in page and "Paste your" not in page
+        assert "4044" not in page and "&lt;b&gt;" not in page
+    assert "data-channel-error" not in pages[0] and "data-channel-notice" not in pages[1]
+    assert "Alert channel saved." in pages[3] and "HTTP" not in pages[3]
+    assert "The receiver refused the test post" in known and "HTTP 404" in known
+
+
+async def test_a_refused_ui_save_reports_the_receivers_status_as_a_number(
+    net: Net, auth_on: None
+) -> None:
+    a = await _tenant("ncstat")
+    net.respond = lambda call: 404
+    async with _client() as c:
+        h = _h(a.tokens["admin"])
+        r = await c.post(UI, data={"webhook_url": _url("a-hooks.example")}, headers=h)
+        page = (await c.get(r.headers["location"], headers=h)).text
+    assert "channel=test_failed&status=404" in r.headers["location"]
+    assert "The receiver refused the test post" in page and "HTTP 404" in page
+
+
+def test_every_refusal_code_has_a_fixed_message() -> None:
+    from ccf.api.routes.ui_govern import CHANNEL_MESSAGES  # noqa: PLC0415
+
+    codes = {
+        "url_required", "refused_url", "refused_scheme", "refused_target", "invalid_severity",
+        "test_failed", "test_refused", "test_unreachable", "no_channel", "kms_unavailable",
+        "undecryptable", "saved", "removed", "test_sent", "storage_unavailable",
+    }  # fmt: skip
+    assert codes <= set(CHANNEL_MESSAGES)

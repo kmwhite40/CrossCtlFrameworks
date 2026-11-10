@@ -7,8 +7,9 @@
 <article class="card panel" id="alert-channel" style="margin-top:16px">
   <header class="panel__head"><h2 class="panel__title">Alert channel</h2><span class="panel__hint">{{ target.name }} · Slack or Teams incoming webhook</span></header>
   <div class="panel__body">
-    {% if channel_error %}<div class="chip chip--err" style="margin-bottom:12px" data-channel-error><i data-lucide="alert-triangle"></i> {{ channel_error }}</div>{% endif %}
-    {% if channel_notice %}<div class="chip chip--ok" style="margin-bottom:12px" data-channel-notice><i data-lucide="check"></i> {{ channel_notice }}</div>{% endif %}
+    {# channel_outcome is a fixed message chosen by a code; never query-string text. #}
+    {% if channel_outcome and channel_outcome[0] %}<div class="chip chip--err" style="margin-bottom:12px" data-channel-error><i data-lucide="alert-triangle"></i> {{ channel_outcome[1] }}</div>
+    {% elif channel_outcome %}<div class="chip chip--ok" style="margin-bottom:12px" data-channel-notice><i data-lucide="check"></i> {{ channel_outcome[1] }}</div>{% endif %}
     <p class="dim" style="margin:0 0 12px">This organization's alerts at or above the chosen severity are also posted here. The URL is stored encrypted and never shown again: anyone holding it can post to the channel.</p>
     {# The route reduces ``ch`` to {"configured"} for a caller who cannot manage it. #}
     {% if ch and ch.configured and ch.url_hint is not defined %}

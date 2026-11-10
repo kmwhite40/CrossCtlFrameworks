@@ -42,7 +42,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...ai.cipher import CredentialStorageError
+from ...ai.cipher import CredentialStorageError, KmsUnavailableError
 from ...analytics import posture
 from ...auth import Principal
 from ...governance import bus, org_channel
@@ -1558,8 +1558,9 @@ async def org_settings_page(
         channels=channels,
         channel_severities=org_channel.SEVERITIES,
         can_manage_channel=can_manage_channel,
-        channel_notice=request.query_params.get("channel_notice"),
-        channel_error=request.query_params.get("channel_error"),
+        channel_outcome=channel_message(
+            request.query_params.get("channel"), request.query_params.get("status")
+        ),
     )
 
 
@@ -1630,8 +1631,50 @@ async def org_settings_rename(
 # its own ``require_role("admin")``: the /settings gate refuses only viewers.
 # A tenant admin acts on its own organization (a different ``organization_id``
 # is a 403); a platform administrator names one. Outcomes come back on the
-# page (``?channel_notice=`` / ``?channel_error=``) -- messages that never
-# contain the URL.
+# page as a short code (``?channel=saved``), plus the receiver's status for a
+# failed test (``&status=404``), mapped here to fixed text. Nothing from the
+# query string is rendered as text: a crafted link could otherwise put
+# "paste your token at ..." on Concord's own page.
+
+#: Code -> (is it an error, the message shown). Unknown codes show nothing.
+CHANNEL_MESSAGES: dict[str, tuple[bool, str]] = {
+    "saved": (False, "Alert channel saved."),
+    "removed": (False, "Alert channel removed."),
+    "test_sent": (False, "Test post delivered."),
+    "refused_scheme": (True, "The channel URL must use https. Nothing was saved."),
+    "refused_target": (
+        True,
+        "Concord does not send to that address (a private, loopback or metadata "
+        "address). Nothing was saved.",
+    ),
+    "refused_url": (True, "That is not a usable channel URL. Nothing was saved."),
+    "url_required": (True, "Enter the channel's incoming-webhook URL."),
+    "invalid_severity": (True, "Choose a minimum severity from the list."),
+    "test_failed": (True, "The receiver refused the test post. Nothing was saved."),
+    "test_refused": (
+        True,
+        "Concord does not send to the address that URL resolves to. Nothing was saved.",
+    ),
+    "test_unreachable": (True, "The test post could not be delivered. Nothing was saved."),
+    "no_channel": (True, "This organization has no alert channel."),
+    "kms_unavailable": (True, "The key service could not be reached. Try again later."),
+    "undecryptable": (True, "The stored channel URL cannot be read. Set the channel again."),
+    "storage_unavailable": (
+        True,
+        "Encrypted storage is not configured on this server, so a channel cannot be saved.",
+    ),
+}
+
+
+def channel_message(code: str | None, status: str | None) -> tuple[bool, str] | None:
+    """The fixed message for ``code``, with ``status`` only if it is 3 digits."""
+    found = CHANNEL_MESSAGES.get(code or "")
+    if found is None:
+        return None
+    is_error, text = found
+    if status is not None and len(status) == 3 and status.isascii() and status.isdigit():
+        text = f"{text} (The receiver answered HTTP {status}.)"
+    return is_error, text
 
 
 async def _channel_org(
@@ -1652,11 +1695,24 @@ async def _channel_org(
     return org_id
 
 
-def _channel_back(principal: Principal, org_id: int, key: str, message: str) -> RedirectResponse:
+def _channel_back(
+    principal: Principal, org_id: int, code: str, status: int | None = None
+) -> RedirectResponse:
     where = "/settings/organization?"
     if principal.is_global:
         where += f"channel_org={org_id}&"
-    return _see_other(f"{where}{key}={quote(message)}#alert-channel")
+    where += f"channel={quote(code)}"
+    if status is not None:
+        where += f"&status={status}"
+    return _see_other(f"{where}#alert-channel")
+
+
+def _refusal_code(exc: Exception) -> tuple[str, int | None]:
+    if isinstance(exc, org_channel.ChannelRefusedError):
+        return exc.code, exc.status
+    if isinstance(exc, KmsUnavailableError):
+        return "kms_unavailable", None
+    return "storage_unavailable", None
 
 
 @router.post("/settings/organization/notify-channel")
@@ -1681,9 +1737,9 @@ async def org_channel_save(
         )
     except (org_channel.ChannelRefusedError, CredentialStorageError) as exc:
         await session.rollback()
-        return _channel_back(principal, org_id, "channel_error", str(exc))
+        return _channel_back(principal, org_id, *_refusal_code(exc))
     await session.commit()
-    return _channel_back(principal, org_id, "channel_notice", "Alert channel saved")
+    return _channel_back(principal, org_id, "saved")
 
 
 @router.post("/settings/organization/notify-channel/test")
@@ -1696,10 +1752,10 @@ async def org_channel_test(
     try:
         result = await org_channel.send_stored_test(session, org_id)
     except org_channel.ChannelRefusedError as exc:
-        return _channel_back(principal, org_id, "channel_error", str(exc))
+        return _channel_back(principal, org_id, *_refusal_code(exc))
     if not result.ok:
-        return _channel_back(principal, org_id, "channel_error", result.error or "test failed")
-    return _channel_back(principal, org_id, "channel_notice", "Test post delivered")
+        return _channel_back(principal, org_id, result.code, result.status_code)
+    return _channel_back(principal, org_id, "test_sent")
 
 
 @router.post("/settings/organization/notify-channel/delete")
@@ -1710,6 +1766,6 @@ async def org_channel_delete(
 ) -> RedirectResponse:
     org_id = await _channel_org(session, principal, organization_id)
     if not await org_channel.remove(session, org_id, actor=principal.email or "system"):
-        return _channel_back(principal, org_id, "channel_error", "there is no alert channel")
+        return _channel_back(principal, org_id, "no_channel")
     await session.commit()
-    return _channel_back(principal, org_id, "channel_notice", "Alert channel removed")
+    return _channel_back(principal, org_id, "removed")

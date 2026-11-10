@@ -58,7 +58,16 @@ ENTITY_TYPE = "org_notify_channel"
 
 
 class ChannelRefusedError(ValueError):
-    """The request cannot be honoured; the message is safe to show (no URL)."""
+    """The request cannot be honoured; the message is safe to show (no URL).
+
+    ``code`` names the refusal for a page that must not render free text from
+    its query string (``ccf.api.routes.ui_govern`` maps codes to fixed
+    messages); ``status`` is the receiver's HTTP status for a failed test."""
+
+    def __init__(self, message: str, code: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,9 @@ class ProbeResult:
     ok: bool
     status_code: int | None
     error: str | None
+    #: ``test_sent`` | ``test_failed`` (the receiver answered non-2xx) |
+    #: ``test_refused`` (the URL guard) | ``test_unreachable`` (transport).
+    code: str = "test_sent"
 
 
 def cipher() -> CredentialCipher:
@@ -95,23 +107,30 @@ def url_hint(url: str) -> str:
     return f"{scheme}://{host}"
 
 
-def refusal(url: str) -> str | None:
-    """Why ``url`` may not be an alert channel, or ``None``. Never echoes it."""
+def refusal_with_code(url: str) -> tuple[str, str] | None:
+    """``(code, reason)`` if ``url`` may not be an alert channel. Never echoes it."""
     clean = url.strip()
     if not clean:
-        return "a channel URL is required"
+        return "url_required", "a channel URL is required"
     if len(clean) > MAX_URL_LENGTH:
-        return f"a channel URL is at most {MAX_URL_LENGTH} characters"
+        return "refused_url", f"a channel URL is at most {MAX_URL_LENGTH} characters"
     try:
         scheme = urlsplit(clean).scheme
     except ValueError:
-        return "not a valid URL"
+        return "refused_url", "not a valid URL"
     if scheme != "https":
-        return "the channel URL must use https"
+        return "refused_scheme", "the channel URL must use https"
     try:
-        return webhook_url.refusal(clean)
+        reason = webhook_url.refusal(clean)
     except Exception as e:  # malformed beyond what the guard parses
-        return f"not a valid URL ({type(e).__name__})"
+        return "refused_url", f"not a valid URL ({type(e).__name__})"
+    return ("refused_target", reason) if reason is not None else None
+
+
+def refusal(url: str) -> str | None:
+    """Why ``url`` may not be an alert channel, or ``None``. Never echoes it."""
+    found = refusal_with_code(url)
+    return found[1] if found is not None else None
 
 
 def masked_view(ch: OrgNotifyChannel | None) -> dict[str, Any]:
@@ -156,11 +175,13 @@ async def send_test(url: str, org_name: str, min_severity: str) -> ProbeResult:
     try:
         reason, status = await delivery.send_pinned(url, text)
     except Exception as e:
-        return ProbeResult(False, None, f"the test post could not be sent ({type(e).__name__})")
+        msg = f"the test post could not be sent ({type(e).__name__})"
+        return ProbeResult(False, None, msg, "test_unreachable")
     if reason is not None:
-        return ProbeResult(False, None, f"the test post was refused: {reason}")
+        return ProbeResult(False, None, f"the test post was refused: {reason}", "test_refused")
     if status is None or not 200 <= status < 300:
-        return ProbeResult(False, status, f"the receiver answered the test post with HTTP {status}")
+        msg = f"the receiver answered the test post with HTTP {status}"
+        return ProbeResult(False, status, msg, "test_failed")
     return ProbeResult(True, status, None)
 
 
@@ -217,24 +238,28 @@ async def save(
     only the severity and the on/off switch. Raises :class:`ChannelRefusedError`.
     """
     if min_severity not in SEVERITIES:
-        raise ChannelRefusedError(f"min_severity must be one of {', '.join(SEVERITIES)}")
+        raise ChannelRefusedError(
+            f"min_severity must be one of {', '.join(SEVERITIES)}", "invalid_severity"
+        )
     existing = await get(session, org_id)
     sealed: str | None = None
     hint: str | None = None
     if url is not None and url.strip():
         clean = url.strip()
-        reason = refusal(clean)
-        if reason is not None:
-            raise ChannelRefusedError(reason)
+        refused = refusal_with_code(clean)
+        if refused is not None:
+            raise ChannelRefusedError(refused[1], refused[0])
         # Fail before the test post: a post to a channel that then cannot be
         # stored would announce a channel that does not exist.
         sealed = cipher().encrypt(clean)
         hint = url_hint(clean)
         result = await send_test(clean, await _org_name(session, org_id), min_severity)
         if not result.ok:
-            raise ChannelRefusedError(f"{result.error}; the channel was not saved")
+            raise ChannelRefusedError(
+                f"{result.error}; the channel was not saved", result.code, result.status_code
+            )
     elif existing is None:
-        raise ChannelRefusedError("a channel URL is required")
+        raise ChannelRefusedError("a channel URL is required", "url_required")
 
     now = datetime.now(UTC)
     created = existing is None
@@ -330,16 +355,18 @@ async def send_stored_test(session: AsyncSession, org_id: int) -> ProbeResult:
     """A test post to ``org_id``'s stored channel. Raises :class:`ChannelRefusedError`."""
     ch = await get(session, org_id)
     if ch is None:
-        raise ChannelRefusedError("this organization has no alert channel")
+        raise ChannelRefusedError("this organization has no alert channel", "no_channel")
     try:
         url = cipher().decrypt(ch.encrypted_url)
     except KmsUnavailableError:
         raise ChannelRefusedError(
-            "the key service could not be reached to read the channel URL; try again later"
+            "the key service could not be reached to read the channel URL; try again later",
+            "kms_unavailable",
         ) from None
     except Exception as e:
         raise ChannelRefusedError(
-            f"the stored channel URL could not be decrypted ({type(e).__name__}); set it again"
+            f"the stored channel URL could not be decrypted ({type(e).__name__}); set it again",
+            "undecryptable",
         ) from None
     return await send_test(url, await _org_name(session, org_id), ch.min_severity)
 
