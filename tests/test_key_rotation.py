@@ -16,6 +16,7 @@ import base64
 import hashlib
 import json
 import os
+from typing import Any
 
 import pytest
 from alembic import command
@@ -35,7 +36,12 @@ from ccf.ai.cipher import (
     key_id,
     token_key_id,
 )
-from ccf.ai.rotation import ENCRYPTED_COLUMNS, rewrap_all
+from ccf.ai.rotation import (
+    DAMAGED_NOT_AUTHENTIC,
+    DAMAGED_NOT_CIPHERTEXT,
+    ENCRYPTED_COLUMNS,
+    rewrap_all,
+)
 from ccf.config import get_settings
 from ccf.db import session_scope
 from ccf.models import Organization, User
@@ -604,6 +610,95 @@ def test_a_version_one_mfa_secret_does_not_decrypt_in_the_credential_store(keys)
     legacy = _version_one_blob(KEY_A, "JBSWY3DPEHPK3PXP", AAD_MFA)
     with pytest.raises(CredentialStorageError):
         build_cipher(get_settings(), aad=AAD_CREDENTIAL).decrypt(legacy)
+
+
+@pytest.mark.asyncio
+async def test_a_damaged_value_is_reported_and_the_sweep_carries_on(keys: Any) -> None:
+    """One malformed value must not stop a rotation.
+
+    ``needs_rewrap`` parsed the token outside the sweep's error handling, so a
+    single value that is not base64 at all -- a hand-edited row, a test
+    fixture, a truncated write -- raised ``binascii.Error`` out of
+    ``rewrap_all``. The rotation stopped there, named no row, and every value
+    after it stayed on the old key. ``tests/test_platform.py`` stores exactly
+    such a value, which is how this surfaced (three tests here failed whenever
+    that module ran first).
+    """
+    keys(KEY_A)
+    good = build_cipher(get_settings(), aad=AAD_MFA).encrypt("GOODSECRET")
+    _o1, damaged_id = await _seed_mfa_row("not-a-real-credential")
+    _o2, good_id = await _seed_mfa_row(good)
+
+    keys(KEY_B, previous=[KEY_A])
+    async with session_scope() as s:
+        report = await rewrap_all(s)
+
+    assert not report.ok
+    assert ("user_mfa_credentials", damaged_id, DAMAGED_NOT_CIPHERTEXT) in report.damaged
+    # A key will not fix it, so it is not reported as needing one.
+    assert not any(
+        t == "user_mfa_credentials" and r == damaged_id for t, r, _k in report.unreadable
+    )
+    async with session_scope() as s:
+        damaged = await s.get(UserMfaCredential, damaged_id)
+        moved = await s.get(UserMfaCredential, good_id)
+        assert damaged is not None and moved is not None
+        assert damaged.secret_encrypted == "not-a-real-credential", "a damaged row was modified"
+        assert token_key_id(moved.secret_encrypted) == key_id(KEY_B), "the sweep stopped early"
+
+
+@pytest.mark.asyncio
+async def test_a_value_from_another_store_is_damaged_not_missing_a_key(keys: Any) -> None:
+    """The key is configured; the value fails authentication in this store.
+
+    It used to be filed as ``unreadable`` with its own key id, and the CLI
+    told the operator to add that key to CCF_AI_CREDENTIAL_PREVIOUS_KEYS --
+    a key that was already there, so the advice could never work.
+    """
+    keys(KEY_A)
+    foreign = build_cipher(get_settings(), aad=AAD_CREDENTIAL).encrypt("NOT-AN-MFA-SECRET")
+    _org, cred_id = await _seed_mfa_row(foreign)
+
+    keys(KEY_B, previous=[KEY_A])
+    async with session_scope() as s:
+        report = await rewrap_all(s)
+
+    assert ("user_mfa_credentials", cred_id, DAMAGED_NOT_AUTHENTIC) in report.damaged
+    assert not any(t == "user_mfa_credentials" and r == cred_id for t, r, _k in report.unreadable)
+
+
+def test_the_cli_never_advises_a_key_for_a_damaged_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    from contextlib import asynccontextmanager  # noqa: PLC0415
+
+    from typer.testing import CliRunner  # noqa: PLC0415
+
+    from ccf import cli  # noqa: PLC0415
+    from ccf.ai import rotation  # noqa: PLC0415
+
+    report = rotation.RewrapReport(
+        unreadable=[("connector_configs", 7, "abc123")],
+        damaged=[("user_mfa_credentials", 9, DAMAGED_NOT_CIPHERTEXT)],
+    )
+
+    async def fake_rewrap(_session: object) -> rotation.RewrapReport:
+        return report
+
+    @asynccontextmanager
+    async def fake_scope():  # type: ignore[no-untyped-def]
+        yield None
+
+    monkeypatch.setattr(rotation, "rewrap_all", fake_rewrap)
+    monkeypatch.setattr(cli, "session_scope", fake_scope)
+    result = CliRunner().invoke(cli.app, ["keys-rewrap"])
+    out = " ".join(result.stdout.split())
+
+    assert result.exit_code == 1
+    assert "connector_configs id=7 needs key abc123" in out
+    # Rich wraps long lines, so read the normalised text from the damaged row
+    # on; the unreadable row is printed before it.
+    damaged_line = out[out.index("user_mfa_credentials id=9") :]
+    assert "PREVIOUS_KEYS" not in damaged_line
+    assert DAMAGED_NOT_CIPHERTEXT in damaged_line
 
 
 @pytest.mark.asyncio

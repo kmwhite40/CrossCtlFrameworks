@@ -26,6 +26,7 @@ from .cipher import (
     AAD_MFA,
     AAD_NOTIFY_CHANNEL,
     KmsUnavailableError,
+    PayloadAuthenticationError,
     UnknownKeyError,
     build_cipher,
     token_key_id,
@@ -59,21 +60,34 @@ ENCRYPTED_COLUMNS: tuple[EncryptedColumn, ...] = (
 )
 
 
+#: Why a ``damaged`` row could not be read. Fixed phrases, never exception
+#: text: an error message can quote the bytes it choked on.
+DAMAGED_NOT_CIPHERTEXT = "the stored value is not a ciphertext this code wrote"
+DAMAGED_NOT_AUTHENTIC = (
+    "the key is present but the value did not authenticate: it belongs to "
+    "another store, or the stored bytes were modified"
+)
+
+
 @dataclass
 class RewrapReport:
     """What moved, what was already current, and what could not be read."""
 
     rewrapped: int = 0
     already_current: int = 0
-    #: ``(table, row id, the key id the row needs)``. Reported rather than
-    #: counted as a bare failure: an operator who dropped a predecessor too
-    #: early needs to know which key to put back, and a tag failure naming
-    #: nothing cannot tell them.
+    #: ``(table, row id, the key id the row needs)``: rows a missing key would
+    #: rescue. Reported rather than counted as a bare failure: an operator who
+    #: dropped a predecessor too early needs to know which key to put back.
     unreadable: list[tuple[str, int, str | None]] = field(default_factory=list)
+    #: ``(table, row id, why)``: rows no key will rescue -- not a ciphertext at
+    #: all, or one that fails authentication under a key that IS configured.
+    #: Kept apart from ``unreadable`` so the operator is never told to restore
+    #: a key that is not missing. The secret has to be entered again.
+    damaged: list[tuple[str, int, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
-        return not self.unreadable
+        return not self.unreadable and not self.damaged
 
 
 async def rewrap_all(session: AsyncSession) -> RewrapReport:
@@ -88,8 +102,15 @@ async def rewrap_all(session: AsyncSession) -> RewrapReport:
             token = getattr(row, spec.column, None)
             if not token:
                 continue
-            if not cipher.needs_rewrap(token):
-                report.already_current += 1
+            # Parsed inside the handling, not before it: one value that is not
+            # a ciphertext at all used to raise out of the sweep, naming no
+            # row and leaving every later row on the old key.
+            try:
+                if not cipher.needs_rewrap(token):
+                    report.already_current += 1
+                    continue
+            except Exception:
+                report.damaged.append((spec.label, row.id, DAMAGED_NOT_CIPHERTEXT))
                 continue
             try:
                 setattr(row, spec.column, cipher.rewrap(token))
@@ -101,7 +122,13 @@ async def rewrap_all(session: AsyncSession) -> RewrapReport:
                 # may fix. Reporting it beside genuinely orphaned rows would
                 # tell an operator to restore a key that was never missing.
                 raise
+            except PayloadAuthenticationError:
+                report.damaged.append((spec.label, row.id, DAMAGED_NOT_AUTHENTIC))
+                continue
             except Exception:
+                # The token parsed (needs_rewrap did), so its key id is safe to
+                # read; what failed is not established, so it is filed where a
+                # key might help, as before.
                 report.unreadable.append((spec.label, row.id, token_key_id(token)))
                 continue
             report.rewrapped += 1

@@ -516,6 +516,11 @@ def keys_rewrap() -> None:
                 f"{kid or 'unknown (pre-key-id)'} — add it to "
                 "CCF_AI_CREDENTIAL_PREVIOUS_KEYS and run again"
             )
+        for table, row_id, why in report.damaged:
+            # No key fixes these, so none is suggested.
+            console.print(
+                f"[red]damaged[/red] {table} id={row_id}: {why} — enter this secret again"
+            )
         if not report.ok:
             raise typer.Exit(code=1)
 
