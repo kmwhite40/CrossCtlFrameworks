@@ -136,7 +136,15 @@ SLACK_WEBHOOK_HOSTS = frozenset({"hooks.slack.com", "hooks.slack-gov.com"})
 
 #: Backslash-escaped for a markdown destination. escape() makes one pass over
 #: its input, so the backslashes it inserts are never escaped again.
-MARKDOWN_SPECIALS = frozenset("\\`*_{}[]()#+-.!|<>~")
+MARKDOWN_SPECIALS = frozenset("\\`*_{}[]()#+-.!|~")
+
+#: Angle brackets on the markdown path are REPLACED, not backslash-escaped: a
+#: receiver that parses Slack-style ``<!channel>`` / ``<url|label>`` but is not
+#: on SLACK_WEBHOOK_HOSTS (a relay in front of Slack, a Slack-compatible chat)
+#: ignores backslashes, while single angle quotation marks read the same and are
+#: markup nowhere. (Entities were the alternative; Teams' connector can print
+#: ``&lt;`` literally.)
+MARKDOWN_REPLACED = {"<": "\u2039", ">": "\u203a"}
 
 
 def flavour_for(url: str | None) -> Flavour:
@@ -178,6 +186,8 @@ def _escape_char(ch: str, flavour: Flavour) -> str:
     """One character, escaped: an entity for Slack, a backslash pair for markdown."""
     if flavour == "slack":
         return slack.escape(ch)
+    if ch in MARKDOWN_REPLACED:
+        return MARKDOWN_REPLACED[ch]
     return f"\\{ch}" if ch in MARKDOWN_SPECIALS else ch
 
 

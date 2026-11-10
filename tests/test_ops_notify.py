@@ -1010,13 +1010,22 @@ def test_the_flavour_is_decided_by_host() -> None:
 
 
 def test_markdown_escaping_renders_back_to_the_text() -> None:
-    raw = "a\\b `c` *d* _e_ {f} [g](h) #i +j -k .l !m |n >o <p ~q"
+    raw = "a\\b `c` *d* _e_ {f} [g](h) #i +j -k .l !m |n ~q"
     out = delivery.escape(raw, "markdown")
     # CommonMark: a backslash before ASCII punctuation renders that character.
     import re  # noqa: PLC0415
 
     assert re.sub(r"\\(.)", r"\1", out) == raw
     assert delivery.escape("&<>", "slack") == "&amp;&lt;&gt;"
+
+
+def test_markdown_never_sends_an_angle_bracket() -> None:
+    """A Slack-syntax receiver off the Slack host list ignores backslashes, so
+    ``\\<!channel\\>`` would still ping there. No ``<`` or ``>`` goes out at all."""
+    hostile = "<!channel> <!here|x> <@U123> <https://evil.example|Reset password> >o <p"
+    out = delivery.escape(hostile, "markdown")
+    assert "<" not in out and ">" not in out
+    assert out.startswith("\u2039\\!channel\u203a")  # still reads the same
 
 
 def test_a_locked_thread_is_a_thread_to_replace_not_a_dead_letter() -> None:
