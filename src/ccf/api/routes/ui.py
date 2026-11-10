@@ -3244,6 +3244,7 @@ async def _fedramp20x_system_visible(
 async def reliability_page(
     request: Request,
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     from ...events import retention  # noqa: PLC0415
     from ...reliability import run_checks, summarize  # noqa: PLC0415

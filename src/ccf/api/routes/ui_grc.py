@@ -1941,6 +1941,7 @@ async def portal_admin_page(
     request: Request,
     organization_id: int | None = None,
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     # The server-rendered twin of ``portal.list_grants_endpoint``: the query
     # parameter used to win over the principal, so a tenant admin could render

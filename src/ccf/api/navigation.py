@@ -199,7 +199,7 @@ NAV: tuple[Group, ...] = (
             Item("audit_findings", "Audit Findings", "/audit/findings"),
             Item("poams", "Corrective Action Plans", "/poams"),
             Item("audit_ready", "Audit Readiness", "/audit/readiness"),
-            Item("portaladmin", "Auditor Portal", "/admin/portal"),
+            Item("portaladmin", "Auditor Portal", "/admin/portal", audience=frozenset({"admin"})),
             Item("trust", "Trust Center", "/trust"),
         ),
     ),
@@ -287,7 +287,9 @@ NAV: tuple[Group, ...] = (
             ),
             Item("apitokens", "API Management", "/settings/api-tokens"),
             Item("audit", "Audit Logs", "/audit", audience=frozenset({"admin", "assessor"})),
-            Item("reliability", "System Health", "/admin/reliability"),
+            Item(
+                "reliability", "System Health", "/admin/reliability", audience=frozenset({"admin"})
+            ),
             Item("selfassurance", "Self-Assurance", "/admin/self-assurance", audience=PLATFORM),
         ),
     ),

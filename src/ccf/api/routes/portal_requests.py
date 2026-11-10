@@ -439,10 +439,13 @@ def _ui_actor(request: Request) -> str:
 
 
 def _ui_org(request: Request, organization_id: int) -> int:
-    """The admin-API gate, for the page's form posts.
+    """The caller's organization for the page's form posts, admins only.
 
-    The auth gate refuses only viewers on ``/admin/*`` form posts, so without
-    this an editor could approve an agency's access the API would refuse them.
+    Each form post also declares ``require_role("admin")``, which is the gate
+    ``/admin/rbac`` reports (tests/test_admin_route_gates.py). This check is a
+    second layer: the auth gate refuses only viewers on ``/admin/*`` form
+    posts, so a handler that lost its declared gate would otherwise let an
+    editor approve an agency's access the API refuses them.
     """
     principal = getattr(request.state, "principal", None)
     if principal is not None and not principal.is_global and principal.role != "admin":
@@ -472,6 +475,7 @@ async def ui_create_link(
     label: str = Form("", max_length=255),
     system_ids: list[int] = Form(default=[]),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> HTMLResponse:
     from .ui import templates as ui_templates  # noqa: PLC0415 — the app shell's environment
     from .ui_grc import _portal_admin_context  # noqa: PLC0415
@@ -501,6 +505,7 @@ async def ui_revoke_link(
     link_id: int,
     organization_id: int = Form(...),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
     org = _ui_org(request, organization_id)
     return await _ui_act(
@@ -517,6 +522,7 @@ async def ui_approve(
     organization_id: int = Form(...),
     ttl_days: int = Form(...),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
     org = _ui_org(request, organization_id)
     return await _ui_act(
@@ -535,6 +541,7 @@ async def ui_deny(
     organization_id: int = Form(...),
     reason: str = Form("", max_length=4000),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
     org = _ui_org(request, organization_id)
     return await _ui_act(
@@ -555,6 +562,7 @@ async def ui_notice(
     notified_on: date = Form(...),
     reference: str = Form("", max_length=255),
     session: AsyncSession = Depends(get_session),
+    _admin: Principal = Depends(require_role("admin")),
 ) -> RedirectResponse:
     org = _ui_org(request, organization_id)
     return await _ui_act(
