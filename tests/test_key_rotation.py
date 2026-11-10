@@ -37,9 +37,11 @@ from ccf.ai.cipher import (
     token_key_id,
 )
 from ccf.ai.rotation import (
+    CENSUS_DAMAGED,
     DAMAGED_NOT_AUTHENTIC,
     DAMAGED_NOT_CIPHERTEXT,
     ENCRYPTED_COLUMNS,
+    key_census,
     rewrap_all,
 )
 from ccf.config import get_settings
@@ -665,6 +667,18 @@ async def test_a_value_from_another_store_is_damaged_not_missing_a_key(keys: Any
 
     assert ("user_mfa_credentials", cred_id, DAMAGED_NOT_AUTHENTIC) in report.damaged
     assert not any(t == "user_mfa_credentials" and r == cred_id for t, r, _k in report.unreadable)
+
+
+@pytest.mark.asyncio
+async def test_the_key_census_counts_a_damaged_value_instead_of_crashing(keys: Any) -> None:
+    """``ccf keys-status`` is the check run after a rotation; it called
+    token_key_id on every row and raised on the same malformed value."""
+    keys(KEY_A)
+    await _seed_mfa_row("not-a-real-credential")
+    async with session_scope() as s:
+        census = await key_census(s)
+    assert set(census) == {spec.label for spec in ENCRYPTED_COLUMNS}
+    assert census["user_mfa_credentials"].get(CENSUS_DAMAGED, 0) >= 1
 
 
 def test_the_cli_never_advises_a_key_for_a_damaged_row(monkeypatch: pytest.MonkeyPatch) -> None:

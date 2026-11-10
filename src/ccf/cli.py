@@ -454,12 +454,8 @@ def keys_status() -> None:
     """Show the current key id and how many stored values still need rewrapping."""
 
     async def _run() -> None:
-        from .ai.cipher import (  # noqa: PLC0415
-            CredentialStorageError,
-            build_cipher,
-            token_key_id,
-        )
-        from .ai.rotation import ENCRYPTED_COLUMNS  # noqa: PLC0415
+        from .ai.cipher import CredentialStorageError, build_cipher  # noqa: PLC0415
+        from .ai.rotation import key_census  # noqa: PLC0415
 
         settings = get_settings()
         try:
@@ -472,16 +468,9 @@ def keys_status() -> None:
             raise typer.Exit(code=1) from None
         console.print(f"current key id: [bold]{current.current_key_id}[/bold]")
         async with session_scope() as session:
-            for spec in ENCRYPTED_COLUMNS:
-                rows = (await session.execute(select(spec.model))).scalars().all()
-                by_key: dict[str, int] = {}
-                for row in rows:
-                    token = getattr(row, spec.column, None)
-                    if not token:
-                        continue
-                    kid = token_key_id(token) or "v1 (no key id)"
-                    by_key[kid] = by_key.get(kid, 0) + 1
-                console.print(f"  {spec.label}: {by_key or 'no encrypted rows'}")
+            census = await key_census(session)
+        for label, by_key in census.items():
+            console.print(f"  {label}: {by_key or 'no encrypted rows'}")
 
     asyncio.run(_run())
 

@@ -96,7 +96,8 @@ every stored value with a tag failure that named nothing):
    key, and `CCF_AI_CREDENTIAL_MASTER_KEY` to the new one. Both are now live:
    new writes use the new key, existing rows still read.
 2. Run `ccf keys-rewrap`. It moves every stored value onto the current key and
-   reports anything it could not read, with the key id to restore.
+   reports anything it could not read: with the key id to restore, or as
+   damaged when no key would help.
 3. Confirm with `ccf keys-status`, then remove the old key from the
    environment.
 

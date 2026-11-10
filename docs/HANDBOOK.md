@@ -221,7 +221,8 @@ wrong, because before it existed changing the key orphaned every stored secret:
 1. Set `CCF_AI_CREDENTIAL_PREVIOUS_KEYS` to a JSON array holding the **old**
    key, and `CCF_AI_CREDENTIAL_MASTER_KEY` to the new one.
 2. `ccf keys-rewrap` — moves every stored secret onto the current key and
-   reports anything it could not read, with the key id to restore.
+   reports anything it could not read: with the key id to restore, or as
+   damaged when no key would help.
 3. `ccf keys-status`, then drop the old key from the environment.
 
 Rewrapping is never lazy. A read path that re-encrypts can roll back while an

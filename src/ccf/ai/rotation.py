@@ -135,3 +135,33 @@ async def rewrap_all(session: AsyncSession) -> RewrapReport:
 
     await session.flush()
     return report
+
+
+#: The ``key_census`` bucket for a value that does not parse at all.
+CENSUS_DAMAGED = "damaged (not a ciphertext)"
+#: The bucket for a version-1 value, which recorded no key id.
+CENSUS_V1 = "v1 (no key id)"
+
+
+async def key_census(session: AsyncSession) -> dict[str, dict[str, int]]:
+    """Per store, how many stored values sit under each key id. Reads only.
+
+    ``ccf keys-status`` prints this to confirm a rotation finished. A value
+    that does not parse is counted under :data:`CENSUS_DAMAGED` rather than
+    raised: the status check an operator runs after a rotation must not be
+    the thing that crashes on the row they need to find.
+    """
+    census: dict[str, dict[str, int]] = {}
+    for spec in ENCRYPTED_COLUMNS:
+        by_key: dict[str, int] = {}
+        for row in (await session.execute(select(spec.model))).scalars().all():
+            token = getattr(row, spec.column, None)
+            if not token:
+                continue
+            try:
+                kid = token_key_id(token) or CENSUS_V1
+            except Exception:
+                kid = CENSUS_DAMAGED
+            by_key[kid] = by_key.get(kid, 0) + 1
+        census[spec.label] = by_key
+    return census
