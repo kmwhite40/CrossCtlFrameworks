@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..events import outbox
 from ..logging import get_logger
 from ..models import Event, Notification, NotificationRead
-from . import delivery
+from . import delivery, org_channel
 
 log = get_logger(__name__)
 
@@ -153,7 +153,17 @@ async def notify(
 
 
 async def _queue_delivery(session: AsyncSession, n: Notification) -> None:
-    """Queue the Slack/Teams post of ``n`` if policy sends it; posted after commit."""
+    """Queue the Slack/Teams posts of ``n``; posted after commit.
+
+    One job per destination that sends it, decided now: the operator's
+    channel under ``CCF_NOTIFY_*``, and the notification's organization's own
+    channel if it has one, enabled, whose minimum severity ``n`` meets. Each is
+    queued independently (``enqueue_notification`` contains its own failure),
+    and an org-less notification never reaches any organization's channel.
+    """
     text = delivery.render(n)
     if text is not None:
-        await outbox.enqueue_notification(session, n, text)
+        await outbox.enqueue_notification(session, n, text, destination="ops")
+    org_text = await org_channel.org_job_text(session, n)
+    if org_text is not None:
+        await outbox.enqueue_notification(session, n, org_text, destination="org")

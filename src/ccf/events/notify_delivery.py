@@ -12,6 +12,16 @@ with the attempts log. Final, dead-lettered at once: any other 4xx (the
 receiver refuses the URL), and no URL configured in this process. A
 notification that is gone, or that belongs to another organization than its
 job, is not posted.
+
+**Two destinations** (``result["destination"]``, spec section 5). ``"ops"`` is
+the operator's ``CCF_NOTIFY_WEBHOOK_URL``, as above; a job queued before
+destinations existed carries no key and is an ops job. ``"org"`` is the
+notification's organization's own channel (:mod:`ccf.governance.org_channel`),
+read at send time on the job's tenant: removed or disabled since queueing is
+``{"skipped": ...}`` (the admin turned it off, not an outage), a URL that does
+not decrypt is final. It is posted through ``webhook_url.pinned_target``. Its
+URL is a secret: no error, log line or result names it, only an exception's
+type. The two are separate jobs, so a failure at one never touches the other.
 """
 
 from __future__ import annotations
@@ -23,7 +33,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import set_session_tenant
-from ..governance import delivery
+from ..governance import delivery, org_channel
 from ..logging import get_logger
 from ..models import Notification
 from ..models_outbox import OutboxJob
@@ -64,6 +74,14 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
     text = prior.get("text")
     if not isinstance(text, str) or not text:
         return {"skipped": "nothing to send"}
+    destination = prior.get("destination", "ops")
+    if destination != "ops":
+        # Each destination is its own job: this one never touches the other.
+        return (
+            await _run_org(session, nid, job, prior, text)
+            if destination == "org"
+            else {"refused": f"unknown destination: {str(destination)[:32]}"}
+        )
     url = delivery.target()
     if url is None:
         # Queued because the api had a URL; this process has none. Never a
@@ -77,7 +95,6 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
         log.warning("notify_delivery.unconfigured", notification_id=nid)
         raise DeliveryError(msg, prior, final=True)
 
-    log_: list[dict[str, Any]] = list(prior.get("attempts_log") or [])
     started = time.monotonic()
     status: int | None = None
     error: str | None = None
@@ -85,6 +102,22 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
         status = await delivery.send(url, text)
     except Exception as e:
         error = f"{type(e).__name__}: {str(e)[:200]}"
+    return _settle(
+        nid, prior, destination="ops", started=started, status=status, error=error
+    )
+
+
+def _settle(
+    nid: int,
+    prior: dict[str, Any],
+    *,
+    destination: str,
+    started: float,
+    status: int | None,
+    error: str | None,
+) -> dict[str, Any]:
+    """The attempts log, and the outcome: a dict, or a :class:`DeliveryError`."""
+    log_: list[dict[str, Any]] = list(prior.get("attempts_log") or [])
     if error is None and not (status is not None and 200 <= status < 300):
         error = f"HTTP {status}"
     # A 4xx other than 408/429 is the receiver refusing this request (a revoked
@@ -94,9 +127,48 @@ async def run(session: AsyncSession, scope_key: str, job: OutboxJob) -> dict[str
     log_.append({"at": datetime.now(UTC).isoformat(), "status": status, "ms": ms, "error": error})
     log_ = log_[-_MAX_LOG:]
     if error is not None:
-        log.warning("notify_delivery.failed", notification_id=nid, error=error)
+        log.warning(
+            "notify_delivery.failed", notification_id=nid, destination=destination, error=error
+        )
         raise DeliveryError(error, {**prior, "attempts_log": log_}, final=final)
     return {"status_code": status, "attempts_log": log_}
+
+
+async def _run_org(
+    session: AsyncSession, nid: int, job: OutboxJob, prior: dict[str, Any], text: str
+) -> dict[str, Any]:
+    """Post to the organization's own channel, read now on the job's tenant."""
+    org_id = job.organization_id
+    if org_id is None:
+        return {"refused": "an organization-less notification has no organization channel"}
+    ch = await org_channel.get(session, org_id)
+    if ch is None:
+        return {"skipped": "organization channel removed"}
+    if not ch.enabled:
+        return {"skipped": "organization channel disabled"}
+    try:
+        url = org_channel.cipher().decrypt(ch.encrypted_url)
+    except Exception as e:
+        # A retry cannot make a ciphertext decrypt (or conjure a missing key).
+        msg = f"the organization channel URL could not be decrypted ({type(e).__name__})"
+        log.warning("notify_delivery.undecryptable", notification_id=nid, org_id=org_id)
+        raise DeliveryError(msg, prior, final=True) from None
+
+    started = time.monotonic()
+    status: int | None = None
+    error: str | None = None
+    try:
+        reason, status = await delivery.send_pinned(url, text)
+        if reason is not None:
+            # The guard's reason names the host at most, never the path (the
+            # secret). Retried: a name may resolve, or stop pointing inward.
+            error = f"refused by the URL guard: {reason}"
+    except Exception as e:
+        # The type only: an HTTP library's message can carry the request URL.
+        error = type(e).__name__
+    return _settle(
+        nid, prior, destination="org", started=started, status=status, error=error
+    )
 
 
 register(

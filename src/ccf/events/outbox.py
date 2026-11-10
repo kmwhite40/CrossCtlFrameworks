@@ -188,7 +188,16 @@ async def enqueue(
     return jobs
 
 
-async def enqueue_notification(session: AsyncSession, n: Notification, text: str) -> None:
+#: Where a ``notify_delivery`` job posts (``result["destination"]``): the
+#: operator's channel (``CCF_NOTIFY_WEBHOOK_URL``) or the notification's
+#: organization's own channel. A job queued before destinations existed has no
+#: key and is an ops job.
+NOTIFY_DESTINATIONS = ("ops", "org")
+
+
+async def enqueue_notification(
+    session: AsyncSession, n: Notification, text: str, *, destination: str = "ops"
+) -> None:
     """Queue the outbound post of ``n`` in the caller's transaction.
 
     ``text`` is the message as rendered now (:func:`ccf.governance.delivery.render`),
@@ -197,9 +206,15 @@ async def enqueue_notification(session: AsyncSession, n: Notification, text: str
     an org-less notification's job is platform-only, as an org-less event's
     delivery to a global webhook is. It has no trigger event.
 
+    One job per destination (``destination``: ``"ops"`` or ``"org"``), each in
+    its own savepoint, so the two never share a fate: a failure to queue or to
+    deliver one costs nothing at the other.
+
     Its own savepoint: a failed insert costs this one post, never the caller's
     transaction (the digest raises an org's alerts in one step).
     """
+    if destination not in NOTIFY_DESTINATIONS:
+        raise ValueError(f"unknown notification destination: {destination!r}")
     try:
         async with session.begin_nested():
             session.add(
@@ -210,7 +225,7 @@ async def enqueue_notification(session: AsyncSession, n: Notification, text: str
                     trigger_event_id=None,
                     max_attempts=WEBHOOK_MAX_ATTEMPTS,
                     next_attempt_at=func.now(),
-                    result={"text": text},
+                    result={"destination": destination, "text": text},
                 )
             )
             await session.flush()
@@ -218,5 +233,6 @@ async def enqueue_notification(session: AsyncSession, n: Notification, text: str
         log.warning(
             "event_outbox.notify_job_failed",
             notification_id=n.id,
+            destination=destination,
             error=f"{type(e).__name__}: {str(e)[:200]}",
         )
