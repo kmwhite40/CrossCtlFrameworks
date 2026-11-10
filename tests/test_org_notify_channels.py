@@ -208,9 +208,36 @@ def test_the_url_is_sealed_under_its_own_context() -> None:
         cred.decrypt(sealed)
 
 
-def test_the_hint_shows_scheme_host_and_last_four_only() -> None:
-    url = "https://hooks.slack.com/services/T000/B000/abcdefWXYZ"
-    assert org_channel.url_hint(url) == "https://hooks.slack.com/…WXYZ"
+def test_the_hint_shows_scheme_and_host_only() -> None:
+    slack = "https://hooks.slack.com/services/T000/B000/abcdefWXYZ"
+    teams = "https://x.webhook.office.com/webhookb2/a/IncomingWebhook/b/c?sig=QWERTYsig1234"
+    assert org_channel.url_hint(slack) == "https://hooks.slack.com"
+    assert org_channel.url_hint(teams) == "https://x.webhook.office.com"
+
+
+LONG_HOST = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 53, "example"])  # 253 chars
+
+
+def test_a_long_host_is_cut_to_fit_the_column() -> None:
+    assert len(LONG_HOST) == 253
+    hint = org_channel.url_hint(f"https://{LONG_HOST}/services/x")
+    assert len(hint) == org_channel.MAX_HINT_LENGTH == 160
+    assert hint.startswith("https://aaaa") and hint.endswith("…")
+
+
+async def test_a_long_host_saves_instead_of_failing_after_the_test_post(
+    net: Net, auth_on: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    a = await _tenant("nclong")
+    monkeypatch.setattr(webhook_url, "_resolve", lambda host: ["93.184.216.34"])
+    async with _client() as c:
+        r = await c.put(
+            API,
+            json={"webhook_url": f"https://{LONG_HOST}/services/T/B/x"},
+            headers=_h(a.tokens["admin"]),
+        )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["url_hint"]) <= 160
 
 
 # ── queueing ─────────────────────────────────────────────────────────────────

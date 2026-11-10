@@ -38,7 +38,7 @@ tagged — nothing goes quiet.
 
 - `org_notify_channels` — one per organization: `organization_id` (unique, FK, RLS by org),
   `encrypted_url` (envelope-encrypted with a **purpose-specific AAD**, never the connector
-  credential's), `url_hint` (scheme + host + last 4 chars, for display), `min_severity`
+  credential's), `url_hint` (scheme + host only (no path or query: the path carries the token), for display), `min_severity`
   (`info|warning|critical`, default `critical`), `enabled`, `created_by/at`, `updated_by/at`.
   The URL is a secret (anyone holding it can post to the channel): never returned by any API,
   never logged.

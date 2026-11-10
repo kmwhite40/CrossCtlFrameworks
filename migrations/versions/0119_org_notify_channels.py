@@ -7,8 +7,8 @@ Create Date: 2026-11-09
 ``org_notify_channels`` holds at most one channel per organization, set by that
 organization's admins. ``encrypted_url`` is envelope-encrypted under its own
 associated data (``ccf.ai.cipher.AAD_NOTIFY_CHANNEL``): the URL is the
-credential, so it is never stored or shown in clear; ``url_hint`` (scheme, host
-and the last four characters) is what the settings page shows.
+credential, so it is never stored or shown in clear; ``url_hint`` (scheme and
+host only: the path carries the token) is what the settings page shows.
 
 Tenant table: the standard ``tenant_isolation`` predicate, forced. ``ccf_app``
 may delete a row (an admin removes the channel); it holds no TRUNCATE.

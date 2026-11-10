@@ -7,7 +7,7 @@ holds it can post to the channel -- so:
 * it is sealed with its own associated data (``AAD_NOTIFY_CHANNEL``), never
   the connector credential's, and opened only to send;
 * nothing here returns it, logs it, or puts it in an event, an audit entry or
-  an error. Only :func:`url_hint` (scheme, host, last four characters) is
+  an error. Only :func:`url_hint` (scheme and host, nothing from the path) is
   shown, and an error names an exception's type, never its text (an HTTP
   library's message can carry the request URL);
 * every post goes through :func:`ccf.governance.delivery.send_pinned` (the SSRF
@@ -73,11 +73,24 @@ def cipher() -> CredentialCipher:
     return build_cipher(get_settings(), aad=AAD_NOTIFY_CHANNEL)
 
 
+#: ``org_notify_channels.url_hint`` is ``String(160)``.
+MAX_HINT_LENGTH = 160
+
+
 def url_hint(url: str) -> str:
-    """What is shown instead of the URL: ``https://host/…abcd``."""
+    """What is shown instead of the URL: ``https://host``, never more.
+
+    Nothing from the path or query: a Slack webhook's path is its token and a
+    Teams webhook's query carries its ``sig``, and the hint is written for good
+    into the hash-chained audit trail and into event payloads. A host too long
+    for the column is cut with an ellipsis, so saving can never fail on it
+    after the test post has already been sent."""
     parts = urlsplit(url.strip())
-    host = parts.hostname or "?"
-    return f"{parts.scheme}://{host}/…{url.strip()[-4:]}"
+    scheme, host = parts.scheme or "?", parts.hostname or "?"
+    room = MAX_HINT_LENGTH - len(f"{scheme}://")
+    if len(host) > room:
+        host = host[: room - 1] + "…"
+    return f"{scheme}://{host}"
 
 
 def refusal(url: str) -> str | None:
