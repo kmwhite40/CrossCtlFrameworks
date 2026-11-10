@@ -46,11 +46,11 @@ async def _no_live_jobs_left_behind() -> AsyncIterator[None]:
         mark = (await s.execute(select(func.coalesce(func.max(OutboxJob.id), 0)))).scalar_one()
     yield
     async with session_scope() as s:
-        await s.execute(
-            delete(OutboxJob).where(
-                OutboxJob.id > mark, OutboxJob.status.in_(("pending", "claimed"))
-            )
-        )
+        # Every job this test created, failed ones included: a dead letter left
+        # by a throwaway consumer FAILs the event_outbox reliability check for
+        # whichever module runs next (test_reliability, when test_outbox_schema's
+        # wipe does not happen to sort in between).
+        await s.execute(delete(OutboxJob).where(OutboxJob.id > mark))
 
 
 def _future(seconds: int = 3600) -> datetime:
