@@ -550,7 +550,9 @@ async def test_a_tenant_admin_cannot_rename_an_organization(two) -> None:
         page = await _get(c, a.tokens["admin"], "/settings/organization")
     assert own.status_code == 403
     assert "platform" in own.text
-    assert 'method="post"' not in page
+    # No rename form (the page's alert-channel forms post elsewhere).
+    assert 'action="/settings/organization"' not in page
+    assert 'name="name"' not in page
     assert "Renames are done by a platform administrator" in page
     assert await _names(a.org, b.org) == {a.org: f"Alpha-org-{a.tag}", b.org: f"Bravo-org-{b.tag}"}
 

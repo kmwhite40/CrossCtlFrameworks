@@ -64,6 +64,7 @@ from .routes import (
     insights,
     mappings,
     notifications,
+    notify_channel,
     oscal,
     packages,
     packs,
@@ -283,6 +284,7 @@ def create_app() -> FastAPI:
     app.include_router(ai_settings.router)
     app.include_router(ai_settings.ui_router)
     app.include_router(connector_settings.router)
+    app.include_router(notify_channel.router)
     app.include_router(controls.router)
     app.include_router(frameworks.router)
     app.include_router(worksheets.router)

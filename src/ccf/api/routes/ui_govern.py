@@ -34,6 +34,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -41,11 +42,12 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...ai.cipher import CredentialStorageError
 from ...analytics import posture
 from ...auth import Principal
-from ...governance import bus
+from ...governance import bus, org_channel
 from ...governance import org_structure as svc
-from ...models import Event, Organization, Policy, Risk, System, User
+from ...models import Event, Organization, OrgNotifyChannel, Policy, Risk, System, User
 from ...models_program import (
     BusinessUnit,
     Committee,
@@ -60,7 +62,7 @@ from ...models_program import (
 from ...self_assurance.service import SELF_ORG
 from .. import navigation
 from ..audit import record_event
-from ..auth_deps import require_platform_admin, require_role
+from ..auth_deps import require_platform_admin, require_role, resolve_caller_org
 from ..deps import get_session
 from .ui import _principal_org, templates
 
@@ -1479,7 +1481,9 @@ def _reserved(name: str) -> bool:
 
 @router.get("/settings/organization", response_class=HTMLResponse)
 async def org_settings_page(
-    request: Request, session: AsyncSession = Depends(get_session)
+    request: Request,
+    channel_org_id: int | None = Query(default=None, alias="channel_org"),
+    session: AsyncSession = Depends(get_session),
 ) -> HTMLResponse:
     """The caller's organization; for a platform administrator (unscoped),
     every live organization with a rename form."""
@@ -1521,6 +1525,20 @@ async def org_settings_page(
             ).scalars()
         )
     principal = _principal(request)
+    # The alert channel: the caller's own organization's, or -- for a platform
+    # administrator -- the one named by ``?channel_org=``. Masked always.
+    channel_org: Organization | None = record
+    if org is None and channel_org_id is not None:
+        channel_org = next((o for o in organizations if o.id == channel_org_id), None)
+    channels: dict[int, dict[str, Any]] = {}
+    if org is None:
+        rows = (await session.execute(select(OrgNotifyChannel))).scalars()
+        channels = {c.organization_id: org_channel.masked_view(c) for c in rows}
+    channel = (
+        org_channel.masked_view(await org_channel.get(session, channel_org.id))
+        if channel_org is not None
+        else None
+    )
     return _render(
         request,
         "org_settings.html",
@@ -1529,6 +1547,13 @@ async def org_settings_page(
         counts=counts,
         organizations=organizations,
         can_rename=org is None and (principal is None or principal.is_global),
+        channel_org=channel_org,
+        channel=channel,
+        channels=channels,
+        channel_severities=org_channel.SEVERITIES,
+        can_manage_channel=_is_admin(request),
+        channel_notice=request.query_params.get("channel_notice"),
+        channel_error=request.query_params.get("channel_error"),
     )
 
 
@@ -1591,3 +1616,94 @@ async def org_settings_rename(
     )
     await session.commit()
     return _see_other("/settings/organization")
+
+
+# ── Organization alert channel ───────────────────────────────────────────────
+#
+# The same operations as /api/org/notify-channel, as forms. Each POST carries
+# its own ``require_role("admin")``: the /settings gate refuses only viewers.
+# A tenant admin acts on its own organization (a different ``organization_id``
+# is a 403); a platform administrator names one. Outcomes come back on the
+# page (``?channel_notice=`` / ``?channel_error=``) -- messages that never
+# contain the URL.
+
+
+async def _channel_org(
+    session: AsyncSession, principal: Principal, organization_id: int | None
+) -> int:
+    org_id = resolve_caller_org(principal.org_id, organization_id)
+    if org_id is None:
+        raise HTTPException(400, "name the organization whose alert channel to change")
+    found = (
+        await session.execute(
+            select(Organization.id).where(
+                Organization.id == org_id, Organization.deleted_at.is_(None)
+            )
+        )
+    ).scalar_one_or_none()
+    if found is None:
+        raise HTTPException(404, "no such organization")
+    return org_id
+
+
+def _channel_back(principal: Principal, org_id: int, key: str, message: str) -> RedirectResponse:
+    where = "/settings/organization?"
+    if principal.is_global:
+        where += f"channel_org={org_id}&"
+    return _see_other(f"{where}{key}={quote(message)}#alert-channel")
+
+
+@router.post("/settings/organization/notify-channel")
+async def org_channel_save(
+    *,
+    webhook_url: str = Form(default=""),
+    min_severity: str = Form(default="critical"),
+    enabled: str | None = Form(default=None),
+    organization_id: int | None = Form(default=None),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    org_id = await _channel_org(session, principal, organization_id)
+    try:
+        await org_channel.save(
+            session,
+            org_id,
+            actor=principal.email or "system",
+            url=webhook_url or None,
+            min_severity=min_severity,
+            enabled=enabled is not None,
+        )
+    except (org_channel.ChannelRefusedError, CredentialStorageError) as exc:
+        await session.rollback()
+        return _channel_back(principal, org_id, "channel_error", str(exc))
+    await session.commit()
+    return _channel_back(principal, org_id, "channel_notice", "Alert channel saved")
+
+
+@router.post("/settings/organization/notify-channel/test")
+async def org_channel_test(
+    organization_id: int | None = Form(default=None),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    org_id = await _channel_org(session, principal, organization_id)
+    try:
+        result = await org_channel.send_stored_test(session, org_id)
+    except org_channel.ChannelRefusedError as exc:
+        return _channel_back(principal, org_id, "channel_error", str(exc))
+    if not result.ok:
+        return _channel_back(principal, org_id, "channel_error", result.error or "test failed")
+    return _channel_back(principal, org_id, "channel_notice", "Test post delivered")
+
+
+@router.post("/settings/organization/notify-channel/delete")
+async def org_channel_delete(
+    organization_id: int | None = Form(default=None),
+    session: AsyncSession = Depends(get_session),
+    principal: Principal = Depends(require_role("admin")),
+) -> RedirectResponse:
+    org_id = await _channel_org(session, principal, organization_id)
+    if not await org_channel.remove(session, org_id, actor=principal.email or "system"):
+        return _channel_back(principal, org_id, "channel_error", "there is no alert channel")
+    await session.commit()
+    return _channel_back(principal, org_id, "channel_notice", "Alert channel removed")
