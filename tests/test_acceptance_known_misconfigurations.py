@@ -346,7 +346,7 @@ FIXTURE: dict[str, tuple[list[dict[str, Any]], dict[str, Any]]] = {
         {"tenant_id": TENANT},
     ),
     m365.LOCKOUT_THRESHOLD.key: (PASSWORD_RULE_SETTINGS, {"tenant_id": TENANT}),
-    m365.SECURITY_ALERTS_TRIAGED.key: (SECURITY_ALERTS, {"tenant_id": TENANT}),
+    m365.SECURITY_ALERTS_TRIAGED.key: (SECURITY_ALERTS, {"tenant_id": TENANT, "now": NOW}),
     m365.REMOVABLE_STORAGE_BLOCKED.key: (DEVICE_CONFIGURATIONS, {"tenant_id": TENANT}),
     m365.SYSTEM_USE_NOTIFICATION.key: (TERMS_OF_USE, {"tenant_id": TENANT}),
     m365.DEVICE_COMPLIANCE_REQUIRED.key: (CONDITIONAL_ACCESS, {"tenant_id": TENANT}),
