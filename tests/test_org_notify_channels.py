@@ -1096,3 +1096,35 @@ async def test_kms_unavailable_on_a_test_post_says_try_later(
             await org_channel.send_stored_test(s, a)
     assert "try again later" in str(e.value) and "set it again" not in str(e.value)
     assert net.calls == []
+
+
+# ── fix round 1: a 422 never echoes the URL ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "shape", ["string", "array", "nested", "wrong_type_severity", "wrong_type_enabled"]
+)
+async def test_a_malformed_body_is_a_422_without_the_url(
+    net: Net, auth_on: None, shape: str
+) -> None:
+    a = await _tenant("nc422")
+    url = _url("a-hooks.example")
+    secret = url.rsplit("/", 1)[1]
+    body: Any = {
+        "string": url,
+        "array": [url, {"webhook_url": url}],
+        "nested": {"webhook_url": {"url": url}},
+        "wrong_type_severity": {"webhook_url": url, "min_severity": [url]},
+        "wrong_type_enabled": {"webhook_url": url, "enabled": url},
+    }[shape]
+    async with _client() as c:
+        r = await c.put(API, json=body, headers=_h(a.tokens["admin"]))
+    assert r.status_code == 422, r.text
+    assert secret not in r.text
+    assert net.calls == [] and await _stored(a.org) is None
+
+
+async def test_the_put_body_is_still_documented() -> None:
+    schema = create_app().openapi()
+    body = schema["paths"]["/api/org/notify-channel"]["put"]["requestBody"]
+    assert "webhook_url" in json.dumps(body)

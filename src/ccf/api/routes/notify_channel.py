@@ -9,8 +9,11 @@ organization, or a platform admin (unscoped) naming one with
 
 The URL is a secret: no response carries it (``masked_view``), and the request
 field is ``webhook_url`` so the audit middleware redacts it from the recorded
-body. It is a plain ``str`` without pydantic constraints on purpose: a
-validation error echoes the rejected input, so length and shape are checked by
+body. FastAPI's 422 carries each rejected ``input``, and a body that is a
+JSON string or array (or a ``webhook_url`` that is not a string) would put the
+URL itself in that response. So ``PUT`` takes the raw body and validates it
+here (:func:`_parse`), answering a 422 with each error's type, location and
+message but never its input. Length and shape of the URL are checked by
 :func:`ccf.governance.org_channel.refusal`, whose messages never repeat it.
 
 See docs/superpowers/specs/2026-11-09-org-notify-channels-design.md (section 6).
@@ -20,8 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -76,13 +79,40 @@ async def get_channel(
     return org_channel.masked_view(await org_channel.get(session, org_id))
 
 
-@router.put("")
+def _parse(raw: Any) -> ChannelIn:
+    """The body as a :class:`ChannelIn`, or a 422 that never echoes the input."""
+    if not isinstance(raw, dict):
+        raise HTTPException(
+            422,
+            [{"type": "model_type", "loc": ["body"], "msg": "the body must be a JSON object"}],
+        )
+    try:
+        return ChannelIn.model_validate(raw)
+    except ValidationError as exc:
+        errors = [
+            {"type": e["type"], "loc": ["body", *e["loc"]], "msg": e["msg"]}
+            for e in exc.errors(include_url=False, include_input=False, include_context=False)
+        ]
+        raise HTTPException(422, errors) from None
+
+
+#: The documented body, since the route reads it raw (see :func:`_parse`).
+_PUT_BODY = {
+    "requestBody": {
+        "required": True,
+        "content": {"application/json": {"schema": ChannelIn.model_json_schema()}},
+    }
+}
+
+
+@router.put("", openapi_extra=_PUT_BODY)
 async def put_channel(
-    body: ChannelIn,
+    raw: Any = Body(default=None),
     organization_id: int | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     principal: Principal = Depends(require_role("admin")),
 ) -> dict[str, Any]:
+    body = _parse(raw)
     org_id = await _org(session, principal, organization_id)
     try:
         ch = await org_channel.save(
