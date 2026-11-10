@@ -17,6 +17,7 @@ an alert raised by a change that rolls back is never announced.
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -144,10 +145,26 @@ def flavour_for(url: str | None) -> Flavour:
     return "slack" if host in SLACK_WEBHOOK_HOSTS else "markdown"
 
 
+#: Plain-text mass mentions on the markdown path: Mattermost, Rocket.Chat and
+#: Discord ping a whole channel for these, and no Markdown escape stops it. An
+#: ``@`` not preceded by a word character or dot (so ``user@all.example`` is an
+#: address, left alone), before one of the four words and a word boundary.
+_MASS_MENTION = re.compile(r"(?<![\w.])@(?=(?:channel|here|all|everyone)\b)", re.IGNORECASE)
+
+#: FULLWIDTH COMMERCIAL AT: reads as ``@``, is no platform's mention sigil.
+_SAFE_AT = "\uff20"
+
+
 def escape(text: str, flavour: Flavour) -> str:
-    """``text`` made inert for ``flavour`` (see the comment above)."""
+    """``text`` made inert for ``flavour`` (see the comment above).
+
+    Slack needs nothing for ``@channel``: in its message syntax a mention is
+    ``<!channel>``, and ``<`` is escaped. On the markdown path the four mass
+    mentions get a full-width ``@``; any other ``@`` (an address, ``@alice``)
+    is left as it is."""
     if flavour == "slack":
         return slack.escape(text)
+    text = _MASS_MENTION.sub(_SAFE_AT, text)
     return "".join(f"\\{ch}" if ch in MARKDOWN_SPECIALS else ch for ch in text)
 
 

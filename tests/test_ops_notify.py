@@ -1067,3 +1067,63 @@ async def test_a_very_long_alert_is_delivered_cut_on_slack(env: Env, fake: FakeS
 @pytest.mark.parametrize("code", ["msg_too_long", "no_text"])
 def test_a_length_or_empty_refusal_stays_final_as_a_backstop(code: str) -> None:
     assert slack.classify(code) == "final"
+
+
+# ── fix round 1, item 2b: plain-text mass mentions on the markdown path ──────
+
+MENTIONS = "@channel @HERE @all @everyone ping; mail user@example.com or @alice"
+SAFE_AT = chr(0xFF20)  # FULLWIDTH COMMERCIAL AT
+
+
+def _no_mass_mention(text: str) -> None:
+    import re  # noqa: PLC0415
+
+    assert not re.search(r"(?<![\w.])@(channel|here|all|everyone)\b", text, re.I), text
+    for word in ("channel", "HERE", "all", "everyone"):
+        assert f"{SAFE_AT}{word}" in text  # still reads as @word
+    assert "user@example\\.com" in text and "@alice" in text  # other @s untouched
+
+
+async def test_mass_mentions_are_neutralised_on_the_markdown_ops_webhook(
+    env: Env, fake: FakeSlack
+) -> None:
+    env.set(webhook="https://chat.example/hooks/abc")  # Mattermost-style, not Slack
+    await _notify(None, title=MENTIONS)
+    await _drain()
+    (posted,) = fake.webhook_texts()
+    _no_mass_mention(posted)
+
+
+async def test_mass_mentions_are_neutralised_on_a_markdown_org_channel(
+    env: Env, fake: FakeSlack
+) -> None:
+    env.set(webhook=None)
+    a = await _org()
+    await _org_channel(a)  # ORG_HOST: a markdown receiver
+    await _notify(a, title=MENTIONS)
+    await _drain()
+    (posted,) = fake.webhook_texts()
+    _no_mass_mention(posted)
+
+
+async def test_mass_mentions_are_neutralised_in_a_markdown_test_post(
+    env: Env, fake: FakeSlack
+) -> None:
+    result = await org_channel.send_test(f"https://{ORG_HOST}/x", MENTIONS, "critical")
+    assert result.ok
+    (posted,) = fake.webhook_texts()
+    _no_mass_mention(posted)
+
+
+def test_an_at_word_that_is_part_of_an_address_or_longer_word_is_kept() -> None:
+    out = delivery.escape("x@here.com @allison @channels me@all", "markdown")
+    assert SAFE_AT not in out
+
+
+def test_slack_text_with_a_plain_at_channel_is_not_a_mention() -> None:
+    """In Slack's message syntax a channel-wide mention is ``<!channel>``; a
+    plain ``@channel`` in text posted through the API is not one, and the
+    ``<`` it would need is escaped. So the Slack flavour leaves ``@`` alone."""
+    out = delivery.escape("@channel @here <!channel>", "slack")
+    assert out == "@channel @here &lt;!channel&gt;"
+    assert "<!" not in out and SAFE_AT not in out
