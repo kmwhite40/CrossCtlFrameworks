@@ -182,11 +182,15 @@ async def _name(org_id: int) -> str:
         return o.name
 
 
-async def _notify(org_id: int | None, *, title: str = "Drift", severity: str = "critical") -> int:
+async def _notify(
+    org_id: int | None, *, title: str = "Drift", severity: str = "critical", body: str | None = None
+) -> int:
     async with session_scope() as s:
         if org_id is not None:
             await set_session_tenant(s, org_id)
-        n = await bus.notify(s, category="test", title=title, org_id=org_id, severity=severity)
+        n = await bus.notify(
+            s, category="test", title=title, org_id=org_id, severity=severity, body=body
+        )
         assert n is not None
         return n.id
 
@@ -1020,3 +1024,46 @@ def test_a_locked_thread_is_a_thread_to_replace_not_a_dead_letter() -> None:
     assert "restricted_action_thread_locked" not in slack.FINAL_ERRORS
     assert not slack.FINAL_ERRORS & slack.THREAD_GONE_ERRORS
     assert not slack.RETRY_ERRORS & (slack.FINAL_ERRORS | slack.THREAD_GONE_ERRORS)
+
+
+# ── fix round 1, item 5: a long alert is cut, never refused ──────────────────
+
+
+@pytest.mark.parametrize("flavour", ["slack", "markdown"])
+@pytest.mark.parametrize("filler", ["x", "&", "["])  # plain, and characters that escape long
+def test_long_text_is_cut_to_3000_without_splitting_an_escape(flavour: str, filler: str) -> None:
+    import re  # noqa: PLC0415
+
+    out = delivery.outbound("[CRITICAL] " + filler * 20_000, flavour, tagged="Acme")  # type: ignore[arg-type]
+    assert len(out) <= delivery.MAX_TEXT_CHARS == 3000
+    rendered = (
+        re.sub(r"\\(.)", r"\1", out)
+        if flavour == "markdown"
+        else out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+    )
+    assert rendered.endswith("… (truncated)")
+    body = out[: -len(delivery.escape(delivery.TRUNCATED, flavour))]  # type: ignore[arg-type]
+    if flavour == "slack":
+        assert not re.search(r"&[a-z]*$", body)  # no "&am" left dangling
+    else:
+        assert not body.endswith("\\") or body.endswith("\\\\")
+    assert out.startswith("[Acme] ")
+
+
+def test_short_text_is_untouched() -> None:
+    assert delivery.outbound("[CRITICAL] fine", "slack", tagged="Acme") == "[Acme] [CRITICAL] fine"
+
+
+async def test_a_very_long_alert_is_delivered_cut_on_slack(env: Env, fake: FakeSlack) -> None:
+    env.slack()
+    a = await _org()
+    nid = await _notify(a, title="long", body="T" * 50_000)  # titles are cut at 512
+    await _drain()
+    reply = next(m for m in fake.slack_posts() if m.get("thread_ts"))
+    assert len(reply["text"]) <= 3000 and reply["text"].endswith("… (truncated)")
+    assert (await _jobs(nid))["ops"].status == "done"
+
+
+@pytest.mark.parametrize("code", ["msg_too_long", "no_text"])
+def test_a_length_or_empty_refusal_stays_final_as_a_backstop(code: str) -> None:
+    assert slack.classify(code) == "final"

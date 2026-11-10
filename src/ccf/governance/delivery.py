@@ -159,13 +159,42 @@ def tag(org_name: str | None, flavour: Flavour = "slack") -> str:
     return f"[{escape(org_name or 'Platform', flavour)}]"
 
 
+#: Longest text posted, escapes and tag included. Slack refuses a long message
+#: (``msg_too_long``, final: it would dead-letter the alert) and Teams cards
+#: have their own limits; 3,000 characters is well inside both.
+MAX_TEXT_CHARS = 3000
+TRUNCATED = "\u2026 (truncated)"
+
+
+def _cut(text: str, flavour: Flavour, room: int) -> str:
+    """The longest prefix of ``text`` whose escaped form fits ``room``, escaped.
+
+    Cut on the raw text, character by character, so an escape (``&amp;``,
+    ``\\[``) is never split."""
+    out: list[str] = []
+    used = 0
+    for ch in text:
+        piece = escape(ch, flavour)
+        if used + len(piece) > room:
+            break
+        out.append(piece)
+        used += len(piece)
+    return "".join(out)
+
+
 def outbound(text: str, flavour: Flavour, *, tagged: str | None = None) -> str:
     """The text as posted: escaped for ``flavour``, after the ``tagged`` org's tag
-    when one is given (``tagged=""`` tags it ``[Platform]``)."""
+    when one is given (``tagged=""`` tags it ``[Platform]``), and never longer
+    than :data:`MAX_TEXT_CHARS` -- a longer one ends "… (truncated)"."""
+    prefix = "" if tagged is None else f"{tag(tagged or None, flavour)} "
     body = escape(text, flavour)
-    if tagged is None:
-        return body
-    return f"{tag(tagged or None, flavour)} {body}"
+    if len(prefix) + len(body) <= MAX_TEXT_CHARS:
+        return prefix + body
+    suffix = escape(TRUNCATED, flavour)
+    room = max(0, MAX_TEXT_CHARS - len(prefix) - len(suffix))
+    # The tag is at most an escaped 255-character name, so prefix and suffix
+    # always leave room.
+    return prefix + _cut(text, flavour, room) + suffix
 
 
 async def send(url: str, text: str) -> int:
