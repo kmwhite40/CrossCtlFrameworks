@@ -1539,6 +1539,12 @@ async def org_settings_page(
         if channel_org is not None
         else None
     )
+    can_manage_channel = _is_admin(request)
+    if channel is not None and not can_manage_channel:
+        # Spec section 6: the channel's settings are an admin's to read. Other
+        # roles learn only whether one is set -- reduced here, not in the
+        # template, so nothing more is ever in the render context.
+        channel = {"configured": bool(channel.get("configured"))}
     return _render(
         request,
         "org_settings.html",
@@ -1551,7 +1557,7 @@ async def org_settings_page(
         channel=channel,
         channels=channels,
         channel_severities=org_channel.SEVERITIES,
-        can_manage_channel=_is_admin(request),
+        can_manage_channel=can_manage_channel,
         channel_notice=request.query_params.get("channel_notice"),
         channel_error=request.query_params.get("channel_error"),
     )

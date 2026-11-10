@@ -10,14 +10,17 @@
     {% if channel_error %}<div class="chip chip--err" style="margin-bottom:12px" data-channel-error><i data-lucide="alert-triangle"></i> {{ channel_error }}</div>{% endif %}
     {% if channel_notice %}<div class="chip chip--ok" style="margin-bottom:12px" data-channel-notice><i data-lucide="check"></i> {{ channel_notice }}</div>{% endif %}
     <p class="dim" style="margin:0 0 12px">This organization's alerts at or above the chosen severity are also posted here. The URL is stored encrypted and never shown again: anyone holding it can post to the channel.</p>
-    {% if ch and ch.configured %}
+    {# The route reduces ``ch`` to {"configured"} for a caller who cannot manage it. #}
+    {% if ch and ch.configured and ch.url_hint is not defined %}
+    <p style="margin:0" data-channel-set>An alert channel is set. Its administrators manage it.</p>
+    {% elif ch and ch.configured %}
     <dl style="display:grid;grid-template-columns:max-content 1fr;gap:8px 14px;margin:0 0 12px" data-channel>
       <dt class="dim">Destination</dt><dd class="mono" style="margin:0" data-channel-hint>{{ ch.url_hint }}</dd>
       <dt class="dim">Posts</dt><dd style="margin:0">{% if ch.enabled %}<span class="chip chip--ok">on</span>{% else %}<span class="chip chip--ghost">off</span>{% endif %} at <strong>{{ ch.min_severity }}</strong> and above</dd>
       <dt class="dim">Changed</dt><dd style="margin:0">{{ ch.updated_by or '—' }} · {{ (ch.updated_at or '')[:16] | replace('T', ' ') }}</dd>
     </dl>
     {% else %}
-    <p style="margin:0 0 12px" data-channel-none>No alert channel is set.</p>
+    <p style="margin:0 0 12px" data-channel-none>No alert channel.</p>
     {% endif %}
     {% if can_manage_channel %}
     <form method="post" action="/settings/organization/notify-channel" class="row" style="gap:8px;flex-wrap:wrap;align-items:center" data-channel-form>
@@ -36,8 +39,6 @@
       <form method="post" action="/settings/organization/notify-channel/delete">{% if is_platform %}<input type="hidden" name="organization_id" value="{{ target.id }}">{% endif %}<button class="btn btn--ghost btn--sm" type="submit">Remove channel</button></form>
     </div>
     {% endif %}
-    {% else %}
-    <p class="dim" style="margin:0">The alert channel is set by this organization's administrators.</p>
     {% endif %}
   </div>
 </article>

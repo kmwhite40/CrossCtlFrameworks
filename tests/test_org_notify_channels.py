@@ -813,9 +813,23 @@ async def test_the_settings_page_offers_the_form_only_to_admins(net: Net, auth_o
             pages[role] = r.text
     hint = org_channel.url_hint(url)
     for role, page in pages.items():
-        assert "Alert channel" in page and hint in page, role
+        assert "Alert channel" in page, role
         assert url.rsplit("/", 1)[1] not in page
         assert ("data-channel-form" in page) is (role == "admin"), role
+        if role == "admin":
+            assert hint in page and "<strong>warning</strong> and above" in page
+        else:
+            # Spec section 6: the read is an admin's. Presence only.
+            assert "An alert channel is set" in page, role
+            assert "a-hooks.example" not in page, role
+            assert "<strong>warning</strong>" not in page and "data-channel-hint" not in page
+
+
+async def test_a_non_admin_sees_only_that_there_is_no_channel(net: Net, auth_on: None) -> None:
+    a = await _tenant("ncui0")
+    async with _client() as c:
+        page = (await c.get("/settings/organization", headers=_h(a.tokens["viewer"]))).text
+    assert "No alert channel" in page and "data-channel-form" not in page
 
 
 @pytest.mark.parametrize("role", ["viewer", "control_owner", "assessor"])
