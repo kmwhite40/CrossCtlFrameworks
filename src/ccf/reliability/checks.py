@@ -1253,23 +1253,34 @@ async def _check_event_outbox(session: AsyncSession) -> Check:
     registered = sorted(consumers.REGISTRY)
     derived = sorted(n for n in registered if n not in outbox.AT_LEAST_ONCE)
 
+    # A tenant session reads only its own rows, but those include the ops posts
+    # of its own alerts: their errors are the operator's (a Slack token
+    # refused, a setting missing) and spec section 2.4 keeps the ops channel
+    # from customers. So a tenant's "oldest error" comes from jobs that are not
+    # ops posts; with only ops failures it has none to show.
+    tenant = (await session.execute(text("SELECT ccf.current_tenant()"))).scalar()
     failed = (
         await session.execute(
             text(
                 "SELECT consumer, count(*) AS n, "
-                "(array_agg(last_error ORDER BY id))[1] AS oldest_error "
+                "(array_agg(last_error ORDER BY id))[1] AS oldest_error, "
+                "(array_agg(last_error ORDER BY id) FILTER (WHERE consumer <> :notify "
+                "OR coalesce(result->>'destination', 'ops') = 'org'))[1] AS tenant_error "
                 "FROM ccf.outbox_jobs WHERE status = 'failed' "
                 "GROUP BY consumer ORDER BY consumer"
-            )
+            ),
+            {"notify": outbox.NOTIFY_CONSUMER},
         )
     ).all()
     if failed:
         by_dest = await _notify_failures_by_destination(session)
-        parts = [
-            f"{c}: {n} failed (oldest error: {(err or 'none recorded')[:160]})"
-            + (by_dest if c == outbox.NOTIFY_CONSUMER else "")
-            for c, n, err in failed
-        ]
+        parts = []
+        for c, n, err, tenant_err in failed:
+            shown = err if tenant is None else tenant_err
+            line = f"{c}: {n} failed"
+            if tenant is None or shown is not None:
+                line += f" (oldest error: {(shown or 'none recorded')[:160]})"
+            parts.append(line + (by_dest if c == outbox.NOTIFY_CONSUMER else ""))
         return Check(
             "event_outbox",
             FAIL,

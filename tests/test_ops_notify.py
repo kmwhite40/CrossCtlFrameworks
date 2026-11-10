@@ -749,19 +749,53 @@ async def test_the_outbox_check_names_whose_delivery_failed(env: Env, fake: Fake
 async def test_a_tenant_sees_its_own_failures_but_not_the_ops_error(
     env: Env, fake: FakeSlack
 ) -> None:
+    """Ops fails with a Slack error (the operator's), the org channel with a
+    404 (the tenant's). The tenant's view must not carry the Slack error
+    anywhere -- including the consumer-level "oldest error", which over the
+    tenant's RLS-scoped rows is usually its own ops job."""
+    env.slack()
     a, b = await _org(), await _org()
     await _org_channel(a)
     await _org_channel(b)
-    fake.answer = lambda r, b_: httpx.Response(404)
-    await _notify(a)
+    fake.answer = lambda r, b_: (
+        httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
+        if r.url.host == "slack.com"
+        else httpx.Response(404)
+    )
+    first = await _notify(a)  # ops queued first: the oldest failed job is ops
     await _notify(b)
     await _drain(4)
+    assert (await _jobs(first))[
+        "ops"
+    ].last_error == "DeliveryError: Slack chat.postMessage: invalid_auth"
     async with session_scope() as s:
         await set_session_tenant(s, a)
-        detail = (await checks._check_event_outbox(s)).message
-    assert f"org {a} (" in detail and f"org {b} (" not in detail
-    assert await _name(b) not in detail
-    assert "ops: 1" in detail and "ops: 1 (oldest error" not in detail
+        tenant_view = (await checks._check_event_outbox(s)).message
+    async with session_scope() as s:
+        await set_session_tenant(s, None)
+        platform_view = (await checks._check_event_outbox(s)).message
+    assert f"org {a} (" in tenant_view and f"org {b} (" not in tenant_view
+    assert await _name(b) not in tenant_view
+    assert "invalid_auth" not in tenant_view and "Slack" not in tenant_view
+    assert "CCF_NOTIFY" not in tenant_view
+    assert "ops: 1" in tenant_view and "HTTP 404" in tenant_view  # its own error stays
+    assert "invalid_auth" in platform_view  # the operator still sees it
+
+
+async def test_a_tenant_whose_only_failure_is_ops_sees_no_error_text(
+    env: Env, fake: FakeSlack
+) -> None:
+    env.slack()
+    a = await _org()
+    fake.answer = _slack_error("invalid_auth")
+    await _notify(a)
+    await _drain(2)
+    async with session_scope() as s:
+        await set_session_tenant(s, a)
+        check = await checks._check_event_outbox(s)
+    assert check.status == checks.FAIL  # the verdict is unchanged
+    assert "invalid_auth" not in check.message and "oldest error" not in check.message
+    assert "notify_delivery: 1 failed" in check.message
 
 
 async def test_a_legacy_failed_job_counts_as_ops(env: Env) -> None:
