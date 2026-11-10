@@ -515,7 +515,15 @@ async def test_a_short_retry_after_never_shortens_the_backoff(env: Env, fake: Fa
     assert wait >= worker.WEBHOOK_BACKOFF_SECONDS - 5
 
 
-@pytest.mark.parametrize("code", ["thread_not_found", "invalid_thread_ts", "message_not_found"])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "thread_not_found",
+        "invalid_thread_ts",
+        "message_not_found",
+        "restricted_action_thread_locked",
+    ],
+)
 async def test_a_gone_parent_is_replaced_once_and_the_reply_lands(
     env: Env, fake: FakeSlack, code: str
 ) -> None:
@@ -1005,3 +1013,10 @@ def test_markdown_escaping_renders_back_to_the_text() -> None:
 
     assert re.sub(r"\\(.)", r"\1", out) == raw
     assert delivery.escape("&<>", "slack") == "&amp;&lt;&gt;"
+
+
+def test_a_locked_thread_is_a_thread_to_replace_not_a_dead_letter() -> None:
+    assert slack.classify("restricted_action_thread_locked") == "thread_gone"
+    assert "restricted_action_thread_locked" not in slack.FINAL_ERRORS
+    assert not slack.FINAL_ERRORS & slack.THREAD_GONE_ERRORS
+    assert not slack.RETRY_ERRORS & (slack.FINAL_ERRORS | slack.THREAD_GONE_ERRORS)

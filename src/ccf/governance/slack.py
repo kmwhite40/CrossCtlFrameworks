@@ -21,7 +21,8 @@ https://docs.slack.dev/reference/methods/chat.postMessage (fetched 2026-11-09):
   code not listed below (the spec's "others retry");
 * ``final`` -- the token, its scopes, the channel or the workspace refuse this
   app, which a retry cannot change; the operator has to act;
-* ``thread_gone`` -- the stored thread parent cannot take replies any more.
+* ``thread_gone`` -- the stored thread parent cannot take replies any more,
+  including a thread an admin locked (``restricted_action_thread_locked``).
   The documented table names no code for a deleted or unknown ``thread_ts``;
   ``thread_not_found`` and ``invalid_thread_ts`` are what Slack has been
   reported to return, ``message_not_found`` is the spec's, and
@@ -86,7 +87,6 @@ FINAL_ERRORS = frozenset(
         "messages_tab_disabled",
         "restricted_action",
         "restricted_action_read_only_channel",
-        "restricted_action_thread_locked",
         "restricted_action_non_threadable_channel",
         "restricted_action_thread_only_channel",
         "invalid_arguments",
@@ -104,8 +104,17 @@ FINAL_ERRORS = frozenset(
 )
 
 #: The thread parent is gone or cannot take replies: open a new thread once.
+#: ``restricted_action_thread_locked`` is per thread (an admin locked that one),
+#: so a new thread works where dead-lettering would lose every later alert of
+#: that organization.
 THREAD_GONE_ERRORS = frozenset(
-    {"thread_not_found", "invalid_thread_ts", "message_not_found", "cannot_reply_to_message"}
+    {
+        "thread_not_found",
+        "invalid_thread_ts",
+        "message_not_found",
+        "cannot_reply_to_message",
+        "restricted_action_thread_locked",
+    }
 )
 
 _CODE = re.compile(r"[a-z0-9_]{1,64}")
