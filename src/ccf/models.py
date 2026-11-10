@@ -1567,6 +1567,28 @@ class OrgNotifyChannel(Base):
         return f"<OrgNotifyChannel org={self.organization_id} {self.url_hint}>"
 
 
+class OpsNotifyThread(Base):
+    """The operator's Slack thread for one organization in one channel (0120).
+
+    Platform-only: ``ccf_app`` (every tenant session) has no privilege on the
+    table and RLS admits only an unscoped session. Written by the
+    ``notify_delivery`` consumer through :mod:`ccf.governance.ops_threads`.
+    """
+
+    __tablename__ = "ops_notify_threads"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "channel", name="uq_ops_notify_threads_org_channel"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE")
+    )
+    channel: Mapped[str] = mapped_column(String(128))
+    thread_ts: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Event(Base):
     """Append-only activity/event stream — the internal integration bus."""
 
