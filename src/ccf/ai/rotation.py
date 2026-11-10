@@ -17,12 +17,14 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from ..config import get_settings
+from ..models import OrgNotifyChannel
 from ..models_ai_actions import AiProviderConfig
 from ..models_grc import ConnectorConfig
 from ..models_identity import UserMfaCredential
 from .cipher import (
     AAD_CREDENTIAL,
     AAD_MFA,
+    AAD_NOTIFY_CHANNEL,
     KmsUnavailableError,
     UnknownKeyError,
     build_cipher,
@@ -53,6 +55,7 @@ ENCRYPTED_COLUMNS: tuple[EncryptedColumn, ...] = (
     ),
     EncryptedColumn(ConnectorConfig, "encrypted_credential", AAD_CREDENTIAL, "connector_configs"),
     EncryptedColumn(UserMfaCredential, "secret_encrypted", AAD_MFA, "user_mfa_credentials"),
+    EncryptedColumn(OrgNotifyChannel, "encrypted_url", AAD_NOTIFY_CHANNEL, "org_notify_channels"),
 )
 
 

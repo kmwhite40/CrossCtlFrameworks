@@ -1530,6 +1530,43 @@ class NotificationRead(Base):
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class OrgNotifyChannel(Base):
+    """An organization's own Slack/Teams alert channel (migration 0119).
+
+    ``encrypted_url`` is sealed with ``ccf.ai.cipher.AAD_NOTIFY_CHANNEL``: the
+    URL is the credential (anyone holding it can post), so it is never
+    returned, logged or shown -- only ``url_hint``. Managed through
+    :mod:`ccf.governance.org_channel`.
+    """
+
+    __tablename__ = "org_notify_channels"
+    __table_args__ = (
+        UniqueConstraint("organization_id", name="uq_org_notify_channels_org"),
+        CheckConstraint(
+            "min_severity IN ('info', 'warning', 'critical')",
+            name="ck_org_notify_channels_min_severity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    organization_id: Mapped[int] = mapped_column(
+        ForeignKey("ccf.organizations.id", ondelete="CASCADE")
+    )
+    encrypted_url: Mapped[str] = mapped_column(Text)
+    url_hint: Mapped[str] = mapped_column(String(160))
+    min_severity: Mapped[str] = mapped_column(
+        String(16), default="critical", server_default="critical"
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text("true"))
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_by: Mapped[str | None] = mapped_column(String(255))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:  # never the ciphertext, never anything but the hint
+        return f"<OrgNotifyChannel org={self.organization_id} {self.url_hint}>"
+
+
 class Event(Base):
     """Append-only activity/event stream — the internal integration bus."""
 

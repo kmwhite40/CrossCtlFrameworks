@@ -129,6 +129,8 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         # 0096 per-user read state -- one member's "read all" must not touch
         # another's inbox, and never another tenant's.
         "notification_reads",
+        # 0119 an organization's own alert channel (its URL is a credential).
+        "org_notify_channels",
         "pack_controls", "pack_evidence_requirements", "pack_install_runs", "pack_mappings",
         "pack_rules", "pack_test_results", "people", "poam_milestones", "poams", "policies",
         "policy_attestations", "policy_versions", "prep_classifications", "prep_embeddings",
@@ -212,8 +214,8 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    # 143 + 21 (0099) + 3 (0100) + 3 (0103) + 2 (0105)
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 179
+    # 179 through 0118, + 1 (0119 org_notify_channels)
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 180
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
