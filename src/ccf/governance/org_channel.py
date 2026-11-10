@@ -32,6 +32,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ai.cipher import (
@@ -321,15 +322,18 @@ async def org_job_text(session: AsyncSession, n: Notification) -> str | None:
 
     ``None`` for an org-less notification, an organization without a channel,
     a disabled channel, or a severity below the channel's minimum. Looked up
-    in its own savepoint: a failure here costs this one post, never the
-    caller's transaction, and never the ops post.
+    in its own savepoint: a database error here (the table absent on a
+    half-migrated deploy, a lock timeout) costs this one post, never the
+    caller's transaction, and never the ops post. Nothing else is swallowed:
+    ``MultipleResultsFound`` means the org filter is broken, and hiding it
+    would make every tenant guard test pass for the wrong reason.
     """
     if n.organization_id is None:
         return None
     try:
         async with session.begin_nested():
             ch = await get(session, n.organization_id)
-    except Exception as e:
+    except DBAPIError as e:
         log.warning(
             "org_channel.lookup_failed",
             notification_id=n.id,

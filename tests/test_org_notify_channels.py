@@ -266,24 +266,65 @@ async def test_a_tenant_alert_reaches_its_own_channel_and_never_another_orgs(net
 
 
 async def test_the_queue_time_lookup_filters_the_org_without_rls(net: Net) -> None:
-    """Only B has a channel. On an UNSCOPED session (RLS shows every row), A's
-    notification must still find no channel: the org filter is the guard."""
-    a, b = await _org(), await _org()
+    """B and C have channels, A has none. On an UNSCOPED session (RLS shows
+    every row), A's notification must still find no channel and C's must find
+    C's: the org filter is the guard. Two other channels, so a dropped filter
+    cannot pass by an error being swallowed or by a lucky single row."""
+    a, b, c = await _org(), await _org(), await _org()
     await _seed_channel(b, _url("b-hooks.example"), min_severity="info")
+    await _seed_channel(c, _url("a-hooks.example"), min_severity="critical")
     async with session_scope() as s:
         await set_session_tenant(s, None)
         n = await bus.notify(s, category="test", title="unscoped", org_id=a, severity="critical")
         assert n is not None
         nid = n.id
         assert await org_channel.org_job_text(s, n) is None
+        nc = await bus.notify(s, category="test", title="c's", org_id=c, severity="warning")
+        assert nc is not None
+        # C's channel wants critical: B's (info) would have said yes.
+        assert await org_channel.org_job_text(s, nc) is None
+        nc.severity = "critical"
+        assert await org_channel.org_job_text(s, nc) == "[CRITICAL] c's"
     assert set(_by_dest(await _jobs(nid))) == {"ops"}
+
+
+async def test_a_database_error_in_the_lookup_costs_only_the_org_post(
+    net: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy.exc import OperationalError  # noqa: PLC0415
+
+    a = await _org()
+    await _seed_channel(a, _url("a-hooks.example"))
+
+    async def _down(session: Any, org_id: int) -> None:
+        raise OperationalError("SELECT", {}, Exception("lock timeout"))
+
+    monkeypatch.setattr(org_channel, "get", _down)
+    with capture_logs() as logs:
+        nid = await _notify(a)
+    assert set(_by_dest(await _jobs(nid))) == {"ops"}
+    assert any(e.get("event") == "org_channel.lookup_failed" for e in logs)
+
+
+async def test_any_other_lookup_error_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy.exc import MultipleResultsFound  # noqa: PLC0415
+
+    a = await _org()
+
+    async def _broken(session: Any, org_id: int) -> None:
+        raise MultipleResultsFound("two channels for one org")
+
+    monkeypatch.setattr(org_channel, "get", _broken)
+    with pytest.raises(MultipleResultsFound):
+        await _notify(a)
 
 
 async def test_the_send_time_lookup_filters_the_org_without_rls(net: Net) -> None:
     """A job for A, run on an UNSCOPED session while only B has a channel:
     skipped as removed, and B's channel is never posted to."""
-    a, b = await _org(), await _org()
+    a, b, c = await _org(), await _org(), await _org()
     await _seed_channel(b, _url("b-hooks.example"), min_severity="info")
+    await _seed_channel(c, _url("b-hooks.example"), min_severity="info")
     nid = await _notify(a)  # A has no channel: no org job is queued
     factory = get_session_factory()
     async with factory() as s:
