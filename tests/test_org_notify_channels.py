@@ -1128,3 +1128,56 @@ async def test_the_put_body_is_still_documented() -> None:
     schema = create_app().openapi()
     body = schema["paths"]["/api/org/notify-channel"]["put"]["requestBody"]
     assert "webhook_url" in json.dumps(body)
+
+
+# ── fix round 1: two first saves at once ─────────────────────────────────────
+
+
+async def test_two_concurrent_first_saves_leave_one_channel_and_no_error(
+    net: Net, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both read "no channel yet", both test-post, both write: the second
+    becomes an update instead of an IntegrityError (a 500)."""
+    import asyncio  # noqa: PLC0415
+
+    a = await _org()
+    urls = [_url("a-hooks.example"), _url("b-hooks.example")]
+    reads: list[int] = []
+    real_get = org_channel.get
+
+    async def one(url: str, who: str) -> None:
+        async with session_scope() as s:
+            await set_session_tenant(s, a)
+            await org_channel.save(s, a, actor=who, url=url, min_severity="critical", enabled=True)
+
+    async def get_then_wait(session: Any, org_id: int) -> Any:
+        found = await real_get(session, org_id)
+        reads.append(org_id)
+        while len(reads) < 2:  # both have looked before either writes
+            await asyncio.sleep(0.01)
+        return found
+
+    monkeypatch.setattr(org_channel, "get", get_then_wait)
+    await asyncio.wait_for(asyncio.gather(one(urls[0], "x"), one(urls[1], "y")), 30)
+    monkeypatch.undo()
+    async with session_scope() as s:
+        rows = (
+            (await s.execute(select(OrgNotifyChannel).where(OrgNotifyChannel.organization_id == a)))
+            .scalars()
+            .all()
+        )
+        assert len(rows) == 1
+        assert org_channel.cipher().decrypt(rows[0].encrypted_url) in urls
+        assert rows[0].updated_by in ("x", "y")
+        verbs = (
+            (
+                await s.execute(
+                    select(Event.verb).where(
+                        Event.organization_id == a, Event.entity_type == "org_notify_channel"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert sorted(verbs) == ["created", "updated"]  # the second save is told it updated

@@ -31,7 +31,8 @@ from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import literal_column, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -239,16 +240,42 @@ async def save(
     created = existing is None
     if existing is None:
         assert sealed is not None and hint is not None
-        ch = OrgNotifyChannel(
-            organization_id=org_id,
-            encrypted_url=sealed,
-            url_hint=hint,
-            min_severity=min_severity,
-            enabled=enabled,
-            created_by=actor,
-            updated_by=actor,
+        # An upsert, not an add: two admins saving the first channel at once
+        # both read "none" above, and the second insert would hit the unique
+        # key and answer a 500. ``xmax = 0`` is true only for a fresh insert.
+        stmt: Any = (
+            pg_insert(OrgNotifyChannel)
+            .values(
+                organization_id=org_id,
+                encrypted_url=sealed,
+                url_hint=hint,
+                min_severity=min_severity,
+                enabled=enabled,
+                created_by=actor,
+                updated_by=actor,
+            )
+            .on_conflict_do_update(
+                index_elements=[OrgNotifyChannel.organization_id],
+                set_={
+                    "encrypted_url": sealed,
+                    "url_hint": hint,
+                    "min_severity": min_severity,
+                    "enabled": enabled,
+                    "updated_by": actor,
+                    "updated_at": now,
+                },
+            )
+            .returning(OrgNotifyChannel.id, literal_column("(xmax = 0)"))
         )
-        session.add(ch)
+        row_id, created = (await session.execute(stmt)).one()
+        found = (
+            await session.execute(
+                select(OrgNotifyChannel)
+                .where(OrgNotifyChannel.id == row_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        ch = found
     else:
         ch = existing
         if sealed is not None and hint is not None:
