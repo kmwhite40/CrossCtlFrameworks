@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Agency View Preview · Concord{% endblock %}
+{% block heading %}Agency view preview{% endblock %}
+{% block subtitle %}How an agency reviewer will read each system's FedRAMP certification package: every Rev5 baseline control, the indicators and rules FedRAMP maps to it, and what the package reports for them. Read from the documents Concord stores for the system; nothing is changed.{% endblock %}
+{% block content %}
+{% if systems %}
+<div class="table-wrap"><table>
+  <thead><tr><th>System</th><th>Certification class</th><th>Package documents stored</th><th></th></tr></thead>
+  <tbody>{% for s in systems %}<tr>
+    <td>{{ s.name }}</td>
+    <td>{% if s.certification_class %}Class {{ s.certification_class }}{% else %}<span class="dim">not recorded</span>{% endif %}</td>
+    <td>{{ counts.get(s.id, 0) }} of 6</td>
+    <td><a class="btn btn--secondary" href="/systems/{{ s.id }}/agency-view"><i data-lucide="git-compare"></i>Preview</a></td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="server"></i><h2>No systems</h2><p>Add a system and author its FedRAMP 20x documents first.</p></div>
+{% endif %}
+{% endblock %}

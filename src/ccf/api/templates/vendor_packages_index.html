@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Vendor FedRAMP Packages · Concord{% endblock %}
+{% block heading %}Vendor FedRAMP packages{% endblock %}
+{% block subtitle %}A cloud vendor's FedRAMP 20x certification package, read against the Rev5 control baseline: what the provider's package covers and what is left for your agency to decide.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/vendors"><i data-lucide="building-2"></i>Vendors</a>{% endblock %}
+{% block content %}
+{% if vendors %}
+<div class="table-wrap"><table>
+  <thead><tr><th>Vendor</th><th>Authorization</th><th>Package documents</th><th></th></tr></thead>
+  <tbody>{% for v in vendors %}{% set h = held.get(v.id, {}) %}<tr>
+    <td>{{ v.name }}</td>
+    <td>{{ v.authorization or '—' }}</td>
+    <td>{% if h %}{{ h | length }} of {{ kinds | length }}{% if h.values() | select('equalto', false) | list %} · <span class="chip chip--warn">{{ h.values() | select('equalto', false) | list | length }} with schema errors</span>{% endif %}{% else %}<span class="dim">none uploaded</span>{% endif %}</td>
+    <td><a class="btn btn--secondary" href="/vendors/{{ v.id }}/fedramp-package"><i data-lucide="git-compare"></i>Open</a></td>
+  </tr>{% endfor %}</tbody>
+</table></div>
+{% else %}
+<div class="card empty-state"><i data-lucide="building-2"></i><h2>No vendors recorded</h2><p>Add the vendor on <a href="/vendors">Vendor Inventory</a> first; its package is uploaded here.</p></div>
+{% endif %}
+{% endblock %}

@@ -93,6 +93,7 @@ from .routes import (
     ui_ato,
     ui_auditprog,
     ui_boundary,
+    ui_crosswalk,
     ui_govern,
     ui_grc,
     ui_history,
@@ -355,6 +356,7 @@ def create_app() -> FastAPI:
     app.include_router(ui_history.router)
     app.include_router(ui_intel.router)
     app.include_router(ui_vdr.router)
+    app.include_router(ui_crosswalk.router)
     app.include_router(ui_platform.router)
     app.include_router(ui_riskprog.router)
     app.include_router(ui_tprmprog.router)

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "_crosswalk.html" import crosswalk, class_picker, documents_table %}
+{% block title %}Agency View · {{ system.name }} · Concord{% endblock %}
+{% block heading %}Agency view: {{ system.name }}{% endblock %}
+{% block subtitle %}This system's stored FedRAMP certification package, read the way an agency reviewer reads it. A mapped indicator or rule shows where to look, not that a control is satisfied.{% endblock %}
+{% block actions %}<a class="btn btn--secondary" href="/fedramp20x/agency-view"><i data-lucide="arrow-left"></i>All systems</a>{% endblock %}
+{% block content %}
+<article class="card panel" style="margin-bottom:16px">
+  <header class="panel__head"><h2 class="panel__title">Package documents</h2><span class="panel__hint">as stored for this system</span></header>
+  {{ documents_table(docs, kinds) }}
+</article>
+{% if not docs.get('sdr') %}
+<div class="note note--warn" role="status"><strong>No Security Decision Record is stored.</strong> Without one, every control reads as not reported or unmapped. Seed and author the SDR on the system's FedRAMP 20x page first.</div>
+{% endif %}
+{% if not recorded_class %}
+<div class="note note--warn" role="status"><strong>No certification class is recorded for this system.</strong> The baseline differs by class, so none is assumed. Choose one to preview as; record the class on the system to make it stick.</div>
+{{ class_picker('/systems/' ~ system.id ~ '/agency-view', classes, assumed_class, 'Preview as') }}
+{% endif %}
+{% if problem %}<div class="note note--warn" role="status">{{ problem }}</div>{% endif %}
+{% if model %}
+{% if assumed_class %}<p class="dim">Previewing as Class {{ model.cls }} (assumed, not recorded).</p>{% endif %}
+{{ crosswalk(model, states, notice, export_base) }}
+{% endif %}
+{% endblock %}

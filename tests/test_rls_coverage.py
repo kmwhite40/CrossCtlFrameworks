@@ -171,6 +171,8 @@ EXPECTED_TENANT_ISOLATION_TABLES: frozenset[str] = frozenset(
         "vulnerability_evaluations",
         # 0115 event-bus outbox -- organization_id NULL only for platform jobs.
         "outbox_jobs",
+        # 0121 a vendor's FedRAMP certification package (agency-side crosswalk).
+        "vendor_cert_documents",
     }
 )
 
@@ -214,8 +216,8 @@ async def test_rls_policy_structural_guard() -> None:
         f"tables with tenant_isolation not in the expected snapshot: {sorted(unexpected)} — "
         "update EXPECTED_TENANT_ISOLATION_TABLES for the new coverage"
     )
-    # 179 through 0118, + 1 (0119 org_notify_channels)
-    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 180
+    # 179 through 0118, + 1 (0119 org_notify_channels), + 1 (0121 vendor_cert_documents)
+    assert len(found) == len(EXPECTED_TENANT_ISOLATION_TABLES) == 181
 
     for relname, rowsecurity, forcerowsecurity in rows:
         assert rowsecurity is True, f"ccf.{relname}: ROW LEVEL SECURITY is not ENABLED"
